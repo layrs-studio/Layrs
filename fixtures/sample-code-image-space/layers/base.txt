@@ -1,0 +1,6 @@
+layer: base
+description: Stable fixture state used as the starting point for sample-code-image-space.
+artifacts:
+  - artifacts/ui-frame.txt
+proofs:
+  - manual-readability-check

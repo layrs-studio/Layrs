@@ -1,0 +1,5 @@
+space: sample-code-image-space
+workspace: local-fixtures
+team: product-foundation
+purpose: Demonstrate a small Layrs Space with code, image-like text, layers, steps, and weave notes.
+core_git_compatibility: false

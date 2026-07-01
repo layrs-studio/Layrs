@@ -1,0 +1,12 @@
+[package]
+name = "layrs-daemon"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-steps = { path = "../layrs-steps" }
+
+[lib]
+path = "src/lib.rs"

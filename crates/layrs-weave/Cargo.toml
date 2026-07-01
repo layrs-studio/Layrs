@@ -1,0 +1,9 @@
+[package]
+name = "layrs-weave"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-gates = { path = "../layrs-gates" }

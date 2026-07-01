@@ -1,0 +1,12 @@
+[package]
+name = "layrs-api"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-sync = { path = "../layrs-sync" }
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,0 +1,28 @@
+{
+  "name": "@layrs/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared React UI primitives for Layrs Studio.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@layrs/client-sdk": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "typescript": "^5.5.4"
+  }
+}

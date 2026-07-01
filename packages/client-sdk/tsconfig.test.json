@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": false,
+    "outDir": "../../tmp/client-sdk-content-tests",
+    "rootDir": "../.."
+  },
+  "include": ["src", "../lens-sdk/src"]
+}

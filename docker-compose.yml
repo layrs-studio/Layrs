@@ -1,0 +1,38 @@
+name: layrs-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: layrs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: layrs
+      POSTGRES_USER: layrs
+      POSTGRES_PASSWORD: layrs
+    ports:
+      - "127.0.0.1:${LAYRS_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - layrs-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U layrs -d layrs"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: layrs-minio
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: layrs
+      MINIO_ROOT_PASSWORD: layrs-local-secret
+    ports:
+      - "127.0.0.1:${LAYRS_MINIO_API_PORT:-19000}:9000"
+      - "127.0.0.1:${LAYRS_MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - layrs-minio-data:/data
+
+volumes:
+  layrs-postgres-data:
+  layrs-minio-data:

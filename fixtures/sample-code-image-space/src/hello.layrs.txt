@@ -1,0 +1,7 @@
+module greeting
+
+fn message(name):
+  return "Hello, " + name + " from Layrs"
+
+view console:
+  print message("local-first")

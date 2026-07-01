@@ -1,0 +1,4 @@
+layer: experiment-copy
+parent: base
+description: Candidate layer that changes presentation copy without changing the source example.
+status: exploratory

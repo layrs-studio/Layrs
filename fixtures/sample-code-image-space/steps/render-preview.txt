@@ -1,0 +1,5 @@
+step: render-preview
+input_layer: base
+output_artifact: artifacts/ui-frame.txt
+status: simulated
+proof: The preview is represented as plain text to keep the fixture portable.

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/layrs-lens-sdk",
+  "crates/layrs-lens-raw",
+  "crates/layrs-lens-text",
+  "crates/layrs-lens-code",
+  "crates/layrs-lens-image",
+  "crates/layrs-core",
+  "crates/layrs-store",
+  "crates/layrs-store-local",
+  "crates/layrs-graph",
+  "crates/layrs-policy",
+  "crates/layrs-gates",
+  "crates/layrs-proof",
+  "crates/layrs-steps",
+  "crates/layrs-weave",
+  "crates/layrs-cli",
+  "crates/layrs-daemon",
+  "crates/layrs-api",
+  "crates/layrs-sync",
+  "crates/layrs-store-server",
+  "crates/layrs-server",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+version = "0.0.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[workspace.metadata.layrs]
+status = "foundation"
+core_git_compatibility = false

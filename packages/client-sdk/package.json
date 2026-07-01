@@ -1,0 +1,24 @@
+{
+  "name": "@layrs/client-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed Layrs Studio fixtures and local client helpers.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test:content": "tsc -p tsconfig.test.json && node ../../tmp/client-sdk-content-tests/packages/client-sdk/src/content-normalization.test.js && node ../../tmp/client-sdk-content-tests/packages/client-sdk/src/lenses-diff.test.js"
+  },
+  "dependencies": {
+    "@layrs/lens-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

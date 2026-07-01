@@ -1,0 +1,19 @@
+{
+  "name": "layrs-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-first source control workspace for Layrs.",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "check": "node -e \"console.log('Layrs: Studio packages scaffolded. Install dependencies before running package checks.')\"",
+    "check:workspaces": "pnpm -r --if-present check",
+    "dev": "node scripts/dev.mjs",
+    "dev:services": "docker compose up -d --remove-orphans",
+    "dev:server": "cargo run --target-dir target/dev-server -p layrs-server",
+    "dev:down": "node scripts/dev-down.mjs",
+    "dev:studio-web": "pnpm --filter @layrs/studio-web dev",
+    "dev:studio-desktop": "pnpm --filter @layrs/studio-desktop tauri:dev",
+    "format:check": "node -e \"console.log('Layrs: placeholder format check, no formatter configured yet.')\"",
+    "test": "node -e \"console.log('Layrs: placeholder test suite, no runnable tests yet.')\""
+  }
+}

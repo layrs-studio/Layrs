@@ -1,0 +1,13 @@
+[package]
+name = "layrs-store-local"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1"
+layrs-sync = { path = "../layrs-sync" }

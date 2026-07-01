@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/target/
+
+# JavaScript and TypeScript
+/node_modules/
+**/node_modules/
+/.pnpm-store/
+/dist/
+**/dist/
+/build/
+**/build/
+/.next/
+
+# Environment and local state
+.env
+.env.*
+!.env.example
+/.layrs-local/
+/tmp/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

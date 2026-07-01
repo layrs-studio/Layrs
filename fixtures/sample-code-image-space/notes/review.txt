@@ -1,0 +1,4 @@
+review: fixture sanity
+
+The fixture should remain small, text-only, and readable in a terminal.
+Do not add binary screenshots or generated archives here.

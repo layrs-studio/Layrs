@@ -1,0 +1,13 @@
+[package]
+name = "layrs-lens-code"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+layrs-lens-sdk = { path = "../layrs-lens-sdk" }
+layrs-lens-text = { path = "../layrs-lens-text" }

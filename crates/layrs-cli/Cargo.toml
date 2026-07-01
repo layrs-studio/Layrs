@@ -1,0 +1,16 @@
+[package]
+name = "layrs-cli"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-store-local = { path = "../layrs-store-local" }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "layrs"
+path = "src/main.rs"

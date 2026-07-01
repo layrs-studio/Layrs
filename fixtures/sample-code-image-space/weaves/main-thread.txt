@@ -1,0 +1,6 @@
+weave: main-thread
+
+1. Create a small Space fixture.
+2. Add a code-like source file.
+3. Add an image-like Artifact as text.
+4. Link the base Layer to a simulated Step and Proof.

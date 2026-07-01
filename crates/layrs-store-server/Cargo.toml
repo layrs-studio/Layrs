@@ -1,0 +1,9 @@
+[package]
+name = "layrs-store-server"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-sync = { path = "../layrs-sync" }
