@@ -1686,20 +1686,11 @@ async fn delete_space_storage_in_tx(
         .bind(space_id)
         .execute(&mut **tx)
         .await?;
-    sqlx::query(
-        r#"
-        DELETE FROM tree_entries
-        WHERE tree_id IN (
-            SELECT tree_id
-            FROM tree_objects
-            WHERE workspace_id = $1 AND space_id = $2
-        )
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query("DELETE FROM space_tree_objects WHERE workspace_id = $1 AND space_id = $2")
+        .bind(workspace_id)
+        .bind(space_id)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query(
         r#"
         UPDATE artifacts
@@ -1718,31 +1709,12 @@ async fn delete_space_storage_in_tx(
         .bind(space_id)
         .execute(&mut **tx)
         .await?;
-    sqlx::query(
-        r#"
-        DELETE FROM file_object_chunks
-        WHERE file_object_id IN (
-            SELECT file_object_id
-            FROM file_objects
-            WHERE workspace_id = $1 AND space_id = $2
-        )
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("DELETE FROM tree_objects WHERE workspace_id = $1 AND space_id = $2")
+    sqlx::query("DELETE FROM space_file_objects WHERE workspace_id = $1 AND space_id = $2")
         .bind(workspace_id)
         .bind(space_id)
         .execute(&mut **tx)
         .await?;
-    sqlx::query("DELETE FROM file_objects WHERE workspace_id = $1 AND space_id = $2")
-        .bind(workspace_id)
-        .bind(space_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query("DELETE FROM object_chunks WHERE workspace_id = $1 AND space_id = $2")
+    sqlx::query("DELETE FROM space_object_chunks WHERE workspace_id = $1 AND space_id = $2")
         .bind(workspace_id)
         .bind(space_id)
         .execute(&mut **tx)
@@ -2190,7 +2162,7 @@ async fn publish_local_space_sync_v2(
     }
 
     let root_tree_id =
-        if let Some(root_tree_id) = requested_root_tree_id.or(store_index.root_tree_id) {
+        if let Some(root_tree_id) = store_index.root_tree_id.or(requested_root_tree_id) {
             ensure_tree_in_space_in_tx(&mut tx, workspace_id, space_id, &root_tree_id).await?;
             Some(root_tree_id)
         } else {
@@ -2416,7 +2388,7 @@ async fn put_space_chunk(
         ));
     }
     let stored_size_bytes = bytes.len() as i64;
-    let object_key = format!("chunks/{workspace_id}/{space_id}/{chunk_id}");
+    let object_key = format!("chunks/global/{chunk_id}");
     sqlx::query(
         r#"
         INSERT INTO object_chunks
@@ -2432,8 +2404,6 @@ async fn put_space_chunk(
             state = 'available',
             content_bytes = EXCLUDED.content_bytes,
             updated_at = now()
-        WHERE object_chunks.workspace_id = EXCLUDED.workspace_id
-          AND object_chunks.space_id = EXCLUDED.space_id
         "#,
     )
     .bind(&chunk_id)
@@ -2448,6 +2418,9 @@ async fn put_space_chunk(
     .bind(&user.id)
     .execute(&state.pool)
     .await?;
+
+    mark_chunk_available_for_space(&state.pool, &workspace_id, &space_id, &chunk_id, &user.id)
+        .await?;
 
     Ok(Json(json!({
         "chunkId": chunk_id,
@@ -2475,8 +2448,12 @@ async fn get_space_chunk(
     let row = sqlx::query(
         r#"
         SELECT content_bytes, media_type, size_bytes, stored_size_bytes, digest, compression
-        FROM object_chunks
-        WHERE workspace_id = $1 AND space_id = $2 AND chunk_id = $3 AND state = 'available'
+        FROM object_chunks oc
+        JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
+        WHERE soc.workspace_id = $1
+          AND soc.space_id = $2
+          AND oc.chunk_id = $3
+          AND oc.state = 'available'
         "#,
     )
     .bind(&workspace_id)
@@ -3752,11 +3729,17 @@ async fn push_received_tree_object_for_layer(
                a.artifact_id, a.state
         FROM tree_entries te
         JOIN file_objects f ON f.file_object_id = te.file_object_id
+        JOIN space_tree_objects sto ON sto.tree_id = te.tree_id
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
         LEFT JOIN artifacts a ON a.workspace_id = $2
             AND a.space_id = $3
             AND a.layer_id = $4
             AND a.logical_path = te.logical_path
         WHERE te.tree_id = $1
+          AND sto.workspace_id = $2
+          AND sto.space_id = $3
+          AND sfo.workspace_id = $2
+          AND sfo.space_id = $3
         ORDER BY te.logical_path ASC
         "#,
     )
@@ -4040,9 +4023,13 @@ async fn tree_file_ref_for_path(
         SELECT f.file_object_id, f.digest, f.size_bytes, f.media_type
         FROM tree_entries te
         JOIN file_objects f ON f.file_object_id = te.file_object_id
+        JOIN space_tree_objects sto ON sto.tree_id = te.tree_id
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
         WHERE te.tree_id = $1
-          AND f.workspace_id = $2
-          AND f.space_id = $3
+          AND sto.workspace_id = $2
+          AND sto.space_id = $3
+          AND sfo.workspace_id = $2
+          AND sfo.space_id = $3
           AND te.logical_path = $4
           AND te.entry_kind = 'file'
         "#,
@@ -4208,10 +4195,10 @@ async fn first_tree_file_path(
         r#"
         SELECT te.logical_path
         FROM tree_entries te
-        JOIN tree_objects t ON t.tree_id = te.tree_id
+        JOIN space_tree_objects sto ON sto.tree_id = te.tree_id
         WHERE te.tree_id = $1
-          AND t.workspace_id = $2
-          AND t.space_id = $3
+          AND sto.workspace_id = $2
+          AND sto.space_id = $3
           AND te.entry_kind = 'file'
         ORDER BY te.logical_path ASC
         LIMIT 1
@@ -4288,9 +4275,10 @@ async fn file_object_bytes(
         SELECT oc.content_bytes, oc.compression
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
+        JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
         WHERE foc.file_object_id = $1
-          AND oc.workspace_id = $2
-          AND oc.space_id = $3
+          AND soc.workspace_id = $2
+          AND soc.space_id = $3
           AND oc.state = 'available'
         ORDER BY foc.chunk_index ASC
         "#,
@@ -4327,9 +4315,10 @@ async fn chunk_values_for_file_object(
                oc.chunk_id, oc.digest, oc.object_key, oc.compression, oc.stored_size_bytes
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
+        JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
         WHERE foc.file_object_id = $1
-          AND oc.workspace_id = $2
-          AND oc.space_id = $3
+          AND soc.workspace_id = $2
+          AND soc.space_id = $3
           AND oc.state = 'available'
         ORDER BY foc.chunk_index ASC
         "#,
@@ -5275,9 +5264,12 @@ async fn artifact_v2_content_value(
 ) -> Result<Value, ApiError> {
     let file_row = sqlx::query(
         r#"
-        SELECT file_object_id, digest, size_bytes, media_type
-        FROM file_objects
-        WHERE workspace_id = $1 AND space_id = $2 AND file_object_id = $3
+        SELECT f.file_object_id, f.digest, f.size_bytes, f.media_type
+        FROM file_objects f
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
+        WHERE sfo.workspace_id = $1
+          AND sfo.space_id = $2
+          AND f.file_object_id = $3
         "#,
     )
     .bind(workspace_id)
@@ -5601,9 +5593,12 @@ async fn file_object_text_window(
 ) -> Result<ArtifactTextWindow, ApiError> {
     let file_row = sqlx::query(
         r#"
-        SELECT file_object_id, digest, size_bytes, media_type
-        FROM file_objects
-        WHERE workspace_id = $1 AND space_id = $2 AND file_object_id = $3
+        SELECT f.file_object_id, f.digest, f.size_bytes, f.media_type
+        FROM file_objects f
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
+        WHERE sfo.workspace_id = $1
+          AND sfo.space_id = $2
+          AND f.file_object_id = $3
         "#,
     )
     .bind(workspace_id)
@@ -5628,9 +5623,10 @@ async fn file_object_text_window(
         SELECT oc.content_bytes, oc.compression
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
+        JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
         WHERE foc.file_object_id = $1
-          AND oc.workspace_id = $2
-          AND oc.space_id = $3
+          AND soc.workspace_id = $2
+          AND soc.space_id = $3
           AND oc.state = 'available'
         ORDER BY foc.chunk_index ASC
         "#,
@@ -6201,9 +6197,12 @@ async fn load_store_file_object_in_tx(
 ) -> Result<Option<StoreFileObject>, ApiError> {
     let row = sqlx::query(
         r#"
-        SELECT file_object_id, digest, size_bytes, media_type
-        FROM file_objects
-        WHERE workspace_id = $1 AND space_id = $2 AND file_object_id = $3
+        SELECT f.file_object_id, f.digest, f.size_bytes, f.media_type
+        FROM file_objects f
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
+        WHERE sfo.workspace_id = $1
+          AND sfo.space_id = $2
+          AND f.file_object_id = $3
         "#,
     )
     .bind(workspace_id)
@@ -6245,7 +6244,7 @@ async fn upsert_store_objects_in_tx(
                     validate_object_digest(raw_object_id.as_deref().ok_or_else(|| {
                         ApiError::bad_request("storeObjects.objectId is required")
                     })?)?;
-                upsert_tree_object_shell_in_tx(
+                let tree_id = upsert_tree_object_shell_in_tx(
                     tx,
                     workspace_id,
                     space_id,
@@ -6254,8 +6253,8 @@ async fn upsert_store_objects_in_tx(
                     account_id,
                 )
                 .await?;
-                tree_entries_by_tree.insert(object_id.clone(), object.entries);
-                root_tree_id = Some(object_id);
+                tree_entries_by_tree.insert(tree_id.clone(), object.entries);
+                root_tree_id = Some(tree_id);
             }
             "file" => {
                 let object_id =
@@ -6311,7 +6310,10 @@ async fn upsert_store_objects_in_tx(
                 if let Some(path) = path {
                     file_by_path.insert(path, file.clone());
                 }
-                file_by_id.insert(file_object_id, file);
+                file_by_id.insert(file_object_id.clone(), file.clone());
+                if file_object_id != object_id {
+                    file_by_id.insert(object_id, file);
+                }
             }
             "tombstone" => {
                 if let Some(path) = object.path {
@@ -6372,7 +6374,7 @@ async fn upsert_store_object_chunks_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
-    _account_id: &str,
+    account_id: &str,
     chunks: Vec<PublishStoreObjectChunkBody>,
 ) -> Result<Vec<ChunkDescriptor>, ApiError> {
     let mut descriptors = Vec::new();
@@ -6404,20 +6406,18 @@ async fn upsert_store_object_chunks_in_tx(
             r#"
             SELECT digest, size_bytes, stored_size_bytes, compression
             FROM object_chunks
-            WHERE workspace_id = $1
-              AND space_id = $2
-              AND chunk_id = $3
+            WHERE chunk_id = $1
               AND state = 'available'
             "#,
         )
-        .bind(workspace_id)
-        .bind(space_id)
         .bind(&chunk_id)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| {
             ApiError::bad_request("storeObjects chunk bytes must be uploaded before publish")
         })?;
+        mark_chunk_available_for_space_in_tx(tx, workspace_id, space_id, &chunk_id, account_id)
+            .await?;
         let stored_digest = row.get::<String, _>("digest");
         let actual_digest = validate_object_digest(&stored_digest)?;
         if actual_digest != chunk_id {
@@ -6473,14 +6473,14 @@ async fn upsert_tree_object_shell_in_tx(
     tree_id: &str,
     entry_count: i32,
     account_id: &str,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
     sqlx::query(
         r#"
         INSERT INTO tree_objects
             (tree_id, workspace_id, space_id, digest, entry_count, created_by_account_id)
         VALUES
             ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (workspace_id, space_id, digest) DO UPDATE SET
+        ON CONFLICT (tree_id) DO UPDATE SET
             entry_count = EXCLUDED.entry_count
         "#,
     )
@@ -6492,7 +6492,8 @@ async fn upsert_tree_object_shell_in_tx(
     .bind(account_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    mark_tree_available_for_space_in_tx(tx, workspace_id, space_id, tree_id, account_id).await?;
+    Ok(tree_id.to_string())
 }
 
 fn apply_store_object_to_artifact(
@@ -6775,9 +6776,13 @@ async fn chunk_descriptors(
         let chunk_id = validate_chunk_id(&chunk_id)?;
         let row = sqlx::query(
             r#"
-            SELECT digest, size_bytes
-            FROM object_chunks
-            WHERE workspace_id = $1 AND space_id = $2 AND chunk_id = $3 AND state = 'available'
+            SELECT oc.digest, oc.size_bytes
+            FROM object_chunks oc
+            JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
+            WHERE soc.workspace_id = $1
+              AND soc.space_id = $2
+              AND oc.chunk_id = $3
+              AND oc.state = 'available'
             "#,
         )
         .bind(workspace_id)
@@ -6838,7 +6843,7 @@ async fn upsert_file_object_in_tx(
             (file_object_id, workspace_id, space_id, digest, size_bytes, media_type, chunk_count, created_by_account_id)
         VALUES
             ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (workspace_id, space_id, digest) DO UPDATE SET
+        ON CONFLICT (file_object_id) DO UPDATE SET
             media_type = EXCLUDED.media_type,
             chunk_count = EXCLUDED.chunk_count
         RETURNING file_object_id
@@ -6854,6 +6859,8 @@ async fn upsert_file_object_in_tx(
     .bind(account_id)
     .fetch_one(&mut **tx)
     .await?;
+    mark_file_available_for_space_in_tx(tx, workspace_id, space_id, &file_object_id, account_id)
+        .await?;
     for (index, chunk) in chunks.iter().enumerate() {
         sqlx::query(
             r#"
@@ -6887,8 +6894,12 @@ async fn ensure_file_object_in_space_in_tx(
     let exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
-            SELECT 1 FROM file_objects
-            WHERE workspace_id = $1 AND space_id = $2 AND file_object_id = $3
+            SELECT 1
+            FROM file_objects f
+            JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
+            WHERE sfo.workspace_id = $1
+              AND sfo.space_id = $2
+              AND f.file_object_id = $3
         )
         "#,
     )
@@ -7044,7 +7055,7 @@ async fn rebuild_layer_tree_in_tx(
             (tree_id, workspace_id, space_id, digest, entry_count, created_by_account_id)
         VALUES
             ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (workspace_id, space_id, digest) DO UPDATE SET
+        ON CONFLICT (tree_id) DO UPDATE SET
             entry_count = EXCLUDED.entry_count
         RETURNING tree_id
         "#,
@@ -7057,6 +7068,7 @@ async fn rebuild_layer_tree_in_tx(
     .bind(account_id)
     .fetch_one(&mut **tx)
     .await?;
+    mark_tree_available_for_space_in_tx(tx, workspace_id, space_id, &tree_id, account_id).await?;
     for row in rows {
         sqlx::query(
             r#"
@@ -7089,8 +7101,12 @@ async fn ensure_tree_in_space_in_tx(
     let exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
-            SELECT 1 FROM tree_objects
-            WHERE workspace_id = $1 AND space_id = $2 AND tree_id = $3
+            SELECT 1
+            FROM tree_objects t
+            JOIN space_tree_objects sto ON sto.tree_id = t.tree_id
+            WHERE sto.workspace_id = $1
+              AND sto.space_id = $2
+              AND t.tree_id = $3
         )
         "#,
     )
@@ -7250,8 +7266,12 @@ async fn optional_existing_tree_id_in_tx(
     let exists: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS(
-            SELECT 1 FROM tree_objects
-            WHERE workspace_id = $1 AND space_id = $2 AND tree_id = $3
+            SELECT 1
+            FROM tree_objects t
+            JOIN space_tree_objects sto ON sto.tree_id = t.tree_id
+            WHERE sto.workspace_id = $1
+              AND sto.space_id = $2
+              AND t.tree_id = $3
         )
         "#,
     )
@@ -8147,8 +8167,13 @@ async fn object_chunk_exists(
     sqlx::query_scalar(
         r#"
         SELECT EXISTS(
-            SELECT 1 FROM object_chunks
-            WHERE workspace_id = $1 AND space_id = $2 AND chunk_id = $3 AND state = 'available'
+            SELECT 1
+            FROM object_chunks oc
+            JOIN space_object_chunks soc ON soc.chunk_id = oc.chunk_id
+            WHERE soc.workspace_id = $1
+              AND soc.space_id = $2
+              AND oc.chunk_id = $3
+              AND oc.state = 'available'
         )
         "#,
     )
@@ -8158,6 +8183,106 @@ async fn object_chunk_exists(
     .fetch_one(pool)
     .await
     .map_err(ApiError::from)
+}
+
+async fn mark_chunk_available_for_space(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    chunk_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        INSERT INTO space_object_chunks
+            (workspace_id, space_id, chunk_id, created_by_account_id)
+        VALUES
+            ($1, $2, $3, $4)
+        ON CONFLICT (workspace_id, space_id, chunk_id) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(chunk_id)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn mark_chunk_available_for_space_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    chunk_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        INSERT INTO space_object_chunks
+            (workspace_id, space_id, chunk_id, created_by_account_id)
+        VALUES
+            ($1, $2, $3, $4)
+        ON CONFLICT (workspace_id, space_id, chunk_id) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(chunk_id)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_file_available_for_space_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    file_object_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        INSERT INTO space_file_objects
+            (workspace_id, space_id, file_object_id, created_by_account_id)
+        VALUES
+            ($1, $2, $3, $4)
+        ON CONFLICT (workspace_id, space_id, file_object_id) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(file_object_id)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_tree_available_for_space_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    tree_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        INSERT INTO space_tree_objects
+            (workspace_id, space_id, tree_id, created_by_account_id)
+        VALUES
+            ($1, $2, $3, $4)
+        ON CONFLICT (workspace_id, space_id, tree_id) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(tree_id)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn validate_chunk_id(value: &str) -> Result<String, ApiError> {
@@ -9167,12 +9292,13 @@ mod tests {
                 .fetch_one(&fixture.pool)
                 .await
                 .expect("artifact count");
-        let chunks: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM object_chunks WHERE space_id = $1")
-                .bind(&fixture.space_id)
-                .fetch_one(&fixture.pool)
-                .await
-                .expect("chunk count");
+        let chunks: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM space_object_chunks WHERE space_id = $1",
+        )
+        .bind(&fixture.space_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("chunk count");
         assert_eq!(spaces, 0);
         assert_eq!(artifacts, 0);
         assert_eq!(chunks, 0);
@@ -9672,6 +9798,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_global_chunk_can_be_published_in_another_space() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let bytes = Bytes::from_static(b"shared chunk bytes\n");
+        let chunk_id = blake3_digest_for_bytes(&bytes);
+        let file_object_id = blake3_digest_for_bytes(&bytes);
+        let root_tree_id = blake3_digest_for_bytes(b"shared-chunk-second-space-tree");
+        let second_space_id = format!("space_{}", Uuid::new_v4().simple());
+        let second_layer_id = format!("layer_{}", Uuid::new_v4().simple());
+
+        sqlx::query(
+            "INSERT INTO spaces (space_id, workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, $3, 'Second Sync Space', $4)",
+        )
+        .bind(&second_space_id)
+        .bind(&fixture.workspace_id)
+        .bind(format!("second-{}", Uuid::new_v4().simple()))
+        .bind(&fixture.account_id)
+        .execute(&fixture.pool)
+        .await
+        .expect("second space inserted");
+        sqlx::query(
+            "INSERT INTO layers (layer_id, workspace_id, space_id, name, created_by_account_id) VALUES ($1, $2, $3, 'Main', $4)",
+        )
+        .bind(&second_layer_id)
+        .bind(&fixture.workspace_id)
+        .bind(&second_space_id)
+        .bind(&fixture.account_id)
+        .execute(&fixture.pool)
+        .await
+        .expect("second layer inserted");
+        let mut tx = fixture.pool.begin().await.expect("policy tx begins");
+        insert_empty_layer_policy(
+            &mut tx,
+            &fixture.workspace_id,
+            &second_space_id,
+            &second_layer_id,
+            Some(&fixture.account_id),
+        )
+        .await
+        .expect("second policy inserted");
+        tx.commit().await.expect("policy tx commits");
+
+        let _ = put_space_chunk(
+            State(test_state(fixture.pool.clone())),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            fixture.bearer_headers(),
+            bytes.clone(),
+        )
+        .await
+        .expect("chunk upload into first space succeeds");
+
+        let _ = publish_local_space_sync(
+            State(test_state(fixture.pool.clone())),
+            Path((fixture.workspace_id.clone(), second_space_id.clone())),
+            fixture.bearer_headers(),
+            Json(
+                serde_json::from_value(json!({
+                    "protocol": "layrs.sync.v2",
+                    "layerId": second_layer_id,
+                    "policyEpoch": 1,
+                    "idempotencyKey": format!("shared_chunk_{}", Uuid::new_v4().simple()),
+                    "sourceClientId": "test-client",
+                    "rootTreeId": root_tree_id,
+                    "changedPaths": ["shared.txt"],
+                    "storeObjects": {
+                        "chunks": [{
+                            "chunkId": chunk_id,
+                            "digest": chunk_id,
+                            "size": bytes.len(),
+                            "rawSize": bytes.len(),
+                            "storedSize": bytes.len(),
+                            "compression": "identity"
+                        }],
+                        "fileObjects": [{
+                            "fileObjectId": file_object_id,
+                            "digest": file_object_id,
+                            "size": bytes.len(),
+                            "mediaType": "text/plain",
+                            "chunks": [{
+                                "chunkId": chunk_id,
+                                "size": bytes.len(),
+                                "rawSize": bytes.len(),
+                                "storedSize": bytes.len(),
+                                "compression": "identity"
+                            }]
+                        }],
+                        "treeObjects": [{
+                            "treeId": root_tree_id,
+                            "entries": [{
+                                "path": "shared.txt",
+                                "fileObjectId": file_object_id
+                            }]
+                        }]
+                    }
+                }))
+                .expect("publish body is valid"),
+            ),
+        )
+        .await
+        .expect("second space publish reuses the global chunk");
+
+        let availability_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM space_object_chunks WHERE chunk_id = $1",
+        )
+        .bind(&chunk_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("availability count");
+        assert_eq!(availability_count, 2);
+    }
+
+    #[tokio::test]
     async fn step_and_artifact_diff_endpoints_return_lens_window_segments() {
         let Some(fixture) = SyncTestFixture::create().await else {
             return;
@@ -10073,6 +10316,7 @@ mod tests {
 
     struct SyncTestFixture {
         pool: PgPool,
+        account_id: String,
         workspace_id: String,
         space_id: String,
         layer_id: String,
@@ -10184,6 +10428,7 @@ mod tests {
 
             Some(Self {
                 pool,
+                account_id,
                 workspace_id,
                 space_id,
                 layer_id,

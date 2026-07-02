@@ -240,7 +240,9 @@ async function main() {
   await run("docker", ["compose", "--env-file", devEnvPath, "up", "-d", "--remove-orphans"]);
 
   console.log(`Layrs dev: starting Layrs Server at ${devEnv.LAYRS_SERVER_URL}`);
-  console.log(`Layrs dev: starting Studio Web at ${devEnv.LAYRS_STUDIO_WEB_URL}`);
+  if (process.env.LAYRS_DEV_SKIP_STUDIO !== "1") {
+    console.log(`Layrs dev: starting Studio Web at ${devEnv.LAYRS_STUDIO_WEB_URL}`);
+  }
   console.log(`Layrs dev: PostgreSQL on 127.0.0.1:${devEnv.LAYRS_POSTGRES_PORT}`);
   console.log(`Layrs dev: MinIO API on ${devEnv.LAYRS_OBJECT_STORE_ENDPOINT}`);
   console.log("Layrs dev: Docker services keep running until `pnpm run dev:down`.");
@@ -273,39 +275,39 @@ async function main() {
   );
   children.push(server);
 
-  let studio;
-  try {
-    studio = startLongProcess(
-      "Studio Web",
-      pnpmCommand,
-      [
-        ...pnpmArgsPrefix,
-        "--filter",
-        "@layrs/studio-web",
-        "dev",
-        "--",
-        "--port",
-        devEnv.LAYRS_STUDIO_WEB_PORT,
-        "--strictPort"
-      ],
-      {
-        ...process.env,
-        ...devEnv,
-        VITE_LAYRS_API_URL: devEnv.LAYRS_SERVER_URL,
-        VITE_LAYRS_SERVER_URL: devEnv.LAYRS_SERVER_URL
-      }
-    );
-    children.push(studio);
-  } catch (error) {
-    shutdown(1);
-    throw error;
+  if (process.env.LAYRS_DEV_SKIP_STUDIO !== "1") {
+    try {
+      const studio = startLongProcess(
+        "Studio Web",
+        pnpmCommand,
+        [
+          ...pnpmArgsPrefix,
+          "--filter",
+          "@layrs/studio-web",
+          "dev",
+          "--",
+          "--port",
+          devEnv.LAYRS_STUDIO_WEB_PORT,
+          "--strictPort"
+        ],
+        {
+          ...process.env,
+          ...devEnv,
+          VITE_LAYRS_API_URL: devEnv.LAYRS_SERVER_URL,
+          VITE_LAYRS_SERVER_URL: devEnv.LAYRS_SERVER_URL
+        }
+      );
+      children.push(studio);
+    } catch (error) {
+      shutdown(1);
+      throw error;
+    }
   }
 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
 
   server.on("layrs-start-error", () => shutdown(1));
-  studio.on("layrs-start-error", () => shutdown(1));
 
   for (const child of children) {
     child.on("exit", (code, signal) => {

@@ -4790,11 +4790,28 @@ fn upload_publish_chunks(
     space_id: &str,
     store_objects: &PublishStoreObjectsRequest,
 ) -> Result<(), String> {
-    let chunks_by_id = store_objects
+    let mut chunks_by_id = store_objects
         .chunks
         .iter()
+        .cloned()
         .map(|chunk| (chunk.chunk_id.clone(), chunk))
         .collect::<BTreeMap<_, _>>();
+
+    for file_object in &store_objects.file_objects {
+        for chunk_ref in &file_object.chunks {
+            chunks_by_id
+                .entry(chunk_ref.chunk_id.clone())
+                .or_insert_with(|| PublishChunkObjectRequest {
+                    digest: chunk_ref.chunk_id.clone(),
+                    chunk_id: chunk_ref.chunk_id.clone(),
+                    size: chunk_ref.size,
+                    raw_size: chunk_ref.raw_size,
+                    stored_size: chunk_ref.stored_size.unwrap_or(chunk_ref.raw_size),
+                    compression: chunk_ref.compression.clone(),
+                });
+        }
+    }
+
     if chunks_by_id.is_empty() {
         return Ok(());
     }
