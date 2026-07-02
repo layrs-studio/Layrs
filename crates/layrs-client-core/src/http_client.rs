@@ -1,5 +1,6 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     net::TcpStream,
     time::Duration,
@@ -11,16 +12,31 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct BytesResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
 pub fn get_json<T: DeserializeOwned>(
     endpoint: &str,
     path: &str,
     bearer: Option<&str>,
 ) -> Result<T, String> {
-    let response = request(endpoint, "GET", path, bearer, None, &[])?;
+    let response = request(endpoint, "GET", path, bearer, None, &[], &[])?;
     decode_response(response, path)
 }
 
 pub fn get_bytes(endpoint: &str, path: &str, bearer: Option<&str>) -> Result<Vec<u8>, String> {
+    Ok(get_bytes_with_headers(endpoint, path, bearer)?.body)
+}
+
+pub fn get_bytes_with_headers(
+    endpoint: &str,
+    path: &str,
+    bearer: Option<&str>,
+) -> Result<BytesResponse, String> {
     let target = HttpTarget::parse(endpoint)?;
     let mut stream = TcpStream::connect((target.host.as_str(), target.port)).map_err(|error| {
         format!(
@@ -51,15 +67,15 @@ pub fn get_bytes(endpoint: &str, path: &str, bearer: Option<&str>) -> Result<Vec
     stream
         .read_to_end(&mut response)
         .map_err(|error| format!("Layrs Desktop could not read Layrs server response: {error}"))?;
-    let (status, body) = parse_http_response_bytes(&response)?;
-    if !(200..300).contains(&status) {
+    let response = parse_http_response_bytes(&response)?;
+    if !(200..300).contains(&response.status) {
         return Err(format!(
             "Layrs server returned HTTP {} for {path}: {}",
-            status,
-            String::from_utf8_lossy(&body).trim()
+            response.status,
+            String::from_utf8_lossy(&response.body).trim()
         ));
     }
-    Ok(body)
+    Ok(response)
 }
 
 pub fn post_json<TBody: Serialize, TResponse: DeserializeOwned>(
@@ -77,6 +93,7 @@ pub fn post_json<TBody: Serialize, TResponse: DeserializeOwned>(
         bearer,
         Some("application/json"),
         body.as_bytes(),
+        &[],
     )?;
     decode_response(response, path)
 }
@@ -87,6 +104,16 @@ pub fn put_bytes_json<TResponse: DeserializeOwned>(
     bearer: Option<&str>,
     bytes: &[u8],
 ) -> Result<TResponse, String> {
+    put_bytes_json_with_headers(endpoint, path, bearer, bytes, &[])
+}
+
+pub fn put_bytes_json_with_headers<TResponse: DeserializeOwned>(
+    endpoint: &str,
+    path: &str,
+    bearer: Option<&str>,
+    bytes: &[u8],
+    extra_headers: &[(&str, String)],
+) -> Result<TResponse, String> {
     let response = request(
         endpoint,
         "PUT",
@@ -94,6 +121,7 @@ pub fn put_bytes_json<TResponse: DeserializeOwned>(
         bearer,
         Some("application/octet-stream"),
         bytes,
+        extra_headers,
     )?;
     decode_response(response, path)
 }
@@ -103,7 +131,7 @@ pub fn delete_json<T: DeserializeOwned>(
     path: &str,
     bearer: Option<&str>,
 ) -> Result<T, String> {
-    let response = request(endpoint, "DELETE", path, bearer, None, &[])?;
+    let response = request(endpoint, "DELETE", path, bearer, None, &[], &[])?;
     decode_response(response, path)
 }
 
@@ -131,6 +159,7 @@ fn request(
     bearer: Option<&str>,
     content_type: Option<&str>,
     body: &[u8],
+    extra_headers: &[(&str, String)],
 ) -> Result<HttpResponse, String> {
     let target = HttpTarget::parse(endpoint)?;
     let mut stream = TcpStream::connect((target.host.as_str(), target.port)).map_err(|error| {
@@ -159,9 +188,13 @@ fn request(
         "Content-Length: 0\r\n".to_string()
     };
 
+    let custom_headers = extra_headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let request_head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\n{}{}Connection: close\r\n\r\n",
-        target.host, target.port, auth, content_headers
+        "{method} {path} HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\n{}{}{}Connection: close\r\n\r\n",
+        target.host, target.port, auth, content_headers, custom_headers
     );
     stream
         .write_all(request_head.as_bytes())
@@ -196,7 +229,7 @@ fn parse_http_response(raw: &str) -> Result<HttpResponse, String> {
     })
 }
 
-fn parse_http_response_bytes(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
+fn parse_http_response_bytes(raw: &[u8]) -> Result<BytesResponse, String> {
     let Some(split_at) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
         return Err("Layrs server returned a malformed HTTP response.".to_string());
     };
@@ -209,7 +242,21 @@ fn parse_http_response_bytes(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
         .ok_or_else(|| "Layrs server response had no HTTP status.".to_string())?
         .parse::<u16>()
         .map_err(|error| format!("Layrs server response had an invalid HTTP status: {error}"))?;
-    Ok((status, raw[split_at + 4..].to_vec()))
+    Ok(BytesResponse {
+        status,
+        headers: parse_headers(head),
+        body: raw[split_at + 4..].to_vec(),
+    })
+}
+
+fn parse_headers(head: &str) -> BTreeMap<String, String> {
+    head.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]

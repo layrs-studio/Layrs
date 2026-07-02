@@ -92,18 +92,38 @@
   margin: 0;
 }
 
+.desktop-shortcut-footer {
+  display: grid;
+  gap: 6px;
+}
+
+.desktop-shortcut-footer span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.desktop-shortcut-footer kbd {
+  min-width: 58px;
+  border: 1px solid var(--layrs-line);
+  border-radius: 6px;
+  background: var(--layrs-panel-strong);
+  color: var(--layrs-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.desktop-shortcut-footer.is-muted {
+  opacity: 0.55;
+}
+
 .desktop-stack {
   display: grid;
   gap: 8px;
   margin-top: 14px;
-}
-
-.desktop-draft-box {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--layrs-line);
 }
 
 .desktop-layer-card {
@@ -114,9 +134,19 @@
   border-top: 1px solid var(--layrs-line);
 }
 
+.desktop-layer-card--rail {
+  margin-top: 18px;
+}
+
 .desktop-layer-list {
   display: grid;
   gap: 8px;
+}
+
+.desktop-layer-list--rail {
+  max-height: min(54vh, 620px);
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .desktop-layer-row {
@@ -162,6 +192,19 @@
 .desktop-layer-row__main span {
   color: var(--layrs-muted);
   font-size: 12px;
+}
+
+.desktop-layer-row__latest {
+  color: var(--layrs-muted);
+  font-size: 11px;
+}
+
+.desktop-layer-list--rail .desktop-layer-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desktop-layer-list--rail .desktop-layer-row__rules {
+  justify-content: start;
 }
 
 .desktop-layer-row__rules {
@@ -228,6 +271,41 @@
 .desktop-layer-create {
   display: grid;
   gap: 8px;
+}
+
+@keyframes desktop-confirm-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+  }
+  35% {
+    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(45, 212, 191, 0);
+  }
+}
+
+.desktop-view--local.is-pulsing-changes .desktop-review-grid,
+.desktop-view--local.is-pulsing-layer .desktop-layer-row.is-active,
+.desktop-view--local.is-pulsing-steps .layrs-tabs button[data-tab-id="steps"],
+.desktop-view--local.is-pulsing-sync .layrs-tabs button[data-tab-id="sync"] {
+  animation: desktop-confirm-pulse 1.05s ease-out;
+  border-color: rgba(45, 212, 191, 0.6);
+}
+
+.desktop-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(300px, 1fr)) minmax(260px, 0.72fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.desktop-draft-form {
+  align-content: start;
+}
+
+.desktop-local-init-card {
+  min-height: 100%;
 }
 
 .desktop-inline-badge {
@@ -1118,6 +1196,7 @@
 @media (max-width: 1100px) {
   .desktop-view--local,
   .desktop-steps-grid,
+  .desktop-draft-grid,
   .desktop-settings-grid--cards {
     grid-template-columns: 1fr;
   }

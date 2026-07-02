@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
   Artifact,
@@ -23,6 +23,158 @@ export interface AppShellProps {
   sidebar: ReactNode;
   toolbar?: ReactNode;
   children: ReactNode;
+}
+
+export type NotificationTone = "success" | "danger" | "warning" | "info";
+
+export interface NotificationInput {
+  tone: NotificationTone;
+  title: string;
+  message?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  dedupeKey?: string;
+  autoDismissMs?: number;
+}
+
+export interface Notification extends NotificationInput {
+  id: string;
+  createdAt: number;
+}
+
+export interface NotificationContextValue {
+  dismiss: (id: string) => void;
+  notify: (input: NotificationInput) => string;
+  notifications: Notification[];
+}
+
+const NotificationContext = createContext<NotificationContextValue | null>(null);
+
+let nextNotificationId = 1;
+
+export function NotificationProvider({ children }: { children: ReactNode }) {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(
+    () => () => {
+      for (const timer of timersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      timersRef.current.clear();
+    },
+    []
+  );
+
+  const dismiss = useCallback((id: string) => {
+    const timer = timersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
+    setNotifications((current) => current.filter((notification) => notification.id !== id));
+  }, []);
+
+  const notify = useCallback(
+    (input: NotificationInput) => {
+      const id = input.dedupeKey ?? `notification_${nextNotificationId++}`;
+      const notification: Notification = {
+        ...input,
+        id,
+        createdAt: Date.now()
+      };
+
+      const existingTimer = timersRef.current.get(id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        timersRef.current.delete(id);
+      }
+
+      setNotifications((current) => {
+        const withoutDuplicate = input.dedupeKey
+          ? current.filter((item) => item.dedupeKey !== input.dedupeKey)
+          : current;
+        return [...withoutDuplicate, notification].slice(-6);
+      });
+
+      const autoDismissMs =
+        typeof input.autoDismissMs === "number"
+          ? input.autoDismissMs
+          : input.tone === "success" || input.tone === "info"
+            ? 4200
+            : undefined;
+      if (autoDismissMs && autoDismissMs > 0) {
+        timersRef.current.set(
+          id,
+          setTimeout(() => dismiss(id), autoDismissMs)
+        );
+      }
+
+      return id;
+    },
+    [dismiss]
+  );
+
+  const value = useMemo(
+    () => ({
+      dismiss,
+      notify,
+      notifications
+    }),
+    [dismiss, notify, notifications]
+  );
+
+  return (
+    <NotificationContext.Provider value={value}>
+      {children}
+      <ToastStack notifications={notifications} onDismiss={dismiss} />
+    </NotificationContext.Provider>
+  );
+}
+
+export function useNotifications() {
+  const context = useContext(NotificationContext);
+  if (!context) {
+    throw new Error("useNotifications must be used inside NotificationProvider.");
+  }
+  return context;
+}
+
+export interface ToastStackProps {
+  notifications: Notification[];
+  onDismiss: (id: string) => void;
+}
+
+export function ToastStack({ notifications, onDismiss }: ToastStackProps) {
+  if (notifications.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="layrs-toast-stack" role="status" aria-live="polite" aria-relevant="additions text">
+      {notifications.map((notification) => (
+        <article className={`layrs-toast layrs-toast--${notification.tone}`} key={notification.id}>
+          <div>
+            <strong>{notification.title}</strong>
+            {notification.message ? <p>{notification.message}</p> : null}
+          </div>
+          {notification.actionLabel && notification.onAction ? (
+            <button type="button" className="layrs-toast__action" onClick={notification.onAction}>
+              {notification.actionLabel}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="layrs-toast__dismiss"
+            aria-label={`Dismiss ${notification.title}`}
+            onClick={() => onDismiss(notification.id)}
+          >
+            x
+          </button>
+        </article>
+      ))}
+    </div>
+  );
 }
 
 export function AppShell({ productName, workspaceName, sidebar, toolbar, children }: AppShellProps) {
@@ -110,6 +262,7 @@ export function Tabs({ activeId, ariaLabel, onChange, tabs }: TabsProps) {
         <button
           aria-selected={activeId === tab.id}
           className={activeId === tab.id ? "is-active" : undefined}
+          data-tab-id={tab.id}
           disabled={tab.disabled}
           key={tab.id}
           onClick={() => onChange(tab.id)}

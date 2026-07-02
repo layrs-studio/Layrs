@@ -2,31 +2,65 @@ use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cli {
+    pub globals: GlobalFlags,
+    pub command: CliCommand,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GlobalFlags {
+    pub space: Option<PathBuf>,
+    pub json: bool,
+    pub no_color: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Help,
     Init {
-        store: Option<PathBuf>,
-    },
-    WorkspaceCreate {
-        store: Option<PathBuf>,
         name: String,
+        path: Option<PathBuf>,
     },
-    SpaceCreate {
-        store: Option<PathBuf>,
+    Step,
+    Diff {
+        step_id: Option<String>,
+        stat: bool,
+        name_only: bool,
+        window: Option<Window>,
+        wrap: Option<bool>,
+    },
+    Timeline {
+        limit: Option<u32>,
+    },
+    Publish {
         workspace: Option<String>,
-        name: String,
+    },
+    Receive,
+    Compact,
+    Status,
+    Login {
+        endpoint: Option<String>,
+    },
+    Whoami,
+    Logout,
+    Spaces,
+    Layers,
+    LayerUse {
+        name_or_id: String,
     },
     LayerCreate {
-        store: Option<PathBuf>,
-        space: Option<String>,
         name: String,
     },
-    Status {
-        store: Option<PathBuf>,
+    LayerDelete {
+        name_or_id: String,
+        yes: bool,
     },
-    StoreScrub {
-        store: Option<PathBuf>,
-    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    pub start: u32,
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,88 +88,143 @@ impl fmt::Display for CliParseError {
 
 impl std::error::Error for CliParseError {}
 
-pub fn parse_args<I, S>(args: I) -> Result<CliCommand, CliParseError>
+pub fn parse_args<I, S>(args: I) -> Result<Cli, CliParseError>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
     let mut args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    let globals = take_global_flags(&mut args)?;
 
-    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        return Ok(CliCommand::Help);
+    if args.is_empty() || take_help_flag(&mut args) {
+        reject_remaining_help_context(&args)?;
+        return Ok(Cli {
+            globals,
+            command: CliCommand::Help,
+        });
     }
 
-    let store = take_path_option(&mut args, "--store")?;
-    let command = args.remove(0);
+    let command_name = args.remove(0);
+    let command = match command_name.as_str() {
+        "init" => parse_init(args)?,
+        "step" => parse_no_extra(args, CliCommand::Step)?,
+        "diff" => parse_diff(args)?,
+        "timeline" => parse_timeline(args)?,
+        "publish" => parse_publish(args)?,
+        "receive" => parse_no_extra(args, CliCommand::Receive)?,
+        "compact" => parse_no_extra(args, CliCommand::Compact)?,
+        "status" => parse_no_extra(args, CliCommand::Status)?,
+        "login" => parse_login(args)?,
+        "whoami" => parse_no_extra(args, CliCommand::Whoami)?,
+        "logout" => parse_no_extra(args, CliCommand::Logout)?,
+        "spaces" => parse_no_extra(args, CliCommand::Spaces)?,
+        "layers" => parse_no_extra(args, CliCommand::Layers)?,
+        "layer" => parse_layer(args)?,
+        _ => {
+            return Err(CliParseError::new(format!(
+                "unknown command `{command_name}`; run `layrs --help`"
+            )));
+        }
+    };
 
-    match command.as_str() {
-        "init" => parse_init(args, store),
-        "workspace" => parse_workspace(args, store),
-        "space" => parse_space(args, store),
-        "layer" => parse_layer(args, store),
-        "status" => parse_no_extra(args, CliCommand::Status { store }),
-        "store" => parse_store(args, store),
-        _ => Err(CliParseError::new(format!(
-            "unknown command `{command}`; run `layrs --help`"
-        ))),
-    }
+    Ok(Cli { globals, command })
 }
 
 pub fn usage() -> &'static str {
     "Usage:
-  layrs init [PATH] [--store PATH]
-  layrs workspace create NAME [--store PATH]
-  layrs space create NAME [--workspace ID] [--store PATH]
-  layrs layer create NAME [--space ID] [--store PATH]
-  layrs status [--store PATH]
-  layrs store scrub [--store PATH]"
+  layrs [--space PATH] [--json] [--no-color] COMMAND
+
+Commands:
+  layrs init \"Space Name\" [--path PATH]
+  layrs step
+  layrs diff [STEP_ID] [--stat] [--name-only] [--window START:LIMIT] [--wrap|--no-wrap]
+  layrs timeline [--limit N]
+  layrs publish [--workspace WORKSPACE_ID]
+  layrs receive
+  layrs compact
+  layrs status
+  layrs login [--endpoint URL]
+  layrs whoami
+  layrs logout
+  layrs spaces
+  layrs layers
+  layrs layer use NAME_OR_ID
+  layrs layer create NAME
+  layrs layer delete NAME_OR_ID [--yes]
+
+Global flags:
+  --space PATH     Use a local Layrs space at PATH instead of discovering from cwd.
+  --json           Emit stable JSON: {\"ok\":true,\"data\":...} or {\"ok\":false,\"error\":...}.
+  --no-color       Disable ANSI color in human output."
 }
 
-fn parse_init(args: Vec<String>, store: Option<PathBuf>) -> Result<CliCommand, CliParseError> {
-    match (args.as_slice(), store) {
-        ([], store) => Ok(CliCommand::Init { store }),
-        ([path], None) => Ok(CliCommand::Init {
-            store: Some(PathBuf::from(path)),
-        }),
-        ([_path], Some(_)) => Err(CliParseError::new(
-            "`layrs init` accepts either PATH or --store PATH, not both",
-        )),
-        _ => Err(CliParseError::new(
-            "usage: layrs init [PATH] [--store PATH]",
-        )),
-    }
+fn parse_init(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let path = take_path_option(&mut args, "--path")?;
+    let name = take_required_positional(args, "Space Name", "init")?;
+    Ok(CliCommand::Init { name, path })
 }
 
-fn parse_workspace(
-    mut args: Vec<String>,
-    store: Option<PathBuf>,
-) -> Result<CliCommand, CliParseError> {
-    expect_subcommand(&mut args, "workspace", "create")?;
-    let name = take_required_name(args, "workspace create")?;
-    Ok(CliCommand::WorkspaceCreate { store, name })
-}
+fn parse_diff(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let stat = take_bool_flag(&mut args, "--stat")?;
+    let name_only = take_bool_flag(&mut args, "--name-only")?;
+    let window = take_string_option(&mut args, "--window")?
+        .map(|value| parse_window(&value))
+        .transpose()?;
+    let wrap = take_wrap_option(&mut args)?;
+    let step_id = take_optional_positional(args, "STEP_ID", "diff")?;
 
-fn parse_space(mut args: Vec<String>, store: Option<PathBuf>) -> Result<CliCommand, CliParseError> {
-    expect_subcommand(&mut args, "space", "create")?;
-    let workspace = take_string_option(&mut args, "--workspace")?;
-    let name = take_required_name(args, "space create")?;
-    Ok(CliCommand::SpaceCreate {
-        store,
-        workspace,
-        name,
+    Ok(CliCommand::Diff {
+        step_id,
+        stat,
+        name_only,
+        window,
+        wrap,
     })
 }
 
-fn parse_layer(mut args: Vec<String>, store: Option<PathBuf>) -> Result<CliCommand, CliParseError> {
-    expect_subcommand(&mut args, "layer", "create")?;
-    let space = take_string_option(&mut args, "--space")?;
-    let name = take_required_name(args, "layer create")?;
-    Ok(CliCommand::LayerCreate { store, space, name })
+fn parse_timeline(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let limit = take_string_option(&mut args, "--limit")?
+        .map(|value| parse_u32_option("--limit", &value))
+        .transpose()?;
+    parse_no_extra(args, CliCommand::Timeline { limit })
 }
 
-fn parse_store(mut args: Vec<String>, store: Option<PathBuf>) -> Result<CliCommand, CliParseError> {
-    expect_subcommand(&mut args, "store", "scrub")?;
-    parse_no_extra(args, CliCommand::StoreScrub { store })
+fn parse_publish(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let workspace = take_string_option(&mut args, "--workspace")?;
+    parse_no_extra(args, CliCommand::Publish { workspace })
+}
+
+fn parse_login(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let endpoint = take_string_option(&mut args, "--endpoint")?;
+    parse_no_extra(args, CliCommand::Login { endpoint })
+}
+
+fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let Some(subcommand) = args.first().cloned() else {
+        return Err(CliParseError::new(
+            "usage: layrs layer use NAME_OR_ID | create NAME | delete NAME_OR_ID [--yes]",
+        ));
+    };
+    args.remove(0);
+
+    match subcommand.as_str() {
+        "use" => {
+            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer use")?;
+            Ok(CliCommand::LayerUse { name_or_id })
+        }
+        "create" => {
+            let name = take_required_positional(args, "NAME", "layer create")?;
+            Ok(CliCommand::LayerCreate { name })
+        }
+        "delete" => {
+            let yes = take_bool_flag(&mut args, "--yes")?;
+            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer delete")?;
+            Ok(CliCommand::LayerDelete { name_or_id, yes })
+        }
+        _ => Err(CliParseError::new(format!(
+            "unknown layer command `{subcommand}`; expected use, create, or delete"
+        ))),
+    }
 }
 
 fn parse_no_extra(args: Vec<String>, command: CliCommand) -> Result<CliCommand, CliParseError> {
@@ -149,33 +238,107 @@ fn parse_no_extra(args: Vec<String>, command: CliCommand) -> Result<CliCommand, 
     }
 }
 
-fn expect_subcommand(
-    args: &mut Vec<String>,
-    command: &str,
-    expected: &str,
-) -> Result<(), CliParseError> {
-    if args.first().map(String::as_str) == Some(expected) {
-        args.remove(0);
+fn take_global_flags(args: &mut Vec<String>) -> Result<GlobalFlags, CliParseError> {
+    Ok(GlobalFlags {
+        space: take_path_option(args, "--space")?,
+        json: take_bool_flag(args, "--json")?,
+        no_color: take_bool_flag(args, "--no-color")?,
+    })
+}
+
+fn take_help_flag(args: &mut Vec<String>) -> bool {
+    take_flag_anywhere(args, "--help") || take_flag_anywhere(args, "-h")
+}
+
+fn reject_remaining_help_context(args: &[String]) -> Result<(), CliParseError> {
+    if args.is_empty() {
         Ok(())
     } else {
         Err(CliParseError::new(format!(
-            "usage: layrs {command} {expected} NAME"
+            "unexpected argument `{}` before help flag",
+            args[0]
         )))
     }
 }
 
-fn take_required_name(args: Vec<String>, command: &str) -> Result<String, CliParseError> {
+fn take_optional_positional(
+    args: Vec<String>,
+    name: &str,
+    command: &str,
+) -> Result<Option<String>, CliParseError> {
     match args.as_slice() {
-        [name] if !name.starts_with("--") => Ok(name.clone()),
-        [] => Err(CliParseError::new(format!(
-            "missing NAME for `layrs {command}`"
-        ))),
+        [] => Ok(None),
+        [value] if !value.starts_with("--") => Ok(Some(value.clone())),
         [unexpected] => Err(CliParseError::new(format!(
-            "unexpected argument `{unexpected}`"
+            "unexpected argument `{unexpected}` for `layrs {command}`"
         ))),
         _ => Err(CliParseError::new(format!(
-            "too many arguments for `layrs {command}`"
+            "too many arguments for `layrs {command}`; expected optional {name}"
         ))),
+    }
+}
+
+fn take_required_positional(
+    args: Vec<String>,
+    name: &str,
+    command: &str,
+) -> Result<String, CliParseError> {
+    match args.as_slice() {
+        [value] if !value.starts_with("--") => Ok(value.clone()),
+        [] => Err(CliParseError::new(format!(
+            "missing {name} for `layrs {command}`"
+        ))),
+        [unexpected] => Err(CliParseError::new(format!(
+            "unexpected argument `{unexpected}` for `layrs {command}`"
+        ))),
+        _ => Err(CliParseError::new(format!(
+            "too many arguments for `layrs {command}`; expected {name}"
+        ))),
+    }
+}
+
+fn take_wrap_option(args: &mut Vec<String>) -> Result<Option<bool>, CliParseError> {
+    let wrap = take_bool_flag(args, "--wrap")?;
+    let no_wrap = take_bool_flag(args, "--no-wrap")?;
+    match (wrap, no_wrap) {
+        (true, true) => Err(CliParseError::new(
+            "`layrs diff` accepts either --wrap or --no-wrap, not both",
+        )),
+        (true, false) => Ok(Some(true)),
+        (false, true) => Ok(Some(false)),
+        (false, false) => Ok(None),
+    }
+}
+
+fn take_bool_flag(args: &mut Vec<String>, flag: &str) -> Result<bool, CliParseError> {
+    let mut found = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        if args[index] == flag {
+            if found {
+                return Err(CliParseError::new(format!("duplicate `{flag}` option")));
+            }
+            found = true;
+            args.remove(index);
+        } else if args[index].starts_with(&format!("{flag}=")) {
+            return Err(CliParseError::new(format!(
+                "`{flag}` does not accept a value"
+            )));
+        } else {
+            index += 1;
+        }
+    }
+
+    Ok(found)
+}
+
+fn take_flag_anywhere(args: &mut Vec<String>, flag: &str) -> bool {
+    if let Some(index) = args.iter().position(|arg| arg == flag) {
+        args.remove(index);
+        true
+    } else {
+        false
     }
 }
 
@@ -196,11 +359,17 @@ fn take_string_option(args: &mut Vec<String>, flag: &str) -> Result<Option<Strin
                 return Err(CliParseError::new(format!("missing value for `{flag}`")));
             }
             let value = args.remove(index + 1);
+            if value.starts_with("--") {
+                return Err(CliParseError::new(format!("missing value for `{flag}`")));
+            }
             args.remove(index);
             found = Some(value);
         } else if let Some(value) = args[index].strip_prefix(&format!("{flag}=")) {
             if found.is_some() {
                 return Err(CliParseError::new(format!("duplicate `{flag}` option")));
+            }
+            if value.is_empty() {
+                return Err(CliParseError::new(format!("missing value for `{flag}`")));
             }
             found = Some(value.to_string());
             args.remove(index);
@@ -212,51 +381,100 @@ fn take_string_option(args: &mut Vec<String>, flag: &str) -> Result<Option<Strin
     Ok(found)
 }
 
+fn parse_window(value: &str) -> Result<Window, CliParseError> {
+    let Some((start, limit)) = value.split_once(':') else {
+        return Err(CliParseError::new(
+            "`--window` must use START:LIMIT, for example --window 0:200",
+        ));
+    };
+    Ok(Window {
+        start: parse_u32_option("--window START", start)?,
+        limit: parse_u32_option("--window LIMIT", limit)?,
+    })
+}
+
+fn parse_u32_option(flag: &str, value: &str) -> Result<u32, CliParseError> {
+    value
+        .parse::<u32>()
+        .map_err(|_| CliParseError::new(format!("`{flag}` expects a non-negative integer")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_init_with_positional_store_path() {
-        let command = parse_args(["init", ".layrs"]).expect("parse");
+    fn parses_init_with_name_and_path() {
+        let cli = parse_args(["--json", "init", "Game Prototype", "--path", "D:/work/game"])
+            .expect("parse");
 
         assert_eq!(
-            command,
-            CliCommand::Init {
-                store: Some(PathBuf::from(".layrs"))
+            cli,
+            Cli {
+                globals: GlobalFlags {
+                    json: true,
+                    no_color: false,
+                    space: None,
+                },
+                command: CliCommand::Init {
+                    name: "Game Prototype".to_string(),
+                    path: Some(PathBuf::from("D:/work/game"))
+                }
             }
         );
     }
 
     #[test]
-    fn parses_workspace_create() {
-        let command = parse_args(["workspace", "create", "Acme"]).expect("parse");
+    fn parses_diff_options() {
+        let cli = parse_args([
+            "diff",
+            "step-123",
+            "--stat",
+            "--window",
+            "20:40",
+            "--no-wrap",
+        ])
+        .expect("parse");
 
         assert_eq!(
-            command,
-            CliCommand::WorkspaceCreate {
-                store: None,
-                name: "Acme".to_string()
+            cli.command,
+            CliCommand::Diff {
+                step_id: Some("step-123".to_string()),
+                stat: true,
+                name_only: false,
+                window: Some(Window {
+                    start: 20,
+                    limit: 40
+                }),
+                wrap: Some(false),
             }
         );
     }
 
     #[test]
-    fn parses_store_scrub_with_store_flag() {
-        let command = parse_args(["store", "scrub", "--store", "D:/tmp/layrs"]).expect("parse");
+    fn parses_layer_delete_yes_with_global_space() {
+        let cli = parse_args(["layer", "delete", "draft", "--yes", "--space", "."]).expect("parse");
 
+        assert_eq!(cli.globals.space, Some(PathBuf::from(".")));
         assert_eq!(
-            command,
-            CliCommand::StoreScrub {
-                store: Some(PathBuf::from("D:/tmp/layrs"))
+            cli.command,
+            CliCommand::LayerDelete {
+                name_or_id: "draft".to_string(),
+                yes: true
             }
         );
     }
 
     #[test]
-    fn rejects_layer_create_without_name() {
-        let error = parse_args(["layer", "create"]).expect_err("parse should fail");
+    fn parses_compact() {
+        let cli = parse_args(["compact"]).expect("parse");
+        assert_eq!(cli.command, CliCommand::Compact);
+    }
 
-        assert!(error.message().contains("missing NAME"));
+    #[test]
+    fn rejects_conflicting_wrap_flags() {
+        let error = parse_args(["diff", "--wrap", "--no-wrap"]).expect_err("parse should fail");
+
+        assert!(error.message().contains("either --wrap or --no-wrap"));
     }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LensDiffHost } from "@layrs/lenses";
-import { ConfirmModal, DangerZone, AppShell, Sidebar, StatusPill, Tabs } from "@layrs/ui";
+import { ConfirmModal, DangerZone, AppShell, Sidebar, StatusPill, Tabs, useNotifications } from "@layrs/ui";
 import {
   AvailableSpaceView,
   BootstrapData,
@@ -8,6 +8,7 @@ import {
   DesktopStatus,
   DeviceLoginPollResponse,
   DeviceLoginStartResponse,
+  DesktopShortcutSettings,
   LayerAccessKind,
   LensDiffEntry,
   LocalDiffStats,
@@ -21,6 +22,7 @@ import {
   deleteLayer,
   forgetLocalSpace,
   getDesktopStatus,
+  initLocalSpace,
   listAvailableSpaces,
   listLocalSpaces,
   loadDiffWindow,
@@ -31,6 +33,7 @@ import {
   receiveLocalSpace,
   refreshBootstrap,
   saveDesktopSettings,
+  saveLocalStep,
   scanWorkingTree,
   sendDraftLocalSpace,
   selectFolder,
@@ -39,7 +42,7 @@ import {
 } from "./tauri";
 
 type LoadState = "loading" | "ready" | "error";
-type DesktopPage = "available" | "local" | "settings";
+type DesktopPage = "available" | "local" | "draft" | "settings";
 type LocalSpaceTab = "changes" | "files" | "steps" | "layers" | "sync" | "settings";
 type FileState = "clean" | "modified" | "added" | "deleted" | "redacted";
 type ChangeState = "modified" | "added" | "deleted";
@@ -49,6 +52,7 @@ type CommandKey =
   | "local"
   | "create"
   | "create-draft"
+  | "init-local"
   | "forget-local"
   | "open"
   | "switch"
@@ -57,6 +61,7 @@ type CommandKey =
   | "scan"
   | "diff-window"
   | "receive"
+  | "save-step"
   | "publish"
   | "send-draft"
   | "settings";
@@ -103,7 +108,17 @@ const statusLabels: Record<string, string> = {
   expired: "Expired"
 };
 
+const defaultShortcuts: DesktopShortcutSettings = {
+  enabled: true,
+  saveStep: "Ctrl+S",
+  publish: "Ctrl+P",
+  smartSavePublishesPendingStep: true
+};
+
+type PulseTarget = "changes" | "layer" | "steps" | "sync";
+
 export function DesktopApp() {
+  const { notify } = useNotifications();
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [page, setPage] = useState<DesktopPage>(() => pageFromHash(window.location.hash));
   const [status, setStatus] = useState<DesktopStatus | null>(null);
@@ -117,7 +132,6 @@ export function DesktopApp() {
   const [login, setLogin] = useState<DeviceLoginStartResponse | null>(null);
   const [pollStatus, setPollStatus] = useState<string | null>(null);
   const [pollInFlight, setPollInFlight] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedLocalSpaceId, setSelectedLocalSpaceId] = useState<string | null>(null);
   const [localSpaceTab, setLocalSpaceTab] = useState<LocalSpaceTab>("changes");
@@ -129,6 +143,8 @@ export function DesktopApp() {
   const [createDrafts, setCreateDrafts] = useState<Record<string, CreateDraft>>({});
   const [draftSpaceName, setDraftSpaceName] = useState("");
   const [draftSpaceFolder, setDraftSpaceFolder] = useState("");
+  const [initSpaceName, setInitSpaceName] = useState("");
+  const [initSpaceFolder, setInitSpaceFolder] = useState("");
   const [sendWorkspaceId, setSendWorkspaceId] = useState("");
   const [newLayerName, setNewLayerName] = useState("");
   const [layerSearchQuery, setLayerSearchQuery] = useState("");
@@ -136,17 +152,30 @@ export function DesktopApp() {
   const [autoPublish, setAutoPublish] = useState(false);
   const [autoLocalSteps, setAutoLocalSteps] = useState(true);
   const [syncIntervalMinutes, setSyncIntervalMinutes] = useState(15);
+  const [shortcuts, setShortcuts] = useState<DesktopShortcutSettings>(defaultShortcuts);
+  const [pulseTargets, setPulseTargets] = useState<Set<PulseTarget>>(new Set());
   const [commandErrors, setCommandErrors] = useState<Partial<Record<CommandKey, string>>>({});
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const pollInFlightRef = useRef(false);
   const autoScanInFlightRef = useRef<Set<string>>(new Set());
   const lastFocusScanRef = useRef<{ localSpaceId: string; at: number }>({ localSpaceId: "", at: 0 });
+  const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const effectiveBootstrap = bootstrap ?? status?.cachedBootstrap ?? null;
   const isConnected = Boolean(status?.connected || effectiveBootstrap?.account);
 
-  const recordCommandError = useCallback((key: CommandKey, nextError: unknown) => {
-    setCommandErrors((current) => ({ ...current, [key]: errorMessage(nextError) }));
-  }, []);
+  const recordCommandError = useCallback(
+    (key: CommandKey, nextError: unknown) => {
+      const message = errorMessage(nextError);
+      setCommandErrors((current) => ({ ...current, [key]: message }));
+      notify({
+        tone: "danger",
+        title: "Action failed",
+        message,
+        dedupeKey: `desktop-error-${key}`
+      });
+    },
+    [notify]
+  );
 
   const clearCommandError = useCallback((key: CommandKey) => {
     setCommandErrors((current) => {
@@ -187,7 +216,7 @@ export function DesktopApp() {
         setBusyAction(null);
       }
     },
-    [clearCommandError, recordCommandError]
+    [clearCommandError, notify, recordCommandError]
   );
 
   const runAutoScan = useCallback(
@@ -228,7 +257,7 @@ export function DesktopApp() {
       }
 
       if (showMessage && availableResult.status === "fulfilled" && localResult.status === "fulfilled") {
-        setMessage("Distant Spaces refreshed.");
+        notify({ tone: "success", title: "Distant Spaces refreshed", dedupeKey: "desktop-distant-refreshed" });
       }
 
       if (availableResult.status === "fulfilled") {
@@ -244,7 +273,7 @@ export function DesktopApp() {
         }
       }
     },
-    [clearCommandError, recordCommandError]
+    [clearCommandError, notify, recordCommandError]
   );
 
   const hydrateStatus = useCallback(async () => {
@@ -274,8 +303,8 @@ export function DesktopApp() {
         try {
           const response = await refreshBootstrap(loadedSettings?.defaultLocalSpacesFolder ?? "");
           applyPollResponse(response);
-          setMessage(null);
         } catch {
+          notify({ tone: "info", title: "Using cached account", message: "Distant refresh failed, but cached account data is available.", dedupeKey: "desktop-bootstrap-cache" });
           // A cached account is still useful offline; Distant refresh below will expose detailed errors.
         }
         await loadSpaces();
@@ -286,7 +315,7 @@ export function DesktopApp() {
       setLoadState("error");
       setError(errorMessage(nextError));
     }
-  }, [clearCommandError, loadSpaces, recordCommandError]);
+  }, [clearCommandError, loadSpaces, notify, recordCommandError]);
 
   useEffect(() => {
     void hydrateStatus();
@@ -400,6 +429,23 @@ export function DesktopApp() {
     };
   }, [runAutoScan, selectedLocalSpace?.localSpaceId]);
 
+  useEffect(
+    () => () => {
+      if (pulseTimerRef.current) {
+        window.clearTimeout(pulseTimerRef.current);
+      }
+    },
+    []
+  );
+
+  function triggerPulse(targets: PulseTarget[]) {
+    if (pulseTimerRef.current) {
+      window.clearTimeout(pulseTimerRef.current);
+    }
+    setPulseTargets(new Set(targets));
+    pulseTimerRef.current = window.setTimeout(() => setPulseTargets(new Set()), 1100);
+  }
+
   function applySettings(settings: DesktopSettings) {
     setEndpointDraft(settings.serverEndpoint);
     setDefaultLocalRoot(settings.defaultLocalSpacesFolder);
@@ -407,6 +453,7 @@ export function DesktopApp() {
     setAutoPublish(settings.autoPublish);
     setAutoLocalSteps(settings.autoLocalSteps);
     setSyncIntervalMinutes(Math.max(1, Math.round(settings.syncIntervalSeconds / 60)));
+    setShortcuts(settings.shortcuts ?? defaultShortcuts);
     setDraftSpaceFolder((current) => current || settings.defaultLocalSpacesFolder);
   }
 
@@ -417,20 +464,26 @@ export function DesktopApp() {
       autoPublish,
       autoLocalSteps,
       syncIntervalSeconds: Number.isFinite(syncIntervalMinutes) ? Math.max(60, syncIntervalMinutes * 60) : 900,
-      defaultLocalSpacesFolder: defaultLocalRoot
+      defaultLocalSpacesFolder: defaultLocalRoot,
+      shortcuts
     };
   }
 
   async function saveSettings() {
     setError(null);
-    setMessage(null);
+    const shortcutError = validateShortcuts(shortcuts);
+    if (shortcutError) {
+      setError(shortcutError);
+      notify({ tone: "danger", title: "Shortcuts not saved", message: shortcutError, dedupeKey: "desktop-shortcut-validation" });
+      return;
+    }
     setBusyAction("settings");
     try {
       const nextSettings = await saveDesktopSettings(currentSettings());
       applySettings(nextSettings);
       setStatus((current) => (current ? { ...current, serverEndpoint: nextSettings.serverEndpoint } : current));
       clearCommandError("settings");
-      setMessage("Desktop settings saved.");
+      notify({ tone: "success", title: "Settings saved", dedupeKey: "desktop-settings-saved" });
     } catch (nextError) {
       recordCommandError("settings", nextError);
       setError(errorMessage(nextError));
@@ -445,14 +498,18 @@ export function DesktopApp() {
     }
 
     setError(null);
-    setMessage(null);
     setPollStatus(null);
     setLogin(null);
     try {
       const nextLogin = await startDeviceLogin();
       setLogin(nextLogin);
       setPollStatus("pending");
-      setMessage(nextLogin.message ?? "Enter the user code in Layrs Studio, then leave this window open.");
+      notify({
+        tone: "info",
+        title: "Device login started",
+        message: nextLogin.message ?? "Enter the user code in Layrs Studio, then leave this window open.",
+        dedupeKey: "desktop-device-login"
+      });
     } catch (nextError) {
       setError(errorMessage(nextError));
     }
@@ -484,7 +541,6 @@ export function DesktopApp() {
 
   async function refreshConnectedBootstrap() {
     setError(null);
-    setMessage(null);
     setBusyAction("refresh");
     try {
       const response = await refreshBootstrap(defaultLocalRoot);
@@ -526,6 +582,13 @@ export function DesktopApp() {
     void chooseFolder(draftSpaceFolder, setDraftSpaceFolder);
   }
 
+  function chooseInitFolder() {
+    void chooseFolder(initSpaceFolder, (folder) => {
+      setInitSpaceFolder(folder);
+      setInitSpaceName((current) => current || nameFromFolder(folder));
+    });
+  }
+
   function chooseDefaultLocalSpacesFolder() {
     void chooseFolder(defaultLocalRoot, setDefaultLocalRoot);
   }
@@ -538,7 +601,12 @@ export function DesktopApp() {
       setPollStatus(response.status);
     }
 
-    setMessage(response.message ?? statusLabels[response.status] ?? response.status);
+    notify({
+      tone: response.status === "authorized" || response.status === "connected" ? "success" : "info",
+      title: statusLabels[response.status] ?? response.status,
+      message: response.message,
+      dedupeKey: "desktop-device-poll"
+    });
 
     if (response.bootstrap) {
       setBootstrap(response.bootstrap);
@@ -566,7 +634,7 @@ export function DesktopApp() {
       if (nextStatus.connected || nextStatus.cachedBootstrap) {
         setLogin(null);
         setPollStatus(null);
-        setMessage("Device code already completed. Desktop connection refreshed.");
+        notify({ tone: "success", title: "Desktop connection refreshed", dedupeKey: "desktop-device-consumed" });
         await loadSpaces();
         return;
       }
@@ -580,7 +648,7 @@ export function DesktopApp() {
       if (response.status === "connected" || response.bootstrap) {
         setLogin(null);
         setPollStatus(null);
-        setMessage("Device code already completed. Desktop connection refreshed.");
+        notify({ tone: "success", title: "Desktop connection refreshed", dedupeKey: "desktop-device-consumed" });
         await loadSpaces();
         return;
       }
@@ -590,8 +658,13 @@ export function DesktopApp() {
 
     setLogin(null);
     setPollStatus(null);
-    setMessage(null);
     setError("This device code was already used. Start a new login from Settings.");
+    notify({
+      tone: "warning",
+      title: "Device code already used",
+      message: "Start a new login from Settings.",
+      dedupeKey: "desktop-device-code-used"
+    });
   }
 
   function choosePage(nextPage: DesktopPage) {
@@ -620,7 +693,6 @@ export function DesktopApp() {
 
     setBusyAction(`create:${space.spaceId}`);
     setError(null);
-    setMessage(null);
     try {
       const result = await createLocalSpace(space.spaceId, draft.targetFolder.trim(), draft.layerId || undefined);
       replaceLocalSpace(result.localSpace);
@@ -629,7 +701,11 @@ export function DesktopApp() {
       await scanLocalSpace(result.localSpace.localSpaceId);
       await loadSpaces();
       clearCommandError("create");
-      setMessage(result.created ? "Local Space created." : "Existing Local Space opened.");
+      notify({
+        tone: "success",
+        title: result.created ? "Local Space created" : "Existing Local Space opened",
+        dedupeKey: "desktop-local-space-created"
+      });
     } catch (nextError) {
       recordCommandError("create", nextError);
       setError(errorMessage(nextError));
@@ -642,17 +718,16 @@ export function DesktopApp() {
     const name = draftSpaceName.trim();
     const targetFolder = draftSpaceFolder.trim();
     if (!name) {
-      setError("Name the Draft Local Space before creating it.");
+      setError("Name the empty local Space before creating it.");
       return;
     }
     if (!targetFolder) {
-      setError("Choose a folder before creating a Draft Local Space.");
+      setError("Choose a folder before creating an empty local Space.");
       return;
     }
 
     setBusyAction("create-draft");
     setError(null);
-    setMessage(null);
     try {
       const result = await createDraftLocalSpace(name, targetFolder);
       replaceLocalSpace(result.localSpace);
@@ -661,9 +736,50 @@ export function DesktopApp() {
       choosePage("local");
       await scanLocalSpace(result.localSpace.localSpaceId);
       clearCommandError("create-draft");
-      setMessage("Draft Local Space created.");
+      notify({ tone: "success", title: "Draft Local Space created", dedupeKey: "desktop-draft-created" });
     } catch (nextError) {
       recordCommandError("create-draft", nextError);
+      setError(errorMessage(nextError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleInitLocalSpace() {
+    const name = initSpaceName.trim();
+    const targetFolder = initSpaceFolder.trim();
+    if (!name) {
+      setError("Name the Local Space before initializing this folder.");
+      return;
+    }
+    if (!targetFolder) {
+      setError("Choose an existing folder before initializing a Local Space.");
+      return;
+    }
+
+    setBusyAction("init-local");
+    setError(null);
+    try {
+      const result = await initLocalSpace(name, targetFolder);
+      replaceLocalSpace(result.localSpace);
+      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
+      setInitSpaceName("");
+      setInitSpaceFolder("");
+      setSelectedStepId(null);
+      setSelectedDiffPath(null);
+      setLocalSpaceTab("changes");
+      choosePage("local");
+      await scanLocalSpace(result.localSpace.localSpaceId);
+      await loadSpaces();
+      clearCommandError("init-local");
+      triggerPulse(["changes", "steps"]);
+      notify({
+        tone: "success",
+        title: result.created ? "Folder initialized" : "Local Space opened",
+        dedupeKey: "desktop-local-init"
+      });
+    } catch (nextError) {
+      recordCommandError("init-local", nextError);
       setError(errorMessage(nextError));
     } finally {
       setBusyAction(null);
@@ -681,7 +797,6 @@ export function DesktopApp() {
 
     setBusyAction("send-draft");
     setError(null);
-    setMessage(null);
     try {
       const result = await sendDraftLocalSpace(selectedLocalSpace.localSpaceId, sendWorkspaceId.trim());
       replaceLocalSpace(result.localSpace);
@@ -689,7 +804,12 @@ export function DesktopApp() {
       await scanLocalSpace(result.localSpace.localSpaceId);
       await loadSpaces();
       clearCommandError("send-draft");
-      setMessage(`Draft sent to Studio with ${result.publishedLayers} Layer(s).`);
+      notify({
+        tone: "success",
+        title: "Draft sent to Studio",
+        message: `${result.publishedLayers} Layer(s) published.`,
+        dedupeKey: "desktop-draft-sent"
+      });
     } catch (nextError) {
       recordCommandError("send-draft", nextError);
       setError(errorMessage(nextError));
@@ -708,7 +828,7 @@ export function DesktopApp() {
       choosePage("local");
       await scanLocalSpace(nextSpace.localSpaceId);
       clearCommandError("open");
-      setMessage("Local Space opened.");
+      notify({ tone: "success", title: "Local Space opened", dedupeKey: "desktop-local-opened" });
     } catch (nextError) {
       recordCommandError("open", nextError);
       setError(errorMessage(nextError));
@@ -760,7 +880,12 @@ export function DesktopApp() {
         return nextSpace?.localSpaceId ?? null;
       });
       clearCommandError("forget-local");
-      setMessage(result.archivedLayrsPath ? `${result.message} Archived metadata: ${result.archivedLayrsPath}` : result.message);
+      notify({
+        tone: "success",
+        title: "Local Space forgotten",
+        message: result.archivedLayrsPath ? `${result.message} Archived metadata: ${result.archivedLayrsPath}` : result.message,
+        dedupeKey: "desktop-forgot-local"
+      });
       await refreshConnectedBootstrap();
     } catch (nextError) {
       recordCommandError("forget-local", nextError);
@@ -784,7 +909,13 @@ export function DesktopApp() {
       setSelectedLocalSpaceId(result.localSpace.localSpaceId);
       await scanLocalSpace(result.localSpace.localSpaceId);
       clearCommandError("switch");
-      setMessage(`Layer switched. ${result.changedFiles} changed files preserved in local Steps.`);
+      triggerPulse(["layer", "steps"]);
+      notify({
+        tone: "success",
+        title: "Layer switched",
+        message: `${result.changedFiles} changed file(s) preserved in local Steps.`,
+        dedupeKey: "desktop-layer-switched"
+      });
     } catch (nextError) {
       recordCommandError("switch", nextError);
       setError(errorMessage(nextError));
@@ -812,7 +943,8 @@ export function DesktopApp() {
       setNewLayerName("");
       await scanLocalSpace(result.localSpace.localSpaceId);
       clearCommandError("create-layer");
-      setMessage("Layer created from current files.");
+      triggerPulse(["layer", "steps"]);
+      notify({ tone: "success", title: "Layer created from current files", dedupeKey: "desktop-layer-created" });
     } catch (nextError) {
       recordCommandError("create-layer", nextError);
       setError(errorMessage(nextError));
@@ -844,7 +976,8 @@ export function DesktopApp() {
       await scanLocalSpace(result.localSpace.localSpaceId);
       await loadSpaces();
       clearCommandError("delete-layer");
-      setMessage(result.message);
+      triggerPulse(["layer"]);
+      notify({ tone: "success", title: "Layer deleted", message: result.message, dedupeKey: "desktop-layer-deleted" });
     } catch (nextError) {
       recordCommandError("delete-layer", nextError);
       setError(errorMessage(nextError));
@@ -867,7 +1000,8 @@ export function DesktopApp() {
       await scanLocalSpace(result.localSpace.localSpaceId);
       await loadSpaces();
       clearCommandError("receive");
-      setMessage(result.message);
+      triggerPulse(["sync", "changes"]);
+      notify({ tone: "success", title: "Receive complete", message: result.message, dedupeKey: "desktop-receive" });
     } catch (nextError) {
       recordCommandError("receive", nextError);
       setError(errorMessage(nextError));
@@ -876,8 +1010,73 @@ export function DesktopApp() {
     }
   }
 
+  async function handleSaveStep() {
+    if (!selectedLocalSpace) {
+      notify({ tone: "warning", title: "No Local Space selected", dedupeKey: "desktop-save-no-space" });
+      return;
+    }
+
+    setBusyAction("save-step");
+    setError(null);
+    try {
+      const result = await saveLocalStep(selectedLocalSpace.localSpaceId);
+      replaceLocalSpace(result.localSpace);
+      await scanLocalSpace(result.localSpace.localSpaceId);
+      clearCommandError("save-step");
+      if (result.status === "clean") {
+        notify({ tone: "info", title: "Nothing to save", message: result.message, dedupeKey: "desktop-save-clean" });
+      } else {
+        triggerPulse(["changes", "steps", "sync", "layer"]);
+        notify({
+          tone: "success",
+          title: "Step created",
+          message: `${result.changedFiles} file(s), +${result.diffStats.additions}, -${result.diffStats.deletions}`,
+          dedupeKey: "desktop-step-saved"
+        });
+      }
+    } catch (nextError) {
+      recordCommandError("save-step", nextError);
+      setError(errorMessage(nextError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleSmartSaveShortcut() {
+    if (!selectedLocalSpace) {
+      notify({ tone: "warning", title: "No Local Space selected", dedupeKey: "desktop-save-no-space" });
+      return;
+    }
+
+    if (workingTreeChanges.length > 0) {
+      await handleSaveStep();
+      return;
+    }
+
+    if (shortcuts.smartSavePublishesPendingStep && (selectedWorkingTree?.pendingPublishCount ?? 0) > 0) {
+      await handlePublish();
+      return;
+    }
+
+    notify({ tone: "info", title: "Nothing to save", message: "No local changes or pending publish step.", dedupeKey: "desktop-save-nothing" });
+  }
+
   async function handlePublish() {
     if (!selectedLocalSpace) {
+      return;
+    }
+    if (selectedLocalSpace.state === "draft") {
+      if (!sendWorkspaceId.trim()) {
+        notify({
+          tone: "warning",
+          title: "Choose a Workspace",
+          message: "Draft publish creates the Space in Studio first.",
+          dedupeKey: "desktop-draft-publish-workspace"
+        });
+        setError("Choose a Workspace before publishing this Draft Local Space.");
+        return;
+      }
+      await handleSendDraftToStudio();
       return;
     }
 
@@ -889,7 +1088,8 @@ export function DesktopApp() {
       await scanLocalSpace(result.localSpace.localSpaceId);
       await loadSpaces();
       clearCommandError("publish");
-      setMessage(result.message);
+      triggerPulse(["sync", "steps"]);
+      notify({ tone: result.status === "clean" ? "info" : "success", title: "Publish complete", message: result.message, dedupeKey: "desktop-publish" });
     } catch (nextError) {
       recordCommandError("publish", nextError);
       setError(errorMessage(nextError));
@@ -897,6 +1097,37 @@ export function DesktopApp() {
       setBusyAction(null);
     }
   }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        !shortcuts.enabled ||
+        loadState !== "ready" ||
+        !selectedLocalSpace ||
+        forgetTarget ||
+        deleteLayerTarget ||
+        isEditableShortcutTarget(event.target)
+      ) {
+        return;
+      }
+
+      const pressed = shortcutFromKeyboardEvent(event);
+      if (!pressed) {
+        return;
+      }
+
+      if (shortcutMatches(pressed, shortcuts.saveStep)) {
+        event.preventDefault();
+        void handleSmartSaveShortcut();
+      } else if (shortcutMatches(pressed, shortcuts.publish)) {
+        event.preventDefault();
+        void handlePublish();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteLayerTarget, forgetTarget, loadState, selectedLocalSpace, shortcuts, workingTreeChanges.length, selectedWorkingTree?.pendingPublishCount]);
 
   async function handleLoadDiffWindow(path: string, start: number, limit: number) {
     if (!selectedLocalSpace) {
@@ -949,13 +1180,19 @@ export function DesktopApp() {
               meta: `${localSpaces.length}`
             },
             {
+              id: "desktop-draft",
+              label: "Local setup",
+              eyebrow: "Offline",
+              isActive: page === "draft"
+            },
+            {
               id: "desktop-settings",
               label: "Settings",
               eyebrow: "Device",
               isActive: page === "settings"
             }
           ]}
-          footer={<span>Receive and publish on demand</span>}
+          footer={<ShortcutFooter hasLocalSpace={Boolean(selectedLocalSpace)} shortcuts={shortcuts} />}
         />
       }
       toolbar={
@@ -981,7 +1218,6 @@ export function DesktopApp() {
       <section className="desktop-page">
         {loadState === "loading" ? <p className="desktop-alert">Loading desktop state...</p> : null}
         {error ? <p className="desktop-alert desktop-alert--error">{error}</p> : null}
-        {message ? <p className="desktop-alert">{message}</p> : null}
         <CommandErrors errors={commandErrors} />
 
         {page === "available" ? (
@@ -1011,13 +1247,13 @@ export function DesktopApp() {
             selectedDiffContextKey={activeDiffContextKey}
             selectedScanRevision={selectedScanRevision}
             timeline={timeline}
+            workingTree={selectedWorkingTree}
             workingTreeChangeCount={workingTreeChanges.length}
             workspaces={effectiveBootstrap?.workspaces ?? []}
-            draftSpaceName={draftSpaceName}
-            draftSpaceFolder={draftSpaceFolder}
             sendWorkspaceId={sendWorkspaceId}
             newLayerName={newLayerName}
             layerSearchQuery={layerSearchQuery}
+            pulseTargets={pulseTargets}
             activeTab={localSpaceTab}
             busyAction={busyAction}
             commandErrors={commandErrors}
@@ -1025,12 +1261,9 @@ export function DesktopApp() {
             onOpenSpace={(localSpaceId) => void handleOpenLocalSpace(localSpaceId)}
             onForgetSpace={(localSpaceId) => void handleForgetLocalSpace(localSpaceId)}
             onScan={(localSpaceId) => void scanLocalSpace(localSpaceId)}
-            onDraftSpaceNameChange={setDraftSpaceName}
-            onChooseDraftFolder={chooseDraftFolder}
             onSelectDiff={setSelectedDiffPath}
             onLoadDiffWindow={(path, start, limit) => void handleLoadDiffWindow(path, start, limit)}
             onSelectTimeline={selectTimelineItem}
-            onCreateDraftSpace={() => void handleCreateDraftLocalSpace()}
             onSendWorkspaceChange={setSendWorkspaceId}
             onSendDraft={() => void handleSendDraftToStudio()}
             onSelectLayer={(layerId) => void handleSwitchLayer(layerId)}
@@ -1041,6 +1274,22 @@ export function DesktopApp() {
             onDeleteLayer={(layerId) => void handleDeleteLayer(layerId)}
             onReceive={() => void handleReceive()}
             onPublish={() => void handlePublish()}
+          />
+        ) : null}
+
+        {page === "draft" ? (
+          <DraftLocalSpaceView
+            busyAction={busyAction}
+            draftSpaceFolder={draftSpaceFolder}
+            draftSpaceName={draftSpaceName}
+            initSpaceFolder={initSpaceFolder}
+            initSpaceName={initSpaceName}
+            onChooseDraftFolder={chooseDraftFolder}
+            onChooseInitFolder={chooseInitFolder}
+            onCreateDraftSpace={() => void handleCreateDraftLocalSpace()}
+            onInitLocalSpace={() => void handleInitLocalSpace()}
+            onDraftSpaceNameChange={setDraftSpaceName}
+            onInitSpaceNameChange={setInitSpaceName}
           />
         ) : null}
 
@@ -1057,6 +1306,7 @@ export function DesktopApp() {
             autoPublish={autoPublish}
             autoLocalSteps={autoLocalSteps}
             syncIntervalMinutes={syncIntervalMinutes}
+            shortcuts={shortcuts}
             loadState={loadState}
             saving={busyAction === "settings"}
             onEndpointChange={setEndpointDraft}
@@ -1072,6 +1322,7 @@ export function DesktopApp() {
             onAutoPublishChange={setAutoPublish}
             onAutoLocalStepsChange={setAutoLocalSteps}
             onSyncIntervalChange={setSyncIntervalMinutes}
+            onShortcutsChange={setShortcuts}
           />
         ) : null}
       </section>
@@ -1219,6 +1470,100 @@ function AvailableSpacesView({
   );
 }
 
+interface DraftLocalSpaceViewProps {
+  busyAction: string | null;
+  draftSpaceFolder: string;
+  draftSpaceName: string;
+  initSpaceFolder: string;
+  initSpaceName: string;
+  onChooseDraftFolder: () => void;
+  onChooseInitFolder: () => void;
+  onCreateDraftSpace: () => void;
+  onInitLocalSpace: () => void;
+  onDraftSpaceNameChange: (value: string) => void;
+  onInitSpaceNameChange: (value: string) => void;
+}
+
+function DraftLocalSpaceView({
+  busyAction,
+  draftSpaceFolder,
+  draftSpaceName,
+  initSpaceFolder,
+  initSpaceName,
+  onChooseDraftFolder,
+  onChooseInitFolder,
+  onCreateDraftSpace,
+  onInitLocalSpace,
+  onDraftSpaceNameChange,
+  onInitSpaceNameChange
+}: DraftLocalSpaceViewProps) {
+  return (
+    <div className="desktop-view" id="desktop-draft">
+      <section className="desktop-panel desktop-panel--wide desktop-draft-page">
+        <div className="desktop-heading-line">
+          <div className="layrs-section-heading">
+            <span>Offline Local Spaces</span>
+            <h1>Local setup</h1>
+          </div>
+        </div>
+        <div className="desktop-draft-grid">
+          <div className="desktop-setting-card desktop-draft-form desktop-local-init-card">
+            <span>Initialize existing folder</span>
+            <strong>Use files that are already on this machine</strong>
+            <label className="desktop-field">
+              <span>Space name</span>
+              <input value={initSpaceName} onChange={(event) => onInitSpaceNameChange(event.currentTarget.value)} placeholder="My existing project" />
+            </label>
+            <FolderField
+              label="Existing folder"
+              value={initSpaceFolder}
+              placeholder="Choose the folder to initialize"
+              onChoose={onChooseInitFolder}
+            />
+            <button
+              type="button"
+              className="desktop-primary-button"
+              onClick={onInitLocalSpace}
+              disabled={!initSpaceName.trim() || !initSpaceFolder.trim() || busyAction === "init-local"}
+            >
+              Initialize existing folder
+            </button>
+            <em>The folder becomes a Local Space, then opens on Changes so you can review and save Steps.</em>
+          </div>
+          <div className="desktop-setting-card desktop-draft-form desktop-local-init-card">
+            <span>Create empty local Space</span>
+            <strong>Start offline with an empty Main Layer</strong>
+            <label className="desktop-field">
+              <span>Space name</span>
+              <input value={draftSpaceName} onChange={(event) => onDraftSpaceNameChange(event.currentTarget.value)} placeholder="New game space" />
+            </label>
+            <FolderField
+              label="New folder"
+              value={draftSpaceFolder}
+              placeholder="Choose where to create this Local Space"
+              onChoose={onChooseDraftFolder}
+            />
+            <button
+              type="button"
+              className="desktop-primary-button"
+              onClick={onCreateDraftSpace}
+              disabled={!draftSpaceName.trim() || !draftSpaceFolder.trim() || busyAction === "create-draft"}
+            >
+              Create empty local Space
+            </button>
+            <em>Stays local until you choose a Workspace and send it to Studio from the Local header.</em>
+          </div>
+          <div className="desktop-setting-card">
+            <span>Publish path</span>
+            <strong>Draft publishing stays in Local</strong>
+            <em>Create empty local Space still opens as a draft. Select it under Local, choose a Workspace, then Send to Studio before regular Publish is enabled.</em>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 interface LocalSpacesViewProps {
   localSpaces: LocalSpaceSummary[];
   selectedSpace: LocalSpaceSummary | null;
@@ -1230,13 +1575,13 @@ interface LocalSpacesViewProps {
   selectedDiffContextKey: string;
   selectedScanRevision: number;
   timeline: TimelineItem[];
+  workingTree?: WorkingTreeScan;
   workingTreeChangeCount: number;
   workspaces: BootstrapData["workspaces"];
-  draftSpaceName: string;
-  draftSpaceFolder: string;
   sendWorkspaceId: string;
   newLayerName: string;
   layerSearchQuery: string;
+  pulseTargets: Set<PulseTarget>;
   activeTab: LocalSpaceTab;
   busyAction: string | null;
   commandErrors: Partial<Record<CommandKey, string>>;
@@ -1244,12 +1589,9 @@ interface LocalSpacesViewProps {
   onOpenSpace: (localSpaceId: string) => void;
   onForgetSpace: (localSpaceId: string) => void;
   onScan: (localSpaceId: string) => void;
-  onDraftSpaceNameChange: (value: string) => void;
-  onChooseDraftFolder: () => void;
   onSelectDiff: (path: string) => void;
   onLoadDiffWindow: (path: string, start: number, limit: number) => void;
   onSelectTimeline: (item: TimelineItem) => void;
-  onCreateDraftSpace: () => void;
   onSendWorkspaceChange: (value: string) => void;
   onSendDraft: () => void;
   onSelectLayer: (layerId: string) => void;
@@ -1273,13 +1615,13 @@ function LocalSpacesView({
   selectedDiffContextKey,
   selectedScanRevision,
   timeline,
+  workingTree,
   workingTreeChangeCount,
   workspaces,
-  draftSpaceName,
-  draftSpaceFolder,
   sendWorkspaceId,
   newLayerName,
   layerSearchQuery,
+  pulseTargets,
   activeTab,
   busyAction,
   commandErrors,
@@ -1287,12 +1629,9 @@ function LocalSpacesView({
   onOpenSpace,
   onForgetSpace,
   onScan,
-  onDraftSpaceNameChange,
-  onChooseDraftFolder,
   onSelectDiff,
   onLoadDiffWindow,
   onSelectTimeline,
-  onCreateDraftSpace,
   onSendWorkspaceChange,
   onSendDraft,
   onSelectLayer,
@@ -1305,8 +1644,16 @@ function LocalSpacesView({
   onPublish
 }: LocalSpacesViewProps) {
   const activeAccess = selectedLayer?.access ?? "open";
+  const pulseClassName = [
+    pulseTargets.has("changes") ? "is-pulsing-changes" : "",
+    pulseTargets.has("layer") ? "is-pulsing-layer" : "",
+    pulseTargets.has("steps") ? "is-pulsing-steps" : "",
+    pulseTargets.has("sync") ? "is-pulsing-sync" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <div className="desktop-view desktop-view--local" id="desktop-local">
+    <div className={`desktop-view desktop-view--local ${pulseClassName}`} id="desktop-local">
       <section className="desktop-panel desktop-local-list">
         <div className="layrs-section-heading">
           <span>Local Spaces</span>
@@ -1329,31 +1676,18 @@ function LocalSpacesView({
             </button>
           ))}
         </div>
-        {localSpaces.length === 0 ? <p className="desktop-empty">No Local Spaces detected. Pull one from Distant or start a Draft below.</p> : null}
-        <div className="desktop-draft-box">
-          <div className="layrs-section-heading">
-            <span>Draft Local Space</span>
-            <h3>Create offline</h3>
-          </div>
-          <label className="desktop-field">
-            <span>Name</span>
-            <input value={draftSpaceName} onChange={(event) => onDraftSpaceNameChange(event.currentTarget.value)} placeholder="New game space" />
-          </label>
-          <FolderField
-            label="Folder"
-            value={draftSpaceFolder}
-            placeholder="Choose where to create this Local Space"
-            onChoose={onChooseDraftFolder}
+        {localSpaces.length === 0 ? <p className="desktop-empty">No Local Spaces detected. Pull one from Distant or create one offline.</p> : null}
+        {selectedSpace ? (
+          <LayerRailPanel
+            busyAction={busyAction}
+            query={layerSearchQuery}
+            selectedLayer={selectedLayer}
+            selectedSpace={selectedSpace}
+            workingTree={workingTree}
+            onQueryChange={onLayerSearchChange}
+            onSelectLayer={onSelectLayer}
           />
-          <button
-            type="button"
-            className="desktop-primary-button"
-            onClick={onCreateDraftSpace}
-            disabled={!draftSpaceName.trim() || !draftSpaceFolder.trim() || busyAction === "create-draft"}
-          >
-            Create Draft Local Space
-          </button>
-        </div>
+        ) : null}
       </section>
 
       <section className="desktop-panel desktop-space-detail">
@@ -1404,7 +1738,13 @@ function LocalSpacesView({
                   type="button"
                   className="desktop-primary-button"
                   onClick={onPublish}
-                  disabled={selectedSpace.state === "draft" || busyAction === "publish" || Boolean(commandErrors.publish)}
+                  disabled={
+                    (selectedSpace.state === "draft" && !sendWorkspaceId) ||
+                    busyAction === "publish" ||
+                    busyAction === "send-draft" ||
+                    Boolean(commandErrors.publish) ||
+                    Boolean(commandErrors["send-draft"])
+                  }
                 >
                   Publish
                 </button>
@@ -1484,6 +1824,7 @@ function LocalSpacesView({
               <LayerManagementPanel
                 selectedSpace={selectedSpace}
                 selectedLayer={selectedLayer}
+                workingTree={workingTree}
                 query={layerSearchQuery}
                 newLayerName={newLayerName}
                 busyAction={busyAction}
@@ -1515,6 +1856,7 @@ function LocalSpacesView({
 interface LayerManagementPanelProps {
   selectedSpace: LocalSpaceSummary;
   selectedLayer: LocalLayerSummary | null;
+  workingTree?: WorkingTreeScan;
   query: string;
   newLayerName: string;
   busyAction: string | null;
@@ -1524,6 +1866,67 @@ interface LayerManagementPanelProps {
   onNewLayerNameChange: (value: string) => void;
   onCreateLayer: () => void;
   onDeleteLayer: (layerId: string) => void;
+}
+
+interface LayerRailPanelProps {
+  selectedSpace: LocalSpaceSummary;
+  selectedLayer: LocalLayerSummary | null;
+  workingTree?: WorkingTreeScan;
+  query: string;
+  busyAction: string | null;
+  onQueryChange: (value: string) => void;
+  onSelectLayer: (layerId: string) => void;
+}
+
+function LayerRailPanel({
+  selectedSpace,
+  selectedLayer,
+  workingTree,
+  query,
+  busyAction,
+  onQueryChange,
+  onSelectLayer
+}: LayerRailPanelProps) {
+  const layers = layersByLatestStep(selectedSpace, workingTree, query);
+
+  return (
+    <div className="desktop-layer-card desktop-layer-card--rail">
+      <div className="layrs-section-heading">
+        <span>Layers</span>
+        <h3>{selectedLayer?.displayName ?? "Switch Layer"}</h3>
+      </div>
+      <label className="desktop-field">
+        <span>Search Layers</span>
+        <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search by name, access, sync" />
+      </label>
+      <div className="desktop-layer-list desktop-layer-list--rail">
+        {layers.map(({ layer, latestStepAt, stepCount }) => {
+          const isActive = layer.layerId === selectedSpace.activeLayerId;
+          return (
+            <article className={isActive ? "desktop-layer-row is-active" : "desktop-layer-row"} key={layer.layerId}>
+              <button
+                type="button"
+                className="desktop-layer-row__main"
+                onClick={() => onSelectLayer(layer.layerId)}
+                disabled={isActive || !layer.canOpen || busyAction === `switch:${layer.layerId}`}
+              >
+                <strong>{layer.displayName}</strong>
+                <span>{layer.parentLayerId ? `Parent: ${layerDisplayName(selectedSpace, layer.parentLayerId)}` : "Base Layer"}</span>
+                <span className="desktop-layer-row__latest">
+                  {stepCount > 0 ? `Latest step ${formatUnixTime(latestStepAt)}` : "No local steps yet"}
+                </span>
+              </button>
+              <div className="desktop-layer-row__rules">
+                <StatusPill status={layer.access === "blocked" ? "blocked" : layer.access === "redacted" ? "needs-proof" : "passing"} label={layer.access} />
+                <StatusPill status={layer.syncStatus === "local-only" ? "needs-proof" : "passing"} label={syncStatusLabel(layer.syncStatus)} />
+              </div>
+            </article>
+          );
+        })}
+        {layers.length === 0 ? <p className="desktop-empty">No Layers match this search.</p> : null}
+      </div>
+    </div>
+  );
 }
 
 function SyncPanel({
@@ -1620,6 +2023,7 @@ function LocalSpaceSettingsPanel({
 function LayerManagementPanel({
   selectedSpace,
   selectedLayer,
+  workingTree,
   query,
   newLayerName,
   busyAction,
@@ -1630,18 +2034,7 @@ function LayerManagementPanel({
   onCreateLayer,
   onDeleteLayer
 }: LayerManagementPanelProps) {
-  const normalizedQuery = query.trim().toLowerCase();
-  const layers = selectedSpace.layers.filter((layer) => {
-    if (!normalizedQuery) {
-      return true;
-    }
-    return (
-      layer.displayName.toLowerCase().includes(normalizedQuery) ||
-      layer.layerId.toLowerCase().includes(normalizedQuery) ||
-      layer.syncStatus.toLowerCase().includes(normalizedQuery) ||
-      layer.access.toLowerCase().includes(normalizedQuery)
-    );
-  });
+  const layers = layersByLatestStep(selectedSpace, workingTree, query);
   const activeAccess = selectedLayer?.access ?? "open";
   const activeSyncStatus = selectedLayer?.syncStatus ?? (selectedSpace.state === "draft" ? "local" : "linked");
   const parentLabel = selectedLayer?.parentLayerId ? layerDisplayName(selectedSpace, selectedLayer.parentLayerId) : "None";
@@ -1657,7 +2050,7 @@ function LayerManagementPanel({
         <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search by name, access, sync" />
       </label>
       <div className="desktop-layer-list">
-        {layers.map((layer) => {
+        {layers.map(({ layer, latestStepAt, stepCount }) => {
           const isActive = layer.layerId === selectedSpace.activeLayerId;
           const canDelete = !isActive && selectedSpace.layers.length > 1;
           return (
@@ -1670,6 +2063,9 @@ function LayerManagementPanel({
               >
                 <strong>{layer.displayName}</strong>
                 <span>{layer.parentLayerId ? `Parent: ${layerDisplayName(selectedSpace, layer.parentLayerId)}` : "Base Layer"}</span>
+                <span className="desktop-layer-row__latest">
+                  {stepCount > 0 ? `Latest step ${formatUnixTime(latestStepAt)}` : "No local steps yet"}
+                </span>
               </button>
               <div className="desktop-layer-row__rules">
                 <StatusPill status={layer.access === "blocked" ? "blocked" : layer.access === "redacted" ? "needs-proof" : "passing"} label={layer.access} />
@@ -1899,6 +2295,7 @@ interface SettingsViewProps {
   autoPublish: boolean;
   autoLocalSteps: boolean;
   syncIntervalMinutes: number;
+  shortcuts: DesktopShortcutSettings;
   loadState: LoadState;
   saving: boolean;
   onEndpointChange: (value: string) => void;
@@ -1910,6 +2307,7 @@ interface SettingsViewProps {
   onAutoPublishChange: (value: boolean) => void;
   onAutoLocalStepsChange: (value: boolean) => void;
   onSyncIntervalChange: (value: number) => void;
+  onShortcutsChange: (value: DesktopShortcutSettings) => void;
 }
 
 function SettingsView({
@@ -1924,6 +2322,7 @@ function SettingsView({
   autoPublish,
   autoLocalSteps,
   syncIntervalMinutes,
+  shortcuts,
   loadState,
   saving,
   onEndpointChange,
@@ -1934,7 +2333,8 @@ function SettingsView({
   onAutoReceiveChange,
   onAutoPublishChange,
   onAutoLocalStepsChange,
-  onSyncIntervalChange
+  onSyncIntervalChange,
+  onShortcutsChange
 }: SettingsViewProps) {
   return (
     <div className="desktop-view" id="desktop-settings">
@@ -2001,6 +2401,33 @@ function SettingsView({
           </section>
 
           <section className="desktop-setting-card">
+            <span>Shortcuts</span>
+            <ToggleRow
+              label="Enable keyboard shortcuts"
+              checked={shortcuts.enabled}
+              onChange={(enabled) => onShortcutsChange({ ...shortcuts, enabled })}
+            />
+            <ShortcutCaptureField
+              label="Save Step"
+              value={shortcuts.saveStep}
+              onChange={(saveStep) => onShortcutsChange({ ...shortcuts, saveStep })}
+            />
+            <ShortcutCaptureField
+              label="Publish"
+              value={shortcuts.publish}
+              onChange={(publish) => onShortcutsChange({ ...shortcuts, publish })}
+            />
+            <ToggleRow
+              label="Use Save Step again to publish pending step"
+              checked={shortcuts.smartSavePublishesPendingStep}
+              onChange={(smartSavePublishesPendingStep) => onShortcutsChange({ ...shortcuts, smartSavePublishesPendingStep })}
+            />
+            <button type="button" className="desktop-secondary-button" onClick={() => onShortcutsChange(defaultShortcuts)}>
+              Reset defaults
+            </button>
+          </section>
+
+          <section className="desktop-setting-card">
             <span>Storage</span>
             <FolderField
               label="Default Local Spaces folder"
@@ -2030,6 +2457,59 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
       <span>{label}</span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} />
     </label>
+  );
+}
+
+function ShortcutCaptureField({
+  label,
+  onChange,
+  value
+}: {
+  label: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  return (
+    <label className="desktop-field">
+      <span>{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(normalizeShortcut(event.currentTarget.value))}
+        onKeyDown={(event) => {
+          if (event.key === "Tab") {
+            return;
+          }
+          event.preventDefault();
+          const shortcut = shortcutFromKeyboardEvent(event);
+          if (shortcut) {
+            onChange(shortcut);
+          }
+        }}
+        placeholder="Press shortcut"
+      />
+    </label>
+  );
+}
+
+function ShortcutFooter({ hasLocalSpace, shortcuts }: { hasLocalSpace: boolean; shortcuts: DesktopShortcutSettings }) {
+  if (!shortcuts.enabled) {
+    return <span className="desktop-shortcut-footer is-muted">Keyboard shortcuts disabled</span>;
+  }
+
+  return (
+    <div className={hasLocalSpace ? "desktop-shortcut-footer" : "desktop-shortcut-footer is-muted"}>
+      <span>
+        <kbd>{shortcuts.saveStep}</kbd> Step
+      </span>
+      {shortcuts.smartSavePublishesPendingStep ? (
+        <span>
+          <kbd>{shortcuts.saveStep}</kbd> again Publish
+        </span>
+      ) : null}
+      <span>
+        <kbd>{shortcuts.publish}</kbd> Publish
+      </span>
+    </div>
   );
 }
 
@@ -2161,6 +2641,68 @@ function buildChanges(scan: WorkingTreeScan | undefined, selectedStepId: string 
   }));
 }
 
+interface LayerWithStepActivity {
+  layer: LocalLayerSummary;
+  latestStepAt: number;
+  stepCount: number;
+}
+
+function layersByLatestStep(
+  space: LocalSpaceSummary,
+  scan: WorkingTreeScan | undefined,
+  query: string
+): LayerWithStepActivity[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  const activity = new Map<string, { latestStepAt: number; stepCount: number }>();
+
+  for (const layerActivity of scan?.layerActivities ?? []) {
+    activity.set(layerActivity.layerId, {
+      latestStepAt: layerActivity.latestStepAt,
+      stepCount: layerActivity.stepCount
+    });
+  }
+
+  if (!scan?.layerActivities?.length) {
+    for (const step of scan?.steps ?? []) {
+      const current = activity.get(step.layerId) ?? { latestStepAt: 0, stepCount: 0 };
+      activity.set(step.layerId, {
+        latestStepAt: Math.max(current.latestStepAt, step.capturedAt),
+        stepCount: current.stepCount + 1
+      });
+    }
+  }
+
+  return space.layers
+    .filter((layer) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+      return (
+        layer.displayName.toLowerCase().includes(normalizedQuery) ||
+        layer.layerId.toLowerCase().includes(normalizedQuery) ||
+        layer.syncStatus.toLowerCase().includes(normalizedQuery) ||
+        layer.access.toLowerCase().includes(normalizedQuery)
+      );
+    })
+    .map((layer) => ({
+      layer,
+      latestStepAt: activity.get(layer.layerId)?.latestStepAt ?? 0,
+      stepCount: activity.get(layer.layerId)?.stepCount ?? 0
+    }))
+    .sort((left, right) => {
+      if (left.latestStepAt !== right.latestStepAt) {
+        return right.latestStepAt - left.latestStepAt;
+      }
+      if (left.layer.layerId === space.activeLayerId && right.layer.layerId !== space.activeLayerId) {
+        return -1;
+      }
+      if (right.layer.layerId === space.activeLayerId && left.layer.layerId !== space.activeLayerId) {
+        return 1;
+      }
+      return left.layer.displayName.localeCompare(right.layer.displayName, undefined, { sensitivity: "base" });
+    });
+}
+
 function buildTimeline(
   space: LocalSpaceSummary | null,
   scan: WorkingTreeScan | undefined,
@@ -2174,21 +2716,11 @@ function buildTimeline(
   const scanStats = scan
     ? diffStatsFromDiffs(scan.diffs)
     : undefined;
-  const layerName = activeLayerLabel(space);
   const base: TimelineItem[] = [
-    {
-      id: "active-layer",
-      kind: "active",
-      title: "Active Layer",
-      actor: "Layrs Desktop",
-      at: "Now",
-      summary: space.activeLayerId ? `${layerName} is active in the local folder.` : "No active Layer is active.",
-      isActive: false
-    },
     {
       id: "working-tree",
       kind: "scan",
-      title: scan ? "Working tree scanned" : "Working tree not scanned",
+      title: "Working tree",
       actor: displayPath(space.rootPath),
       at: scan ? "Latest" : "Pending",
       summary: scan ? `${changedCount} local changes before publication.` : "Run Scan to load files and local changes.",
@@ -2451,6 +2983,9 @@ function pageFromHash(hash: string): DesktopPage {
   if (hash.includes("desktop-local")) {
     return "local";
   }
+  if (hash.includes("desktop-draft")) {
+    return "draft";
+  }
   if (hash.includes("desktop-settings")) {
     return "settings";
   }
@@ -2464,11 +2999,100 @@ function pageTitle(page: DesktopPage, selectedSpace: LocalSpaceSummary | null) {
   if (page === "settings") {
     return "Settings";
   }
+  if (page === "draft") {
+    return "Local setup";
+  }
   return "Distant Spaces";
+}
+
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select" || target.isContentEditable;
+}
+
+function shortcutFromKeyboardEvent(event: KeyboardEvent | React.KeyboardEvent): string {
+  const key = event.key;
+  if (!key || ["Control", "Shift", "Alt", "Meta"].includes(key)) {
+    return "";
+  }
+  const parts: string[] = [];
+  if (event.ctrlKey || event.metaKey) {
+    parts.push("Ctrl");
+  }
+  if (event.shiftKey) {
+    parts.push("Shift");
+  }
+  if (event.altKey) {
+    parts.push("Alt");
+  }
+  parts.push(normalizeShortcutKey(key));
+  return parts.join("+");
+}
+
+function normalizeShortcutKey(key: string): string {
+  if (key.length === 1) {
+    return key.toUpperCase();
+  }
+  if (key === " ") {
+    return "Space";
+  }
+  return key
+    .replace(/^Arrow/, "")
+    .replace("Escape", "Esc")
+    .replace("Delete", "Del");
+}
+
+function normalizeShortcut(value: string): string {
+  return value
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "control" || lower === "cmd" || lower === "meta" || lower === "ctrl") {
+        return "Ctrl";
+      }
+      if (lower === "shift") {
+        return "Shift";
+      }
+      if (lower === "alt" || lower === "option") {
+        return "Alt";
+      }
+      return normalizeShortcutKey(part);
+    })
+    .join("+");
+}
+
+function shortcutMatches(pressed: string, configured: string): boolean {
+  return normalizeShortcut(pressed) === normalizeShortcut(configured);
+}
+
+function validateShortcuts(shortcuts: DesktopShortcutSettings): string | null {
+  if (!shortcuts.enabled) {
+    return null;
+  }
+  const saveStep = normalizeShortcut(shortcuts.saveStep);
+  const publish = normalizeShortcut(shortcuts.publish);
+  if (!saveStep || !publish) {
+    return "Shortcut fields cannot be empty while shortcuts are enabled.";
+  }
+  if (saveStep === publish) {
+    return "Save Step and Publish shortcuts must be different.";
+  }
+  return null;
 }
 
 function trimPath(value: string) {
   return value.replace(/[\\/]+$/, "");
+}
+
+function nameFromFolder(value: string) {
+  const normalized = trimPath(displayPath(value));
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? "";
 }
 
 function slug(value: string) {

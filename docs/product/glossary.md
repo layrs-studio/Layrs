@@ -1,59 +1,89 @@
-# Glossaire produit Layrs
+# Layrs Product Glossary
 
-Ce glossaire fixe les termes de base de la V1. Les définitions doivent rester courtes, opérables et cohérentes entre produit, architecture et code.
+Terms in this file are canonical for documentation, code reviews and agent
+work.
 
 ## Workspace
 
-Un Workspace est le périmètre d'organisation principal. Il porte l'identité, les Teams, les Spaces, les Policies globales et les réglages de gouvernance.
+Server-side organization boundary. A Workspace owns members, Teams, Spaces,
+devices, audit events and governance defaults.
 
 ## Team
 
-Une Team est un groupe de membres dans un Workspace. Elle sert à attribuer des droits, des responsabilités, des Gates et des Policies sans lier ces règles à des personnes isolées.
+Group of Workspace members used for permissions and ownership.
 
 ## Space
 
-Un Space est l'unité de travail principale, proche du rôle produit d'un repo ou d'un projet, mais sans modèle Git dans le coeur V1. Il contient des Layers, des Artifacts, des Weaves et leur Graph.
+Repo-like project in Layrs. A Space contains Layers, artifacts, access policy
+registries, Steps and future Weaves.
+
+## Local Space
+
+Machine-local copy of a Space. It is a user folder plus `.layrs/` metadata and
+can work offline.
+
+## Draft Local Space
+
+Local Space that has not been sent to Studio Server yet. It can have files,
+Layers and Steps locally before it receives server ids.
 
 ## Layer
 
-Un Layer est un état nommé, traçable et composable d'un Space. Il peut représenter une base stable, une exploration, une proposition ou un résultat automatisé.
-
-## View
-
-Une View est une projection lisible d'un Space, d'un Layer ou du Graph. Elle peut filtrer par fichier, domaine, décision, Step, Artifact, Gate ou Policy.
-
-## Artifact
-
-Un Artifact est un résultat stocké et référencé par Layrs. Il peut être un fichier, une note, une image, un rapport, une preuve de test, une sortie de Step ou une capture de décision.
+Switchable line of work inside a Space. A Layer behaves like a branch in the
+user mental model, but it is represented as a Layrs Layer, not a Git branch.
 
 ## Step
 
-Un Step est une action automatisée ou semi-automatisée qui lit un état et produit un changement, un Artifact, une Proof ou un signal de Gate.
+Anonymous snapshot of a Layer state. A Step is not a commit and does not need a
+name or message. Steps protect local work, power diffs/timeline and form the
+local pending-publish queue.
 
-## Flow
+## Pending Publish
 
-Un Flow est une suite ordonnée de Steps. Il décrit une procédure réutilisable, par exemple analyser un Space, produire une Layer candidate, exécuter des Gates puis publier des Artifacts.
+Set of local Steps not yet confirmed by the server. Publishing must send every
+pending Step in order, not only the latest one.
 
-## Weave
+## Client Core
 
-Un Weave est le fil narratif qui relie intentions, changements, décisions, commentaires, Proofs et Artifacts. Il explique pourquoi un état existe, pas seulement ce qui a changé.
+The shared Rust engine used by Studio CLI and Studio Desktop for local
+behavior. New local functionality should be implemented here first.
+
+## Artifact
+
+Stored object visible to users through a path or product reference. Artifacts
+can be code, text, images, textures, metadata, generated outputs or future Proof
+material.
 
 ## Lens
 
-Une Lens est une perspective spécialisée sur le Graph. Elle sert à isoler un angle d'analyse: sécurité, produit, dette technique, dépendances, ownership, qualité ou livraison.
+Adapter for a file/artifact type. A Lens owns preview, diff and future
+reconcile behavior. UI surfaces render Lens outputs.
 
-## Graph
+## View
 
-Le Graph relie les objets Layrs: Workspaces, Teams, Spaces, Layers, Artifacts, Steps, Flows, Weaves, Lenses, Proofs, Gates et Policies. Il devient la carte de vérité locale et synchronisable.
+Readable projection of a Space, Layer, Step, artifact or future Weave.
+
+## Weave
+
+Future review and reconciliation flow between Layers. A Weave will connect
+intent, changed artifacts, Steps, Lens diffs, Proofs, Gates, comments and final
+decisions.
 
 ## Proof
 
-Une Proof est une évidence attachée à une décision, une Gate, un Step ou un Artifact. Elle peut être automatique ou humaine, mais doit être assez précise pour être vérifiée plus tard.
+Evidence attached to a Step, Gate, Weave or artifact. Proofs can be automatic
+or human-provided, but must remain inspectable.
 
 ## Gate
 
-Une Gate est un point de contrôle. Elle autorise, bloque, demande une Proof ou déclenche une action selon les Policies et le contexte du Space.
+Control point that allows, blocks or asks for Proofs before a Weave or publish
+can proceed.
 
 ## Policy
 
-Une Policy est une règle déclarative qui gouverne les droits, les Gates, les Steps permis et les comportements attendus dans un Workspace, une Team ou un Space.
+Declarative rule for permissions, access registries, Gates and allowed actions.
+
+## Graph
+
+Relationships between Layrs objects: Workspaces, Teams, Spaces, Layers,
+Artifacts, Steps, Lenses, Weaves, Proofs, Gates and Policies.

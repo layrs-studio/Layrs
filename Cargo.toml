@@ -15,6 +15,7 @@ members = [
   "crates/layrs-proof",
   "crates/layrs-steps",
   "crates/layrs-weave",
+  "crates/layrs-client-core",
   "crates/layrs-cli",
   "crates/layrs-daemon",
   "crates/layrs-api",

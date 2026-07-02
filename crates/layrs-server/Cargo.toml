@@ -21,3 +21,4 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tower-http = { version = "0.5", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
+zstd = "0.13"

@@ -4,11 +4,13 @@ export {
   ArtifactCard,
   ConfirmModal,
   DangerZone,
+  NotificationProvider,
   PolicyMatrix,
   ProofPanel,
   Sidebar,
   StatusPill,
   Tabs,
+  ToastStack,
   VirtualWeaveList
 } from "./studio-components";
 
@@ -18,6 +20,10 @@ export type {
   ArtifactCardProps,
   ConfirmModalProps,
   DangerZoneProps,
+  Notification,
+  NotificationContextValue,
+  NotificationInput,
+  NotificationTone,
   PolicyMatrixProps,
   ProofPanelProps,
   SidebarItem,
@@ -25,5 +31,8 @@ export type {
   StatusPillProps,
   TabItem,
   TabsProps,
+  ToastStackProps,
   VirtualWeaveListProps
 } from "./studio-components";
+
+export { useNotifications } from "./studio-components";

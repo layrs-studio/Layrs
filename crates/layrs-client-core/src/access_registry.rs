@@ -3,7 +3,14 @@ use crate::desktop_state::{
     BootstrapData, DesktopConfig, DesktopSettings, LayerSummary, LocalSpaceConfigEntry,
     SpaceSummary,
 };
-use crate::http_client::{delete_json, get_bytes, get_json, post_json, put_bytes_json};
+use crate::http_client::{
+    delete_json, get_bytes_with_headers, get_json, post_json, put_bytes_json_with_headers,
+};
+use crate::object_store::{
+    compact_loose_chunks, read_chunk_encoded, read_chunk_raw, read_file_object_bytes,
+    write_file_object_manifest, write_received_encoded_chunk, CompactStoreResult, FileChunkRef,
+    FileObjectFile, FILE_OBJECT_SCHEMA,
+};
 use crate::secret_store::{OsSecretStore, SecretStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,14 +28,13 @@ const ACCESS_POINTER_SCHEMA: &str = "layrs.local_space_access.v1";
 const LAYER_ACCESS_SCHEMA: &str = "layrs.layer_access.v1";
 const WORKING_STATE_SCHEMA: &str = "layrs.layer_working_state.v2";
 const STEP_SCHEMA: &str = "layrs.layer_step.v2";
+const PENDING_PUBLISH_SCHEMA: &str = "layrs.pending_publish.v1";
 const TREE_OBJECT_SCHEMA: &str = "layrs.tree_object.v1";
-const FILE_OBJECT_SCHEMA: &str = "layrs.file_object.v1";
 const SCAN_CACHE_SCHEMA: &str = "layrs.scan_cache.v1";
 const SYNC_STATE_SCHEMA: &str = "layrs.layer_sync_state.v1";
 const SYNC_PROTOCOL_V2: &str = "layrs.sync.v2";
 const LOCAL_SPACE_STATE_LINKED: &str = "linked";
 const LOCAL_SPACE_STATE_DRAFT: &str = "draft";
-const CHUNK_SIZE: usize = 1024 * 1024;
 const TEXT_DIFF_DEFAULT_WINDOW_LIMIT: usize = 400;
 const TEXT_DIFF_MAX_WINDOW_LIMIT: usize = 2_000;
 
@@ -109,6 +115,16 @@ pub struct CreateLocalSpaceResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InitLocalSpaceResult {
+    pub local_space: LocalSpaceSummary,
+    pub created: bool,
+    pub initial_step_id: Option<String>,
+    pub scanned_files: usize,
+    pub pending_publish_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendDraftLocalSpaceResult {
     pub local_space: LocalSpaceSummary,
     pub workspace_id: String,
@@ -163,6 +179,8 @@ pub struct WorkingTreeScan {
     pub deleted: Vec<String>,
     pub diffs: Vec<LensDiffEntry>,
     pub steps: Vec<LocalStepSummary>,
+    pub layer_activities: Vec<LayerStepActivity>,
+    pub pending_publish_count: usize,
     pub files: Vec<FileSnapshotEntry>,
 }
 
@@ -186,6 +204,14 @@ pub struct LocalStepSummary {
     pub changed_files: usize,
     pub diff_stats: DiffStats,
     pub diffs: Vec<LensDiffEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerStepActivity {
+    pub layer_id: String,
+    pub latest_step_at: u64,
+    pub step_count: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -292,6 +318,42 @@ pub struct SyncOperationResult {
     pub sync_state_path: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactLocalSpaceResult {
+    pub local_space: LocalSpaceSummary,
+    pub packed_chunks: usize,
+    pub loose_chunks_removed: usize,
+    pub raw_bytes: u64,
+    pub stored_bytes: u64,
+    pub pack_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLocalStepResult {
+    pub local_space: LocalSpaceSummary,
+    pub status: String,
+    pub message: String,
+    pub step_id: Option<String>,
+    pub changed_files: usize,
+    pub diff_stats: DiffStats,
+    pub pending_publish_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingPublishFile {
+    schema: String,
+    step_id: String,
+    layer_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_tree_id: Option<String>,
+    #[serde(default)]
+    changed_paths: Vec<String>,
+    created_at_unix: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateSpaceFromLocalRequest {
@@ -357,8 +419,8 @@ struct PublishLayerRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<PublishArtifactRequest>,
     deleted_paths: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    step: Option<PublishStepRequest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steps: Vec<PublishStepRequest>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -409,6 +471,9 @@ struct PublishChunkObjectRequest {
     chunk_id: String,
     digest: String,
     size: u64,
+    raw_size: u64,
+    stored_size: u64,
+    compression: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -451,6 +516,10 @@ struct PublishFileObjectRequest {
 struct PublishChunkRefRequest {
     chunk_id: String,
     size: u64,
+    raw_size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored_size: Option<u64>,
+    compression: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -532,6 +601,12 @@ struct ReceivedChunkObject {
     size: Option<u64>,
     #[serde(default, rename = "sizeBytes")]
     size_bytes: Option<u64>,
+    #[serde(default, alias = "rawSize")]
+    raw_size: Option<u64>,
+    #[serde(default, alias = "storedSize")]
+    stored_size: Option<u64>,
+    #[serde(default)]
+    compression: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -554,6 +629,12 @@ struct ReceivedChunkRef {
     size: Option<u64>,
     #[serde(default, rename = "sizeBytes")]
     size_bytes: Option<u64>,
+    #[serde(default, alias = "rawSize")]
+    raw_size: Option<u64>,
+    #[serde(default, alias = "storedSize")]
+    stored_size: Option<u64>,
+    #[serde(default)]
+    compression: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -732,22 +813,6 @@ struct TreeObjectFile {
     schema: String,
     tree_id: String,
     files: Vec<FileSnapshotEntry>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileObjectFile {
-    schema: String,
-    hash: String,
-    size: u64,
-    chunks: Vec<FileChunkRef>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileChunkRef {
-    chunk_id: String,
-    size: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1069,6 +1134,120 @@ pub fn create_draft_local_space(
     })
 }
 
+pub fn init_local_space(
+    name: String,
+    target_folder: String,
+) -> Result<InitLocalSpaceResult, String> {
+    let display_name = if name.trim().is_empty() {
+        "Untitled Space".to_string()
+    } else {
+        name.trim().to_string()
+    };
+    let root = absolute_path(&PathBuf::from(target_folder.trim()))?;
+    if root.exists() && !root.is_dir() {
+        return Err(format!(
+            "Layrs cannot initialize a Local Space in a file: {}",
+            root.display()
+        ));
+    }
+
+    fs::create_dir_all(&root).map_err(|error| {
+        format!(
+            "Layrs could not create Local Space folder {}: {error}",
+            root.display()
+        )
+    })?;
+
+    let layrs_dir = root.join(LAYRS_DIR);
+    if layrs_dir.join("local-space.json").exists() {
+        return Err(format!(
+            "Layrs found an existing Local Space at {}.",
+            root.display()
+        ));
+    }
+
+    create_local_space_directories(&layrs_dir)?;
+    let now = unix_now();
+    let local_space_id = format!("local_space_{}", now);
+    let layer_id = "local_layer_main".to_string();
+    let layer_view = LayerAccessView {
+        layer_id: layer_id.clone(),
+        workspace_id: String::new(),
+        space_id: local_space_id.clone(),
+        display_name: "Main".to_string(),
+        access: LayerAccessKind::Open,
+        can_open: true,
+        local_path: Some(layer_dir(&layrs_dir, &layer_id).display().to_string()),
+        reason: None,
+    };
+    scaffold_layer(&layrs_dir, &local_space_id, &layer_view)?;
+
+    let meta = LocalSpaceFile {
+        schema: LOCAL_SPACE_SCHEMA.to_string(),
+        state: LOCAL_SPACE_STATE_DRAFT.to_string(),
+        local_space_id: local_space_id.clone(),
+        space_id: local_space_id.clone(),
+        server_space_id: None,
+        workspace_id: String::new(),
+        name: display_name,
+        root_path: root.display().to_string(),
+        created_at_unix: now,
+        updated_at_unix: now,
+        layers: vec![LocalLayerMetadata {
+            layer_id: layer_id.clone(),
+            display_name: "Main".to_string(),
+            parent_layer_id: None,
+            access: LayerAccessKind::Open,
+            can_open: true,
+        }],
+    };
+    write_json(&layrs_dir.join("local-space.json"), &meta)?;
+    let active = ActiveLayerFile {
+        schema: ACTIVE_LAYER_SCHEMA.to_string(),
+        layer_id: layer_id.clone(),
+        updated_at_unix: now,
+    };
+    write_json(&layrs_dir.join("active-layer.json"), &active)?;
+    write_access_pointer(&layrs_dir, &local_space_id, Some(&layer_id), &[layer_view])?;
+
+    let empty_state = WorkingStateFile {
+        schema: WORKING_STATE_SCHEMA.to_string(),
+        layer_id: layer_id.clone(),
+        captured_at_unix: now,
+        root_tree_id: None,
+        files: Vec::new(),
+    };
+    write_layer_state(&layrs_dir, &layer_id, &empty_state)?;
+    remember_local_space(&meta, Some(layer_id.clone()))?;
+
+    let handle = LocalSpaceHandle {
+        root,
+        layrs_dir,
+        meta,
+        active,
+    };
+    let current_state = capture_working_state(&handle.root, &layer_id, true)?;
+    let scanned_files = current_state.files.len();
+    let initial_step_id = if scanned_files > 0 {
+        let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
+        let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
+        write_pending_publish(&handle.layrs_dir, &step)?;
+        write_working_state(&handle.layrs_dir, &layer_id, &current_state)?;
+        Some(step_id)
+    } else {
+        None
+    };
+    let pending_publish_count = read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len();
+
+    Ok(InitLocalSpaceResult {
+        local_space: summary_from_handle(&handle),
+        created: true,
+        initial_step_id,
+        scanned_files,
+        pending_publish_count,
+    })
+}
+
 pub fn send_draft_local_space(
     local_space: String,
     workspace_id: String,
@@ -1133,6 +1312,7 @@ pub fn send_draft_local_space(
             .map(|file| file.path.clone())
             .collect::<BTreeSet<_>>();
         if !publish_paths.is_empty() {
+            let pending_steps = pending_publish_steps(&handle.layrs_dir, &mapping.local_layer_id)?;
             let publish_path = format!(
                 "/v1/workspaces/{}/spaces/{}/sync/publish",
                 url_path_segment(&workspace_id),
@@ -1146,7 +1326,7 @@ pub fn send_draft_local_space(
                 &state,
                 publish_paths.iter().cloned().collect(),
                 Vec::new(),
-                None,
+                &pending_steps,
             )?;
             upload_publish_chunks(
                 &handle,
@@ -1612,6 +1792,9 @@ pub fn scan_working_tree(local_space: String) -> Result<WorkingTreeScan, String>
         &deleted,
     );
     let steps = local_step_summaries(&handle, &active_layer_id)?;
+    let layer_activities = layer_step_activities(&handle.layrs_dir, &handle.meta.layers)?;
+    let pending_publish_count =
+        read_pending_publish_files(&handle.layrs_dir, &active_layer_id)?.len();
 
     Ok(WorkingTreeScan {
         root_path: handle.root.display().to_string(),
@@ -1622,6 +1805,8 @@ pub fn scan_working_tree(local_space: String) -> Result<WorkingTreeScan, String>
         deleted,
         diffs,
         steps,
+        layer_activities,
+        pending_publish_count,
         files: current.files,
     })
 }
@@ -1720,6 +1905,13 @@ pub fn receive_local_space(local_space: String) -> Result<SyncOperationResult, S
     }
 
     let current_state = capture_working_state(&handle.root, &layer_id, true)?;
+    let pending_publish_count = read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len();
+    if pending_publish_count > 0 {
+        return Err(
+            "Publish pending local Step(s) before receiving Studio state for this Layer."
+                .to_string(),
+        );
+    }
     let previous_state = read_layer_state(&handle.layrs_dir, &layer_id).ok();
     let changed_files = changed_file_count(previous_state.as_ref(), &current_state);
     let saved_step = if changed_files > 0 && config.auto_local_steps {
@@ -1766,6 +1958,68 @@ pub fn receive_local_space(local_space: String) -> Result<SyncOperationResult, S
     })
 }
 
+pub fn compact_local_space(local_space: String) -> Result<CompactLocalSpaceResult, String> {
+    let handle = open_local_space_handle(&local_space)?;
+    let compacted: CompactStoreResult = compact_loose_chunks(&handle.layrs_dir)?;
+    Ok(CompactLocalSpaceResult {
+        local_space: summary_from_handle(&handle),
+        packed_chunks: compacted.packed_chunks,
+        loose_chunks_removed: compacted.loose_chunks_removed,
+        raw_bytes: compacted.raw_bytes,
+        stored_bytes: compacted.stored_bytes,
+        pack_path: compacted.pack_path,
+    })
+}
+
+pub fn save_local_step(local_space: String) -> Result<SaveLocalStepResult, String> {
+    let handle = open_local_space_handle(&local_space)?;
+    let layer_id = handle.active.layer_id.clone();
+    let current_state = capture_working_state(&handle.root, &layer_id, true)?;
+    let previous_state = read_layer_state(&handle.layrs_dir, &layer_id).ok();
+    let (added, modified, deleted) = diff_state(previous_state.as_ref(), &current_state);
+    let changed_files = added.len() + modified.len() + deleted.len();
+
+    if changed_files == 0 {
+        return Ok(SaveLocalStepResult {
+            local_space: summary_from_handle(&handle),
+            status: "clean".to_string(),
+            message: "Nothing to save.".to_string(),
+            step_id: None,
+            changed_files: 0,
+            diff_stats: DiffStats::default(),
+            pending_publish_count: read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len(),
+        });
+    }
+
+    let diffs = lens_diff_entries(
+        &handle,
+        "workingTree",
+        &layer_id,
+        None,
+        previous_state.as_ref(),
+        &current_state,
+        &added,
+        &modified,
+        &deleted,
+    );
+    let stats = diff_stats(&diffs);
+    let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
+    let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
+    write_pending_publish(&handle.layrs_dir, &step)?;
+    write_working_state(&handle.layrs_dir, &layer_id, &current_state)?;
+    let pending_publish_count = read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len();
+
+    Ok(SaveLocalStepResult {
+        local_space: summary_from_handle(&handle),
+        status: "saved".to_string(),
+        message: format!("Step saved with {changed_files} changed file(s)."),
+        step_id: Some(step_id),
+        changed_files,
+        diff_stats: stats,
+        pending_publish_count,
+    })
+}
+
 pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, String> {
     let mut handle = open_local_space_handle(&local_space)?;
     if handle.meta.state == LOCAL_SPACE_STATE_DRAFT {
@@ -1795,11 +2049,12 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
     let previous_state = if force_full_publish {
         None
     } else {
-        read_layer_state(&handle.layrs_dir, &layer_id).ok()
+        read_layer_index(&handle.layrs_dir, &layer_id).ok()
     };
     let (added, modified, deleted) = diff_state(previous_state.as_ref(), &current_state);
     let changed_files = added.len() + modified.len() + deleted.len();
     if changed_files == 0 {
+        clear_pending_publish(&handle.layrs_dir, &layer_id)?;
         let path = write_sync_state(&handle, "publish", "clean", 0, None)?;
         return Ok(SyncOperationResult {
             local_space: summary_from_handle(&handle),
@@ -1808,12 +2063,17 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
             sync_state_path: path.display().to_string(),
         });
     }
-    let publish_step = if config.auto_local_steps {
-        let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
-        Some(read_step_file(&handle.layrs_dir, &layer_id, &step_id)?)
-    } else {
-        None
-    };
+    let latest_pending_step = latest_pending_publish_step(&handle.layrs_dir, &layer_id)?;
+    match latest_pending_step {
+        Some(step) if step.root_tree_id == current_state.root_tree_id => {}
+        _ if config.auto_local_steps => {
+            let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
+            let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
+            write_pending_publish(&handle.layrs_dir, &step)?;
+        }
+        _ => {}
+    }
+    let publish_steps = pending_publish_steps(&handle.layrs_dir, &layer_id)?;
 
     let publish_paths = added
         .iter()
@@ -1839,7 +2099,7 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
             .cloned()
             .collect(),
         deleted.clone(),
-        publish_step.as_ref(),
+        &publish_steps,
     )?;
     let token = desktop_token(&config)?;
     upload_publish_chunks(
@@ -1870,6 +2130,7 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
             Err(error) => return Err(error),
         };
     write_layer_state(&handle.layrs_dir, &layer_id, &current_state)?;
+    clear_pending_publish(&handle.layrs_dir, &layer_id)?;
     handle.meta.updated_at_unix = unix_now();
     write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
     remember_local_space(&handle.meta, Some(layer_id.clone()))?;
@@ -1889,7 +2150,10 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
     Ok(SyncOperationResult {
         local_space: summary_from_handle(&handle),
         status: "published".to_string(),
-        message: format!("Published {changed_files} local change(s) to Studio."),
+        message: format!(
+            "Published {changed_files} local change(s) and {} pending step(s) to Studio.",
+            publish_steps.len()
+        ),
         sync_state_path: sync_path.display().to_string(),
     })
 }
@@ -1904,6 +2168,16 @@ pub fn save_desktop_settings(settings: DesktopSettings) -> Result<DesktopSetting
             "Layrs Desktop currently accepts only http:// server endpoints for local development."
                 .to_string(),
         );
+    }
+    if settings.shortcuts.enabled {
+        let save_step = settings.shortcuts.save_step.trim();
+        let publish = settings.shortcuts.publish.trim();
+        if save_step.is_empty() || publish.is_empty() {
+            return Err("Shortcut fields cannot be empty while shortcuts are enabled.".to_string());
+        }
+        if save_step.eq_ignore_ascii_case(publish) {
+            return Err("Save Step and Publish shortcuts must be different.".to_string());
+        }
     }
 
     let mut config = DesktopConfig::load_or_create()?;
@@ -2683,7 +2957,7 @@ fn write_step(
     layer_id: &str,
     state: &WorkingStateFile,
 ) -> Result<String, String> {
-    let step_id = format!("{}-{}", unix_now(), fnv1a_hex(layer_id.as_bytes()));
+    let step_id = unique_step_id(layrs_dir, layer_id);
     let (parent_step_id, base_layer_id, base_tree_id, base_state) = step_base(layrs_dir, layer_id)?;
     let (added, modified, deleted) = diff_state(base_state.as_ref(), state);
     let changed_paths = added
@@ -2718,12 +2992,147 @@ fn write_step(
     Ok(step_id)
 }
 
+fn unique_step_id(layrs_dir: &Path, layer_id: &str) -> String {
+    let layer_hash = fnv1a_hex(layer_id.as_bytes());
+    for attempt in 0..1000u32 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let step_id = format!(
+            "{}{:09}-{}-{attempt}",
+            now.as_secs(),
+            now.subsec_nanos(),
+            layer_hash
+        );
+        if !layer_dir(layrs_dir, layer_id)
+            .join("steps")
+            .join(format!("{step_id}.json"))
+            .exists()
+        {
+            return step_id;
+        }
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{now}-{layer_hash}-fallback")
+}
+
 fn read_step_file(layrs_dir: &Path, layer_id: &str, step_id: &str) -> Result<StepFile, String> {
     read_json(
         &layer_dir(layrs_dir, layer_id)
             .join("steps")
             .join(format!("{step_id}.json")),
     )
+}
+
+fn pending_publish_dir(layrs_dir: &Path, layer_id: &str) -> PathBuf {
+    layer_dir(layrs_dir, layer_id).join("pending-publish")
+}
+
+fn write_pending_publish(layrs_dir: &Path, step: &StepFile) -> Result<(), String> {
+    let pending = PendingPublishFile {
+        schema: PENDING_PUBLISH_SCHEMA.to_string(),
+        step_id: step.step_id.clone(),
+        layer_id: step.layer_id.clone(),
+        root_tree_id: step.root_tree_id.clone(),
+        changed_paths: step.changed_paths.clone(),
+        created_at_unix: unix_now(),
+    };
+    write_json(
+        &pending_publish_dir(layrs_dir, &step.layer_id).join(format!("{}.json", step.step_id)),
+        &pending,
+    )
+}
+
+fn read_pending_publish_files(
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<Vec<PendingPublishFile>, String> {
+    let dir = pending_publish_dir(layrs_dir, layer_id);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut pending = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|error| {
+        format!(
+            "Layrs Desktop could not read pending publish directory {}: {error}",
+            dir.display()
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Layrs Desktop could not read pending publish entry {}: {error}",
+                dir.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            pending.push(read_json::<PendingPublishFile>(&path)?);
+        }
+    }
+
+    pending.sort_by(|left, right| {
+        left.created_at_unix
+            .cmp(&right.created_at_unix)
+            .then_with(|| left.step_id.cmp(&right.step_id))
+    });
+    Ok(pending)
+}
+
+fn latest_pending_publish_step(
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<Option<StepFile>, String> {
+    let Some(pending) = read_pending_publish_files(layrs_dir, layer_id)?
+        .last()
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    Ok(Some(read_step_file(layrs_dir, layer_id, &pending.step_id)?))
+}
+
+fn pending_publish_steps(layrs_dir: &Path, layer_id: &str) -> Result<Vec<StepFile>, String> {
+    read_pending_publish_files(layrs_dir, layer_id)?
+        .into_iter()
+        .map(|pending| read_step_file(layrs_dir, layer_id, &pending.step_id))
+        .collect()
+}
+
+fn clear_pending_publish(layrs_dir: &Path, layer_id: &str) -> Result<(), String> {
+    let dir = pending_publish_dir(layrs_dir, layer_id);
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&dir).map_err(|error| {
+        format!(
+            "Layrs Desktop could not read pending publish directory {}: {error}",
+            dir.display()
+        )
+    })? {
+        let path = entry
+            .map_err(|error| {
+                format!(
+                    "Layrs Desktop could not read pending publish entry {}: {error}",
+                    dir.display()
+                )
+            })?
+            .path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not remove pending publish file {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn step_base(
@@ -2850,7 +3259,7 @@ fn write_file_object(
     let hash = blake3_id(bytes);
     let object = format!("objects/files/{}.json", object_file_stem(&hash));
     if write_objects {
-        write_file_object_manifest(layrs_dir, &hash, bytes)?;
+        write_file_object_manifest(layrs_dir, &hash, bytes, media_type_for_path(path))?;
     }
 
     Ok(FileSnapshotEntry {
@@ -2861,53 +3270,6 @@ fn write_file_object(
     })
 }
 
-fn write_file_object_manifest(layrs_dir: &Path, hash: &str, bytes: &[u8]) -> Result<(), String> {
-    let object_path = layrs_dir
-        .join("objects")
-        .join("files")
-        .join(format!("{}.json", object_file_stem(hash)));
-    if object_path.exists() {
-        return Ok(());
-    }
-
-    let mut chunks = Vec::new();
-    for chunk in bytes.chunks(CHUNK_SIZE) {
-        let chunk_id = blake3_id(chunk);
-        let chunk_path = layrs_dir
-            .join("objects")
-            .join("chunks")
-            .join(format!("{}.chunk", object_file_stem(&chunk_id)));
-        if !chunk_path.exists() {
-            if let Some(parent) = chunk_path.parent() {
-                fs::create_dir_all(parent).map_err(|error| {
-                    format!(
-                        "Layrs Desktop could not create chunk directory {}: {error}",
-                        parent.display()
-                    )
-                })?;
-            }
-            fs::write(&chunk_path, chunk).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not write chunk object {}: {error}",
-                    chunk_path.display()
-                )
-            })?;
-        }
-        chunks.push(FileChunkRef {
-            chunk_id,
-            size: chunk.len() as u64,
-        });
-    }
-
-    let manifest = FileObjectFile {
-        schema: FILE_OBJECT_SCHEMA.to_string(),
-        hash: hash.to_string(),
-        size: bytes.len() as u64,
-        chunks,
-    };
-    write_json(&object_path, &manifest)
-}
-
 fn read_snapshot_object_bytes(
     layrs_dir: &Path,
     file: &FileSnapshotEntry,
@@ -2915,20 +3277,7 @@ fn read_snapshot_object_bytes(
     let object_path = layrs_dir.join(&file.object);
     if file.object.starts_with("objects/files/") {
         let manifest = read_json::<FileObjectFile>(&object_path)?;
-        let mut bytes = Vec::with_capacity(manifest.size as usize);
-        for chunk in manifest.chunks {
-            let chunk_path = layrs_dir
-                .join("objects")
-                .join("chunks")
-                .join(format!("{}.chunk", object_file_stem(&chunk.chunk_id)));
-            let chunk_bytes = fs::read(&chunk_path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not read chunk object {}: {error}",
-                    chunk_path.display()
-                )
-            })?;
-            bytes.extend_from_slice(&chunk_bytes);
-        }
+        let bytes = read_file_object_bytes(layrs_dir, &manifest)?;
         if blake3_id(&bytes) != file.hash {
             return Err(format!(
                 "Layrs Desktop object hash mismatch while reading {}.",
@@ -3211,6 +3560,30 @@ fn local_step_summaries(
     Ok(summaries)
 }
 
+fn layer_step_activities(
+    layrs_dir: &Path,
+    layers: &[LocalLayerMetadata],
+) -> Result<Vec<LayerStepActivity>, String> {
+    let mut activities = Vec::with_capacity(layers.len());
+
+    for layer in layers {
+        let steps = read_step_files(layrs_dir, &layer.layer_id)?;
+        let latest_step_at = steps
+            .iter()
+            .map(|step| step.captured_at_unix)
+            .max()
+            .unwrap_or(0);
+
+        activities.push(LayerStepActivity {
+            layer_id: layer.layer_id.clone(),
+            latest_step_at,
+            step_count: steps.len(),
+        });
+    }
+
+    Ok(activities)
+}
+
 fn initial_step_base_state(handle: &LocalSpaceHandle, layer_id: &str) -> Option<WorkingStateFile> {
     let parent_layer_id = handle
         .meta
@@ -3357,10 +3730,7 @@ fn text_diff_model(
         .min(total_diff_lines);
     let lines = all_lines[window_start..window_end].to_vec();
     let has_more = window_end < total_diff_lines;
-    let large_diff = old_truncated
-        || new_truncated
-        || has_more
-        || total_diff_lines > window_limit;
+    let large_diff = old_truncated || new_truncated || has_more || total_diff_lines > window_limit;
     let mut fields = common_diff_fields(path, state, lens_id, old_file, new_file);
     fields.insert(
         "source".to_string(),
@@ -4209,32 +4579,17 @@ fn ensure_received_v2_chunks(
                 ));
             }
         }
-        let expected_size = chunk.size.or(chunk.size_bytes);
-        let chunk_path = layrs_dir
-            .join("objects")
-            .join("chunks")
-            .join(format!("{}.chunk", object_file_stem(&chunk.chunk_id)));
-        if chunk_path.exists() {
-            let bytes = fs::read(&chunk_path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not read local received chunk {}: {error}",
-                    chunk_path.display()
-                )
-            })?;
-            if blake3_id(&bytes) != chunk.chunk_id {
-                return Err(format!(
-                    "Layrs Desktop rejected local V2 chunk {} because its hash does not match.",
-                    chunk.chunk_id
-                ));
-            }
-            if let Some(expected_size) = expected_size {
-                if bytes.len() as u64 != expected_size {
-                    return Err(format!(
-                        "Layrs Desktop rejected local V2 chunk {} because its size does not match.",
-                        chunk.chunk_id
-                    ));
-                }
-            }
+        let expected_size = chunk.raw_size.or(chunk.size).or(chunk.size_bytes);
+        let hint = FileChunkRef {
+            chunk_id: chunk.chunk_id.clone(),
+            size: expected_size.unwrap_or(0),
+            compression: chunk
+                .compression
+                .clone()
+                .unwrap_or_else(|| "identity".to_string()),
+            stored_size: chunk.stored_size,
+        };
+        if read_chunk_raw(layrs_dir, &chunk.chunk_id, Some(&hint)).is_ok() {
             continue;
         }
 
@@ -4252,35 +4607,27 @@ fn ensure_received_v2_chunks(
                 url_path_segment(&chunk.chunk_id)
             )
         });
-        let bytes = get_bytes(endpoint, &download_path, token)?;
-        if blake3_id(&bytes) != chunk.chunk_id {
-            return Err(format!(
-                "Layrs Desktop rejected V2 chunk {} because its hash does not match.",
-                chunk.chunk_id
-            ));
-        }
-        if let Some(expected_size) = expected_size {
-            if bytes.len() as u64 != expected_size {
-                return Err(format!(
-                    "Layrs Desktop rejected V2 chunk {} because its size does not match.",
-                    chunk.chunk_id
-                ));
-            }
-        }
-        if let Some(parent) = chunk_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not create received chunk directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        fs::write(&chunk_path, bytes).map_err(|error| {
-            format!(
-                "Layrs Desktop could not write received V2 chunk {}: {error}",
-                chunk_path.display()
-            )
-        })?;
+        let response = get_bytes_with_headers(endpoint, &download_path, token)?;
+        let compression = chunk
+            .compression
+            .clone()
+            .or_else(|| response.headers.get("x-layrs-chunk-compression").cloned())
+            .unwrap_or_else(|| "identity".to_string());
+        let raw_size = expected_size
+            .or_else(|| {
+                response
+                    .headers
+                    .get("x-layrs-raw-size")
+                    .and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(response.body.len() as u64);
+        write_received_encoded_chunk(
+            layrs_dir,
+            &chunk.chunk_id,
+            response.body,
+            &compression,
+            raw_size,
+        )?;
     }
     Ok(())
 }
@@ -4307,7 +4654,16 @@ fn write_received_v2_file_objects(
                 validate_blake3_id(&chunk.chunk_id)?;
                 Ok(FileChunkRef {
                     chunk_id: chunk.chunk_id.clone(),
-                    size: chunk.size.or(chunk.size_bytes).unwrap_or(0),
+                    size: chunk
+                        .raw_size
+                        .or(chunk.size)
+                        .or(chunk.size_bytes)
+                        .unwrap_or(0),
+                    compression: chunk
+                        .compression
+                        .clone()
+                        .unwrap_or_else(|| "identity".to_string()),
+                    stored_size: chunk.stored_size,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -4386,26 +4742,43 @@ fn build_publish_v2_request(
     state: &WorkingStateFile,
     changed_paths: Vec<String>,
     deleted_paths: Vec<String>,
-    step: Option<&StepFile>,
+    steps: &[StepFile],
 ) -> Result<PublishLayerRequest, String> {
     let publish_paths = changed_paths
         .iter()
         .filter(|path| !deleted_paths.contains(path))
         .cloned()
         .collect::<BTreeSet<_>>();
+    let mut store_objects = publish_store_objects_for_paths(handle, state, &publish_paths)?;
+    for step in steps {
+        let step_state = state_from_step(&handle.layrs_dir, step)?;
+        let step_paths = step
+            .changed_paths
+            .iter()
+            .filter(|path| !deleted_paths.iter().any(|deleted| deleted == *path))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        extend_publish_store_objects_for_paths(
+            &mut store_objects,
+            handle,
+            step_state.root_tree_id.clone(),
+            &step_state.files,
+            &step_paths,
+        )?;
+    }
     Ok(PublishLayerRequest {
         layer_id: layer_id.to_string(),
         protocol: SYNC_PROTOCOL_V2.to_string(),
         policy_epoch: layer_policy_epoch(handle, layer_id),
-        idempotency_key: publish_idempotency_key(layer_id, state.root_tree_id.as_deref()),
+        idempotency_key: publish_idempotency_key(layer_id, state.root_tree_id.as_deref(), steps),
         source_client_id: config.device_id.clone(),
         base_tree_id,
         root_tree_id: state.root_tree_id.clone(),
         changed_paths,
-        store_objects: publish_store_objects_for_paths(handle, state, &publish_paths)?,
+        store_objects,
         artifacts: Vec::new(),
         deleted_paths,
-        step: step.map(PublishStepRequest::from_step),
+        steps: steps.iter().map(PublishStepRequest::from_step).collect(),
     })
 }
 
@@ -4452,17 +4825,20 @@ fn upload_publish_chunks(
                 item.chunk_id
             )
         })?;
-        let bytes = read_local_chunk_object_bytes(handle, &chunk.chunk_id)?;
-        if bytes.len() as u64 != chunk.size {
+        let file_chunk = FileChunkRef {
+            chunk_id: chunk.chunk_id.clone(),
+            size: chunk.raw_size,
+            compression: chunk.compression.clone(),
+            stored_size: Some(chunk.stored_size),
+        };
+        let encoded = read_chunk_encoded(&handle.layrs_dir, &file_chunk)?;
+        if encoded.raw_size != chunk.raw_size {
             return Err(format!(
-                "Layrs Desktop chunk {} has size {}, expected {}.",
-                chunk.chunk_id,
-                bytes.len(),
-                chunk.size
+                "Layrs Desktop chunk {} has raw size {}, expected {}.",
+                chunk.chunk_id, encoded.raw_size, chunk.raw_size
             ));
         }
-        let actual = blake3_id(&bytes);
-        if actual != chunk.chunk_id || actual != chunk.digest {
+        if encoded.digest != chunk.chunk_id || encoded.digest != chunk.digest {
             return Err(format!(
                 "Layrs Desktop chunk {} failed local hash verification before upload.",
                 chunk.chunk_id
@@ -4476,28 +4852,20 @@ fn upload_publish_chunks(
                 url_path_segment(&chunk.chunk_id)
             )
         });
-        let _: Value = put_bytes_json(endpoint, &upload_path, token, &bytes)?;
+        let _: Value = put_bytes_json_with_headers(
+            endpoint,
+            &upload_path,
+            token,
+            &encoded.bytes,
+            &[
+                ("x-layrs-chunk-compression", encoded.compression.clone()),
+                ("x-layrs-raw-size", encoded.raw_size.to_string()),
+                ("x-layrs-stored-size", encoded.stored_size.to_string()),
+            ],
+        )?;
     }
 
     Ok(())
-}
-
-fn read_local_chunk_object_bytes(
-    handle: &LocalSpaceHandle,
-    chunk_id: &str,
-) -> Result<Vec<u8>, String> {
-    validate_blake3_id(chunk_id)?;
-    let chunk_path = handle
-        .layrs_dir
-        .join("objects")
-        .join("chunks")
-        .join(format!("{}.chunk", object_file_stem(chunk_id)));
-    fs::read(&chunk_path).map_err(|error| {
-        format!(
-            "Layrs Desktop could not read publish chunk {}: {error}",
-            chunk_path.display()
-        )
-    })
 }
 
 fn layer_policy_epoch(handle: &LocalSpaceHandle, layer_id: &str) -> u64 {
@@ -4506,10 +4874,20 @@ fn layer_policy_epoch(handle: &LocalSpaceHandle, layer_id: &str) -> u64 {
         .unwrap_or(1)
 }
 
-fn publish_idempotency_key(layer_id: &str, root_tree_id: Option<&str>) -> String {
+fn publish_idempotency_key(
+    layer_id: &str,
+    root_tree_id: Option<&str>,
+    steps: &[StepFile],
+) -> String {
     let mut material = layer_id.as_bytes().to_vec();
     material.push(0);
     material.extend_from_slice(root_tree_id.unwrap_or("none").as_bytes());
+    for step in steps {
+        material.push(0);
+        material.extend_from_slice(step.step_id.as_bytes());
+        material.push(0);
+        material.extend_from_slice(step.root_tree_id.as_deref().unwrap_or("none").as_bytes());
+    }
     format!("publish-{}", object_file_stem(&blake3_id(&material)))
 }
 
@@ -4519,30 +4897,65 @@ fn publish_store_objects_for_paths(
     paths: &BTreeSet<String>,
 ) -> Result<PublishStoreObjectsRequest, String> {
     let mut objects = PublishStoreObjectsRequest::default();
-    if let Some(root_tree_id) = state.root_tree_id.clone() {
-        objects.tree_objects.push(PublishTreeObjectRequest {
-            tree_id: root_tree_id,
-            entries: state
-                .files
-                .iter()
-                .map(|file| PublishTreeEntryRequest {
-                    path: file.path.clone(),
-                    file_object_id: file.hash.clone(),
-                    size: file.size,
-                })
-                .collect(),
-        });
-    }
+    extend_publish_store_objects_for_paths(
+        &mut objects,
+        handle,
+        state.root_tree_id.clone(),
+        &state.files,
+        paths,
+    )?;
+    Ok(objects)
+}
 
-    for file in &state.files {
+fn extend_publish_store_objects_for_paths(
+    objects: &mut PublishStoreObjectsRequest,
+    handle: &LocalSpaceHandle,
+    root_tree_id: Option<String>,
+    files: &[FileSnapshotEntry],
+    paths: &BTreeSet<String>,
+) -> Result<(), String> {
+    if let Some(root_tree_id) = root_tree_id {
+        if !objects
+            .tree_objects
+            .iter()
+            .any(|tree| tree.tree_id == root_tree_id)
+        {
+            objects.tree_objects.push(PublishTreeObjectRequest {
+                tree_id: root_tree_id,
+                entries: files
+                    .iter()
+                    .map(|file| PublishTreeEntryRequest {
+                        path: file.path.clone(),
+                        file_object_id: file.hash.clone(),
+                        size: file.size,
+                    })
+                    .collect(),
+            });
+        }
+    }
+    for file in files {
         if !paths.contains(&file.path) {
             continue;
         }
         let (file_object, chunks) = publish_file_object_for_file(handle, file)?;
-        objects.file_objects.push(file_object);
-        objects.chunks.extend(chunks);
+        if !objects
+            .file_objects
+            .iter()
+            .any(|object| object.file_object_id == file_object.file_object_id)
+        {
+            objects.file_objects.push(file_object);
+        }
+        for chunk in chunks {
+            if !objects
+                .chunks
+                .iter()
+                .any(|object| object.chunk_id == chunk.chunk_id)
+            {
+                objects.chunks.push(chunk);
+            }
+        }
     }
-    Ok(objects)
+    Ok(())
 }
 
 fn publish_file_object_for_file(
@@ -4554,7 +4967,10 @@ fn publish_file_object_for_file(
         .iter()
         .map(|chunk| PublishChunkRefRequest {
             chunk_id: chunk.chunk_id.clone(),
-            size: chunk.size,
+            size: chunk.raw_size,
+            raw_size: chunk.raw_size,
+            stored_size: Some(chunk.stored_size),
+            compression: chunk.compression.clone(),
         })
         .collect();
     Ok((
@@ -4579,6 +4995,9 @@ fn publish_chunks_for_file(
                 digest: chunk.chunk_id.clone(),
                 chunk_id: chunk.chunk_id,
                 size: chunk.size,
+                raw_size: chunk.size,
+                stored_size: chunk.stored_size.unwrap_or(chunk.size),
+                compression: chunk.compression,
             });
         }
         return Ok(chunks);
@@ -4586,33 +5005,21 @@ fn publish_chunks_for_file(
 
     let bytes = read_snapshot_object_bytes(&handle.layrs_dir, file)?;
     let mut chunks = Vec::new();
-    for chunk in bytes.chunks(CHUNK_SIZE) {
-        let chunk_id = blake3_id(chunk);
-        let chunk_path = handle
-            .layrs_dir
-            .join("objects")
-            .join("chunks")
-            .join(format!("{}.chunk", object_file_stem(&chunk_id)));
-        if !chunk_path.exists() {
-            if let Some(parent) = chunk_path.parent() {
-                fs::create_dir_all(parent).map_err(|error| {
-                    format!(
-                        "Layrs Desktop could not create chunk directory {}: {error}",
-                        parent.display()
-                    )
-                })?;
-            }
-            fs::write(&chunk_path, chunk).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not write publish chunk {}: {error}",
-                    chunk_path.display()
-                )
-            })?;
-        }
+    write_file_object_manifest(
+        &handle.layrs_dir,
+        &file.hash,
+        &bytes,
+        media_type_for_path(&file.path),
+    )?;
+    let manifest = read_json::<FileObjectFile>(&handle.layrs_dir.join(&file.object))?;
+    for chunk in manifest.chunks {
         chunks.push(PublishChunkObjectRequest {
-            digest: chunk_id.clone(),
-            chunk_id,
-            size: chunk.len() as u64,
+            digest: chunk.chunk_id.clone(),
+            chunk_id: chunk.chunk_id,
+            size: chunk.size,
+            raw_size: chunk.size,
+            stored_size: chunk.stored_size.unwrap_or(chunk.size),
+            compression: chunk.compression,
         });
     }
     Ok(chunks)
@@ -5270,7 +5677,10 @@ mod tests {
         let inserted = lines.iter().find(|line| line.op == "insert").unwrap();
         assert_eq!(inserted.text.chars().count(), 4 * 1024 * 1024);
         assert!(!inserted.text.contains("Layrs line truncated"));
-        assert_eq!(diff.diff.fields.get("newTruncated"), Some(&Value::Bool(false)));
+        assert_eq!(
+            diff.diff.fields.get("newTruncated"),
+            Some(&Value::Bool(false))
+        );
         assert!(diff.diff.fields.get("lineTextTruncated").is_none());
 
         let _ = fs::remove_dir_all(root);
@@ -5478,6 +5888,239 @@ mod tests {
     }
 
     #[test]
+    fn save_local_step_writes_step_and_pending_publish() {
+        let root = unique_test_dir("save-step-pending");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "base\n").unwrap();
+
+        let created = create_local_space(
+            "space-save-step".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("note.txt"), "changed\n").unwrap();
+
+        let saved = save_local_step(created.local_space.local_space_id.clone()).unwrap();
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+
+        assert_eq!(saved.status, "saved");
+        assert_eq!(saved.changed_files, 1);
+        assert_eq!(saved.pending_publish_count, 1);
+        assert_eq!(scan.pending_publish_count, 1);
+        assert_eq!(scan.steps.len(), 1);
+        assert!(space
+            .join(LAYRS_DIR)
+            .join("layers")
+            .join("main")
+            .join("pending-publish")
+            .join(format!("{}.json", saved.step_id.unwrap()))
+            .exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn init_local_space_records_existing_files_as_pending_step() {
+        let root = unique_test_dir("init-existing");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "hello\n").unwrap();
+
+        let initialized =
+            init_local_space("Initialized".to_string(), space.display().to_string()).unwrap();
+        let scan = scan_working_tree(initialized.local_space.local_space_id.clone()).unwrap();
+
+        assert_eq!(initialized.scanned_files, 1);
+        assert!(initialized.initial_step_id.is_some());
+        assert_eq!(initialized.pending_publish_count, 1);
+        assert_eq!(scan.pending_publish_count, 1);
+        assert_eq!(
+            scan.files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note.txt"]
+        );
+        assert_eq!(scan.steps.len(), 1);
+        assert!(space.join(LAYRS_DIR).join("active-layer.json").exists());
+        assert!(space.join(LAYRS_DIR).join("access.json").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn init_local_space_without_files_stays_clean() {
+        let root = unique_test_dir("init-empty");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+
+        let initialized =
+            init_local_space("Empty".to_string(), space.display().to_string()).unwrap();
+        let scan = scan_working_tree(initialized.local_space.local_space_id.clone()).unwrap();
+
+        assert_eq!(initialized.scanned_files, 0);
+        assert!(initialized.initial_step_id.is_none());
+        assert_eq!(initialized.pending_publish_count, 0);
+        assert!(!scan.changed);
+        assert!(scan.steps.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeated_text_steps_reuse_and_compress_chunks() {
+        let root = unique_test_dir("store-size-text");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("big.txt"), "a".repeat(187_000)).unwrap();
+
+        let initialized =
+            init_local_space("Size Optimized".to_string(), space.display().to_string()).unwrap();
+        for index in 0..8 {
+            let mut content = "a".repeat(186_960);
+            content.push_str(&format!("step-{index:032}"));
+            fs::write(space.join("big.txt"), content).unwrap();
+            save_local_step(initialized.local_space.local_space_id.clone()).unwrap();
+        }
+
+        let chunks_dir = space.join(LAYRS_DIR).join("objects").join("chunks");
+        let stored_bytes = directory_file_size(&chunks_dir, Some("chunk"));
+        assert!(
+            stored_bytes < 250_000,
+            "expected optimized chunks below 250 KiB, got {stored_bytes}"
+        );
+
+        let scan = scan_working_tree(initialized.local_space.local_space_id).unwrap();
+        assert_eq!(scan.steps.len(), 9);
+        assert_eq!(scan.pending_publish_count, 9);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compact_packs_loose_chunks_and_keeps_file_readable() {
+        let root = unique_test_dir("compact-store");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        let expected = "hello compact\n".repeat(10_000);
+        fs::write(space.join("big.txt"), &expected).unwrap();
+
+        let initialized =
+            init_local_space("Compact".to_string(), space.display().to_string()).unwrap();
+        let layrs_dir = space.join(LAYRS_DIR);
+        let before = directory_file_count(&layrs_dir.join("objects").join("chunks"), Some("chunk"));
+        assert!(before > 0);
+
+        let compacted = compact_local_space(initialized.local_space.local_space_id).unwrap();
+        assert!(compacted.packed_chunks > 0);
+        assert!(compacted.loose_chunks_removed > 0);
+        assert!(compacted.pack_path.is_some());
+        let after = directory_file_count(&layrs_dir.join("objects").join("chunks"), Some("chunk"));
+        assert_eq!(after, 0);
+
+        let state = read_layer_state(&layrs_dir, "local_layer_main").unwrap();
+        let file = state
+            .files
+            .iter()
+            .find(|file| file.path == "big.txt")
+            .unwrap();
+        let bytes = read_snapshot_object_bytes(&layrs_dir, file).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), expected);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_local_step_clean_does_not_duplicate_step() {
+        let root = unique_test_dir("save-step-clean");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "base\n").unwrap();
+
+        let created = create_local_space(
+            "space-save-clean".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("note.txt"), "changed\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+
+        let clean = save_local_step(created.local_space.local_space_id.clone()).unwrap();
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+
+        assert_eq!(clean.status, "clean");
+        assert_eq!(clean.changed_files, 0);
+        assert_eq!(clean.pending_publish_count, 1);
+        assert_eq!(scan.steps.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_includes_layer_step_activity_for_inactive_layers() {
+        let root = unique_test_dir("layer-step-activity");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "main\n").unwrap();
+
+        let created = create_local_space(
+            "space-layer-activity".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("note.txt"), "feature\n").unwrap();
+        let feature = create_layer_from_current(
+            created.local_space.local_space_id.clone(),
+            "Feature".to_string(),
+        )
+        .unwrap();
+        let feature_state = capture_working_state(&space, &feature.active_layer_id, true).unwrap();
+        write_step(
+            &space.join(LAYRS_DIR),
+            &feature.active_layer_id,
+            &feature_state,
+        )
+        .unwrap();
+        switch_layer(
+            created.local_space.local_space_id.clone(),
+            "main".to_string(),
+        )
+        .unwrap();
+
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+        let feature_activity = scan
+            .layer_activities
+            .iter()
+            .find(|activity| activity.layer_id == feature.active_layer_id)
+            .unwrap();
+
+        assert_eq!(scan.steps.len(), 1);
+        assert_eq!(scan.steps[0].layer_id, "main");
+        assert_eq!(feature_activity.step_count, 1);
+        assert!(feature_activity.latest_step_at > 0);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn step_summary_uses_recorded_base_after_index_advances() {
         let root = unique_test_dir("step-base-after-publish");
         let config = root.join("config");
@@ -5602,6 +6245,7 @@ mod tests {
             auto_local_steps: true,
             sync_interval_seconds: 300,
             default_local_spaces_folder: root.display().to_string(),
+            shortcuts: Default::default(),
             local_spaces: Vec::new(),
         };
         let step_id = write_step(&handle.layrs_dir, "main", &state).unwrap();
@@ -5614,7 +6258,7 @@ mod tests {
             &state,
             vec!["note.txt".to_string()],
             Vec::new(),
-            Some(&step),
+            &[step.clone()],
         )
         .unwrap();
         let json = serde_json::to_value(body).unwrap();
@@ -5631,13 +6275,14 @@ mod tests {
         assert!(json["rootTreeId"].as_str().unwrap().starts_with("blake3:"));
         assert_eq!(json["changedPaths"], serde_json::json!(["note.txt"]));
         assert_eq!(json["deletedPaths"], serde_json::json!([]));
-        assert_eq!(json["step"]["stepId"].as_str(), Some(step_id.as_str()));
+        assert_eq!(json["steps"].as_array().map(Vec::len), Some(1));
+        assert_eq!(json["steps"][0]["stepId"].as_str(), Some(step_id.as_str()));
         assert_eq!(
-            json["step"]["changedPaths"],
+            json["steps"][0]["changedPaths"],
             serde_json::json!(["note.txt"])
         );
         assert_eq!(
-            json["step"]["rootTreeId"].as_str(),
+            json["steps"][0]["rootTreeId"].as_str(),
             state.root_tree_id.as_deref()
         );
         assert!(json.get("artifacts").is_none());
@@ -5676,6 +6321,97 @@ mod tests {
         assert_eq!(store["chunks"][0]["digest"], store["chunks"][0]["chunkId"]);
         assert!(store["chunks"][0].get("data").is_none());
         assert!(store["chunks"][0].get("encoding").is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publish_v2_payload_contains_every_pending_step_in_order() {
+        let root = unique_test_dir("publish-v2-pending-steps");
+        let config_dir = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config_dir);
+        fs::write(space.join("note.txt"), "base\n").unwrap();
+
+        let created = create_local_space(
+            "space-pending-steps".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
+        handle.meta.workspace_id = "workspace_1".to_string();
+        handle.meta.space_id = "space_1".to_string();
+        write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
+        let base_state = read_layer_state(&handle.layrs_dir, "main").unwrap();
+
+        fs::write(space.join("note.txt"), "step one\n").unwrap();
+        let first_state = capture_working_state(&space, "main", true).unwrap();
+        let first_step_id = write_step(&handle.layrs_dir, "main", &first_state).unwrap();
+        let first_step = read_step_file(&handle.layrs_dir, "main", &first_step_id).unwrap();
+        write_pending_publish(&handle.layrs_dir, &first_step).unwrap();
+
+        fs::write(space.join("note.txt"), "step two\n").unwrap();
+        let second_state = capture_working_state(&space, "main", true).unwrap();
+        let second_step_id = write_step(&handle.layrs_dir, "main", &second_state).unwrap();
+        let second_step = read_step_file(&handle.layrs_dir, "main", &second_step_id).unwrap();
+        write_pending_publish(&handle.layrs_dir, &second_step).unwrap();
+
+        let pending_steps = pending_publish_steps(&handle.layrs_dir, "main").unwrap();
+        let config = DesktopConfig {
+            server_endpoint: "http://127.0.0.1:8787".to_string(),
+            device_id: "client_test".to_string(),
+            auto_receive: false,
+            auto_publish: false,
+            auto_local_steps: true,
+            sync_interval_seconds: 300,
+            default_local_spaces_folder: root.display().to_string(),
+            shortcuts: Default::default(),
+            local_spaces: Vec::new(),
+        };
+        let body = build_publish_v2_request(
+            &handle,
+            &config,
+            "main",
+            base_state.root_tree_id.clone(),
+            &second_state,
+            vec!["note.txt".to_string()],
+            Vec::new(),
+            &pending_steps,
+        )
+        .unwrap();
+        let json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(json["steps"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            json["steps"][0]["stepId"].as_str(),
+            Some(first_step_id.as_str())
+        );
+        assert_eq!(
+            json["steps"][1]["stepId"].as_str(),
+            Some(second_step_id.as_str())
+        );
+        assert_eq!(
+            json["steps"][0]["rootTreeId"].as_str(),
+            first_state.root_tree_id.as_deref()
+        );
+        assert_eq!(
+            json["steps"][1]["rootTreeId"].as_str(),
+            second_state.root_tree_id.as_deref()
+        );
+        let tree_ids = json["storeObjects"]["treeObjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tree| tree.get("treeId").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>();
+        assert!(tree_ids.contains(first_state.root_tree_id.as_deref().unwrap()));
+        assert!(tree_ids.contains(second_state.root_tree_id.as_deref().unwrap()));
+        assert_ne!(
+            json["steps"][0]["rootTreeId"],
+            json["steps"][1]["rootTreeId"]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -5746,6 +6482,9 @@ mod tests {
                     download_url: None,
                     size: Some(bytes.len() as u64),
                     size_bytes: None,
+                    raw_size: None,
+                    stored_size: None,
+                    compression: None,
                 }],
                 file_objects: vec![ReceivedFileObject {
                     file_object_id: file_object_id.clone(),
@@ -5755,6 +6494,9 @@ mod tests {
                         chunk_id,
                         size: Some(bytes.len() as u64),
                         size_bytes: None,
+                        raw_size: None,
+                        stored_size: None,
+                        compression: None,
                     }],
                 }],
                 tree_objects: vec![ReceivedTreeObject {
@@ -5894,6 +6636,41 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    fn directory_file_size(path: &Path, extension: Option<&str>) -> u64 {
+        if !path.exists() {
+            return 0;
+        }
+        fs::read_dir(path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && extension.is_none_or(|extension| {
+                        path.extension().and_then(|value| value.to_str()) == Some(extension)
+                    })
+            })
+            .filter_map(|path| fs::metadata(path).ok().map(|metadata| metadata.len()))
+            .sum()
+    }
+
+    fn directory_file_count(path: &Path, extension: Option<&str>) -> usize {
+        if !path.exists() {
+            return 0;
+        }
+        fs::read_dir(path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && extension.is_none_or(|extension| {
+                        path.extension().and_then(|value| value.to_str()) == Some(extension)
+                    })
+            })
+            .count()
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

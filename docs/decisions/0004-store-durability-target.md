@@ -1,28 +1,32 @@
-# ADR 0004: Cible de durabilité du store
+# ADR 0004: Store durability target
 
 Date: 2026-06-29
 
-Statut: accepté
+Status: accepted
 
-## Contexte
+## Context
 
-Un outil de source control local-first doit inspirer confiance. Une écriture acceptée par Layrs ne doit pas disparaître silencieusement après un crash de processus, une interruption d'interface ou une reprise locale.
+Source control is only useful if users trust it. Once Layrs accepts local work,
+that work must not disappear silently after a process crash, UI interruption,
+Layer switch, compaction or local resume.
 
-## Décision
+## Decision
 
-La cible V1 du store est la durabilité locale après acquittement d'écriture dans les limites du système de fichiers hôte.
+The V1 store target is local durability after write acknowledgement, within the
+limits of the host file system.
 
-Le design doit privilégier:
+The design must prioritize:
 
-- des écritures atomiques ou transactionnelles pour les métadonnées critiques;
-- une séparation claire entre contenu brut, index et relations du Graph;
-- des identifiants stables pour Artifacts, Layers, Steps et Proofs;
-- des opérations de récupération capables de détecter un état partiel;
-- des tests de fixtures qui simulent reprise, corruption partielle et doublons.
+- atomic or transactional writes for critical metadata;
+- content-addressed objects for file bytes and trees;
+- stable identifiers for Layers, Steps and artifacts;
+- recovery paths that detect partial state;
+- safety tests that exercise real local workflows through the CLI and core.
 
-## Conséquences
+## Consequences
 
-- Les APIs d'écriture devront définir précisément le moment d'acquittement.
-- Les caches ne pourront jamais être la seule source d'un objet accepté.
-- Les Proofs de durabilité devront être automatisables avant une V1 publique.
-- Les performances ne doivent pas être optimisées au prix d'une perte silencieuse de données.
+- Caches cannot be the only source of accepted objects.
+- Switching Layer must preserve local work before materializing another Layer.
+- Publish must send every pending Step in order.
+- Compaction must preserve object readability.
+- Anti-loss tests are a release gate, not optional coverage.

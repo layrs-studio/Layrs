@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   createLayrsClient,
@@ -15,7 +15,7 @@ import {
   type TeamMemberRole,
   type TimelineItem
 } from "@layrs/client-sdk";
-import { AppShell, StatusPill } from "@layrs/ui";
+import { AppShell, StatusPill, useNotifications } from "@layrs/ui";
 import { HomePage } from "./pages/HomePage";
 import { SpacePage } from "./pages/SpacePage";
 import { TeamPage } from "./pages/TeamPage";
@@ -55,7 +55,9 @@ type TimelineFeedTarget = {
 };
 
 export function StudioApp() {
+  const { notify } = useNotifications();
   const client = useMemo(createClientForRuntime, []);
+  const lastToastRef = useRef<{ notice?: string; error?: string }>({});
   const isMock = isMockMode();
   const [route, setRoute] = useState<StudioRoute>(currentStudioRoute);
   const [state, dispatch] = useReducer(studioReducer, { status: "checking" });
@@ -124,6 +126,17 @@ export function StudioApp() {
     globalThis.addEventListener?.("popstate", handlePopState);
     return () => globalThis.removeEventListener?.("popstate", handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (state.status === "ready" && state.notice && lastToastRef.current.notice !== state.notice) {
+      lastToastRef.current.notice = state.notice;
+      notify({ tone: "success", title: state.notice, dedupeKey: "studio-notice" });
+    }
+    if (state.status === "ready" && state.error && lastToastRef.current.error !== state.error) {
+      lastToastRef.current.error = state.error;
+      notify({ tone: "danger", title: "Action failed", message: state.error, dedupeKey: "studio-error" });
+    }
+  }, [notify, state.status, state.status === "ready" ? state.notice : undefined, state.status === "ready" ? state.error : undefined]);
 
   useEffect(() => {
     if (state.status !== "ready") {
@@ -391,6 +404,7 @@ function StudioWorkspace({
   artifactFeed: ArtifactFeedState;
   timelineFeed: TimelineFeedState;
 }) {
+  const { notify } = useNotifications();
   const { snapshot } = state;
   const selectedSpace =
     route.name === "space"
@@ -415,6 +429,11 @@ function StudioWorkspace({
     setFavoriteSpaceIds((current) => {
       const next = current.includes(spaceId) ? current.filter((id) => id !== spaceId) : [...current, spaceId];
       saveFavoriteSpaceIds(snapshot.workspace.id, next);
+      notify({
+        tone: "success",
+        title: current.includes(spaceId) ? "Removed from favorites" : "Added to favorites",
+        dedupeKey: "studio-favorite-toggle"
+      });
       return next;
     });
   }
@@ -449,7 +468,6 @@ function StudioWorkspace({
       }
     >
       {state.error ? <InlineAlert tone="danger">{state.error}</InlineAlert> : null}
-      {state.notice ? <InlineAlert tone="success">{state.notice}</InlineAlert> : null}
 
       {route.name === "team" ? (
         <TeamPage

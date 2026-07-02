@@ -1,16 +1,39 @@
 # Layrs Studio Desktop
 
-This package is a minimal Tauri-ready placeholder for the desktop shell. Network
-installation is intentionally not performed in this worker run, so the app is
-scaffolded but not built locally.
+Studio Desktop is the local-first graphical client for Layrs. It is a Tauri
+shell around the shared Rust `layrs-client-core` engine.
 
-Expected local flow after dependencies are available:
+Desktop must not reimplement local source-control logic. Features such as init,
+scan, diff, save Step, timeline, Layer create/switch, pending publish, receive,
+publish and compact belong in `layrs-client-core` and are exposed through Tauri
+commands.
 
-```bash
+## Development
+
+```powershell
 pnpm install
 pnpm --filter @layrs/studio-desktop tauri:dev
 ```
 
-The desktop UI reuses the shared `@layrs/ui` components and the typed
-`@layrs/client-sdk` fixtures so the Web and Desktop shells expose the same
-Workspace, Team, Space, Layer, Artifact, Weave, Proof, Gate and Policy concepts.
+Renderer-only development:
+
+```powershell
+pnpm --filter @layrs/studio-desktop dev
+```
+
+## Expected Local Features
+
+- Initialize an existing folder as a Draft Local Space.
+- Create empty local Spaces.
+- Show working-tree changes through Lenses.
+- Save local Steps.
+- Show timeline and Step diffs.
+- Create and switch Layers without losing local work.
+- Receive, publish and compact through the shared core.
+- Use secure desktop auth for server sync.
+
+## Testing
+
+The first UI tests run the React renderer with a controlled fake Tauri bridge.
+That validates user flow and presentation without depending on a native window.
+Native Tauri/WebDriver automation can be added later.

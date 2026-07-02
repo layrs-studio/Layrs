@@ -1,26 +1,29 @@
-# ADR 0003: Terminologie Workspace, Team et Space
+# ADR 0003: Workspace, Team and Space terminology
 
 Date: 2026-06-29
 
-Statut: accepté
+Status: accepted
 
-## Contexte
+## Context
 
-Layrs a besoin d'une terminologie stable pour éviter de mélanger organisation, droits, dépôt, projet et espace de travail local. Les termes empruntés à GitHub ou Git peuvent aider à expliquer le produit, mais ne doivent pas piloter le modèle.
+Layrs needs stable terms for organization, permissions, repo-like projects and
+local work. GitHub/Git terms can help explain the product, but must not control
+the data model.
 
-## Décision
+## Decision
 
-La V1 retient:
+V1 uses:
 
-- Workspace pour le périmètre d'organisation.
-- Team pour les groupes de membres et d'accès.
-- Space pour l'unité de travail comparable à un repo ou projet.
+- Workspace for the organization boundary.
+- Team for member groups and permissions.
+- Space for the repo-like project.
+- Local Space for a machine-local copy of a Space.
 
-Ces termes sont les noms canoniques dans les docs et les futures APIs.
+These are canonical names in docs, code review and APIs.
 
-## Conséquences
+## Consequences
 
-- Le README et le glossaire utilisent ces termes en premier.
-- Les autres termes comme organisation, repo ou projet restent explicatifs seulement.
-- Les Policies peuvent viser Workspace, Team ou Space selon leur portée.
-- Les futures interfaces doivent éviter de renommer Space en repository dans le coeur produit.
+- "Organization" and "repo" can be explanatory words, not core names.
+- Policies and access rules can target Workspaces, Teams, Spaces and Layers.
+- Studio Web manages Workspace/Team/Space state.
+- Studio CLI and Desktop manage Local Spaces through the shared Client Core.
