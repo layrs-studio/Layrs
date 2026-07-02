@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 const serverUrl = (process.env.LAYRS_E2E_SERVER_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const studioWebPort = Number.parseInt(process.env.LAYRS_E2E_STUDIO_WEB_PORT ?? "5173", 10);
 const serverPort = Number.parseInt(new URL(serverUrl).port || "8787", 10);
+const composeSuffix = String(serverPort);
 const viteCommand =
   process.platform === "win32"
     ? `node_modules\\.bin\\vite.CMD --host 127.0.0.1 --port ${studioWebPort} --strictPort`
@@ -31,6 +32,10 @@ export default defineConfig({
       env: {
         ...process.env,
         LAYRS_DEV_SKIP_STUDIO: "1",
+        LAYRS_DEV_RESET_SERVICES: process.env.CI ? "1" : "0",
+        LAYRS_COMPOSE_PROJECT_NAME: `layrs-e2e-${composeSuffix}`,
+        LAYRS_POSTGRES_CONTAINER_NAME: `layrs-e2e-postgres-${composeSuffix}`,
+        LAYRS_MINIO_CONTAINER_NAME: `layrs-e2e-minio-${composeSuffix}`,
         LAYRS_SERVER_PORT: String(serverPort),
         LAYRS_STUDIO_WEB_PORT: String(studioWebPort)
       },

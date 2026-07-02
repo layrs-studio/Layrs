@@ -20,6 +20,9 @@ const portPlans = {
 };
 
 const requiredDevEnvKeys = [
+  "LAYRS_COMPOSE_PROJECT_NAME",
+  "LAYRS_POSTGRES_CONTAINER_NAME",
+  "LAYRS_MINIO_CONTAINER_NAME",
   "LAYRS_POSTGRES_PORT",
   "LAYRS_MINIO_API_PORT",
   "LAYRS_MINIO_CONSOLE_PORT",
@@ -137,7 +140,10 @@ function hasExplicitPortOverrides() {
     "LAYRS_MINIO_API_PORT",
     "LAYRS_MINIO_CONSOLE_PORT",
     "LAYRS_SERVER_PORT",
-    "LAYRS_STUDIO_WEB_PORT"
+    "LAYRS_STUDIO_WEB_PORT",
+    "LAYRS_COMPOSE_PROJECT_NAME",
+    "LAYRS_POSTGRES_CONTAINER_NAME",
+    "LAYRS_MINIO_CONTAINER_NAME"
   ].some((key) => Boolean(process.env[key]));
 }
 
@@ -178,6 +184,10 @@ async function createDevEnvironment() {
     );
     const values = {
       ...existing,
+      LAYRS_COMPOSE_PROJECT_NAME: process.env.LAYRS_COMPOSE_PROJECT_NAME ?? existing.LAYRS_COMPOSE_PROJECT_NAME ?? "layrs-dev",
+      LAYRS_POSTGRES_CONTAINER_NAME:
+        process.env.LAYRS_POSTGRES_CONTAINER_NAME ?? existing.LAYRS_POSTGRES_CONTAINER_NAME ?? "layrs-postgres",
+      LAYRS_MINIO_CONTAINER_NAME: process.env.LAYRS_MINIO_CONTAINER_NAME ?? existing.LAYRS_MINIO_CONTAINER_NAME ?? "layrs-minio",
       LAYRS_SERVER_ADDR: `127.0.0.1:${serverPort}`,
       LAYRS_SERVER_URL: `http://127.0.0.1:${serverPort}`,
       LAYRS_STUDIO_WEB_URL: `http://127.0.0.1:${studioPort}`,
@@ -199,6 +209,9 @@ async function createDevEnvironment() {
   const studioPort = await choosePort("Studio Web", "LAYRS_STUDIO_WEB_PORT", portPlans.studio);
 
   const values = {
+    LAYRS_COMPOSE_PROJECT_NAME: process.env.LAYRS_COMPOSE_PROJECT_NAME ?? "layrs-dev",
+    LAYRS_POSTGRES_CONTAINER_NAME: process.env.LAYRS_POSTGRES_CONTAINER_NAME ?? "layrs-postgres",
+    LAYRS_MINIO_CONTAINER_NAME: process.env.LAYRS_MINIO_CONTAINER_NAME ?? "layrs-minio",
     LAYRS_POSTGRES_PORT: String(postgresPort),
     LAYRS_MINIO_API_PORT: String(minioApiPort),
     LAYRS_MINIO_CONSOLE_PORT: String(minioConsolePort),
@@ -236,8 +249,13 @@ async function main() {
 
   const devEnv = await createDevEnvironment();
 
+  if (process.env.LAYRS_DEV_RESET_SERVICES === "1") {
+    console.log("Layrs dev: resetting Docker services and volumes for this run...");
+    await run("docker", ["compose", "--env-file", devEnvPath, "down", "--volumes", "--remove-orphans"]);
+  }
+
   console.log("Layrs dev: starting Docker services...");
-  await run("docker", ["compose", "--env-file", devEnvPath, "up", "-d", "--remove-orphans"]);
+  await run("docker", ["compose", "--env-file", devEnvPath, "up", "-d", "--wait", "--remove-orphans"]);
 
   console.log(`Layrs dev: starting Layrs Server at ${devEnv.LAYRS_SERVER_URL}`);
   if (process.env.LAYRS_DEV_SKIP_STUDIO !== "1") {

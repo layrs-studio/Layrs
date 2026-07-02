@@ -1,0 +1,413 @@
+    #[test]
+    fn publish_v2_payload_contains_store_objects_and_canonical_ids() {
+        let root = unique_test_dir("publish-v2");
+        let config_dir = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config_dir);
+        fs::write(space.join("note.txt"), "base\n").unwrap();
+
+        let created = create_local_space(
+            "space-publish-v2".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
+        handle.meta.workspace_id = "workspace_1".to_string();
+        handle.meta.space_id = "space_1".to_string();
+        write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
+        let base_state = read_layer_state(&handle.layrs_dir, "main").unwrap();
+
+        fs::write(space.join("note.txt"), "changed\n").unwrap();
+        let state = capture_working_state(&space, "main", true).unwrap();
+        let config = DesktopConfig {
+            server_endpoint: "http://127.0.0.1:8787".to_string(),
+            device_id: "client_test".to_string(),
+            auto_receive: false,
+            auto_publish: false,
+            auto_local_steps: true,
+            sync_interval_seconds: 300,
+            default_local_spaces_folder: root.display().to_string(),
+            shortcuts: Default::default(),
+            local_spaces: Vec::new(),
+        };
+        let step_id = write_step(&handle.layrs_dir, "main", &state).unwrap();
+        let step = read_step_file(&handle.layrs_dir, "main", &step_id).unwrap();
+        let body = build_publish_v2_request(
+            &handle,
+            &config,
+            "main",
+            base_state.root_tree_id.clone(),
+            &state,
+            vec!["note.txt".to_string()],
+            Vec::new(),
+            &[step.clone()],
+        )
+        .unwrap();
+        let json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(json["protocol"], SYNC_PROTOCOL_V2);
+        assert_eq!(json["layerId"], "main");
+        assert_eq!(json["policyEpoch"], 1);
+        assert_eq!(json["sourceClientId"], "client_test");
+        assert!(json["idempotencyKey"]
+            .as_str()
+            .unwrap()
+            .starts_with("publish-"));
+        assert!(json["baseTreeId"].as_str().unwrap().starts_with("blake3:"));
+        assert!(json["rootTreeId"].as_str().unwrap().starts_with("blake3:"));
+        assert_eq!(json["changedPaths"], serde_json::json!(["note.txt"]));
+        assert_eq!(json["deletedPaths"], serde_json::json!([]));
+        assert_eq!(json["steps"].as_array().map(Vec::len), Some(1));
+        assert_eq!(json["steps"][0]["stepId"].as_str(), Some(step_id.as_str()));
+        assert_eq!(
+            json["steps"][0]["changedPaths"],
+            serde_json::json!(["note.txt"])
+        );
+        assert_eq!(
+            json["steps"][0]["rootTreeId"].as_str(),
+            state.root_tree_id.as_deref()
+        );
+        assert!(json.get("artifacts").is_none());
+
+        let store = &json["storeObjects"];
+        assert!(store.is_object());
+        let store_keys = store
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            store_keys,
+            BTreeSet::from([
+                "chunks".to_string(),
+                "fileObjects".to_string(),
+                "treeObjects".to_string()
+            ])
+        );
+        assert_eq!(store["treeObjects"].as_array().unwrap().len(), 1);
+        assert_eq!(store["fileObjects"].as_array().unwrap().len(), 1);
+        assert_eq!(store["chunks"].as_array().unwrap().len(), 1);
+        assert!(store["treeObjects"][0]["treeId"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"));
+        assert!(store["fileObjects"][0]["fileObjectId"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"));
+        assert!(store["chunks"][0]["chunkId"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"));
+        assert_eq!(store["chunks"][0]["digest"], store["chunks"][0]["chunkId"]);
+        assert!(store["chunks"][0].get("data").is_none());
+        assert!(store["chunks"][0].get("encoding").is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publish_v2_payload_contains_every_pending_step_in_order() {
+        let root = unique_test_dir("publish-v2-pending-steps");
+        let config_dir = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config_dir);
+        fs::write(space.join("note.txt"), "base\n").unwrap();
+
+        let created = create_local_space(
+            "space-pending-steps".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
+        handle.meta.workspace_id = "workspace_1".to_string();
+        handle.meta.space_id = "space_1".to_string();
+        write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
+        let base_state = read_layer_state(&handle.layrs_dir, "main").unwrap();
+
+        fs::write(space.join("note.txt"), "step one\n").unwrap();
+        let first_state = capture_working_state(&space, "main", true).unwrap();
+        let first_step_id = write_step(&handle.layrs_dir, "main", &first_state).unwrap();
+        let first_step = read_step_file(&handle.layrs_dir, "main", &first_step_id).unwrap();
+        write_pending_publish(&handle.layrs_dir, &first_step).unwrap();
+
+        fs::write(space.join("note.txt"), "step two\n").unwrap();
+        let second_state = capture_working_state(&space, "main", true).unwrap();
+        let second_step_id = write_step(&handle.layrs_dir, "main", &second_state).unwrap();
+        let second_step = read_step_file(&handle.layrs_dir, "main", &second_step_id).unwrap();
+        write_pending_publish(&handle.layrs_dir, &second_step).unwrap();
+
+        let pending_steps = pending_publish_steps(&handle.layrs_dir, "main").unwrap();
+        let config = DesktopConfig {
+            server_endpoint: "http://127.0.0.1:8787".to_string(),
+            device_id: "client_test".to_string(),
+            auto_receive: false,
+            auto_publish: false,
+            auto_local_steps: true,
+            sync_interval_seconds: 300,
+            default_local_spaces_folder: root.display().to_string(),
+            shortcuts: Default::default(),
+            local_spaces: Vec::new(),
+        };
+        let body = build_publish_v2_request(
+            &handle,
+            &config,
+            "main",
+            base_state.root_tree_id.clone(),
+            &second_state,
+            vec!["note.txt".to_string()],
+            Vec::new(),
+            &pending_steps,
+        )
+        .unwrap();
+        let json = serde_json::to_value(body).unwrap();
+
+        assert_eq!(json["steps"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            json["steps"][0]["stepId"].as_str(),
+            Some(first_step_id.as_str())
+        );
+        assert_eq!(
+            json["steps"][1]["stepId"].as_str(),
+            Some(second_step_id.as_str())
+        );
+        assert_eq!(
+            json["steps"][0]["rootTreeId"].as_str(),
+            first_state.root_tree_id.as_deref()
+        );
+        assert_eq!(
+            json["steps"][1]["rootTreeId"].as_str(),
+            second_state.root_tree_id.as_deref()
+        );
+        let tree_ids = json["storeObjects"]["treeObjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tree| tree.get("treeId").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>();
+        assert!(tree_ids.contains(first_state.root_tree_id.as_deref().unwrap()));
+        assert!(tree_ids.contains(second_state.root_tree_id.as_deref().unwrap()));
+        assert_ne!(
+            json["steps"][0]["rootTreeId"],
+            json["steps"][1]["rootTreeId"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receive_v2_content_objects_materializes_chunk_bytes() {
+        let root = unique_test_dir("receive-v2");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "local\n").unwrap();
+
+        let created = create_local_space(
+            "space-receive-v2".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
+        let bytes = b"server bytes\n".to_vec();
+        let chunk_id = blake3_id(&bytes);
+        let file_object_id = blake3_id(&bytes);
+        let chunk_dir = handle.layrs_dir.join("objects").join("chunks");
+        fs::create_dir_all(&chunk_dir).unwrap();
+        fs::write(
+            chunk_dir.join(format!("{}.chunk", object_file_stem(&chunk_id))),
+            &bytes,
+        )
+        .unwrap();
+        let files = vec![FileSnapshotEntry {
+            path: "note.txt".to_string(),
+            object: format!("objects/files/{}.json", object_file_stem(&file_object_id)),
+            hash: file_object_id.clone(),
+            size: bytes.len() as u64,
+        }];
+        let tree_id = tree_id_for_files(&files);
+        let response = ReceiveLocalSpaceResponse {
+            workspace_id: handle.meta.workspace_id.clone(),
+            space_id: handle.meta.space_id.clone(),
+            layer_id: handle.active.layer_id.clone(),
+            protocol: Some(SYNC_PROTOCOL_V2.to_string()),
+            root_tree_id: Some(tree_id.clone()),
+            cursor: Some("cursor_1".to_string()),
+            layers: vec![
+                ReceivedLayer {
+                    id: handle.active.layer_id.clone(),
+                    workspace_id: Some(handle.meta.workspace_id.clone()),
+                    space_id: Some(handle.meta.space_id.clone()),
+                    name: "Main".to_string(),
+                    parent_layer_id: None,
+                    access: Some("open".to_string()),
+                },
+                ReceivedLayer {
+                    id: "layer_without_head".to_string(),
+                    workspace_id: Some(handle.meta.workspace_id.clone()),
+                    space_id: Some(handle.meta.space_id.clone()),
+                    name: "Metadata Only".to_string(),
+                    parent_layer_id: Some(handle.active.layer_id.clone()),
+                    access: Some("open".to_string()),
+                },
+            ],
+            access_registries: Vec::new(),
+            content_objects: Some(ReceivedContentObjects {
+                chunks: vec![ReceivedChunkObject {
+                    chunk_id: chunk_id.clone(),
+                    digest: Some(chunk_id.clone()),
+                    download_url: None,
+                    size: Some(bytes.len() as u64),
+                    size_bytes: None,
+                    raw_size: None,
+                    stored_size: None,
+                    compression: None,
+                }],
+                file_objects: vec![ReceivedFileObject {
+                    file_object_id: file_object_id.clone(),
+                    hash: Some(file_object_id.clone()),
+                    size: Some(bytes.len() as u64),
+                    chunks: vec![ReceivedChunkRef {
+                        chunk_id,
+                        size: Some(bytes.len() as u64),
+                        size_bytes: None,
+                        raw_size: None,
+                        stored_size: None,
+                        compression: None,
+                    }],
+                }],
+                tree_objects: vec![ReceivedTreeObject {
+                    tree_id: tree_id.clone(),
+                    layer_id: Some(handle.active.layer_id.clone()),
+                    entries: vec![ReceivedTreeEntry {
+                        path: "note.txt".to_string(),
+                        file_object_id: Some(file_object_id),
+                        size: Some(bytes.len() as u64),
+                    }],
+                }],
+            }),
+            timeline: Vec::new(),
+            steps: vec![ReceivedStep {
+                step_id: "step_server_1".to_string(),
+                layer_id: handle.active.layer_id.clone(),
+                parent_step_id: None,
+                base_layer_id: Some(handle.active.layer_id.clone()),
+                base_tree_id: None,
+                root_tree_id: Some(tree_id.clone()),
+                changed_paths: vec!["note.txt".to_string()],
+                captured_at_unix: Some(1_782_910_398),
+            }],
+        };
+
+        apply_receive_response(&mut handle, response, true, None, None).unwrap();
+
+        assert_eq!(fs::read(space.join("note.txt")).unwrap(), bytes);
+        assert!(handle
+            .meta
+            .layers
+            .iter()
+            .any(|layer| layer.layer_id == "layer_without_head"));
+        let received_steps = read_step_files(&handle.layrs_dir, &handle.active.layer_id).unwrap();
+        assert!(received_steps
+            .iter()
+            .any(|step| step.step_id == "step_server_1"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_child_layer_step_diffs_against_parent_layer() {
+        let root = unique_test_dir("child-step-parent");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "parent\n").unwrap();
+
+        let created = create_local_space(
+            "space-child-step".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let child = create_layer_from_current(
+            created.local_space.local_space_id.clone(),
+            "Child".to_string(),
+        )
+        .unwrap();
+        fs::write(space.join("note.txt"), "child\n").unwrap();
+        switch_layer(
+            created.local_space.local_space_id.clone(),
+            "main".to_string(),
+        )
+        .unwrap();
+        switch_layer(
+            created.local_space.local_space_id.clone(),
+            child.active_layer_id.clone(),
+        )
+        .unwrap();
+
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+        assert_eq!(scan.steps.len(), 1);
+        assert_eq!(scan.steps[0].changed_files, 1);
+        let lines = &scan.steps[0].diffs[0].diff.hunks[0].lines;
+        assert!(lines
+            .iter()
+            .any(|line| line.op == "delete" && line.text == "parent"));
+        assert!(lines
+            .iter()
+            .any(|line| line.op == "insert" && line.text == "child"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_layer_removes_non_active_local_layer() {
+        let root = unique_test_dir("delete-layer");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "main\n").unwrap();
+
+        let created = create_local_space(
+            "space-delete-layer".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let child = create_layer_from_current(
+            created.local_space.local_space_id.clone(),
+            "Scratch".to_string(),
+        )
+        .unwrap();
+        switch_layer(
+            created.local_space.local_space_id.clone(),
+            "main".to_string(),
+        )
+        .unwrap();
+
+        let result = delete_layer(
+            created.local_space.local_space_id.clone(),
+            child.active_layer_id.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(result.local_space.layers.len(), 1);
+        assert_eq!(result.local_space.active_layer_id.as_deref(), Some("main"));
+        assert!(!space
+            .join(LAYRS_DIR)
+            .join("layers")
+            .join(child.active_layer_id)
+            .exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+

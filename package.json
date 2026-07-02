@@ -6,6 +6,7 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "check": "node -e \"console.log('Layrs: Studio packages scaffolded. Install dependencies before running package checks.')\"",
+    "check:file-size": "node scripts/check-file-size.mjs",
     "check:workspaces": "pnpm -r --if-present check",
     "dev": "node scripts/dev.mjs",
     "dev:services": "docker compose up -d --remove-orphans",
