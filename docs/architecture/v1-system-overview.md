@@ -1,81 +1,96 @@
-# Vue système V1
+# Layrs System Overview
 
-Ce document décrit la première architecture cible de Layrs. Il ne promet pas que tous les composants existent déjà; il sert de contrat d'orientation pour les workers qui vont créer les crates, apps et packages.
+This document describes the current intended V1 architecture. It is written for
+both human developers and coding agents.
 
-## Objectifs
+## Goals
 
-- Fournir un coeur local-first pour créer, relier et vérifier des états de travail.
-- Modéliser directement les concepts Layrs plutôt qu'un dépôt Git interne.
-- Garder un store durable et inspectable comme base commune.
-- Permettre des automatisations par Steps, Flows, Gates et Policies.
-- Préparer la synchronisation future sans rendre le serveur obligatoire en V1.
+- Never lose accepted local work silently.
+- Keep Layrs concepts explicit instead of hiding Git concepts underneath.
+- Share all local source-control behavior between Studio CLI and Studio
+  Desktop.
+- Support code and non-code assets through Lenses.
+- Prepare Weaves as the future review and reconciliation flow between Layers.
 
-## Non-objectifs V1
-
-- Compatibilité Git dans le coeur.
-- Hébergement cloud obligatoire.
-- Marketplace d'intégrations.
-- Refonte complète des workflows CI/CD existants.
-
-## Couches prévues
+## Current Layers
 
 ```text
-Interfaces
-  apps/*             UI desktop/web, API locale, surfaces d'administration.
+Studio Web
+  Server management surface for accounts, Workspaces, Teams, Spaces, Layers,
+  access rules, devices and future Weaves/Gates.
 
-Packages partagés
-  packages/*         Types, clients et composants réutilisables côté TypeScript.
+Studio Desktop
+  Tauri UI for Local Spaces. Calls layrs-client-core for local behavior.
 
-Coeur Rust
-  crates/layrs-core      Modèle domaine et invariants.
-  crates/layrs-store     Persistance locale, transactions et récupération.
-  crates/layrs-graph     Relations entre objets Layrs et requêtes de Graph.
-  crates/layrs-policy    Evaluation des Policies.
-  crates/layrs-gates     Résolution des Gates et états de contrôle.
-  crates/layrs-steps     Exécution et traçabilité des Steps.
-  crates/layrs-weave     Fil narratif, commentaires, décisions et Proofs.
-  crates/layrs-cli       Interface ligne de commande.
-  crates/layrs-api       API locale ou service applicatif.
+Studio CLI
+  Command-line surface for the same Local Space operations as Desktop.
+
+layrs-client-core
+  Shared Rust engine for local config, Local Spaces, Layers, scans, Steps,
+  diffs, object store, compact, publish and receive.
+
+layrs-server
+  Axum/sqlx server for Studio Web, auth, Workspace/Team/Space/Layer metadata,
+  access policies, chunks and published state.
+
+packages/*
+  TypeScript SDK, Lens contracts and shared UI components.
 ```
 
-## Flux principal
+## Local Space Model
 
-1. Un utilisateur ou un Step ouvre un Workspace et un Space.
-2. Layrs charge les métadonnées, Artifacts et relations nécessaires depuis le store local.
-3. Une action crée ou modifie une Layer, une Proof, un Weave ou un Artifact.
-4. Les Policies applicables sont évaluées.
-5. Les Gates bloquent, acceptent ou demandent des Proofs complémentaires.
-6. Le store acquitte l'écriture durablement.
-7. Le Graph expose le nouvel état aux Views et Lenses.
+A Local Space is a directory containing user files plus `.layrs/` metadata. The
+active Layer is materialized into the user-visible folder. Switching Layer must
+preserve current work first, then replace only the files needed for the target
+Layer.
 
-## Store local-first
+Steps are anonymous Layer snapshots. They are not commits. They exist so local
+work can be reviewed, restored, published later, and protected during Layer
+switches.
 
-Le store doit séparer les responsabilités:
+## Store And Durability
 
-- contenu brut et Artifacts;
-- métadonnées du domaine Layrs;
-- index de requête;
-- relations du Graph;
-- journal ou traces nécessaires à la récupération.
+The local store is content-addressed:
 
-Cette séparation doit rendre les données inspectables et limiter les pertes silencieuses. Les détails de format restent à décider dans les crates, mais les invariants produit viennent des ADRs.
+- file contents become chunks;
+- file objects reference ordered chunks;
+- tree objects reference files and subtrees;
+- Layer states and Steps reference root tree ids.
 
-## Policies et Gates
+Chunk ids are based on raw content hashes. Compression and packs reduce storage
+cost, but the raw content hash remains the integrity boundary.
 
-Les Policies décrivent les règles. Les Gates appliquent ces règles à un état concret.
+Critical invariants:
 
-Exemples:
+- no accepted Step stores full project copies;
+- switching Layer cannot overwrite unsaved work without first creating a Step;
+- caches are never the only source of accepted objects;
+- failed tests preserve temp folders for inspection.
 
-- une Layer ne peut pas être promue sans Proof de test;
-- une Team peut modifier un Space mais pas changer ses Policies;
-- un Step automatique peut produire un Artifact mais pas l'approuver seul.
+## Lenses
 
-## Steps, Flows et Weaves
+Lenses own preview, diff and future reconcile behavior. Text/code/image/raw
+Lenses are built in first, and external Lenses can be added later. UI surfaces
+render Lens outputs; they should not implement file-specific diff logic.
 
-Un Step produit un résultat vérifiable. Un Flow ordonne plusieurs Steps. Un Weave explique le chemin: intention, changements, preuves, décisions et commentaires.
+## Server And Access
 
-Le Weave est essentiel parce que Layrs ne veut pas seulement stocker des états; il doit rendre le raisonnement lisible.
+The server is authoritative for accounts, Workspace/Team/Space membership,
+Layer access policies and published Layer state. Local clients cache access
+registries per Layer and prevalidate redacted/reserved paths, but the server
+revalidates publish/receive.
 
-## Synchronisation future
+## Weaves
 
-La synchronisation distante sera une couche au-dessus du store local-first. Elle devra transporter les objets et relations Layrs, résoudre les conflits dans les termes du domaine et respecter les Policies applicables.
+Weaves are not implemented yet. The target is a review/reconciliation object
+that connects:
+
+- source Layer;
+- target Layer;
+- Steps and changed artifacts;
+- Lens diffs;
+- Proofs and Gates;
+- decisions and comments.
+
+Weaves should explain why a Layer state should be accepted, not just what bytes
+changed.

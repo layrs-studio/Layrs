@@ -17,6 +17,7 @@
 .env.*
 !.env.example
 /.layrs-local/
+/.layrs/
 /tmp/
 
 # Editors and operating systems

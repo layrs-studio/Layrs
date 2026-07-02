@@ -76,6 +76,14 @@ export interface DesktopSettings {
   autoLocalSteps: boolean;
   syncIntervalSeconds: number;
   defaultLocalSpacesFolder: string;
+  shortcuts: DesktopShortcutSettings;
+}
+
+export interface DesktopShortcutSettings {
+  enabled: boolean;
+  saveStep: string;
+  publish: string;
+  smartSavePublishesPendingStep: boolean;
 }
 
 export interface DeviceLoginStartResponse {
@@ -200,6 +208,12 @@ export interface LocalStepSummary {
   diffs: LensDiffEntry[];
 }
 
+export interface LayerStepActivity {
+  layerId: string;
+  latestStepAt: number;
+  stepCount: number;
+}
+
 export interface WorkingTreeScan {
   rootPath: string;
   activeLayerId: string;
@@ -209,6 +223,8 @@ export interface WorkingTreeScan {
   deleted: string[];
   diffs: LensDiffEntry[];
   steps: LocalStepSummary[];
+  layerActivities: LayerStepActivity[];
+  pendingPublishCount: number;
   files: FileSnapshotEntry[];
 }
 
@@ -217,6 +233,16 @@ export interface SyncOperationResult {
   status: string;
   message: string;
   syncStatePath: string;
+}
+
+export interface SaveLocalStepResult {
+  localSpace: LocalSpaceSummary;
+  status: "saved" | "clean" | string;
+  message: string;
+  stepId?: string;
+  changedFiles: number;
+  diffStats: LocalDiffStats;
+  pendingPublishCount: number;
 }
 
 type TauriCore = {
@@ -298,6 +324,13 @@ export function createDraftLocalSpace(name: string, targetFolder: string) {
   });
 }
 
+export function initLocalSpace(name: string, targetFolder: string) {
+  return tauriInvoke<CreateLocalSpaceResult>("init_local_space", {
+    name,
+    targetFolder
+  });
+}
+
 export function sendDraftLocalSpace(localSpace: string, workspaceId: string) {
   return tauriInvoke<SendDraftLocalSpaceResult>("send_draft_local_space", {
     localSpace,
@@ -351,6 +384,10 @@ export function receiveLocalSpace(localSpace: string) {
 
 export function publishLocalSpace(localSpace: string) {
   return tauriInvoke<SyncOperationResult>("publish_local_space", { localSpace });
+}
+
+export function saveLocalStep(localSpace: string) {
+  return tauriInvoke<SaveLocalStepResult>("save_local_step", { localSpace });
 }
 
 export function loadDesktopSettings() {

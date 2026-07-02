@@ -1,9 +1,6 @@
-mod access_registry;
-mod auth;
-mod desktop_state;
 mod folder_dialog;
-mod http_client;
-mod secret_store;
+
+use layrs_client_core::{access_registry, auth, desktop_state};
 
 #[tauri::command]
 fn desktop_status() -> Result<auth::DesktopStatus, String> {
@@ -60,6 +57,18 @@ fn create_draft_local_space(
     target_folder: String,
 ) -> Result<access_registry::CreateLocalSpaceResult, String> {
     access_registry::create_draft_local_space(name, target_folder)
+}
+
+#[tauri::command]
+fn init_local_space(
+    name: String,
+    target_folder: String,
+) -> Result<access_registry::CreateLocalSpaceResult, String> {
+    let result = access_registry::init_local_space(name, target_folder)?;
+    Ok(access_registry::CreateLocalSpaceResult {
+        local_space: result.local_space,
+        created: result.created,
+    })
 }
 
 #[tauri::command]
@@ -132,6 +141,13 @@ fn receive_local_space(
 }
 
 #[tauri::command]
+fn save_local_step(
+    local_space: String,
+) -> Result<access_registry::SaveLocalStepResult, String> {
+    access_registry::save_local_step(local_space)
+}
+
+#[tauri::command]
 fn publish_local_space(
     local_space: String,
 ) -> Result<access_registry::SyncOperationResult, String> {
@@ -167,6 +183,7 @@ fn main() {
             list_local_spaces,
             create_local_space,
             create_draft_local_space,
+            init_local_space,
             send_draft_local_space,
             open_local_space,
             forget_local_space,
@@ -176,6 +193,7 @@ fn main() {
             scan_working_tree,
             load_diff_window,
             receive_local_space,
+            save_local_step,
             publish_local_space,
             load_desktop_settings,
             save_desktop_settings,

@@ -42,6 +42,8 @@ const DEFAULT_ARTIFACT_DIFF_WINDOW_LIMIT: usize = 400;
 const MAX_ARTIFACT_DIFF_WINDOW_LIMIT: usize = 1000;
 const MAX_DIFF_COLUMN_WINDOW_LIMIT: usize = 4000;
 const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
+const CHUNK_COMPRESSION_IDENTITY: &str = "identity";
+const CHUNK_COMPRESSION_ZSTD: &str = "zstd";
 
 #[derive(Clone, Debug)]
 pub struct WebServerConfig {
@@ -561,6 +563,8 @@ struct SyncPublishBody {
     store_objects_camel: Option<PublishStoreObjectsBody>,
     #[serde(default)]
     step: Option<SyncStepBody>,
+    #[serde(default)]
+    steps: Vec<SyncStepBody>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1938,7 +1942,10 @@ async fn publish_local_space_sync(
     let source_client_id = body.source_client_id.or(body.source_client_id_camel);
     let root_tree_id = body.root_tree_id.or(body.root_tree_id_camel);
     let base_tree_id = body.base_tree_id.or(body.base_tree_id_camel);
-    let step = body.step;
+    let mut steps = body.steps;
+    if let Some(step) = body.step {
+        steps.push(step);
+    }
     let mut changed_paths = body.changed_paths;
     changed_paths.extend(body.changed_paths_camel);
     let mut store_objects = Vec::new();
@@ -1973,7 +1980,7 @@ async fn publish_local_space_sync(
     if store_objects.is_empty()
         && publish_artifacts.is_empty()
         && deleted_paths.is_empty()
-        && step.is_none()
+        && steps.is_empty()
     {
         return Err(ApiError::bad_request(
             "at least one store object, artifact, deleted path, or step is required",
@@ -1994,7 +2001,7 @@ async fn publish_local_space_sync(
         root_tree_id,
         protocol,
         changed_paths,
-        step,
+        steps,
         store_objects,
         publish_artifacts,
         deleted_paths,
@@ -2017,7 +2024,7 @@ async fn publish_local_space_sync_v2(
     requested_root_tree_id: Option<String>,
     protocol: Option<String>,
     changed_paths: Vec<String>,
-    step: Option<SyncStepBody>,
+    steps: Vec<SyncStepBody>,
     store_objects: Vec<PublishStoreObjectBody>,
     mut publish_artifacts: Vec<PublishArtifactBody>,
     mut deleted_paths: Vec<String>,
@@ -2062,7 +2069,8 @@ async fn publish_local_space_sync_v2(
             "changedPaths": changed_paths,
             "storeObjectCount": store_objects.len(),
             "artifactCount": publish_artifacts.len(),
-            "deletedPathCount": deleted_paths.len()
+            "deletedPathCount": deleted_paths.len(),
+            "stepCount": steps.len()
         }))
         .execute(&mut *tx)
         .await?;
@@ -2200,24 +2208,55 @@ async fn publish_local_space_sync_v2(
         account_id,
     )
     .await?;
-    let step_id = insert_layer_step_in_tx(
-        &mut tx,
-        workspace_id,
-        space_id,
-        layer_id,
-        step.as_ref(),
-        requested_base_tree_id.as_deref(),
-        root_tree_id.as_deref(),
-        &changed_paths,
-        source_client_id.as_deref(),
-        if idempotency_key.is_some() {
-            Some(sync_batch_id.as_str())
-        } else {
-            None
-        },
-        account_id,
-    )
-    .await?;
+    let sync_batch_ref = if idempotency_key.is_some() {
+        Some(sync_batch_id.as_str())
+    } else {
+        None
+    };
+    let mut recorded_steps = Vec::new();
+    if steps.is_empty() {
+        let step_id = insert_layer_step_in_tx(
+            &mut tx,
+            workspace_id,
+            space_id,
+            layer_id,
+            None,
+            requested_base_tree_id.as_deref(),
+            root_tree_id.as_deref(),
+            &changed_paths,
+            source_client_id.as_deref(),
+            sync_batch_ref,
+            account_id,
+        )
+        .await?;
+        recorded_steps.push(json!({
+            "stepId": step_id,
+            "layerId": layer_id,
+            "rootTreeId": root_tree_id.as_deref()
+        }));
+    } else {
+        for step in &steps {
+            let step_id = insert_layer_step_in_tx(
+                &mut tx,
+                workspace_id,
+                space_id,
+                layer_id,
+                Some(step),
+                requested_base_tree_id.as_deref(),
+                root_tree_id.as_deref(),
+                &changed_paths,
+                source_client_id.as_deref(),
+                sync_batch_ref,
+                account_id,
+            )
+            .await?;
+            recorded_steps.push(json!({
+                "stepId": step_id,
+                "layerId": layer_id,
+                "rootTreeId": step.root_tree_id.as_deref().or(root_tree_id.as_deref())
+            }));
+        }
+    }
     if idempotency_key.is_some() {
         insert_sync_batch_change_in_tx(
             &mut tx,
@@ -2232,18 +2271,23 @@ async fn publish_local_space_sync_v2(
         )
         .await?;
         change_index += 1;
-        insert_sync_batch_change_in_tx(
-            &mut tx,
-            &sync_batch_id,
-            change_index,
-            "record_step",
-            None,
-            None,
-            None,
-            root_tree_id.as_deref(),
-            json!({ "stepId": step_id }),
-        )
-        .await?;
+        for step in &recorded_steps {
+            insert_sync_batch_change_in_tx(
+                &mut tx,
+                &sync_batch_id,
+                change_index,
+                "record_step",
+                None,
+                None,
+                None,
+                step.get("rootTreeId")
+                    .and_then(Value::as_str)
+                    .or(root_tree_id.as_deref()),
+                json!({ "stepId": step.get("stepId").and_then(Value::as_str) }),
+            )
+            .await?;
+            change_index += 1;
+        }
         sqlx::query(
             "UPDATE sync_batches SET status = 'applied', server_cursor = $1, updated_at = now() WHERE sync_batch_id = $2",
         )
@@ -2284,10 +2328,8 @@ async fn publish_local_space_sync_v2(
             "rootTreeId": root_tree_id,
             "policyEpoch": policy_epoch
         },
-        "step": {
-            "stepId": step_id,
-            "layerId": layer_id
-        },
+        "step": recorded_steps.last().cloned(),
+        "steps": recorded_steps,
         "syncBatchId": if idempotency_key.is_some() { Some(sync_batch_id.as_str()) } else { None },
         "published": published,
         "deleted": deleted_values,
@@ -2350,24 +2392,43 @@ async fn put_space_chunk(
     ensure_workspace_write(&state.pool, &workspace_id, &user.id).await?;
     ensure_space_in_workspace(&state.pool, &workspace_id, &space_id).await?;
     let chunk_id = validate_chunk_id(&chunk_id)?;
-    let digest = blake3_digest_for_bytes(&bytes);
+    let compression = chunk_compression_from_headers(&headers)?;
+    let raw_bytes = decode_chunk_bytes(&bytes, &compression)?;
+    let raw_size = raw_bytes.len() as i64;
+    if let Some(expected_raw_size) = header_i64(&headers, "x-layrs-raw-size")? {
+        if expected_raw_size != raw_size {
+            return Err(ApiError::bad_request(
+                "chunk raw size header does not match decoded bytes",
+            ));
+        }
+    }
+    if let Some(expected_stored_size) = header_i64(&headers, "x-layrs-stored-size")? {
+        if expected_stored_size != bytes.len() as i64 {
+            return Err(ApiError::bad_request(
+                "chunk stored size header does not match uploaded bytes",
+            ));
+        }
+    }
+    let digest = blake3_digest_for_bytes(&raw_bytes);
     if chunk_id != digest {
         return Err(ApiError::bad_request(
-            "chunk_id must match the uploaded bytes blake3 digest",
+            "chunk_id must match the decoded chunk bytes blake3 digest",
         ));
     }
-    let size_bytes = bytes.len() as i64;
+    let stored_size_bytes = bytes.len() as i64;
     let object_key = format!("chunks/{workspace_id}/{space_id}/{chunk_id}");
     sqlx::query(
         r#"
         INSERT INTO object_chunks
-            (chunk_id, workspace_id, space_id, digest, size_bytes, object_key, state, content_bytes, created_by_account_id)
+            (chunk_id, workspace_id, space_id, digest, size_bytes, stored_size_bytes, object_key, compression, state, content_bytes, created_by_account_id)
         VALUES
-            ($1, $2, $3, $4, $5, $6, 'available', $7, $8)
+            ($1, $2, $3, $4, $5, $6, $7, $8, 'available', $9, $10)
         ON CONFLICT (chunk_id) DO UPDATE SET
             digest = EXCLUDED.digest,
             size_bytes = EXCLUDED.size_bytes,
+            stored_size_bytes = EXCLUDED.stored_size_bytes,
             object_key = EXCLUDED.object_key,
+            compression = EXCLUDED.compression,
             state = 'available',
             content_bytes = EXCLUDED.content_bytes,
             updated_at = now()
@@ -2379,8 +2440,10 @@ async fn put_space_chunk(
     .bind(&workspace_id)
     .bind(&space_id)
     .bind(&digest)
-    .bind(size_bytes)
+    .bind(raw_size)
+    .bind(stored_size_bytes)
     .bind(&object_key)
+    .bind(&compression)
     .bind(bytes.to_vec())
     .bind(&user.id)
     .execute(&state.pool)
@@ -2391,7 +2454,10 @@ async fn put_space_chunk(
         "workspaceId": workspace_id,
         "spaceId": space_id,
         "digest": digest,
-        "sizeBytes": size_bytes,
+        "sizeBytes": raw_size,
+        "rawSize": raw_size,
+        "storedSize": stored_size_bytes,
+        "compression": compression,
         "objectKey": object_key,
         "state": "available"
     })))
@@ -2408,7 +2474,7 @@ async fn get_space_chunk(
     let chunk_id = validate_chunk_id(&chunk_id)?;
     let row = sqlx::query(
         r#"
-        SELECT content_bytes, media_type, size_bytes, digest
+        SELECT content_bytes, media_type, size_bytes, stored_size_bytes, digest, compression
         FROM object_chunks
         WHERE workspace_id = $1 AND space_id = $2 AND chunk_id = $3 AND state = 'available'
         "#,
@@ -2427,15 +2493,26 @@ async fn get_space_chunk(
         .try_get::<String, _>("media_type")
         .ok()
         .unwrap_or_else(|| "application/octet-stream".to_string());
+    let stored_size = row
+        .try_get::<i64, _>("stored_size_bytes")
+        .ok()
+        .unwrap_or(bytes.len() as i64);
+    let compression = row
+        .try_get::<String, _>("compression")
+        .ok()
+        .unwrap_or_else(|| CHUNK_COMPRESSION_IDENTITY.to_string());
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, media_type)
         .header("x-layrs-chunk-id", chunk_id)
         .header("x-layrs-digest", row.get::<String, _>("digest"))
         .header(
-            "content-length",
+            "x-layrs-raw-size",
             row.get::<i64, _>("size_bytes").to_string(),
         )
+        .header("x-layrs-stored-size", stored_size.to_string())
+        .header("x-layrs-chunk-compression", compression)
+        .header("content-length", bytes.len().to_string())
         .body(Body::from(bytes))
         .map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(response)
@@ -4208,7 +4285,7 @@ async fn file_object_bytes(
 ) -> Result<Vec<u8>, ApiError> {
     let chunk_rows = sqlx::query(
         r#"
-        SELECT oc.content_bytes
+        SELECT oc.content_bytes, oc.compression
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
         WHERE foc.file_object_id = $1
@@ -4229,7 +4306,11 @@ async fn file_object_bytes(
             .try_get::<Vec<u8>, _>("content_bytes")
             .ok()
             .ok_or_else(|| ApiError::not_found("chunk bytes are not available"))?;
-        bytes.extend(chunk_bytes);
+        let compression = row
+            .try_get::<String, _>("compression")
+            .ok()
+            .unwrap_or_else(|| CHUNK_COMPRESSION_IDENTITY.to_string());
+        bytes.extend(decode_chunk_bytes(&chunk_bytes, &compression)?);
     }
     Ok(bytes)
 }
@@ -4243,7 +4324,7 @@ async fn chunk_values_for_file_object(
     let rows = sqlx::query(
         r#"
         SELECT foc.chunk_index, foc.byte_offset, foc.size_bytes,
-               oc.chunk_id, oc.digest, oc.object_key
+               oc.chunk_id, oc.digest, oc.object_key, oc.compression, oc.stored_size_bytes
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
         WHERE foc.file_object_id = $1
@@ -4270,6 +4351,9 @@ async fn chunk_values_for_file_object(
                 "byteOffset": row.get::<i64, _>("byte_offset"),
                 "size": row.get::<i64, _>("size_bytes"),
                 "sizeBytes": row.get::<i64, _>("size_bytes"),
+                "rawSize": row.get::<i64, _>("size_bytes"),
+                "storedSize": row.try_get::<i64, _>("stored_size_bytes").ok(),
+                "compression": row.try_get::<String, _>("compression").ok().unwrap_or_else(|| CHUNK_COMPRESSION_IDENTITY.to_string()),
                 "downloadUrl": format!("/v1/workspaces/{workspace_id}/spaces/{space_id}/chunks/{}", row.get::<String, _>("chunk_id"))
             })
         })
@@ -5541,7 +5625,7 @@ async fn file_object_text_window(
 
     let chunk_rows = sqlx::query(
         r#"
-        SELECT oc.content_bytes
+        SELECT oc.content_bytes, oc.compression
         FROM file_object_chunks foc
         JOIN object_chunks oc ON oc.chunk_id = foc.chunk_id
         WHERE foc.file_object_id = $1
@@ -5562,7 +5646,12 @@ async fn file_object_text_window(
             .try_get::<Vec<u8>, _>("content_bytes")
             .ok()
             .ok_or_else(|| ApiError::not_found("chunk bytes are not available"))?;
-        builder.push_lossy_utf8(&bytes);
+        let compression = row
+            .try_get::<String, _>("compression")
+            .ok()
+            .unwrap_or_else(|| CHUNK_COMPRESSION_IDENTITY.to_string());
+        let raw = decode_chunk_bytes(&bytes, &compression)?;
+        builder.push_lossy_utf8(&raw);
     }
     let text_window = builder.finish();
 
@@ -6294,6 +6383,7 @@ async fn upsert_store_object_chunks_in_tx(
         let declared_size_bytes = chunk
             .size_bytes
             .or(chunk.size_bytes_camel)
+            .or(chunk.raw_size)
             .or_else(|| chunk.size.map(|value| value as i64));
         let byte_offset = chunk
             .byte_offset
@@ -6312,7 +6402,7 @@ async fn upsert_store_object_chunks_in_tx(
         }
         let row = sqlx::query(
             r#"
-            SELECT digest, size_bytes
+            SELECT digest, size_bytes, stored_size_bytes, compression
             FROM object_chunks
             WHERE workspace_id = $1
               AND space_id = $2
@@ -6340,6 +6430,28 @@ async fn upsert_store_object_chunks_in_tx(
             if expected_size != size_bytes {
                 return Err(ApiError::bad_request(
                     "chunk size does not match uploaded bytes",
+                ));
+            }
+        }
+        if let Some(expected_stored_size) = chunk.stored_size {
+            let stored_size = row
+                .try_get::<i64, _>("stored_size_bytes")
+                .ok()
+                .unwrap_or(size_bytes);
+            if expected_stored_size != stored_size {
+                return Err(ApiError::bad_request(
+                    "chunk stored size does not match uploaded bytes",
+                ));
+            }
+        }
+        if let Some(expected_compression) = chunk.compression.as_deref() {
+            let stored_compression = row
+                .try_get::<String, _>("compression")
+                .ok()
+                .unwrap_or_else(|| CHUNK_COMPRESSION_IDENTITY.to_string());
+            if expected_compression != stored_compression {
+                return Err(ApiError::bad_request(
+                    "chunk compression does not match uploaded bytes",
                 ));
             }
         }
@@ -7062,20 +7174,14 @@ async fn insert_layer_step_in_tx(
         };
     let step_root_tree_id =
         step.and_then(|step| cleaned_optional_text(step.root_tree_id.as_deref()));
-    if let (Some(step_root_tree_id), Some(root_tree_id)) =
-        (step_root_tree_id.as_deref(), root_tree_id)
-    {
-        if validate_object_digest(step_root_tree_id)? != validate_object_digest(root_tree_id)? {
-            return Err(ApiError::bad_request(
-                "step rootTreeId does not match published rootTreeId",
-            ));
-        }
+    if let Some(step_root_tree_id) = step_root_tree_id.as_deref() {
+        validate_object_digest(step_root_tree_id)?;
     }
     let stored_root_tree_id = optional_existing_tree_id_in_tx(
         tx,
         workspace_id,
         space_id,
-        root_tree_id.or(step_root_tree_id.as_deref()),
+        step_root_tree_id.as_deref().or(root_tree_id),
     )
     .await?;
     let step_base_tree_id = step
@@ -8077,6 +8183,41 @@ fn blake3_digest_for_bytes(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
 
+fn chunk_compression_from_headers(headers: &HeaderMap) -> Result<String, ApiError> {
+    let compression = headers
+        .get("x-layrs-chunk-compression")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or(CHUNK_COMPRESSION_IDENTITY)
+        .trim()
+        .to_ascii_lowercase();
+    match compression.as_str() {
+        CHUNK_COMPRESSION_IDENTITY | CHUNK_COMPRESSION_ZSTD => Ok(compression),
+        _ => Err(ApiError::bad_request("unsupported chunk compression")),
+    }
+}
+
+fn header_i64(headers: &HeaderMap, name: &str) -> Result<Option<i64>, ApiError> {
+    headers
+        .get(name)
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| ApiError::bad_request("invalid chunk size header"))?
+                .parse::<i64>()
+                .map_err(|_| ApiError::bad_request("invalid chunk size header"))
+        })
+        .transpose()
+}
+
+fn decode_chunk_bytes(bytes: &[u8], compression: &str) -> Result<Vec<u8>, ApiError> {
+    match compression {
+        CHUNK_COMPRESSION_IDENTITY => Ok(bytes.to_vec()),
+        CHUNK_COMPRESSION_ZSTD => zstd::stream::decode_all(std::io::Cursor::new(bytes))
+            .map_err(|_| ApiError::bad_request("chunk zstd payload could not be decoded")),
+        _ => Err(ApiError::bad_request("unsupported chunk compression")),
+    }
+}
+
 fn require_layer_id(
     layer_id: Option<String>,
     layer_id_camel: Option<String>,
@@ -9045,8 +9186,10 @@ mod tests {
         let bytes = Bytes::from_static(b"fn main() {}\n");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
+        let first_root_tree_id = blake3_digest_for_bytes(b"authorized-content-intermediate-tree");
         let root_tree_id = blake3_digest_for_bytes(b"authorized-content-tree");
-        let step_id = format!("step_{}", Uuid::new_v4().simple());
+        let first_step_id = format!("step_{}", Uuid::new_v4().simple());
+        let second_step_id = format!("step_{}", Uuid::new_v4().simple());
 
         let Json(upload_payload) = put_space_chunk(
             State(test_state(fixture.pool.clone())),
@@ -9078,13 +9221,22 @@ mod tests {
                     "sourceClientId": "test-client",
                     "rootTreeId": root_tree_id,
                     "changedPaths": ["src/main.rs"],
-                    "step": {
-                        "stepId": step_id,
-                        "layerId": fixture.layer_id,
-                        "rootTreeId": root_tree_id,
-                        "changedPaths": ["src/main.rs"],
-                        "capturedAtUnix": 1782910398
-                    },
+                    "steps": [
+                        {
+                            "stepId": first_step_id,
+                            "layerId": fixture.layer_id,
+                            "rootTreeId": first_root_tree_id,
+                            "changedPaths": ["src/main.rs"],
+                            "capturedAtUnix": 1782910398
+                        },
+                        {
+                            "stepId": second_step_id,
+                            "layerId": fixture.layer_id,
+                            "rootTreeId": root_tree_id,
+                            "changedPaths": ["src/main.rs"],
+                            "capturedAtUnix": 1782910399
+                        }
+                    ],
                     "storeObjects": {
                         "chunks": [{
                             "chunkId": chunk_id,
@@ -9101,6 +9253,13 @@ mod tests {
                             }]
                         }],
                         "treeObjects": [{
+                            "treeId": first_root_tree_id,
+                            "entries": [{
+                                "path": "src/main.rs",
+                                "fileObjectId": file_object_id,
+                                "size": bytes.len()
+                            }]
+                        }, {
                             "treeId": root_tree_id,
                             "entries": [{
                                 "path": "src/main.rs",
@@ -9132,15 +9291,24 @@ mod tests {
             publish_payload
                 .pointer("/step/stepId")
                 .and_then(Value::as_str),
-            Some(step_id.as_str())
+            Some(second_step_id.as_str())
         );
-        let stored_step_count: i64 =
-            sqlx::query_scalar("SELECT count(*)::bigint FROM layer_steps WHERE step_id = $1")
-                .bind(&step_id)
-                .fetch_one(&fixture.pool)
-                .await
-                .expect("step count");
-        assert_eq!(stored_step_count, 1);
+        assert_eq!(
+            publish_payload
+                .get("steps")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        let stored_step_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM layer_steps WHERE step_id IN ($1, $2)",
+        )
+        .bind(&first_step_id)
+        .bind(&second_step_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("step count");
+        assert_eq!(stored_step_count, 2);
 
         let Json(receive_payload) = receive_local_space_sync(
             State(test_state(fixture.pool.clone())),
@@ -9169,15 +9337,15 @@ mod tests {
                 .and_then(Value::as_array)
                 .is_some_and(|values| !values.is_empty())
         );
-        assert_eq!(
-            receive_payload
-                .get("steps")
-                .and_then(Value::as_array)
-                .and_then(|steps| steps.first())
-                .and_then(|step| step.get("stepId"))
-                .and_then(Value::as_str),
-            Some(step_id.as_str())
-        );
+        let received_step_ids = receive_payload
+            .get("steps")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|step| step.get("stepId").and_then(Value::as_str))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(received_step_ids.contains(first_step_id.as_str()));
+        assert!(received_step_ids.contains(second_step_id.as_str()));
         assert_eq!(
             receive_payload
                 .get("contents")
@@ -9252,6 +9420,7 @@ mod tests {
                 store_objects: None,
                 store_objects_camel: None,
                 step: None,
+                steps: Vec::new(),
             }),
         )
         .await
@@ -9260,6 +9429,69 @@ mod tests {
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
         assert_eq!(error.code, "invalid_request");
         assert!(error.message.contains("inline artifact content"));
+    }
+
+    #[tokio::test]
+    async fn compressed_chunk_upload_stores_encoded_bytes_with_raw_digest() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let raw = Bytes::from("compress me\n".repeat(4096));
+        let chunk_id = blake3_digest_for_bytes(&raw);
+        let compressed = Bytes::from(
+            zstd::stream::encode_all(std::io::Cursor::new(raw.as_ref()), 3)
+                .expect("zstd compression succeeds"),
+        );
+        assert!(compressed.len() < raw.len());
+        let mut headers = fixture.bearer_headers();
+        headers.insert(
+            "x-layrs-chunk-compression",
+            HeaderValue::from_static(CHUNK_COMPRESSION_ZSTD),
+        );
+        headers.insert(
+            "x-layrs-raw-size",
+            HeaderValue::from_str(&raw.len().to_string()).expect("raw size header"),
+        );
+        headers.insert(
+            "x-layrs-stored-size",
+            HeaderValue::from_str(&compressed.len().to_string()).expect("stored size header"),
+        );
+
+        let Json(upload_payload) = put_space_chunk(
+            State(test_state(fixture.pool.clone())),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            headers,
+            compressed.clone(),
+        )
+        .await
+        .expect("compressed chunk upload succeeds");
+
+        assert_eq!(
+            upload_payload.get("chunkId").and_then(Value::as_str),
+            Some(chunk_id.as_str())
+        );
+        assert_eq!(
+            upload_payload.get("compression").and_then(Value::as_str),
+            Some(CHUNK_COMPRESSION_ZSTD)
+        );
+        let row = sqlx::query(
+            "SELECT size_bytes, stored_size_bytes, compression, content_bytes FROM object_chunks WHERE chunk_id = $1",
+        )
+        .bind(&chunk_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("chunk row exists");
+        assert_eq!(row.get::<i64, _>("size_bytes"), raw.len() as i64);
+        assert_eq!(
+            row.get::<i64, _>("stored_size_bytes"),
+            compressed.len() as i64
+        );
+        assert_eq!(row.get::<String, _>("compression"), CHUNK_COMPRESSION_ZSTD);
+        assert_eq!(row.get::<Vec<u8>, _>("content_bytes"), compressed.to_vec());
     }
 
     #[test]
@@ -10130,10 +10362,23 @@ impl PublishCanonicalStoreObjectsBody {
                     size_bytes: chunk_ref
                         .size_bytes
                         .or(chunk_ref.size_bytes_camel)
+                        .or(chunk_ref.raw_size)
                         .or_else(|| {
-                            source.and_then(|chunk| chunk.size_bytes.or(chunk.size_bytes_camel))
+                            source.and_then(|chunk| {
+                                chunk
+                                    .size_bytes
+                                    .or(chunk.size_bytes_camel)
+                                    .or(chunk.raw_size)
+                            })
                         }),
                     size_bytes_camel: None,
+                    raw_size: None,
+                    stored_size: chunk_ref
+                        .stored_size
+                        .or_else(|| source.and_then(|chunk| chunk.stored_size)),
+                    compression: chunk_ref
+                        .compression
+                        .or_else(|| source.and_then(|chunk| chunk.compression.clone())),
                     byte_offset: chunk_ref.byte_offset.or(chunk_ref.byte_offset_camel),
                     byte_offset_camel: None,
                 });
@@ -10201,6 +10446,12 @@ struct PublishChunkObjectBody {
     size_bytes: Option<i64>,
     #[serde(default, rename = "sizeBytes")]
     size_bytes_camel: Option<i64>,
+    #[serde(default, rename = "rawSize")]
+    raw_size: Option<i64>,
+    #[serde(default, rename = "storedSize")]
+    stored_size: Option<i64>,
+    #[serde(default)]
+    compression: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -10245,6 +10496,12 @@ struct PublishChunkRefBody {
     size_bytes: Option<i64>,
     #[serde(default, rename = "sizeBytes")]
     size_bytes_camel: Option<i64>,
+    #[serde(default, rename = "rawSize")]
+    raw_size: Option<i64>,
+    #[serde(default, rename = "storedSize")]
+    stored_size: Option<i64>,
+    #[serde(default)]
+    compression: Option<String>,
     #[serde(default)]
     byte_offset: Option<i64>,
     #[serde(default, rename = "byteOffset")]
@@ -10332,6 +10589,12 @@ struct PublishStoreObjectChunkBody {
     size_bytes: Option<i64>,
     #[serde(default, rename = "sizeBytes")]
     size_bytes_camel: Option<i64>,
+    #[serde(default, rename = "rawSize")]
+    raw_size: Option<i64>,
+    #[serde(default, rename = "storedSize")]
+    stored_size: Option<i64>,
+    #[serde(default)]
+    compression: Option<String>,
     #[serde(default)]
     byte_offset: Option<i64>,
     #[serde(default, rename = "byteOffset")]

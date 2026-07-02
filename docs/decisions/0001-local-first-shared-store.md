@@ -2,21 +2,27 @@
 
 Date: 2026-06-29
 
-Statut: accepté
+Status: accepted
 
-## Contexte
+## Context
 
-Layrs doit rester utile même sans serveur central. Les Spaces, Layers, Artifacts, Weaves, Proofs et Graphs doivent pouvoir être créés, inspectés et reliés localement avant toute synchronisation.
+Layrs must remain useful without a central server. Users and agents must be
+able to create, inspect, switch and protect work locally before any sync.
 
-## Décision
+## Decision
 
-La V1 adopte un store partagé local-first comme source de vérité du coeur Layrs. Les surfaces produit liront et écriront dans ce store via des API internes, au lieu de dépendre d'un service distant comme autorité primaire.
+Layrs V1 uses a local-first shared store as the authority for local client
+behavior. Studio CLI and Studio Desktop access that store through
+`layrs-client-core`.
 
-Le store partagé doit représenter les objets Layrs et leurs relations. La synchronisation, la collaboration distante et les ponts externes seront construits autour de ce modèle, pas au-dessus d'un dépôt Git interne.
+The store represents Layrs concepts directly: Spaces, Layers, Steps, artifacts,
+object trees, access registries and future Weave inputs. Sync, collaboration
+and external bridges are built around this model.
 
-## Conséquences
+## Consequences
 
-- Les opérations locales doivent rester déterministes et inspectables.
-- Les objets doivent porter assez de métadonnées pour être synchronisés plus tard.
-- Les conflits doivent être exprimés dans le modèle Layrs plutôt que cachés dans des fichiers temporaires.
-- Les premiers tests doivent privilégier des fixtures lisibles et reproductibles.
+- Local operations must be deterministic and inspectable.
+- CLI and Desktop must not duplicate local source-control logic.
+- Objects must carry enough metadata to sync later.
+- Conflicts must be expressed in Layrs terms, not hidden in temp files.
+- Tests must prioritize durability and recovery before visual polish.

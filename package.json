@@ -14,6 +14,12 @@
     "dev:studio-web": "pnpm --filter @layrs/studio-web dev",
     "dev:studio-desktop": "pnpm --filter @layrs/studio-desktop tauri:dev",
     "format:check": "node -e \"console.log('Layrs: placeholder format check, no formatter configured yet.')\"",
-    "test": "node -e \"console.log('Layrs: placeholder test suite, no runnable tests yet.')\""
+    "test": "node -e \"console.log('Layrs: placeholder test suite, no runnable tests yet.')\"",
+    "test:e2e": "playwright test",
+    "test:e2e:trace": "playwright test --trace on",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
   }
 }

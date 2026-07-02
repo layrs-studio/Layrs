@@ -23,6 +23,8 @@ pub struct DesktopConfig {
     #[serde(default = "default_local_spaces_folder")]
     pub default_local_spaces_folder: String,
     #[serde(default)]
+    pub shortcuts: DesktopShortcutSettings,
+    #[serde(default)]
     pub local_spaces: Vec<LocalSpaceConfigEntry>,
 }
 
@@ -65,6 +67,7 @@ impl DesktopConfig {
             auto_local_steps: true,
             sync_interval_seconds: default_sync_interval_seconds(),
             default_local_spaces_folder: default_local_spaces_folder(),
+            shortcuts: DesktopShortcutSettings::default(),
             local_spaces: Vec::new(),
         };
         config.save()?;
@@ -100,6 +103,7 @@ impl DesktopConfig {
             auto_local_steps: self.auto_local_steps,
             sync_interval_seconds: self.sync_interval_seconds,
             default_local_spaces_folder: self.default_local_spaces_folder.clone(),
+            shortcuts: self.shortcuts.clone(),
         }
     }
 
@@ -114,6 +118,7 @@ impl DesktopConfig {
         self.auto_local_steps = settings.auto_local_steps;
         self.sync_interval_seconds = settings.sync_interval_seconds.max(30);
         self.default_local_spaces_folder = settings.default_local_spaces_folder;
+        self.shortcuts = settings.shortcuts;
         self.normalize();
     }
 
@@ -145,6 +150,8 @@ impl DesktopConfig {
         if self.default_local_spaces_folder.trim().is_empty() {
             self.default_local_spaces_folder = default_local_spaces_folder();
         }
+
+        self.shortcuts.normalize();
     }
 }
 
@@ -157,6 +164,43 @@ pub struct DesktopSettings {
     pub auto_local_steps: bool,
     pub sync_interval_seconds: u64,
     pub default_local_spaces_folder: String,
+    #[serde(default)]
+    pub shortcuts: DesktopShortcutSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopShortcutSettings {
+    #[serde(default = "default_shortcuts_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_save_step_shortcut")]
+    pub save_step: String,
+    #[serde(default = "default_publish_shortcut")]
+    pub publish: String,
+    #[serde(default = "default_smart_save_publishes_pending_step")]
+    pub smart_save_publishes_pending_step: bool,
+}
+
+impl Default for DesktopShortcutSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_shortcuts_enabled(),
+            save_step: default_save_step_shortcut(),
+            publish: default_publish_shortcut(),
+            smart_save_publishes_pending_step: default_smart_save_publishes_pending_step(),
+        }
+    }
+}
+
+impl DesktopShortcutSettings {
+    fn normalize(&mut self) {
+        if self.save_step.trim().is_empty() {
+            self.save_step = default_save_step_shortcut();
+        }
+        if self.publish.trim().is_empty() {
+            self.publish = default_publish_shortcut();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -343,14 +387,59 @@ pub fn workspace_root(input: Option<String>) -> Result<PathBuf, String> {
 }
 
 fn config_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join("desktop.json"))
+    migrated_client_file("client.json", "desktop.json")
 }
 
 fn cache_path() -> Result<PathBuf, String> {
-    Ok(config_dir()?.join("bootstrap-cache.json"))
+    migrated_client_file("bootstrap-cache.json", "bootstrap-cache.json")
+}
+
+fn migrated_client_file(file_name: &str, legacy_file_name: &str) -> Result<PathBuf, String> {
+    let path = config_dir()?.join(file_name);
+    if !path.exists() {
+        if let Ok(legacy_path) = legacy_config_dir().map(|dir| dir.join(legacy_file_name)) {
+            if legacy_path.exists() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        format!(
+                            "Layrs could not create client config directory {}: {error}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                fs::copy(&legacy_path, &path).map_err(|error| {
+                    format!(
+                        "Layrs could not migrate local config from {} to {}: {error}",
+                        legacy_path.display(),
+                        path.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(path)
 }
 
 fn config_dir() -> Result<PathBuf, String> {
+    if let Ok(appdata) = env::var("APPDATA") {
+        return Ok(PathBuf::from(appdata).join("Layrs").join("Client"));
+    }
+
+    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(xdg).join("layrs").join("client"));
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        return Ok(PathBuf::from(home)
+            .join(".config")
+            .join("layrs")
+            .join("client"));
+    }
+
+    Err("Layrs could not find a safe user config directory.".to_string())
+}
+
+fn legacy_config_dir() -> Result<PathBuf, String> {
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata).join("Layrs").join("Studio Desktop"));
     }
@@ -366,10 +455,26 @@ fn config_dir() -> Result<PathBuf, String> {
             .join("studio-desktop"));
     }
 
-    Err("Layrs Desktop could not find a safe user config directory.".to_string())
+    Err("Layrs could not find a safe legacy Desktop config directory.".to_string())
 }
 
 fn default_auto_local_steps() -> bool {
+    true
+}
+
+fn default_shortcuts_enabled() -> bool {
+    true
+}
+
+fn default_save_step_shortcut() -> String {
+    "Ctrl+S".to_string()
+}
+
+fn default_publish_shortcut() -> String {
+    "Ctrl+P".to_string()
+}
+
+fn default_smart_save_publishes_pending_step() -> bool {
     true
 }
 
