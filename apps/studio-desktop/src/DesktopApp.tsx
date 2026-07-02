@@ -308,6 +308,15 @@ export function DesktopApp() {
           // A cached account is still useful offline; Distant refresh below will expose detailed errors.
         }
         await loadSpaces();
+      } else {
+        try {
+          const localResult = await listLocalSpaces();
+          setLocalSpaces(localResult);
+          clearCommandError("local");
+          setSelectedLocalSpaceId((current) => current ?? localResult[0]?.localSpaceId ?? null);
+        } catch (nextLocalError) {
+          recordCommandError("local", nextLocalError);
+        }
       }
 
       setLoadState("ready");
@@ -2359,7 +2368,7 @@ function SettingsView({
               <div className="desktop-code">
                 <div>
                   <span>User code</span>
-                  <strong>{login.userCode}</strong>
+                  <strong aria-label="Device user code">{login.userCode}</strong>
                 </div>
                 <a href={login.verificationUriComplete ?? login.verificationUri} target="_blank" rel="noreferrer">
                   Open verification page

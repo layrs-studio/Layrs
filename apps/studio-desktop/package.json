@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Layrs Studio desktop shell placeholder.",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5174",
+    "dev": "vite --host 127.0.0.1 --port 6174",
     "tauri:dev": "tauri dev",
     "build": "vite build",
     "tauri:build": "tauri build",

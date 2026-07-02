@@ -1,6 +1,13 @@
 use std::process::{Command, Stdio};
 
 pub fn select_folder(initial_directory: Option<String>) -> Result<Option<String>, String> {
+    if let Ok(folder) = std::env::var("LAYRS_E2E_SELECTED_FOLDER") {
+        let folder = folder.trim().to_string();
+        if !folder.is_empty() {
+            return Ok(Some(folder));
+        }
+    }
+
     select_folder_impl(initial_directory)
 }
 

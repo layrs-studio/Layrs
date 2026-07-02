@@ -20,6 +20,10 @@
 /.layrs/
 /tmp/
 
+# Test artifacts
+/playwright-report/
+/test-results/
+
 # Editors and operating systems
 .DS_Store
 Thumbs.db
