@@ -61,6 +61,7 @@ include!("sections/access_timeline_values.rs");
 include!("sections/store_objects.rs");
 include!("sections/artifact_publish.rs");
 include!("sections/layer_state_publish.rs");
+include!("sections/weave_handlers.rs");
 include!("sections/devices_audit_policy.rs");
 include!("sections/wire_utils.rs");
 include!("sections/store_object_bodies.rs");

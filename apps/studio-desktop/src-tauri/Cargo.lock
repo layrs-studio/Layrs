@@ -1601,9 +1601,30 @@ name = "layrs-client-core"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "layrs-lens-raw",
+ "layrs-lens-sdk",
+ "layrs-lens-text",
  "serde",
  "serde_json",
  "zstd",
+]
+
+[[package]]
+name = "layrs-lens-raw"
+version = "0.0.0"
+dependencies = [
+ "layrs-lens-sdk",
+]
+
+[[package]]
+name = "layrs-lens-sdk"
+version = "0.0.0"
+
+[[package]]
+name = "layrs-lens-text"
+version = "0.0.0"
+dependencies = [
+ "layrs-lens-sdk",
 ]
 
 [[package]]

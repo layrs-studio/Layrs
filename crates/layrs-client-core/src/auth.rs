@@ -1,8 +1,8 @@
 use crate::{
     access_registry::AccessRegistryResult,
     desktop_state::{
-        load_cached_bootstrap, save_cached_bootstrap, validate_desktop_bootstrap, Account,
-        BootstrapData, DesktopConfig,
+        clear_cached_bootstrap, load_cached_bootstrap, save_cached_bootstrap,
+        validate_desktop_bootstrap, Account, BootstrapData, DesktopConfig,
     },
     http_client::{get_json, post_json},
     secret_store::{OsSecretStore, SecretStore, SecretStoreStatus},
@@ -136,9 +136,16 @@ pub fn desktop_status() -> Result<DesktopStatus, String> {
 
     if connected && cached_bootstrap.is_none() {
         if let Some(token) = token.as_deref() {
-            if let Ok(bootstrap) = load_bootstrap_with_token(&config.server_endpoint, token) {
-                save_cached_bootstrap(&bootstrap)?;
-                cached_bootstrap = Some(bootstrap);
+            match load_bootstrap_with_token(&config.server_endpoint, token) {
+                Ok(bootstrap) => {
+                    save_cached_bootstrap(&bootstrap)?;
+                    cached_bootstrap = Some(bootstrap);
+                }
+                Err(error) if is_invalid_desktop_token_error(&error) => {
+                    clear_desktop_session(&store, &config.device_id)?;
+                    cached_bootstrap = None;
+                }
+                Err(_) => {}
             }
         }
     }
@@ -261,7 +268,14 @@ pub fn refresh_bootstrap(
         .ok_or_else(|| {
             "Layrs Desktop is not connected. Connect before loading workspaces.".to_string()
         })?;
-    let bootstrap = load_bootstrap_with_token(&config.server_endpoint, &token)?;
+    let bootstrap = match load_bootstrap_with_token(&config.server_endpoint, &token) {
+        Ok(bootstrap) => bootstrap,
+        Err(error) if is_invalid_desktop_token_error(&error) => {
+            clear_desktop_session(&store, &config.device_id)?;
+            return Err("Layrs Desktop session expired or was revoked by the server. Reconnect this device to continue.".to_string());
+        }
+        Err(error) => return Err(error),
+    };
     save_cached_bootstrap(&bootstrap)?;
     Ok(DeviceLoginPollResponse {
         status: "connected".to_string(),
@@ -275,6 +289,23 @@ pub fn refresh_bootstrap(
 fn load_bootstrap_with_token(endpoint: &str, token: &str) -> Result<BootstrapData, String> {
     let bootstrap = get_json(endpoint, "/v1/desktop/bootstrap", Some(token))?;
     validate_desktop_bootstrap(bootstrap, "/v1/desktop/bootstrap")
+}
+
+pub(crate) fn is_invalid_desktop_token_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("http 401")
+        && (lower.contains("desktop bearer token is invalid")
+            || lower.contains("\"code\":\"unauthorized\""))
+}
+
+pub(crate) fn clear_desktop_session(
+    store: &impl SecretStore,
+    device_id: &str,
+) -> Result<(), String> {
+    store
+        .delete_token(device_id)
+        .map_err(|error| format!("Layrs Desktop could not clear expired OS token: {error}"))?;
+    clear_cached_bootstrap()
 }
 
 fn require_secret_store() -> Result<OsSecretStore, String> {

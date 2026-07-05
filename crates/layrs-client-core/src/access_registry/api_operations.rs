@@ -110,6 +110,89 @@ fn receive_linked_space_state(
     )
 }
 
+fn fetch_studio_state_for_sync(
+    handle: &LocalSpaceHandle,
+    config: &DesktopConfig,
+) -> Result<(WorkingStateFile, PathBuf), String> {
+    ensure_linked_space_ready(handle)?;
+    let layer_id = handle.active.layer_id.clone();
+    if !is_probably_server_layer_id(&layer_id) {
+        return Err(unlinked_layer_message(&layer_id));
+    }
+    let receive_path = format!(
+        "/v1/workspaces/{}/spaces/{}/sync/receive",
+        url_path_segment(&handle.meta.workspace_id),
+        url_path_segment(&handle.meta.space_id)
+    );
+    let request = ReceiveLocalSpaceRequest {
+        layer_id: layer_id.clone(),
+        limit: 200,
+    };
+    let token = desktop_token(config)?;
+    let response: ReceiveLocalSpaceResponse = post_json(
+        &config.server_endpoint,
+        &receive_path,
+        Some(&token),
+        &request,
+    )?;
+    if response.workspace_id != handle.meta.workspace_id || response.space_id != handle.meta.space_id {
+        return Err("Layrs Desktop received sync data for a different Space.".to_string());
+    }
+    if response.layer_id != layer_id {
+        return Err(format!(
+            "Layrs Desktop received Layer {} while {} is active.",
+            response.layer_id, layer_id
+        ));
+    }
+    let response_uses_v2 = response.protocol.as_deref() == Some(SYNC_PROTOCOL_V2)
+        || response.content_objects.is_some();
+    if !response_uses_v2 {
+        return Err("Layrs Desktop requires layrs.sync.v2 receive data.".to_string());
+    }
+    let content_objects = response
+        .content_objects
+        .as_ref()
+        .ok_or_else(|| "Layrs Desktop received V2 protocol without contentObjects.".to_string())?;
+    let studio_state = received_v2_state(
+        &handle.layrs_dir,
+        Some(config.server_endpoint.as_str()),
+        Some(token.as_str()),
+        &response.workspace_id,
+        &response.space_id,
+        &layer_id,
+        response.root_tree_id.as_deref(),
+        content_objects,
+    )?
+    .ok_or_else(|| format!("Layrs Desktop received V2 content without a tree for active Layer {layer_id}."))?;
+
+    let policy_by_layer = response
+        .access_registries
+        .iter()
+        .filter_map(|policy| {
+            policy
+                .get("layer_id")
+                .or_else(|| policy.get("layerId"))
+                .and_then(Value::as_str)
+                .map(|layer_id| (layer_id.to_string(), policy.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(layer) = response.layers.iter().find(|layer| layer.id == layer_id) {
+        if let Some(policy) = policy_by_layer.get(&layer_id) {
+            write_received_access_file(handle, &layer_id, &layer.name, policy)?;
+        }
+        write_received_sync_state(
+            handle,
+            &layer_id,
+            response.cursor.clone(),
+            layer.parent_layer_id.as_deref(),
+        )?;
+    }
+    write_received_steps(&handle.layrs_dir, &response.steps)?;
+    write_received_timeline_cache(handle, &layer_id, &response.timeline)?;
+    let sync_path = write_sync_state(handle, "sync-retrieve", "retrieved", 0, response.cursor)?;
+    Ok((studio_state, sync_path))
+}
+
 pub fn receive_local_space(local_space: String) -> Result<SyncOperationResult, String> {
     let mut handle = open_local_space_handle(&local_space)?;
     if handle.meta.state == LOCAL_SPACE_STATE_DRAFT {
@@ -139,7 +222,9 @@ pub fn receive_local_space(local_space: String) -> Result<SyncOperationResult, S
     let previous_state = read_layer_state(&handle.layrs_dir, &layer_id).ok();
     let changed_files = changed_file_count(previous_state.as_ref(), &current_state);
     let saved_step = if changed_files > 0 && config.auto_local_steps {
-        Some(write_step(&handle.layrs_dir, &layer_id, &current_state)?)
+        let step_id = write_step_and_pending_publish(&handle.layrs_dir, &layer_id, &current_state)?;
+        propagate_step_to_linked_children(&mut handle, &layer_id, &step_id)?;
+        Some(step_id)
     } else {
         None
     };
@@ -182,6 +267,196 @@ pub fn receive_local_space(local_space: String) -> Result<SyncOperationResult, S
     })
 }
 
+pub fn sync_local_space(local_space: String) -> Result<SyncOperationResult, String> {
+    let mut handle = open_local_space_handle(&local_space)?;
+    if handle.meta.state == LOCAL_SPACE_STATE_DRAFT {
+        return Err("Draft Local Spaces must be sent to Studio before syncing.".to_string());
+    }
+    ensure_linked_space_ready(&handle)?;
+
+    if let Some(weave_id) = active_weave_id(&handle.layrs_dir)? {
+        let session = read_weave_session(&handle.layrs_dir, &weave_id)?;
+        return Err(format!(
+            "A Weave is already {}. Resolve/continue or abort it before syncing.",
+            session.status
+        ));
+    }
+
+    let config = DesktopConfig::load_or_create()?;
+    let synced_layer_deletions = flush_pending_layer_deletions(&handle, &config)?;
+    let layer_deletion_message = if synced_layer_deletions > 0 {
+        format!("Deleted {synced_layer_deletions} Layer(s) on Studio. ")
+    } else {
+        String::new()
+    };
+    let layer_id = handle.active.layer_id.clone();
+    if !is_probably_server_layer_id(&layer_id) {
+        let path = write_sync_state(&handle, "sync", "blocked-unlinked-layer", 0, None)?;
+        return Err(format!(
+            "{} Sync state: {}",
+            unlinked_layer_message(&layer_id),
+            path.display()
+        ));
+    }
+
+    let current_state = capture_working_state(&handle.root, &layer_id, true)?;
+    let previous_state = read_layer_state(&handle.layrs_dir, &layer_id).ok();
+    let changed_files = changed_file_count(previous_state.as_ref(), &current_state);
+    if changed_files > 0 {
+        let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
+        let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
+        write_pending_publish(&handle.layrs_dir, &step)?;
+        propagate_step_to_linked_children(&mut handle, &layer_id, &step_id)?;
+        write_working_state(&handle.layrs_dir, &layer_id, &current_state)?;
+    }
+
+    let pending_count = read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len();
+    let needs_initial_publish = layer_needs_initial_publish(&handle, &layer_id)?;
+    if needs_initial_publish {
+        let published = publish_local_space(handle.meta.local_space_id.clone())?;
+        return Ok(SyncOperationResult {
+            local_space: published.local_space,
+            status: "synced".to_string(),
+            message: format!("Sync complete. {layer_deletion_message}{}", published.message),
+            sync_state_path: published.sync_state_path,
+        });
+    }
+    if pending_count == 0 {
+        let received = receive_local_space(handle.meta.local_space_id.clone())?;
+        return Ok(SyncOperationResult {
+            local_space: received.local_space,
+            status: "synced".to_string(),
+            message: format!("Sync complete. {layer_deletion_message}{}", received.message),
+            sync_state_path: received.sync_state_path,
+        });
+    }
+
+    let local_state = capture_working_state(&handle.root, &layer_id, true)?;
+    let base_state = read_layer_index(&handle.layrs_dir, &layer_id).ok();
+    let (studio_state, sync_path) = fetch_studio_state_for_sync(&handle, &config)?;
+    let studio_root = studio_state.root_tree_id.clone();
+    let base_root = base_state.as_ref().and_then(|state| state.root_tree_id.clone());
+    if studio_root != base_root {
+        if let Some(conflicted) =
+            weave_studio_state_into_local_sync(&mut handle, base_state.as_ref(), &local_state, &studio_state, &sync_path)?
+        {
+            return Ok(conflicted);
+        }
+    }
+
+    let published = publish_local_space(handle.meta.local_space_id.clone())?;
+    Ok(SyncOperationResult {
+        local_space: published.local_space,
+        status: "synced".to_string(),
+        message: format!(
+            "Sync complete. {layer_deletion_message}Retrieved Studio state, then {}.",
+            published.message
+        ),
+        sync_state_path: published.sync_state_path,
+    })
+}
+
+fn weave_studio_state_into_local_sync(
+    handle: &mut LocalSpaceHandle,
+    base_state: Option<&WorkingStateFile>,
+    local_state: &WorkingStateFile,
+    studio_state: &WorkingStateFile,
+    sync_path: &Path,
+) -> Result<Option<SyncOperationResult>, String> {
+    let layer_id = handle.active.layer_id.clone();
+    let weave_id = unique_weave_id(&handle.layrs_dir, "studio-sync", &layer_id);
+    let source_layer_id = format!("studio-sync:{layer_id}");
+    let now = unix_now();
+    let mut session = WeaveSessionFile {
+        schema: WEAVE_SESSION_SCHEMA.to_string(),
+        weave_id: weave_id.clone(),
+        source_layer_id: source_layer_id.clone(),
+        target_layer_id: layer_id.clone(),
+        status: "applying".to_string(),
+        pre_weave_target_tree_id: local_state.root_tree_id.clone(),
+        pre_weave_target_step_id: sorted_steps(&handle.layrs_dir, &layer_id)?
+            .last()
+            .map(|step| step.step_id.clone()),
+        planned_steps: Vec::new(),
+        applied_steps: Vec::new(),
+        conflicts: Vec::new(),
+        created_at_unix: now,
+        updated_at_unix: now,
+    };
+    let mut proposed_state = local_state.clone();
+    let base_files = base_state
+        .map(|state| file_entries(&state.files))
+        .unwrap_or_default();
+    let local_files = file_entries(&local_state.files);
+    let studio_files = file_entries(&studio_state.files);
+    let mut paths = BTreeSet::new();
+    let (local_added, local_modified, local_deleted) = diff_state(base_state, local_state);
+    let (studio_added, studio_modified, studio_deleted) = diff_state(base_state, studio_state);
+    paths.extend(local_added);
+    paths.extend(local_modified);
+    paths.extend(local_deleted);
+    paths.extend(studio_added);
+    paths.extend(studio_modified);
+    paths.extend(studio_deleted);
+
+    let mut conflicts = Vec::new();
+    for path in paths {
+        let base = base_files.get(&path);
+        let ours = local_files.get(&path);
+        let theirs = studio_files.get(&path);
+        match reconcile_path_with_lens(
+            handle,
+            &weave_id,
+            &layer_id,
+            &source_layer_id,
+            &path,
+            base,
+            ours,
+            theirs,
+        )? {
+            PathReconcileOutcome::AutoResolved(entry) => {
+                apply_file_choice(&mut proposed_state, &path, entry);
+            }
+            PathReconcileOutcome::Conflicted(conflict) => {
+                apply_conflict_marker_to_state(handle, &mut proposed_state, &weave_id, &conflict, ours)?;
+                conflicts.push(conflict);
+            }
+        }
+    }
+
+    proposed_state.root_tree_id = Some(write_tree_object(&handle.layrs_dir, &proposed_state.files)?);
+    if conflicts.is_empty() {
+        write_working_state(&handle.layrs_dir, &layer_id, &proposed_state)?;
+        materialize_state(&handle.root, &proposed_state)?;
+        let step_id = write_step(&handle.layrs_dir, &layer_id, &proposed_state)?;
+        let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
+        write_pending_publish(&handle.layrs_dir, &step)?;
+        return Ok(None);
+    }
+
+    session.conflicts = conflicts;
+    session.status = "conflicted".to_string();
+    session.updated_at_unix = unix_now();
+    write_json(
+        &proposed_state_path(&handle.layrs_dir, &weave_id),
+        &storage_state(&handle.layrs_dir, &proposed_state)?,
+    )?;
+    write_weave_session(&handle.layrs_dir, &session)?;
+    write_active_weave_marker(&handle.layrs_dir, Some(&weave_id))?;
+    materialize_state(&handle.root, &proposed_state)?;
+    let sync_state_path = write_sync_state(handle, "sync", "conflicted", session.conflicts.len(), None)
+        .unwrap_or_else(|_| sync_path.to_path_buf());
+    Ok(Some(SyncOperationResult {
+        local_space: summary_from_handle(handle),
+        status: "conflicted".to_string(),
+        message: format!(
+            "Sync retrieved Studio changes but paused with {} conflict(s). Resolve the Weave, then run Sync again.",
+            session.conflicts.len()
+        ),
+        sync_state_path: sync_state_path.display().to_string(),
+    }))
+}
+
 pub fn compact_local_space(local_space: String) -> Result<CompactLocalSpaceResult, String> {
     let handle = open_local_space_handle(&local_space)?;
     let compacted: CompactStoreResult = compact_loose_chunks(&handle.layrs_dir)?;
@@ -196,7 +471,7 @@ pub fn compact_local_space(local_space: String) -> Result<CompactLocalSpaceResul
 }
 
 pub fn save_local_step(local_space: String) -> Result<SaveLocalStepResult, String> {
-    let handle = open_local_space_handle(&local_space)?;
+    let mut handle = open_local_space_handle(&local_space)?;
     let layer_id = handle.active.layer_id.clone();
     let current_state = capture_working_state(&handle.root, &layer_id, true)?;
     let previous_state = read_layer_state(&handle.layrs_dir, &layer_id).ok();
@@ -230,6 +505,7 @@ pub fn save_local_step(local_space: String) -> Result<SaveLocalStepResult, Strin
     let step_id = write_step(&handle.layrs_dir, &layer_id, &current_state)?;
     let step = read_step_file(&handle.layrs_dir, &layer_id, &step_id)?;
     write_pending_publish(&handle.layrs_dir, &step)?;
+    propagate_step_to_linked_children(&mut handle, &layer_id, &step_id)?;
     write_working_state(&handle.layrs_dir, &layer_id, &current_state)?;
     let pending_publish_count = read_pending_publish_files(&handle.layrs_dir, &layer_id)?.len();
 
@@ -269,6 +545,10 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
         layer_id = linked_layer_id;
         force_full_publish = true;
     }
+    let needs_initial_publish = layer_needs_initial_publish(&handle, &layer_id)?;
+    if needs_initial_publish {
+        force_full_publish = true;
+    }
     let current_state = capture_working_state(&handle.root, &layer_id, true)?;
     let previous_state = if force_full_publish {
         None
@@ -277,7 +557,7 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
     };
     let (added, modified, deleted) = diff_state(previous_state.as_ref(), &current_state);
     let changed_files = added.len() + modified.len() + deleted.len();
-    if changed_files == 0 {
+    if changed_files == 0 && !needs_initial_publish {
         clear_pending_publish(&handle.layrs_dir, &layer_id)?;
         let path = write_sync_state(&handle, "publish", "clean", 0, None)?;
         return Ok(SyncOperationResult {
@@ -297,7 +577,8 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
         }
         _ => {}
     }
-    let publish_steps = pending_publish_steps(&handle.layrs_dir, &layer_id)?;
+    let publish_steps =
+        publish_steps_for_layer(&handle.layrs_dir, &layer_id, needs_initial_publish)?;
 
     let publish_paths = added
         .iter()
@@ -380,6 +661,35 @@ pub fn publish_local_space(local_space: String) -> Result<SyncOperationResult, S
         ),
         sync_state_path: sync_path.display().to_string(),
     })
+}
+
+fn layer_needs_initial_publish(
+    handle: &LocalSpaceHandle,
+    layer_id: &str,
+) -> Result<bool, String> {
+    let path = layer_dir(&handle.layrs_dir, layer_id).join("sync-state.json");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let value = read_json::<Value>(&path)?;
+    Ok(value
+        .get("needsInitialPublish")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
+}
+
+fn publish_steps_for_layer(
+    layrs_dir: &Path,
+    layer_id: &str,
+    needs_initial_publish: bool,
+) -> Result<Vec<StepFile>, String> {
+    if needs_initial_publish {
+        let steps = sorted_steps(layrs_dir, layer_id)?;
+        if !steps.is_empty() {
+            return Ok(steps);
+        }
+    }
+    pending_publish_steps(layrs_dir, layer_id)
 }
 
 pub fn load_desktop_settings() -> Result<DesktopSettings, String> {

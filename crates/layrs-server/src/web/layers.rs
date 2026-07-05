@@ -21,3 +21,19 @@ pub(super) async fn delete_layer(
 ) -> Result<Json<Value>, ApiError> {
     super::delete_layer(state, path, headers).await
 }
+
+pub(super) async fn disconnect_layer_parent(
+    state: State<AppState>,
+    path: Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    super::disconnect_layer_parent(state, path, headers).await
+}
+
+pub(super) async fn clear_layer_steps(
+    state: State<AppState>,
+    path: Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    super::clear_layer_steps(state, path, headers).await
+}

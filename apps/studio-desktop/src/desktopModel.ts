@@ -116,9 +116,7 @@ export function layersByLatestStep(
       }
       return (
         layer.displayName.toLowerCase().includes(normalizedQuery) ||
-        layer.layerId.toLowerCase().includes(normalizedQuery) ||
-        layer.syncStatus.toLowerCase().includes(normalizedQuery) ||
-        layer.access.toLowerCase().includes(normalizedQuery)
+        layer.layerId.toLowerCase().includes(normalizedQuery)
       );
     })
     .map((layer) => ({
@@ -169,7 +167,7 @@ export function buildTimeline(
   const steps = (scan?.steps ?? [])
     .slice()
     .reverse()
-    .map((step) => timelineItemFromStep(step, selectedStepId, layerDisplayName(space, step.layerId)));
+    .map((step) => timelineItemFromStep(step, selectedStepId, stepLayerOriginLabel(space, step)));
 
   return [...base, ...steps];
 }
@@ -185,6 +183,10 @@ function timelineItemFromStep(step: LocalStepSummary, selectedStepId: string | n
     isActive: selectedStepId === step.stepId,
     diffStats: step.diffStats
   };
+}
+
+function stepLayerOriginLabel(space: LocalSpaceSummary, step: LocalStepSummary): string {
+  return step.originLayerName?.trim() || layerDisplayName(space, step.originLayerId ?? step.layerId);
 }
 
 function normalizeChangeState(state: string): ChangeState {
@@ -423,6 +425,12 @@ export function pageFromHash(hash: string): DesktopPage {
   if (hash.includes("desktop-draft")) {
     return "draft";
   }
+  if (hash.includes("desktop-spaceSettings")) {
+    return "spaceSettings";
+  }
+  if (hash.includes("desktop-weaves")) {
+    return "weaves";
+  }
   if (hash.includes("desktop-settings")) {
     return "settings";
   }
@@ -435,6 +443,12 @@ export function pageTitle(page: DesktopPage, selectedSpace: LocalSpaceSummary | 
   }
   if (page === "settings") {
     return "Settings";
+  }
+  if (page === "spaceSettings") {
+    return selectedSpace ? `${selectedSpace.name} Settings` : "Space Settings";
+  }
+  if (page === "weaves") {
+    return selectedSpace ? `${selectedSpace.name} Weaves` : "Weaves";
   }
   if (page === "draft") {
     return "Local setup";

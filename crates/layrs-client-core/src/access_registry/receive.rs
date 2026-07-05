@@ -30,6 +30,7 @@ fn write_linked_layer_sync_state(
         "schema": SYNC_STATE_SCHEMA,
         "layerId": layer_id,
         "parentLayerId": parent_layer_id,
+        "needsInitialPublish": true,
         "lastReceiveUnix": null,
         "lastPublishUnix": null,
         "pending": false,
@@ -104,6 +105,7 @@ fn apply_receive_response(
             layer_id: layer_id.clone(),
             display_name: layer.name.clone(),
             parent_layer_id: layer.parent_layer_id.clone(),
+            lineage_status: default_layer_lineage_status(),
             access: access_kind.clone(),
             can_open: access_kind == LayerAccessKind::Open,
         };
@@ -393,22 +395,82 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
         if layer_id.is_empty() {
             return Err("Layrs Desktop received a step without layerId.".to_string());
         }
+        let existing_step = read_step_file(layrs_dir, layer_id, &step.step_id).ok();
         if let Some(root_tree_id) = step.root_tree_id.as_deref() {
             validate_blake3_id(root_tree_id)?;
         }
         if let Some(base_tree_id) = step.base_tree_id.as_deref() {
             validate_blake3_id(base_tree_id)?;
         }
+        let timeline_position = match step
+            .timeline_position
+            .or_else(|| existing_step.as_ref().and_then(|step| step.timeline_position))
+        {
+            Some(position) => Some(position),
+            None => Some(next_timeline_position(layrs_dir, layer_id)?),
+        };
+        let origin_layer_id = step
+            .origin_layer_id
+            .clone()
+            .or_else(|| existing_step.as_ref().and_then(|step| step.origin_layer_id.clone()))
+            .or_else(|| Some(layer_id.to_string()));
+        let origin_layer_name = step
+            .origin_layer_name
+            .clone()
+            .or_else(|| existing_step.as_ref().and_then(|step| step.origin_layer_name.clone()))
+            .or_else(|| {
+                origin_layer_id
+                    .as_deref()
+                    .and_then(|origin_layer_id| step_layer_display_name(layrs_dir, origin_layer_id))
+            })
+            .or_else(|| step_layer_display_name(layrs_dir, layer_id));
         let step_file = StepFile {
             schema: STEP_SCHEMA.to_string(),
             step_id: step.step_id.clone(),
             layer_id: layer_id.to_string(),
-            parent_step_id: step.parent_step_id.clone(),
-            base_layer_id: step.base_layer_id.clone(),
-            base_tree_id: step.base_tree_id.clone(),
-            root_tree_id: step.root_tree_id.clone(),
-            changed_paths: step.changed_paths.clone(),
-            captured_at_unix: step.captured_at_unix.unwrap_or_else(unix_now),
+            parent_step_id: step
+                .parent_step_id
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.parent_step_id.clone())),
+            base_layer_id: step
+                .base_layer_id
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.base_layer_id.clone())),
+            base_tree_id: step
+                .base_tree_id
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.base_tree_id.clone())),
+            root_tree_id: step
+                .root_tree_id
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.root_tree_id.clone())),
+            changed_paths: if step.changed_paths.is_empty() {
+                existing_step
+                    .as_ref()
+                    .map(|step| step.changed_paths.clone())
+                    .unwrap_or_default()
+            } else {
+                step.changed_paths.clone()
+            },
+            timeline_position,
+            origin_layer_id,
+            origin_layer_name,
+            origin_step_id: step
+                .origin_step_id
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.origin_step_id.clone()))
+                .or_else(|| Some(step.step_id.clone())),
+            step_kind: step
+                .step_kind
+                .clone()
+                .or_else(|| existing_step.as_ref().and_then(|step| step.step_kind.clone()))
+                .or_else(|| Some("native".to_string())),
+            captured_at_unix: step.captured_at_unix.unwrap_or_else(|| {
+                existing_step
+                    .as_ref()
+                    .map(|step| step.captured_at_unix)
+                    .unwrap_or_else(unix_now)
+            }),
             files: Vec::new(),
         };
         write_json(

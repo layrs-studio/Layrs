@@ -12,6 +12,17 @@ fn load_live_bootstrap_or_cache() -> Result<(BootstrapData, String, Option<Strin
             save_cached_bootstrap(&bootstrap)?;
             Ok((bootstrap, "fresh".to_string(), None))
         }
+        Err(error) if is_invalid_desktop_token_error(&error) => {
+            clear_desktop_session(&OsSecretStore::new(), &config.device_id)?;
+            Ok((
+                BootstrapData::default(),
+                "offline".to_string(),
+                Some(
+                    "Layrs Desktop session expired or was revoked by the server. Reconnect this device to continue."
+                        .to_string(),
+                ),
+            ))
+        }
         Err(error) => {
             if let Some(bootstrap) = load_cached_bootstrap()? {
                 Ok((
@@ -505,6 +516,7 @@ fn summary_from_handle(handle: &LocalSpaceHandle) -> LocalSpaceSummary {
                 layer_id: layer.layer_id.clone(),
                 display_name: layer.display_name.clone(),
                 parent_layer_id: layer.parent_layer_id.clone(),
+                lineage_status: layer.lineage_status.clone(),
                 access: layer.access.clone(),
                 can_open: layer.can_open,
                 path: layer_dir(&handle.layrs_dir, &layer.layer_id)

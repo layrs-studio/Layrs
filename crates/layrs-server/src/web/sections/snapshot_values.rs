@@ -105,6 +105,7 @@ async fn receive_store_objects_for_layers(
         WHERE workspace_id = $1
           AND space_id = $2
           AND layer_id = ANY($3)
+          AND cleared_at IS NULL
           AND (root_tree_id IS NOT NULL OR base_tree_id IS NOT NULL)
         "#,
     )
@@ -279,12 +280,14 @@ async fn layer_step_values_for_layers(
         r#"
         SELECT step_id, layer_id, parent_step_id, base_layer_id, base_tree_id,
                root_tree_id, changed_paths, source_client_id, sync_batch_id,
+               timeline_position, origin_layer_id, origin_layer_name, origin_step_id, step_kind,
                EXTRACT(EPOCH FROM captured_at)::bigint AS captured_at_unix,
                to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS captured_at
         FROM layer_steps
         WHERE workspace_id = $1
           AND space_id = $2
           AND layer_id = ANY($3)
+          AND cleared_at IS NULL
         ORDER BY captured_at ASC, created_at ASC, step_id ASC
         "#,
     )
@@ -307,6 +310,11 @@ async fn layer_step_values_for_layers(
                 "changedPaths": row.try_get::<Vec<String>, _>("changed_paths").unwrap_or_default(),
                 "sourceClientId": row.try_get::<String, _>("source_client_id").ok(),
                 "syncBatchId": row.try_get::<String, _>("sync_batch_id").ok(),
+                "timelinePosition": row.try_get::<i64, _>("timeline_position").ok(),
+                "originLayerId": row.try_get::<String, _>("origin_layer_id").ok(),
+                "originLayerName": row.try_get::<String, _>("origin_layer_name").ok(),
+                "originStepId": row.try_get::<String, _>("origin_step_id").ok(),
+                "stepKind": row.try_get::<String, _>("step_kind").ok(),
                 "capturedAtUnix": row.get::<i64, _>("captured_at_unix"),
                 "capturedAt": row.get::<String, _>("captured_at")
             })
@@ -326,6 +334,7 @@ async fn layer_step_detail_values(
         r#"
         SELECT step_id, layer_id, parent_step_id, base_layer_id, base_tree_id,
                root_tree_id, changed_paths, source_client_id, sync_batch_id,
+               timeline_position, origin_layer_id, origin_layer_name, origin_step_id, step_kind,
                EXTRACT(EPOCH FROM captured_at)::bigint AS captured_at_unix,
                to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS captured_at
         FROM layer_steps
@@ -333,6 +342,7 @@ async fn layer_step_detail_values(
           AND space_id = $2
           AND layer_id = $3
           AND ($4::text IS NULL OR step_id = $4)
+          AND cleared_at IS NULL
         ORDER BY captured_at DESC, created_at DESC, step_id DESC
         "#,
     )
@@ -386,6 +396,11 @@ async fn layer_step_detail_values(
             "files": files,
             "sourceClientId": row.try_get::<String, _>("source_client_id").ok(),
             "syncBatchId": row.try_get::<String, _>("sync_batch_id").ok(),
+            "timelinePosition": row.try_get::<i64, _>("timeline_position").ok(),
+            "originLayerId": row.try_get::<String, _>("origin_layer_id").ok(),
+            "originLayerName": row.try_get::<String, _>("origin_layer_name").ok(),
+            "originStepId": row.try_get::<String, _>("origin_step_id").ok(),
+            "stepKind": row.try_get::<String, _>("step_kind").ok(),
             "capturedAtUnix": row.get::<i64, _>("captured_at_unix"),
             "capturedAt": row.get::<String, _>("captured_at")
         }));

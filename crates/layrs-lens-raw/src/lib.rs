@@ -1,8 +1,9 @@
 use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
     DiffKind, DiffModel, InspectorField, InspectorValueType, LensCapability, LensManifest,
-    LensResult, MetadataValue, PreviewKind, PreviewModel, ReconcileModel, ReconcileStatus,
-    ViewerContract, content_hash, infer_media_type_from_path,
+    LensReconcileContent, LensReconcileInput, LensReconcileResult, LensResult, MetadataValue,
+    PreviewKind, PreviewModel, ReconcileModel, ReconcileStatus, ViewerContract, content_hash,
+    infer_media_type_from_path,
 };
 
 pub const RAW_LENS_ID: &str = "layrs.raw";
@@ -162,10 +163,55 @@ pub fn reconcile_for_raw_diff(diff: Option<&DiffModel>) -> ReconcileModel {
     }
 }
 
+pub fn reconcile_raw(input: LensReconcileInput<'_>) -> LensReconcileResult {
+    if same_side(input.ours, input.theirs) {
+        return LensReconcileResult::auto_resolved(
+            "Raw sides are identical",
+            content_from_side(input.ours),
+        );
+    }
+    if same_side(input.base, input.ours) {
+        return LensReconcileResult::auto_resolved(
+            "Target side is unchanged; taking source",
+            content_from_side(input.theirs),
+        );
+    }
+    if same_side(input.base, input.theirs) {
+        return LensReconcileResult::auto_resolved(
+            "Source side is unchanged; keeping target",
+            content_from_side(input.ours),
+        );
+    }
+
+    LensReconcileResult::conflicted(
+        "Raw content changed differently on both sides",
+        content_from_side(input.ours),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+fn same_side(
+    left: layrs_lens_sdk::LensReconcileSide<'_>,
+    right: layrs_lens_sdk::LensReconcileSide<'_>,
+) -> bool {
+    left.exists == right.exists && (!left.exists || left.bytes == right.bytes)
+}
+
+fn content_from_side(side: layrs_lens_sdk::LensReconcileSide<'_>) -> LensReconcileContent {
+    if side.exists {
+        LensReconcileContent::present(side.bytes.to_vec())
+    } else {
+        LensReconcileContent::absent()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use layrs_lens_sdk::ReconcileStatus;
+    use layrs_lens_sdk::{
+        LensReconcileInput, LensReconcileResultStatus, LensReconcileSide, ReconcileStatus,
+    };
 
     #[test]
     fn manifest_declares_core_lens_capabilities() {
@@ -197,5 +243,51 @@ mod tests {
         let output = analyze(AnalysisInput::new("artifact", b"same").with_previous_bytes(b"same"));
 
         assert_eq!(output.reconcile.status, ReconcileStatus::AutoResolvable);
+    }
+
+    #[test]
+    fn raw_reconcile_auto_resolves_identical_sides() {
+        let result = reconcile_case(b"base", b"same", b"same");
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(result.resolved.expect("resolved").bytes, b"same");
+    }
+
+    #[test]
+    fn raw_reconcile_takes_source_when_target_unchanged() {
+        let result = reconcile_case(b"base", b"base", b"source");
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(result.resolved.expect("resolved").bytes, b"source");
+    }
+
+    #[test]
+    fn raw_reconcile_keeps_target_when_source_unchanged() {
+        let result = reconcile_case(b"base", b"target", b"base");
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(result.resolved.expect("resolved").bytes, b"target");
+    }
+
+    #[test]
+    fn raw_reconcile_conflicts_whole_file_without_markers() {
+        let result = reconcile_case(b"base", b"target\x00bytes", b"source\x00bytes");
+
+        assert_eq!(result.status, LensReconcileResultStatus::Conflicted);
+        assert!(result.blocks.is_empty());
+        assert!(result.segments.is_empty());
+        assert_eq!(result.conflict.expect("conflict").bytes, b"target\x00bytes");
+    }
+
+    fn reconcile_case(base: &[u8], ours: &[u8], theirs: &[u8]) -> LensReconcileResult {
+        reconcile_raw(LensReconcileInput {
+            path: None,
+            media_type: Some("application/octet-stream"),
+            base: LensReconcileSide::present(base, None),
+            ours: LensReconcileSide::present(ours, None),
+            theirs: LensReconcileSide::present(theirs, None),
+            ours_label: "target",
+            theirs_label: "source",
+        })
     }
 }

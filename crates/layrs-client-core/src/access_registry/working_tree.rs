@@ -7,14 +7,14 @@ fn capture_working_state(
     if write_objects {
         create_local_space_directories(&layrs_dir)?;
     }
-    let previous_cache = read_scan_cache(&layrs_dir);
+    let ignore_rules = read_ignore_rules(root)?;
     let mut next_cache = BTreeMap::new();
     let mut files = Vec::new();
     collect_files(
         root,
         root,
         &layrs_dir,
-        &previous_cache,
+        &ignore_rules,
         &mut next_cache,
         &mut files,
         write_objects,
@@ -42,7 +42,7 @@ fn collect_files(
     root: &Path,
     current: &Path,
     layrs_dir: &Path,
-    previous_cache: &BTreeMap<String, ScanCacheEntry>,
+    ignore_rules: &IgnoreRules,
     next_cache: &mut BTreeMap<String, ScanCacheEntry>,
     files: &mut Vec<FileSnapshotEntry>,
     write_objects: bool,
@@ -60,7 +60,13 @@ fn collect_files(
 
     for entry in entries {
         let path = entry.path();
-        if path.file_name().and_then(|name| name.to_str()) == Some(LAYRS_DIR) {
+        if path.file_name().and_then(|name| name.to_str()) == Some(LAYRS_DIR)
+            || path.file_name().and_then(|name| name.to_str()) == Some(".git")
+        {
+            continue;
+        }
+        let key = relative_key(root, &path)?;
+        if ignore_rules.ignores(&key) {
             continue;
         }
 
@@ -76,13 +82,12 @@ fn collect_files(
                 root,
                 &path,
                 layrs_dir,
-                previous_cache,
+                ignore_rules,
                 next_cache,
                 files,
                 write_objects,
             )?;
         } else if file_type.is_file() {
-            let key = relative_key(root, &path)?;
             let metadata = entry.metadata().map_err(|error| {
                 format!(
                     "Layrs Desktop could not inspect working tree file {}: {error}",
@@ -94,13 +99,6 @@ fn collect_files(
                 .modified()
                 .map(system_time_marker)
                 .unwrap_or_else(|_| "unknown".to_string());
-            if let Some(cached) = previous_cache.get(&key) {
-                if cached.size == size && cached.modified_at == modified_at {
-                    files.push(cached.snapshot.clone());
-                    next_cache.insert(key, cached.clone());
-                    continue;
-                }
-            }
 
             let bytes = fs::read(&path).map_err(|error| {
                 format!(
@@ -125,9 +123,123 @@ fn collect_files(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct IgnoreRules {
+    rules: Vec<IgnoreRule>,
+}
+
+#[derive(Debug)]
+struct IgnoreRule {
+    pattern: String,
+    directory_only: bool,
+}
+
+impl IgnoreRules {
+    fn ignores(&self, path_key: &str) -> bool {
+        self.rules.iter().any(|rule| rule.matches(path_key))
+    }
+}
+
+impl IgnoreRule {
+    fn matches(&self, path_key: &str) -> bool {
+        let normalized = path_key.replace('\\', "/");
+        let pattern = self.pattern.as_str();
+
+        if self.directory_only {
+            return normalized == pattern || normalized.starts_with(&format!("{pattern}/"));
+        }
+
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            return normalized.ends_with(suffix);
+        }
+
+        if pattern.contains('/') {
+            return normalized == pattern || normalized.starts_with(&format!("{pattern}/"));
+        }
+
+        normalized
+            .split('/')
+            .any(|segment| segment == pattern || wildcard_segment_matches(pattern, segment))
+    }
+}
+
+fn wildcard_segment_matches(pattern: &str, segment: &str) -> bool {
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        segment.starts_with(prefix) && segment.ends_with(suffix)
+    } else {
+        false
+    }
+}
+
+fn read_ignore_rules(root: &Path) -> Result<IgnoreRules, String> {
+    let path = root.join(".layrsignore");
+    if !path.exists() {
+        return Ok(IgnoreRules::default());
+    }
+
+    let body = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Layrs Desktop could not read ignore file {}: {error}",
+            path.display()
+        )
+    })?;
+    let rules = body
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let directory_only = trimmed.ends_with('/');
+            let pattern = trimmed
+                .trim_matches('/')
+                .replace('\\', "/")
+                .trim()
+                .to_string();
+            if pattern.is_empty() {
+                None
+            } else {
+                Some(IgnoreRule {
+                    pattern,
+                    directory_only,
+                })
+            }
+        })
+        .collect();
+    Ok(IgnoreRules { rules })
+}
+
 fn materialize_state(root: &Path, state: &WorkingStateFile) -> Result<(), String> {
     let current = capture_working_state(root, &state.layer_id, false)?;
     let (added, modified, deleted) = diff_state(Some(&current), state);
+    let target_files = file_entries(&state.files);
+    let mut prepared = Vec::new();
+
+    for path_key in added.iter().chain(modified.iter()) {
+        let file = target_files.get(path_key).ok_or_else(|| {
+            format!("Layrs Desktop cannot restore missing tree entry {path_key}.")
+        })?;
+        let bytes = read_snapshot_object_bytes(&root.join(LAYRS_DIR), file)?;
+        prepared.push((path_key.clone(), bytes));
+    }
+
+    for (path_key, bytes) in prepared {
+        let target = path_from_key(root, &path_key)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not create directory while switching Layer {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&target, bytes).map_err(|error| {
+            format!(
+                "Layrs Desktop could not restore file {}: {error}",
+                target.display()
+            )
+        })?;
+    }
 
     for path_key in deleted {
         let path = path_from_key(root, &path_key)?;
@@ -139,29 +251,6 @@ fn materialize_state(root: &Path, state: &WorkingStateFile) -> Result<(), String
                 )
             })?;
         }
-    }
-
-    let target_files = file_entries(&state.files);
-    for path_key in added.iter().chain(modified.iter()) {
-        let file = target_files.get(path_key).ok_or_else(|| {
-            format!("Layrs Desktop cannot restore missing tree entry {path_key}.")
-        })?;
-        let target = path_from_key(root, &file.path)?;
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not create directory while switching Layer {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        let bytes = read_snapshot_object_bytes(&root.join(LAYRS_DIR), file)?;
-        fs::write(&target, bytes).map_err(|error| {
-            format!(
-                "Layrs Desktop could not restore file {}: {error}",
-                target.display()
-            )
-        })?;
     }
 
     Ok(())
@@ -264,6 +353,11 @@ fn write_step(
         base_tree_id,
         root_tree_id: Some(root_tree_id),
         changed_paths,
+        timeline_position: Some(next_timeline_position(layrs_dir, layer_id)?),
+        origin_layer_id: Some(layer_id.to_string()),
+        origin_layer_name: step_layer_display_name(layrs_dir, layer_id),
+        origin_step_id: Some(step_id.clone()),
+        step_kind: Some("native".to_string()),
         captured_at_unix: state.captured_at_unix,
         files: Vec::new(),
     };
@@ -273,6 +367,17 @@ fn write_step(
             .join(format!("{step_id}.json")),
         &step,
     )?;
+    Ok(step_id)
+}
+
+fn write_step_and_pending_publish(
+    layrs_dir: &Path,
+    layer_id: &str,
+    state: &WorkingStateFile,
+) -> Result<String, String> {
+    let step_id = write_step(layrs_dir, layer_id, state)?;
+    let step = read_step_file(layrs_dir, layer_id, &step_id)?;
+    write_pending_publish(layrs_dir, &step)?;
     Ok(step_id)
 }
 
@@ -301,6 +406,14 @@ fn unique_step_id(layrs_dir: &Path, layer_id: &str) -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{now}-{layer_hash}-fallback")
+}
+
+fn next_timeline_position(layrs_dir: &Path, layer_id: &str) -> Result<u64, String> {
+    Ok(read_step_files(layrs_dir, layer_id)?
+        .into_iter()
+        .filter_map(|step| step.timeline_position)
+        .max()
+        .map_or(0, |position| position.saturating_add(1)))
 }
 
 fn read_step_file(layrs_dir: &Path, layer_id: &str, step_id: &str) -> Result<StepFile, String> {
@@ -432,11 +545,7 @@ fn step_base(
     String,
 > {
     let mut steps = read_step_files(layrs_dir, layer_id)?;
-    steps.sort_by(|left, right| {
-        left.captured_at_unix
-            .cmp(&right.captured_at_unix)
-            .then_with(|| left.step_id.cmp(&right.step_id))
-    });
+    steps.sort_by(compare_steps_by_timeline);
     if let Some(previous_step) = steps.last() {
         let state = state_from_step(layrs_dir, previous_step)?;
         return Ok((
@@ -577,18 +686,6 @@ fn read_snapshot_object_bytes(
             object_path.display()
         )
     })
-}
-
-fn read_scan_cache(layrs_dir: &Path) -> BTreeMap<String, ScanCacheEntry> {
-    read_json::<ScanCacheFile>(&layrs_dir.join("scan-cache.json"))
-        .map(|cache| {
-            cache
-                .entries
-                .into_iter()
-                .map(|entry| (entry.path.clone(), entry))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn write_scan_cache(

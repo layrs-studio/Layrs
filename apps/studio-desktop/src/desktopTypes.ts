@@ -1,8 +1,8 @@
 import type { DesktopShortcutSettings, LensDiffEntry, LocalDiffStats } from "./tauri";
 
 export type LoadState = "loading" | "ready" | "error";
-export type DesktopPage = "available" | "local" | "draft" | "settings";
-export type LocalSpaceTab = "changes" | "files" | "steps" | "layers" | "sync" | "settings";
+export type DesktopPage = "available" | "local" | "draft" | "spaceSettings" | "weaves" | "settings";
+export type LocalSpaceTab = "changes" | "files" | "steps" | "settings";
 export type FileState = "clean" | "modified" | "added" | "deleted" | "redacted";
 export type ChangeState = "modified" | "added" | "deleted";
 export const FOCUS_SCAN_THROTTLE_MS = 1500;
@@ -17,12 +17,17 @@ export type CommandKey =
   | "switch"
   | "create-layer"
   | "delete-layer"
+  | "disconnect-layer"
+  | "clear-steps"
   | "scan"
   | "diff-window"
   | "receive"
+  | "sync"
   | "save-step"
   | "publish"
   | "send-draft"
+  | "weave"
+  | "weave-parent"
   | "settings";
 
 export interface LayerFile {

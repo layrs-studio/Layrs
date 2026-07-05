@@ -25,7 +25,7 @@ pub fn get_json<T: DeserializeOwned>(
     bearer: Option<&str>,
 ) -> Result<T, String> {
     let response = request(endpoint, "GET", path, bearer, None, &[], &[])?;
-    decode_response(response, path)
+    decode_response(response, endpoint, path)
 }
 
 pub fn get_bytes(endpoint: &str, path: &str, bearer: Option<&str>) -> Result<Vec<u8>, String> {
@@ -70,9 +70,11 @@ pub fn get_bytes_with_headers(
     let response = parse_http_response_bytes(&response)?;
     if !(200..300).contains(&response.status) {
         return Err(format!(
-            "Layrs server returned HTTP {} for {path}: {}",
+            "Layrs server at {} returned HTTP {} for {path}: {}{}",
+            endpoint.trim().trim_end_matches('/'),
             response.status,
-            String::from_utf8_lossy(&response.body).trim()
+            String::from_utf8_lossy(&response.body).trim(),
+            endpoint_response_hint(endpoint, path, response.status, &response.body)
         ));
     }
     Ok(response)
@@ -95,7 +97,7 @@ pub fn post_json<TBody: Serialize, TResponse: DeserializeOwned>(
         body.as_bytes(),
         &[],
     )?;
-    decode_response(response, path)
+    decode_response(response, endpoint, path)
 }
 
 pub fn put_bytes_json<TResponse: DeserializeOwned>(
@@ -123,7 +125,7 @@ pub fn put_bytes_json_with_headers<TResponse: DeserializeOwned>(
         bytes,
         extra_headers,
     )?;
-    decode_response(response, path)
+    decode_response(response, endpoint, path)
 }
 
 pub fn delete_json<T: DeserializeOwned>(
@@ -132,24 +134,63 @@ pub fn delete_json<T: DeserializeOwned>(
     bearer: Option<&str>,
 ) -> Result<T, String> {
     let response = request(endpoint, "DELETE", path, bearer, None, &[], &[])?;
-    decode_response(response, path)
+    decode_response(response, endpoint, path)
 }
 
-fn decode_response<T: DeserializeOwned>(response: HttpResponse, path: &str) -> Result<T, String> {
+fn decode_response<T: DeserializeOwned>(
+    response: HttpResponse,
+    endpoint: &str,
+    path: &str,
+) -> Result<T, String> {
     if !(200..300).contains(&response.status) {
         return Err(format!(
-            "Layrs server returned HTTP {} for {path}: {}",
+            "Layrs server at {} returned HTTP {} for {path}: {}{}",
+            endpoint.trim().trim_end_matches('/'),
             response.status,
-            response.body.trim()
+            response.body.trim(),
+            endpoint_response_hint(endpoint, path, response.status, response.body.as_bytes())
         ));
     }
 
     serde_json::from_str(&response.body).map_err(|error| {
         format!(
-            "Layrs Desktop could not decode JSON response from {path}: {error}. Body: {}",
-            response.body.trim()
+            "Layrs Desktop could not decode JSON response from {}{path}: {error}. Body: {}{}",
+            endpoint.trim().trim_end_matches('/'),
+            response.body.trim(),
+            endpoint_decode_hint(endpoint, path, &response.body)
         )
     })
+}
+
+fn endpoint_response_hint(endpoint: &str, path: &str, status: u16, body: &[u8]) -> String {
+    if status == 404 && path == "/v1/desktop/bootstrap" {
+        return format!(
+            " Hint: {endpoint} does not expose the Desktop bootstrap API. In Settings > Server, use the Layrs Server URL printed by `pnpm run dev` (usually http://127.0.0.1:8787), not the Studio Web URL."
+        );
+    }
+
+    if looks_like_studio_web(endpoint, body) {
+        return " Hint: this response looks like Studio Web, not the Layrs Server API. Use the server endpoint, usually http://127.0.0.1:8787 in local dev.".to_string();
+    }
+
+    String::new()
+}
+
+fn endpoint_decode_hint(endpoint: &str, path: &str, body: &str) -> String {
+    if path == "/v1/desktop/bootstrap" && looks_like_studio_web(endpoint, body.as_bytes()) {
+        return " Hint: Desktop is probably pointed at Studio Web instead of Layrs Server. In Settings > Server, use the Layrs Server URL printed by `pnpm run dev`.".to_string();
+    }
+
+    String::new()
+}
+
+fn looks_like_studio_web(endpoint: &str, body: &[u8]) -> bool {
+    endpoint.contains(":5173")
+        || std::str::from_utf8(body)
+            .map(|text| {
+                text.contains("<title>Layrs Studio</title>") || text.contains("/src/main.tsx")
+            })
+            .unwrap_or(false)
 }
 
 fn request(

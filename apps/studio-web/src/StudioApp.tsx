@@ -529,7 +529,7 @@ function StudioSidebar({
         <SidebarSection title="Favorite Spaces" items={spaceItems} emptyLabel="No favorite Spaces" onNavigate={onNavigate} />
         <div className="layrs-sidebar__section">
           <span className="layrs-sidebar__section-title">Roadmap</span>
-          {["Weaves", "Gates", "Audit", "Settings"].map((label) => (
+          {["Gates", "Audit"].map((label) => (
             <span className="layrs-sidebar__item layrs-sidebar__item--disabled" key={label}>
               <span>
                 <small>Coming later</small>

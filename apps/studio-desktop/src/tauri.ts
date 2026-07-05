@@ -108,6 +108,7 @@ export interface LocalLayerSummary {
   layerId: string;
   displayName: string;
   parentLayerId?: string;
+  lineageStatus?: "linked" | "unlinked" | string;
   access: LayerAccessKind;
   canOpen: boolean;
   path: string;
@@ -177,6 +178,13 @@ export interface DeleteLayerResult {
   message: string;
 }
 
+export interface LayerSettingsResult {
+  localSpace: LocalSpaceSummary;
+  layerId: string;
+  message: string;
+  archivedStepsPath?: string;
+}
+
 export interface FileSnapshotEntry {
   path: string;
   object: string;
@@ -203,6 +211,11 @@ export interface LocalStepSummary {
   stepId: string;
   layerId: string;
   capturedAt: number;
+  timelinePosition?: number;
+  originLayerId?: string;
+  originLayerName?: string;
+  originStepId?: string;
+  stepKind?: string;
   changedFiles: number;
   diffStats: LocalDiffStats;
   diffs: LensDiffEntry[];
@@ -243,6 +256,43 @@ export interface SaveLocalStepResult {
   changedFiles: number;
   diffStats: LocalDiffStats;
   pendingPublishCount: number;
+}
+
+export interface WeaveConflictSummary {
+  conflictId: string;
+  path: string;
+  lensId: string;
+  status: string;
+  message: string;
+  resolution?: string;
+  blocks: WeaveConflictBlockSummary[];
+}
+
+export interface WeaveConflictBlockSummary {
+  blockId: string;
+  status: string;
+  base: string;
+  ours: string;
+  theirs: string;
+  resolution?: string;
+}
+
+export interface WeaveSessionSummary {
+  weaveId: string;
+  sourceLayerId: string;
+  targetLayerId: string;
+  status: string;
+  preWeaveTargetTreeId?: string;
+  preWeaveTargetStepId?: string;
+  plannedSteps: string[];
+  appliedSteps: string[];
+  conflicts: WeaveConflictSummary[];
+}
+
+export interface WeaveOperationResult {
+  localSpace: LocalSpaceSummary;
+  session: WeaveSessionSummary;
+  message: string;
 }
 
 type TauriCore = {
@@ -358,6 +408,14 @@ export function deleteLayer(localSpace: string, layerId: string) {
   return tauriInvoke<DeleteLayerResult>("delete_layer", { localSpace, layerId });
 }
 
+export function disconnectLayerFromParent(localSpace: string, layerId: string) {
+  return tauriInvoke<LayerSettingsResult>("disconnect_layer_from_parent", { localSpace, layerId });
+}
+
+export function clearLayerSteps(localSpace: string, layerId: string) {
+  return tauriInvoke<LayerSettingsResult>("clear_layer_steps", { localSpace, layerId });
+}
+
 export function scanWorkingTree(localSpace: string) {
   return tauriInvoke<WorkingTreeScan>("scan_working_tree", { localSpace });
 }
@@ -386,8 +444,65 @@ export function publishLocalSpace(localSpace: string) {
   return tauriInvoke<SyncOperationResult>("publish_local_space", { localSpace });
 }
 
+export function syncLocalSpace(localSpace: string) {
+  return tauriInvoke<SyncOperationResult>("sync_local_space", { localSpace });
+}
+
 export function saveLocalStep(localSpace: string) {
   return tauriInvoke<SaveLocalStepResult>("save_local_step", { localSpace });
+}
+
+export function weaveLayers(
+  localSpace: string,
+  sourceLayerId: string,
+  targetLayerId: string,
+  preview = false
+) {
+  return tauriInvoke<WeaveOperationResult>("weave_layers", {
+    localSpace,
+    sourceLayerId,
+    targetLayerId,
+    preview
+  });
+}
+
+export function weaveActiveLayerToParent(localSpace: string, preview = false) {
+  return tauriInvoke<WeaveOperationResult>("weave_active_layer_to_parent", {
+    localSpace,
+    preview
+  });
+}
+
+export function weaveStatus(localSpace: string) {
+  return tauriInvoke<WeaveSessionSummary | null>("weave_status", { localSpace });
+}
+
+export function weaveConflicts(localSpace: string) {
+  return tauriInvoke<WeaveConflictSummary[]>("weave_conflicts", { localSpace });
+}
+
+export function resolveWeaveConflict(
+  localSpace: string,
+  path: string,
+  resolution: string,
+  replacementFile?: string,
+  manualText?: string
+) {
+  return tauriInvoke<WeaveOperationResult>("resolve_weave_conflict", {
+    localSpace,
+    path,
+    resolution,
+    replacementFile: replacementFile || undefined,
+    manualText: manualText || undefined
+  });
+}
+
+export function continueWeave(localSpace: string) {
+  return tauriInvoke<WeaveOperationResult>("continue_weave", { localSpace });
+}
+
+export function abortWeave(localSpace: string) {
+  return tauriInvoke<WeaveOperationResult>("abort_weave", { localSpace });
 }
 
 export function loadDesktopSettings() {

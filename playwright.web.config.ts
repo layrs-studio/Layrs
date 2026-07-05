@@ -4,6 +4,7 @@ const serverUrl = (process.env.LAYRS_E2E_SERVER_URL ?? "http://127.0.0.1:18887")
 const studioWebPort = Number.parseInt(process.env.LAYRS_E2E_STUDIO_WEB_PORT ?? "15174", 10);
 const serverPort = Number.parseInt(new URL(serverUrl).port || "18887", 10);
 const composeSuffix = String(serverPort);
+const reuseExistingServer = process.env.LAYRS_E2E_ISOLATED !== "1" && !process.env.CI;
 const viteCommand =
   process.platform === "win32"
     ? `node_modules\\.bin\\vite.CMD --host 127.0.0.1 --port ${studioWebPort} --strictPort`
@@ -31,6 +32,7 @@ export default defineConfig({
       cwd: ".",
       env: {
         ...process.env,
+        LAYRS_DEV_EPHEMERAL: process.env.LAYRS_E2E_ISOLATED === "1" ? "1" : "0",
         LAYRS_DEV_SKIP_STUDIO: "1",
         LAYRS_DEV_RESET_SERVICES: process.env.CI ? "1" : "0",
         LAYRS_COMPOSE_PROJECT_NAME: `layrs-web-e2e-${composeSuffix}`,
@@ -40,7 +42,7 @@ export default defineConfig({
         LAYRS_STUDIO_WEB_PORT: String(studioWebPort)
       },
       url: `${serverUrl}/healthz`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer,
       timeout: 180_000
     },
     {
@@ -52,7 +54,7 @@ export default defineConfig({
         VITE_LAYRS_SERVER_URL: serverUrl
       },
       url: `http://127.0.0.1:${studioWebPort}`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer,
       timeout: 120_000
     }
   ]

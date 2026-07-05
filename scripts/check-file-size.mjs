@@ -47,6 +47,26 @@ const softLimitAllowlist = new Map([
     "packages/client-sdk/src/normalizers.ts",
     "central wire-normalization compatibility layer; cross-coupled helpers stay together below hard limit",
   ],
+  [
+    "crates/layrs-client-core/src/access_registry/weaves.rs",
+    "durable local weave state machine; conflict/session logic stays together below hard limit",
+  ],
+  [
+    "crates/layrs-cli/tests/local_data_safety.rs",
+    "black-box anti-loss scenarios; grouped so each workflow keeps its setup and assertions nearby",
+  ],
+  [
+    "crates/layrs-cli/src/engine.rs",
+    "CLI command facade over client-core; parser/rendering are split out and facade remains below hard limit",
+  ],
+  [
+    "crates/layrs-client-core/src/access_registry/api_local_spaces.rs",
+    "local-space public facade; storage, diff, receive, weave, and working-tree internals are split out",
+  ],
+  [
+    "crates/layrs-lens-text/src/lib.rs",
+    "built-in text Lens core; diff, preview, and reconcile must share line model below hard limit",
+  ],
 ]);
 
 const root = process.cwd();

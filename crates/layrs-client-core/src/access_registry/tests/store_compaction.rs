@@ -136,8 +136,8 @@
             .unwrap();
 
         assert_eq!(scan.steps.len(), 1);
-        assert_eq!(scan.steps[0].layer_id, "main");
-        assert_eq!(feature_activity.step_count, 1);
+        assert!(scan.steps.iter().all(|step| step.layer_id == "main"));
+        assert_eq!(feature_activity.step_count, 2);
         assert!(feature_activity.latest_step_at > 0);
 
         let _ = fs::remove_dir_all(root);

@@ -304,6 +304,151 @@
     }
 
     #[tokio::test]
+    async fn create_child_layer_inherits_parent_head_steps_and_files() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let bytes = Bytes::from_static(b"child inherits this\n");
+        let chunk_id = blake3_digest_for_bytes(&bytes);
+        let file_object_id = blake3_digest_for_bytes(&bytes);
+        let root_tree_id = blake3_digest_for_bytes(b"create-child-inherits-parent-tree");
+        let step_id = format!("step_{}", Uuid::new_v4().simple());
+
+        let _: Json<Value> = put_space_chunk(
+            State(test_state(fixture.pool.clone())),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            fixture.bearer_headers(),
+            bytes.clone(),
+        )
+        .await
+        .expect("chunk upload succeeds before parent publish");
+
+        let _: Json<Value> = publish_local_space_sync(
+            State(test_state(fixture.pool.clone())),
+            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+            fixture.bearer_headers(),
+            Json(
+                serde_json::from_value(json!({
+                    "protocol": "layrs.sync.v2",
+                    "layerId": fixture.layer_id,
+                    "policyEpoch": 1,
+                    "idempotencyKey": format!("idem_{}", Uuid::new_v4().simple()),
+                    "sourceClientId": "test-client",
+                    "rootTreeId": root_tree_id,
+                    "changedPaths": ["src/inherited.txt"],
+                    "steps": [{
+                        "stepId": step_id,
+                        "layerId": fixture.layer_id,
+                        "rootTreeId": root_tree_id,
+                        "changedPaths": ["src/inherited.txt"],
+                        "timelinePosition": 0,
+                        "originLayerId": fixture.layer_id,
+                        "originLayerName": "Main",
+                        "originStepId": step_id,
+                        "stepKind": "native",
+                        "capturedAtUnix": 1782910398
+                    }],
+                    "storeObjects": {
+                        "chunks": [{
+                            "chunkId": chunk_id,
+                            "digest": chunk_id,
+                            "size": bytes.len()
+                        }],
+                        "fileObjects": [{
+                            "fileObjectId": file_object_id,
+                            "size": bytes.len(),
+                            "mediaType": "text/plain",
+                            "chunks": [{
+                                "chunkId": chunk_id,
+                                "size": bytes.len()
+                            }]
+                        }],
+                        "treeObjects": [{
+                            "treeId": root_tree_id,
+                            "entries": [{
+                                "path": "src/inherited.txt",
+                                "fileObjectId": file_object_id,
+                                "size": bytes.len()
+                            }]
+                        }]
+                    }
+                }))
+                .expect("publish body is valid"),
+            ),
+        )
+        .await
+        .expect("parent publish succeeds");
+
+        let Json(created) = create_layer(
+            State(test_state(fixture.pool.clone())),
+            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+            fixture.bearer_headers(),
+            Json(CreateLayerBody {
+                name: "Feature".to_string(),
+                parent_id: Some(fixture.layer_id.clone()),
+                parent_layer_id: None,
+                summary: None,
+            }),
+        )
+        .await
+        .expect("child layer create succeeds");
+        let child_layer_id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("child layer id");
+
+        let inherited_head: Option<String> = sqlx::query_scalar(
+            "SELECT root_tree_id FROM layer_heads WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3",
+        )
+        .bind(&fixture.workspace_id)
+        .bind(&fixture.space_id)
+        .bind(child_layer_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("child head query");
+        assert_eq!(inherited_head.as_deref(), Some(root_tree_id.as_str()));
+
+        let inherited_step = sqlx::query(
+            "SELECT origin_step_id, step_kind FROM layer_steps WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3",
+        )
+        .bind(&fixture.workspace_id)
+        .bind(&fixture.space_id)
+        .bind(child_layer_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("child inherited step");
+        assert_eq!(
+            inherited_step.get::<Option<String>, _>("origin_step_id").as_deref(),
+            Some(step_id.as_str())
+        );
+        assert_eq!(inherited_step.get::<String, _>("step_kind"), "inherited");
+
+        let Json(files_payload) = list_layer_artifacts(
+            State(test_state(fixture.pool.clone())),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                child_layer_id.to_string(),
+            )),
+            fixture.bearer_headers(),
+        )
+        .await
+        .expect("child files list succeeds");
+        assert!(
+            files_payload
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| {
+                    item.get("path").and_then(Value::as_str) == Some("src/inherited.txt")
+                }))
+        );
+    }
+
+    #[tokio::test]
     async fn delete_layer_accepts_desktop_bearer_principal() {
         let Some(fixture) = SyncTestFixture::create().await else {
             return;
@@ -503,6 +648,11 @@
                             "layerId": fixture.layer_id,
                             "rootTreeId": first_root_tree_id,
                             "changedPaths": ["src/main.rs"],
+                            "timelinePosition": 0,
+                            "originLayerId": fixture.layer_id,
+                            "originLayerName": "Main",
+                            "originStepId": first_step_id,
+                            "stepKind": "native",
                             "capturedAtUnix": 1782910398
                         },
                         {
@@ -510,6 +660,11 @@
                             "layerId": fixture.layer_id,
                             "rootTreeId": root_tree_id,
                             "changedPaths": ["src/main.rs"],
+                            "timelinePosition": 1,
+                            "originLayerId": fixture.layer_id,
+                            "originLayerName": "Main",
+                            "originStepId": second_step_id,
+                            "stepKind": "native",
                             "capturedAtUnix": 1782910399
                         }
                     ],
@@ -622,6 +777,41 @@
             .collect::<std::collections::BTreeSet<_>>();
         assert!(received_step_ids.contains(first_step_id.as_str()));
         assert!(received_step_ids.contains(second_step_id.as_str()));
+        let second_received_step = receive_payload
+            .get("steps")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|step| step.get("stepId").and_then(Value::as_str) == Some(second_step_id.as_str()))
+            .expect("second step returned");
+        assert_eq!(
+            second_received_step
+                .get("timelinePosition")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            second_received_step
+                .get("originLayerId")
+                .and_then(Value::as_str),
+            Some(fixture.layer_id.as_str())
+        );
+        assert_eq!(
+            second_received_step
+                .get("originLayerName")
+                .and_then(Value::as_str),
+            Some("Main")
+        );
+        assert_eq!(
+            second_received_step
+                .get("originStepId")
+                .and_then(Value::as_str),
+            Some(second_step_id.as_str())
+        );
+        assert_eq!(
+            second_received_step.get("stepKind").and_then(Value::as_str),
+            Some("native")
+        );
         assert_eq!(
             receive_payload
                 .get("contents")

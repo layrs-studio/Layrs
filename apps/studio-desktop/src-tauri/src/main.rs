@@ -1,6 +1,7 @@
 mod folder_dialog;
 
 use layrs_client_core::{access_registry, auth, desktop_state};
+use tauri::{Manager, PhysicalSize, Size};
 
 #[tauri::command]
 fn desktop_status() -> Result<auth::DesktopStatus, String> {
@@ -118,6 +119,22 @@ fn delete_layer(
 }
 
 #[tauri::command]
+fn disconnect_layer_from_parent(
+    local_space: String,
+    layer_id: String,
+) -> Result<access_registry::LayerSettingsResult, String> {
+    access_registry::disconnect_layer_from_parent(local_space, layer_id)
+}
+
+#[tauri::command]
+fn clear_layer_steps(
+    local_space: String,
+    layer_id: String,
+) -> Result<access_registry::LayerSettingsResult, String> {
+    access_registry::clear_layer_steps(local_space, layer_id, true)
+}
+
+#[tauri::command]
 fn scan_working_tree(local_space: String) -> Result<access_registry::WorkingTreeScan, String> {
     access_registry::scan_working_tree(local_space)
 }
@@ -155,6 +172,62 @@ fn publish_local_space(
 }
 
 #[tauri::command]
+fn sync_local_space(
+    local_space: String,
+) -> Result<access_registry::SyncOperationResult, String> {
+    access_registry::sync_local_space(local_space)
+}
+
+#[tauri::command]
+fn weave_layers(
+    local_space: String,
+    source_layer_id: String,
+    target_layer_id: String,
+    preview: bool,
+) -> Result<access_registry::WeaveOperationResult, String> {
+    access_registry::weave_layers(local_space, source_layer_id, target_layer_id, preview)
+}
+
+#[tauri::command]
+fn weave_active_layer_to_parent(
+    local_space: String,
+    preview: bool,
+) -> Result<access_registry::WeaveOperationResult, String> {
+    access_registry::weave_active_layer_to_parent(local_space, preview)
+}
+
+#[tauri::command]
+fn weave_status(local_space: String) -> Result<Option<access_registry::WeaveSessionSummary>, String> {
+    access_registry::weave_status(local_space)
+}
+
+#[tauri::command]
+fn weave_conflicts(local_space: String) -> Result<Vec<access_registry::WeaveConflictSummary>, String> {
+    access_registry::weave_conflicts(local_space)
+}
+
+#[tauri::command]
+fn resolve_weave_conflict(
+    local_space: String,
+    path: String,
+    resolution: String,
+    replacement_file: Option<String>,
+    manual_text: Option<String>,
+) -> Result<access_registry::WeaveOperationResult, String> {
+    access_registry::resolve_weave_conflict(local_space, path, resolution, replacement_file, manual_text)
+}
+
+#[tauri::command]
+fn continue_weave(local_space: String) -> Result<access_registry::WeaveOperationResult, String> {
+    access_registry::continue_weave(local_space)
+}
+
+#[tauri::command]
+fn abort_weave(local_space: String) -> Result<access_registry::WeaveOperationResult, String> {
+    access_registry::abort_weave(local_space)
+}
+
+#[tauri::command]
 fn load_desktop_settings() -> Result<desktop_state::DesktopSettings, String> {
     access_registry::load_desktop_settings()
 }
@@ -171,8 +244,27 @@ fn select_folder(initial_directory: Option<String>) -> Result<Option<String>, St
     folder_dialog::select_folder(initial_directory)
 }
 
+fn apply_e2e_window_settings(app: &tauri::App) -> Result<(), tauri::Error> {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(instance_id) = std::env::var("LAYRS_E2E_INSTANCE_ID") {
+            window.set_title(&format!("Layrs Studio E2E {instance_id}"))?;
+        }
+
+        if std::env::var("LAYRS_E2E_WINDOW_SIZE").ok().as_deref() == Some("1920x1080") {
+            window.set_size(Size::Physical(PhysicalSize::new(1920, 1080)))?;
+            let _ = window.center();
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            apply_e2e_window_settings(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             desktop_status,
             configure_server_endpoint,
@@ -190,11 +282,21 @@ fn main() {
             switch_layer,
             create_layer_from_current,
             delete_layer,
+            disconnect_layer_from_parent,
+            clear_layer_steps,
             scan_working_tree,
             load_diff_window,
             receive_local_space,
             save_local_step,
             publish_local_space,
+            sync_local_space,
+            weave_layers,
+            weave_active_layer_to_parent,
+            weave_status,
+            weave_conflicts,
+            resolve_weave_conflict,
+            continue_weave,
+            abort_weave,
             load_desktop_settings,
             save_desktop_settings,
             select_folder

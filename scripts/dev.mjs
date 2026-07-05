@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localStateDir = resolve(rootDir, ".layrs-local");
-const devEnvPath = resolve(localStateDir, "dev.env");
+const devEnvPath = resolveDevEnvPath();
 const cargoBin = process.platform === "win32" ? "cargo.exe" : "cargo";
 const pnpmCommand = process.platform === "win32" ? "cmd.exe" : "pnpm";
 const pnpmArgsPrefix = process.platform === "win32" ? ["/d", "/s", "/c", "pnpm"] : [];
@@ -153,6 +153,10 @@ function readExistingDevEnvironment() {
   }
 
   const values = parseDevEnvFile(devEnvPath);
+  if (process.env.LAYRS_DEV_EPHEMERAL !== "1" && isEphemeralDevEnvironment(values)) {
+    return undefined;
+  }
+
   if (requiredDevEnvKeys.every((key) => Boolean(values[key]))) {
     return values;
   }
@@ -242,12 +246,37 @@ function writeDevEnvironment(values) {
   );
 }
 
+function resolveDevEnvPath() {
+  if (process.env.LAYRS_DEV_ENV_PATH) {
+    return resolve(rootDir, process.env.LAYRS_DEV_ENV_PATH);
+  }
+
+  if (process.env.LAYRS_DEV_EPHEMERAL === "1") {
+    const suffix = safeEnvFileSegment(
+      process.env.LAYRS_COMPOSE_PROJECT_NAME ?? `layrs-ephemeral-${process.pid}`
+    );
+    return resolve(localStateDir, `${suffix}.env`);
+  }
+
+  return resolve(localStateDir, "dev.env");
+}
+
+function isEphemeralDevEnvironment(values) {
+  const project = values.LAYRS_COMPOSE_PROJECT_NAME ?? "";
+  return project.startsWith("layrs-e2e-") || project.startsWith("layrs-web-e2e-");
+}
+
+function safeEnvFileSegment(value) {
+  return value.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "layrs-ephemeral";
+}
+
 async function main() {
   if (!existsSync(resolve(rootDir, "node_modules"))) {
     console.warn("Layrs dev: node_modules is missing. Run `pnpm install` once before Studio can start.");
   }
 
   const devEnv = await createDevEnvironment();
+  const shouldCleanServicesOnExit = process.env.LAYRS_DEV_EPHEMERAL === "1";
 
   if (process.env.LAYRS_DEV_RESET_SERVICES === "1") {
     console.log("Layrs dev: resetting Docker services and volumes for this run...");
@@ -270,6 +299,18 @@ async function main() {
 
   let shuttingDown = false;
   const children = [];
+  const cleanupServices = () => {
+    if (!shouldCleanServicesOnExit) {
+      return;
+    }
+
+    spawnSync("docker", ["compose", "--env-file", devEnvPath, "down", "--volumes", "--remove-orphans"], {
+      cwd: rootDir,
+      stdio: "inherit",
+      windowsHide: true
+    });
+  };
+
   const shutdown = (exitCode = 0) => {
     if (shuttingDown) {
       return;
@@ -279,6 +320,7 @@ async function main() {
     for (const child of children) {
       child.kill();
     }
+    cleanupServices();
     process.exitCode = exitCode;
   };
 

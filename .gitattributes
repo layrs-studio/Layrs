@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Keep repository attributes themselves stable on Windows.
+.gitattributes text eol=lf
+
+# SQLx migration checksums are byte-sensitive. Keep migrations stable on Windows.
+crates/layrs-store-server/migrations/*.sql text eol=lf

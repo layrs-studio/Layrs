@@ -104,11 +104,7 @@ fn load_step_diff_window(
 ) -> Result<LensDiffEntry, String> {
     let layer_id = handle.active.layer_id.clone();
     let mut steps = read_step_files(&handle.layrs_dir, &layer_id)?;
-    steps.sort_by(|left, right| {
-        left.captured_at_unix
-            .cmp(&right.captured_at_unix)
-            .then_with(|| left.step_id.cmp(&right.step_id))
-    });
+    steps.sort_by(compare_steps_by_timeline);
 
     let mut previous_state: Option<WorkingStateFile> = None;
     for step in steps {
@@ -190,11 +186,7 @@ fn local_step_summaries(
     layer_id: &str,
 ) -> Result<Vec<LocalStepSummary>, String> {
     let mut steps = read_step_files(&handle.layrs_dir, layer_id)?;
-    steps.sort_by(|left, right| {
-        left.captured_at_unix
-            .cmp(&right.captured_at_unix)
-            .then_with(|| left.step_id.cmp(&right.step_id))
-    });
+    steps.sort_by(compare_steps_by_timeline);
 
     let mut summaries = Vec::with_capacity(steps.len());
     let mut previous_state: Option<WorkingStateFile> = None;
@@ -221,9 +213,14 @@ fn local_step_summaries(
         let diff_stats = diff_stats(&diffs);
 
         summaries.push(LocalStepSummary {
-            step_id: step.step_id,
-            layer_id: step.layer_id,
+            step_id: step.step_id.clone(),
+            layer_id: step.layer_id.clone(),
             captured_at: step.captured_at_unix,
+            timeline_position: step.timeline_position,
+            origin_layer_id: step.origin_layer_id.clone(),
+            origin_layer_name: step.origin_layer_name.clone(),
+            origin_step_id: step.origin_step_id.clone(),
+            step_kind: step.step_kind.clone(),
             changed_files,
             diff_stats,
             diffs,

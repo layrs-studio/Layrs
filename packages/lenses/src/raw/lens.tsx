@@ -25,6 +25,8 @@ export const rawLens: LayrsLens<ReactNode> = {
     reconcile: () => ({
       status: "unsupported",
       summary: "Raw reconciliation is not supported.",
+      blocks: [],
+      segments: [],
       fields: {}
     })
   }

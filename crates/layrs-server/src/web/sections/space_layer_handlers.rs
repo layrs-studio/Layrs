@@ -344,6 +344,15 @@ async fn create_layer(
             &policy_id,
         )
         .await?;
+        inherit_parent_layer_history_in_tx(
+            &mut tx,
+            &workspace_id,
+            &space_id,
+            parent_layer_id,
+            &layer_id,
+            &user.id,
+        )
+        .await?;
     }
     write_timeline_in_tx(
         &mut tx,
@@ -374,6 +383,137 @@ async fn create_layer(
         "stepIds": [],
         "gateIds": []
     })))
+}
+
+async fn inherit_parent_layer_history_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    parent_layer_id: &str,
+    child_layer_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    if let Some(parent_head) = sqlx::query(
+        r#"
+        SELECT layer_state_id, root_tree_id, policy_epoch, server_cursor
+        FROM layer_heads
+        WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(parent_layer_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    {
+        let layer_state_id = prefixed_id("layer_state");
+        let parent_layer_state_id = parent_head.try_get::<Option<String>, _>("layer_state_id")?;
+        let root_tree_id = parent_head.try_get::<Option<String>, _>("root_tree_id")?;
+        let policy_epoch = parent_head.try_get::<i64, _>("policy_epoch")?;
+        let server_cursor = parent_head.try_get::<Option<String>, _>("server_cursor")?;
+        sqlx::query(
+            r#"
+            INSERT INTO layer_states
+                (layer_state_id, workspace_id, space_id, layer_id, root_tree_id,
+                 policy_epoch, parent_layer_state_id, created_by_account_id)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(&layer_state_id)
+        .bind(workspace_id)
+        .bind(space_id)
+        .bind(child_layer_id)
+        .bind(root_tree_id.as_deref())
+        .bind(policy_epoch)
+        .bind(parent_layer_state_id.as_deref())
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO layer_heads
+                (workspace_id, space_id, layer_id, layer_state_id, root_tree_id,
+                 policy_epoch, server_cursor, updated_by_account_id)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(space_id)
+        .bind(child_layer_id)
+        .bind(&layer_state_id)
+        .bind(root_tree_id.as_deref())
+        .bind(policy_epoch)
+        .bind(server_cursor.as_deref())
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    sqlx::query(
+        r#"
+        WITH ordered_parent_steps AS (
+            SELECT
+                s.*,
+                ('step_' || md5(s.step_id || ':' || $4)) AS inherited_step_id,
+                lag('step_' || md5(s.step_id || ':' || $4)) OVER step_order AS inherited_parent_step_id,
+                lag(s.root_tree_id) OVER step_order AS inherited_base_tree_id,
+                (row_number() OVER step_order - 1)::bigint AS inherited_timeline_position,
+                COALESCE(NULLIF(s.origin_layer_name, ''), parent_layer.name, $3) AS inherited_origin_layer_name
+            FROM layer_steps s
+            JOIN layers parent_layer
+              ON parent_layer.workspace_id = s.workspace_id
+             AND parent_layer.space_id = s.space_id
+             AND parent_layer.layer_id = s.layer_id
+            WHERE s.workspace_id = $1
+              AND s.space_id = $2
+              AND s.layer_id = $3
+              AND s.cleared_at IS NULL
+            WINDOW step_order AS (
+                ORDER BY COALESCE(s.timeline_position, 9223372036854775807),
+                         s.captured_at,
+                         s.created_at,
+                         s.step_id
+            )
+        )
+        INSERT INTO layer_steps
+            (step_id, workspace_id, space_id, layer_id, parent_step_id,
+             base_layer_id, base_tree_id, root_tree_id, changed_paths,
+             source_client_id, sync_batch_id, created_by_account_id, captured_at,
+             timeline_position, origin_layer_id, origin_layer_name, origin_step_id, step_kind)
+        SELECT
+            inherited_step_id,
+            $1,
+            $2,
+            $4,
+            inherited_parent_step_id,
+            $4,
+            COALESCE(inherited_base_tree_id, base_tree_id),
+            root_tree_id,
+            changed_paths,
+            source_client_id,
+            NULL,
+            $5,
+            captured_at,
+            inherited_timeline_position,
+            COALESCE(origin_layer_id, layer_id),
+            inherited_origin_layer_name,
+            COALESCE(origin_step_id, step_id),
+            'inherited'
+        FROM ordered_parent_steps
+        ON CONFLICT (step_id) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(parent_layer_id)
+    .bind(child_layer_id)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 async fn delete_layer(
@@ -447,6 +587,76 @@ async fn delete_layer(
         "id": layer_id,
         "spaceId": space_id,
         "deleted": true
+    })))
+}
+
+async fn disconnect_layer_parent(
+    State(state): State<AppState>,
+    Path((workspace_id, space_id, layer_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_principal(&state.pool, &headers).await?;
+    ensure_workspace_admin(&state.pool, &workspace_id, &user.id).await?;
+    ensure_layer_in_space(&state.pool, &workspace_id, &space_id, &layer_id).await?;
+
+    let parent_layer_id: Option<String> = sqlx::query_scalar(
+        "SELECT parent_layer_id FROM layers WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3",
+    )
+    .bind(&workspace_id)
+    .bind(&space_id)
+    .bind(&layer_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if parent_layer_id.is_none() {
+        return Err(ApiError::conflict("layer has no parent to disconnect"));
+    }
+
+    sqlx::query(
+        "UPDATE layers SET lineage_status = 'unlinked', updated_at = now() WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3",
+    )
+    .bind(&workspace_id)
+    .bind(&space_id)
+    .bind(&layer_id)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(json!({
+        "layerId": layer_id,
+        "lineageStatus": "unlinked",
+        "message": "Layer disconnected from parent."
+    })))
+}
+
+async fn clear_layer_steps(
+    State(state): State<AppState>,
+    Path((workspace_id, space_id, layer_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_principal(&state.pool, &headers).await?;
+    ensure_workspace_admin(&state.pool, &workspace_id, &user.id).await?;
+    ensure_layer_in_space(&state.pool, &workspace_id, &space_id, &layer_id).await?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE layer_steps
+        SET cleared_at = now(), cleared_by_account_id = $4
+        WHERE workspace_id = $1
+          AND space_id = $2
+          AND layer_id = $3
+          AND cleared_at IS NULL
+        "#,
+    )
+    .bind(&workspace_id)
+    .bind(&space_id)
+    .bind(&layer_id)
+    .bind(&user.id)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(json!({
+        "layerId": layer_id,
+        "clearedSteps": result.rows_affected(),
+        "message": "Layer Steps cleared from active history. Files were kept."
     })))
 }
 

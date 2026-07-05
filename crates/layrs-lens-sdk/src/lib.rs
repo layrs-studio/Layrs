@@ -347,6 +347,160 @@ impl ReconcileStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LensReconcileSide<'a> {
+    pub exists: bool,
+    pub bytes: &'a [u8],
+    pub content_hash: Option<&'a str>,
+    pub size: u64,
+}
+
+impl<'a> LensReconcileSide<'a> {
+    pub fn present(bytes: &'a [u8], content_hash: Option<&'a str>) -> Self {
+        Self {
+            exists: true,
+            bytes,
+            content_hash,
+            size: bytes.len() as u64,
+        }
+    }
+
+    pub fn absent() -> Self {
+        Self {
+            exists: false,
+            bytes: &[],
+            content_hash: None,
+            size: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LensReconcileInput<'a> {
+    pub path: Option<&'a Path>,
+    pub media_type: Option<&'a str>,
+    pub base: LensReconcileSide<'a>,
+    pub ours: LensReconcileSide<'a>,
+    pub theirs: LensReconcileSide<'a>,
+    pub ours_label: &'a str,
+    pub theirs_label: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LensReconcileContent {
+    pub exists: bool,
+    pub bytes: Vec<u8>,
+}
+
+impl LensReconcileContent {
+    pub fn present(bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            exists: true,
+            bytes: bytes.into(),
+        }
+    }
+
+    pub fn absent() -> Self {
+        Self {
+            exists: false,
+            bytes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LensReconcileResult {
+    pub status: LensReconcileResultStatus,
+    pub summary: String,
+    pub resolved: Option<LensReconcileContent>,
+    pub conflict: Option<LensReconcileContent>,
+    pub blocks: Vec<LensConflictBlock>,
+    pub segments: Vec<LensConflictSegment>,
+    pub fields: MetadataMap,
+}
+
+impl LensReconcileResult {
+    pub fn auto_resolved(summary: impl Into<String>, content: LensReconcileContent) -> Self {
+        Self {
+            status: LensReconcileResultStatus::AutoResolved,
+            summary: summary.into(),
+            resolved: Some(content),
+            conflict: None,
+            blocks: Vec::new(),
+            segments: Vec::new(),
+            fields: MetadataMap::new(),
+        }
+    }
+
+    pub fn conflicted(
+        summary: impl Into<String>,
+        content: LensReconcileContent,
+        blocks: Vec<LensConflictBlock>,
+        segments: Vec<LensConflictSegment>,
+    ) -> Self {
+        Self {
+            status: LensReconcileResultStatus::Conflicted,
+            summary: summary.into(),
+            resolved: None,
+            conflict: Some(content),
+            blocks,
+            segments,
+            fields: MetadataMap::new(),
+        }
+    }
+
+    pub fn unsupported(summary: impl Into<String>) -> Self {
+        Self {
+            status: LensReconcileResultStatus::Unsupported,
+            summary: summary.into(),
+            resolved: None,
+            conflict: None,
+            blocks: Vec::new(),
+            segments: Vec::new(),
+            fields: MetadataMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LensReconcileResultStatus {
+    AutoResolved,
+    Conflicted,
+    Unsupported,
+}
+
+impl LensReconcileResultStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoResolved => "auto_resolved",
+            Self::Conflicted => "conflicted",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LensConflictBlock {
+    pub block_id: String,
+    pub base: String,
+    pub ours: String,
+    pub theirs: String,
+    pub supported_resolutions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LensConflictSegment {
+    pub kind: LensConflictSegmentKind,
+    pub text: Option<String>,
+    pub block_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LensConflictSegmentKind {
+    Text,
+    Block,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedReference {
     pub target: String,

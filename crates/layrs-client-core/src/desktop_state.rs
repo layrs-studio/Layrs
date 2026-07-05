@@ -372,6 +372,18 @@ pub fn save_cached_bootstrap(bootstrap: &BootstrapData) -> Result<(), String> {
     })
 }
 
+pub fn clear_cached_bootstrap() -> Result<(), String> {
+    let path = cache_path()?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Layrs Desktop could not clear local non-secret bootstrap cache at {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 pub fn workspace_root(input: Option<String>) -> Result<PathBuf, String> {
     match input {
         Some(value) if !value.trim().is_empty() => {

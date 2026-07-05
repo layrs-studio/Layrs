@@ -37,6 +37,10 @@ interface LayerStepSummary {
   changedPaths: string[];
   files: StepChangedFile[];
   parentStepId?: string;
+  originLayerId?: string;
+  originLayerName?: string;
+  originStepId?: string;
+  stepKind?: string;
   baseLayerId?: string;
   baseTreeId?: string;
   rootTreeId?: string;
@@ -143,7 +147,7 @@ export function LayerStepsPanel({
                 <p>{step.changedPaths.length || step.diffStats.files} changed file(s)</p>
                 <div>
                   <StatusPill status={step.status} label={step.status === "passing" ? "captured" : undefined} />
-                  <em>{step.actor}</em>
+                  <em>{step.originLayerName?.trim() || step.actor}</em>
                 </div>
               </button>
             ))}
@@ -508,6 +512,10 @@ function stepFromPayload(
     changedPaths,
     files,
     parentStepId: stringPayload(record.parentStepId) ?? stringPayload(record.parent_step_id),
+    originLayerId: stringPayload(record.originLayerId) ?? stringPayload(record.origin_layer_id),
+    originLayerName: stringPayload(record.originLayerName) ?? stringPayload(record.origin_layer_name),
+    originStepId: stringPayload(record.originStepId) ?? stringPayload(record.origin_step_id),
+    stepKind: stringPayload(record.stepKind) ?? stringPayload(record.step_kind),
     baseLayerId: stringPayload(record.baseLayerId) ?? stringPayload(record.base_layer_id),
     baseTreeId: stringPayload(record.baseTreeId) ?? stringPayload(record.base_tree_id),
     rootTreeId: stringPayload(record.rootTreeId) ?? stringPayload(record.root_tree_id),

@@ -26,6 +26,8 @@ export const imageLens: LayrsLens<ReactNode> = {
     reconcile: () => ({
       status: "unsupported",
       summary: "Image reconciliation is declared but not implemented yet.",
+      blocks: [],
+      segments: [],
       fields: {}
     })
   }

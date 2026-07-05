@@ -50,21 +50,19 @@ layrs layer use Main
 layrs compact
 ```
 
-Run the main safety checks:
+Run the full test suite:
 
 ```powershell
-cargo fmt --check
-cargo test -p layrs-cli --test local_data_safety -- --test-threads=1
-cargo test -p layrs-cli
-$env:RUST_TEST_THREADS='1'; cargo test -p layrs-client-core
-cargo test -p layrs-server
-pnpm --filter @layrs/studio-web check
-pnpm --filter @layrs/studio-desktop check
+pnpm run test
 ```
 
-Future UI safety coverage is under Playwright:
+Use targeted checks while iterating:
 
 ```powershell
+pnpm run test:core
+pnpm run test:desktop:ci
+pnpm run test:web:ci
+pnpm run test:e2e:ci
 pnpm test:e2e
 ```
 

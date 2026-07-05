@@ -25,6 +25,18 @@ Stop Docker services with:
 pnpm run dev:down
 ```
 
+## Test Suite
+
+Run the full canonical suite with:
+
+```powershell
+pnpm run test
+```
+
+This runs core/CLI tests, native Desktop UI tests, Studio Web tests, and the
+Desktop-to-server-to-Web E2E flow. The targeted commands below are useful while
+iterating on one layer.
+
 ## Local Durability Tests
 
 These are the highest-priority tests.
@@ -37,6 +49,11 @@ $env:RUST_TEST_THREADS='1'; cargo test -p layrs-client-core
 They cover init, diff, Step creation, pending publish, Layer switching,
 compaction and no-loss behavior. If a temporary Local Space fails, it should
 remain on disk for inspection.
+
+The canonical feature matrix lives in
+[`docs/development/test-matrix.md`](test-matrix.md). New local behavior should
+state whether it is covered at `core`, `cli`, `desktop-native`, and
+`server-sync` level.
 
 ## CLI And Server Tests
 
@@ -64,13 +81,18 @@ Playwright tests cover user-visible flows. They do not replace core or CLI
 durability tests.
 
 ```powershell
+pnpm test:desktop
 pnpm test:e2e
+pnpm test:desktop:ci
+pnpm test:e2e:ci
 pnpm test:e2e:ui
 pnpm test:e2e:trace
 ```
 
-Desktop renderer tests run the React app in a browser with a controlled fake
-Tauri bridge. Native Tauri window automation is a future layer.
+Desktop-native tests open the real Tauri app and drive the visible UI through
+Playwright over WebView2 CDP. The fake Tauri bridge tests are allowed only for
+non-critical renderer behavior; source-control workflows should be covered by
+the native app.
 
 ## Testing Priorities
 

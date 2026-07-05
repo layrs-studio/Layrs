@@ -1,7 +1,8 @@
 use crate::engine::{
-    CompactOutput, DiffOutput, InitLocalSpace, LayerDeleted, LayerOutput, LayersOutput,
-    LoginOutput, LogoutOutput, PublishOutput, ReceiveOutput, SpacesOutput, StatusOutput, StepSaved,
-    TimelineOutput, WhoamiOutput,
+    CompactOutput, DiffOutput, InitLocalSpace, LayerActionOutput, LayerDeleted, LayerOutput,
+    LayersOutput, LoginOutput, LogoutOutput, PublishOutput, ReceiveOutput, SpacesOutput,
+    StatusOutput, StepSaved, SyncOutput, TimelineOutput, WeaveConflictOutput, WeaveOutput,
+    WeaveSessionOutput, WhoamiOutput,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -126,6 +127,22 @@ pub fn receive(data: ReceiveOutput) -> Result<Rendered, String> {
     )
 }
 
+pub fn sync(data: SyncOutput) -> Result<Rendered, String> {
+    Rendered::from_serializable(
+        format!(
+            "{}\nworkspace: {}\nstatus: {}{}",
+            data.message,
+            data.workspace_id,
+            data.status,
+            data.sync_state_path
+                .as_deref()
+                .map(|path| format!("\nsync state: {path}"))
+                .unwrap_or_default()
+        ),
+        &data,
+    )
+}
+
 pub fn compact(data: CompactOutput) -> Result<Rendered, String> {
     Rendered::from_serializable(
         format!(
@@ -240,6 +257,91 @@ pub fn layer_deleted(data: LayerDeleted) -> Result<Rendered, String> {
         ),
         &data,
     )
+}
+
+pub fn layer_action(data: LayerActionOutput) -> Result<Rendered, String> {
+    let archive = data
+        .archived_steps_path
+        .as_ref()
+        .map(|path| format!("\narchive: {path}"))
+        .unwrap_or_default();
+    Rendered::from_serializable(
+        format!(
+            "{}\nLayer: {}\nname: {}{}",
+            data.message, data.layer_id, data.name, archive
+        ),
+        &data,
+    )
+}
+
+pub fn weave(data: WeaveOutput) -> Result<Rendered, String> {
+    let conflicts = data.session.conflicts.len();
+    Rendered::from_serializable(
+        format!(
+            "{}\nweave: {}\nstatus: {}\nsource: {}\ntarget: {}\nplanned steps: {}\napplied steps: {}\nconflicts: {}",
+            data.message,
+            data.session.weave_id,
+            data.session.status,
+            data.session.source_layer_id,
+            data.session.target_layer_id,
+            data.session.planned_steps.len(),
+            data.session.applied_steps.len(),
+            conflicts
+        ),
+        &data,
+    )
+}
+
+pub fn weave_status(data: Option<WeaveSessionOutput>) -> Result<Rendered, String> {
+    match data {
+        Some(session) => Rendered::from_serializable(
+            format!(
+                "active weave: {}\nstatus: {}\nsource: {}\ntarget: {}\nconflicts: {}",
+                session.weave_id,
+                session.status,
+                session.source_layer_id,
+                session.target_layer_id,
+                session.conflicts.len()
+            ),
+            &session,
+        ),
+        None => Rendered::from_serializable("No active Weave.".to_string(), &json!(null)),
+    }
+}
+
+pub fn weave_conflicts(data: Vec<WeaveConflictOutput>) -> Result<Rendered, String> {
+    let human = if data.is_empty() {
+        "No active Weave conflicts.".to_string()
+    } else {
+        data.iter()
+            .map(|conflict| {
+                let blocks = if conflict.blocks.is_empty() {
+                    String::new()
+                } else {
+                    conflict
+                        .blocks
+                        .iter()
+                        .map(|block| {
+                            format!(
+                                "\n  {}  {}  ours:{} chars  theirs:{} chars",
+                                block.block_id,
+                                block.status,
+                                block.ours.chars().count(),
+                                block.theirs.chars().count()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                };
+                format!(
+                    "{}  {}  {}  {}",
+                    conflict.conflict_id, conflict.path, conflict.lens_id, conflict.status
+                ) + &blocks
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Rendered::from_serializable(human, &data)
 }
 
 pub fn render_diff_text(text: &str, color: bool) -> String {

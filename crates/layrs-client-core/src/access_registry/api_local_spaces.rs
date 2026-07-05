@@ -138,6 +138,7 @@ fn create_local_space_internal(
                 .iter()
                 .find(|layer| layer.id == view.layer_id)
                 .and_then(|layer| layer.parent_layer_id.clone()),
+            lineage_status: default_layer_lineage_status(),
             access: view.access.clone(),
             can_open: view.can_open,
         })
@@ -263,6 +264,7 @@ pub fn create_draft_local_space(
             layer_id: layer_id.clone(),
             display_name: "Main".to_string(),
             parent_layer_id: None,
+            lineage_status: default_layer_lineage_status(),
             access: LayerAccessKind::Open,
             can_open: true,
         }],
@@ -356,6 +358,7 @@ pub fn init_local_space(
             layer_id: layer_id.clone(),
             display_name: "Main".to_string(),
             parent_layer_id: None,
+            lineage_status: default_layer_lineage_status(),
             access: LayerAccessKind::Open,
             can_open: true,
         }],
@@ -599,11 +602,10 @@ pub fn switch_layer(
     let previous_state = read_layer_state(&handle.layrs_dir, &previous_layer_id).ok();
     let changed_files = changed_file_count(previous_state.as_ref(), &current_state);
     let saved_step_id = if changed_files > 0 && config.auto_local_steps {
-        Some(write_step(
-            &handle.layrs_dir,
-            &previous_layer_id,
-            &current_state,
-        )?)
+        let step_id =
+            write_step_and_pending_publish(&handle.layrs_dir, &previous_layer_id, &current_state)?;
+        propagate_step_to_linked_children(&mut handle, &previous_layer_id, &step_id)?;
+        Some(step_id)
     } else {
         None
     };
@@ -649,11 +651,10 @@ pub fn create_layer_from_current(
     let previous_state = read_layer_state(&handle.layrs_dir, &previous_layer_id).ok();
     let changed_files = changed_file_count(previous_state.as_ref(), &current_state);
     let saved_step_id = if changed_files > 0 {
-        Some(write_step(
-            &handle.layrs_dir,
-            &previous_layer_id,
-            &current_state,
-        )?)
+        let step_id =
+            write_step_and_pending_publish(&handle.layrs_dir, &previous_layer_id, &current_state)?;
+        propagate_step_to_linked_children(&mut handle, &previous_layer_id, &step_id)?;
+        Some(step_id)
     } else {
         None
     };
@@ -667,6 +668,7 @@ pub fn create_layer_from_current(
         layer_id: layer_id.clone(),
         display_name,
         parent_layer_id: Some(previous_layer_id.clone()),
+        lineage_status: default_layer_lineage_status(),
         access: LayerAccessKind::Open,
         can_open: true,
     };
@@ -693,6 +695,7 @@ pub fn create_layer_from_current(
     let mut new_state = current_state.clone();
     new_state.layer_id = layer_id.clone();
     write_layer_state(&handle.layrs_dir, &layer_id, &new_state)?;
+    inherit_parent_steps(&handle.layrs_dir, &previous_layer_id, &layer_id)?;
     if is_server_linked_space(&handle) {
         write_linked_layer_sync_state(&handle, &layer_id, Some(&previous_layer_id))?;
     }
@@ -742,9 +745,17 @@ pub fn delete_layer(local_space: String, layer_id: String) -> Result<DeleteLayer
         .iter()
         .position(|layer| layer.layer_id == target_layer_id)
         .ok_or_else(|| format!("Layrs Desktop does not know Layer {target_layer_id}."))?;
+    let target_layer = handle.meta.layers[target_index].clone();
 
     if is_server_linked_space(&handle) && is_probably_server_layer_id(&target_layer_id) {
-        delete_linked_server_layer(&handle, &target_layer_id)?;
+        enqueue_pending_layer_deletion(
+            &handle.layrs_dir,
+            &target_layer_id,
+            &target_layer.display_name,
+        )?;
+        if let Ok(config) = DesktopConfig::load_or_create() {
+            let _ = flush_pending_layer_deletions(&handle, &config);
+        }
     }
 
     let layer_path = layer_dir(&handle.layrs_dir, &target_layer_id);
@@ -766,22 +777,200 @@ pub fn delete_layer(local_space: String, layer_id: String) -> Result<DeleteLayer
     Ok(DeleteLayerResult {
         local_space: summary_from_handle(&handle),
         deleted_layer_id: target_layer_id,
-        message: "Layer deleted.".to_string(),
+        message: "Layer deleted locally. Sync will also delete it from Studio if it exists there."
+            .to_string(),
     })
 }
 
-fn delete_linked_server_layer(handle: &LocalSpaceHandle, layer_id: &str) -> Result<(), String> {
-    ensure_linked_space_ready(handle)?;
-    let config = DesktopConfig::load_or_create()?;
-    let token = desktop_token(&config)?;
-    let delete_path = format!(
-        "/v1/workspaces/{}/spaces/{}/layers/{}",
-        url_path_segment(&handle.meta.workspace_id),
-        url_path_segment(&handle.meta.space_id),
-        url_path_segment(layer_id)
-    );
-    let _: Value = delete_json(&config.server_endpoint, &delete_path, Some(&token))?;
-    Ok(())
+pub fn disconnect_layer_from_parent(
+    local_space: String,
+    layer_id: String,
+) -> Result<LayerSettingsResult, String> {
+    let mut handle = open_local_space_handle(&local_space)?;
+    let target_layer_id = resolve_known_layer_id(&handle, &layer_id)?;
+    let layer = handle
+        .meta
+        .layers
+        .iter_mut()
+        .find(|layer| layer.layer_id == target_layer_id)
+        .ok_or_else(|| format!("Layrs Desktop does not know Layer {target_layer_id}."))?;
+
+    if layer.parent_layer_id.is_none() {
+        return Err(format!(
+            "Layer {} has no parent to disconnect from.",
+            layer.display_name
+        ));
+    }
+
+    layer.lineage_status = "unlinked".to_string();
+    handle.meta.updated_at_unix = unix_now();
+    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
+    write_access_pointer_from_meta(&handle)?;
+    remember_local_space(&handle.meta, Some(handle.active.layer_id.clone()))?;
+
+    Ok(LayerSettingsResult {
+        local_space: summary_from_handle(&handle),
+        layer_id: target_layer_id,
+        message: "Layer disconnected from its parent. Future parent Steps will not propagate automatically.".to_string(),
+        archived_steps_path: None,
+    })
+}
+
+pub fn clear_layer_steps(
+    local_space: String,
+    layer_id: String,
+    archive: bool,
+) -> Result<LayerSettingsResult, String> {
+    let handle = open_local_space_handle(&local_space)?;
+    if active_weave_id(&handle.layrs_dir)?.is_some() {
+        return Err("Finish or abort the active Weave before clearing Layer Steps.".to_string());
+    }
+
+    let target_layer_id = resolve_known_layer_id(&handle, &layer_id)?;
+    let layer_path = layer_dir(&handle.layrs_dir, &target_layer_id);
+    let steps_dir = layer_path.join("steps");
+    let pending_dir = pending_publish_dir(&handle.layrs_dir, &target_layer_id);
+    let archive_path = if archive {
+        Some(layer_path.join("archived-steps").join(format!(
+            "{}-{}",
+            unix_now(),
+            safe_id_fragment(&target_layer_id)
+        )))
+    } else {
+        None
+    };
+
+    let mut moved = 0usize;
+    if let Some(archive_path) = archive_path.as_ref() {
+        fs::create_dir_all(archive_path.join("steps")).map_err(|error| {
+            format!(
+                "Layrs Desktop could not create Layer Step archive {}: {error}",
+                archive_path.display()
+            )
+        })?;
+        fs::create_dir_all(archive_path.join("pending-publish")).map_err(|error| {
+            format!(
+                "Layrs Desktop could not create pending publish archive {}: {error}",
+                archive_path.display()
+            )
+        })?;
+    }
+
+    let steps_archive = archive_path.as_ref().map(|path| path.join("steps"));
+    let pending_archive = archive_path.as_ref().map(|path| path.join("pending-publish"));
+    moved += move_or_remove_json_files(&steps_dir, steps_archive.as_deref())?;
+    moved += move_or_remove_json_files(&pending_dir, pending_archive.as_deref())?;
+
+    Ok(LayerSettingsResult {
+        local_space: summary_from_handle(&handle),
+        layer_id: target_layer_id,
+        message: format!(
+            "Layer Steps cleared from the active history. {moved} metadata file(s) were {} and project files were kept.",
+            if archive { "archived" } else { "removed" }
+        ),
+        archived_steps_path: archive_path.map(|path| path.display().to_string()),
+    })
+}
+
+pub fn weave_active_layer_to_parent(
+    local_space: String,
+    preview: bool,
+) -> Result<WeaveOperationResult, String> {
+    let handle = open_local_space_handle(&local_space)?;
+    let active_layer_id = handle.active.layer_id.clone();
+    let active_layer = handle
+        .meta
+        .layers
+        .iter()
+        .find(|layer| layer.layer_id == active_layer_id)
+        .ok_or_else(|| format!("Layrs Desktop does not know active Layer {active_layer_id}."))?;
+    let parent_layer_id = active_layer.parent_layer_id.clone().ok_or_else(|| {
+        format!(
+            "Layer {} has no parent to Weave into.",
+            active_layer.display_name
+        )
+    })?;
+    if active_layer.lineage_status != "linked" {
+        return Err(format!(
+            "Layer {} is disconnected from its parent.",
+            active_layer.display_name
+        ));
+    }
+    weave_layers(local_space, active_layer_id, parent_layer_id, preview)
+}
+
+fn resolve_known_layer_id(handle: &LocalSpaceHandle, selector: &str) -> Result<String, String> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err("Choose a Layer.".to_string());
+    }
+    handle
+        .meta
+        .layers
+        .iter()
+        .find(|layer| {
+            layer.layer_id == selector || layer.display_name.eq_ignore_ascii_case(selector)
+        })
+        .map(|layer| layer.layer_id.clone())
+        .ok_or_else(|| format!("Layrs Desktop does not know Layer {selector}."))
+}
+
+fn move_or_remove_json_files(dir: &Path, archive_dir: Option<&Path>) -> Result<usize, String> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    let mut moved = 0usize;
+    for entry in fs::read_dir(dir).map_err(|error| {
+        format!(
+            "Layrs Desktop could not read Layer metadata directory {}: {error}",
+            dir.display()
+        )
+    })? {
+        let path = entry
+            .map_err(|error| {
+                format!(
+                    "Layrs Desktop could not read Layer metadata entry {}: {error}",
+                    dir.display()
+                )
+            })?
+            .path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+
+        if let Some(archive_dir) = archive_dir {
+            fs::create_dir_all(archive_dir).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not create archive directory {}: {error}",
+                    archive_dir.display()
+                )
+            })?;
+            let file_name = path.file_name().ok_or_else(|| {
+                format!(
+                    "Layrs Desktop could not read Layer metadata filename {}.",
+                    path.display()
+                )
+            })?;
+            let target = archive_dir.join(file_name);
+            fs::rename(&path, &target).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not archive Layer metadata {} to {}: {error}",
+                    path.display(),
+                    target.display()
+                )
+            })?;
+        } else {
+            fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not remove Layer metadata {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+        moved += 1;
+    }
+    Ok(moved)
 }
 
 fn create_linked_server_layer(

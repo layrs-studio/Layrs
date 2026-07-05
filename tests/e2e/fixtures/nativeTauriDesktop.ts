@@ -9,6 +9,8 @@ type JsonRecord = Record<string, unknown>;
 export interface NativeTauriDesktop {
   browser: Browser;
   page: Page;
+  desktopUrl: string;
+  instanceId: string;
   invoke<T = unknown>(command: string, args?: JsonRecord): Promise<T>;
   pause(ms?: number): Promise<void>;
   dispose(): Promise<void>;
@@ -31,18 +33,25 @@ declare global {
 
 const repoRoot = process.cwd();
 const desktopAppDir = resolve(repoRoot, "apps/studio-desktop");
+const desktopE2eCargoTargetDir = resolve(repoRoot, "target", "studio-desktop-e2e");
+const nativeWindowSize = { width: 1920, height: 1080 };
 
 export async function launchNativeTauriDesktop(
   testInfo: TestInfo,
   options: NativeTauriDesktopOptions = {}
 ): Promise<NativeTauriDesktop> {
   const debugPort = await freePort();
+  const desktopPort = await freePort();
   const stateRoot = testInfo.outputPath("native-tauri-state");
   await mkdir(stateRoot, { recursive: true });
 
   const logs: string[] = [];
   const visual = options.visual ?? process.env.LAYRS_E2E_VISUAL !== "0";
-  const child = spawnTauriDev(debugPort, stateRoot, logs, options, visual);
+  const instanceId = makeInstanceId(testInfo);
+  const desktopUrl = `http://127.0.0.1:${desktopPort}`;
+  const configPath = await writeE2eTauriConfig(stateRoot, desktopPort, instanceId);
+  await stopStaleE2eDesktopProcesses();
+  const child = spawnTauriDev(debugPort, desktopPort, instanceId, configPath, stateRoot, logs, options, visual);
 
   let browser: Browser | undefined;
   try {
@@ -50,13 +59,15 @@ export async function launchNativeTauriDesktop(
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, {
       slowMo: visual ? visualSlowMoMs() : 0
     });
-    const page = await waitForTauriPage(browser, logs, 60_000);
+    const page = await waitForTauriPage(browser, desktopUrl, logs, 60_000);
     await page.bringToFront();
     await expect.poll(() => hasRealTauriInvoke(page), { timeout: 30_000 }).toBe(true);
 
     return {
       browser,
       page,
+      desktopUrl,
+      instanceId,
       invoke: (command, args) =>
         page.evaluate(
           ([commandName, commandArgs]) => window.__TAURI__!.core!.invoke(commandName, commandArgs),
@@ -70,12 +81,14 @@ export async function launchNativeTauriDesktop(
         await attachLogs(testInfo, logs);
         await browser?.close().catch(() => undefined);
         stopProcessTree(child);
+        await stopStaleE2eDesktopProcesses();
       }
     };
   } catch (error) {
     await attachLogs(testInfo, logs);
     await browser?.close().catch(() => undefined);
     stopProcessTree(child);
+    await stopStaleE2eDesktopProcesses();
     throw error;
   }
 }
@@ -107,6 +120,9 @@ async function hasRealTauriInvoke(page: Page): Promise<boolean> {
 
 function spawnTauriDev(
   debugPort: number,
+  desktopPort: number,
+  instanceId: string,
+  configPath: string,
   stateRoot: string,
   logs: string[],
   options: NativeTauriDesktopOptions,
@@ -126,6 +142,11 @@ function spawnTauriDev(
     ...process.env,
     ...isolatedAppEnv,
     ...(options.selectedFolder ? { LAYRS_E2E_SELECTED_FOLDER: options.selectedFolder } : {}),
+    CARGO_TARGET_DIR: desktopE2eCargoTargetDir,
+    LAYRS_E2E_DESKTOP_PORT: String(desktopPort),
+    LAYRS_E2E_INSTANCE_ID: instanceId,
+    LAYRS_E2E_WINDOW_SIZE: `${nativeWindowSize.width}x${nativeWindowSize.height}`,
+    WEBVIEW2_USER_DATA_FOLDER: resolve(stateRoot, "WebView2"),
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`
   };
   if (!visual) {
@@ -137,8 +158,8 @@ function spawnTauriDev(
   const child = spawn(
     process.platform === "win32" ? "cmd.exe" : "pnpm",
     process.platform === "win32"
-      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev"]
-      : ["tauri", "dev"],
+      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev", "--config", configPath]
+      : ["tauri", "dev", "--config", configPath],
     {
       cwd: desktopAppDir,
       env,
@@ -150,6 +171,7 @@ function spawnTauriDev(
   child.stdout.on("data", (chunk) => pushLog(logs, chunk));
   child.stderr.on("data", (chunk) => pushLog(logs, chunk));
   child.on("exit", (code, signal) => pushLog(logs, `tauri dev exited with ${signal ?? code}`));
+  pushLog(logs, `native e2e instance ${instanceId} frontend=${desktopPort} cdp=${debugPort}\n`);
 
   return child;
 }
@@ -172,11 +194,16 @@ async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number) 
   throw new Error(`Timed out waiting for WebView2 CDP on ${url}.\n${logs.slice(-80).join("")}`);
 }
 
-async function waitForTauriPage(browser: Browser, logs: string[], timeoutMs: number): Promise<Page> {
+async function waitForTauriPage(
+  browser: Browser,
+  desktopUrl: string,
+  logs: string[],
+  timeoutMs: number
+): Promise<Page> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const pages = browser.contexts().flatMap((context) => context.pages());
-    const page = pages.find((candidate) => candidate.url().startsWith("http://127.0.0.1:6174"));
+    const page = pages.find((candidate) => candidate.url().startsWith(desktopUrl));
     if (page) {
       await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => undefined);
       return page;
@@ -184,7 +211,38 @@ async function waitForTauriPage(browser: Browser, logs: string[], timeoutMs: num
     await delay(250);
   }
 
-  throw new Error(`Timed out waiting for a Tauri WebView page.\n${logs.slice(-80).join("")}`);
+  throw new Error(`Timed out waiting for a Tauri WebView page at ${desktopUrl}.\n${logs.slice(-80).join("")}`);
+}
+
+async function writeE2eTauriConfig(stateRoot: string, desktopPort: number, instanceId: string): Promise<string> {
+  const configPath = resolve(stateRoot, "tauri.e2e.conf.json");
+  const title = `Layrs Studio E2E ${instanceId}`;
+  const config = {
+    build: {
+      beforeDevCommand: `pnpm exec vite --host 127.0.0.1 --port ${desktopPort} --strictPort`,
+      devUrl: `http://127.0.0.1:${desktopPort}`
+    },
+    app: {
+      windows: [
+        {
+          label: "main",
+          title,
+          width: nativeWindowSize.width,
+          height: nativeWindowSize.height,
+          minWidth: 960,
+          minHeight: 640
+        }
+      ]
+    }
+  };
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return configPath;
+}
+
+function makeInstanceId(testInfo: TestInfo): string {
+  const safeTitle = testInfo.titlePath.join("-").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const entropy = Math.random().toString(36).slice(2, 8);
+  return `${process.pid}-${testInfo.workerIndex}-${testInfo.retry}-${safeTitle.slice(0, 48)}-${entropy}`;
 }
 
 async function freePort(): Promise<number> {
@@ -217,6 +275,26 @@ function stopProcessTree(child: ChildProcessWithoutNullStreams) {
   }
 
   child.kill("SIGTERM");
+}
+
+async function stopStaleE2eDesktopProcesses() {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-Command",
+      "Get-Process -Name layrs-studio-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*target\\\\studio-desktop-e2e*' } | Stop-Process -Force"
+    ],
+    {
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  await delay(800);
 }
 
 async function attachLogs(testInfo: TestInfo, logs: string[]) {

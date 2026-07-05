@@ -194,6 +194,64 @@ async fn insert_layer_step_in_tx(
         .filter(|step| !step.changed_paths.is_empty())
         .map(|step| step.changed_paths.clone())
         .unwrap_or_else(|| changed_paths.to_vec());
+    let timeline_position = step
+        .and_then(|step| step.timeline_position)
+        .filter(|value| *value >= 0);
+    let origin_layer_id =
+        match step.and_then(|step| cleaned_optional_text(step.origin_layer_id.as_deref())) {
+            Some(candidate) => {
+                let exists: bool = sqlx::query_scalar(
+                    r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM layers
+                    WHERE workspace_id = $1
+                      AND space_id = $2
+                      AND layer_id = $3
+                )
+                "#,
+                )
+                .bind(workspace_id)
+                .bind(space_id)
+                .bind(&candidate)
+                .fetch_one(&mut **tx)
+                .await?;
+                if exists {
+                    Some(candidate)
+                } else {
+                    Some(layer_id.to_string())
+                }
+            }
+            None => Some(layer_id.to_string()),
+        };
+    let origin_step_id = step
+        .and_then(|step| cleaned_optional_text(step.origin_step_id.as_deref()))
+        .or_else(|| Some(step_id.clone()));
+    let origin_layer_name = match step.and_then(|step| cleaned_optional_text(step.origin_layer_name.as_deref())) {
+        Some(name) => name,
+        None => {
+            let fallback_layer_id = origin_layer_id.as_deref().unwrap_or(layer_id);
+            sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT name
+                FROM layers
+                WHERE workspace_id = $1
+                  AND space_id = $2
+                  AND layer_id = $3
+                "#,
+            )
+            .bind(workspace_id)
+            .bind(space_id)
+            .bind(fallback_layer_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| fallback_layer_id.to_string())
+        }
+    };
+    let step_kind = step
+        .and_then(|step| cleaned_optional_text(step.step_kind.as_deref()))
+        .filter(|kind| matches!(kind.as_str(), "native" | "inherited" | "woven"))
+        .unwrap_or_else(|| "native".to_string());
     let captured_at_unix = step
         .and_then(|step| step.captured_at_unix)
         .filter(|value| *value > 0)
@@ -204,10 +262,12 @@ async fn insert_layer_step_in_tx(
         INSERT INTO layer_steps
             (step_id, workspace_id, space_id, layer_id, parent_step_id,
              base_layer_id, base_tree_id, root_tree_id, changed_paths,
-             source_client_id, sync_batch_id, created_by_account_id, captured_at)
+             source_client_id, sync_batch_id, created_by_account_id,
+             timeline_position, origin_layer_id, origin_layer_name, origin_step_id, step_kind, captured_at)
         VALUES
             ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-             $10, $11, $12, COALESCE(to_timestamp($13::double precision), now()))
+             $10, $11, $12, $13, $14, $15, $16, $17,
+             COALESCE(to_timestamp($18::double precision), now()))
         ON CONFLICT (step_id) DO UPDATE SET
             parent_step_id = COALESCE(EXCLUDED.parent_step_id, layer_steps.parent_step_id),
             base_layer_id = EXCLUDED.base_layer_id,
@@ -215,7 +275,12 @@ async fn insert_layer_step_in_tx(
             root_tree_id = EXCLUDED.root_tree_id,
             changed_paths = EXCLUDED.changed_paths,
             source_client_id = EXCLUDED.source_client_id,
-            sync_batch_id = EXCLUDED.sync_batch_id
+            sync_batch_id = EXCLUDED.sync_batch_id,
+            timeline_position = COALESCE(EXCLUDED.timeline_position, layer_steps.timeline_position),
+            origin_layer_id = COALESCE(EXCLUDED.origin_layer_id, layer_steps.origin_layer_id),
+            origin_layer_name = COALESCE(NULLIF(EXCLUDED.origin_layer_name, ''), layer_steps.origin_layer_name),
+            origin_step_id = COALESCE(EXCLUDED.origin_step_id, layer_steps.origin_step_id),
+            step_kind = EXCLUDED.step_kind
         "#,
     )
     .bind(&step_id)
@@ -230,6 +295,11 @@ async fn insert_layer_step_in_tx(
     .bind(source_client_id)
     .bind(sync_batch_id)
     .bind(account_id)
+    .bind(timeline_position)
+    .bind(origin_layer_id.as_deref())
+    .bind(&origin_layer_name)
+    .bind(origin_step_id.as_deref())
+    .bind(&step_kind)
     .bind(captured_at_unix)
     .execute(&mut **tx)
     .await?;

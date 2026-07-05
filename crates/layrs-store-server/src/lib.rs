@@ -45,6 +45,10 @@ pub mod schema {
     pub const SYNC_BATCHES: &str = "sync_batches";
     pub const SYNC_BATCH_CHANGES: &str = "sync_batch_changes";
     pub const WEAVES: &str = "weaves";
+    pub const WEAVE_REQUESTS: &str = "weave_requests";
+    pub const WEAVE_SESSIONS: &str = "weave_sessions";
+    pub const WEAVE_CONFLICTS: &str = "weave_conflicts";
+    pub const WEAVE_RESOLUTIONS: &str = "weave_resolutions";
     pub const PROOFS: &str = "proofs";
     pub const POLICIES: &str = "policies";
     pub const TIMELINE_EVENTS: &str = "timeline_events";
@@ -84,6 +88,10 @@ pub mod schema {
         SYNC_BATCHES,
         SYNC_BATCH_CHANGES,
         WEAVES,
+        WEAVE_REQUESTS,
+        WEAVE_SESSIONS,
+        WEAVE_CONFLICTS,
+        WEAVE_RESOLUTIONS,
         PROOFS,
         POLICIES,
         TIMELINE_EVENTS,
@@ -99,6 +107,7 @@ pub mod schema {
         "V2 file objects are assembled from ordered object_chunks",
         "layer_heads advance atomically after policy_epoch and object availability checks",
         "layer_steps store synchronizable anonymous Layer snapshots separate from Layer heads",
+        "weave sessions must preserve the target layer pre-weave tree until applied or aborted",
         "timeline events should be append-only and cursor-addressable",
         "policies should be evaluated before publish decisions are committed",
     ];

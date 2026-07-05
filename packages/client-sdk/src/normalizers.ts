@@ -51,6 +51,8 @@ export type StudioSnapshotWire = Partial<StudioFixture> & {
 type LayerWire = Partial<Layer> & {
   space_id?: LayrsId;
   parent_id?: LayrsId;
+  parent_layer_id?: LayrsId;
+  lineage_status?: string;
   artifact_ids?: LayrsId[];
   step_ids?: LayrsId[];
   gate_ids?: LayrsId[];
@@ -344,6 +346,10 @@ export function normalizeLayerStep(payload: unknown): LayerStep | undefined {
     id: stringFrom(record.id) ?? stepId,
     stepId,
     layerId,
+    originLayerId: stringFrom(record.originLayerId) ?? stringFrom(record.origin_layer_id),
+    originLayerName: stringFrom(record.originLayerName) ?? stringFrom(record.origin_layer_name),
+    originStepId: stringFrom(record.originStepId) ?? stringFrom(record.origin_step_id),
+    stepKind: stringFrom(record.stepKind) ?? stringFrom(record.step_kind),
     baseLayerId: stringFrom(record.baseLayerId) ?? stringFrom(record.base_layer_id),
     baseTreeId: stringFrom(record.baseTreeId) ?? stringFrom(record.base_tree_id),
     rootTreeId: stringFrom(record.rootTreeId) ?? stringFrom(record.root_tree_id),
@@ -784,7 +790,9 @@ function layerFromWire(layer: Layer | LayerWire): Layer {
   return {
     id: wire.id ?? "",
     spaceId: wire.spaceId ?? wire.space_id ?? "",
-    parentId: wire.parentId ?? wire.parent_id,
+    parentId: wire.parentId ?? wire.parent_id ?? wire.parentLayerId ?? wire.parent_layer_id,
+    parentLayerId: wire.parentLayerId ?? wire.parent_layer_id ?? wire.parentId ?? wire.parent_id,
+    lineageStatus: wire.lineageStatus ?? wire.lineage_status ?? "linked",
     name: wire.name ?? "Untitled Layer",
     kind: wire.kind ?? "proposal",
     status: wire.status ?? "active",

@@ -35,6 +35,9 @@ pub enum CliCommand {
     Publish {
         workspace: Option<String>,
     },
+    Sync {
+        workspace: Option<String>,
+    },
     Receive,
     Compact,
     Status,
@@ -55,6 +58,31 @@ pub enum CliCommand {
         name_or_id: String,
         yes: bool,
     },
+    LayerDisconnect {
+        name_or_id: String,
+        yes: bool,
+    },
+    LayerClearSteps {
+        name_or_id: String,
+        yes: bool,
+    },
+    Weave {
+        source: String,
+        target: String,
+        preview: bool,
+    },
+    WeaveParent {
+        preview: bool,
+    },
+    WeaveStatus,
+    WeaveConflicts,
+    WeaveResolve {
+        path: String,
+        resolution: String,
+        file: Option<PathBuf>,
+    },
+    WeaveContinue,
+    WeaveAbort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +139,7 @@ where
         "diff" => parse_diff(args)?,
         "timeline" => parse_timeline(args)?,
         "publish" => parse_publish(args)?,
+        "sync" => parse_sync(args)?,
         "receive" => parse_no_extra(args, CliCommand::Receive)?,
         "compact" => parse_no_extra(args, CliCommand::Compact)?,
         "status" => parse_no_extra(args, CliCommand::Status)?,
@@ -120,6 +149,7 @@ where
         "spaces" => parse_no_extra(args, CliCommand::Spaces)?,
         "layers" => parse_no_extra(args, CliCommand::Layers)?,
         "layer" => parse_layer(args)?,
+        "weave" => parse_weave(args)?,
         _ => {
             return Err(CliParseError::new(format!(
                 "unknown command `{command_name}`; run `layrs --help`"
@@ -140,6 +170,7 @@ Commands:
   layrs diff [STEP_ID] [--stat] [--name-only] [--window START:LIMIT] [--wrap|--no-wrap]
   layrs timeline [--limit N]
   layrs publish [--workspace WORKSPACE_ID]
+  layrs sync [--workspace WORKSPACE_ID]
   layrs receive
   layrs compact
   layrs status
@@ -151,11 +182,118 @@ Commands:
   layrs layer use NAME_OR_ID
   layrs layer create NAME
   layrs layer delete NAME_OR_ID [--yes]
+  layrs layer disconnect NAME_OR_ID [--yes]
+  layrs layer clear-steps NAME_OR_ID [--yes]
+  layrs weave parent [--preview]
+  layrs weave SOURCE --target TARGET [--preview]
+  layrs weave status
+  layrs weave conflicts
+  layrs weave resolve PATH [--block N] --ours|--theirs|--base|--both-ours-first|--both-theirs-first|--manual-text FILE_OR_STDIN|--file FILE
+  layrs weave continue
+  layrs weave abort
 
 Global flags:
   --space PATH     Use a local Layrs space at PATH instead of discovering from cwd.
   --json           Emit stable JSON: {\"ok\":true,\"data\":...} or {\"ok\":false,\"error\":...}.
   --no-color       Disable ANSI color in human output."
+}
+
+fn parse_weave(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let Some(first) = args.first().cloned() else {
+        return Err(CliParseError::new(
+            "usage: layrs weave parent [--preview] | SOURCE --target TARGET [--preview] | status | conflicts | resolve PATH [--block N] --ours|--theirs|--base|--both-ours-first|--both-theirs-first|--manual-text FILE_OR_STDIN|--file FILE | continue | abort",
+        ));
+    };
+    args.remove(0);
+
+    match first.as_str() {
+        "status" => parse_no_extra(args, CliCommand::WeaveStatus),
+        "conflicts" => parse_no_extra(args, CliCommand::WeaveConflicts),
+        "continue" => parse_no_extra(args, CliCommand::WeaveContinue),
+        "abort" => parse_no_extra(args, CliCommand::WeaveAbort),
+        "resolve" => parse_weave_resolve(args),
+        "parent" => {
+            let preview = take_bool_flag(&mut args, "--preview")?;
+            parse_no_extra(args, CliCommand::WeaveParent { preview })
+        }
+        _ => {
+            let preview = take_bool_flag(&mut args, "--preview")?;
+            let target = take_string_option(&mut args, "--target")?
+                .ok_or_else(|| CliParseError::new("layrs weave requires --target TARGET."))?;
+            parse_no_extra(
+                args,
+                CliCommand::Weave {
+                    source: first,
+                    target,
+                    preview,
+                },
+            )
+        }
+    }
+}
+
+fn parse_weave_resolve(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let block = take_string_option(&mut args, "--block")?;
+    let file = take_path_option(&mut args, "--file")?;
+    let manual_text = take_path_option(&mut args, "--manual-text")?;
+    let ours = take_bool_flag(&mut args, "--ours")?;
+    let theirs = take_bool_flag(&mut args, "--theirs")?;
+    let base = take_bool_flag(&mut args, "--base")?;
+    let both_ours_first = take_bool_flag(&mut args, "--both-ours-first")?;
+    let both_theirs_first = take_bool_flag(&mut args, "--both-theirs-first")?;
+    let selected = [
+        ours,
+        theirs,
+        base,
+        both_ours_first,
+        both_theirs_first,
+        file.is_some(),
+        manual_text.is_some(),
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if selected != 1 {
+        return Err(CliParseError::new(
+            "layrs weave resolve needs exactly one of --ours, --theirs, --base, --both-ours-first, --both-theirs-first, --manual-text FILE, or --file FILE.",
+        ));
+    }
+    if block.is_some() && file.is_some() {
+        return Err(CliParseError::new(
+            "layrs weave resolve --block cannot be combined with --file.",
+        ));
+    }
+    if block.is_none() && manual_text.is_some() {
+        return Err(CliParseError::new(
+            "layrs weave resolve --manual-text requires --block.",
+        ));
+    }
+    let path = take_required_positional(args, "PATH", "weave resolve")?;
+    let choice = if ours {
+        "ours"
+    } else if theirs {
+        "theirs"
+    } else if base {
+        "base"
+    } else if both_ours_first {
+        "both_ours_then_theirs"
+    } else if both_theirs_first {
+        "both_theirs_then_ours"
+    } else if manual_text.is_some() {
+        "manual"
+    } else {
+        "file"
+    }
+    .to_string();
+    let replacement = file.or(manual_text);
+    let resolution = block
+        .map(|block| format!("block:{block}:{choice}"))
+        .unwrap_or(choice);
+    Ok(CliCommand::WeaveResolve {
+        path,
+        resolution,
+        file: replacement,
+    })
 }
 
 fn parse_init(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
@@ -194,6 +332,11 @@ fn parse_publish(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     parse_no_extra(args, CliCommand::Publish { workspace })
 }
 
+fn parse_sync(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let workspace = take_string_option(&mut args, "--workspace")?;
+    parse_no_extra(args, CliCommand::Sync { workspace })
+}
+
 fn parse_login(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     let endpoint = take_string_option(&mut args, "--endpoint")?;
     parse_no_extra(args, CliCommand::Login { endpoint })
@@ -202,7 +345,7 @@ fn parse_login(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
 fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     let Some(subcommand) = args.first().cloned() else {
         return Err(CliParseError::new(
-            "usage: layrs layer use NAME_OR_ID | create NAME | delete NAME_OR_ID [--yes]",
+            "usage: layrs layer use NAME_OR_ID | create NAME | delete NAME_OR_ID [--yes] | disconnect NAME_OR_ID [--yes] | clear-steps NAME_OR_ID [--yes]",
         ));
     };
     args.remove(0);
@@ -221,8 +364,18 @@ fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
             let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer delete")?;
             Ok(CliCommand::LayerDelete { name_or_id, yes })
         }
+        "disconnect" => {
+            let yes = take_bool_flag(&mut args, "--yes")?;
+            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer disconnect")?;
+            Ok(CliCommand::LayerDisconnect { name_or_id, yes })
+        }
+        "clear-steps" => {
+            let yes = take_bool_flag(&mut args, "--yes")?;
+            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer clear-steps")?;
+            Ok(CliCommand::LayerClearSteps { name_or_id, yes })
+        }
         _ => Err(CliParseError::new(format!(
-            "unknown layer command `{subcommand}`; expected use, create, or delete"
+            "unknown layer command `{subcommand}`; expected use, create, delete, disconnect, or clear-steps"
         ))),
     }
 }
@@ -469,6 +622,85 @@ mod tests {
     fn parses_compact() {
         let cli = parse_args(["compact"]).expect("parse");
         assert_eq!(cli.command, CliCommand::Compact);
+    }
+
+    #[test]
+    fn parses_sync_workspace() {
+        let cli = parse_args(["sync", "--workspace", "workspace_123"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            CliCommand::Sync {
+                workspace: Some("workspace_123".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn parses_weave_block_resolution() {
+        let cli = parse_args(["weave", "resolve", "story.txt", "--block", "2", "--theirs"])
+            .expect("parse");
+
+        assert_eq!(
+            cli.command,
+            CliCommand::WeaveResolve {
+                path: "story.txt".to_string(),
+                resolution: "block:2:theirs".to_string(),
+                file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_weave_manual_text_block_resolution() {
+        let cli = parse_args([
+            "weave",
+            "resolve",
+            "story.txt",
+            "--block",
+            "2",
+            "--manual-text",
+            "resolved.txt",
+        ])
+        .expect("parse");
+
+        assert_eq!(
+            cli.command,
+            CliCommand::WeaveResolve {
+                path: "story.txt".to_string(),
+                resolution: "block:2:manual".to_string(),
+                file: Some(PathBuf::from("resolved.txt")),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_weave_manual_text_without_block() {
+        let error = parse_args([
+            "weave",
+            "resolve",
+            "story.txt",
+            "--manual-text",
+            "resolved.txt",
+        ])
+        .expect_err("parse should fail");
+
+        assert!(error.message().contains("--manual-text requires --block"));
+    }
+
+    #[test]
+    fn rejects_weave_block_resolution_with_file() {
+        let error = parse_args([
+            "weave",
+            "resolve",
+            "story.txt",
+            "--block",
+            "1",
+            "--file",
+            "resolved.txt",
+        ])
+        .expect_err("parse should fail");
+
+        assert!(error.message().contains("--block cannot be combined"));
     }
 
     #[test]

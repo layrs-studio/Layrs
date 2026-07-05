@@ -1,35 +1,18 @@
 import { LensDiffHost } from "@layrs/lenses";
-import { DangerZone, StatusPill, Tabs } from "@layrs/ui";
-import type {
-  AvailableSpaceView,
-  BootstrapData,
-  LayerAccessKind,
-  LensDiffEntry,
-  LocalLayerSummary,
-  LocalSpaceSummary,
-  WorkingTreeScan
-} from "./tauri";
+import { DangerZone, Tabs } from "@layrs/ui";
+import type { AvailableSpaceView, BootstrapData, LayerAccessKind, LensDiffEntry, LocalLayerSummary, LocalSpaceSummary, WeaveSessionSummary, WorkingTreeScan } from "./tauri";
+import { LayerRailPanel } from "./DesktopLayerRail";
 import { FolderChoice, FolderField, PathText } from "./DesktopSettingsView";
 import {
-  activeLayerCaption,
   compactPath,
   defaultCreateDraft,
   diffWindowState,
   displayPath,
-  formatUnixTime,
   layerDisplayName,
-  layersByLatestStep,
   syncStatusLabel
 } from "./desktopModel";
-import type {
-  CommandKey,
-  CreateDraft,
-  LayerFile,
-  LocalChange,
-  LocalSpaceTab,
-  PulseTarget,
-  TimelineItem
-} from "./desktopTypes";
+import type { CommandKey, CreateDraft, LayerFile, LocalChange, LocalSpaceTab, PulseTarget, TimelineItem } from "./desktopTypes";
+import { WeavesPanel } from "./DesktopWeavesView";
 
 interface AvailableSpacesViewProps {
   spaces: AvailableSpaceView[];
@@ -227,12 +210,12 @@ export function DraftLocalSpaceView({
             >
               Create empty local Space
             </button>
-            <em>Stays local until you choose a Workspace and send it to Studio from the Local header.</em>
+            <em>Stays local until you link it from the Local Space Sync tab.</em>
           </div>
           <div className="desktop-setting-card">
             <span>Publish path</span>
             <strong>Draft publishing stays in Local</strong>
-            <em>Create empty local Space still opens as a draft. Select it under Local, choose a Workspace, then Send to Studio before regular Publish is enabled.</em>
+            <em>Create empty local Space still opens as a draft. Select it under Local, then use Sync to create it in a Workspace.</em>
           </div>
         </div>
       </section>
@@ -253,31 +236,26 @@ interface LocalSpacesViewProps {
   timeline: TimelineItem[];
   workingTree?: WorkingTreeScan;
   workingTreeChangeCount: number;
-  workspaces: BootstrapData["workspaces"];
-  sendWorkspaceId: string;
-  newLayerName: string;
   layerSearchQuery: string;
   pulseTargets: Set<PulseTarget>;
   activeTab: LocalSpaceTab;
   busyAction: string | null;
   commandErrors: Partial<Record<CommandKey, string>>;
-  onSelectSpace: (localSpaceId: string) => void;
-  onOpenSpace: (localSpaceId: string) => void;
-  onForgetSpace: (localSpaceId: string) => void;
   onScan: (localSpaceId: string) => void;
   onSelectDiff: (path: string) => void;
   onLoadDiffWindow: (path: string, start: number, limit: number) => void;
   onSelectTimeline: (item: TimelineItem) => void;
-  onSendWorkspaceChange: (value: string) => void;
-  onSendDraft: () => void;
   onSelectLayer: (layerId: string) => void;
-  onNewLayerNameChange: (value: string) => void;
   onLayerSearchChange: (value: string) => void;
   onTabChange: (tab: LocalSpaceTab) => void;
   onCreateLayer: () => void;
+  onWeaveToParent: () => void;
+  onSync: () => void;
+  onClearLayerSteps: (layerId: string) => void;
   onDeleteLayer: (layerId: string) => void;
-  onReceive: () => void;
-  onPublish: () => void;
+  onDisconnectLayer: (layerId: string) => void;
+  onOpenSpaceSettings: () => void;
+  onOpenSpaceWeaves: () => void;
 }
 
 export function LocalSpacesView({
@@ -293,33 +271,32 @@ export function LocalSpacesView({
   timeline,
   workingTree,
   workingTreeChangeCount,
-  workspaces,
-  sendWorkspaceId,
-  newLayerName,
   layerSearchQuery,
   pulseTargets,
   activeTab,
   busyAction,
   commandErrors,
-  onSelectSpace,
-  onOpenSpace,
-  onForgetSpace,
   onScan,
   onSelectDiff,
   onLoadDiffWindow,
   onSelectTimeline,
-  onSendWorkspaceChange,
-  onSendDraft,
   onSelectLayer,
-  onNewLayerNameChange,
   onLayerSearchChange,
   onTabChange,
   onCreateLayer,
+  onWeaveToParent,
+  onSync,
+  onClearLayerSteps,
   onDeleteLayer,
-  onReceive,
-  onPublish
+  onDisconnectLayer,
+  onOpenSpaceSettings,
+  onOpenSpaceWeaves
 }: LocalSpacesViewProps) {
   const activeAccess = selectedLayer?.access ?? "open";
+  const parentLayer = selectedLayer?.parentLayerId
+    ? selectedSpace?.layers.find((layer) => layer.layerId === selectedLayer.parentLayerId) ?? null
+    : null;
+  const canWeaveToParent = Boolean(selectedLayer?.parentLayerId && selectedLayer?.lineageStatus !== "unlinked");
   const pulseClassName = [
     pulseTargets.has("changes") ? "is-pulsing-changes" : "",
     pulseTargets.has("layer") ? "is-pulsing-layer" : "",
@@ -330,42 +307,6 @@ export function LocalSpacesView({
     .join(" ");
   return (
     <div className={`desktop-view desktop-view--local ${pulseClassName}`} id="desktop-local">
-      <section className="desktop-panel desktop-local-list">
-        <div className="layrs-section-heading">
-          <span>Local Spaces</span>
-          <h2>This machine</h2>
-        </div>
-        <div className="desktop-stack">
-          {localSpaces.map((space) => (
-            <button
-              type="button"
-              className={selectedSpace?.localSpaceId === space.localSpaceId ? "desktop-space-card is-active" : "desktop-space-card"}
-              key={space.localSpaceId}
-              onClick={() => onSelectSpace(space.localSpaceId)}
-            >
-              <strong>
-                {space.name}
-                {space.state === "draft" ? <span className="desktop-inline-badge">Draft</span> : null}
-              </strong>
-              <PathText value={space.rootPath} />
-              <em>{activeLayerCaption(space)}</em>
-            </button>
-          ))}
-        </div>
-        {localSpaces.length === 0 ? <p className="desktop-empty">No Local Spaces detected. Pull one from Distant or create one offline.</p> : null}
-        {selectedSpace ? (
-          <LayerRailPanel
-            busyAction={busyAction}
-            query={layerSearchQuery}
-            selectedLayer={selectedLayer}
-            selectedSpace={selectedSpace}
-            workingTree={workingTree}
-            onQueryChange={onLayerSearchChange}
-            onSelectLayer={onSelectLayer}
-          />
-        ) : null}
-      </section>
-
       <section className="desktop-panel desktop-space-detail">
         {selectedSpace ? (
           <>
@@ -376,57 +317,39 @@ export function LocalSpacesView({
                   {selectedSpace.name}
                   {selectedSpace.state === "draft" ? <span className="desktop-inline-badge">Local draft</span> : null}
                 </h1>
+                <div className="desktop-space-nav">
+                  <button type="button" className="desktop-ghost-button" onClick={onOpenSpaceSettings}>
+                    Space settings
+                  </button>
+                  <button type="button" className="desktop-ghost-button" onClick={onOpenSpaceWeaves}>
+                    Weaves
+                  </button>
+                </div>
               </div>
               <div className="desktop-actions">
-                {selectedSpace.state === "draft" ? (
-                  <>
-                    <select
-                      aria-label="Workspace target for Draft Local Space"
-                      value={sendWorkspaceId}
-                      onChange={(event) => onSendWorkspaceChange(event.currentTarget.value)}
-                    >
-                      <option value="">Choose Workspace</option>
-                      {workspaces.map((workspace) => (
-                        <option value={workspace.id} key={workspace.id}>
-                          {workspace.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="desktop-primary-button"
-                      onClick={onSendDraft}
-                      disabled={!sendWorkspaceId || busyAction === "send-draft" || Boolean(commandErrors["send-draft"])}
-                    >
-                      Send to Studio
-                    </button>
-                  </>
-                ) : null}
-                <button
-                  type="button"
-                  className="desktop-secondary-button"
-                  onClick={onReceive}
-                  disabled={selectedSpace.state === "draft" || busyAction === "receive" || Boolean(commandErrors.receive)}
-                >
-                  Receive
-                </button>
                 <button
                   type="button"
                   className="desktop-primary-button"
-                  onClick={onPublish}
+                  onClick={onSync}
                   disabled={
-                    (selectedSpace.state === "draft" && !sendWorkspaceId) ||
-                    busyAction === "publish" ||
+                    busyAction === "sync" ||
                     busyAction === "send-draft" ||
-                    Boolean(commandErrors.publish) ||
+                    Boolean(commandErrors.sync) ||
                     Boolean(commandErrors["send-draft"])
                   }
                 >
-                  Publish
+                  Sync
                 </button>
-                <button type="button" className="desktop-secondary-button" onClick={() => onOpenSpace(selectedSpace.localSpaceId)} disabled={Boolean(commandErrors.open)}>
-                  Open folder
-                </button>
+                {parentLayer && canWeaveToParent ? (
+                  <button
+                    type="button"
+                    className="desktop-secondary-button"
+                    onClick={onWeaveToParent}
+                    disabled={busyAction === "weave-parent" || Boolean(commandErrors["weave-parent"])}
+                  >
+                    Weave to {parentLayer.displayName}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="desktop-secondary-button"
@@ -435,17 +358,6 @@ export function LocalSpacesView({
                 >
                   Scan
                 </button>
-                <details className="desktop-more-menu">
-                  <summary>More</summary>
-                  <button
-                    type="button"
-                    className="desktop-danger-button"
-                    onClick={() => onForgetSpace(selectedSpace.localSpaceId)}
-                    disabled={busyAction === "forget-local"}
-                  >
-                    Forget local
-                  </button>
-                </details>
               </div>
             </div>
 
@@ -457,9 +369,7 @@ export function LocalSpacesView({
                 { id: "changes", label: "Changes", count: workingTreeChangeCount },
                 { id: "files", label: "Files", count: files.length },
                 { id: "steps", label: "Steps", count: timeline.filter((item) => item.kind === "step").length },
-                { id: "layers", label: "Layers", count: selectedSpace.layers.length },
-                { id: "sync", label: "Sync" },
-                { id: "settings", label: "Settings" }
+                { id: "settings", label: "Layer settings" }
               ]}
             />
 
@@ -496,125 +406,66 @@ export function LocalSpacesView({
               </div>
             ) : null}
 
-            {activeTab === "layers" ? (
-              <LayerManagementPanel
-                selectedSpace={selectedSpace}
-                selectedLayer={selectedLayer}
-                workingTree={workingTree}
-                query={layerSearchQuery}
-                newLayerName={newLayerName}
+            {activeTab === "settings" ? (
+              <LayerSettingsView
                 busyAction={busyAction}
                 commandErrors={commandErrors}
-                onQueryChange={onLayerSearchChange}
-                onSelectLayer={onSelectLayer}
-                onNewLayerNameChange={onNewLayerNameChange}
-                onCreateLayer={onCreateLayer}
+                onClearSteps={onClearLayerSteps}
                 onDeleteLayer={onDeleteLayer}
+                onDisconnectLayer={onDisconnectLayer}
+                selectedLayer={selectedLayer}
+                selectedSpace={selectedSpace}
               />
             ) : null}
 
-            {activeTab === "sync" ? (
-              <SyncPanel selectedSpace={selectedSpace} selectedLayer={selectedLayer} changes={changes} commandErrors={commandErrors} />
-            ) : null}
-
-            {activeTab === "settings" ? (
-              <LocalSpaceSettingsPanel selectedSpace={selectedSpace} selectedLayer={selectedLayer} onForgetSpace={onForgetSpace} busyAction={busyAction} />
-            ) : null}
           </>
         ) : (
-          <p className="desktop-empty">Select a Local Space to inspect Layers, files, local changes and timeline.</p>
+          <p className="desktop-empty">
+            {localSpaces.length === 0
+              ? "No Local Spaces detected. Pull one from Distant or create one offline."
+              : "Select a Local Space from the sidebar to inspect Layers, files, local changes and timeline."}
+          </p>
         )}
       </section>
-    </div>
-  );
-}
-
-interface LayerManagementPanelProps {
-  selectedSpace: LocalSpaceSummary;
-  selectedLayer: LocalLayerSummary | null;
-  workingTree?: WorkingTreeScan;
-  query: string;
-  newLayerName: string;
-  busyAction: string | null;
-  commandErrors: Partial<Record<CommandKey, string>>;
-  onQueryChange: (value: string) => void;
-  onSelectLayer: (layerId: string) => void;
-  onNewLayerNameChange: (value: string) => void;
-  onCreateLayer: () => void;
-  onDeleteLayer: (layerId: string) => void;
-}
-
-interface LayerRailPanelProps {
-  selectedSpace: LocalSpaceSummary;
-  selectedLayer: LocalLayerSummary | null;
-  workingTree?: WorkingTreeScan;
-  query: string;
-  busyAction: string | null;
-  onQueryChange: (value: string) => void;
-  onSelectLayer: (layerId: string) => void;
-}
-
-function LayerRailPanel({
-  selectedSpace,
-  selectedLayer,
-  workingTree,
-  query,
-  busyAction,
-  onQueryChange,
-  onSelectLayer
-}: LayerRailPanelProps) {
-  const layers = layersByLatestStep(selectedSpace, workingTree, query);
-
-  return (
-    <div className="desktop-layer-card desktop-layer-card--rail">
-      <div className="layrs-section-heading">
-        <span>Layers</span>
-        <h3>{selectedLayer?.displayName ?? "Switch Layer"}</h3>
-      </div>
-      <label className="desktop-field">
-        <span>Search Layers</span>
-        <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search by name, access, sync" />
-      </label>
-      <div className="desktop-layer-list desktop-layer-list--rail">
-        {layers.map(({ layer, latestStepAt, stepCount }) => {
-          const isActive = layer.layerId === selectedSpace.activeLayerId;
-          return (
-            <article className={isActive ? "desktop-layer-row is-active" : "desktop-layer-row"} key={layer.layerId}>
-              <button
-                type="button"
-                className="desktop-layer-row__main"
-                onClick={() => onSelectLayer(layer.layerId)}
-                disabled={isActive || !layer.canOpen || busyAction === `switch:${layer.layerId}`}
-              >
-                <strong>{layer.displayName}</strong>
-                <span>{layer.parentLayerId ? `Parent: ${layerDisplayName(selectedSpace, layer.parentLayerId)}` : "Base Layer"}</span>
-                <span className="desktop-layer-row__latest">
-                  {stepCount > 0 ? `Latest step ${formatUnixTime(latestStepAt)}` : "No local steps yet"}
-                </span>
-              </button>
-              <div className="desktop-layer-row__rules">
-                <StatusPill status={layer.access === "blocked" ? "blocked" : layer.access === "redacted" ? "needs-proof" : "passing"} label={layer.access} />
-                <StatusPill status={layer.syncStatus === "local-only" ? "needs-proof" : "passing"} label={syncStatusLabel(layer.syncStatus)} />
-              </div>
-            </article>
-          );
-        })}
-        {layers.length === 0 ? <p className="desktop-empty">No Layers match this search.</p> : null}
-      </div>
+      {selectedSpace ? (
+        <section className="desktop-panel desktop-layer-rail">
+          <LayerRailPanel
+            busyAction={busyAction}
+            commandErrors={commandErrors}
+            query={layerSearchQuery}
+            selectedLayer={selectedLayer}
+            selectedSpace={selectedSpace}
+            workingTree={workingTree}
+            onCreateLayer={onCreateLayer}
+            onQueryChange={onLayerSearchChange}
+            onSelectLayer={onSelectLayer}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }
 
 function SyncPanel({
+  busyAction,
   changes,
   commandErrors,
+  onSendDraft,
+  onSendWorkspaceChange,
+  sendWorkspaceId,
   selectedLayer,
-  selectedSpace
+  selectedSpace,
+  workspaces
 }: {
+  busyAction: string | null;
   changes: LocalChange[];
   commandErrors: Partial<Record<CommandKey, string>>;
+  onSendDraft: () => void;
+  onSendWorkspaceChange: (value: string) => void;
+  sendWorkspaceId: string;
   selectedLayer: LocalLayerSummary | null;
   selectedSpace: LocalSpaceSummary;
+  workspaces: BootstrapData["workspaces"];
 }) {
   return (
     <section className="desktop-subpanel">
@@ -622,6 +473,36 @@ function SyncPanel({
         <strong>Sync status</strong>
         <span>{selectedSpace.state}</span>
       </div>
+      {selectedSpace.state === "draft" ? (
+        <div className="desktop-setting-card desktop-setting-card--wide">
+          <span>Draft Local Space</span>
+          <strong>Create this Space in Studio before normal Sync</strong>
+          <em>Choose the target Workspace here; Local headers stay focused on copied Spaces.</em>
+          <div className="desktop-draft-sync-row">
+            <select
+              aria-label="Workspace target for Draft Local Space"
+              value={sendWorkspaceId}
+              onChange={(event) => onSendWorkspaceChange(event.currentTarget.value)}
+            >
+              <option value="">Choose Workspace</option>
+              {workspaces.map((workspace) => (
+                <option value={workspace.id} key={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="desktop-primary-button"
+              onClick={onSendDraft}
+              disabled={!sendWorkspaceId || busyAction === "send-draft" || Boolean(commandErrors["send-draft"])}
+            >
+              Create in Studio and Sync
+            </button>
+          </div>
+          {commandErrors["send-draft"] ? <p className="desktop-alert desktop-alert--error">{commandErrors["send-draft"]}</p> : null}
+        </div>
+      ) : null}
       <div className="desktop-settings-grid desktop-settings-grid--cards">
         <div className="desktop-setting-card">
           <span>Active Layer</span>
@@ -650,12 +531,16 @@ function SyncPanel({
 
 function LocalSpaceSettingsPanel({
   busyAction,
+  commandErrors,
   onForgetSpace,
+  onOpenSpace,
   selectedLayer,
   selectedSpace
 }: {
   busyAction: string | null;
+  commandErrors: Partial<Record<CommandKey, string>>;
   onForgetSpace: (localSpaceId: string) => void;
+  onOpenSpace: (localSpaceId: string) => void;
   selectedLayer: LocalLayerSummary | null;
   selectedSpace: LocalSpaceSummary;
 }) {
@@ -675,6 +560,19 @@ function LocalSpaceSettingsPanel({
           <span>Layer</span>
           <strong>{selectedLayer?.displayName ?? "No active Layer"}</strong>
           <em>{selectedLayer?.access ?? "No access state"}</em>
+        </div>
+        <div className="desktop-setting-card">
+          <span>Folder action</span>
+          <strong>Open local folder</strong>
+          <em>Opens the copied Space on this machine.</em>
+          <button
+            type="button"
+            className="desktop-secondary-button"
+            onClick={() => onOpenSpace(selectedSpace.localSpaceId)}
+            disabled={busyAction === `open:${selectedSpace.localSpaceId}` || Boolean(commandErrors.open)}
+          >
+            Open folder
+          </button>
         </div>
       </div>
       <div className="desktop-danger-stack">
@@ -696,99 +594,226 @@ function LocalSpaceSettingsPanel({
   );
 }
 
-function LayerManagementPanel({
-  selectedSpace,
-  selectedLayer,
-  workingTree,
-  query,
-  newLayerName,
+export function SpaceSettingsView({
   busyAction,
+  changes,
   commandErrors,
-  onQueryChange,
-  onSelectLayer,
-  onNewLayerNameChange,
-  onCreateLayer,
-  onDeleteLayer
-}: LayerManagementPanelProps) {
-  const layers = layersByLatestStep(selectedSpace, workingTree, query);
-  const activeAccess = selectedLayer?.access ?? "open";
-  const activeSyncStatus = selectedLayer?.syncStatus ?? (selectedSpace.state === "draft" ? "local" : "linked");
-  const parentLabel = selectedLayer?.parentLayerId ? layerDisplayName(selectedSpace, selectedLayer.parentLayerId) : "None";
+  onBack,
+  onForgetSpace,
+  onOpenSpace,
+  onSendDraft,
+  onSendWorkspaceChange,
+  selectedLayer,
+  selectedSpace,
+  sendWorkspaceId,
+  workspaces
+}: {
+  busyAction: string | null;
+  changes: LocalChange[];
+  commandErrors: Partial<Record<CommandKey, string>>;
+  onBack: () => void;
+  onForgetSpace: (localSpaceId: string) => void;
+  onOpenSpace: (localSpaceId: string) => void;
+  onSendDraft: () => void;
+  onSendWorkspaceChange: (value: string) => void;
+  selectedLayer: LocalLayerSummary | null;
+  selectedSpace: LocalSpaceSummary | null;
+  sendWorkspaceId: string;
+  workspaces: BootstrapData["workspaces"];
+}) {
+  if (!selectedSpace) {
+    return <p className="desktop-empty">Select a Local Space before opening Space settings.</p>;
+  }
 
   return (
-    <section className="desktop-layer-card">
-      <div className="layrs-section-heading">
-        <span>Layers</span>
-        <h3>{selectedLayer?.displayName ?? "No active Layer"}</h3>
-      </div>
-      <label className="desktop-field">
-        <span>Search Layers</span>
-        <input value={query} onChange={(event) => onQueryChange(event.currentTarget.value)} placeholder="Search by name, access, sync" />
-      </label>
-      <div className="desktop-layer-list">
-        {layers.map(({ layer, latestStepAt, stepCount }) => {
-          const isActive = layer.layerId === selectedSpace.activeLayerId;
-          const canDelete = !isActive && selectedSpace.layers.length > 1;
-          return (
-            <article className={isActive ? "desktop-layer-row is-active" : "desktop-layer-row"} key={layer.layerId}>
-              <button
-                type="button"
-                className="desktop-layer-row__main"
-                onClick={() => onSelectLayer(layer.layerId)}
-                disabled={isActive || !layer.canOpen || busyAction === `switch:${layer.layerId}`}
-              >
-                <strong>{layer.displayName}</strong>
-                <span>{layer.parentLayerId ? `Parent: ${layerDisplayName(selectedSpace, layer.parentLayerId)}` : "Base Layer"}</span>
-                <span className="desktop-layer-row__latest">
-                  {stepCount > 0 ? `Latest step ${formatUnixTime(latestStepAt)}` : "No local steps yet"}
-                </span>
-              </button>
-              <div className="desktop-layer-row__rules">
-                <StatusPill status={layer.access === "blocked" ? "blocked" : layer.access === "redacted" ? "needs-proof" : "passing"} label={layer.access} />
-                <StatusPill status={layer.syncStatus === "local-only" ? "needs-proof" : "passing"} label={syncStatusLabel(layer.syncStatus)} />
-              </div>
-              <button
-                type="button"
-                className="desktop-layer-delete"
-                onClick={() => onDeleteLayer(layer.layerId)}
-                disabled={!canDelete || busyAction === `delete-layer:${layer.layerId}`}
-              >
-                Delete
-              </button>
-            </article>
-          );
-        })}
-        {layers.length === 0 ? <p className="desktop-empty">No Layers match this search.</p> : null}
-      </div>
-      <div className="desktop-layer-rules">
-        <div>
-          <span>Access</span>
-          <strong>{activeAccess}</strong>
-        </div>
-        <div>
-          <span>Sync</span>
-          <strong>{syncStatusLabel(activeSyncStatus)}</strong>
-        </div>
-        <div>
-          <span>Parent</span>
-          <strong>{parentLabel}</strong>
-        </div>
-      </div>
-      <div className="desktop-layer-create">
-        <label className="desktop-field">
-          <span>New Layer</span>
-          <input value={newLayerName} onChange={(event) => onNewLayerNameChange(event.currentTarget.value)} placeholder="Layer name" />
-        </label>
-        <button
-          type="button"
-          className="desktop-secondary-button"
-          onClick={onCreateLayer}
-          disabled={!newLayerName.trim() || busyAction === "create-layer" || Boolean(commandErrors["create-layer"])}
-        >
-          Create from current
+    <div className="desktop-settings-stack">
+      <div className="desktop-page-return">
+        <button type="button" className="desktop-ghost-button" onClick={onBack}>
+          Back to Space
         </button>
+        <span>{selectedSpace.name}</span>
       </div>
-    </section>
+      <LocalSpaceSettingsPanel
+        busyAction={busyAction}
+        commandErrors={commandErrors}
+        onForgetSpace={onForgetSpace}
+        onOpenSpace={onOpenSpace}
+        selectedLayer={selectedLayer}
+        selectedSpace={selectedSpace}
+      />
+      <SyncPanel
+        busyAction={busyAction}
+        changes={changes}
+        commandErrors={commandErrors}
+        onSendDraft={onSendDraft}
+        onSendWorkspaceChange={onSendWorkspaceChange}
+        selectedLayer={selectedLayer}
+        selectedSpace={selectedSpace}
+        sendWorkspaceId={sendWorkspaceId}
+        workspaces={workspaces}
+      />
+    </div>
+  );
+}
+
+export function LayerSettingsView({
+  busyAction,
+  commandErrors,
+  onClearSteps,
+  onDeleteLayer,
+  onDisconnectLayer,
+  selectedLayer,
+  selectedSpace
+}: {
+  busyAction: string | null;
+  commandErrors: Partial<Record<CommandKey, string>>;
+  onClearSteps: (layerId: string) => void;
+  onDeleteLayer: (layerId: string) => void;
+  onDisconnectLayer: (layerId: string) => void;
+  selectedLayer: LocalLayerSummary | null;
+  selectedSpace: LocalSpaceSummary | null;
+}) {
+  if (!selectedSpace || !selectedLayer) {
+    return <p className="desktop-empty">Select a Layer before opening Layer settings.</p>;
+  }
+  const parentName = selectedLayer.parentLayerId ? layerDisplayName(selectedSpace, selectedLayer.parentLayerId) : "None";
+  const canDelete = selectedSpace.layers.length > 1 && selectedSpace.activeLayerId !== selectedLayer.layerId;
+  const canDisconnect = Boolean(selectedLayer.parentLayerId && selectedLayer.lineageStatus !== "unlinked");
+
+  return (
+    <div className="desktop-view">
+      <section className="desktop-panel desktop-panel--wide">
+        <div className="desktop-subheading">
+          <strong>Layer settings</strong>
+          <span>{selectedLayer.displayName}</span>
+        </div>
+        <div className="desktop-settings-grid desktop-settings-grid--cards">
+          <div className="desktop-setting-card">
+            <span>Parent</span>
+            <strong>{parentName}</strong>
+            <em>{selectedLayer.parentLayerId ? `Lineage ${selectedLayer.lineageStatus ?? "linked"}` : "Base Layer"}</em>
+          </div>
+          <div className="desktop-setting-card">
+            <span>Access</span>
+            <strong>{selectedLayer.access}</strong>
+            <em>{selectedLayer.canOpen ? "Open locally" : "Restricted locally"}</em>
+          </div>
+          <div className="desktop-setting-card">
+            <span>Sync</span>
+            <strong>{syncStatusLabel(selectedLayer.syncStatus)}</strong>
+            <em>Layer-specific sync state.</em>
+          </div>
+        </div>
+      </section>
+      <section className="desktop-panel desktop-panel--wide">
+        <div className="desktop-subheading">
+          <strong>Danger zone</strong>
+          <span>{selectedLayer.displayName}</span>
+        </div>
+        <div className="desktop-danger-stack">
+          <DangerZone
+            title="Disconnect from parent"
+            description="Stops automatic propagation of future parent Steps into this Layer. Existing files and Steps stay in place."
+          >
+            <button
+              type="button"
+              className="desktop-danger-button"
+              disabled={!canDisconnect || busyAction === "disconnect-layer" || Boolean(commandErrors["disconnect-layer"])}
+              onClick={() => onDisconnectLayer(selectedLayer.layerId)}
+            >
+              Disconnect from parent
+            </button>
+          </DangerZone>
+          <DangerZone
+            title="Clear Layer Steps"
+            description="Removes this Layer history from the active timeline while keeping files and object data. Step metadata is archived for diagnostics."
+          >
+            <button
+              type="button"
+              className="desktop-danger-button"
+              disabled={busyAction === "clear-steps" || Boolean(commandErrors["clear-steps"])}
+              onClick={() => onClearSteps(selectedLayer.layerId)}
+            >
+              Clear steps
+            </button>
+          </DangerZone>
+          <DangerZone
+            title="Delete Layer"
+            description="Deletes this Layer state. Switch away from the active Layer before deleting it."
+          >
+            <button
+              type="button"
+              className="desktop-danger-button"
+              disabled={!canDelete || busyAction === `delete-layer:${selectedLayer.layerId}`}
+              onClick={() => onDeleteLayer(selectedLayer.layerId)}
+            >
+              Delete layer
+            </button>
+          </DangerZone>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export function SpaceWeavesView({
+  busyAction,
+  commandErrors,
+  onBack,
+  onAbortWeave,
+  onApplyWeave,
+  onContinueWeave,
+  onPreviewWeave,
+  onResolveWeaveConflict,
+  onWeaveSourceLayerChange,
+  onWeaveTargetLayerChange,
+  selectedSpace,
+  weaveSession,
+  weaveSourceLayerId,
+  weaveTargetLayerId
+}: {
+  busyAction: string | null;
+  commandErrors: Partial<Record<CommandKey, string>>;
+  onBack: () => void;
+  selectedSpace: LocalSpaceSummary | null;
+  weaveSession: WeaveSessionSummary | null;
+  weaveSourceLayerId: string;
+  weaveTargetLayerId: string;
+  onWeaveSourceLayerChange: (value: string) => void;
+  onWeaveTargetLayerChange: (value: string) => void;
+  onPreviewWeave: () => void;
+  onApplyWeave: () => void;
+  onResolveWeaveConflict: (path: string, resolution: string, manualText?: string) => void;
+  onContinueWeave: () => void;
+  onAbortWeave: () => void;
+}) {
+  if (!selectedSpace) {
+    return <p className="desktop-empty">Select a Local Space before opening Weaves.</p>;
+  }
+  return (
+    <div className="desktop-view">
+      <div className="desktop-page-return">
+        <button type="button" className="desktop-ghost-button" onClick={onBack}>
+          Back to Space
+        </button>
+        <span>{selectedSpace.name}</span>
+      </div>
+      <WeavesPanel
+        busyAction={busyAction}
+        commandErrors={commandErrors}
+        selectedSpace={selectedSpace}
+        session={weaveSession}
+        sourceLayerId={weaveSourceLayerId}
+        targetLayerId={weaveTargetLayerId}
+        onSourceLayerChange={onWeaveSourceLayerChange}
+        onTargetLayerChange={onWeaveTargetLayerChange}
+        onPreview={onPreviewWeave}
+        onApply={onApplyWeave}
+        onResolveConflict={onResolveWeaveConflict}
+        onContinue={onContinueWeave}
+        onAbort={onAbortWeave}
+      />
+    </div>
   );
 }
 

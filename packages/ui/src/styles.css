@@ -724,7 +724,7 @@ a {
   box-shadow: var(--layrs-shadow);
   color: var(--layrs-ink);
   padding: 12px;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .layrs-toast--success {
@@ -764,6 +764,7 @@ a {
   color: var(--layrs-ink);
   cursor: pointer;
   font-weight: 800;
+  pointer-events: auto;
 }
 
 .layrs-toast__action {

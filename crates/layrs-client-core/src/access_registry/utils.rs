@@ -102,6 +102,148 @@ fn layer_dir(layrs_dir: &Path, layer_id: &str) -> PathBuf {
     layrs_dir.join("layers").join(safe_id_fragment(layer_id))
 }
 
+fn step_layer_display_name(layrs_dir: &Path, layer_id: &str) -> Option<String> {
+    read_json::<LocalSpaceFile>(&layrs_dir.join("local-space.json"))
+        .ok()
+        .and_then(|meta| {
+            meta.layers
+                .into_iter()
+                .find(|layer| layer.layer_id == layer_id)
+                .map(|layer| layer.display_name)
+        })
+        .filter(|name| !name.trim().is_empty())
+}
+
+fn pending_layer_deletions_path(layrs_dir: &Path) -> PathBuf {
+    layrs_dir.join("sync").join("pending-layer-deletions.json")
+}
+
+fn read_pending_layer_deletions(layrs_dir: &Path) -> Result<PendingLayerDeletionsFile, String> {
+    let path = pending_layer_deletions_path(layrs_dir);
+    if !path.exists() {
+        return Ok(PendingLayerDeletionsFile {
+            schema: PENDING_LAYER_DELETIONS_SCHEMA.to_string(),
+            deleted_layers: Vec::new(),
+        });
+    }
+
+    let mut pending: PendingLayerDeletionsFile = read_json(&path)?;
+    pending.schema = PENDING_LAYER_DELETIONS_SCHEMA.to_string();
+    Ok(pending)
+}
+
+fn write_pending_layer_deletions(
+    layrs_dir: &Path,
+    pending: &PendingLayerDeletionsFile,
+) -> Result<(), String> {
+    let path = pending_layer_deletions_path(layrs_dir);
+    if pending.deleted_layers.is_empty() {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not clear pending Layer deletions {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+        return Ok(());
+    }
+
+    write_json(&path, pending)
+}
+
+fn enqueue_pending_layer_deletion(
+    layrs_dir: &Path,
+    layer_id: &str,
+    display_name: &str,
+) -> Result<(), String> {
+    let mut pending = read_pending_layer_deletions(layrs_dir)?;
+    if let Some(existing) = pending
+        .deleted_layers
+        .iter_mut()
+        .find(|deleted| deleted.layer_id == layer_id)
+    {
+        existing.display_name = display_name.to_string();
+        existing.deleted_at_unix = unix_now();
+    } else {
+        pending.deleted_layers.push(PendingLayerDeletion {
+            layer_id: layer_id.to_string(),
+            display_name: display_name.to_string(),
+            deleted_at_unix: unix_now(),
+        });
+    }
+    write_pending_layer_deletions(layrs_dir, &pending)
+}
+
+fn delete_server_layer(
+    handle: &LocalSpaceHandle,
+    config: &DesktopConfig,
+    layer_id: &str,
+) -> Result<(), String> {
+    ensure_linked_space_ready(handle)?;
+    let token = desktop_token(config)?;
+    let delete_path = format!(
+        "/v1/workspaces/{}/spaces/{}/layers/{}",
+        url_path_segment(&handle.meta.workspace_id),
+        url_path_segment(&handle.meta.space_id),
+        url_path_segment(layer_id)
+    );
+    let _: Value = delete_json(&config.server_endpoint, &delete_path, Some(&token))?;
+    Ok(())
+}
+
+fn flush_pending_layer_deletions(
+    handle: &LocalSpaceHandle,
+    config: &DesktopConfig,
+) -> Result<usize, String> {
+    let pending = read_pending_layer_deletions(&handle.layrs_dir)?;
+    if pending.deleted_layers.is_empty() {
+        return Ok(0);
+    }
+
+    ensure_linked_space_ready(handle)?;
+    let mut synced = 0usize;
+    let mut remaining = Vec::new();
+    let mut first_error = None;
+
+    for deletion in pending.deleted_layers {
+        if !is_probably_server_layer_id(&deletion.layer_id) {
+            synced += 1;
+            continue;
+        }
+
+        if first_error.is_some() {
+            remaining.push(deletion);
+            continue;
+        }
+
+        match delete_server_layer(handle, config, &deletion.layer_id) {
+            Ok(()) => synced += 1,
+            Err(error) if is_layer_not_found_error(&error) => synced += 1,
+            Err(error) => {
+                first_error = Some(error);
+                remaining.push(deletion);
+            }
+        }
+    }
+
+    write_pending_layer_deletions(
+        &handle.layrs_dir,
+        &PendingLayerDeletionsFile {
+            schema: PENDING_LAYER_DELETIONS_SCHEMA.to_string(),
+            deleted_layers: remaining,
+        },
+    )?;
+
+    if let Some(error) = first_error {
+        return Err(format!(
+            "Layrs Desktop could not sync pending Layer deletion to Studio: {error}"
+        ));
+    }
+
+    Ok(synced)
+}
+
 fn unique_layer_id(handle: &LocalSpaceHandle, name: &str) -> String {
     let base = safe_id_fragment(name);
     let existing = handle
@@ -292,6 +434,19 @@ fn unix_now() -> u64 {
 
 fn default_linked_state() -> String {
     LOCAL_SPACE_STATE_LINKED.to_string()
+}
+
+fn default_layer_lineage_status() -> String {
+    "linked".to_string()
+}
+
+fn compare_steps_by_timeline(left: &StepFile, right: &StepFile) -> std::cmp::Ordering {
+    match (left.timeline_position, right.timeline_position) {
+        (Some(left_position), Some(right_position)) => left_position.cmp(&right_position),
+        _ => left.captured_at_unix.cmp(&right.captured_at_unix),
+    }
+        .then_with(|| left.captured_at_unix.cmp(&right.captured_at_unix))
+        .then_with(|| left.step_id.cmp(&right.step_id))
 }
 
 #[allow(dead_code)]

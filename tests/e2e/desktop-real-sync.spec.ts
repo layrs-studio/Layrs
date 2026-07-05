@@ -76,12 +76,13 @@ test("visible Desktop publishes a Draft Space that Studio Web can review", async
     await expect(desktop.page.getByText("Layer: Main")).toBeVisible();
     await desktop.pause();
 
+    await desktop.page.getByRole("tab", { name: /Sync/ }).click();
     const workspaceSelect = desktop.page.getByLabel("Workspace target for Draft Local Space");
     await expect(workspaceSelect).toBeVisible();
     await workspaceSelect.selectOption({ label: workspaceName });
-    await desktop.page.getByRole("button", { name: "Publish" }).click();
+    await desktop.page.getByRole("button", { name: "Create in Studio and Sync" }).click();
     await expect(desktop.page.getByText("Draft sent to Studio")).toBeVisible({ timeout: 60_000 });
-    await expect(desktop.page.getByText("Linked")).toBeVisible({ timeout: 30_000 });
+    await expect(desktop.page.getByText("Linked", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await desktop.pause();
 
     await page.goto("/");

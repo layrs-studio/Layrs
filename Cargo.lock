@@ -854,6 +854,9 @@ name = "layrs-client-core"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "layrs-lens-raw",
+ "layrs-lens-sdk",
+ "layrs-lens-text",
  "serde",
  "serde_json",
  "zstd",

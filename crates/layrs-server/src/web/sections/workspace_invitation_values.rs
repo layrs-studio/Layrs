@@ -411,7 +411,7 @@ async fn space_values(pool: &PgPool, workspace_id: &str) -> Result<Vec<Value>, A
 async fn layer_values(pool: &PgPool, workspace_id: &str) -> Result<Vec<Value>, ApiError> {
     let rows = sqlx::query(
         r#"
-        SELECT l.layer_id, l.space_id, l.parent_layer_id, l.name,
+        SELECT l.layer_id, l.space_id, l.parent_layer_id, l.lineage_status, l.name,
                COALESCE(
                    (
                        SELECT array_agg(a.artifact_id ORDER BY a.created_at)
@@ -429,6 +429,7 @@ async fn layer_values(pool: &PgPool, workspace_id: &str) -> Result<Vec<Value>, A
                        WHERE s.workspace_id = l.workspace_id
                          AND s.space_id = l.space_id
                          AND s.layer_id = l.layer_id
+                         AND s.cleared_at IS NULL
                    ),
                    ARRAY[]::text[]
                ) AS step_ids
@@ -455,6 +456,8 @@ async fn layer_values(pool: &PgPool, workspace_id: &str) -> Result<Vec<Value>, A
                 "id": row.get::<String, _>("layer_id"),
                 "spaceId": row.get::<String, _>("space_id"),
                 "parentId": parent_id,
+                "parentLayerId": parent_id,
+                "lineageStatus": row.try_get::<String, _>("lineage_status").unwrap_or_else(|_| "linked".to_string()),
                 "name": row.get::<String, _>("name"),
                 "kind": if parent_id.is_some() { "proposal" } else { "base" },
                 "status": "active",

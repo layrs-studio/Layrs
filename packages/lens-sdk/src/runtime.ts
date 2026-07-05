@@ -1,4 +1,12 @@
-import type { ArtifactMetadata, DiffModel, LensId, LensManifest, PreviewModel, ReconcileModel } from "./contracts";
+import type {
+  ArtifactMetadata,
+  DiffModel,
+  LensId,
+  LensManifest,
+  PreviewModel,
+  LensReconcileInput,
+  LensReconcileResult
+} from "./contracts";
 
 export type LensMatchReason = "explicit" | "pathRegex" | "mediaType" | "extension" | "utf8TextFallback" | "rawFallback";
 
@@ -22,13 +30,7 @@ export interface LensDiffRendererProps {
   className?: string;
 }
 
-export interface LensReconcileRequest {
-  path: string;
-  base?: unknown;
-  left?: unknown;
-  right?: unknown;
-  fields?: Record<string, unknown>;
-}
+export type LensReconcileRequest = LensReconcileInput;
 
 export interface LensViewerModule<TNode = unknown> {
   renderPreview?: (props: LensPreviewRendererProps) => TNode;
@@ -39,7 +41,7 @@ export interface LensViewerModule<TNode = unknown> {
 export interface LensAnalyzerModule {
   preparePreview?: (input: unknown) => Promise<PreviewModel> | PreviewModel;
   prepareDiff?: (input: unknown) => Promise<DiffModel> | DiffModel;
-  reconcile?: (request: LensReconcileRequest) => Promise<ReconcileModel> | ReconcileModel;
+  reconcile?: (request: LensReconcileInput) => Promise<LensReconcileResult> | LensReconcileResult;
 }
 
 export interface LayrsLens<TNode = unknown> {

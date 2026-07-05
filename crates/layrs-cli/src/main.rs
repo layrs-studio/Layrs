@@ -78,6 +78,7 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         ),
         CliCommand::Timeline { limit } => render::timeline(engine.timeline(limit)?),
         CliCommand::Publish { workspace } => render::publish(engine.publish(workspace.as_deref())?),
+        CliCommand::Sync { workspace } => render::sync(engine.sync(workspace.as_deref())?),
         CliCommand::Receive => render::receive(engine.receive()?),
         CliCommand::Compact => render::compact(engine.compact()?),
         CliCommand::Status => render::status(engine.status()?),
@@ -93,6 +94,27 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         CliCommand::LayerDelete { name_or_id, yes } => {
             render::layer_deleted(engine.layer_delete(&name_or_id, yes)?)
         }
+        CliCommand::LayerDisconnect { name_or_id, yes } => {
+            render::layer_action(engine.layer_disconnect(&name_or_id, yes)?)
+        }
+        CliCommand::LayerClearSteps { name_or_id, yes } => {
+            render::layer_action(engine.layer_clear_steps(&name_or_id, yes)?)
+        }
+        CliCommand::Weave {
+            source,
+            target,
+            preview,
+        } => render::weave(engine.weave(&source, &target, preview)?),
+        CliCommand::WeaveParent { preview } => render::weave(engine.weave_parent(preview)?),
+        CliCommand::WeaveStatus => render::weave_status(engine.weave_status()?),
+        CliCommand::WeaveConflicts => render::weave_conflicts(engine.weave_conflicts()?),
+        CliCommand::WeaveResolve {
+            path,
+            resolution,
+            file,
+        } => render::weave(engine.weave_resolve(&path, &resolution, file.as_deref())?),
+        CliCommand::WeaveContinue => render::weave(engine.weave_continue()?),
+        CliCommand::WeaveAbort => render::weave(engine.weave_abort()?),
     }
     .map_err(CliError::runtime)?;
 

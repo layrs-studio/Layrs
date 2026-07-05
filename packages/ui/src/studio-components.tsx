@@ -51,6 +51,13 @@ export interface NotificationContextValue {
 const NotificationContext = createContext<NotificationContextValue | null>(null);
 
 let nextNotificationId = 1;
+const TOAST_MAX_AUTO_DISMISS_MS = 8000;
+const TOAST_DEFAULT_AUTO_DISMISS_MS: Record<NotificationTone, number> = {
+  success: 4200,
+  info: 4200,
+  warning: 6500,
+  danger: TOAST_MAX_AUTO_DISMISS_MS
+};
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -97,18 +104,15 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         return [...withoutDuplicate, notification].slice(-6);
       });
 
-      const autoDismissMs =
-        typeof input.autoDismissMs === "number"
+      const requestedDismissMs =
+        typeof input.autoDismissMs === "number" && input.autoDismissMs > 0
           ? input.autoDismissMs
-          : input.tone === "success" || input.tone === "info"
-            ? 4200
-            : undefined;
-      if (autoDismissMs && autoDismissMs > 0) {
-        timersRef.current.set(
-          id,
-          setTimeout(() => dismiss(id), autoDismissMs)
-        );
-      }
+          : TOAST_DEFAULT_AUTO_DISMISS_MS[input.tone];
+      const autoDismissMs = Math.min(requestedDismissMs, TOAST_MAX_AUTO_DISMISS_MS);
+      timersRef.current.set(
+        id,
+        setTimeout(() => dismiss(id), autoDismissMs)
+      );
 
       return id;
     },

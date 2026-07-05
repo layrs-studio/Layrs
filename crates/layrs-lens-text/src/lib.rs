@@ -1,9 +1,10 @@
 use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
     DiffHunk, DiffKind, DiffLine, DiffModel, DiffOp, ExtractedReference, InspectorField,
-    InspectorValueType, LensCapability, LensManifest, LensResult, MetadataValue, PreviewKind,
-    PreviewModel, ReconcileModel, ReconcileStatus, ReferenceKind, ViewerContract,
-    infer_media_type_from_path, span_at,
+    InspectorValueType, LensCapability, LensConflictBlock, LensConflictSegment,
+    LensConflictSegmentKind, LensError, LensManifest, LensReconcileContent, LensReconcileInput,
+    LensReconcileResult, LensResult, MetadataValue, PreviewKind, PreviewModel, ReconcileModel,
+    ReconcileStatus, ReferenceKind, ViewerContract, infer_media_type_from_path, span_at,
 };
 
 pub const TEXT_LENS_ID: &str = "layrs.text";
@@ -270,6 +271,417 @@ pub fn reconcile_for_text_diff(diff: Option<&DiffModel>) -> ReconcileModel {
     }
 }
 
+#[derive(Clone)]
+struct TextChangeRange {
+    base_start: usize,
+    base_end: usize,
+    replacement: Vec<String>,
+}
+
+pub fn reconcile_text(input: LensReconcileInput<'_>) -> LensReconcileResult {
+    let Ok(base_text) = side_text(input.base.bytes, input.base.exists) else {
+        return LensReconcileResult::unsupported("Base text is not valid UTF-8");
+    };
+    let Ok(ours_text) = side_text(input.ours.bytes, input.ours.exists) else {
+        return LensReconcileResult::unsupported("Target text is not valid UTF-8");
+    };
+    let Ok(theirs_text) = side_text(input.theirs.bytes, input.theirs.exists) else {
+        return LensReconcileResult::unsupported("Source text is not valid UTF-8");
+    };
+
+    let base_lines = split_text_lines(base_text);
+    let ours_lines = split_text_lines(ours_text);
+    let theirs_lines = split_text_lines(theirs_text);
+    let ours_changes = text_change_ranges(&base_lines, &ours_lines);
+    let theirs_changes = text_change_ranges(&base_lines, &theirs_lines);
+    let mut blocks = Vec::new();
+    let mut merged = Vec::new();
+    let mut segments = Vec::new();
+    let mut base_index = 0usize;
+    let mut ours_index = 0usize;
+    let mut theirs_index = 0usize;
+
+    while ours_index < ours_changes.len() || theirs_index < theirs_changes.len() {
+        let next_ours = ours_changes.get(ours_index);
+        let next_theirs = theirs_changes.get(theirs_index);
+        match (next_ours, next_theirs) {
+            (Some(ours_change), Some(theirs_change))
+                if ours_change.base_end <= theirs_change.base_start =>
+            {
+                append_plain_lines_segment(
+                    &mut merged,
+                    &mut segments,
+                    &base_lines,
+                    base_index,
+                    ours_change.base_start,
+                );
+                append_plain_text_segment(
+                    &mut merged,
+                    &mut segments,
+                    join_lines(&ours_change.replacement),
+                );
+                base_index = ours_change.base_end;
+                ours_index += 1;
+            }
+            (Some(ours_change), Some(theirs_change))
+                if theirs_change.base_end <= ours_change.base_start =>
+            {
+                append_plain_lines_segment(
+                    &mut merged,
+                    &mut segments,
+                    &base_lines,
+                    base_index,
+                    theirs_change.base_start,
+                );
+                append_plain_text_segment(
+                    &mut merged,
+                    &mut segments,
+                    join_lines(&theirs_change.replacement),
+                );
+                base_index = theirs_change.base_end;
+                theirs_index += 1;
+            }
+            (Some(_), Some(_)) => {
+                let start = next_ours
+                    .map(|change| change.base_start)
+                    .into_iter()
+                    .chain(next_theirs.map(|change| change.base_start))
+                    .min()
+                    .unwrap_or(base_index);
+                let mut end = start;
+                let mut ours_group = Vec::new();
+                let mut theirs_group = Vec::new();
+                loop {
+                    let mut advanced = false;
+                    while let Some(change) = ours_changes.get(ours_index) {
+                        if change.base_start <= end {
+                            end = end.max(change.base_end);
+                            ours_group.push(change.clone());
+                            ours_index += 1;
+                            advanced = true;
+                        } else {
+                            break;
+                        }
+                    }
+                    while let Some(change) = theirs_changes.get(theirs_index) {
+                        if change.base_start <= end {
+                            end = end.max(change.base_end);
+                            theirs_group.push(change.clone());
+                            theirs_index += 1;
+                            advanced = true;
+                        } else {
+                            break;
+                        }
+                    }
+                    if !advanced {
+                        break;
+                    }
+                }
+
+                append_plain_lines_segment(
+                    &mut merged,
+                    &mut segments,
+                    &base_lines,
+                    base_index,
+                    start,
+                );
+                let base_text = join_lines(&base_lines[start..end]);
+                let ours_text = apply_text_changes_to_region(&base_lines, start, end, &ours_group);
+                let theirs_text =
+                    apply_text_changes_to_region(&base_lines, start, end, &theirs_group);
+                if ours_text == theirs_text {
+                    append_plain_text_segment(&mut merged, &mut segments, ours_text);
+                } else {
+                    let block_id = format!("block-{}", blocks.len() + 1);
+                    append_conflict_marker(
+                        &mut merged,
+                        input.ours_label,
+                        input.theirs_label,
+                        &ours_text,
+                        &theirs_text,
+                    );
+                    segments.push(LensConflictSegment {
+                        kind: LensConflictSegmentKind::Block,
+                        text: None,
+                        block_id: Some(block_id.clone()),
+                    });
+                    blocks.push(LensConflictBlock {
+                        block_id,
+                        base: base_text,
+                        ours: ours_text,
+                        theirs: theirs_text,
+                        supported_resolutions: text_block_resolutions(),
+                    });
+                }
+                base_index = end;
+            }
+            (Some(ours_change), None) => {
+                append_plain_lines_segment(
+                    &mut merged,
+                    &mut segments,
+                    &base_lines,
+                    base_index,
+                    ours_change.base_start,
+                );
+                append_plain_text_segment(
+                    &mut merged,
+                    &mut segments,
+                    join_lines(&ours_change.replacement),
+                );
+                base_index = ours_change.base_end;
+                ours_index += 1;
+            }
+            (None, Some(theirs_change)) => {
+                append_plain_lines_segment(
+                    &mut merged,
+                    &mut segments,
+                    &base_lines,
+                    base_index,
+                    theirs_change.base_start,
+                );
+                append_plain_text_segment(
+                    &mut merged,
+                    &mut segments,
+                    join_lines(&theirs_change.replacement),
+                );
+                base_index = theirs_change.base_end;
+                theirs_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+
+    append_plain_lines_segment(
+        &mut merged,
+        &mut segments,
+        &base_lines,
+        base_index,
+        base_lines.len(),
+    );
+    let merged_text = join_lines(&merged);
+    if blocks.is_empty() {
+        return LensReconcileResult::auto_resolved(
+            "Text auto-merged without conflicts",
+            LensReconcileContent::present(merged_text.into_bytes()),
+        );
+    }
+
+    LensReconcileResult::conflicted(
+        format!("Text merge has {} unresolved block(s)", blocks.len()),
+        LensReconcileContent::present(merged_text.into_bytes()),
+        blocks,
+        segments,
+    )
+}
+
+pub fn resolve_text_block_choice(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    resolution: &str,
+    manual: Option<&str>,
+) -> Result<String, LensError> {
+    match resolution {
+        "ours" => Ok(ours.to_string()),
+        "theirs" => Ok(theirs.to_string()),
+        "base" => Ok(base.to_string()),
+        "both_ours_then_theirs" => Ok(format!("{}{}", ensure_trailing_newline(ours), theirs)),
+        "both_theirs_then_ours" => Ok(format!("{}{}", ensure_trailing_newline(theirs), ours)),
+        "manual" => manual.map(ToString::to_string).ok_or_else(|| {
+            LensError::new(
+                "missing_manual_resolution",
+                "Manual text block resolution requires replacement text",
+            )
+        }),
+        other => Err(LensError::new(
+            "unsupported_text_resolution",
+            format!(
+                "Unsupported text block resolution `{other}`. Use ours, theirs, base, both_ours_then_theirs, both_theirs_then_ours, or manual."
+            ),
+        )),
+    }
+}
+
+fn side_text(bytes: &[u8], exists: bool) -> Result<&str, std::str::Utf8Error> {
+    if exists {
+        std::str::from_utf8(bytes)
+    } else {
+        Ok("")
+    }
+}
+
+fn text_block_resolutions() -> Vec<String> {
+    [
+        "ours",
+        "theirs",
+        "base",
+        "both_ours_then_theirs",
+        "both_theirs_then_ours",
+        "manual",
+    ]
+    .into_iter()
+    .map(ToString::to_string)
+    .collect()
+}
+
+fn split_text_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.split_inclusive('\n')
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn append_base_lines(output: &mut Vec<String>, base: &[String], start: usize, end: usize) {
+    if start < end {
+        output.extend(base[start..end].iter().cloned());
+    }
+}
+
+fn append_plain_lines_segment(
+    output: &mut Vec<String>,
+    segments: &mut Vec<LensConflictSegment>,
+    base: &[String],
+    start: usize,
+    end: usize,
+) {
+    append_plain_text_segment(output, segments, join_lines(&base[start..end]));
+}
+
+fn append_plain_text_segment(
+    output: &mut Vec<String>,
+    segments: &mut Vec<LensConflictSegment>,
+    text: String,
+) {
+    if text.is_empty() {
+        return;
+    }
+    output.push(text.clone());
+    segments.push(LensConflictSegment {
+        kind: LensConflictSegmentKind::Text,
+        text: Some(text),
+        block_id: None,
+    });
+}
+
+fn append_conflict_marker(
+    output: &mut Vec<String>,
+    ours_label: &str,
+    theirs_label: &str,
+    ours: &str,
+    theirs: &str,
+) {
+    output.push(format!("<<<<<<< target:{ours_label}\n"));
+    output.push(ensure_trailing_newline(ours));
+    output.push("=======\n".to_string());
+    output.push(ensure_trailing_newline(theirs));
+    output.push(format!(">>>>>>> source:{theirs_label}\n"));
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.is_empty() || text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    }
+}
+
+fn join_lines(lines: &[String]) -> String {
+    lines.concat()
+}
+
+fn apply_text_changes_to_region(
+    base: &[String],
+    start: usize,
+    end: usize,
+    changes: &[TextChangeRange],
+) -> String {
+    let mut output = Vec::new();
+    let mut cursor = start;
+    let mut ordered = changes.to_vec();
+    ordered.sort_by_key(|change| (change.base_start, change.base_end));
+    for change in ordered {
+        append_base_lines(&mut output, base, cursor, change.base_start);
+        output.extend(change.replacement);
+        cursor = change.base_end;
+    }
+    append_base_lines(&mut output, base, cursor, end);
+    join_lines(&output)
+}
+
+fn text_change_ranges(base: &[String], variant: &[String]) -> Vec<TextChangeRange> {
+    if base == variant {
+        return Vec::new();
+    }
+    let Some(matches) = lcs_line_matches(base, variant) else {
+        return vec![TextChangeRange {
+            base_start: 0,
+            base_end: base.len(),
+            replacement: variant.to_vec(),
+        }];
+    };
+    let mut ranges = Vec::new();
+    let mut base_cursor = 0usize;
+    let mut variant_cursor = 0usize;
+
+    for (base_match, variant_match) in matches
+        .into_iter()
+        .chain(std::iter::once((base.len(), variant.len())))
+    {
+        if base_cursor != base_match || variant_cursor != variant_match {
+            ranges.push(TextChangeRange {
+                base_start: base_cursor,
+                base_end: base_match,
+                replacement: variant[variant_cursor..variant_match].to_vec(),
+            });
+        }
+        base_cursor = base_match.saturating_add(1);
+        variant_cursor = variant_match.saturating_add(1);
+    }
+
+    ranges
+}
+
+fn lcs_line_matches(base: &[String], variant: &[String]) -> Option<Vec<(usize, usize)>> {
+    const MAX_LCS_CELLS: usize = 4_000_000;
+    let cells = base.len().saturating_add(1) * variant.len().saturating_add(1);
+    if cells > MAX_LCS_CELLS {
+        return None;
+    }
+    let width = variant.len() + 1;
+    let mut table = vec![0usize; (base.len() + 1) * width];
+    for base_index in (0..base.len()).rev() {
+        for variant_index in (0..variant.len()).rev() {
+            let index = base_index * width + variant_index;
+            table[index] = if base[base_index] == variant[variant_index] {
+                table[(base_index + 1) * width + variant_index + 1] + 1
+            } else {
+                table[(base_index + 1) * width + variant_index]
+                    .max(table[base_index * width + variant_index + 1])
+            };
+        }
+    }
+
+    let mut matches = Vec::new();
+    let mut base_index = 0usize;
+    let mut variant_index = 0usize;
+    while base_index < base.len() && variant_index < variant.len() {
+        if base[base_index] == variant[variant_index] {
+            matches.push((base_index, variant_index));
+            base_index += 1;
+            variant_index += 1;
+        } else if table[(base_index + 1) * width + variant_index]
+            >= table[base_index * width + variant_index + 1]
+        {
+            base_index += 1;
+        } else {
+            variant_index += 1;
+        }
+    }
+    Some(matches)
+}
+
 fn extract_url_functions(
     text: &str,
     references: &mut Vec<ExtractedReference>,
@@ -462,7 +874,9 @@ fn preview_body(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use layrs_lens_sdk::ReconcileStatus;
+    use layrs_lens_sdk::{
+        LensReconcileInput, LensReconcileResultStatus, LensReconcileSide, ReconcileStatus,
+    };
 
     #[test]
     fn manifest_is_text_fallback_not_code() {
@@ -547,5 +961,89 @@ skip: /var/tmp/file.txt https://example.test/app.css data:image/png;base64,aa
                 .iter()
                 .any(|reference| reference.target.starts_with("data:"))
         );
+    }
+
+    #[test]
+    fn reconcile_auto_merges_non_overlapping_edits() {
+        let result = reconcile_case(
+            b"a\nb\nc\nd\n",
+            b"a\nours-b\nc\nd\n",
+            b"a\nb\ntheirs-c\nd\n",
+        );
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(
+            String::from_utf8(result.resolved.expect("resolved").bytes).expect("utf8"),
+            "a\nours-b\ntheirs-c\nd\n"
+        );
+    }
+
+    #[test]
+    fn reconcile_auto_merges_same_edit_on_both_sides() {
+        let result = reconcile_case(b"a\nb\n", b"a\nshared\n", b"a\nshared\n");
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(
+            String::from_utf8(result.resolved.expect("resolved").bytes).expect("utf8"),
+            "a\nshared\n"
+        );
+    }
+
+    #[test]
+    fn reconcile_reports_independent_text_conflict_blocks() {
+        let result = reconcile_case(
+            b"a\nx\nb\ny\nc\n",
+            b"a\nours-x\nb\nours-y\nc\n",
+            b"a\ntheirs-x\nb\ntheirs-y\nc\n",
+        );
+
+        assert_eq!(result.status, LensReconcileResultStatus::Conflicted);
+        assert_eq!(result.blocks.len(), 2);
+        assert_eq!(result.blocks[0].block_id, "block-1");
+        assert_eq!(result.blocks[1].block_id, "block-2");
+        let marked = String::from_utf8(result.conflict.expect("conflict").bytes).expect("utf8");
+        assert_eq!(marked.matches("<<<<<<< target:target").count(), 2);
+        assert!(marked.contains("ours-x"));
+        assert!(marked.contains("theirs-y"));
+    }
+
+    #[test]
+    fn reconcile_preserves_crlf_and_trailing_newline() {
+        let result = reconcile_case(b"a\r\nb\r\n", b"a\r\nours\r\n", b"a\r\nours\r\n");
+
+        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(result.resolved.expect("resolved").bytes, b"a\r\nours\r\n");
+    }
+
+    #[test]
+    fn resolves_text_blocks_with_lens_choices() {
+        assert_eq!(
+            resolve_text_block_choice(
+                "base\n",
+                "ours\n",
+                "theirs\n",
+                "both_ours_then_theirs",
+                None
+            )
+            .expect("resolve"),
+            "ours\ntheirs\n"
+        );
+        assert_eq!(
+            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "manual", Some("manual\n"))
+                .expect("manual"),
+            "manual\n"
+        );
+    }
+
+    fn reconcile_case(base: &[u8], ours: &[u8], theirs: &[u8]) -> LensReconcileResult {
+        reconcile_text(LensReconcileInput {
+            path: None,
+            media_type: Some("text/plain"),
+            base: LensReconcileSide::present(base, None),
+            ours: LensReconcileSide::present(ours, None),
+            theirs: LensReconcileSide::present(theirs, None),
+            ours_label: "target",
+            theirs_label: "source",
+        })
     }
 }

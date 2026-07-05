@@ -526,3 +526,439 @@
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn scan_detects_same_size_edit_even_after_cache_is_warm() {
+        let root = unique_test_dir("same-size-cache");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "alpha\n").unwrap();
+
+        let created = create_local_space(
+            "space-same-size-cache".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let clean = scan_working_tree(created.local_space.local_space_id.clone()).unwrap();
+        assert!(!clean.changed);
+
+        fs::write(space.join("note.txt"), "bravo\n").unwrap();
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+
+        assert_eq!(scan.modified, vec!["note.txt".to_string()]);
+        assert_eq!(scan.diffs[0].path, "note.txt");
+        assert!(scan.diffs[0].diff.hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.op == "insert" && line.text == "bravo"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn switch_layer_missing_target_object_keeps_active_layer_and_files() {
+        let root = unique_test_dir("switch-missing-object");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("note.txt"), "main safe\n").unwrap();
+
+        let created = create_local_space(
+            "space-switch-missing-object".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        fs::write(space.join("note.txt"), "feature target\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+
+        switch_layer(created.local_space.local_space_id.clone(), "main".to_string()).unwrap();
+        assert_eq!(fs::read_to_string(space.join("note.txt")).unwrap(), "main safe\n");
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        let target_state = read_layer_state(&layrs_dir, &feature.active_layer_id).unwrap();
+        let target_file = target_state
+            .files
+            .iter()
+            .find(|file| file.path == "note.txt")
+            .unwrap();
+        let manifest = read_json::<FileObjectFile>(&layrs_dir.join(&target_file.object)).unwrap();
+        let chunk_id = &manifest.chunks[0].chunk_id;
+        let chunk_path = layrs_dir
+            .join("objects")
+            .join("chunks")
+            .join(format!("{}.chunk", object_file_stem(chunk_id)));
+        fs::remove_file(&chunk_path).unwrap();
+
+        let error = switch_layer(
+            created.local_space.local_space_id.clone(),
+            feature.active_layer_id,
+        )
+        .unwrap_err();
+        assert!(error.contains("could not find chunk object"));
+        assert_eq!(fs::read_to_string(space.join("note.txt")).unwrap(), "main safe\n");
+
+        let active = read_json::<ActiveLayerFile>(&layrs_dir.join("active-layer.json")).unwrap();
+        assert_eq!(active.layer_id, "main");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn auto_local_steps_disabled_preserves_layer_work_without_step() {
+        let root = unique_test_dir("auto-step-disabled");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        let mut desktop_config = DesktopConfig::load_or_create().unwrap();
+        desktop_config.auto_local_steps = false;
+        desktop_config.save().unwrap();
+        fs::write(space.join("note.txt"), "main\n").unwrap();
+
+        let created = create_local_space(
+            "space-auto-step-disabled".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        fs::write(space.join("note.txt"), "feature draft\n").unwrap();
+        fs::write(space.join("draft.txt"), "unstepped\n").unwrap();
+
+        let switched_to_main =
+            switch_layer(created.local_space.local_space_id.clone(), "main".to_string()).unwrap();
+        assert_eq!(switched_to_main.saved_step_id, None);
+        assert_eq!(switched_to_main.changed_files, 2);
+        assert_eq!(fs::read_to_string(space.join("note.txt")).unwrap(), "main\n");
+        assert!(!space.join("draft.txt").exists());
+        assert!(read_step_files(&space.join(LAYRS_DIR), &feature.active_layer_id)
+            .unwrap()
+            .is_empty());
+
+        switch_layer(
+            created.local_space.local_space_id,
+            feature.active_layer_id.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(space.join("note.txt")).unwrap(),
+            "feature draft\n"
+        );
+        assert_eq!(fs::read_to_string(space.join("draft.txt")).unwrap(), "unstepped\n");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_publish_steps_are_separate_per_layer() {
+        let root = unique_test_dir("pending-per-layer");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+        fs::write(space.join("main.txt"), "main v1\n").unwrap();
+
+        let created = create_local_space(
+            "space-pending-per-layer".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("main.txt"), "main v2\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        fs::write(space.join("feature.txt"), "feature\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        assert_eq!(read_pending_publish_files(&layrs_dir, "main").unwrap().len(), 1);
+        assert_eq!(
+            read_pending_publish_files(&layrs_dir, &feature.active_layer_id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        switch_layer(created.local_space.local_space_id.clone(), "main".to_string()).unwrap();
+        let main_scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+        assert_eq!(main_scan.pending_publish_count, 1);
+        assert!(main_scan.steps.iter().all(|step| step.layer_id == "main"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_layer_inherits_parent_steps_without_copying_chunks() {
+        let root = unique_test_dir("inherit-parent-steps");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+
+        let created = create_local_space(
+            "space-inherit-parent-steps".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("main-1.txt"), "main 1\n").unwrap();
+        let main_1 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+        fs::write(space.join("main-2.txt"), "main 2\n").unwrap();
+        let main_2 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        let chunk_count_before = directory_file_count(
+            &layrs_dir.join("objects").join("chunks"),
+            Some("chunk"),
+        );
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        let chunk_count_after = directory_file_count(
+            &layrs_dir.join("objects").join("chunks"),
+            Some("chunk"),
+        );
+        assert_eq!(chunk_count_after, chunk_count_before);
+
+        let mut feature_steps = read_step_files(&layrs_dir, &feature.active_layer_id).unwrap();
+        feature_steps.sort_by(compare_steps_by_timeline);
+        assert_eq!(feature_steps.len(), 2);
+        assert_eq!(feature_steps[0].step_kind.as_deref(), Some("inherited"));
+        assert_eq!(
+            feature_steps[0].origin_layer_id.as_deref(),
+            Some("main")
+        );
+        assert_eq!(feature_steps[0].origin_layer_name.as_deref(), Some("Main"));
+        assert_eq!(feature_steps[0].origin_step_id.as_deref(), Some(main_1.as_str()));
+        assert_eq!(feature_steps[1].step_kind.as_deref(), Some("inherited"));
+        assert_eq!(
+            feature_steps[1].origin_layer_id.as_deref(),
+            Some("main")
+        );
+        assert_eq!(feature_steps[1].origin_layer_name.as_deref(), Some("Main"));
+        assert_eq!(feature_steps[1].origin_step_id.as_deref(), Some(main_2.as_str()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn linked_child_receives_future_parent_steps_after_own_work() {
+        let root = unique_test_dir("linked-child-propagation");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+
+        let created = create_local_space(
+            "space-linked-child-propagation".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("main-1.txt"), "main 1\n").unwrap();
+        let main_1 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+        fs::write(space.join("main-2.txt"), "main 2\n").unwrap();
+        let main_2 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        fs::write(space.join("feature.txt"), "feature B\n").unwrap();
+        let feature_b = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+
+        switch_layer(created.local_space.local_space_id.clone(), "main".to_string()).unwrap();
+        fs::write(space.join("main-3.txt"), "main 3\n").unwrap();
+        let main_3 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        let mut feature_steps = read_step_files(&layrs_dir, &feature.active_layer_id).unwrap();
+        feature_steps.sort_by(compare_steps_by_timeline);
+        let provenance = feature_steps
+            .iter()
+            .map(|step| {
+                (
+                    step.origin_layer_id.as_deref().unwrap_or(step.layer_id.as_str()),
+                    step.origin_layer_name.as_deref().unwrap_or("<missing>"),
+                    step.origin_step_id.as_deref().unwrap_or(step.step_id.as_str()),
+                    step.step_kind.as_deref().unwrap_or("native"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provenance,
+            vec![
+                ("main", "Main", main_1.as_str(), "inherited"),
+                ("main", "Main", main_2.as_str(), "inherited"),
+                (
+                    feature.active_layer_id.as_str(),
+                    "Feature",
+                    feature_b.as_str(),
+                    "native",
+                ),
+                ("main", "Main", main_3.as_str(), "inherited"),
+            ]
+        );
+
+        switch_layer(
+            created.local_space.local_space_id,
+            feature.active_layer_id.clone(),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(space.join("main-3.txt")).unwrap(), "main 3\n");
+        assert_eq!(
+            fs::read_to_string(space.join("feature.txt")).unwrap(),
+            "feature B\n"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disconnected_child_does_not_receive_future_parent_steps() {
+        let root = unique_test_dir("disconnected-child-propagation");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+
+        let created = create_local_space(
+            "space-disconnected-child-propagation".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("main-1.txt"), "main 1\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+        let feature =
+            create_layer_from_current(created.local_space.local_space_id.clone(), "Feature".into())
+                .unwrap();
+        disconnect_layer_from_parent(
+            created.local_space.local_space_id.clone(),
+            feature.active_layer_id.clone(),
+        )
+        .unwrap();
+
+        switch_layer(created.local_space.local_space_id.clone(), "main".to_string()).unwrap();
+        fs::write(space.join("main-2.txt"), "main 2\n").unwrap();
+        let main_2 = save_local_step(created.local_space.local_space_id.clone())
+            .unwrap()
+            .step_id
+            .unwrap();
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        let feature_steps = read_step_files(&layrs_dir, &feature.active_layer_id).unwrap();
+        assert!(
+            feature_steps
+                .iter()
+                .all(|step| step.origin_step_id.as_deref() != Some(main_2.as_str())),
+            "disconnected child should not receive future parent step"
+        );
+        let summary = open_local_space(created.local_space.local_space_id).unwrap();
+        let feature_summary = summary
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == feature.active_layer_id)
+            .unwrap();
+        assert_eq!(feature_summary.lineage_status, "unlinked");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clear_layer_steps_archives_history_without_touching_files_or_chunks() {
+        let root = unique_test_dir("clear-layer-steps");
+        let config = root.join("config");
+        let space = root.join("space");
+        fs::create_dir_all(&space).unwrap();
+        env::set_var("APPDATA", &config);
+
+        let created = create_local_space(
+            "space-clear-layer-steps".to_string(),
+            space.display().to_string(),
+            Some("main".to_string()),
+        )
+        .unwrap();
+        fs::write(space.join("keep.txt"), "important data\n").unwrap();
+        save_local_step(created.local_space.local_space_id.clone()).unwrap();
+
+        let layrs_dir = space.join(LAYRS_DIR);
+        let chunk_count_before = directory_file_count(
+            &layrs_dir.join("objects").join("chunks"),
+            Some("chunk"),
+        );
+        let cleared =
+            clear_layer_steps(created.local_space.local_space_id.clone(), "main".to_string(), true)
+                .unwrap();
+
+        assert_eq!(fs::read_to_string(space.join("keep.txt")).unwrap(), "important data\n");
+        assert_eq!(read_step_files(&layrs_dir, "main").unwrap().len(), 0);
+        assert_eq!(read_pending_publish_files(&layrs_dir, "main").unwrap().len(), 0);
+        assert!(cleared.archived_steps_path.as_deref().is_some_and(|path| {
+            std::path::Path::new(path).join("steps").exists()
+        }));
+        let chunk_count_after = directory_file_count(
+            &layrs_dir.join("objects").join("chunks"),
+            Some("chunk"),
+        );
+        assert_eq!(chunk_count_after, chunk_count_before);
+
+        let scan = scan_working_tree(created.local_space.local_space_id).unwrap();
+        assert_eq!(scan.steps.len(), 0);
+        assert!(!scan.changed);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_desktop_settings_rejects_empty_and_duplicate_shortcuts() {
+        let root = unique_test_dir("settings-shortcuts");
+        let config = root.join("config");
+        env::set_var("APPDATA", &config);
+        let settings = DesktopConfig::load_or_create().unwrap().settings();
+
+        let mut empty = settings.clone();
+        empty.shortcuts.enabled = true;
+        empty.shortcuts.save_step = String::new();
+        let empty_error = save_desktop_settings(empty).unwrap_err();
+        assert!(empty_error.contains("Shortcut fields cannot be empty"));
+
+        let mut duplicate = settings;
+        duplicate.shortcuts.enabled = true;
+        duplicate.shortcuts.save_step = "Ctrl+S".to_string();
+        duplicate.shortcuts.publish = "ctrl+s".to_string();
+        let duplicate_error = save_desktop_settings(duplicate).unwrap_err();
+        assert!(duplicate_error.contains("must be different"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+

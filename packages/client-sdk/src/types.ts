@@ -112,6 +112,8 @@ export interface Layer {
   id: LayrsId;
   spaceId: LayrsId;
   parentId?: LayrsId;
+  parentLayerId?: LayrsId;
+  lineageStatus?: "linked" | "unlinked" | string;
   name: string;
   kind: LayerKind;
   status: LayerStatus;
@@ -247,6 +249,10 @@ export interface LayerStep {
   id: LayrsId;
   stepId: LayrsId;
   layerId: LayrsId;
+  originLayerId?: LayrsId;
+  originLayerName?: string;
+  originStepId?: LayrsId;
+  stepKind?: string;
   baseLayerId?: LayrsId;
   baseTreeId?: LayrsId;
   rootTreeId?: LayrsId;

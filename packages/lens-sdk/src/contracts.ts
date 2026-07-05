@@ -17,6 +17,8 @@ export type ReferenceKind = "relativePath" | "urlFunction" | "externalUrl" | (st
 export type InspectorValueType = "string" | "number" | "boolean" | "stringList";
 export type ProofStatus = "pass" | "warn" | "notEvaluated";
 export type ReconcileStatus = "unsupported" | "needs_manual_resolution" | "auto_resolvable";
+export type LensReconcileResultStatus = "auto_resolved" | "conflicted" | "unsupported";
+export type LensConflictSegmentKind = "text" | "block";
 
 export interface LensManifest {
   id: LensId;
@@ -129,6 +131,52 @@ export interface DiffVirtualizationMetadata {
 export interface ReconcileModel {
   status: ReconcileStatus;
   summary: string;
+  fields: Record<string, unknown>;
+}
+
+export interface LensReconcileSide {
+  exists: boolean;
+  bytes?: Uint8Array;
+  contentHash?: string;
+  size: number;
+}
+
+export interface LensReconcileInput {
+  path: string;
+  mediaType?: string;
+  base: LensReconcileSide;
+  ours: LensReconcileSide;
+  theirs: LensReconcileSide;
+  oursLabel: string;
+  theirsLabel: string;
+}
+
+export interface LensReconcileContent {
+  exists: boolean;
+  bytes?: Uint8Array;
+}
+
+export interface LensConflictBlock {
+  blockId: string;
+  base: string;
+  ours: string;
+  theirs: string;
+  supportedResolutions: string[];
+}
+
+export interface LensConflictSegment {
+  kind: LensConflictSegmentKind;
+  text?: string;
+  blockId?: string;
+}
+
+export interface LensReconcileResult {
+  status: LensReconcileResultStatus;
+  summary: string;
+  resolved?: LensReconcileContent;
+  conflict?: LensReconcileContent;
+  blocks: LensConflictBlock[];
+  segments: LensConflictSegment[];
   fields: Record<string, unknown>;
 }
 

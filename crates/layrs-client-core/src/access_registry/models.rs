@@ -60,6 +60,8 @@ pub struct LocalLayerSummary {
     pub layer_id: String,
     pub display_name: String,
     pub parent_layer_id: Option<String>,
+    #[serde(default = "default_layer_lineage_status")]
+    pub lineage_status: String,
     pub access: LayerAccessKind,
     pub can_open: bool,
     pub path: String,
@@ -130,6 +132,16 @@ pub struct DeleteLayerResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LayerSettingsResult {
+    pub local_space: LocalSpaceSummary,
+    pub layer_id: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_steps_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkingTreeScan {
     pub root_path: String,
     pub active_layer_id: String,
@@ -161,6 +173,11 @@ pub struct LocalStepSummary {
     pub step_id: String,
     pub layer_id: String,
     pub captured_at: u64,
+    pub timeline_position: Option<u64>,
+    pub origin_layer_id: Option<String>,
+    pub origin_layer_name: Option<String>,
+    pub origin_step_id: Option<String>,
+    pub step_kind: Option<String>,
     pub changed_files: usize,
     pub diff_stats: DiffStats,
     pub diffs: Vec<LensDiffEntry>,
@@ -303,6 +320,51 @@ pub struct SaveLocalStepResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WeaveOperationResult {
+    pub local_space: LocalSpaceSummary,
+    pub session: WeaveSessionSummary,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaveSessionSummary {
+    pub weave_id: String,
+    pub source_layer_id: String,
+    pub target_layer_id: String,
+    pub status: String,
+    pub pre_weave_target_tree_id: Option<String>,
+    pub pre_weave_target_step_id: Option<String>,
+    pub planned_steps: Vec<String>,
+    pub applied_steps: Vec<String>,
+    pub conflicts: Vec<WeaveConflictSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaveConflictSummary {
+    pub conflict_id: String,
+    pub path: String,
+    pub lens_id: String,
+    pub status: String,
+    pub message: String,
+    pub resolution: Option<String>,
+    pub blocks: Vec<WeaveConflictBlockSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaveConflictBlockSummary {
+    pub block_id: String,
+    pub status: String,
+    pub base: String,
+    pub ours: String,
+    pub theirs: String,
+    pub resolution: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PendingPublishFile {
     schema: String,
     step_id: String,
@@ -312,6 +374,22 @@ struct PendingPublishFile {
     #[serde(default)]
     changed_paths: Vec<String>,
     created_at_unix: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingLayerDeletionsFile {
+    schema: String,
+    #[serde(default)]
+    deleted_layers: Vec<PendingLayerDeletion>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingLayerDeletion {
+    layer_id: String,
+    display_name: String,
+    deleted_at_unix: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -397,6 +475,16 @@ struct PublishStepRequest {
     root_tree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     changed_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeline_position: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_layer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_layer_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin_step_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step_kind: Option<String>,
     captured_at_unix: u64,
 }
 
@@ -409,6 +497,11 @@ impl PublishStepRequest {
             base_tree_id: step.base_tree_id.clone(),
             root_tree_id: step.root_tree_id.clone(),
             changed_paths: step.changed_paths.clone(),
+            timeline_position: step.timeline_position,
+            origin_layer_id: step.origin_layer_id.clone(),
+            origin_layer_name: step.origin_layer_name.clone(),
+            origin_step_id: step.origin_step_id.clone(),
+            step_kind: step.step_kind.clone(),
             captured_at_unix: step.captured_at_unix,
         }
     }
@@ -648,6 +741,16 @@ struct ReceivedStep {
     #[serde(default)]
     changed_paths: Vec<String>,
     #[serde(default)]
+    timeline_position: Option<u64>,
+    #[serde(default)]
+    origin_layer_id: Option<String>,
+    #[serde(default)]
+    origin_layer_name: Option<String>,
+    #[serde(default)]
+    origin_step_id: Option<String>,
+    #[serde(default)]
+    step_kind: Option<String>,
+    #[serde(default)]
     captured_at_unix: Option<u64>,
 }
 
@@ -677,6 +780,8 @@ struct LocalLayerMetadata {
     display_name: String,
     #[serde(default)]
     parent_layer_id: Option<String>,
+    #[serde(default = "default_layer_lineage_status")]
+    lineage_status: String,
     access: LayerAccessKind,
     can_open: bool,
 }
@@ -753,9 +858,81 @@ struct StepFile {
     root_tree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     changed_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeline_position: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_layer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_layer_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_step_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step_kind: Option<String>,
     captured_at_unix: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     files: Vec<FileSnapshotEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WeaveSessionFile {
+    schema: String,
+    weave_id: String,
+    source_layer_id: String,
+    target_layer_id: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pre_weave_target_tree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pre_weave_target_step_id: Option<String>,
+    #[serde(default)]
+    planned_steps: Vec<String>,
+    #[serde(default)]
+    applied_steps: Vec<String>,
+    #[serde(default)]
+    conflicts: Vec<WeaveConflictFile>,
+    created_at_unix: u64,
+    updated_at_unix: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WeaveConflictFile {
+    conflict_id: String,
+    path: String,
+    lens_id: String,
+    status: String,
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocks: Vec<WeaveConflictBlockFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    segments: Vec<WeaveConflictSegmentFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WeaveConflictBlockFile {
+    block_id: String,
+    status: String,
+    base: String,
+    ours: String,
+    theirs: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_text: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WeaveConflictSegmentFile {
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

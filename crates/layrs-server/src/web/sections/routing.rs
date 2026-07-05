@@ -153,6 +153,14 @@ fn router(state: AppState) -> Result<Router, ServerError> {
             "/v1/workspaces/:workspace_id/spaces/:space_id/layers/:layer_id",
             delete(layers::delete_layer),
         )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/layers/:layer_id/disconnect-parent",
+            post(layers::disconnect_layer_parent),
+        )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/layers/:layer_id/clear-steps",
+            post(layers::clear_layer_steps),
+        )
         .route("/v1/devices", get(devices::list_devices))
         .route(
             "/v1/workspaces/:workspace_id/audit-events",
@@ -169,6 +177,22 @@ fn router(state: AppState) -> Result<Router, ServerError> {
         .route(
             "/v1/workspaces/:workspace_id/spaces/:space_id/sync/publish",
             post(publish_local_space_sync),
+        )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests",
+            get(list_weave_requests).post(create_weave_request),
+        )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests/:weave_id",
+            get(get_weave_request),
+        )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests/:weave_id/apply",
+            post(apply_weave_request),
+        )
+        .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests/:weave_id/abort",
+            post(abort_weave_request),
         )
         .route(
             "/v1/workspaces/:workspace_id/spaces/:space_id/chunks/prepare",
@@ -535,6 +559,16 @@ struct SyncStepBody {
     root_tree_id: Option<String>,
     #[serde(default, alias = "changed_paths")]
     changed_paths: Vec<String>,
+    #[serde(default, alias = "timeline_position")]
+    timeline_position: Option<i64>,
+    #[serde(default, alias = "origin_layer_id")]
+    origin_layer_id: Option<String>,
+    #[serde(default, alias = "origin_layer_name")]
+    origin_layer_name: Option<String>,
+    #[serde(default, alias = "origin_step_id")]
+    origin_step_id: Option<String>,
+    #[serde(default, alias = "step_kind")]
+    step_kind: Option<String>,
     #[serde(default, alias = "captured_at_unix")]
     captured_at_unix: Option<i64>,
 }

@@ -7,6 +7,7 @@ use layrs_client_core::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -170,6 +171,11 @@ impl ClientCoreEngine {
                 step_id: step.step_id,
                 layer_id: step.layer_id,
                 captured_at_unix: step.captured_at,
+                timeline_position: step.timeline_position,
+                origin_layer_id: step.origin_layer_id,
+                origin_layer_name: step.origin_layer_name,
+                origin_step_id: step.origin_step_id,
+                step_kind: step.step_kind,
                 summary: format!(
                     "{} file(s), +{} -{}",
                     step.diff_stats.files, step.diff_stats.additions, step.diff_stats.deletions
@@ -220,6 +226,35 @@ impl ClientCoreEngine {
             pulled_objects: 0,
             pulled_steps: 0,
             sync_state_path: result.sync_state_path,
+        })
+    }
+
+    pub fn sync(&self, workspace: Option<&str>) -> Result<SyncOutput, CliError> {
+        let selector = self.space_selector()?;
+        let space = map_core(core_space::open_local_space(selector.clone()))?;
+        if space.state == "draft" {
+            let workspace_id = match workspace {
+                Some(workspace_id) => workspace_id.to_string(),
+                None => self.default_workspace_for_draft_publish()?,
+            };
+            let result = map_core(core_space::send_draft_local_space(selector, workspace_id))?;
+            return Ok(SyncOutput {
+                workspace_id: result.workspace_id,
+                status: "synced".to_string(),
+                message: format!(
+                    "Sent Draft Space {} to Studio.",
+                    result.local_space.local_space_id
+                ),
+                sync_state_path: None,
+            });
+        }
+
+        let result = map_core(core_space::sync_local_space(selector))?;
+        Ok(SyncOutput {
+            workspace_id: result.local_space.workspace_id,
+            status: result.status,
+            message: result.message,
+            sync_state_path: Some(result.sync_state_path),
         })
     }
 
@@ -433,10 +468,138 @@ impl ClientCoreEngine {
         })
     }
 
+    pub fn layer_disconnect(
+        &self,
+        name_or_id: &str,
+        yes: bool,
+    ) -> Result<LayerActionOutput, CliError> {
+        if !yes {
+            return Err(CliError::runtime(
+                "Refusing to disconnect a Layer from its parent without --yes.",
+            ));
+        }
+        let space = map_core(core_space::open_local_space(self.space_selector()?))?;
+        let target = resolve_layer_id(&space.layers, name_or_id)?;
+        let result = map_core(core_space::disconnect_layer_from_parent(
+            space.local_space_id,
+            target,
+        ))?;
+        Ok(LayerActionOutput {
+            layer_id: result.layer_id,
+            name: name_or_id.to_string(),
+            message: result.message,
+            archived_steps_path: result.archived_steps_path,
+        })
+    }
+
+    pub fn layer_clear_steps(
+        &self,
+        name_or_id: &str,
+        yes: bool,
+    ) -> Result<LayerActionOutput, CliError> {
+        if !yes {
+            return Err(CliError::runtime(
+                "Refusing to clear Layer Steps without --yes.",
+            ));
+        }
+        let space = map_core(core_space::open_local_space(self.space_selector()?))?;
+        let target = resolve_layer_id(&space.layers, name_or_id)?;
+        let result = map_core(core_space::clear_layer_steps(
+            space.local_space_id,
+            target,
+            true,
+        ))?;
+        Ok(LayerActionOutput {
+            layer_id: result.layer_id,
+            name: name_or_id.to_string(),
+            message: result.message,
+            archived_steps_path: result.archived_steps_path,
+        })
+    }
+
+    pub fn weave(
+        &self,
+        source: &str,
+        target: &str,
+        preview: bool,
+    ) -> Result<WeaveOutput, CliError> {
+        let space = map_core(core_space::open_local_space(self.space_selector()?))?;
+        let source_id = resolve_layer_id(&space.layers, source)?;
+        let target_id = resolve_layer_id(&space.layers, target)?;
+        let result = map_core(core_space::weave_layers(
+            space.local_space_id,
+            source_id,
+            target_id,
+            preview,
+        ))?;
+        Ok(WeaveOutput::from_result(result))
+    }
+
+    pub fn weave_parent(&self, preview: bool) -> Result<WeaveOutput, CliError> {
+        let result = map_core(core_space::weave_active_layer_to_parent(
+            self.space_selector()?,
+            preview,
+        ))?;
+        Ok(WeaveOutput::from_result(result))
+    }
+
+    pub fn weave_status(&self) -> Result<Option<WeaveSessionOutput>, CliError> {
+        Ok(map_core(core_space::weave_status(self.space_selector()?))?
+            .map(WeaveSessionOutput::from_summary))
+    }
+
+    pub fn weave_conflicts(&self) -> Result<Vec<WeaveConflictOutput>, CliError> {
+        Ok(
+            map_core(core_space::weave_conflicts(self.space_selector()?))?
+                .into_iter()
+                .map(WeaveConflictOutput::from_summary)
+                .collect(),
+        )
+    }
+
+    pub fn weave_resolve(
+        &self,
+        path: &str,
+        resolution: &str,
+        file: Option<&Path>,
+    ) -> Result<WeaveOutput, CliError> {
+        let manual_text = if resolution.ends_with(":manual") {
+            let file = file.ok_or_else(|| {
+                CliError::runtime("Manual text block resolution requires --manual-text FILE.")
+            })?;
+            Some(read_manual_text_resolution(file)?)
+        } else {
+            None
+        };
+        let replacement_file = if manual_text.is_some() {
+            None
+        } else {
+            file.map(|path| path.display().to_string())
+        };
+        let result = map_core(core_space::resolve_weave_conflict(
+            self.space_selector()?,
+            path.to_string(),
+            resolution.to_string(),
+            replacement_file,
+            manual_text,
+        ))?;
+        Ok(WeaveOutput::from_result(result))
+    }
+
+    pub fn weave_continue(&self) -> Result<WeaveOutput, CliError> {
+        let result = map_core(core_space::continue_weave(self.space_selector()?))?;
+        Ok(WeaveOutput::from_result(result))
+    }
+
+    pub fn weave_abort(&self) -> Result<WeaveOutput, CliError> {
+        let result = map_core(core_space::abort_weave(self.space_selector()?))?;
+        Ok(WeaveOutput::from_result(result))
+    }
+
     fn space_selector(&self) -> Result<String, CliError> {
         match self.context.space.clone() {
             Some(path) => Ok(path_string(path)),
-            None => current_dir_string(),
+            None => discover_current_space(),
         }
     }
 
@@ -579,6 +742,11 @@ pub struct TimelineStep {
     pub step_id: String,
     pub layer_id: String,
     pub captured_at_unix: u64,
+    pub timeline_position: Option<u64>,
+    pub origin_layer_id: Option<String>,
+    pub origin_layer_name: Option<String>,
+    pub origin_step_id: Option<String>,
+    pub step_kind: Option<String>,
     pub summary: String,
 }
 
@@ -599,6 +767,14 @@ pub struct ReceiveOutput {
     pub pulled_objects: u32,
     pub pulled_steps: u32,
     pub sync_state_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncOutput {
+    pub workspace_id: String,
+    pub status: String,
+    pub message: String,
+    pub sync_state_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -685,6 +861,110 @@ pub struct LayerDeleted {
     pub name: String,
     pub deleted: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayerActionOutput {
+    pub layer_id: String,
+    pub name: String,
+    pub message: String,
+    pub archived_steps_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeaveOutput {
+    pub message: String,
+    pub local_space_id: String,
+    pub session: WeaveSessionOutput,
+}
+
+impl WeaveOutput {
+    fn from_result(result: core_space::WeaveOperationResult) -> Self {
+        Self {
+            message: result.message,
+            local_space_id: result.local_space.local_space_id,
+            session: WeaveSessionOutput::from_summary(result.session),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeaveSessionOutput {
+    pub weave_id: String,
+    pub source_layer_id: String,
+    pub target_layer_id: String,
+    pub status: String,
+    pub pre_weave_target_tree_id: Option<String>,
+    pub pre_weave_target_step_id: Option<String>,
+    pub planned_steps: Vec<String>,
+    pub applied_steps: Vec<String>,
+    pub conflicts: Vec<WeaveConflictOutput>,
+}
+
+impl WeaveSessionOutput {
+    fn from_summary(session: core_space::WeaveSessionSummary) -> Self {
+        Self {
+            weave_id: session.weave_id,
+            source_layer_id: session.source_layer_id,
+            target_layer_id: session.target_layer_id,
+            status: session.status,
+            pre_weave_target_tree_id: session.pre_weave_target_tree_id,
+            pre_weave_target_step_id: session.pre_weave_target_step_id,
+            planned_steps: session.planned_steps,
+            applied_steps: session.applied_steps,
+            conflicts: session
+                .conflicts
+                .into_iter()
+                .map(WeaveConflictOutput::from_summary)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeaveConflictOutput {
+    pub conflict_id: String,
+    pub path: String,
+    pub lens_id: String,
+    pub status: String,
+    pub message: String,
+    pub resolution: Option<String>,
+    pub blocks: Vec<WeaveConflictBlockOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WeaveConflictBlockOutput {
+    pub block_id: String,
+    pub status: String,
+    pub base: String,
+    pub ours: String,
+    pub theirs: String,
+    pub resolution: Option<String>,
+}
+
+impl WeaveConflictOutput {
+    fn from_summary(conflict: core_space::WeaveConflictSummary) -> Self {
+        Self {
+            conflict_id: conflict.conflict_id,
+            path: conflict.path,
+            lens_id: conflict.lens_id,
+            status: conflict.status,
+            message: conflict.message,
+            resolution: conflict.resolution,
+            blocks: conflict
+                .blocks
+                .into_iter()
+                .map(|block| WeaveConflictBlockOutput {
+                    block_id: block.block_id,
+                    status: block.status,
+                    base: block.base,
+                    ours: block.ours,
+                    theirs: block.theirs,
+                    resolution: block.resolution,
+                })
+                .collect(),
+        }
+    }
 }
 
 fn map_core<T>(result: Result<T, String>) -> Result<T, CliError> {
@@ -809,8 +1089,39 @@ fn current_dir_string() -> Result<String, CliError> {
         .map_err(|error| CliError::runtime(format!("Layrs could not resolve cwd: {error}")))
 }
 
+fn discover_current_space() -> Result<String, CliError> {
+    let mut path = std::env::current_dir()
+        .map_err(|error| CliError::runtime(format!("Layrs could not resolve cwd: {error}")))?;
+    loop {
+        if path.join(".layrs").join("local-space.json").exists() {
+            return Ok(path_string(path));
+        }
+        if !path.pop() {
+            return current_dir_string();
+        }
+    }
+}
+
 fn path_string(path: PathBuf) -> String {
     path.display().to_string()
+}
+
+fn read_manual_text_resolution(path: &Path) -> Result<String, CliError> {
+    if path == Path::new("-") {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input).map_err(|error| {
+            CliError::runtime(format!(
+                "Layrs could not read manual text from stdin: {error}"
+            ))
+        })?;
+        return Ok(input);
+    }
+    std::fs::read_to_string(path).map_err(|error| {
+        CliError::runtime(format!(
+            "Layrs could not read manual text resolution {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn path_key(path: &PathBuf) -> String {
