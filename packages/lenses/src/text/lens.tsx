@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { TextLensDiff } from "./diff";
 import { TextLensPreview } from "./preview";
 import { prepareTextReconcile } from "./reconcile";
+import { TextLensReconcileSurface } from "./reconcileSurface";
 
 const CORE_CAPABILITIES: LensCapability[] = ["view", "diff", "reconcile"];
 
@@ -21,7 +22,8 @@ export const textLens: LayrsLens<ReactNode> = {
   priority: 30,
   viewer: {
     renderPreview: TextLensPreview,
-    renderDiff: TextLensDiff
+    renderDiff: TextLensDiff,
+    renderReconcile: TextLensReconcileSurface
   },
   analyzer: {
     reconcile: prepareTextReconcile

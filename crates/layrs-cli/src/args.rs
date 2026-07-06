@@ -83,6 +83,34 @@ pub enum CliCommand {
     },
     WeaveContinue,
     WeaveAbort,
+    ConflictList,
+    ConflictStatus,
+    ConflictResolve {
+        method: Option<ConflictResolveMethod>,
+        path: Option<String>,
+        block: Option<String>,
+    },
+    ConflictContinue,
+    ConflictAbort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictResolveMethod {
+    Existing,
+    Incoming,
+    Both,
+    Manual,
+}
+
+impl ConflictResolveMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Existing => "existing",
+            Self::Incoming => "incoming",
+            Self::Both => "both",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +178,7 @@ where
         "layers" => parse_no_extra(args, CliCommand::Layers)?,
         "layer" => parse_layer(args)?,
         "weave" => parse_weave(args)?,
+        "conflict" => parse_conflict(args)?,
         _ => {
             return Err(CliParseError::new(format!(
                 "unknown command `{command_name}`; run `layrs --help`"
@@ -191,11 +220,72 @@ Commands:
   layrs weave resolve PATH [--block N] --ours|--theirs|--base|--both-ours-first|--both-theirs-first|--manual-text FILE_OR_STDIN|--file FILE
   layrs weave continue
   layrs weave abort
+  layrs conflict list
+  layrs conflict status
+  layrs conflict resolve
+  layrs conflict resolve METHOD -f PATH --block BLOCK_ID
+  layrs conflict continue
+  layrs conflict abort
 
 Global flags:
   --space PATH     Use a local Layrs space at PATH instead of discovering from cwd.
   --json           Emit stable JSON: {\"ok\":true,\"data\":...} or {\"ok\":false,\"error\":...}.
   --no-color       Disable ANSI color in human output."
+}
+
+fn parse_conflict(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    let Some(subcommand) = args.first().cloned() else {
+        return Err(CliParseError::new(
+            "usage: layrs conflict list | status | resolve [METHOD -f PATH --block BLOCK_ID] | continue | abort",
+        ));
+    };
+    args.remove(0);
+
+    match subcommand.as_str() {
+        "list" => parse_no_extra(args, CliCommand::ConflictList),
+        "status" => parse_no_extra(args, CliCommand::ConflictStatus),
+        "resolve" => parse_conflict_resolve(args),
+        "continue" => parse_no_extra(args, CliCommand::ConflictContinue),
+        "abort" => parse_no_extra(args, CliCommand::ConflictAbort),
+        _ => Err(CliParseError::new(format!(
+            "unknown conflict command `{subcommand}`; expected list, status, resolve, continue, or abort"
+        ))),
+    }
+}
+
+fn parse_conflict_resolve(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
+    if args.is_empty() {
+        return Ok(CliCommand::ConflictResolve {
+            method: None,
+            path: None,
+            block: None,
+        });
+    }
+
+    let method = parse_conflict_resolve_method(&args.remove(0))?;
+    let path = take_string_option_any(&mut args, &["-f", "--file"])?
+        .ok_or_else(|| CliParseError::new("layrs conflict resolve METHOD requires -f PATH."))?;
+    let block = take_string_option(&mut args, "--block")?;
+    parse_no_extra(
+        args,
+        CliCommand::ConflictResolve {
+            method: Some(method),
+            path: Some(path),
+            block,
+        },
+    )
+}
+
+fn parse_conflict_resolve_method(value: &str) -> Result<ConflictResolveMethod, CliParseError> {
+    match value {
+        "existing" => Ok(ConflictResolveMethod::Existing),
+        "incoming" => Ok(ConflictResolveMethod::Incoming),
+        "both" => Ok(ConflictResolveMethod::Both),
+        "manual" => Ok(ConflictResolveMethod::Manual),
+        _ => Err(CliParseError::new(format!(
+            "unknown conflict resolve method `{value}`; expected existing, incoming, both, or manual"
+        ))),
+    }
 }
 
 fn parse_weave(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
@@ -534,6 +624,55 @@ fn take_string_option(args: &mut Vec<String>, flag: &str) -> Result<Option<Strin
     Ok(found)
 }
 
+fn take_string_option_any(
+    args: &mut Vec<String>,
+    flags: &[&str],
+) -> Result<Option<String>, CliParseError> {
+    let mut found = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let matched = flags.iter().copied().find(|flag| args[index] == *flag);
+        if let Some(flag) = matched {
+            if found.is_some() {
+                return Err(CliParseError::new(format!(
+                    "duplicate `{}` option",
+                    flags.join("|")
+                )));
+            }
+            if index + 1 >= args.len() {
+                return Err(CliParseError::new(format!("missing value for `{flag}`")));
+            }
+            let value = args.remove(index + 1);
+            if value.starts_with("--") {
+                return Err(CliParseError::new(format!("missing value for `{flag}`")));
+            }
+            args.remove(index);
+            found = Some(value);
+        } else if let Some((flag, value)) = flags.iter().find_map(|flag| {
+            args[index]
+                .strip_prefix(&format!("{flag}="))
+                .map(|value| (*flag, value))
+        }) {
+            if found.is_some() {
+                return Err(CliParseError::new(format!(
+                    "duplicate `{}` option",
+                    flags.join("|")
+                )));
+            }
+            if value.is_empty() {
+                return Err(CliParseError::new(format!("missing value for `{flag}`")));
+            }
+            found = Some(value.to_string());
+            args.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+
+    Ok(found)
+}
+
 fn parse_window(value: &str) -> Result<Window, CliParseError> {
     let Some((start, limit)) = value.split_once(':') else {
         return Err(CliParseError::new(
@@ -701,6 +840,50 @@ mod tests {
         .expect_err("parse should fail");
 
         assert!(error.message().contains("--block cannot be combined"));
+    }
+
+    #[test]
+    fn parses_conflict_resolve_method_path_and_block() {
+        let cli = parse_args([
+            "conflict",
+            "resolve",
+            "incoming",
+            "-f",
+            "story.txt",
+            "--block",
+            "1",
+        ])
+        .expect("parse");
+
+        assert_eq!(
+            cli.command,
+            CliCommand::ConflictResolve {
+                method: Some(ConflictResolveMethod::Incoming),
+                path: Some("story.txt".to_string()),
+                block: Some("1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_conflict_resolve_without_args_as_interactive() {
+        let cli = parse_args(["conflict", "resolve"]).expect("parse");
+
+        assert_eq!(
+            cli.command,
+            CliCommand::ConflictResolve {
+                method: None,
+                path: None,
+                block: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_conflict_resolve_without_path() {
+        let error = parse_args(["conflict", "resolve", "existing"]).expect_err("parse should fail");
+
+        assert!(error.message().contains("requires -f PATH"));
     }
 
     #[test]

@@ -715,7 +715,7 @@
     }
 
     #[test]
-    fn sync_weave_auto_merges_studio_state_into_pending_local_step() {
+    fn sync_weave_replays_pending_local_step_after_received_server_step() {
         let root = unique_test_dir("sync-weave-auto");
         let config = root.join("config");
         let space = root.join("space");
@@ -737,6 +737,30 @@
 
         fs::write(space.join("note.txt"), "a\nb\nstudio-c\n").unwrap();
         let studio_state = capture_working_state(&space, "layer_server", true).unwrap();
+        let server_step = StepFile {
+            schema: STEP_SCHEMA.to_string(),
+            step_id: "server-step-1".to_string(),
+            layer_id: "layer_server".to_string(),
+            parent_step_id: None,
+            base_layer_id: Some("layer_server".to_string()),
+            base_tree_id: base_state.root_tree_id.clone(),
+            root_tree_id: studio_state.root_tree_id.clone(),
+            changed_paths: vec!["note.txt".to_string()],
+            timeline_position: Some(0),
+            origin_layer_id: Some("layer_server".to_string()),
+            origin_layer_name: Some("Main".to_string()),
+            origin_step_id: Some("server-step-1".to_string()),
+            step_kind: Some("native".to_string()),
+            captured_at_unix: unix_now(),
+            files: Vec::new(),
+        };
+        write_json(
+            &layer_dir(&handle.layrs_dir, "layer_server")
+                .join("steps")
+                .join("server-step-1.json"),
+            &server_step,
+        )
+        .unwrap();
         fs::write(space.join("note.txt"), "a\nlocal-b\nc\n").unwrap();
         let local_state = capture_working_state(&space, "layer_server", true).unwrap();
         let local_step_id = write_step(&handle.layrs_dir, "layer_server", &local_state).unwrap();
@@ -744,12 +768,15 @@
         write_pending_publish(&handle.layrs_dir, &local_step).unwrap();
         let sync_path = handle.layrs_dir.join("sync-state.json");
 
-        let result = weave_studio_state_into_local_sync(
+        let pending_steps = pending_publish_steps(&handle.layrs_dir, "layer_server").unwrap();
+        let result = weave_local_state_over_received_sync(
             &mut handle,
             Some(&base_state),
             &local_state,
             &studio_state,
+            &pending_steps,
             &sync_path,
+            "sync",
         )
         .unwrap();
 
@@ -762,7 +789,16 @@
             read_pending_publish_files(&handle.layrs_dir, "layer_server")
                 .unwrap()
                 .len(),
-            2
+            1
+        );
+        let steps = sorted_steps(&handle.layrs_dir, "layer_server").unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].step_id, "server-step-1");
+        assert_eq!(steps[0].step_kind.as_deref(), Some("native"));
+        assert_eq!(steps[1].step_kind.as_deref(), Some("woven"));
+        assert_eq!(
+            steps[1].origin_step_id.as_deref(),
+            Some(local_step_id.as_str())
         );
 
         let _ = fs::remove_dir_all(root);
@@ -798,12 +834,15 @@
         write_pending_publish(&handle.layrs_dir, &local_step).unwrap();
         let sync_path = handle.layrs_dir.join("sync-state.json");
 
-        let result = weave_studio_state_into_local_sync(
+        let pending_steps = pending_publish_steps(&handle.layrs_dir, "layer_server").unwrap();
+        let result = weave_local_state_over_received_sync(
             &mut handle,
             Some(&base_state),
             &local_state,
             &studio_state,
+            &pending_steps,
             &sync_path,
+            "sync",
         )
         .unwrap()
         .expect("conflicted sync");
@@ -811,7 +850,7 @@
         assert_eq!(result.status, "conflicted");
         let marked = fs::read_to_string(space.join("note.txt")).unwrap();
         assert!(marked.contains("<<<<<<< target:layer_server"));
-        assert!(marked.contains(">>>>>>> source:studio-sync:layer_server"));
+        assert!(marked.contains(">>>>>>> source:local-sync:layer_server"));
 
         abort_weave(created.local_space.local_space_id).unwrap();
         assert_eq!(fs::read_to_string(space.join("note.txt")).unwrap(), "local\n");

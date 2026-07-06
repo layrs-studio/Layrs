@@ -44,7 +44,7 @@ async fn rebuild_layer_tree_in_tx(
         RETURNING tree_id
         "#,
     )
-    .bind(prefixed_id("tree"))
+    .bind(&digest)
     .bind(workspace_id)
     .bind(space_id)
     .bind(&digest)

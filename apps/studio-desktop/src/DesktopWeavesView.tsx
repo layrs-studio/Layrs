@@ -1,6 +1,6 @@
-import type { LocalSpaceSummary, WeaveSessionSummary } from "./tauri";
+import { LensReconcileSurface, type LensReconcileConflict } from "@layrs/lenses";
+import type { LocalSpaceSummary, WeaveConflictSummary, WeaveSessionSummary } from "./tauri";
 import type { CommandKey } from "./desktopTypes";
-import { useState } from "react";
 
 export function WeavesPanel({
   busyAction,
@@ -33,8 +33,6 @@ export function WeavesPanel({
 }) {
   const canStart = sourceLayerId && targetLayerId && sourceLayerId !== targetLayerId;
   const unresolved = session?.conflicts.filter((conflict) => conflict.status !== "resolved") ?? [];
-  const [manualTextByBlock, setManualTextByBlock] = useState<Record<string, string>>({});
-  const manualKey = (conflictPath: string, blockId: string) => `${conflictPath}:${blockId}`;
 
   return (
     <section className="desktop-subpanel desktop-weaves-panel">
@@ -97,112 +95,16 @@ export function WeavesPanel({
           {session.conflicts.length > 0 ? (
             <div className="desktop-weave-conflicts">
               {session.conflicts.map((conflict) => (
-                <article className={conflict.status === "resolved" ? "desktop-conflict-card is-resolved" : "desktop-conflict-card"} key={conflict.conflictId}>
-                  <div>
-                    <strong>{conflict.path}</strong>
-                    <span>{conflict.lensId}</span>
-                    <em>{conflict.message}</em>
-                  </div>
-                  <div className="desktop-conflict-actions">
-                    <button type="button" className="desktop-secondary-button" disabled={conflict.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`} onClick={() => onResolveConflict(conflict.path, "ours")}>
-                      Keep target
-                    </button>
-                    <button type="button" className="desktop-secondary-button" disabled={conflict.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`} onClick={() => onResolveConflict(conflict.path, "theirs")}>
-                      Take source
-                    </button>
-                    <button type="button" className="desktop-secondary-button" disabled={conflict.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`} onClick={() => onResolveConflict(conflict.path, "base")}>
-                      Restore base
-                    </button>
-                  </div>
-                  {conflict.blocks.length > 0 ? (
-                    <div className="desktop-conflict-blocks">
-                      {conflict.blocks.map((block) => (
-                        <div className={block.status === "resolved" ? "desktop-conflict-block is-resolved" : "desktop-conflict-block"} key={block.blockId}>
-                          <div className="desktop-conflict-block-header">
-                            <strong>{block.blockId}</strong>
-                            <span>{block.status}</span>
-                            {block.resolution ? <em>{block.resolution}</em> : null}
-                          </div>
-                          <div className="desktop-conflict-versions">
-                            <ConflictVersion label="Base" value={block.base} />
-                            <ConflictVersion label="Target" value={block.ours} />
-                            <ConflictVersion label="Source" value={block.theirs} />
-                          </div>
-                          <div className="desktop-conflict-actions">
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() => onResolveConflict(conflict.path, `block:${block.blockId}:ours`)}
-                            >
-                              Keep target block
-                            </button>
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() => onResolveConflict(conflict.path, `block:${block.blockId}:theirs`)}
-                            >
-                              Take source block
-                            </button>
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() => onResolveConflict(conflict.path, `block:${block.blockId}:base`)}
-                            >
-                              Restore base block
-                            </button>
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() => onResolveConflict(conflict.path, `block:${block.blockId}:both_ours_then_theirs`)}
-                            >
-                              Target then source
-                            </button>
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() => onResolveConflict(conflict.path, `block:${block.blockId}:both_theirs_then_ours`)}
-                            >
-                              Source then target
-                            </button>
-                          </div>
-                          <label className="desktop-field desktop-conflict-manual">
-                            <span>Manual block resolution</span>
-                            <textarea
-                              value={manualTextByBlock[manualKey(conflict.path, block.blockId)] ?? block.ours}
-                              onChange={(event) =>
-                                setManualTextByBlock((current) => ({
-                                  ...current,
-                                  [manualKey(conflict.path, block.blockId)]: event.currentTarget.value
-                                }))
-                              }
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              rows={6}
-                            />
-                            <button
-                              type="button"
-                              className="desktop-secondary-button"
-                              disabled={block.status === "resolved" || busyAction === `weave-resolve:${conflict.path}`}
-                              onClick={() =>
-                                onResolveConflict(
-                                  conflict.path,
-                                  `block:${block.blockId}:manual`,
-                                  manualTextByBlock[manualKey(conflict.path, block.blockId)] ?? block.ours
-                                )
-                              }
-                            >
-                              Use manual block
-                            </button>
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </article>
+                <LensReconcileSurface
+                  busy={busyAction === `weave-resolve:${conflict.path}`}
+                  conflict={toLensReconcileConflict(conflict)}
+                  disabled={conflict.status === "resolved"}
+                  emptyMessage="Conflict details unavailable"
+                  key={conflict.conflictId}
+                  labels={{ existing: "Existing", incoming: "Incoming" }}
+                  title={conflict.path}
+                  onResolve={(resolution) => onResolveConflict(conflict.path, resolution.resolution, resolution.manualText)}
+                />
               ))}
             </div>
           ) : null}
@@ -222,18 +124,32 @@ export function WeavesPanel({
   );
 }
 
-function ConflictVersion({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="desktop-conflict-version">
-      <span>{label}</span>
-      <pre>{previewText(value)}</pre>
-    </div>
-  );
+function toLensReconcileConflict(conflict: WeaveConflictSummary): LensReconcileConflict {
+  return {
+    blocks: conflict.blocks.map((block) => ({
+      base: block.base,
+      blockId: block.blockId,
+      existing: block.ours,
+      incoming: block.theirs,
+      resolution: block.resolution,
+      status: block.status,
+      supportedMethods: toSupportedMethods(block.supportedMethods)
+    })),
+    conflictId: conflict.conflictId,
+    lensId: conflict.lensId,
+    message: conflict.message,
+    path: conflict.path,
+    resolution: conflict.resolution,
+    segments: conflict.segments?.map((segment) => ({
+      blockId: segment.blockId,
+      kind: segment.kind === "block" ? "block" : "text",
+      text: segment.text
+    })),
+    status: conflict.status,
+    supportedMethods: toSupportedMethods(conflict.supportedMethods)
+  };
 }
 
-function previewText(value: string) {
-  if (!value) {
-    return "(empty)";
-  }
-  return value.length > 1_200 ? `${value.slice(0, 1_200)}\n...` : value;
+function toSupportedMethods(methods: string[] | undefined): LensReconcileConflict["supportedMethods"] {
+  return methods as LensReconcileConflict["supportedMethods"];
 }

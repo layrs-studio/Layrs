@@ -19,6 +19,8 @@ export type ProofStatus = "pass" | "warn" | "notEvaluated";
 export type ReconcileStatus = "unsupported" | "needs_manual_resolution" | "auto_resolvable";
 export type LensReconcileResultStatus = "auto_resolved" | "conflicted" | "unsupported";
 export type LensConflictSegmentKind = "text" | "block";
+export type ResolutionMethod = "existing" | "incoming" | "both" | "manual" | (string & {});
+export type LensReconcileActionScope = "file" | "block";
 
 export interface LensManifest {
   id: LensId;
@@ -178,6 +180,70 @@ export interface LensReconcileResult {
   blocks: LensConflictBlock[];
   segments: LensConflictSegment[];
   fields: Record<string, unknown>;
+}
+
+export interface LensReconcileConflictBlock {
+  blockId: string;
+  status: string;
+  base?: string;
+  existing: string;
+  incoming: string;
+  resolution?: string;
+  supportedMethods?: ResolutionMethod[];
+}
+
+export interface LensReconcileConflictSegment {
+  kind: LensConflictSegmentKind;
+  text?: string;
+  blockId?: string;
+}
+
+export interface LensReconcileConflict {
+  conflictId: string;
+  path: string;
+  lensId: LensId;
+  status: string;
+  message?: string;
+  resolution?: string;
+  blocks: LensReconcileConflictBlock[];
+  segments?: LensReconcileConflictSegment[];
+  supportedMethods?: ResolutionMethod[];
+  fields?: Record<string, unknown>;
+}
+
+export interface LensReconcileAction {
+  method: ResolutionMethod;
+  scope: LensReconcileActionScope;
+  label: string;
+  resolution: string;
+  blockId?: string;
+  requiresManualText?: boolean;
+}
+
+export interface LensReconcileResolution {
+  path: string;
+  lensId: LensId;
+  method: ResolutionMethod;
+  scope: LensReconcileActionScope;
+  resolution: string;
+  blockId?: string;
+  manualText?: string;
+}
+
+export interface LensReconcileLabels {
+  existing: string;
+  incoming: string;
+}
+
+export interface LensReconcileRendererProps {
+  conflict: LensReconcileConflict;
+  title: string;
+  emptyMessage: string;
+  className?: string;
+  disabled?: boolean;
+  busy?: boolean;
+  labels?: Partial<LensReconcileLabels>;
+  onResolve?: (resolution: LensReconcileResolution) => void;
 }
 
 export interface LensAnalysisOutput {

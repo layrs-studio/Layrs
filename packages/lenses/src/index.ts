@@ -1,5 +1,6 @@
 export { LensDiffHost, type LensDiffHostProps } from "./host/LensDiffHost";
 export { LensPreviewHost, type LensPreviewHostProps } from "./host/LensPreviewHost";
+export { LensReconcileSurface, type LensReconcileSurfaceProps } from "./host/LensReconcileSurface";
 export { RawLensFallback, type RawLensFallbackProps } from "./raw/fallback";
 export { TextLinesDiffViewer, type TextLinesDiffViewerProps } from "./shared/TextLinesDiffViewer";
 export { builtinLensRegistry, builtinLenses, createBuiltinLensRegistry, getLensManifest, listLenses, resolveLens } from "./registry";
@@ -7,4 +8,4 @@ export { codeLens } from "./code/lens";
 export { imageLens } from "./image/lens";
 export { rawLens } from "./raw/lens";
 export { textLens } from "./text/lens";
-export type { LensSurfaceMetadata } from "@layrs/lens-sdk";
+export type { LensReconcileConflict, LensReconcileResolution, LensSurfaceMetadata, ResolutionMethod } from "@layrs/lens-sdk";

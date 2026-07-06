@@ -13,6 +13,7 @@ pub struct LensManifest {
     pub version: String,
     pub analyzer: AnalyzerContract,
     pub viewer: ViewerContract,
+    pub resolution_methods: ResolutionMethods,
 }
 
 impl LensManifest {
@@ -29,6 +30,7 @@ impl LensManifest {
             version: version.into(),
             analyzer,
             viewer,
+            resolution_methods: ResolutionMethods::default(),
         }
     }
 }
@@ -50,6 +52,92 @@ pub enum LensCapability {
     References,
     ProofRecipes,
     Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResolutionMethods {
+    pub file: Vec<ResolutionMethod>,
+    pub block: Vec<ResolutionMethod>,
+}
+
+impl ResolutionMethods {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn file(methods: Vec<ResolutionMethod>) -> Self {
+        Self {
+            file: methods,
+            block: Vec::new(),
+        }
+    }
+
+    pub fn block(methods: Vec<ResolutionMethod>) -> Self {
+        Self {
+            file: Vec::new(),
+            block: methods,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionScope {
+    File,
+    Block,
+}
+
+impl ResolutionScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Block => "block",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ResolutionMethod {
+    Existing,
+    Incoming,
+    Both,
+    Manual,
+}
+
+impl ResolutionMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Existing => "existing",
+            Self::Incoming => "incoming",
+            Self::Both => "both",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value.trim() {
+            "existing" | "ours" | "target" => Some(Self::Existing),
+            "incoming" | "theirs" | "source" => Some(Self::Incoming),
+            "both"
+            | "both_ours_then_theirs"
+            | "both_theirs_then_ours"
+            | "both_existing_then_incoming" => Some(Self::Both),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ResolutionMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+pub fn resolution_method_labels(methods: &[ResolutionMethod]) -> Vec<String> {
+    methods
+        .iter()
+        .map(|method| method.as_str().to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -414,6 +502,7 @@ pub struct LensReconcileResult {
     pub summary: String,
     pub resolved: Option<LensReconcileContent>,
     pub conflict: Option<LensReconcileContent>,
+    pub file_methods: Vec<ResolutionMethod>,
     pub blocks: Vec<LensConflictBlock>,
     pub segments: Vec<LensConflictSegment>,
     pub fields: MetadataMap,
@@ -426,6 +515,7 @@ impl LensReconcileResult {
             summary: summary.into(),
             resolved: Some(content),
             conflict: None,
+            file_methods: Vec::new(),
             blocks: Vec::new(),
             segments: Vec::new(),
             fields: MetadataMap::new(),
@@ -443,6 +533,7 @@ impl LensReconcileResult {
             summary: summary.into(),
             resolved: None,
             conflict: Some(content),
+            file_methods: Vec::new(),
             blocks,
             segments,
             fields: MetadataMap::new(),
@@ -455,10 +546,16 @@ impl LensReconcileResult {
             summary: summary.into(),
             resolved: None,
             conflict: None,
+            file_methods: Vec::new(),
             blocks: Vec::new(),
             segments: Vec::new(),
             fields: MetadataMap::new(),
         }
+    }
+
+    pub fn with_file_methods(mut self, methods: Vec<ResolutionMethod>) -> Self {
+        self.file_methods = methods;
+        self
     }
 }
 
@@ -485,7 +582,53 @@ pub struct LensConflictBlock {
     pub base: String,
     pub ours: String,
     pub theirs: String,
+    pub methods: Vec<ResolutionMethod>,
     pub supported_resolutions: Vec<String>,
+}
+
+impl LensConflictBlock {
+    pub fn new(
+        block_id: impl Into<String>,
+        base: impl Into<String>,
+        existing: impl Into<String>,
+        incoming: impl Into<String>,
+        methods: Vec<ResolutionMethod>,
+    ) -> Self {
+        Self {
+            block_id: block_id.into(),
+            base: base.into(),
+            ours: existing.into(),
+            theirs: incoming.into(),
+            supported_resolutions: resolution_method_labels(&methods),
+            methods,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LensFileResolutionInput<'a> {
+    pub method: ResolutionMethod,
+    pub base: LensReconcileSide<'a>,
+    pub existing: LensReconcileSide<'a>,
+    pub incoming: LensReconcileSide<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LensBlockResolutionInput<'a> {
+    pub block_id: &'a str,
+    pub base: &'a str,
+    pub existing: &'a str,
+    pub incoming: &'a str,
+    pub method: ResolutionMethod,
+    pub manual_text: Option<&'a str>,
+    pub resolved_text: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LensResolutionSegment<'a> {
+    pub kind: LensConflictSegmentKind,
+    pub text: Option<&'a str>,
+    pub block_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -685,6 +828,44 @@ mod tests {
             viewer.reconcile_statuses,
             vec![ReconcileStatus::Unsupported]
         );
+    }
+
+    #[test]
+    fn manifest_defaults_to_no_resolution_methods() {
+        let manifest = LensManifest::new(
+            "lens",
+            "Lens",
+            "0.0.0",
+            AnalyzerContract {
+                supported_media_types: Vec::new(),
+                file_extensions: Vec::new(),
+                capabilities: Vec::new(),
+            },
+            ViewerContract::new("viewer", "Viewer", Vec::new(), Vec::new()),
+        );
+
+        assert_eq!(manifest.resolution_methods, ResolutionMethods::none());
+    }
+
+    #[test]
+    fn resolution_methods_have_stable_wire_labels_and_aliases() {
+        assert_eq!(ResolutionMethod::Existing.as_str(), "existing");
+        assert_eq!(ResolutionMethod::Incoming.as_str(), "incoming");
+        assert_eq!(ResolutionMethod::Both.as_str(), "both");
+        assert_eq!(ResolutionMethod::Manual.as_str(), "manual");
+        assert_eq!(
+            ResolutionMethod::from_label("ours"),
+            Some(ResolutionMethod::Existing)
+        );
+        assert_eq!(
+            ResolutionMethod::from_label("theirs"),
+            Some(ResolutionMethod::Incoming)
+        );
+        assert_eq!(
+            ResolutionMethod::from_label("both_theirs_then_ours"),
+            Some(ResolutionMethod::Both)
+        );
+        assert_eq!(ResolutionMethod::from_label("base"), None);
     }
 
     #[test]

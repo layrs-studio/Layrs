@@ -287,7 +287,7 @@ async function stopStaleE2eDesktopProcesses() {
     [
       "-NoProfile",
       "-Command",
-      "Get-Process -Name layrs-studio-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*target\\\\studio-desktop-e2e*' } | Stop-Process -Force"
+      "Get-Process -Name layrs-studio-desktop -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*target*studio-desktop-e2e*' } | Stop-Process -Force"
     ],
     {
       stdio: "ignore",

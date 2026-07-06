@@ -470,6 +470,7 @@ async fn step_changed_file_values(
 #[derive(Clone, Debug)]
 struct TreeFileRef {
     file_object_id: String,
+    digest: String,
     size_bytes: i64,
     media_type: Option<String>,
 }
@@ -509,6 +510,7 @@ async fn tree_file_ref_for_path(
 
     Ok(row.map(|row| TreeFileRef {
         file_object_id: row.get("file_object_id"),
+        digest: row.get("digest"),
         size_bytes: row.get("size_bytes"),
         media_type: row.try_get("media_type").ok(),
     }))

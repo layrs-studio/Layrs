@@ -191,6 +191,10 @@ fn router(state: AppState) -> Result<Router, ServerError> {
             post(apply_weave_request),
         )
         .route(
+            "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests/:weave_id/conflicts/:conflict_id/resolve",
+            post(resolve_weave_conflict),
+        )
+        .route(
             "/v1/workspaces/:workspace_id/spaces/:space_id/weave-requests/:weave_id/abort",
             post(abort_weave_request),
         )

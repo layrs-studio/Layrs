@@ -66,6 +66,31 @@
             .collect()
     }
 
+    fn text_weave_conflict_row() -> WeaveConflictRow {
+        WeaveConflictRow {
+            conflict_id: "conflict-note".to_string(),
+            logical_path: "note.txt".to_string(),
+            lens_id: "layrs.text".to_string(),
+            status: "open".to_string(),
+            message: String::new(),
+            base_file_object_id: None,
+            ours_file_object_id: None,
+            theirs_file_object_id: None,
+            resolved_file_object_id: None,
+            source_layer_id: "source".to_string(),
+            target_layer_id: "target".to_string(),
+        }
+    }
+
+    fn weave_side(bytes: &[u8]) -> WeaveConflictSide {
+        WeaveConflictSide {
+            exists: true,
+            digest: Some(blake3_digest_for_bytes(bytes)),
+            media_type: Some("text/plain".to_string()),
+            bytes: bytes.to_vec(),
+        }
+    }
+
     #[test]
     fn desktop_user_json_uses_only_camel_case_display_name() {
         let user = UserPrincipal {

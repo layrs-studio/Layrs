@@ -56,6 +56,10 @@ const softLimitAllowlist = new Map([
     "black-box anti-loss scenarios; grouped so each workflow keeps its setup and assertions nearby",
   ],
   [
+    "crates/layrs-cli/tests/weave_local_safety.rs",
+    "black-box weave/conflict scenarios; grouped to preserve end-to-end layer and resolution invariants",
+  ],
+  [
     "crates/layrs-cli/src/engine.rs",
     "CLI command facade over client-core; parser/rendering are split out and facade remains below hard limit",
   ],

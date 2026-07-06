@@ -348,6 +348,8 @@ pub struct WeaveConflictSummary {
     pub lens_id: String,
     pub status: String,
     pub message: String,
+    #[serde(default)]
+    pub methods: Vec<String>,
     pub resolution: Option<String>,
     pub blocks: Vec<WeaveConflictBlockSummary>,
 }
@@ -358,8 +360,12 @@ pub struct WeaveConflictBlockSummary {
     pub block_id: String,
     pub status: String,
     pub base: String,
+    pub existing: String,
+    pub incoming: String,
     pub ours: String,
     pub theirs: String,
+    #[serde(default)]
+    pub methods: Vec<String>,
     pub resolution: Option<String>,
 }
 
@@ -903,6 +909,8 @@ struct WeaveConflictFile {
     lens_id: String,
     status: String,
     message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    methods: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -919,6 +927,8 @@ struct WeaveConflictBlockFile {
     base: String,
     ours: String,
     theirs: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    methods: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -2,6 +2,7 @@ import type { LayrsLens, LensCapability, LensDiffRendererProps } from "@layrs/le
 import { createLensManifest } from "@layrs/lens-sdk";
 import type { ReactNode } from "react";
 import { RawLensFallback } from "../raw/fallback";
+import { RawLensReconcileSurface } from "../raw/reconcileSurface";
 import { ImageLensPreview } from "./preview";
 
 const CORE_CAPABILITIES: LensCapability[] = ["view", "diff", "reconcile"];
@@ -20,7 +21,8 @@ export const imageLens: LayrsLens<ReactNode> = {
   priority: 20,
   viewer: {
     renderPreview: ImageLensPreview,
-    renderDiff: RawLensDiff
+    renderDiff: RawLensDiff,
+    renderReconcile: RawLensReconcileSurface
   },
   analyzer: {
     reconcile: () => ({

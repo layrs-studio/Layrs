@@ -69,6 +69,7 @@ export function LayerStepsPanel({
   artifacts,
   layer,
   lensRegistry,
+  refreshKey = 0,
   snapshotSteps,
   spaceId,
   workspaceId
@@ -76,6 +77,7 @@ export function LayerStepsPanel({
   artifacts: Artifact[];
   layer?: Layer;
   lensRegistry: LensRegistryState;
+  refreshKey?: number;
   snapshotSteps: StudioSnapshot["steps"];
   spaceId: string;
   workspaceId: string;
@@ -84,7 +86,7 @@ export function LayerStepsPanel({
     () => normalizeLayerSteps(snapshotSteps, artifacts, layer?.id, spaceId),
     [artifacts, layer?.id, snapshotSteps, spaceId]
   );
-  const feedState = useLayerStepsFeed({ layer, spaceId, workspaceId, artifacts });
+  const feedState = useLayerStepsFeed({ layer, refreshKey, spaceId, workspaceId, artifacts });
   const steps = feedState.status === "available" ? feedState.steps : snapshotLayerSteps;
   const [selectedStepId, setSelectedStepId] = useState<string>();
   const selectedStep = steps.find((step) => step.id === selectedStepId) ?? steps[0];
@@ -290,11 +292,13 @@ function StepDiffViewer({
 function useLayerStepsFeed({
   artifacts,
   layer,
+  refreshKey,
   spaceId,
   workspaceId
 }: {
   artifacts: Artifact[];
   layer?: Layer;
+  refreshKey: number;
   spaceId: string;
   workspaceId: string;
 }): StepFeedState {
@@ -327,7 +331,7 @@ function useLayerStepsFeed({
       });
 
     return () => controller.abort();
-  }, [artifacts, layer, spaceId, workspaceId]);
+  }, [artifacts, layer, refreshKey, spaceId, workspaceId]);
 
   return state;
 }

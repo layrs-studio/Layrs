@@ -1,8 +1,8 @@
 use crate::engine::{
-    CompactOutput, DiffOutput, InitLocalSpace, LayerActionOutput, LayerDeleted, LayerOutput,
-    LayersOutput, LoginOutput, LogoutOutput, PublishOutput, ReceiveOutput, SpacesOutput,
-    StatusOutput, StepSaved, SyncOutput, TimelineOutput, WeaveConflictOutput, WeaveOutput,
-    WeaveSessionOutput, WhoamiOutput,
+    CompactOutput, ConflictInteractiveOutput, DiffOutput, InitLocalSpace, LayerActionOutput,
+    LayerDeleted, LayerOutput, LayersOutput, LoginOutput, LogoutOutput, PublishOutput,
+    ReceiveOutput, SpacesOutput, StatusOutput, StepSaved, SyncOutput, TimelineOutput,
+    WeaveConflictOutput, WeaveOutput, WeaveSessionOutput, WhoamiOutput,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -342,6 +342,18 @@ pub fn weave_conflicts(data: Vec<WeaveConflictOutput>) -> Result<Rendered, Strin
             .join("\n")
     };
     Rendered::from_serializable(human, &data)
+}
+
+pub fn conflict_status(data: Option<WeaveSessionOutput>) -> Result<Rendered, String> {
+    weave_status(data)
+}
+
+pub fn conflict_list(data: Vec<WeaveConflictOutput>) -> Result<Rendered, String> {
+    weave_conflicts(data)
+}
+
+pub fn conflict_interactive(data: ConflictInteractiveOutput) -> Result<Rendered, String> {
+    Rendered::from_serializable(data.message.clone(), &data)
 }
 
 pub fn render_diff_text(text: &str, color: bool) -> String {

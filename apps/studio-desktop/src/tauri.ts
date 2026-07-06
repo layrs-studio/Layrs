@@ -265,7 +265,9 @@ export interface WeaveConflictSummary {
   status: string;
   message: string;
   resolution?: string;
+  supportedMethods?: string[];
   blocks: WeaveConflictBlockSummary[];
+  segments?: WeaveConflictSegmentSummary[];
 }
 
 export interface WeaveConflictBlockSummary {
@@ -275,6 +277,13 @@ export interface WeaveConflictBlockSummary {
   ours: string;
   theirs: string;
   resolution?: string;
+  supportedMethods?: string[];
+}
+
+export interface WeaveConflictSegmentSummary {
+  kind: string;
+  text?: string;
+  blockId?: string;
 }
 
 export interface WeaveSessionSummary {

@@ -612,8 +612,17 @@ pub fn switch_layer(
     write_working_state(&handle.layrs_dir, &previous_layer_id, &current_state)?;
 
     if previous_layer_id != target_layer_id {
-        let target_state = read_layer_state(&handle.layrs_dir, &target_layer_id)
+        let mut target_state = read_layer_state(&handle.layrs_dir, &target_layer_id)
             .or_else(|_| read_layer_index(&handle.layrs_dir, &target_layer_id))?;
+        if let Some(weave_id) = active_weave_id(&handle.layrs_dir)? {
+            let session = read_weave_session(&handle.layrs_dir, &weave_id)?;
+            if session.target_layer_id == target_layer_id && session.status == "conflicted" {
+                target_state = read_state_file(
+                    &handle.layrs_dir,
+                    &proposed_state_path(&handle.layrs_dir, &weave_id),
+                )?;
+            }
+        }
         materialize_state(&handle.root, &target_state)?;
 
         handle.active = ActiveLayerFile {

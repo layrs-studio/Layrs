@@ -5,8 +5,9 @@ use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -101,6 +102,33 @@ where
     run_ok_in(space, &space.space, args)
 }
 
+pub fn run_ok_with_stdin<I, S>(space: &TestSpace, args: I, stdin: &str) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .collect::<Vec<OsString>>();
+
+    let output = run_layrs_with_stdin(space, &space.space, &args, Some(stdin.as_bytes()));
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        output.status.success(),
+        "layrs {:?} failed with status {:?}\nstdout:\n{}\nstderr:\n{}\nspace: {}",
+        args,
+        output.status.code(),
+        stdout,
+        stderr,
+        space.root.display()
+    );
+
+    format!("{stdout}{stderr}")
+}
+
 pub fn run_ok_in<I, S>(space: &TestSpace, cwd: &Path, args: I) -> String
 where
     I: IntoIterator<Item = S>,
@@ -168,6 +196,14 @@ where
     S: AsRef<OsStr>,
 {
     read_json(&run_ok(space, args))
+}
+
+pub fn run_json_with_stdin<I, S>(space: &TestSpace, args: I, stdin: &str) -> Value
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    read_json(&run_ok_with_stdin(space, args, stdin))
 }
 
 pub fn space_size_bytes(path: &Path) -> u64 {
@@ -472,9 +508,20 @@ pub fn deterministic_large_content(step: usize) -> String {
 }
 
 fn run_layrs(space: &TestSpace, cwd: &Path, args: &[OsString]) -> std::process::Output {
+    run_layrs_with_stdin(space, cwd, args, None)
+}
+
+fn run_layrs_with_stdin(
+    space: &TestSpace,
+    cwd: &Path,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_layrs"));
     command.args(args);
     command.current_dir(cwd);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
     command.env_clear();
     preserve_env(&mut command, "PATH");
     preserve_env(&mut command, "Path");
@@ -494,9 +541,26 @@ fn run_layrs(space: &TestSpace, cwd: &Path, args: &[OsString]) -> std::process::
     command.env("TMPDIR", space.root.join("tmp"));
     command.env("NO_COLOR", "1");
 
-    command.output().unwrap_or_else(|error| {
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+
+    let mut child = command.spawn().unwrap_or_else(|error| {
         panic!(
             "failed to run layrs with args {:?} in {}: {error}",
+            args,
+            cwd.display()
+        )
+    });
+    if let Some(stdin) = stdin {
+        let mut child_stdin = child.stdin.take().expect("child stdin");
+        child_stdin
+            .write_all(stdin)
+            .unwrap_or_else(|error| panic!("write layrs stdin: {error}"));
+    }
+    child.wait_with_output().unwrap_or_else(|error| {
+        panic!(
+            "failed waiting for layrs with args {:?} in {}: {error}",
             args,
             cwd.display()
         )

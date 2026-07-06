@@ -291,16 +291,23 @@ fn validate_chunk_id(value: &str) -> Result<String, ApiError> {
 fn validate_object_digest(value: &str) -> Result<String, ApiError> {
     let value = value.trim().to_ascii_lowercase();
     let Some(hex) = value.strip_prefix("blake3:") else {
-        return Err(ApiError::bad_request(
-            "digest must use blake3:<64 hex> format",
-        ));
+        return Err(invalid_object_digest_error(&value));
     };
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::bad_request(
-            "digest must use blake3:<64 hex> format",
-        ));
+        return Err(invalid_object_digest_error(&value));
     }
     Ok(value)
+}
+
+fn invalid_object_digest_error(value: &str) -> ApiError {
+    let preview = if value.len() > 96 {
+        format!("{}...", &value[..96])
+    } else {
+        value.to_string()
+    };
+    ApiError::bad_request(format!(
+        "digest must use blake3:<64 hex> format (got `{preview}`)"
+    ))
 }
 
 fn blake3_digest_for_bytes(bytes: &[u8]) -> String {

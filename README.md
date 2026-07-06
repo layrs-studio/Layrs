@@ -56,6 +56,9 @@ Run the full test suite:
 pnpm run test
 ```
 
+This includes the Rust workspace, the Studio Desktop Tauri shell, native
+Desktop UI, Studio Web, and the Desktop-to-server-to-Web E2E suite.
+
 Use targeted checks while iterating:
 
 ```powershell

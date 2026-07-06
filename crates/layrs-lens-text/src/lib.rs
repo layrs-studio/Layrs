@@ -3,8 +3,9 @@ use layrs_lens_sdk::{
     DiffHunk, DiffKind, DiffLine, DiffModel, DiffOp, ExtractedReference, InspectorField,
     InspectorValueType, LensCapability, LensConflictBlock, LensConflictSegment,
     LensConflictSegmentKind, LensError, LensManifest, LensReconcileContent, LensReconcileInput,
-    LensReconcileResult, LensResult, MetadataValue, PreviewKind, PreviewModel, ReconcileModel,
-    ReconcileStatus, ReferenceKind, ViewerContract, infer_media_type_from_path, span_at,
+    LensReconcileResult, LensResolutionSegment, LensResult, MetadataValue, PreviewKind,
+    PreviewModel, ReconcileModel, ReconcileStatus, ReferenceKind, ResolutionMethod,
+    ResolutionMethods, ViewerContract, infer_media_type_from_path, span_at,
 };
 
 pub const TEXT_LENS_ID: &str = "layrs.text";
@@ -57,7 +58,7 @@ pub fn manifest() -> LensManifest {
         },
     ];
 
-    LensManifest::new(
+    let mut manifest = LensManifest::new(
         TEXT_LENS_ID,
         "Text",
         "0.0.0",
@@ -80,7 +81,13 @@ pub fn manifest() -> LensManifest {
             ],
         },
         viewer,
-    )
+    );
+    manifest.resolution_methods = resolution_methods();
+    manifest
+}
+
+pub fn resolution_methods() -> ResolutionMethods {
+    ResolutionMethods::block(text_block_resolution_methods())
 }
 
 fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
@@ -405,13 +412,13 @@ pub fn reconcile_text(input: LensReconcileInput<'_>) -> LensReconcileResult {
                         text: None,
                         block_id: Some(block_id.clone()),
                     });
-                    blocks.push(LensConflictBlock {
+                    blocks.push(LensConflictBlock::new(
                         block_id,
-                        base: base_text,
-                        ours: ours_text,
-                        theirs: theirs_text,
-                        supported_resolutions: text_block_resolutions(),
-                    });
+                        base_text,
+                        ours_text,
+                        theirs_text,
+                        text_block_resolution_methods(),
+                    ));
                 }
                 base_index = end;
             }
@@ -475,31 +482,91 @@ pub fn reconcile_text(input: LensReconcileInput<'_>) -> LensReconcileResult {
 }
 
 pub fn resolve_text_block_choice(
-    base: &str,
-    ours: &str,
-    theirs: &str,
+    _base: &str,
+    existing: &str,
+    incoming: &str,
     resolution: &str,
     manual: Option<&str>,
 ) -> Result<String, LensError> {
-    match resolution {
-        "ours" => Ok(ours.to_string()),
-        "theirs" => Ok(theirs.to_string()),
-        "base" => Ok(base.to_string()),
-        "both_ours_then_theirs" => Ok(format!("{}{}", ensure_trailing_newline(ours), theirs)),
-        "both_theirs_then_ours" => Ok(format!("{}{}", ensure_trailing_newline(theirs), ours)),
-        "manual" => manual.map(ToString::to_string).ok_or_else(|| {
+    let method = ResolutionMethod::from_label(resolution).ok_or_else(|| {
+        LensError::new(
+            "unsupported_text_resolution",
+            format!(
+                "Unsupported text block resolution `{resolution}`. Use existing, incoming, both, or manual."
+            ),
+        )
+    })?;
+    resolve_text_block_choice_by_method(existing, incoming, method, manual)
+}
+
+pub fn resolve_text_block_choice_by_method(
+    existing: &str,
+    incoming: &str,
+    method: ResolutionMethod,
+    manual: Option<&str>,
+) -> Result<String, LensError> {
+    match method {
+        ResolutionMethod::Existing => Ok(existing.to_string()),
+        ResolutionMethod::Incoming => Ok(incoming.to_string()),
+        ResolutionMethod::Both => Ok(format!("{}{}", ensure_trailing_newline(existing), incoming)),
+        ResolutionMethod::Manual => manual.map(ToString::to_string).ok_or_else(|| {
             LensError::new(
                 "missing_manual_resolution",
                 "Manual text block resolution requires replacement text",
             )
         }),
-        other => Err(LensError::new(
-            "unsupported_text_resolution",
-            format!(
-                "Unsupported text block resolution `{other}`. Use ours, theirs, base, both_ours_then_theirs, both_theirs_then_ours, or manual."
-            ),
-        )),
     }
+}
+
+pub fn resolve_text_conflict(
+    blocks: &[layrs_lens_sdk::LensBlockResolutionInput<'_>],
+    segments: &[LensResolutionSegment<'_>],
+) -> LensResult<LensReconcileContent> {
+    let mut output = String::new();
+    if segments.is_empty() {
+        for block in blocks {
+            output.push_str(&resolved_block_text(block)?);
+        }
+        return Ok(LensReconcileContent::present(output.into_bytes()));
+    }
+
+    for segment in segments {
+        match segment.kind {
+            LensConflictSegmentKind::Text => output.push_str(segment.text.unwrap_or_default()),
+            LensConflictSegmentKind::Block => {
+                let block_id = segment.block_id.ok_or_else(|| {
+                    LensError::new(
+                        "missing_text_block_segment_id",
+                        "Text conflict block segment is missing block id",
+                    )
+                })?;
+                let block = blocks
+                    .iter()
+                    .find(|block| block.block_id == block_id)
+                    .ok_or_else(|| {
+                        LensError::new(
+                            "missing_text_block",
+                            format!("Text conflict block `{block_id}` is missing"),
+                        )
+                    })?;
+                output.push_str(&resolved_block_text(block)?);
+            }
+        }
+    }
+
+    Ok(LensReconcileContent::present(output.into_bytes()))
+}
+
+fn resolved_block_text(block: &layrs_lens_sdk::LensBlockResolutionInput<'_>) -> LensResult<String> {
+    if let Some(resolved_text) = block.resolved_text {
+        return Ok(resolved_text.to_string());
+    }
+    resolve_text_block_choice_by_method(
+        block.existing,
+        block.incoming,
+        block.method,
+        block.manual_text,
+    )
 }
 
 fn side_text(bytes: &[u8], exists: bool) -> Result<&str, std::str::Utf8Error> {
@@ -510,18 +577,13 @@ fn side_text(bytes: &[u8], exists: bool) -> Result<&str, std::str::Utf8Error> {
     }
 }
 
-fn text_block_resolutions() -> Vec<String> {
-    [
-        "ours",
-        "theirs",
-        "base",
-        "both_ours_then_theirs",
-        "both_theirs_then_ours",
-        "manual",
+fn text_block_resolution_methods() -> Vec<ResolutionMethod> {
+    vec![
+        ResolutionMethod::Existing,
+        ResolutionMethod::Incoming,
+        ResolutionMethod::Both,
+        ResolutionMethod::Manual,
     ]
-    .into_iter()
-    .map(ToString::to_string)
-    .collect()
 }
 
 fn split_text_lines(text: &str) -> Vec<String> {
@@ -908,6 +970,16 @@ mod tests {
                 .capabilities
                 .contains(&LensCapability::Reconcile)
         );
+        assert!(manifest.resolution_methods.file.is_empty());
+        assert_eq!(
+            manifest.resolution_methods.block,
+            vec![
+                ResolutionMethod::Existing,
+                ResolutionMethod::Incoming,
+                ResolutionMethod::Both,
+                ResolutionMethod::Manual
+            ]
+        );
     }
 
     #[test]
@@ -1001,6 +1073,11 @@ skip: /var/tmp/file.txt https://example.test/app.css data:image/png;base64,aa
         assert_eq!(result.blocks.len(), 2);
         assert_eq!(result.blocks[0].block_id, "block-1");
         assert_eq!(result.blocks[1].block_id, "block-2");
+        assert_eq!(
+            result.blocks[0].supported_resolutions,
+            vec!["existing", "incoming", "both", "manual"]
+        );
+        assert!(result.file_methods.is_empty());
         let marked = String::from_utf8(result.conflict.expect("conflict").bytes).expect("utf8");
         assert_eq!(marked.matches("<<<<<<< target:target").count(), 2);
         assert!(marked.contains("ours-x"));
@@ -1018,21 +1095,50 @@ skip: /var/tmp/file.txt https://example.test/app.css data:image/png;base64,aa
     #[test]
     fn resolves_text_blocks_with_lens_choices() {
         assert_eq!(
-            resolve_text_block_choice(
-                "base\n",
-                "ours\n",
-                "theirs\n",
-                "both_ours_then_theirs",
-                None
-            )
-            .expect("resolve"),
+            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "both", None)
+                .expect("resolve"),
             "ours\ntheirs\n"
+        );
+        assert_eq!(
+            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "incoming", None)
+                .expect("incoming"),
+            "theirs\n"
         );
         assert_eq!(
             resolve_text_block_choice("base\n", "ours\n", "theirs\n", "manual", Some("manual\n"))
                 .expect("manual"),
             "manual\n"
         );
+        assert!(resolve_text_block_choice("base\n", "ours\n", "theirs\n", "base", None).is_err());
+    }
+
+    #[test]
+    fn lens_assembles_text_resolution_from_segments() {
+        let blocks = [layrs_lens_sdk::LensBlockResolutionInput {
+            block_id: "block-1",
+            base: "base\n",
+            existing: "existing\n",
+            incoming: "incoming\n",
+            method: ResolutionMethod::Incoming,
+            manual_text: None,
+            resolved_text: None,
+        }];
+        let segments = [
+            layrs_lens_sdk::LensResolutionSegment {
+                kind: LensConflictSegmentKind::Text,
+                text: Some("before\n"),
+                block_id: None,
+            },
+            layrs_lens_sdk::LensResolutionSegment {
+                kind: LensConflictSegmentKind::Block,
+                text: None,
+                block_id: Some("block-1"),
+            },
+        ];
+
+        let content = resolve_text_conflict(&blocks, &segments).expect("resolved");
+
+        assert_eq!(content.bytes, b"before\nincoming\n");
     }
 
     fn reconcile_case(base: &[u8], ours: &[u8], theirs: &[u8]) -> LensReconcileResult {

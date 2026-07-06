@@ -50,6 +50,7 @@ export function StudioApp() {
   });
   const [timelineFeed, setTimelineFeed] = useState<TimelineFeedState>({ status: "idle" });
   const [artifactFeed, setArtifactFeed] = useState<ArtifactFeedState>({ status: "idle" });
+  const [feedRefreshToken, setFeedRefreshToken] = useState(0);
   const timelineFeedTarget = useMemo(() => resolveTimelineFeedTarget(state, route), [route, state]);
 
   const navigate = useCallback((href: string) => {
@@ -99,7 +100,7 @@ export function StudioApp() {
     });
 
     return () => controller.abort();
-  }, [isMock, timelineFeedTarget?.workspaceId, timelineFeedTarget?.spaceId, timelineFeedTarget?.layerId]);
+  }, [feedRefreshToken, isMock, timelineFeedTarget?.workspaceId, timelineFeedTarget?.spaceId, timelineFeedTarget?.layerId]);
 
   useEffect(() => {
     function handlePopState() {
@@ -291,6 +292,20 @@ export function StudioApp() {
     }
   }
 
+  async function handleRefreshWorkspace() {
+    if (state.status !== "ready") {
+      return;
+    }
+
+    await loadWorkspace(
+      client,
+      dispatch,
+      { account: state.account, session: state.session, workspaces: state.workspaces },
+      state.activeWorkspaceId
+    );
+    setFeedRefreshToken((value) => value + 1);
+  }
+
   if (state.status === "checking") {
     return <SystemScreen title="Connecting to Layrs Studio" detail="Checking session and workspace access." />;
   }
@@ -342,11 +357,13 @@ export function StudioApp() {
       onCreateInvitation={handleCreateInvitation}
       onNavigate={navigate}
       onRemoveTeamMember={handleRemoveTeamMember}
+      onRefreshWorkspace={handleRefreshWorkspace}
       onSaveAccessPolicies={handleSaveAccessPolicies}
       onWorkspaceChange={handleWorkspaceChange}
       route={route}
       state={state}
       artifactFeed={artifactFeed}
+      feedRefreshToken={feedRefreshToken}
       timelineFeed={timelineFeed}
     />
   );
@@ -362,11 +379,13 @@ function StudioWorkspace({
   onCreateInvitation,
   onNavigate,
   onRemoveTeamMember,
+  onRefreshWorkspace,
   onSaveAccessPolicies,
   onWorkspaceChange,
   route,
   state,
   artifactFeed,
+  feedRefreshToken,
   timelineFeed
 }: {
   isMock: boolean;
@@ -379,11 +398,13 @@ function StudioWorkspace({
   onCreateInvitation: (teamId: string, email: string) => Promise<void>;
   onNavigate: (href: string) => void;
   onRemoveTeamMember: (teamId: string, accountId: string) => Promise<void>;
+  onRefreshWorkspace: () => Promise<void>;
   onSaveAccessPolicies: (policies: LayerAccessPolicy[]) => Promise<void>;
   onWorkspaceChange: (workspaceId: string) => void;
   route: StudioRoute;
   state: Extract<StudioState, { status: "ready" }>;
   artifactFeed: ArtifactFeedState;
+  feedRefreshToken: number;
   timelineFeed: TimelineFeedState;
 }) {
   const { notify } = useNotifications();
@@ -471,9 +492,11 @@ function StudioWorkspace({
           onDeleteLayer={onDeleteLayer}
           onDeleteSpace={onDeleteSpace}
           onSaveAccessPolicies={onSaveAccessPolicies}
+          onRefreshWorkspace={onRefreshWorkspace}
           selectedLayer={selectedLayer}
           snapshot={snapshot}
           serverArtifacts={artifactFeed.status === "available" ? artifactFeed.items : undefined}
+          refreshKey={feedRefreshToken}
           space={selectedSpace}
           workspaceId={snapshot.workspace.id}
           teams={snapshot.teams}

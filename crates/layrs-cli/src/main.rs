@@ -49,7 +49,8 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         });
     }
 
-    let color = color_enabled(cli.globals.no_color, cli.globals.json);
+    let json_output = cli.globals.json;
+    let color = color_enabled(cli.globals.no_color, json_output);
     let engine = ClientCoreEngine::new(EngineContext {
         space: cli.globals.space,
     });
@@ -115,6 +116,28 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         } => render::weave(engine.weave_resolve(&path, &resolution, file.as_deref())?),
         CliCommand::WeaveContinue => render::weave(engine.weave_continue()?),
         CliCommand::WeaveAbort => render::weave(engine.weave_abort()?),
+        CliCommand::ConflictList => render::conflict_list(engine.conflict_list()?),
+        CliCommand::ConflictStatus => render::conflict_status(engine.conflict_status()?),
+        CliCommand::ConflictResolve {
+            method: Some(method),
+            path: Some(path),
+            block,
+        } => render::weave(engine.conflict_resolve(method, &path, block.as_deref())?),
+        CliCommand::ConflictResolve { method: None, .. } => {
+            if json_output {
+                return Err(CliError::runtime(
+                    "layrs conflict resolve interactive mode does not support --json.",
+                ));
+            }
+            render::conflict_interactive(engine.conflict_resolve_interactive()?)
+        }
+        CliCommand::ConflictResolve { .. } => {
+            return Err(CliError::runtime(
+                "layrs conflict resolve METHOD requires -f PATH.",
+            ));
+        }
+        CliCommand::ConflictContinue => render::weave(engine.conflict_continue()?),
+        CliCommand::ConflictAbort => render::weave(engine.conflict_abort()?),
     }
     .map_err(CliError::runtime)?;
 

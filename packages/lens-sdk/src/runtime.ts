@@ -5,6 +5,7 @@ import type {
   LensManifest,
   PreviewModel,
   LensReconcileInput,
+  LensReconcileRendererProps,
   LensReconcileResult
 } from "./contracts";
 
@@ -30,7 +31,7 @@ export interface LensDiffRendererProps {
   className?: string;
 }
 
-export type LensReconcileRequest = LensReconcileInput;
+export type LensReconcileRequest = LensReconcileRendererProps;
 
 export interface LensViewerModule<TNode = unknown> {
   renderPreview?: (props: LensPreviewRendererProps) => TNode;

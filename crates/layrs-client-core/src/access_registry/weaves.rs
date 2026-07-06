@@ -1,3 +1,14 @@
+use layrs_lens_sdk::{LensFileResolutionInput, ResolutionMethod};
+
+#[path = "weaves/resolution.rs"]
+mod weave_resolution;
+
+use self::weave_resolution::{
+    assemble_text_conflict_resolution, conflict_block_method_labels, conflict_file_method_labels,
+    labels_to_methods, parse_block_resolution, resolution_method_labels_for_storage,
+    resolve_text_conflict_block, validate_block_resolution_method, validate_file_resolution_method,
+};
+
 fn weave_dir(layrs_dir: &Path, weave_id: &str) -> PathBuf {
     layrs_dir.join("weaves").join(safe_id_fragment(weave_id))
 }
@@ -82,6 +93,7 @@ fn summarize_weave_session(session: &WeaveSessionFile) -> WeaveSessionSummary {
                 lens_id: conflict.lens_id.clone(),
                 status: conflict.status.clone(),
                 message: conflict.message.clone(),
+                methods: conflict_file_method_labels(conflict),
                 resolution: conflict.resolution.clone(),
                 blocks: conflict
                     .blocks
@@ -90,8 +102,11 @@ fn summarize_weave_session(session: &WeaveSessionFile) -> WeaveSessionSummary {
                         block_id: block.block_id.clone(),
                         status: block.status.clone(),
                         base: block.base.clone(),
+                        existing: block.ours.clone(),
+                        incoming: block.theirs.clone(),
                         ours: block.ours.clone(),
                         theirs: block.theirs.clone(),
+                        methods: conflict_block_method_labels(conflict, block),
                         resolution: block.resolution.clone(),
                     })
                     .collect(),
@@ -115,7 +130,10 @@ pub fn weave_layers(
         return Err("Choose two different Layers to Weave.".to_string());
     }
     if active_weave_id(&handle.layrs_dir)?.is_some() {
-        return Err("A Weave is already active. Continue or abort it before starting another Weave.".to_string());
+        return Err(
+            "A Weave is already active. Continue or abort it before starting another Weave."
+                .to_string(),
+        );
     }
 
     let source_state = latest_state_for_layer(&handle.layrs_dir, &source_layer_id)?;
@@ -190,7 +208,8 @@ pub fn weave_layers(
         }
     }
 
-    proposed_state.root_tree_id = Some(write_tree_object(&handle.layrs_dir, &proposed_state.files)?);
+    proposed_state.root_tree_id =
+        Some(write_tree_object(&handle.layrs_dir, &proposed_state.files)?);
     session.conflicts = conflicts;
     session.status = if preview {
         "preview".to_string()
@@ -205,7 +224,10 @@ pub fn weave_layers(
         return Ok(WeaveOperationResult {
             local_space: summary_from_handle(&handle),
             session: summarize_weave_session(&session),
-            message: format!("Weave preview found {} conflict(s).", session.conflicts.len()),
+            message: format!(
+                "Weave preview found {} conflict(s).",
+                session.conflicts.len()
+            ),
         });
     }
 
@@ -312,10 +334,11 @@ pub fn resolve_weave_conflict(
         .ok_or_else(|| format!("No active Weave conflict matches {path}."))?;
     let dir = conflict_dir(&handle.layrs_dir, &weave_id, &conflict.conflict_id);
     if let Some((block_id, block_resolution)) = parse_block_resolution(&resolution) {
-        if block_resolution == "manual" && manual_text.is_none() {
+        let method = validate_block_resolution_method(conflict, &block_id, &block_resolution)?;
+        if method == ResolutionMethod::Manual && manual_text.is_none() {
             return Err("Manual text block resolution requires manual text.".to_string());
         }
-        resolve_text_conflict_block(conflict, &block_id, &block_resolution, manual_text.as_deref())?;
+        resolve_text_conflict_block(conflict, &block_id, method, manual_text.as_deref())?;
         if conflict
             .blocks
             .iter()
@@ -332,13 +355,14 @@ pub fn resolve_weave_conflict(
             conflict.resolution = Some("blocks".to_string());
         }
     } else {
-        let bytes = resolution_bytes(
-            &handle,
-            &weave_id,
-            conflict,
-            resolution.as_str(),
-            replacement_file.as_deref(),
-        )?;
+        let method = validate_file_resolution_method(conflict, resolution.as_str())?;
+        if replacement_file.is_some() {
+            return Err(format!(
+                "Lens {} does not declare replacement-file resolution for {}.",
+                conflict.lens_id, conflict.path
+            ));
+        }
+        let bytes = resolve_file_conflict_with_lens(&handle, &weave_id, conflict, method)?;
         fs::write(dir.join("resolved"), bytes).map_err(|error| {
             format!(
                 "Layrs Desktop could not write resolved conflict {}: {error}",
@@ -347,10 +371,10 @@ pub fn resolve_weave_conflict(
         })?;
         for block in &mut conflict.blocks {
             block.status = "resolved".to_string();
-            block.resolution = Some(resolution.clone());
+            block.resolution = Some(method.as_str().to_string());
         }
         conflict.status = "resolved".to_string();
-        conflict.resolution = Some(resolution);
+        conflict.resolution = Some(method.as_str().to_string());
     }
     let conflict_resolved = conflict.status == "resolved";
     if session
@@ -400,8 +424,9 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
         let entry = write_file_object(&handle.layrs_dir, &conflict.path, &bytes, true)?;
         apply_file_choice(&mut proposed_state, &conflict.path, Some(entry));
     }
-    proposed_state.root_tree_id = Some(write_tree_object(&handle.layrs_dir, &proposed_state.files)?);
-    if session.source_layer_id.starts_with("studio-sync:") {
+    proposed_state.root_tree_id =
+        Some(write_tree_object(&handle.layrs_dir, &proposed_state.files)?);
+    if is_sync_weave_session(&session) {
         let step_id = apply_completed_sync_weave(&mut handle, &session, &proposed_state)?;
         session.applied_steps = vec![step_id];
         session.status = "applied".to_string();
@@ -411,7 +436,8 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
         return Ok(WeaveOperationResult {
             local_space: summary_from_handle(&handle),
             session: summarize_weave_session(&session),
-            message: "Sync Weave applied after conflict resolution. Run Sync again to publish.".to_string(),
+            message: "Sync Weave applied after conflict resolution. Run Sync again to publish."
+                .to_string(),
         });
     }
     let source_steps = sorted_steps(&handle.layrs_dir, &session.source_layer_id)?;
@@ -433,11 +459,32 @@ fn apply_completed_sync_weave(
     proposed_state: &WorkingStateFile,
 ) -> Result<String, String> {
     let target_layer_id = session.target_layer_id.as_str();
+    let base_state = read_layer_index(&handle.layrs_dir, target_layer_id).unwrap_or_else(|_| {
+        WorkingStateFile {
+            schema: WORKING_STATE_SCHEMA.to_string(),
+            layer_id: target_layer_id.to_string(),
+            captured_at_unix: unix_now(),
+            root_tree_id: None,
+            files: Vec::new(),
+        }
+    });
+    archive_planned_sync_steps(
+        &handle.layrs_dir,
+        target_layer_id,
+        &session.planned_steps,
+        &session.weave_id,
+    )?;
     write_working_state(&handle.layrs_dir, target_layer_id, proposed_state)?;
     if handle.active.layer_id == target_layer_id {
         materialize_state(&handle.root, proposed_state)?;
     }
-    let step_id = write_step(&handle.layrs_dir, target_layer_id, proposed_state)?;
+    let step_id = write_sync_woven_step(
+        &handle.layrs_dir,
+        target_layer_id,
+        &base_state,
+        proposed_state,
+        &session.planned_steps,
+    )?;
     let step = read_step_file(&handle.layrs_dir, target_layer_id, &step_id)?;
     write_pending_publish(&handle.layrs_dir, &step)?;
     handle.meta.updated_at_unix = unix_now();
@@ -446,8 +493,136 @@ fn apply_completed_sync_weave(
     Ok(step_id)
 }
 
+fn is_sync_weave_session(session: &WeaveSessionFile) -> bool {
+    session.source_layer_id.starts_with("studio-sync:")
+        || session.source_layer_id.starts_with("local-sync:")
+}
+
+fn archive_planned_sync_steps(
+    layrs_dir: &Path,
+    layer_id: &str,
+    planned_steps: &[String],
+    weave_id: &str,
+) -> Result<(), String> {
+    if planned_steps.is_empty() {
+        return Ok(());
+    }
+
+    let archive_dir = layrs_dir
+        .join("sync")
+        .join("local-replay")
+        .join(safe_id_fragment(weave_id));
+    let archive_steps_dir = archive_dir.join("steps");
+    let archive_pending_dir = archive_dir.join("pending-publish");
+    fs::create_dir_all(&archive_steps_dir).map_err(|error| {
+        format!(
+            "Layrs Desktop could not create sync replay archive {}: {error}",
+            archive_steps_dir.display()
+        )
+    })?;
+    fs::create_dir_all(&archive_pending_dir).map_err(|error| {
+        format!(
+            "Layrs Desktop could not create sync replay archive {}: {error}",
+            archive_pending_dir.display()
+        )
+    })?;
+
+    let steps_dir = layer_dir(layrs_dir, layer_id).join("steps");
+    let pending_dir = pending_publish_dir(layrs_dir, layer_id);
+    for step_id in planned_steps {
+        let step_path = steps_dir.join(format!("{step_id}.json"));
+        if step_path.exists() {
+            fs::copy(&step_path, archive_steps_dir.join(format!("{step_id}.json"))).map_err(
+                |error| {
+                    format!(
+                        "Layrs Desktop could not archive pending Step {}: {error}",
+                        step_path.display()
+                    )
+                },
+            )?;
+            fs::remove_file(&step_path).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not replace pending Step {}: {error}",
+                    step_path.display()
+                )
+            })?;
+        }
+
+        let pending_path = pending_dir.join(format!("{step_id}.json"));
+        if pending_path.exists() {
+            fs::copy(&pending_path, archive_pending_dir.join(format!("{step_id}.json"))).map_err(
+                |error| {
+                    format!(
+                        "Layrs Desktop could not archive pending publish entry {}: {error}",
+                        pending_path.display()
+                    )
+                },
+            )?;
+        }
+    }
+    clear_pending_publish(layrs_dir, layer_id)
+}
+
+fn write_sync_woven_step(
+    layrs_dir: &Path,
+    layer_id: &str,
+    base_state: &WorkingStateFile,
+    state: &WorkingStateFile,
+    planned_steps: &[String],
+) -> Result<String, String> {
+    let step_id = unique_step_id(layrs_dir, layer_id);
+    let root_tree_id = state
+        .root_tree_id
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(|| write_tree_object(layrs_dir, &state.files))?;
+    let (added, modified, deleted) = diff_state(Some(base_state), state);
+    let changed_paths = added
+        .iter()
+        .chain(modified.iter())
+        .chain(deleted.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let parent_step_id = sorted_steps(layrs_dir, layer_id)?
+        .last()
+        .map(|step| step.step_id.clone());
+    let origin_step_id = planned_steps
+        .last()
+        .cloned()
+        .unwrap_or_else(|| step_id.clone());
+    let step = StepFile {
+        schema: STEP_SCHEMA.to_string(),
+        step_id: step_id.clone(),
+        layer_id: layer_id.to_string(),
+        parent_step_id,
+        base_layer_id: Some(layer_id.to_string()),
+        base_tree_id: base_state.root_tree_id.clone(),
+        root_tree_id: Some(root_tree_id),
+        changed_paths,
+        timeline_position: Some(next_timeline_position(layrs_dir, layer_id)?),
+        origin_layer_id: Some(layer_id.to_string()),
+        origin_layer_name: step_layer_display_name(layrs_dir, layer_id),
+        origin_step_id: Some(origin_step_id),
+        step_kind: Some("woven".to_string()),
+        captured_at_unix: state.captured_at_unix,
+        files: Vec::new(),
+    };
+    write_json(
+        &layer_dir(layrs_dir, layer_id)
+            .join("steps")
+            .join(format!("{step_id}.json")),
+        &step,
+    )?;
+    Ok(step_id)
+}
+
 fn ensure_layer_known(handle: &LocalSpaceHandle, layer_id: &str) -> Result<(), String> {
-    if handle.meta.layers.iter().any(|layer| layer.layer_id == layer_id) {
+    if handle
+        .meta
+        .layers
+        .iter()
+        .any(|layer| layer.layer_id == layer_id)
+    {
         Ok(())
     } else {
         Err(format!("Layrs does not know Layer {layer_id}."))
@@ -583,15 +758,13 @@ fn file_entry_hash(entry: Option<&FileSnapshotEntry>) -> Option<&str> {
     entry.map(|entry| entry.hash.as_str())
 }
 
-fn apply_file_choice(
-    state: &mut WorkingStateFile,
-    path: &str,
-    entry: Option<FileSnapshotEntry>,
-) {
+fn apply_file_choice(state: &mut WorkingStateFile, path: &str, entry: Option<FileSnapshotEntry>) {
     state.files.retain(|file| file.path != path);
     if let Some(entry) = entry {
         state.files.push(entry);
-        state.files.sort_by(|left, right| left.path.cmp(&right.path));
+        state
+            .files
+            .sort_by(|left, right| left.path.cmp(&right.path));
     }
 }
 
@@ -671,6 +844,14 @@ fn reconcile_path_with_lens(
             base: block.base,
             ours: block.ours,
             theirs: block.theirs,
+            methods: resolution_method_labels_for_storage(
+                if block.methods.is_empty() {
+                    labels_to_methods(&block.supported_resolutions)
+                } else {
+                    block.methods
+                }
+                .as_slice(),
+            ),
             resolution: None,
             resolved_text: None,
         })
@@ -698,6 +879,7 @@ fn reconcile_path_with_lens(
         lens_id: lens_id.to_string(),
         status: "open".to_string(),
         message,
+        methods: resolution_method_labels_for_storage(&result.file_methods),
         resolution: None,
         blocks,
         segments,
@@ -765,30 +947,45 @@ fn apply_conflict_marker_to_state(
     Ok(())
 }
 
-fn resolution_bytes(
+fn resolve_file_conflict_with_lens(
     handle: &LocalSpaceHandle,
     weave_id: &str,
     conflict: &WeaveConflictFile,
-    resolution: &str,
-    replacement_file: Option<&str>,
+    method: ResolutionMethod,
 ) -> Result<Vec<u8>, String> {
     let dir = conflict_dir(&handle.layrs_dir, weave_id, &conflict.conflict_id);
-    match resolution {
-        "ours" => fs::read(dir.join("ours")),
-        "theirs" => fs::read(dir.join("theirs")),
-        "base" => fs::read(dir.join("base")),
-        "file" => {
-            let replacement = replacement_file
-                .ok_or_else(|| "Resolution --file requires a file path.".to_string())?;
-            fs::read(replacement)
-        }
+    let base_bytes = read_conflict_side(&dir, "base", conflict)?;
+    let existing_bytes = read_conflict_side(&dir, "ours", conflict)?;
+    let incoming_bytes = read_conflict_side(&dir, "theirs", conflict)?;
+    let input = LensFileResolutionInput {
+        method,
+        base: side_from_bytes(&base_bytes),
+        existing: side_from_bytes(&existing_bytes),
+        incoming: side_from_bytes(&incoming_bytes),
+    };
+    let content = match conflict.lens_id.as_str() {
+        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::resolve_raw_conflict(input),
         other => {
             return Err(format!(
-                "Unsupported Weave conflict resolution `{other}`. Use ours, theirs, base, or file."
+                "Lens {other} does not support file-level resolution for {}.",
+                conflict.path
             ));
         }
     }
-    .map_err(|error| {
+    .map_err(|error| error.to_string())?;
+    if content.exists {
+        Ok(content.bytes)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn read_conflict_side(
+    dir: &Path,
+    name: &str,
+    conflict: &WeaveConflictFile,
+) -> Result<Vec<u8>, String> {
+    fs::read(dir.join(name)).map_err(|error| {
         format!(
             "Layrs Desktop could not read resolution bytes for {}: {error}",
             conflict.path
@@ -796,102 +993,13 @@ fn resolution_bytes(
     })
 }
 
-fn parse_block_resolution(resolution: &str) -> Option<(String, String)> {
-    let rest = resolution.strip_prefix("block:")?;
-    let (block_id, choice) = rest.rsplit_once(':')?;
-    Some((block_id.to_string(), choice.to_string()))
-}
-
-fn resolve_text_conflict_block(
-    conflict: &mut WeaveConflictFile,
-    block_id: &str,
-    resolution: &str,
-    manual_text: Option<&str>,
-) -> Result<(), String> {
-    if conflict.blocks.is_empty() {
-        return Err(format!(
-            "Weave conflict {} does not expose text blocks.",
-            conflict.path
-        ));
+fn side_from_bytes(bytes: &[u8]) -> layrs_lens_sdk::LensReconcileSide<'_> {
+    layrs_lens_sdk::LensReconcileSide {
+        exists: true,
+        bytes,
+        content_hash: None,
+        size: bytes.len() as u64,
     }
-    let normalized_id = if block_id.starts_with("block-") {
-        block_id.to_string()
-    } else {
-        format!("block-{block_id}")
-    };
-    let block = conflict
-        .blocks
-        .iter_mut()
-        .find(|block| block.block_id == normalized_id)
-        .ok_or_else(|| {
-            format!(
-                "No text conflict block {block_id} exists for {}.",
-                conflict.path
-            )
-        })?;
-    let resolved_text = block_resolution_text(block, resolution, manual_text)?;
-    block.status = "resolved".to_string();
-    block.resolution = Some(resolution.to_string());
-    block.resolved_text = Some(resolved_text);
-    Ok(())
-}
-
-fn assemble_text_conflict_resolution(conflict: &WeaveConflictFile) -> Result<Vec<u8>, String> {
-    let mut output = String::new();
-    if conflict.segments.is_empty() {
-        for block in &conflict.blocks {
-            let resolution = block.resolution.as_deref().ok_or_else(|| {
-                format!("Text conflict block {} is not resolved.", block.block_id)
-            })?;
-            output.push_str(&block_resolution_text(block, resolution, None)?);
-        }
-        return Ok(output.into_bytes());
-    }
-    for segment in &conflict.segments {
-        match segment.kind.as_str() {
-            "text" => output.push_str(segment.text.as_deref().unwrap_or_default()),
-            "block" => {
-                let block_id = segment
-                    .block_id
-                    .as_deref()
-                    .ok_or_else(|| "Text conflict segment is missing block id.".to_string())?;
-                let block = conflict
-                    .blocks
-                    .iter()
-                    .find(|block| block.block_id == block_id)
-                    .ok_or_else(|| format!("Text conflict block {block_id} is missing."))?;
-                let resolution = block.resolution.as_deref().ok_or_else(|| {
-                    format!("Text conflict block {} is not resolved.", block.block_id)
-                })?;
-                output.push_str(&block_resolution_text(block, resolution, None)?);
-            }
-            other => {
-                return Err(format!(
-                    "Unsupported text conflict segment kind `{other}` for {}.",
-                    conflict.path
-                ));
-            }
-        }
-    }
-    Ok(output.into_bytes())
-}
-
-fn block_resolution_text(
-    block: &WeaveConflictBlockFile,
-    resolution: &str,
-    manual_text: Option<&str>,
-) -> Result<String, String> {
-    if let Some(resolved_text) = block.resolved_text.as_ref() {
-        return Ok(resolved_text.clone());
-    }
-    layrs_lens_text::resolve_text_block_choice(
-        &block.base,
-        &block.ours,
-        &block.theirs,
-        resolution,
-        manual_text,
-    )
-    .map_err(|error| error.to_string())
 }
 
 fn apply_completed_weave(
@@ -1165,13 +1273,23 @@ fn unique_weave_id(layrs_dir: &Path, source_layer_id: &str, target_layer_id: &st
     candidate
 }
 
-fn inherit_parent_steps(layrs_dir: &Path, parent_layer_id: &str, child_layer_id: &str) -> Result<(), String> {
+fn inherit_parent_steps(
+    layrs_dir: &Path,
+    parent_layer_id: &str,
+    child_layer_id: &str,
+) -> Result<(), String> {
     let parent_steps = sorted_steps(layrs_dir, parent_layer_id)?;
     let planned = parent_steps
         .iter()
         .map(|step| step.step_id.clone())
         .collect::<Vec<_>>();
-    let _ = copy_weave_steps_to_target(layrs_dir, &parent_steps, child_layer_id, &planned, "inherited")?;
+    let _ = copy_weave_steps_to_target(
+        layrs_dir,
+        &parent_steps,
+        child_layer_id,
+        &planned,
+        "inherited",
+    )?;
     Ok(())
 }
 
@@ -1211,12 +1329,17 @@ fn propagate_step_to_child(
         return Ok(child_steps
             .iter()
             .find(|step| {
-                step.origin_layer_id.as_deref().unwrap_or(step.layer_id.as_str())
+                step.origin_layer_id
+                    .as_deref()
+                    .unwrap_or(step.layer_id.as_str())
                     == source_step
                         .origin_layer_id
                         .as_deref()
                         .unwrap_or(source_step.layer_id.as_str())
-                    && step.origin_step_id.as_deref().unwrap_or(step.step_id.as_str())
+                    && step
+                        .origin_step_id
+                        .as_deref()
+                        .unwrap_or(step.step_id.as_str())
                         == source_step
                             .origin_step_id
                             .as_deref()
@@ -1224,16 +1347,18 @@ fn propagate_step_to_child(
             })
             .map(|step| step.step_id.clone()));
     }
-    let base_state = recorded_base_state_for_step(&handle.layrs_dir, source_step)
-        .unwrap_or_else(|| WorkingStateFile {
-            schema: WORKING_STATE_SCHEMA.to_string(),
-            layer_id: source_step
-                .base_layer_id
-                .clone()
-                .unwrap_or_else(|| source_step.layer_id.clone()),
-            captured_at_unix: source_step.captured_at_unix,
-            root_tree_id: source_step.base_tree_id.clone(),
-            files: Vec::new(),
+    let base_state =
+        recorded_base_state_for_step(&handle.layrs_dir, source_step).unwrap_or_else(|| {
+            WorkingStateFile {
+                schema: WORKING_STATE_SCHEMA.to_string(),
+                layer_id: source_step
+                    .base_layer_id
+                    .clone()
+                    .unwrap_or_else(|| source_step.layer_id.clone()),
+                captured_at_unix: source_step.captured_at_unix,
+                root_tree_id: source_step.base_tree_id.clone(),
+                files: Vec::new(),
+            }
         });
     let mut base_state = base_state;
     hydrate_state_files(&handle.layrs_dir, &mut base_state)?;
@@ -1252,7 +1377,9 @@ fn propagate_step_to_child(
         if is_safe_take_theirs(base, ours, theirs) {
             apply_file_choice(&mut child_state, path, theirs.cloned());
         } else {
-            let weave_id = unique_weave_id(&handle.layrs_dir, &source_step.layer_id, child_layer_id);
+            let weave_id =
+                unique_weave_id(&handle.layrs_dir, &source_step.layer_id, child_layer_id);
+            let pre_weave_target_tree_id = child_state.root_tree_id.clone();
             let outcome = reconcile_path_with_lens(
                 handle,
                 &weave_id,
@@ -1270,6 +1397,13 @@ fn propagate_step_to_child(
                 }
                 PathReconcileOutcome::Conflicted(conflict) => conflict,
             };
+            apply_conflict_marker_to_state(handle, &mut child_state, &weave_id, &conflict, ours)?;
+            child_state.root_tree_id =
+                Some(write_tree_object(&handle.layrs_dir, &child_state.files)?);
+            write_json(
+                &proposed_state_path(&handle.layrs_dir, &weave_id),
+                &storage_state(&handle.layrs_dir, &child_state)?,
+            )?;
             conflicts.push(conflict);
             let session = WeaveSessionFile {
                 schema: WEAVE_SESSION_SCHEMA.to_string(),
@@ -1277,7 +1411,7 @@ fn propagate_step_to_child(
                 source_layer_id: source_step.layer_id.clone(),
                 target_layer_id: child_layer_id.to_string(),
                 status: "conflicted".to_string(),
-                pre_weave_target_tree_id: child_state.root_tree_id.clone(),
+                pre_weave_target_tree_id,
                 pre_weave_target_step_id: child_steps.last().map(|step| step.step_id.clone()),
                 planned_steps: vec![source_step.step_id.clone()],
                 applied_steps: Vec::new(),
@@ -1303,7 +1437,11 @@ fn propagate_step_to_child(
         base_tree_id: child_steps
             .last()
             .and_then(|step| step.root_tree_id.clone())
-            .or_else(|| read_layer_index(&handle.layrs_dir, child_layer_id).ok().and_then(|state| state.root_tree_id)),
+            .or_else(|| {
+                read_layer_index(&handle.layrs_dir, child_layer_id)
+                    .ok()
+                    .and_then(|state| state.root_tree_id)
+            }),
         root_tree_id: child_state.root_tree_id.clone(),
         changed_paths: source_step.changed_paths.clone(),
         timeline_position: Some(next_timeline_position(&handle.layrs_dir, child_layer_id)?),

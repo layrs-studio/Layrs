@@ -33,9 +33,9 @@ Run the full canonical suite with:
 pnpm run test
 ```
 
-This runs core/CLI tests, native Desktop UI tests, Studio Web tests, and the
-Desktop-to-server-to-Web E2E flow. The targeted commands below are useful while
-iterating on one layer.
+This runs the Rust workspace tests, Studio Desktop Tauri shell tests, native
+Desktop UI tests, Studio Web tests, and the Desktop-to-server-to-Web E2E flow.
+The targeted commands below are useful while iterating on one layer.
 
 ## Local Durability Tests
 
@@ -58,14 +58,14 @@ state whether it is covered at `core`, `cli`, `desktop-native`, and
 ## CLI And Server Tests
 
 ```powershell
-cargo test -p layrs-cli
-cargo test -p layrs-server
+cargo test --workspace -- --test-threads=1
+cargo test --manifest-path apps/studio-desktop/src-tauri/Cargo.toml -- --test-threads=1
 cargo fmt --check
 cargo check --workspace
 ```
 
-Use `RUST_TEST_THREADS=1` for client-core until all temp-path-sensitive tests
-are parallel-safe.
+`pnpm run test:core` runs the two Rust commands above. Use
+`RUST_TEST_THREADS=1` until all temp-path-sensitive tests are parallel-safe.
 
 ## Frontend Checks
 

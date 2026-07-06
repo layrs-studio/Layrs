@@ -1,8 +1,9 @@
 use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
-    DiffKind, DiffModel, InspectorField, InspectorValueType, LensCapability, LensManifest,
-    LensReconcileContent, LensReconcileInput, LensReconcileResult, LensResult, MetadataValue,
-    PreviewKind, PreviewModel, ReconcileModel, ReconcileStatus, ViewerContract, content_hash,
+    DiffKind, DiffModel, InspectorField, InspectorValueType, LensCapability,
+    LensFileResolutionInput, LensManifest, LensReconcileContent, LensReconcileInput,
+    LensReconcileResult, LensResult, MetadataValue, PreviewKind, PreviewModel, ReconcileModel,
+    ReconcileStatus, ResolutionMethod, ResolutionMethods, ViewerContract, content_hash,
     infer_media_type_from_path,
 };
 
@@ -47,7 +48,7 @@ pub fn manifest() -> LensManifest {
         },
     ];
 
-    LensManifest::new(
+    let mut manifest = LensManifest::new(
         RAW_LENS_ID,
         "Raw",
         "0.0.0",
@@ -63,7 +64,13 @@ pub fn manifest() -> LensManifest {
             ],
         },
         viewer,
-    )
+    );
+    manifest.resolution_methods = resolution_methods();
+    manifest
+}
+
+pub fn resolution_methods() -> ResolutionMethods {
+    ResolutionMethods::file(raw_file_resolution_methods())
 }
 
 fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
@@ -189,6 +196,23 @@ pub fn reconcile_raw(input: LensReconcileInput<'_>) -> LensReconcileResult {
         Vec::new(),
         Vec::new(),
     )
+    .with_file_methods(raw_file_resolution_methods())
+}
+
+pub fn resolve_raw_conflict(
+    input: LensFileResolutionInput<'_>,
+) -> LensResult<LensReconcileContent> {
+    match input.method {
+        ResolutionMethod::Existing => Ok(content_from_side(input.existing)),
+        ResolutionMethod::Incoming => Ok(content_from_side(input.incoming)),
+        method => Err(layrs_lens_sdk::LensError::new(
+            "unsupported_raw_resolution",
+            format!(
+                "Raw file resolution `{}` is not supported. Use existing or incoming.",
+                method.as_str()
+            ),
+        )),
+    }
 }
 
 fn same_side(
@@ -204,6 +228,10 @@ fn content_from_side(side: layrs_lens_sdk::LensReconcileSide<'_>) -> LensReconci
     } else {
         LensReconcileContent::absent()
     }
+}
+
+fn raw_file_resolution_methods() -> Vec<ResolutionMethod> {
+    vec![ResolutionMethod::Existing, ResolutionMethod::Incoming]
 }
 
 #[cfg(test)]
@@ -236,6 +264,11 @@ mod tests {
                 .contains(&LensCapability::Reconcile)
         );
         assert_eq!(manifest.viewer.diff_kinds, vec![DiffKind::Binary]);
+        assert_eq!(
+            manifest.resolution_methods.file,
+            vec![ResolutionMethod::Existing, ResolutionMethod::Incoming]
+        );
+        assert!(manifest.resolution_methods.block.is_empty());
     }
 
     #[test]
@@ -276,7 +309,34 @@ mod tests {
         assert_eq!(result.status, LensReconcileResultStatus::Conflicted);
         assert!(result.blocks.is_empty());
         assert!(result.segments.is_empty());
+        assert_eq!(
+            result.file_methods,
+            vec![ResolutionMethod::Existing, ResolutionMethod::Incoming]
+        );
         assert_eq!(result.conflict.expect("conflict").bytes, b"target\x00bytes");
+    }
+
+    #[test]
+    fn raw_lens_resolves_file_methods_only() {
+        let input = LensFileResolutionInput {
+            method: ResolutionMethod::Incoming,
+            base: LensReconcileSide::present(b"base", None),
+            existing: LensReconcileSide::present(b"existing", None),
+            incoming: LensReconcileSide::present(b"incoming", None),
+        };
+
+        let content = resolve_raw_conflict(input).expect("incoming");
+
+        assert_eq!(content.bytes, b"incoming");
+        assert!(
+            resolve_raw_conflict(LensFileResolutionInput {
+                method: ResolutionMethod::Both,
+                base: LensReconcileSide::present(b"base", None),
+                existing: LensReconcileSide::present(b"existing", None),
+                incoming: LensReconcileSide::present(b"incoming", None),
+            })
+            .is_err()
+        );
     }
 
     fn reconcile_case(base: &[u8], ours: &[u8], theirs: &[u8]) -> LensReconcileResult {

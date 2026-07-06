@@ -261,6 +261,127 @@ fn weave_conflict_abort_restores_pre_weave_target() {
 }
 
 #[test]
+fn linked_parent_auto_step_conflicts_with_child_same_line_change_on_switch() {
+    let space = init_empty("linked-parent-auto-step-conflict");
+    fs::write(space.space.join("story.txt"), "base\nline 2\n").expect("write base");
+    let base_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
+
+    let feature = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "layer",
+            "create",
+            "Feature",
+        ],
+    );
+    let feature_layer_id = feature["layer_id"].as_str().expect("feature layer id");
+    fs::write(space.space.join("story.txt"), "feature line 1\nline 2\n")
+        .expect("write feature line");
+    let feature_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
+
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "layer",
+            "use",
+            "Main",
+        ],
+    );
+    fs::write(space.space.join("story.txt"), "main line 1\nline 2\n")
+        .expect("write unstepped main line");
+
+    let switch = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "layer",
+            "use",
+            "Feature",
+        ],
+    );
+    assert_eq!(switch["active"].as_bool(), Some(true));
+
+    let status = run_json(
+        &space,
+        ["--json", "--space", &space.space_arg(), "weave", "status"],
+    );
+    assert_eq!(status["status"].as_str(), Some("conflicted"));
+    assert_eq!(status["source_layer_id"].as_str(), Some("local_layer_main"));
+    assert_eq!(status["target_layer_id"].as_str(), Some(feature_layer_id));
+    let auto_main_step = status["planned_steps"][0]
+        .as_str()
+        .expect("conflicted propagation should plan the auto-created Main Step");
+    assert_ne!(
+        auto_main_step,
+        base_step["step_id"].as_str().expect("base step")
+    );
+    assert_ne!(
+        auto_main_step,
+        feature_step["step_id"].as_str().expect("feature step")
+    );
+
+    let conflicts = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "weave",
+            "conflicts",
+        ],
+    );
+    let conflicts = conflicts.as_array().expect("conflicts");
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0]["path"].as_str(), Some("story.txt"));
+    assert_eq!(conflicts[0]["lens_id"].as_str(), Some("layrs.text"));
+
+    let marked = fs::read_to_string(space.space.join("story.txt")).expect("read marked conflict");
+    assert!(marked.contains("<<<<<<< target:"));
+    assert!(marked.contains("feature line 1"));
+    assert!(marked.contains("======="));
+    assert!(marked.contains("main line 1"));
+    assert!(marked.contains(">>>>>>> source:local_layer_main"));
+    assert_latest_weave_conflict_files(&space.space);
+
+    let feature_timeline = run_json(
+        &space,
+        ["--json", "--space", &space.space_arg(), "timeline"],
+    );
+    assert_timeline_origin_order(
+        &feature_timeline,
+        &[
+            (
+                "local_layer_main",
+                base_step["step_id"].as_str().expect("base step"),
+                "inherited",
+            ),
+            (
+                feature_layer_id,
+                feature_step["step_id"].as_str().expect("feature step"),
+                "native",
+            ),
+        ],
+    );
+
+    let aborted = run_json(
+        &space,
+        ["--json", "--space", &space.space_arg(), "weave", "abort"],
+    );
+    assert_eq!(aborted["session"]["status"].as_str(), Some("aborted"));
+    assert_file(&space.space, "story.txt", "feature line 1\nline 2\n");
+
+    space.pass();
+}
+
+#[test]
 fn weave_conflict_resolve_theirs_continue_updates_target_without_losing_source() {
     let space = init_conflicting_weave_space("weave-resolve");
 
@@ -314,6 +435,325 @@ fn weave_conflict_resolve_theirs_continue_updates_target_without_losing_source()
     );
     assert_file(&space.space, "story.txt", "feature\n");
 
+    space.pass();
+}
+
+#[test]
+fn conflict_list_status_and_text_resolve_use_product_methods() {
+    let space = init_conflicting_weave_space("conflict-cli-text");
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+
+    let status = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "status",
+        ],
+    );
+    assert_eq!(status["status"].as_str(), Some("conflicted"));
+
+    let conflicts = run_json(
+        &space,
+        ["--json", "--space", &space.space_arg(), "conflict", "list"],
+    );
+    let conflicts = conflicts.as_array().expect("conflict list");
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0]["path"].as_str(), Some("story.txt"));
+    assert_eq!(conflicts[0]["lens_id"].as_str(), Some("layrs.text"));
+
+    let missing_block = run_err(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "resolve",
+            "incoming",
+            "-f",
+            "story.txt",
+        ],
+    );
+    assert!(missing_block.contains("requires --block for text conflicts"));
+
+    let resolved = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "resolve",
+            "incoming",
+            "-f",
+            "story.txt",
+            "--block",
+            "block-1",
+        ],
+    );
+    assert_eq!(resolved["session"]["status"].as_str(), Some("resolved"));
+
+    let continued = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "continue",
+        ],
+    );
+    assert_eq!(continued["session"]["status"].as_str(), Some("applied"));
+    assert_file(&space.space, "story.txt", "feature\n");
+
+    space.pass();
+}
+
+#[test]
+fn conflict_text_resolve_both_and_manual_are_block_scoped() {
+    let both = init_conflicting_weave_space("conflict-cli-both");
+    run_json(
+        &both,
+        [
+            "--json",
+            "--space",
+            &both.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+    run_json(
+        &both,
+        [
+            "--json",
+            "--space",
+            &both.space_arg(),
+            "conflict",
+            "resolve",
+            "both",
+            "-f",
+            "story.txt",
+            "--block",
+            "1",
+        ],
+    );
+    run_json(
+        &both,
+        [
+            "--json",
+            "--space",
+            &both.space_arg(),
+            "conflict",
+            "continue",
+        ],
+    );
+    assert_file(&both.space, "story.txt", "main\nfeature\n");
+    both.pass();
+
+    let manual = init_conflicting_weave_space("conflict-cli-manual");
+    run_json(
+        &manual,
+        [
+            "--json",
+            "--space",
+            &manual.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+    let resolved = run_json_with_stdin(
+        &manual,
+        [
+            "--json",
+            "--space",
+            &manual.space_arg(),
+            "conflict",
+            "resolve",
+            "manual",
+            "-f",
+            "story.txt",
+            "--block",
+            "1",
+        ],
+        "manual cli block\n",
+    );
+    assert_eq!(resolved["session"]["status"].as_str(), Some("resolved"));
+    run_json(
+        &manual,
+        [
+            "--json",
+            "--space",
+            &manual.space_arg(),
+            "conflict",
+            "continue",
+        ],
+    );
+    assert_file(&manual.space, "story.txt", "manual cli block\n");
+    manual.pass();
+}
+
+#[test]
+fn conflict_raw_resolve_enforces_file_level_existing_incoming_only() {
+    let (space, _main_bytes, feature_bytes, _base_bytes) =
+        init_conflicting_binary_weave_space("conflict-cli-raw");
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+
+    let block_error = run_err(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "resolve",
+            "incoming",
+            "-f",
+            "Assets/hero.png",
+            "--block",
+            "1",
+        ],
+    );
+    assert!(block_error.contains("--block cannot be used for raw conflicts"));
+
+    let both_error = run_err(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "resolve",
+            "both",
+            "-f",
+            "Assets/hero.png",
+        ],
+    );
+    assert!(both_error.contains("cannot be used for raw conflicts"));
+
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "resolve",
+            "incoming",
+            "-f",
+            "Assets/hero.png",
+        ],
+    );
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "continue",
+        ],
+    );
+    assert_file_bytes(&space.space, "Assets/hero.png", &feature_bytes);
+    space.pass();
+}
+
+#[test]
+fn conflict_interactive_resolve_continue_is_scriptable() {
+    let space = init_conflicting_weave_space("conflict-cli-interactive-continue");
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+
+    let transcript = run_ok_with_stdin(
+        &space,
+        ["--space", &space.space_arg(), "conflict", "resolve"],
+        "i\nc\n",
+    );
+    assert!(transcript.contains("Choose conflict action"));
+    assert!(transcript.contains("Conflict session continued."));
+    assert_file(&space.space, "story.txt", "feature\n");
+    space.pass();
+}
+
+#[test]
+fn conflict_interactive_abort_requires_confirmation_and_supports_quit() {
+    let space = init_conflicting_weave_space("conflict-cli-interactive-abort");
+    run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "weave",
+            "Feature",
+            "--target",
+            "Main",
+        ],
+    );
+
+    let quit = run_ok_with_stdin(
+        &space,
+        ["--space", &space.space_arg(), "conflict", "resolve"],
+        "a\nn\nq\n",
+    );
+    assert!(quit.contains("Abort active conflict session?"));
+    let still_active = run_json(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "conflict",
+            "status",
+        ],
+    );
+    assert_eq!(still_active["status"].as_str(), Some("conflicted"));
+
+    let aborted = run_ok_with_stdin(
+        &space,
+        ["--space", &space.space_arg(), "conflict", "resolve"],
+        "a\ny\n",
+    );
+    assert!(aborted.contains("Conflict session aborted."));
+    assert_file(&space.space, "story.txt", "main\n");
     space.pass();
 }
 

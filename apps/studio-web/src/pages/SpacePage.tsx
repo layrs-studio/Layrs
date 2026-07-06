@@ -7,6 +7,7 @@ import type {
   StudioSnapshot,
   Team
 } from "@layrs/client-sdk";
+import { LensReconcileSurface, type LensReconcileConflict, type LensReconcileResolution } from "@layrs/lenses";
 import { ConfirmModal, DangerZone, StatusPill, Tabs } from "@layrs/ui";
 import { layerHref } from "../routes";
 import { AccessPolicyEditor } from "../components/AccessPolicyEditor";
@@ -39,6 +40,28 @@ interface WeaveConflict {
   lensId: string;
   status: string;
   message: string;
+  resolution?: string;
+  supportedMethods?: string[];
+  blocks?: WeaveConflictBlock[];
+  segments?: WeaveConflictSegment[];
+}
+
+interface WeaveConflictBlock {
+  blockId: string;
+  status: string;
+  base?: string;
+  ours?: string;
+  theirs?: string;
+  existing?: string;
+  incoming?: string;
+  resolution?: string;
+  supportedMethods?: string[];
+}
+
+interface WeaveConflictSegment {
+  kind: string;
+  text?: string;
+  blockId?: string;
 }
 
 export function SpacePage({
@@ -47,7 +70,9 @@ export function SpacePage({
   onDeleteLayer,
   onDeleteSpace,
   onNavigate,
+  onRefreshWorkspace,
   onSaveAccessPolicies,
+  refreshKey = 0,
   selectedLayer,
   space,
   snapshot,
@@ -62,7 +87,9 @@ export function SpacePage({
   onDeleteLayer: (spaceId: string, layerId: string) => Promise<void>;
   onDeleteSpace: (spaceId: string) => Promise<void>;
   onNavigate: (href: string) => void;
+  onRefreshWorkspace?: () => Promise<void>;
   onSaveAccessPolicies: (policies: LayerAccessPolicy[]) => Promise<void>;
+  refreshKey?: number;
   selectedLayer?: Layer;
   serverArtifacts?: StudioSnapshot["artifacts"];
   space?: Space;
@@ -75,7 +102,7 @@ export function SpacePage({
   const [confirmationValue, setConfirmationValue] = useState("");
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const snapshotStepCount = snapshot.steps.filter((step) => step.layerId === selectedLayer?.id).length;
-  const liveStepCount = useLayerStepCount({ layer: selectedLayer, spaceId: space?.id, snapshotStepCount, workspaceId });
+  const liveStepCount = useLayerStepCount({ layer: selectedLayer, refreshKey, spaceId: space?.id, snapshotStepCount, workspaceId });
 
   if (!space) {
     return <EmptyState title="Space not found" detail="Choose an existing Space from the Workspace page." />;
@@ -179,6 +206,7 @@ export function SpacePage({
           artifacts={layerArtifacts}
           layer={selectedLayer}
           lensRegistry={lensRegistry}
+          refreshKey={refreshKey}
           snapshotSteps={snapshot.steps}
           spaceId={space.id}
           workspaceId={workspaceId}
@@ -186,7 +214,7 @@ export function SpacePage({
       ) : null}
 
       {activeTab === "weaves" ? (
-        <SpaceWeavesPanel layers={layers} selectedLayer={selectedLayer} space={space} workspaceId={workspaceId} />
+        <SpaceWeavesPanel layers={layers} onRefreshWorkspace={onRefreshWorkspace} selectedLayer={selectedLayer} space={space} workspaceId={workspaceId} />
       ) : null}
 
       {activeTab === "access" ? (
@@ -319,11 +347,13 @@ export function SpacePage({
 
 function SpaceWeavesPanel({
   layers,
+  onRefreshWorkspace,
   selectedLayer,
   space,
   workspaceId
 }: {
   layers: Layer[];
+  onRefreshWorkspace?: () => Promise<void>;
   selectedLayer?: Layer;
   space: Space;
   workspaceId: string;
@@ -353,7 +383,10 @@ function SpaceWeavesPanel({
       try {
         const payload = await fetchJson(weavesPath(workspaceId, space.id), signal);
         if (!signal.aborted) {
-          setRequests(weaveArrayFromPayload(payload));
+          const detailedRequests = await weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, signal);
+          if (!signal.aborted) {
+            setRequests(detailedRequests);
+          }
         }
       } catch (loadError) {
         if (!signal.aborted) {
@@ -368,13 +401,32 @@ function SpaceWeavesPanel({
     setError("");
     try {
       await action();
-      const payload = await fetchJson(weavesPath(workspaceId, space.id), new AbortController().signal);
-      setRequests(weaveArrayFromPayload(payload));
+      const controller = new AbortController();
+      const payload = await fetchJson(weavesPath(workspaceId, space.id), controller.signal);
+      setRequests(await weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, controller.signal));
+      await onRefreshWorkspace?.();
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : "Weave action failed.");
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function resolveConflict(request: WeaveRequest, conflict: WeaveConflict, resolution: LensReconcileResolution) {
+    await mutateWeave(() =>
+      fetchJson(
+        weaveConflictResolvePath(workspaceId, space.id, request.weaveId, conflict.conflictId),
+        new AbortController().signal,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            blockId: resolution.blockId,
+            manualText: resolution.manualText,
+            method: resolution.method
+          })
+        }
+      )
+    );
   }
 
   function layerName(layerId: string) {
@@ -390,7 +442,11 @@ function SpaceWeavesPanel({
       <div className="studio-settings-grid">
         <label className="studio-field">
           <span>Source Layer</span>
-          <select value={sourceLayerId} onChange={(event) => setSourceLayerId(event.target.value)}>
+          <select
+            data-testid="weave-source-layer"
+            value={sourceLayerId}
+            onChange={(event) => setSourceLayerId(event.target.value)}
+          >
             {layers.map((layer) => (
               <option key={layer.id} value={layer.id}>
                 {layer.name}
@@ -400,7 +456,11 @@ function SpaceWeavesPanel({
         </label>
         <label className="studio-field">
           <span>Target Layer</span>
-          <select value={targetLayerId} onChange={(event) => setTargetLayerId(event.target.value)}>
+          <select
+            data-testid="weave-target-layer"
+            value={targetLayerId}
+            onChange={(event) => setTargetLayerId(event.target.value)}
+          >
             {layers.map((layer) => (
               <option key={layer.id} value={layer.id}>
                 {layer.name}
@@ -411,13 +471,14 @@ function SpaceWeavesPanel({
         <div className="studio-setting-card">
           <span>Rule</span>
           <strong>Durable request</strong>
-          <p>Apply stays disabled server-side while unresolved conflicts exist.</p>
+          <p>Apply remains blocked until every reported conflict is resolved.</p>
         </div>
       </div>
       <div className="studio-action-row">
         <button
           type="button"
           className="studio-primary-button"
+          data-testid="weave-create-request"
           disabled={!canCreate}
           onClick={() =>
             void mutateWeave(() =>
@@ -439,55 +500,85 @@ function SpaceWeavesPanel({
         {requests.length === 0 ? (
           <EmptyState title="No Weaves yet" detail="Create a request to reconcile one Layer into another." />
         ) : (
-          requests.map((request) => (
-            <article className="studio-step-row" key={request.weaveId}>
-              <span>{request.status}</span>
-              <div>
-                <strong>{request.title}</strong>
-                <p>
-                  {layerName(request.sourceLayerId)} {"->"} {layerName(request.targetLayerId)}
-                </p>
-                <small>
-                  {request.plannedSteps.length} planned Steps, {request.appliedSteps.length} applied,{" "}
-                  {request.conflicts?.length ?? 0} conflicts
-                </small>
-              </div>
-              <div className="studio-action-row">
-                <button
-                  type="button"
-                  className="studio-secondary-button"
-                  disabled={isBusy || request.status === "applied" || request.status === "aborted"}
-                  onClick={() =>
-                    void mutateWeave(() =>
-                      fetchJson(
-                        `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/apply`,
-                        new AbortController().signal,
-                        { method: "POST" }
+          requests.map((request) => {
+            const unresolvedConflicts = (request.conflicts ?? []).filter((conflict) => conflict.status !== "resolved");
+            const applyDisabled =
+              isBusy ||
+              request.status === "applied" ||
+              request.status === "aborted" ||
+              unresolvedConflicts.length > 0;
+
+            return (
+            <div className="studio-weave-request" data-testid="weave-request" key={request.weaveId}>
+              <article className="studio-step-row">
+                <span>{request.status}</span>
+                <div>
+                  <strong>{request.title}</strong>
+                  <p>
+                    {layerName(request.sourceLayerId)} {"->"} {layerName(request.targetLayerId)}
+                  </p>
+                  <small>
+                    {request.plannedSteps.length} planned Steps, {request.appliedSteps.length} applied,{" "}
+                    {request.conflicts?.length ?? 0} conflicts
+                  </small>
+                </div>
+                <div className="studio-action-row">
+                  <button
+                    type="button"
+                    className="studio-secondary-button"
+                    data-testid="weave-apply"
+                    disabled={applyDisabled}
+                    title={unresolvedConflicts.length > 0 ? "Resolve all Weave conflicts before applying." : undefined}
+                    onClick={() =>
+                      void mutateWeave(() =>
+                        fetchJson(
+                          `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/apply`,
+                          new AbortController().signal,
+                          { method: "POST" }
+                        )
                       )
-                    )
-                  }
-                >
-                  Apply
-                </button>
-                <button
-                  type="button"
-                  className="studio-danger-button"
-                  disabled={isBusy || request.status === "applied" || request.status === "aborted"}
-                  onClick={() =>
-                    void mutateWeave(() =>
-                      fetchJson(
-                        `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/abort`,
-                        new AbortController().signal,
-                        { method: "POST" }
+                    }
+                  >
+                    Apply
+                  </button>
+                  <button
+                    type="button"
+                    className="studio-danger-button"
+                    disabled={isBusy || request.status === "applied" || request.status === "aborted"}
+                    onClick={() =>
+                      void mutateWeave(() =>
+                        fetchJson(
+                          `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/abort`,
+                          new AbortController().signal,
+                          { method: "POST" }
+                        )
                       )
-                    )
-                  }
-                >
-                  Abort
-                </button>
-              </div>
-            </article>
-          ))
+                    }
+                  >
+                    Abort
+                  </button>
+                </div>
+              </article>
+              {request.conflicts && request.conflicts.length > 0 ? (
+                <div className="studio-weave-conflict-surfaces">
+                  {request.conflicts.map((conflict) => (
+                    <LensReconcileSurface
+                      conflict={toLensReconcileConflict(conflict)}
+                      busy={isBusy}
+                      className="studio-weave-conflict-surface"
+                      disabled={isBusy || conflict.status === "resolved"}
+                      emptyMessage="Conflict details unavailable"
+                      key={conflict.conflictId}
+                      labels={{ existing: "Existing", incoming: "Incoming" }}
+                      title={conflict.path}
+                      onResolve={(resolution) => void resolveConflict(request, conflict, resolution)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            );
+          })
         )}
       </div>
     </section>
@@ -496,11 +587,13 @@ function SpaceWeavesPanel({
 
 function useLayerStepCount({
   layer,
+  refreshKey,
   snapshotStepCount,
   spaceId,
   workspaceId
 }: {
   layer?: Layer;
+  refreshKey: number;
   snapshotStepCount: number;
   spaceId?: string;
   workspaceId: string;
@@ -531,7 +624,7 @@ function useLayerStepCount({
       });
 
     return () => controller.abort();
-  }, [layer, snapshotStepCount, spaceId, workspaceId]);
+  }, [layer, refreshKey, snapshotStepCount, spaceId, workspaceId]);
 
   return count;
 }
@@ -552,6 +645,62 @@ function weaveArrayFromPayload(payload: unknown): WeaveRequest[] {
   const record = objectPayload(payload);
   const items = record?.items ?? record?.weaves ?? record?.weaveRequests;
   return Array.isArray(items) ? (items as WeaveRequest[]) : [];
+}
+
+async function weaveArrayWithDetails(
+  requests: WeaveRequest[],
+  workspaceId: string,
+  spaceId: string,
+  signal: AbortSignal
+): Promise<WeaveRequest[]> {
+  return Promise.all(
+    requests.map(async (request) => {
+      try {
+        const detailPayload = await fetchJson(
+          `${weavesPath(workspaceId, spaceId)}/${encodeURIComponent(request.weaveId)}`,
+          signal
+        );
+        return weaveRequestFromPayload(detailPayload) ?? request;
+      } catch {
+        return request;
+      }
+    })
+  );
+}
+
+function weaveRequestFromPayload(payload: unknown): WeaveRequest | undefined {
+  const record = objectPayload(payload);
+  return typeof record?.weaveId === "string" ? (record as unknown as WeaveRequest) : undefined;
+}
+
+function toLensReconcileConflict(conflict: WeaveConflict): LensReconcileConflict {
+  return {
+    blocks: (conflict.blocks ?? []).map((block) => ({
+      base: block.base ?? "",
+      blockId: block.blockId,
+      existing: block.existing ?? block.ours ?? "",
+      incoming: block.incoming ?? block.theirs ?? "",
+      resolution: block.resolution,
+      status: block.status,
+      supportedMethods: toSupportedMethods(block.supportedMethods)
+    })),
+    conflictId: conflict.conflictId,
+    lensId: conflict.lensId,
+    message: conflict.message,
+    path: conflict.path,
+    resolution: conflict.resolution,
+    segments: conflict.segments?.map((segment) => ({
+      blockId: segment.blockId,
+      kind: segment.kind === "block" ? "block" : "text",
+      text: segment.text
+    })),
+    status: conflict.status,
+    supportedMethods: toSupportedMethods(conflict.supportedMethods)
+  };
+}
+
+function toSupportedMethods(methods: string[] | undefined): LensReconcileConflict["supportedMethods"] {
+  return methods as LensReconcileConflict["supportedMethods"];
 }
 
 function objectPayload(value: unknown): Record<string, unknown> | undefined {
@@ -579,13 +728,30 @@ async function fetchJson(url: string, signal: AbortSignal, init: RequestInit = {
     ...init
   });
   if (!response.ok) {
-    throw new Error(response.statusText);
+    throw new Error(await responseErrorMessage(response));
   }
   return response.json() as Promise<unknown>;
 }
 
+async function responseErrorMessage(response: Response) {
+  const text = await response.text().catch(() => "");
+  if (!text) {
+    return response.statusText;
+  }
+  try {
+    const payload = JSON.parse(text) as { error?: { message?: string }; message?: string };
+    return payload.error?.message ?? payload.message ?? text;
+  } catch {
+    return text;
+  }
+}
+
 function weavesPath(workspaceId: string, spaceId: string): string {
   return `${runtimeApiBaseUrl()}/v1/workspaces/${encodeURIComponent(workspaceId)}/spaces/${encodeURIComponent(spaceId)}/weave-requests`;
+}
+
+function weaveConflictResolvePath(workspaceId: string, spaceId: string, weaveId: string, conflictId: string): string {
+  return `${weavesPath(workspaceId, spaceId)}/${encodeURIComponent(weaveId)}/conflicts/${encodeURIComponent(conflictId)}/resolve`;
 }
 
 function layerSettingsActionPath(

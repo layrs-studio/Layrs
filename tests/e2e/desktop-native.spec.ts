@@ -37,7 +37,7 @@ test("visible Desktop UI initializes a Local Space, captures a Step and switches
     await expect(desktop.page.getByRole("heading", { name: "Native Desktop Visual E2E" })).toBeVisible({
       timeout: 30_000
     });
-    await expect(desktop.page.getByText("Layer: Main")).toBeVisible();
+    await expect(desktop.page.getByRole("button", { name: /Main\s+Base Layer/ })).toBeVisible();
     await desktop.pause();
 
     await writeFile(resolve(root, "src", "visible-change.ts"), "export const visibleChange = true;\n", "utf8");
@@ -53,23 +53,23 @@ test("visible Desktop UI initializes a Local Space, captures a Step and switches
     await desktop.pause();
 
     await desktop.page.keyboard.press("Control+S");
-    await expect(desktop.page.getByText("Choose a Workspace before publishing this Draft Local Space.")).toBeVisible();
+    await expect(desktop.page.getByText("Choose a Workspace in Space Settings before publishing this Draft Local Space.")).toBeVisible();
+    await desktop.page.getByRole("button", { name: "Back to Space" }).click();
     await desktop.pause();
 
     await desktop.page.getByRole("tab", { name: /Steps/ }).click();
     await expect(desktop.page.getByRole("button", { name: /Step/ }).first()).toBeVisible();
     await desktop.pause();
 
-    await desktop.page.getByRole("tab", { name: /Layers/ }).click();
-    await desktop.page.getByLabel("New Layer").fill("Review Layer");
-    await desktop.page.getByRole("button", { name: "Create from current" }).click();
+    await desktop.page.getByLabel("Search or create Layer").fill("Review Layer");
+    await desktop.page.getByRole("button", { name: 'Create "Review Layer" from current' }).click();
     await expect(desktop.page.getByText("Layer created from current files")).toBeVisible();
-    await expect(desktop.page.getByText("Layer: Review Layer")).toBeVisible();
+    await expect(desktop.page.getByRole("button", { name: /Review Layer\s+Parent: Main/ })).toBeVisible();
     await desktop.pause();
 
     await desktop.page.getByRole("button", { name: /Main\s+Base Layer/ }).first().click();
     await expect(desktop.page.getByText("Layer switched")).toBeVisible();
-    await expect(desktop.page.getByText("Layer: Main")).toBeVisible();
+    await expect(desktop.page.getByRole("button", { name: /Main\s+Base Layer/ })).toBeDisabled();
     await desktop.pause();
   } finally {
     await desktop.dispose();
@@ -97,7 +97,7 @@ test("visible Desktop UI creates an empty Local Space and scans a new file", asy
     await expect(desktop.page.getByRole("heading", { name: "Empty Native Space" })).toBeVisible({
       timeout: 30_000
     });
-    await expect(desktop.page.getByText("Layer: Main")).toBeVisible();
+    await expect(desktop.page.getByRole("button", { name: /Main\s+Base Layer/ })).toBeVisible();
     await expect(desktop.page.getByRole("tab", { name: /Changes\s+0/ })).toBeVisible();
     await expect(desktop.page.getByRole("tab", { name: /Steps\s+0/ })).toBeVisible();
     await desktop.pause();
@@ -138,28 +138,16 @@ test("visible Desktop UI blocks active Layer delete and forgets local metadata w
       timeout: 30_000
     });
 
-    await desktop.page.getByRole("tab", { name: /Layers/ }).click();
-    await desktop.page.getByLabel("New Layer").fill("Disposable Layer");
-    await desktop.page.getByRole("button", { name: "Create from current" }).click();
-    await expect(desktop.page.getByText("Layer: Disposable Layer")).toBeVisible();
-    await expect(desktop.page.getByRole("button", { name: "Delete Disposable Layer" })).toBeDisabled();
+    await desktop.page.getByRole("tab", { name: /Layer settings/ }).click();
+    await expect(desktop.page.getByRole("button", { name: "Delete layer" })).toBeDisabled();
     await desktop.pause();
 
-    await desktop.page.getByRole("button", { name: /Main\s+Base Layer/ }).first().click();
-    await expect(desktop.page.getByText("Layer switched")).toBeVisible();
-    await desktop.page.getByRole("button", { name: "Delete Disposable Layer" }).click();
-    const deleteDialog = desktop.page.getByRole("dialog", { name: /Delete Disposable Layer/ });
-    await expect(deleteDialog).toBeVisible();
-    await deleteDialog.getByRole("button", { name: "Delete Layer" }).click();
-    await expect(desktop.page.getByText("Layer deleted", { exact: true })).toBeVisible();
-    await desktop.pause();
-
-    await desktop.page.getByText("More").click();
+    await desktop.page.getByRole("button", { name: "Space settings" }).click();
     await desktop.page.getByRole("button", { name: "Forget local" }).click();
     const forgetDialog = desktop.page.getByRole("dialog", { name: /Forget Forget Safety Space/ });
     await expect(forgetDialog).toBeVisible();
     await forgetDialog.getByRole("button", { name: "Forget local" }).click();
-    await expect(desktop.page.getByText("No Local Spaces detected. Pull one from Distant or create one offline.")).toBeVisible({
+    await expect(desktop.page.getByText("Select a Local Space before opening Space settings.")).toBeVisible({
       timeout: 30_000
     });
     await access(resolve(root, "keep.txt"));

@@ -12,6 +12,9 @@ base64 = "0.22"
 blake3 = "1"
 hex = "0.4"
 layrs-api = { path = "../layrs-api" }
+layrs-lens-raw = { path = "../layrs-lens-raw" }
+layrs-lens-sdk = { path = "../layrs-lens-sdk" }
+layrs-lens-text = { path = "../layrs-lens-text" }
 layrs-store-server = { path = "../layrs-store-server" }
 layrs-sync = { path = "../layrs-sync" }
 serde = { workspace = true }
