@@ -203,7 +203,7 @@ fn test_database_url() -> Option<String> {
         .or_else(|_| std::env::var("LAYRS_DATABASE_URL"))
         .or_else(|_| std::env::var("DATABASE_URL"))
         .ok();
-    if database_url.is_none() && std::env::var("LAYRS_REQUIRE_POSTGRES_TESTS").as_deref() == Ok("1")
+    if database_url.is_none() && std::env::var("LAYRS_REQUIRE_TEST_DATABASE").as_deref() == Ok("1")
     {
         panic!(
             "Postgres integration tests are required: set LAYRS_TEST_DATABASE_URL to a reachable test database"

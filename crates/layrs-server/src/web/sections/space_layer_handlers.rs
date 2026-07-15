@@ -98,6 +98,7 @@ async fn delete_space(
     let artifact_count = row.get::<i64, _>("artifact_count");
 
     let mut tx = state.pool.begin().await?;
+    lock_layer_deletion_dependencies_in_tx(&mut tx, &workspace_id, &space_id, None).await?;
     delete_space_storage_in_tx(&mut tx, &workspace_id, &space_id).await?;
     sqlx::query("DELETE FROM spaces WHERE workspace_id = $1 AND space_id = $2")
         .bind(&workspace_id)
@@ -596,6 +597,8 @@ async fn delete_layer(
     .await?;
 
     let mut tx = state.pool.begin().await?;
+    lock_layer_deletion_dependencies_in_tx(&mut tx, &workspace_id, &space_id, Some(&layer_id))
+        .await?;
     write_timeline_in_tx(
         &mut tx,
         &workspace_id,
@@ -762,6 +765,79 @@ async fn delete_layer_storage_in_tx(
     .bind(space_id)
     .bind(layer_id)
     .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn lock_layer_deletion_dependencies_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    only_layer_id: Option<&str>,
+) -> Result<(), ApiError> {
+    // Match every Weave mutation: Layers -> identity/roles -> policies ->
+    // artifacts -> heads. Later DELETE cascades only touch already-locked rows.
+    let layer_ids = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT layer_id FROM layers
+        WHERE workspace_id = $1 AND space_id = $2
+          AND ($3::text IS NULL OR layer_id = $3)
+        ORDER BY layer_id ASC
+        FOR UPDATE
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(only_layer_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if only_layer_id.is_some() && layer_ids.is_empty() {
+        return Err(ApiError::not_found("layer not found"));
+    }
+
+    sqlx::query(
+        "SELECT membership_id FROM layer_memberships WHERE layer_id = ANY($1) ORDER BY membership_id ASC FOR UPDATE",
+    )
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    let policy_ids = sqlx::query_scalar::<_, String>(
+        "SELECT policy_id FROM layer_access_policies WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3) ORDER BY policy_id ASC FOR UPDATE",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        "SELECT rule_id FROM layer_access_policy_rules WHERE policy_id = ANY($1) ORDER BY policy_id ASC, rule_id ASC FOR UPDATE",
+    )
+    .bind(&policy_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        "SELECT artifact_id FROM artifacts WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3) ORDER BY layer_id ASC, logical_path ASC, artifact_id ASC FOR UPDATE",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        "SELECT layer_id FROM layer_heads WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3) ORDER BY layer_id ASC FOR UPDATE",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    sqlx::query(
+        "SELECT step_id FROM layer_steps WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3) ORDER BY layer_id ASC, step_id ASC FOR UPDATE",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
     .await?;
     Ok(())
 }

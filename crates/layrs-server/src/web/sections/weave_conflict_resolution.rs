@@ -259,6 +259,42 @@ async fn load_weave_conflict_side(
     })
 }
 
+async fn load_weave_conflict_side_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    file_object_id: Option<&str>,
+) -> Result<WeaveConflictSide, ApiError> {
+    let Some(file_object_id) = file_object_id else {
+        return Ok(WeaveConflictSide {
+            exists: false,
+            digest: None,
+            media_type: None,
+            bytes: Vec::new(),
+        });
+    };
+    let row = sqlx::query(
+        r#"
+        SELECT f.digest, f.media_type
+        FROM file_objects f
+        JOIN space_file_objects sfo ON sfo.file_object_id = f.file_object_id
+        WHERE sfo.workspace_id = $1 AND sfo.space_id = $2 AND f.file_object_id = $3
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(file_object_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Weave conflict file object not found"))?;
+    Ok(WeaveConflictSide {
+        exists: true,
+        digest: row.try_get("digest").ok(),
+        media_type: row.try_get("media_type").ok(),
+        bytes: file_object_bytes_in_tx(tx, workspace_id, space_id, file_object_id).await?,
+    })
+}
+
 fn reconcile_weave_conflict(
     row: &WeaveConflictRow,
     base: &WeaveConflictSide,
@@ -593,17 +629,27 @@ async fn mark_weave_conflict_resolved_in_tx(
     resolution_kind: &str,
     account_id: &str,
 ) -> Result<(), ApiError> {
-    sqlx::query(
+    let updated = sqlx::query(
         r#"
-        UPDATE weave_conflicts
+        UPDATE weave_conflicts wc
         SET status = 'resolved', resolved_file_object_id = $1, updated_at = now()
-        WHERE conflict_id = $2
+        WHERE wc.conflict_id = $2
+          AND EXISTS (
+              SELECT 1 FROM weave_requests wr
+              WHERE wr.weave_id = wc.weave_id
+                AND wr.status IN ('open', 'preview', 'conflicted')
+          )
         "#,
     )
     .bind(resolved_file_object_id)
     .bind(&row.conflict_id)
     .execute(&mut **tx)
     .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::bad_request(
+            "Weave request is no longer open for resolution",
+        ));
+    }
     sqlx::query(
         r#"
         INSERT INTO weave_resolutions
@@ -630,9 +676,11 @@ async fn save_weave_session_payload_in_tx(
     sqlx::query(
         r#"
         INSERT INTO weave_sessions (weave_id, status, session_payload)
-        SELECT weave_id, 'conflicted', $2
-        FROM weave_conflicts
-        WHERE conflict_id = $1
+        SELECT wc.weave_id, 'conflicted', $2
+        FROM weave_conflicts wc
+        JOIN weave_requests wr ON wr.weave_id = wc.weave_id
+        WHERE wc.conflict_id = $1
+          AND wr.status IN ('open', 'preview', 'conflicted')
         ON CONFLICT (weave_id) DO UPDATE SET
             session_payload = EXCLUDED.session_payload,
             status = CASE
@@ -665,14 +713,14 @@ async fn update_weave_resolution_status_in_tx(
         "conflicted"
     };
     sqlx::query(
-        "UPDATE weave_requests SET status = $1, updated_at = now() WHERE weave_id = $2 AND status NOT IN ('applied', 'aborted', 'closed')",
+        "UPDATE weave_requests SET status = $1, updated_at = now() WHERE weave_id = $2 AND status IN ('open', 'preview', 'conflicted')",
     )
     .bind(status)
     .bind(weave_id)
     .execute(&mut **tx)
     .await?;
     sqlx::query(
-        "UPDATE weave_sessions SET status = $1, updated_at = now() WHERE weave_id = $2 AND status NOT IN ('applied', 'aborted')",
+        "UPDATE weave_sessions SET status = $1, updated_at = now() WHERE weave_id = $2 AND status IN ('preview', 'conflicted')",
     )
     .bind(status)
     .bind(weave_id)

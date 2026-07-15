@@ -74,25 +74,9 @@ async fn load_weave_authorization_snapshot_in_tx(
         ));
     }
 
-    // Every Weave authorization path uses this order: Layers, actor/teams/roles,
-    // policies, then rules. Policy writers lock the policy before touching rules.
-    let locked_layers = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT layer_id
-        FROM layers
-        WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3)
-        ORDER BY layer_id ASC
-        FOR SHARE
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(&layer_ids)
-    .fetch_all(&mut **tx)
-    .await?;
-    if locked_layers != layer_ids {
-        return Err(ApiError::not_found("layer not found"));
-    }
+    // Global Weave mutation lock order: Layers -> identity/roles -> policies ->
+    // artifacts -> heads. Callers must finish artifact locking before heads.
+    lock_weave_layers_in_tx(tx, workspace_id, space_id, &layer_ids).await?;
 
     lock_active_weave_actor_in_tx(tx, account_id).await?;
     let team_ids = account_team_ids_in_tx(tx, workspace_id, account_id).await?;
@@ -172,6 +156,33 @@ async fn load_weave_authorization_snapshot_in_tx(
     })
 }
 
+async fn lock_weave_layers_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    layer_ids: &[String],
+) -> Result<(), ApiError> {
+    let layer_ids = sorted_unique_strings(layer_ids);
+    let locked_layers = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT layer_id
+        FROM layers
+        WHERE workspace_id = $1 AND space_id = $2 AND layer_id = ANY($3)
+        ORDER BY layer_id ASC
+        FOR SHARE
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(&layer_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    if locked_layers != layer_ids {
+        return Err(ApiError::not_found("layer not found"));
+    }
+    Ok(())
+}
+
 fn access_rule_row(row: &sqlx::postgres::PgRow) -> AccessRuleRow {
     AccessRuleRow {
         path: row.get("path"),
@@ -243,7 +254,7 @@ async fn weave_artifact_ids_for_paths_in_tx(
         WHERE workspace_id = $1 AND space_id = $2
           AND layer_id = ANY($3) AND logical_path = ANY($4)
         ORDER BY layer_id ASC, logical_path ASC
-        FOR SHARE
+        FOR UPDATE
         "#,
     )
     .bind(workspace_id)

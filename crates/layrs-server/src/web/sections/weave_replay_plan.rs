@@ -1,4 +1,4 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct SourceStepReplay {
     source_step_id: String,
     base_tree_id: Option<String>,
@@ -6,8 +6,8 @@ struct SourceStepReplay {
     changed_paths: Vec<String>,
 }
 
-async fn source_step_replays_missing_from_target(
-    pool: &PgPool,
+async fn source_step_replays_missing_from_target_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
     source_layer_id: &str,
@@ -46,7 +46,7 @@ async fn source_step_replays_missing_from_target(
     .bind(space_id)
     .bind(source_layer_id)
     .bind(target_layer_id)
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
 
     Ok(rows
@@ -61,7 +61,6 @@ async fn source_step_replays_missing_from_target(
 }
 
 async fn create_weave_step_replay_plan_in_tx(
-    pool: &PgPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     weave_id: &str,
     workspace_id: &str,
@@ -78,23 +77,13 @@ async fn create_weave_step_replay_plan_in_tx(
         .await?
         .unwrap_or_else(|| source_layer_id.to_string());
     for source_step in source_steps {
-        let actual_paths = actual_step_changed_paths(
-            pool,
-            workspace_id,
-            space_id,
-            source_step.base_tree_id.as_deref(),
-            source_step.root_tree_id.as_deref(),
-            &source_step.changed_paths,
-        )
-        .await?;
-        if actual_paths.is_empty() {
+        if source_step.changed_paths.is_empty() {
             continue;
         }
 
         let mut path_replays = Vec::new();
-        for path in actual_paths {
+        for path in &source_step.changed_paths {
             if let Some((path_replay, inserted_conflict)) = create_weave_path_replay_in_tx(
-                pool,
                 tx,
                 weave_id,
                 workspace_id,
@@ -105,7 +94,7 @@ async fn create_weave_step_replay_plan_in_tx(
                 source_step.root_tree_id.as_deref(),
                 target_tree_id,
                 account_id,
-                &path,
+                path,
             )
             .await?
             {
@@ -170,7 +159,6 @@ async fn create_weave_step_replay_plan_in_tx(
 }
 
 async fn create_weave_path_replay_in_tx(
-    pool: &PgPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     weave_id: &str,
     workspace_id: &str,
@@ -183,56 +171,23 @@ async fn create_weave_path_replay_in_tx(
     account_id: &str,
     path: &str,
 ) -> Result<Option<(Value, bool)>, ApiError> {
-    let layer_ids = vec![source_layer_id.to_string(), target_layer_id.to_string()];
-    let paths = vec![path.to_string()];
-    let artifacts =
-        weave_artifact_ids_for_paths(pool, workspace_id, space_id, &layer_ids, &paths).await?;
-    let source_access = access_decision_for_path(
-        pool,
-        workspace_id,
-        space_id,
-        source_layer_id,
-        path,
-        artifacts.get(source_layer_id, path),
-        account_id,
-    )
-    .await?;
-    let target_access = access_decision_for_path(
-        pool,
-        workspace_id,
-        space_id,
-        target_layer_id,
-        path,
-        artifacts.get(target_layer_id, path),
-        account_id,
-    )
-    .await?;
-    if !source_access.can_read {
-        return Err(ApiError::forbidden(
-            "Weave source path is restricted by Layer access policy",
-        ));
-    }
-    if !target_access.can_write {
-        return Err(ApiError::forbidden(
-            "Weave target path is not writable under Layer access policy",
-        ));
-    }
     let base_ref =
-        tree_file_ref_for_path(pool, workspace_id, space_id, source_base_tree_id, path).await?;
+        tree_file_ref_for_path_in_tx(tx, workspace_id, space_id, source_base_tree_id, path).await?;
     let ours_ref =
-        tree_file_ref_for_path(pool, workspace_id, space_id, target_tree_id, path).await?;
+        tree_file_ref_for_path_in_tx(tx, workspace_id, space_id, target_tree_id, path).await?;
     let theirs_ref =
-        tree_file_ref_for_path(pool, workspace_id, space_id, source_root_tree_id, path).await?;
+        tree_file_ref_for_path_in_tx(tx, workspace_id, space_id, source_root_tree_id, path).await?;
     if same_tree_file_ref(base_ref.as_ref(), theirs_ref.as_ref()) {
         return Ok(None);
     }
 
     let base =
-        weave_side_from_tree_file_ref(pool, workspace_id, space_id, base_ref.as_ref()).await?;
+        weave_side_from_tree_file_ref_in_tx(tx, workspace_id, space_id, base_ref.as_ref()).await?;
     let ours =
-        weave_side_from_tree_file_ref(pool, workspace_id, space_id, ours_ref.as_ref()).await?;
+        weave_side_from_tree_file_ref_in_tx(tx, workspace_id, space_id, ours_ref.as_ref()).await?;
     let theirs =
-        weave_side_from_tree_file_ref(pool, workspace_id, space_id, theirs_ref.as_ref()).await?;
+        weave_side_from_tree_file_ref_in_tx(tx, workspace_id, space_id, theirs_ref.as_ref())
+            .await?;
     let media_type = conflict_media_type_for_path(path, &base, &ours, &theirs);
     let lens_id = lens_id_for_path_and_media_type(path, &media_type).to_string();
     let row = WeaveConflictRow {
@@ -314,8 +269,8 @@ async fn create_weave_path_replay_in_tx(
     )))
 }
 
-async fn actual_step_changed_paths(
-    pool: &PgPool,
+async fn actual_step_changed_paths_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
     base_tree_id: Option<&str>,
@@ -323,7 +278,7 @@ async fn actual_step_changed_paths(
     candidate_paths: &[String],
 ) -> Result<Vec<String>, ApiError> {
     let candidates = if candidate_paths.is_empty() {
-        tree_union_file_paths(pool, workspace_id, space_id, base_tree_id, root_tree_id).await?
+        tree_union_file_paths_in_tx(tx, workspace_id, space_id, base_tree_id, root_tree_id).await?
     } else {
         unique_strings(candidate_paths)
             .into_iter()
@@ -333,9 +288,9 @@ async fn actual_step_changed_paths(
     let mut changed = Vec::new();
     for path in candidates {
         let base =
-            tree_file_ref_for_path(pool, workspace_id, space_id, base_tree_id, &path).await?;
+            tree_file_ref_for_path_in_tx(tx, workspace_id, space_id, base_tree_id, &path).await?;
         let root =
-            tree_file_ref_for_path(pool, workspace_id, space_id, root_tree_id, &path).await?;
+            tree_file_ref_for_path_in_tx(tx, workspace_id, space_id, root_tree_id, &path).await?;
         if !same_tree_file_ref(base.as_ref(), root.as_ref()) {
             changed.push(path);
         }
@@ -343,8 +298,8 @@ async fn actual_step_changed_paths(
     Ok(changed)
 }
 
-async fn tree_union_file_paths(
-    pool: &PgPool,
+async fn tree_union_file_paths_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
     left_tree_id: Option<&str>,
@@ -367,7 +322,7 @@ async fn tree_union_file_paths(
         .bind(tree_id)
         .bind(workspace_id)
         .bind(space_id)
-        .fetch_all(pool)
+        .fetch_all(&mut **tx)
         .await?;
         for row in rows {
             paths.insert(row.get::<String, _>("logical_path"), ());
@@ -377,7 +332,6 @@ async fn tree_union_file_paths(
 }
 
 async fn apply_weave_step_replays_in_tx(
-    pool: &PgPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
@@ -441,7 +395,6 @@ async fn apply_weave_step_replays_in_tx(
             if let Some(file_object_id) = planned_file_object_id {
                 event_ids.push(
                     publish_weave_file_to_target_in_tx(
-                        pool,
                         tx,
                         workspace_id,
                         space_id,
@@ -453,8 +406,7 @@ async fn apply_weave_step_replays_in_tx(
                     .await?,
                 );
             } else {
-                let (_, _, event_id) = delete_artifact_tombstone_in_tx(
-                    pool,
+                let event_id = delete_weave_file_from_target_in_tx(
                     tx,
                     workspace_id,
                     space_id,
@@ -528,7 +480,6 @@ async fn apply_weave_step_replays_in_tx(
 }
 
 async fn publish_weave_file_to_target_in_tx(
-    pool: &PgPool,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
     space_id: &str,
@@ -544,44 +495,104 @@ async fn publish_weave_file_to_target_in_tx(
         .media_type
         .clone()
         .unwrap_or_else(|| "application/octet-stream".to_string());
-    let (_, event_id, _) = publish_artifact_v2_in_tx(
-        pool,
+    ensure_file_object_in_space_in_tx(tx, workspace_id, space_id, &file.file_object_id).await?;
+    let artifact_id = upsert_artifact_metadata_v2_in_tx(
         tx,
         workspace_id,
         space_id,
         target_layer_id,
+        None,
+        path,
+        artifact_kind_for_weave_file(path, &media_type),
         account_id,
-        PublishArtifactBody {
-            id: None,
-            artifact_id: None,
-            artifact_id_camel: None,
-            path: Some(path.to_string()),
-            logical_path: None,
-            logical_path_camel: None,
-            kind: Some(artifact_kind_for_weave_file(path, &media_type).to_string()),
-            artifact_type: None,
-            media_type: Some(media_type),
-            media_type_camel: None,
-            content: None,
-            file_object_id: Some(file.file_object_id),
-            file_object_id_camel: None,
-            object_id: None,
-            object_id_camel: None,
-            tree_id: None,
-            tree_id_camel: None,
-            sha256: None,
-            content_hash: None,
-            size_bytes: Some(file.size_bytes),
-            size_bytes_camel: None,
-            chunks: Vec::new(),
-            state: None,
-            operation: None,
-            action: None,
-            deleted: None,
-        },
+        Some(&file.file_object_id),
+        None,
+    )
+    .await?;
+    let event_id = insert_timeline_event_in_tx(
+        tx,
+        workspace_id,
+        Some(space_id),
+        Some(target_layer_id),
+        "artifact.published",
+        "Artifact published",
+        json!({
+            "artifactId": artifact_id,
+            "path": path,
+            "kind": artifact_kind_for_weave_file(path, &media_type),
+            "fileObjectId": file.file_object_id,
+            "digest": file.digest,
+            "mediaType": media_type,
+            "storage": "file_object_chunks_v2"
+        }),
     )
     .await?;
     Ok(event_id)
+}
+
+async fn delete_weave_file_from_target_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    target_layer_id: &str,
+    account_id: &str,
+    path: &str,
+) -> Result<String, ApiError> {
+    let existing = sqlx::query(
+        "SELECT artifact_id, artifact_kind FROM artifacts WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3 AND logical_path = $4 FOR UPDATE",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(target_layer_id)
+    .bind(path)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let artifact_id = existing
+        .as_ref()
+        .map(|row| row.get::<String, _>("artifact_id"))
+        .unwrap_or_else(|| prefixed_id("artifact"));
+    let artifact_kind = existing
+        .as_ref()
+        .map(|row| row.get::<String, _>("artifact_kind"))
+        .unwrap_or_else(|| "file".to_string());
+    if existing.is_some() {
+        sqlx::query(
+            "UPDATE artifacts SET state = 'deleted', current_file_object_id = NULL, current_tree_id = NULL, updated_at = now() WHERE artifact_id = $1",
+        )
+        .bind(&artifact_id)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO artifacts (artifact_id, workspace_id, space_id, layer_id, logical_path, artifact_kind, state, created_by_account_id) VALUES ($1, $2, $3, $4, $5, $6, 'deleted', $7)",
+        )
+        .bind(&artifact_id)
+        .bind(workspace_id)
+        .bind(space_id)
+        .bind(target_layer_id)
+        .bind(path)
+        .bind(&artifact_kind)
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    insert_timeline_event_in_tx(
+        tx,
+        workspace_id,
+        Some(space_id),
+        Some(target_layer_id),
+        "artifact.deleted",
+        "Artifact deleted",
+        json!({
+            "artifactId": artifact_id,
+            "path": path,
+            "kind": artifact_kind,
+            "state": "deleted",
+            "contentAvailable": false,
+            "storage": "artifact_state_deleted"
+        }),
+    )
+    .await
 }
 
 async fn file_object_id_for_resolved_content_in_tx(
@@ -624,75 +635,6 @@ async fn file_object_id_for_resolved_content_in_tx(
     ))
 }
 
-async fn weave_side_from_tree_file_ref(
-    pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
-    file: Option<&TreeFileRef>,
-) -> Result<WeaveConflictSide, ApiError> {
-    let Some(file) = file else {
-        return Ok(WeaveConflictSide {
-            exists: false,
-            digest: None,
-            media_type: None,
-            bytes: Vec::new(),
-        });
-    };
-    Ok(WeaveConflictSide {
-        exists: true,
-        digest: Some(file.digest.clone()),
-        media_type: file.media_type.clone(),
-        bytes: file_object_bytes(pool, workspace_id, space_id, &file.file_object_id).await?,
-    })
-}
-
-async fn load_weave_request_row_for_update_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    workspace_id: &str,
-    space_id: &str,
-    weave_id: &str,
-) -> Result<sqlx::postgres::PgRow, ApiError> {
-    sqlx::query(
-        r#"
-        SELECT weave_id, source_layer_id, target_layer_id, title, body, status,
-               pre_weave_target_tree_id, pre_weave_target_step_id, planned_steps,
-               applied_steps, requested_by_account_id,
-               created_at::text AS created_at, updated_at::text AS updated_at
-        FROM weave_requests
-        WHERE workspace_id = $1 AND space_id = $2 AND weave_id = $3
-        FOR UPDATE
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(weave_id)
-    .fetch_optional(&mut **tx)
-    .await?
-    .ok_or_else(|| ApiError::not_found("weave request not found"))
-}
-
-async fn current_layer_head_tree_id(
-    pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
-    layer_id: &str,
-) -> Result<Option<String>, ApiError> {
-    sqlx::query_scalar(
-        r#"
-        SELECT root_tree_id
-        FROM layer_heads
-        WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(layer_id)
-    .fetch_optional(pool)
-    .await
-    .map(|value| value.flatten())
-    .map_err(ApiError::from)
-}
-
 async fn current_layer_head_tree_id_for_update_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -713,31 +655,6 @@ async fn current_layer_head_tree_id_for_update_in_tx(
     .fetch_optional(&mut **tx)
     .await
     .map(|value| value.flatten())
-    .map_err(ApiError::from)
-}
-
-async fn latest_layer_step_id(
-    pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
-    layer_id: &str,
-) -> Result<Option<String>, ApiError> {
-    sqlx::query_scalar(
-        r#"
-        SELECT step_id
-        FROM layer_steps
-        WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3
-          AND cleared_at IS NULL
-        ORDER BY COALESCE(timeline_position, 9223372036854775807) DESC,
-                 captured_at DESC, created_at DESC, step_id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(layer_id)
-    .fetch_optional(pool)
-    .await
     .map_err(ApiError::from)
 }
 

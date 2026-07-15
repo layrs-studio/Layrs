@@ -13,6 +13,14 @@ struct WeavePathAccessCheck<'a> {
     target_denied_message: &'static str,
 }
 
+fn normalize_weave_apply_access_error(error: ApiError, preserve_detail: bool) -> ApiError {
+    if !preserve_detail && matches!(error.status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND) {
+        ApiError::forbidden("Weave request is inaccessible")
+    } else {
+        error
+    }
+}
+
 async fn lock_and_revalidate_weave_paths_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -104,6 +112,47 @@ async fn weave_replay_paths_for_update_in_tx(
     .fetch_all(&mut **tx)
     .await?;
     for path in conflict_paths {
+        paths.insert(validate_publish_path(&path)?, ());
+    }
+    Ok(paths.into_keys().collect())
+}
+
+async fn weave_replay_paths_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    weave_id: &str,
+) -> Result<Vec<String>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT changed_paths, path_replays
+        FROM weave_step_replays
+        WHERE weave_id = $1
+        ORDER BY order_index ASC
+        "#,
+    )
+    .bind(weave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut paths = BTreeMap::new();
+    for row in rows {
+        for path in row.get::<Vec<String>, _>("changed_paths") {
+            paths.insert(validate_publish_path(&path)?, ());
+        }
+        let path_replays = row.get::<Value, _>("path_replays");
+        let path_replays = path_replays
+            .as_array()
+            .ok_or_else(|| ApiError::internal("Weave replay path plan is invalid"))?;
+        for path_replay in path_replays {
+            let path = path_replay_path(path_replay)?;
+            paths.insert(validate_publish_path(&path)?, ());
+        }
+    }
+    let conflicts = sqlx::query_scalar::<_, String>(
+        "SELECT logical_path FROM weave_conflicts WHERE weave_id = $1 ORDER BY logical_path",
+    )
+    .bind(weave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for path in conflicts {
         paths.insert(validate_publish_path(&path)?, ());
     }
     Ok(paths.into_keys().collect())
