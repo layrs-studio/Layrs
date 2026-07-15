@@ -6,6 +6,7 @@ type JsonRecord = Record<string, unknown>;
 interface DesktopMockState {
   bootstrap: JsonRecord;
   commandLog: Array<{ command: string; args?: JsonRecord }>;
+  failures: Record<string, string[]>;
   folderSeeds: Record<string, TestSpace>;
   localSpaces: JsonRecord[];
   scans: Record<string, JsonRecord>;
@@ -15,6 +16,7 @@ interface DesktopMockState {
 
 export interface DesktopTauriMock {
   commandLog(): Array<{ command: string; args?: JsonRecord }>;
+  failNext(command: string, message: string): void;
   queueSelectedFolder(folder: string): void;
   seedFolder(space: TestSpace): void;
 }
@@ -32,6 +34,9 @@ export const test = base.extend<{
 
     await use({
       commandLog: () => [...state.commandLog],
+      failNext: (command, message) => {
+        state.failures[command] = [...(state.failures[command] ?? []), message];
+      },
       queueSelectedFolder: (folder) => {
         state.selectedFolders.push(folder);
       },
@@ -47,6 +52,10 @@ export { expect };
 async function installDesktopInvoke(page: Page, state: DesktopMockState) {
   await page.exposeBinding("__layrsDesktopInvoke", async (_source, command: string, args?: JsonRecord) => {
     state.commandLog.push({ command, args });
+    const failure = state.failures[command]?.shift();
+    if (failure) {
+      throw new Error(failure);
+    }
     return clone(handleCommand(state, command, args ?? {}));
   });
 
@@ -94,6 +103,7 @@ function createInitialState(): DesktopMockState {
   return {
     bootstrap,
     commandLog: [],
+    failures: {},
     folderSeeds: {},
     localSpaces: [],
     scans: {},

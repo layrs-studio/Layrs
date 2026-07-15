@@ -11,14 +11,22 @@ import { LensReconcileSurface, type LensReconcileConflict, type LensReconcileRes
 import { ConfirmModal, DangerZone, StatusPill, Tabs } from "@layrs/ui";
 import { layerHref } from "../routes";
 import { AccessPolicyEditor } from "../components/AccessPolicyEditor";
-import { EmptyState, PanelTitle } from "../components/common";
+import { EmptyState, InlineAlert, PanelTitle } from "../components/common";
 import type { LensRegistryState } from "../components/LensFileViewer";
 import { LayerSelector } from "../components/LayerSelector";
 import { LayerStepsPanel } from "../components/LayerStepsPanel";
 import { SpaceFilesPanel } from "../components/SpaceFilesPanel";
+import { artifactAccessSignature } from "../privateData";
+import type { AccessPolicyState } from "../studioRuntime";
+import {
+  isPrivateRequestCancelled,
+  privateRequestKey,
+  type PrivateJsonFetcher,
+  useStudioPrivateApi
+} from "../studioPrivateApi";
 
 type SpaceTab = "files" | "steps" | "access" | "gates" | "weaves" | "spaceSettings" | "layerSettings";
-type DeleteTarget = "space" | "layer" | null;
+type ConfirmationTarget = "delete-space" | "delete-layer" | "disconnect-parent" | "clear-steps" | null;
 
 interface WeaveRequest {
   weaveId: string;
@@ -65,6 +73,7 @@ interface WeaveConflictSegment {
 }
 
 export function SpacePage({
+  accessPolicies,
   account,
   layers,
   onDeleteLayer,
@@ -81,6 +90,7 @@ export function SpacePage({
   lensRegistry,
   teams
 }: {
+  accessPolicies: AccessPolicyState;
   account: Account;
   layers: Layer[];
   lensRegistry: LensRegistryState;
@@ -97,9 +107,12 @@ export function SpacePage({
   workspaceId: string;
   teams: Team[];
 }) {
+  const privateApi = useStudioPrivateApi();
   const [activeTab, setActiveTab] = useState<SpaceTab>("files");
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
+  const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget>(null);
   const [confirmationValue, setConfirmationValue] = useState("");
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const snapshotStepCount = snapshot.steps.filter((step) => step.layerId === selectedLayer?.id).length;
   const liveStepCount = useLayerStepCount({ layer: selectedLayer, refreshKey, spaceId: space?.id, snapshotStepCount, workspaceId });
@@ -114,43 +127,69 @@ export function SpacePage({
     ? snapshot.artifacts.filter((artifact) => artifact.layerId === selectedLayer.id)
     : snapshot.artifacts.filter((artifact) => artifact.spaceId === space.id);
   const layerArtifacts = serverArtifacts ?? snapshotArtifacts;
+  const actualPolicies = accessPolicies.status === "available" ? accessPolicies.policies : [];
   const currentPolicy = selectedLayer
-    ? snapshot.layerAccessPolicies.find((policy) => policy.layerId === selectedLayer.id)
+    ? actualPolicies.find((policy) => policy.layerId === selectedLayer.id)
     : undefined;
-  const targetName = deleteTarget === "space" ? space.name : selectedLayer?.name ?? "";
-  const confirmDisabled = confirmationValue !== targetName || (deleteTarget === "layer" && (!selectedLayer || layers.length <= 1));
+  const targetName = confirmationTarget === "delete-space" ? space.name : selectedLayer?.name ?? "";
+  const requiresTypedConfirmation = confirmationTarget === "delete-space" || confirmationTarget === "delete-layer";
+  const confirmDisabled =
+    confirmationBusy ||
+    !confirmationTarget ||
+    (requiresTypedConfirmation && confirmationValue !== targetName) ||
+    (confirmationTarget === "delete-layer" && (!selectedLayer || layers.length <= 1));
+  const sensitiveViewKey = privateRequestKey(
+    workspaceId,
+    space.id,
+    selectedLayer?.id,
+    refreshKey,
+    artifactAccessSignature(layerArtifacts)
+  );
 
-  function openDeleteDialog(target: DeleteTarget) {
-    setDeleteTarget(target);
+  function openConfirmation(target: ConfirmationTarget) {
+    setConfirmationTarget(target);
     setConfirmationValue("");
+    setConfirmationError(null);
   }
 
-  async function confirmDelete() {
-    if (deleteTarget === "space") {
-      await onDeleteSpace(currentSpace.id);
-    }
-    if (deleteTarget === "layer" && selectedLayer) {
-      await onDeleteLayer(currentSpace.id, selectedLayer.id);
-    }
-    setDeleteTarget(null);
-    setConfirmationValue("");
-  }
-
-  async function runLayerSettingsAction(action: "disconnect-parent" | "clear-steps") {
-    if (!selectedLayer) {
+  async function confirmAction() {
+    if (!confirmationTarget || !selectedLayer && confirmationTarget !== "delete-space") {
       return;
     }
-    const payload = await fetchJson(layerSettingsActionPath(workspaceId, currentSpace.id, selectedLayer.id, action), new AbortController().signal, {
-      method: "POST"
-    });
-    const record = payload && typeof payload === "object" ? (payload as { message?: unknown }) : undefined;
-    const message =
-      typeof record?.message === "string"
-        ? record.message
-        : action === "disconnect-parent"
-          ? "Layer disconnected from parent."
-          : "Layer Steps cleared from active history.";
-    setSettingsMessage(message);
+    setConfirmationBusy(true);
+    setConfirmationError(null);
+    try {
+      if (confirmationTarget === "delete-space") {
+        await onDeleteSpace(currentSpace.id);
+      } else if (confirmationTarget === "delete-layer") {
+        await onDeleteLayer(currentSpace.id, selectedLayer!.id);
+      } else {
+        const action = confirmationTarget;
+        const requestKey = privateRequestKey(workspaceId, currentSpace.id, selectedLayer!.id, action);
+        const payload = await privateApi.request("layer-settings-action", requestKey, ({ fetchJson }) =>
+          fetchJson(layerSettingsActionPath(workspaceId, currentSpace.id, selectedLayer!.id, action), {
+            method: "POST"
+          })
+        );
+        const record = payload && typeof payload === "object" ? (payload as { message?: unknown }) : undefined;
+        setSettingsMessage(
+          typeof record?.message === "string"
+            ? record.message
+            : action === "disconnect-parent"
+              ? "Layer disconnected from parent."
+              : "Layer Steps cleared from active history."
+        );
+        await onRefreshWorkspace?.();
+      }
+      setConfirmationTarget(null);
+      setConfirmationValue("");
+    } catch (actionError) {
+      if (!isPrivateRequestCancelled(actionError)) {
+        setConfirmationError(actionError instanceof Error ? actionError.message : "The action could not be completed.");
+      }
+    } finally {
+      setConfirmationBusy(false);
+    }
   }
 
   return (
@@ -172,7 +211,10 @@ export function SpacePage({
             selectedLayerId={selectedLayer?.id}
             onSelect={(layerId) => onNavigate(layerHref(space.id, layerId))}
           />
-          <StatusPill status={currentPolicy && currentPolicy.rules.length > 0 ? "reviewing" : "passing"} label={`policy ${currentPolicy?.policyEpoch ?? 0}`} />
+          <StatusPill
+            status={accessPolicies.status === "error" ? "blocked" : accessPolicies.status === "available" ? "reviewing" : "pending"}
+            label={currentPolicy ? `policy ${currentPolicy.policyEpoch}` : accessPolicies.status === "error" ? "policy unavailable" : "policy loading"}
+          />
           <button type="button" className="studio-secondary-button" onClick={() => setActiveTab("weaves")}>
             Weaves
           </button>
@@ -190,7 +232,7 @@ export function SpacePage({
           tabs={[
             { id: "files", label: "Files", count: layerArtifacts.length },
             { id: "steps", label: "Steps", count: liveStepCount },
-            { id: "access", label: "Access", count: currentPolicy?.rules.length ?? 0 },
+            { id: "access", label: "Access", count: accessPolicies.status === "available" ? currentPolicy?.rules.length ?? 0 : undefined },
             { id: "layerSettings", label: "Layer settings", disabled: !selectedLayer },
             { id: "gates", label: "Gates", disabled: true, note: "Coming later" }
           ]}
@@ -198,12 +240,19 @@ export function SpacePage({
       </section>
 
       {activeTab === "files" ? (
-        <SpaceFilesPanel artifacts={layerArtifacts} layer={selectedLayer} lensRegistry={lensRegistry} workspaceId={workspaceId} />
+        <SpaceFilesPanel
+          artifacts={layerArtifacts}
+          key={`files:${sensitiveViewKey}`}
+          layer={selectedLayer}
+          lensRegistry={lensRegistry}
+          workspaceId={workspaceId}
+        />
       ) : null}
 
       {activeTab === "steps" ? (
         <LayerStepsPanel
           artifacts={layerArtifacts}
+          key={`steps:${sensitiveViewKey}`}
           layer={selectedLayer}
           lensRegistry={lensRegistry}
           refreshKey={refreshKey}
@@ -214,21 +263,34 @@ export function SpacePage({
       ) : null}
 
       {activeTab === "weaves" ? (
-        <SpaceWeavesPanel layers={layers} onRefreshWorkspace={onRefreshWorkspace} selectedLayer={selectedLayer} space={space} workspaceId={workspaceId} />
+        <SpaceWeavesPanel
+          key={privateRequestKey("weaves", workspaceId, space.id)}
+          layers={layers}
+          onRefreshWorkspace={onRefreshWorkspace}
+          selectedLayer={selectedLayer}
+          space={space}
+          workspaceId={workspaceId}
+        />
       ) : null}
 
       {activeTab === "access" ? (
         <section className="studio-panel studio-panel--wide" id="access">
           <PanelTitle eyebrow="Access Rules" title={selectedLayer?.name ?? "No Layer selected"} />
-          <AccessPolicyEditor
-            account={account}
-            currentLayer={selectedLayer}
-            layers={layers}
-            policies={snapshot.layerAccessPolicies}
-            teams={teams}
-            workspaceMembers={snapshot.workspaceMembers}
-            onSave={onSaveAccessPolicies}
-          />
+          {accessPolicies.status === "error" ? (
+            <InlineAlert tone="danger">{accessPolicies.message}</InlineAlert>
+          ) : accessPolicies.status === "loading" || accessPolicies.status === "idle" ? (
+            <EmptyState title="Loading access policies" detail="Editing remains blocked until Layrs returns the current policy epoch." />
+          ) : (
+            <AccessPolicyEditor
+              account={account}
+              currentLayer={selectedLayer}
+              layers={layers}
+              policies={accessPolicies.policies}
+              teams={teams}
+              workspaceMembers={snapshot.workspaceMembers}
+              onSave={onSaveAccessPolicies}
+            />
+          )}
         </section>
       ) : null}
 
@@ -252,7 +314,7 @@ export function SpacePage({
               title="Delete Space"
               description="Removes this Space, every Layer, access policy and published artifact associated with it."
             >
-              <button type="button" className="studio-danger-button" onClick={() => openDeleteDialog("space")}>
+              <button type="button" className="studio-danger-button" onClick={() => openConfirmation("delete-space")}>
                 Delete Space
               </button>
             </DangerZone>
@@ -285,7 +347,7 @@ export function SpacePage({
                 type="button"
                 className="studio-danger-button"
                 disabled={!selectedLayer?.parentLayerId || selectedLayer.lineageStatus === "unlinked"}
-                onClick={() => selectedLayer && void runLayerSettingsAction("disconnect-parent")}
+                onClick={() => selectedLayer && openConfirmation("disconnect-parent")}
               >
                 Disconnect from parent
               </button>
@@ -298,7 +360,7 @@ export function SpacePage({
                 type="button"
                 className="studio-danger-button"
                 disabled={!selectedLayer}
-                onClick={() => selectedLayer && void runLayerSettingsAction("clear-steps")}
+                onClick={() => selectedLayer && openConfirmation("clear-steps")}
               >
                 Clear Steps
               </button>
@@ -311,7 +373,7 @@ export function SpacePage({
                 type="button"
                 className="studio-danger-button"
                 disabled={!selectedLayer || layers.length <= 1}
-                onClick={() => openDeleteDialog("layer")}
+                onClick={() => openConfirmation("delete-layer")}
               >
                 Delete Layer
               </button>
@@ -322,27 +384,62 @@ export function SpacePage({
 
       <ConfirmModal
         danger
-        confirmLabel={deleteTarget === "space" ? "Delete Space" : "Delete Layer"}
-        confirmationLabel={`Type ${targetName} to confirm`}
+        confirmLabel={
+          confirmationTarget === "delete-space"
+            ? "Delete Space"
+            : confirmationTarget === "delete-layer"
+              ? "Delete Layer"
+              : confirmationTarget === "disconnect-parent"
+                ? "Disconnect Layer"
+                : "Clear Steps"
+        }
+        confirmationLabel={requiresTypedConfirmation ? `Type ${targetName} to confirm` : undefined}
         confirmationValue={confirmationValue}
         description={
-          <p>
-            This action is destructive and cannot be undone from Studio. Routine review actions are intentionally kept
-            outside this Settings tab.
-          </p>
+          <>
+            <p>{confirmationDescription(confirmationTarget)}</p>
+            {confirmationError ? <p className="studio-inline-error" role="alert">{confirmationError}</p> : null}
+          </>
         }
         disabled={confirmDisabled}
         onCancel={() => {
-          setDeleteTarget(null);
+          if (confirmationBusy) {
+            return;
+          }
+          setConfirmationTarget(null);
           setConfirmationValue("");
+          setConfirmationError(null);
         }}
-        onConfirm={() => void confirmDelete()}
+        onConfirm={() => void confirmAction()}
         onConfirmationValueChange={setConfirmationValue}
-        open={deleteTarget !== null}
-        title={deleteTarget === "space" ? `Delete ${space.name}` : `Delete ${selectedLayer?.name ?? "Layer"}`}
+        open={confirmationTarget !== null}
+        title={
+          confirmationTarget === "delete-space"
+            ? `Delete ${space.name}`
+            : confirmationTarget === "disconnect-parent"
+              ? `Disconnect ${selectedLayer?.name ?? "Layer"} from parent`
+              : confirmationTarget === "clear-steps"
+                ? `Clear Steps from ${selectedLayer?.name ?? "Layer"}`
+                : `Delete ${selectedLayer?.name ?? "Layer"}`
+        }
       />
     </section>
   );
+}
+
+function confirmationDescription(target: ConfirmationTarget): string {
+  switch (target) {
+    case "delete-space":
+      return "This permanently removes the Space, its Layers, policies, and published artifacts.";
+    case "delete-layer":
+      return "This permanently removes the selected Layer and its published artifacts.";
+    case "disconnect-parent":
+      return "Future parent Steps will stop propagating to this Layer. Existing files and Steps remain.";
+    case "clear-steps":
+      return "Active Step history will be cleared while retained audit records and published files remain.";
+    default:
+      return "Confirm this destructive action.";
+  }
 }
 
 function SpaceWeavesPanel({
@@ -358,6 +455,8 @@ function SpaceWeavesPanel({
   space: Space;
   workspaceId: string;
 }) {
+  const privateApi = useStudioPrivateApi();
+  const requestKey = privateRequestKey("weaves", workspaceId, space.id);
   const defaultSource = layers.find((layer) => layer.id !== selectedLayer?.id)?.id ?? layers[0]?.id ?? "";
   const defaultTarget = selectedLayer?.id ?? layers[0]?.id ?? "";
   const [requests, setRequests] = useState<WeaveRequest[]>([]);
@@ -375,48 +474,45 @@ function SpaceWeavesPanel({
     if (isMockMode()) {
       return;
     }
-    const controller = new AbortController();
-    void loadWeaves(controller.signal);
-    return () => controller.abort();
-
-    async function loadWeaves(signal: AbortSignal) {
-      try {
-        const payload = await fetchJson(weavesPath(workspaceId, space.id), signal);
-        if (!signal.aborted) {
-          const detailedRequests = await weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, signal);
-          if (!signal.aborted) {
-            setRequests(detailedRequests);
-          }
-        }
-      } catch (loadError) {
-        if (!signal.aborted) {
+    void privateApi
+      .request("space-weaves", requestKey, async ({ fetchJson }) => {
+        const payload = await fetchJson(weavesPath(workspaceId, space.id));
+        return weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, fetchJson);
+      })
+      .then(setRequests)
+      .catch((loadError) => {
+        if (!isPrivateRequestCancelled(loadError)) {
           setError(loadError instanceof Error ? loadError.message : "Could not load Weaves.");
         }
-      }
-    }
-  }, [space.id, workspaceId]);
+      });
 
-  async function mutateWeave(action: () => Promise<unknown>) {
+    return () => privateApi.cancel("space-weaves", requestKey);
+  }, [privateApi, requestKey, space.id, workspaceId]);
+
+  async function mutateWeave(action: (fetchJson: PrivateJsonFetcher) => Promise<unknown>) {
     setIsBusy(true);
     setError("");
     try {
-      await action();
-      const controller = new AbortController();
-      const payload = await fetchJson(weavesPath(workspaceId, space.id), controller.signal);
-      setRequests(await weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, controller.signal));
+      const nextRequests = await privateApi.request("space-weave-mutation", requestKey, async ({ fetchJson }) => {
+        await action(fetchJson);
+        const payload = await fetchJson(weavesPath(workspaceId, space.id));
+        return weaveArrayWithDetails(weaveArrayFromPayload(payload), workspaceId, space.id, fetchJson);
+      });
+      setRequests(nextRequests);
       await onRefreshWorkspace?.();
     } catch (mutationError) {
-      setError(mutationError instanceof Error ? mutationError.message : "Weave action failed.");
+      if (!isPrivateRequestCancelled(mutationError)) {
+        setError(mutationError instanceof Error ? mutationError.message : "Weave action failed.");
+      }
     } finally {
       setIsBusy(false);
     }
   }
 
   async function resolveConflict(request: WeaveRequest, conflict: WeaveConflict, resolution: LensReconcileResolution) {
-    await mutateWeave(() =>
+    await mutateWeave((fetchJson) =>
       fetchJson(
         weaveConflictResolvePath(workspaceId, space.id, request.weaveId, conflict.conflictId),
-        new AbortController().signal,
         {
           method: "POST",
           body: JSON.stringify({
@@ -481,8 +577,8 @@ function SpaceWeavesPanel({
           data-testid="weave-create-request"
           disabled={!canCreate}
           onClick={() =>
-            void mutateWeave(() =>
-              fetchJson(weavesPath(workspaceId, space.id), new AbortController().signal, {
+            void mutateWeave((fetchJson) =>
+              fetchJson(weavesPath(workspaceId, space.id), {
                 method: "POST",
                 body: JSON.stringify({
                   sourceLayerId,
@@ -530,10 +626,9 @@ function SpaceWeavesPanel({
                     disabled={applyDisabled}
                     title={unresolvedConflicts.length > 0 ? "Resolve all Weave conflicts before applying." : undefined}
                     onClick={() =>
-                      void mutateWeave(() =>
+                      void mutateWeave((fetchJson) =>
                         fetchJson(
                           `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/apply`,
-                          new AbortController().signal,
                           { method: "POST" }
                         )
                       )
@@ -546,10 +641,9 @@ function SpaceWeavesPanel({
                     className="studio-danger-button"
                     disabled={isBusy || request.status === "applied" || request.status === "aborted"}
                     onClick={() =>
-                      void mutateWeave(() =>
+                      void mutateWeave((fetchJson) =>
                         fetchJson(
                           `${weavesPath(workspaceId, space.id)}/${encodeURIComponent(request.weaveId)}/abort`,
-                          new AbortController().signal,
                           { method: "POST" }
                         )
                       )
@@ -598,35 +692,32 @@ function useLayerStepCount({
   spaceId?: string;
   workspaceId: string;
 }) {
-  const [count, setCount] = useState(snapshotStepCount);
-
-  useEffect(() => {
-    setCount(snapshotStepCount);
-  }, [snapshotStepCount]);
+  const privateApi = useStudioPrivateApi();
+  const requestKey = privateRequestKey("step-count", workspaceId, spaceId, layer?.id, refreshKey);
+  const [result, setResult] = useState({ key: "", count: snapshotStepCount });
 
   useEffect(() => {
     if (!layer || !spaceId || isMockMode()) {
+      setResult({ key: requestKey, count: snapshotStepCount });
       return;
     }
 
-    const controller = new AbortController();
     const path = `/v1/workspaces/${encodeURIComponent(workspaceId)}/spaces/${encodeURIComponent(spaceId)}/layers/${encodeURIComponent(layer.id)}/steps`;
-    void fetchJson(`${runtimeApiBaseUrl()}${path}`, controller.signal)
+    void privateApi
+      .request("step-count", requestKey, ({ fetchJson }) => fetchJson(`${runtimeApiBaseUrl()}${path}`))
       .then((payload) => {
-        if (!controller.signal.aborted) {
-          setCount(stepArrayFromPayload(payload).length);
-        }
+        setResult({ key: requestKey, count: stepArrayFromPayload(payload).length });
       })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setCount(snapshotStepCount);
+      .catch((requestError) => {
+        if (!isPrivateRequestCancelled(requestError)) {
+          setResult({ key: requestKey, count: snapshotStepCount });
         }
       });
 
-    return () => controller.abort();
-  }, [layer, refreshKey, snapshotStepCount, spaceId, workspaceId]);
+    return () => privateApi.cancel("step-count", requestKey);
+  }, [layer?.id, privateApi, requestKey, snapshotStepCount, spaceId, workspaceId]);
 
-  return count;
+  return result.key === requestKey ? result.count : snapshotStepCount;
 }
 
 function stepArrayFromPayload(payload: unknown): unknown[] {
@@ -651,14 +742,13 @@ async function weaveArrayWithDetails(
   requests: WeaveRequest[],
   workspaceId: string,
   spaceId: string,
-  signal: AbortSignal
+  fetchJson: PrivateJsonFetcher
 ): Promise<WeaveRequest[]> {
   return Promise.all(
     requests.map(async (request) => {
       try {
         const detailPayload = await fetchJson(
-          `${weavesPath(workspaceId, spaceId)}/${encodeURIComponent(request.weaveId)}`,
-          signal
+          `${weavesPath(workspaceId, spaceId)}/${encodeURIComponent(request.weaveId)}`
         );
         return weaveRequestFromPayload(detailPayload) ?? request;
       } catch {
@@ -718,32 +808,6 @@ function runtimeApiBaseUrl(): string {
 function isMockMode(): boolean {
   const env = runtimeEnv();
   return env.VITE_LAYRS_STUDIO_MODE === "mock" || env.VITE_LAYRS_API_MOCK === "true";
-}
-
-async function fetchJson(url: string, signal: AbortSignal, init: RequestInit = {}): Promise<unknown> {
-  const response = await fetch(url, {
-    credentials: "include",
-    headers: init.body === undefined ? undefined : { "Content-Type": "application/json" },
-    signal,
-    ...init
-  });
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
-  }
-  return response.json() as Promise<unknown>;
-}
-
-async function responseErrorMessage(response: Response) {
-  const text = await response.text().catch(() => "");
-  if (!text) {
-    return response.statusText;
-  }
-  try {
-    const payload = JSON.parse(text) as { error?: { message?: string }; message?: string };
-    return payload.error?.message ?? payload.message ?? text;
-  } catch {
-    return text;
-  }
 }
 
 function weavesPath(workspaceId: string, spaceId: string): string {

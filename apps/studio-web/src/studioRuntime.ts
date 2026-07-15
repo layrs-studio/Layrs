@@ -7,6 +7,7 @@ import {
   type AuthSessionResponse,
   type GateStatus,
   type Layer,
+  type LayerAccessPolicy,
   type LayrsClientLike,
   type LensManifest,
   type TimelineItem
@@ -20,14 +21,24 @@ import {
   type StudioState
 } from "./state/studioReducer";
 import { fallbackLensManifests, type LensRegistryState } from "./components/LensFileViewer";
+import { sanitizeArtifacts, sanitizeStudioSnapshot } from "./privateData";
+import type { PrivateJsonFetcher } from "./studioPrivateApi";
 
 export type TimelineFeedState =
-  | { status: "idle" | "loading" | "fallback"; message?: string }
-  | { status: "available"; items: TimelineItem[]; message?: string };
+  | { status: "idle" }
+  | { status: "loading" | "fallback"; key: string; message?: string }
+  | { status: "available"; key: string; items: TimelineItem[]; message?: string };
 
 export type ArtifactFeedState =
-  | { status: "idle" | "loading" | "fallback"; message?: string }
-  | { status: "available"; items: Artifact[]; message?: string };
+  | { status: "idle" }
+  | { status: "loading" | "fallback"; key: string; message?: string }
+  | { status: "available"; key: string; items: Artifact[]; message?: string };
+
+export type AccessPolicyState =
+  | { status: "idle" }
+  | { status: "loading"; key: string }
+  | { status: "available"; key: string; policies: LayerAccessPolicy[] }
+  | { status: "error"; key: string; message: string };
 
 export type TimelineFeedTarget = {
   workspaceId: string;
@@ -80,12 +91,8 @@ export async function loadWorkspace(
   workspaceId: string,
   notice?: string
 ) {
-  try {
-    const snapshot = await client.getStudioSnapshot(workspaceId);
-    dispatch({ type: "ready", auth, snapshot, activeWorkspaceId: workspaceId, notice });
-  } catch (error) {
-    dispatch({ type: "server-error", message: errorMessage(error) });
-  }
+  const snapshot = sanitizeStudioSnapshot(await client.getStudioSnapshot(workspaceId));
+  dispatch({ type: "ready", auth, snapshot, activeWorkspaceId: workspaceId, notice });
 }
 
 export async function reloadReadyWorkspace(
@@ -159,9 +166,9 @@ export function runtimeApiBaseUrl(): string {
   return (runtimeEnv().VITE_LAYRS_API_URL ?? "").replace(/\/$/, "");
 }
 
-export async function loadLensRegistry(baseUrl: string, signal: AbortSignal): Promise<LensRegistryState> {
+export async function loadLensRegistry(baseUrl: string, fetchJson: PrivateJsonFetcher): Promise<LensRegistryState> {
   try {
-    const payload = await fetchJson(`${baseUrl}/v1/lenses`, signal);
+    const payload = await fetchJson(`${baseUrl}/v1/lenses`);
     const manifests = normalizeLensManifests(payload);
     if (manifests.length === 0) {
       return {
@@ -172,6 +179,9 @@ export async function loadLensRegistry(baseUrl: string, signal: AbortSignal): Pr
 
     return { status: "available", manifests };
   } catch (error) {
+    if (statusFromError(error) === 401) {
+      throw error;
+    }
     return {
       status: "fallback",
       manifests: fallbackLensManifests,
@@ -183,16 +193,21 @@ export async function loadLensRegistry(baseUrl: string, signal: AbortSignal): Pr
 export async function loadTimelineFeed(
   baseUrl: string,
   target: TimelineFeedTarget,
-  signal: AbortSignal
+  fetchJson: PrivateJsonFetcher,
+  key: string
 ): Promise<TimelineFeedState> {
   const path = `/v1/workspaces/${encodeURIComponent(target.workspaceId)}/spaces/${encodeURIComponent(target.spaceId)}/layers/${encodeURIComponent(target.layerId)}/timeline?limit=50`;
 
   try {
-    const payload = await fetchJson(`${baseUrl}${path}`, signal);
-    return { status: "available", items: normalizeTimelineItems(payload) };
+    const payload = await fetchJson(`${baseUrl}${path}`);
+    return { status: "available", key, items: normalizeTimelineItems(payload) };
   } catch (error) {
+    if (statusFromError(error) === 401) {
+      throw error;
+    }
     return {
       status: "fallback",
+      key,
       message: `Timeline endpoint unavailable. Studio is using snapshot activity. ${optionalStatus(error)}`
     };
   }
@@ -201,46 +216,23 @@ export async function loadTimelineFeed(
 export async function loadArtifactFeed(
   baseUrl: string,
   target: TimelineFeedTarget,
-  signal: AbortSignal
+  fetchJson: PrivateJsonFetcher,
+  key: string
 ): Promise<ArtifactFeedState> {
   const path = `/v1/workspaces/${encodeURIComponent(target.workspaceId)}/spaces/${encodeURIComponent(target.spaceId)}/layers/${encodeURIComponent(target.layerId)}/artifacts`;
 
   try {
-    const payload = await fetchJson(`${baseUrl}${path}`, signal);
-    return { status: "available", items: normalizeArtifactCollection(payload) };
+    const payload = await fetchJson(`${baseUrl}${path}`);
+    return { status: "available", key, items: sanitizeArtifacts(normalizeArtifactCollection(payload)) };
   } catch (error) {
+    if (statusFromError(error) === 401) {
+      throw error;
+    }
     return {
       status: "fallback",
+      key,
       message: `Artifact endpoint unavailable. Studio is using snapshot files. ${optionalStatus(error)}`
     };
-  }
-}
-
-async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { credentials: "include", signal });
-  const payload = await readOptionalJson(response);
-
-  if (!response.ok) {
-    throw new LayrsApiError(errorMessageFromPayload(payload) ?? response.statusText, response.status);
-  }
-
-  return payload;
-}
-
-async function readOptionalJson(response: Response): Promise<unknown> {
-  if (response.status === 204) {
-    return undefined;
-  }
-
-  const text = await response.text();
-  if (!text) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
   }
 }
 
@@ -381,17 +373,23 @@ export function saveFavoriteSpaceIds(workspaceId: string, spaceIds: string[]) {
   }
 }
 
-function errorMessageFromPayload(payload: unknown): string | undefined {
-  const record = objectPayload(payload);
-  const error = objectPayload(record?.error);
-  return stringPayload(record?.message) ?? stringPayload(error?.message) ?? stringPayload(record?.code) ?? stringPayload(error?.code);
-}
-
 function optionalStatus(error: unknown): string {
   if (error instanceof LayrsApiError) {
     return `(${error.status})`;
   }
+  const status = statusFromError(error);
+  if (status !== undefined) {
+    return `(${status})`;
+  }
   return "";
+}
+
+function statusFromError(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
 }
 
 export function errorMessage(error: unknown): string {

@@ -212,8 +212,17 @@ function diffStatsFromDiffs(diffs: LensDiffEntry[]): LocalDiffStats {
   );
 }
 
-export function diffWindowKey(localSpaceId: string | undefined, selectedStepId: string | null, path: string | undefined): string {
-  return localSpaceId && path ? `${localSpaceId}::${selectedStepId ?? "workingTree"}::${path}` : "";
+export function diffWindowKey(
+  workspaceId: string | undefined,
+  spaceId: string | undefined,
+  layerId: string | undefined,
+  localSpaceId: string | undefined,
+  selectedStepId: string | null,
+  path: string | undefined
+): string {
+  return workspaceId && spaceId && layerId && localSpaceId && path
+    ? `${workspaceId}::${spaceId}::${layerId}::${localSpaceId}::${selectedStepId ?? "workingTree"}::${path}`
+    : "";
 }
 
 interface DesktopDiffWindowState {

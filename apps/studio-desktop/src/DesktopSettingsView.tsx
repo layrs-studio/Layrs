@@ -11,10 +11,7 @@ interface SettingsViewProps {
   login: DeviceLoginStartResponse | null;
   pollStatus: string | null;
   pollInFlight: boolean;
-  autoReceive: boolean;
-  autoPublish: boolean;
   autoLocalSteps: boolean;
-  syncIntervalMinutes: number;
   shortcuts: DesktopShortcutSettings;
   loadState: LoadState;
   saving: boolean;
@@ -23,10 +20,7 @@ interface SettingsViewProps {
   onSaveSettings: () => void;
   onBeginLogin: () => void;
   onPollNow: () => void;
-  onAutoReceiveChange: (value: boolean) => void;
-  onAutoPublishChange: (value: boolean) => void;
   onAutoLocalStepsChange: (value: boolean) => void;
-  onSyncIntervalChange: (value: number) => void;
   onShortcutsChange: (value: DesktopShortcutSettings) => void;
 }
 
@@ -38,10 +32,7 @@ export function SettingsView({
   login,
   pollStatus,
   pollInFlight,
-  autoReceive,
-  autoPublish,
   autoLocalSteps,
-  syncIntervalMinutes,
   shortcuts,
   loadState,
   saving,
@@ -50,10 +41,7 @@ export function SettingsView({
   onSaveSettings,
   onBeginLogin,
   onPollNow,
-  onAutoReceiveChange,
-  onAutoPublishChange,
   onAutoLocalStepsChange,
-  onSyncIntervalChange,
   onShortcutsChange
 }: SettingsViewProps) {
   return (
@@ -104,20 +92,8 @@ export function SettingsView({
           </section>
 
           <section className="desktop-setting-card">
-            <span>Sync</span>
-            <ToggleRow label="Auto receive" checked={autoReceive} onChange={onAutoReceiveChange} />
-            <ToggleRow label="Auto publish" checked={autoPublish} onChange={onAutoPublishChange} />
+            <span>Local changes</span>
             <ToggleRow label="Auto local steps" checked={autoLocalSteps} onChange={onAutoLocalStepsChange} />
-            <label className="desktop-field">
-              <span>Sync interval</span>
-              <input
-                type="number"
-                min={1}
-                max={1440}
-                value={syncIntervalMinutes}
-                onChange={(event) => onSyncIntervalChange(Number(event.currentTarget.value))}
-              />
-            </label>
           </section>
 
           <section className="desktop-setting-card">

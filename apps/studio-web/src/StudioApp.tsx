@@ -14,7 +14,7 @@ import {
   spaceHref,
   teamHref
 } from "./routes";
-import { studioReducer, type AuthScreenMode, type StudioState } from "./state/studioReducer";
+import { studioReducer, type AuthScreenMode, type RequiredAuth, type StudioState } from "./state/studioReducer";
 import { InlineAlert, SystemScreen, TextField, WorkspaceSwitcher } from "./components/common";
 import { fallbackLensManifests, type LensRegistryState } from "./components/LensFileViewer";
 import {
@@ -25,17 +25,21 @@ import {
   loadArtifactFeed,
   loadFavoriteSpaceIds,
   loadLensRegistry,
-  loadTimelineFeed,
-  reloadReadyWorkspace,
   resolveAuthenticatedSession,
   resolveSelectedLayer,
   resolveTimelineFeedTarget,
-  loadWorkspace,
   runtimeApiBaseUrl,
   saveFavoriteSpaceIds,
+  type AccessPolicyState,
   type ArtifactFeedState,
-  type TimelineFeedState
 } from "./studioRuntime";
+import { sanitizeStudioSnapshot } from "./privateData";
+import {
+  isPrivateRequestCancelled,
+  privateRequestKey,
+  StudioPrivateApiController,
+  StudioPrivateApiProvider
+} from "./studioPrivateApi";
 
 export function StudioApp() {
   const { notify } = useNotifications();
@@ -48,10 +52,49 @@ export function StudioApp() {
     status: "fallback",
     manifests: fallbackLensManifests
   });
-  const [timelineFeed, setTimelineFeed] = useState<TimelineFeedState>({ status: "idle" });
   const [artifactFeed, setArtifactFeed] = useState<ArtifactFeedState>({ status: "idle" });
+  const [accessPolicies, setAccessPolicies] = useState<AccessPolicyState>({ status: "idle" });
   const [feedRefreshToken, setFeedRefreshToken] = useState(0);
   const timelineFeedTarget = useMemo(() => resolveTimelineFeedTarget(state, route), [route, state]);
+  const feedRequestKey = timelineFeedTarget
+    ? privateRequestKey(
+        "feeds",
+        timelineFeedTarget.workspaceId,
+        timelineFeedTarget.spaceId,
+        timelineFeedTarget.layerId,
+        feedRefreshToken
+      )
+    : "";
+  const accessLayerIds =
+    state.status === "ready" && timelineFeedTarget
+      ? state.snapshot.layers
+          .filter((layer) => layer.spaceId === timelineFeedTarget.spaceId)
+          .map((layer) => layer.id)
+          .sort()
+      : [];
+  const accessRequestKey = timelineFeedTarget
+    ? privateRequestKey(
+        "access",
+        timelineFeedTarget.workspaceId,
+        timelineFeedTarget.spaceId,
+        accessLayerIds.join(","),
+        feedRefreshToken
+      )
+    : "";
+  const privateApi = useMemo(
+    () =>
+      new StudioPrivateApiController((message) => {
+        setLensRegistry({ status: "fallback", manifests: fallbackLensManifests });
+        setArtifactFeed({ status: "idle" });
+        setAccessPolicies({ status: "idle" });
+        setFeedRefreshToken(0);
+        lastToastRef.current = {};
+        globalThis.history?.replaceState({}, "", homeHref());
+        setRoute(parseStudioRoute(globalThis.location?.pathname ?? homeHref()));
+        dispatch({ type: "signed-out", mode: "login", error: message });
+      }),
+    []
+  );
 
   const navigate = useCallback((href: string) => {
     globalThis.history?.pushState({}, "", href);
@@ -64,43 +107,79 @@ export function StudioApp() {
 
   useEffect(() => {
     if (!timelineFeedTarget) {
-      setTimelineFeed({ status: "idle" });
       setArtifactFeed({ status: "idle" });
       return;
     }
 
     if (isMock) {
       setLensRegistry({ status: "available", manifests: fallbackLensManifests });
-      setTimelineFeed({ status: "fallback" });
-      setArtifactFeed({ status: "fallback" });
+      setArtifactFeed({ status: "fallback", key: feedRequestKey });
       return;
     }
 
-    const controller = new AbortController();
     const baseUrl = runtimeApiBaseUrl();
 
     setLensRegistry({ status: "loading", manifests: fallbackLensManifests });
-    setTimelineFeed({ status: "loading" });
-    setArtifactFeed({ status: "loading" });
+    setArtifactFeed({ status: "loading", key: feedRequestKey });
 
-    void loadLensRegistry(baseUrl, controller.signal).then((next) => {
-      if (!controller.signal.aborted) {
-        setLensRegistry(next);
-      }
-    });
-    void loadTimelineFeed(baseUrl, timelineFeedTarget, controller.signal).then((next) => {
-      if (!controller.signal.aborted) {
-        setTimelineFeed(next);
-      }
-    });
-    void loadArtifactFeed(baseUrl, timelineFeedTarget, controller.signal).then((next) => {
-      if (!controller.signal.aborted) {
-        setArtifactFeed(next);
-      }
-    });
+    void privateApi
+      .request("workspace-feeds", feedRequestKey, async ({ fetchJson }) =>
+        Promise.all([
+          loadLensRegistry(baseUrl, fetchJson),
+          loadArtifactFeed(baseUrl, timelineFeedTarget, fetchJson, feedRequestKey)
+        ])
+      )
+      .then(([nextRegistry, nextArtifacts]) => {
+        setLensRegistry(nextRegistry);
+        setArtifactFeed(nextArtifacts);
+      })
+      .catch((requestError) => {
+        if (!isPrivateRequestCancelled(requestError)) {
+          setArtifactFeed({ status: "fallback", key: feedRequestKey, message: errorMessage(requestError) });
+        }
+      });
 
-    return () => controller.abort();
-  }, [feedRefreshToken, isMock, timelineFeedTarget?.workspaceId, timelineFeedTarget?.spaceId, timelineFeedTarget?.layerId]);
+    return () => privateApi.cancel("workspace-feeds", feedRequestKey);
+  }, [feedRequestKey, isMock, privateApi, timelineFeedTarget?.workspaceId, timelineFeedTarget?.spaceId, timelineFeedTarget?.layerId]);
+
+  useEffect(() => {
+    if (state.status !== "ready" || !timelineFeedTarget) {
+      setAccessPolicies({ status: "idle" });
+      return;
+    }
+
+    const spaceLayers = state.snapshot.layers.filter((layer) => layer.spaceId === timelineFeedTarget.spaceId);
+    if (isMock) {
+      setAccessPolicies({
+        status: "available",
+        key: accessRequestKey,
+        policies: state.snapshot.layerAccessPolicies.filter((policy) => policy.spaceId === timelineFeedTarget.spaceId)
+      });
+      return;
+    }
+
+    setAccessPolicies({ status: "loading", key: accessRequestKey });
+    void privateApi
+      .request("access-policies", accessRequestKey, async () =>
+        Promise.all(
+          spaceLayers.map((layer) =>
+            client.getLayerAccessPolicy(state.activeWorkspaceId, timelineFeedTarget.spaceId, layer.id)
+          )
+        )
+      )
+      .then((policies) => setAccessPolicies({ status: "available", key: accessRequestKey, policies }))
+      .catch((requestError) => {
+        if (!isPrivateRequestCancelled(requestError)) {
+          setAccessPolicies({
+            status: "error",
+            key: accessRequestKey,
+            message: `Access policies could not be loaded from Layrs. Editing is blocked. ${errorMessage(requestError)}`
+          });
+        }
+      });
+
+    return () => privateApi.cancel("access-policies", accessRequestKey);
+  }, [accessRequestKey, client, isMock, privateApi, state.status, timelineFeedTarget?.spaceId, timelineFeedTarget?.workspaceId]);
 
   useEffect(() => {
     function handlePopState() {
@@ -135,12 +214,42 @@ export function StudioApp() {
     dispatch({ type: "select-route" });
   }, [route, state.status]);
 
+  async function loadPrivateWorkspace(auth: RequiredAuth, workspaceId: string, notice?: string) {
+    const snapshot = await privateApi.request(
+      "workspace-load",
+      privateRequestKey("workspace", workspaceId),
+      async () => sanitizeStudioSnapshot(await client.getStudioSnapshot(workspaceId))
+    );
+    dispatch({ type: "ready", auth, snapshot, activeWorkspaceId: workspaceId, notice });
+    setFeedRefreshToken((value) => value + 1);
+  }
+
+  async function reloadPrivateWorkspace(readyState: Extract<StudioState, { status: "ready" }>, notice: string) {
+    await loadPrivateWorkspace(
+      {
+        account: readyState.account,
+        session: readyState.session,
+        workspaces: readyState.workspaces
+      },
+      readyState.activeWorkspaceId,
+      notice
+    );
+  }
+
+  function reportReadyActionError(actionError: unknown) {
+    if (!isPrivateRequestCancelled(actionError)) {
+      dispatch({ type: "notice", error: errorMessage(actionError) });
+    }
+  }
+
   async function handleLogin(email: string, password: string) {
+    privateApi.reset();
     dispatch({ type: "checking" });
     await resolveAuthenticatedSession(() => client.login({ email, password }), client, dispatch);
   }
 
   async function handleSignup(name: string, email: string, password: string) {
+    privateApi.reset();
     dispatch({ type: "checking" });
     await resolveAuthenticatedSession(() => client.signup({ name, email, password }), client, dispatch);
   }
@@ -151,16 +260,26 @@ export function StudioApp() {
     }
 
     try {
-      const workspace = await client.createWorkspace({ name, slug, description: "Server-backed Layrs workspace." });
+      const workspace = await privateApi.request("create-workspace", slug, async () =>
+        client.createWorkspace({ name, slug, description: "Server-backed Layrs workspace." })
+      );
       const auth = {
         account: state.account,
         session: { ...state.session, activeWorkspaceId: workspace.id },
         workspaces: [...state.workspaces, workspace]
       };
-      await loadWorkspace(client, dispatch, auth, workspace.id, "Workspace created.");
+      await loadPrivateWorkspace(auth, workspace.id, "Workspace created.");
       navigate(homeHref());
-    } catch (error) {
-      dispatch({ type: "onboarding", ...state, error: errorMessage(error) });
+    } catch (actionError) {
+      if (!isPrivateRequestCancelled(actionError)) {
+        dispatch({
+          type: "onboarding",
+          account: state.account,
+          session: state.session,
+          workspaces: state.workspaces,
+          error: errorMessage(actionError)
+        });
+      }
     }
   }
 
@@ -171,12 +290,16 @@ export function StudioApp() {
 
     dispatch({ type: "checking" });
     navigate(homeHref());
-    await loadWorkspace(
-      client,
-      dispatch,
-      { account: state.account, session: state.session, workspaces: state.workspaces },
-      workspaceId
-    );
+    try {
+      await loadPrivateWorkspace(
+        { account: state.account, session: state.session, workspaces: state.workspaces },
+        workspaceId
+      );
+    } catch (actionError) {
+      if (!isPrivateRequestCancelled(actionError)) {
+        dispatch({ type: "server-error", message: errorMessage(actionError) });
+      }
+    }
   }
 
   async function handleCreateTeam(input: { name: string }) {
@@ -185,11 +308,13 @@ export function StudioApp() {
     }
 
     try {
-      const team = await client.createTeam({ workspaceId: state.activeWorkspaceId, name: input.name });
+      const team = await privateApi.request("create-team", input.name, async () =>
+        client.createTeam({ workspaceId: state.activeWorkspaceId, name: input.name })
+      );
       navigate(teamHref(team.id));
-      await reloadReadyWorkspace(client, dispatch, state, "Team created.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await reloadPrivateWorkspace(state, "Team created.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
     }
   }
 
@@ -199,11 +324,13 @@ export function StudioApp() {
     }
 
     try {
-      const space = await client.createSpace({ workspaceId: state.activeWorkspaceId, ...input });
+      const space = await privateApi.request("create-space", input.key, async () =>
+        client.createSpace({ workspaceId: state.activeWorkspaceId, ...input })
+      );
       navigate(spaceHref(space.id));
-      await reloadReadyWorkspace(client, dispatch, state, "Space created.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await reloadPrivateWorkspace(state, "Space created.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
     }
   }
 
@@ -213,16 +340,19 @@ export function StudioApp() {
     }
 
     try {
-      const result = await client.deleteSpace(state.activeWorkspaceId, spaceId);
+      const result = await privateApi.request("delete-space", spaceId, async () =>
+        client.deleteSpace(state.activeWorkspaceId, spaceId)
+      );
       navigate(homeHref());
-      await reloadReadyWorkspace(
-        client,
-        dispatch,
+      await reloadPrivateWorkspace(
         state,
         `Space deleted. ${result.deletedLayers} Layer(s) and ${result.deletedArtifacts} artifact(s) were removed.`
       );
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+    } catch (actionError) {
+      reportReadyActionError(actionError);
+      if (!isPrivateRequestCancelled(actionError)) {
+        throw actionError;
+      }
     }
   }
 
@@ -232,11 +362,16 @@ export function StudioApp() {
     }
 
     try {
-      await client.deleteLayer(state.activeWorkspaceId, spaceId, layerId);
+      await privateApi.request("delete-layer", privateRequestKey(spaceId, layerId), async () =>
+        client.deleteLayer(state.activeWorkspaceId, spaceId, layerId)
+      );
       navigate(spaceHref(spaceId));
-      await reloadReadyWorkspace(client, dispatch, state, "Layer deleted.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await reloadPrivateWorkspace(state, "Layer deleted.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
+      if (!isPrivateRequestCancelled(actionError)) {
+        throw actionError;
+      }
     }
   }
 
@@ -246,10 +381,12 @@ export function StudioApp() {
     }
 
     try {
-      await client.addTeamMember({ workspaceId: state.activeWorkspaceId, teamId, ...input });
-      await reloadReadyWorkspace(client, dispatch, state, "Team member added.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await privateApi.request("add-team-member", privateRequestKey(teamId, input.email), async () =>
+        client.addTeamMember({ workspaceId: state.activeWorkspaceId, teamId, ...input })
+      );
+      await reloadPrivateWorkspace(state, "Team member added.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
     }
   }
 
@@ -259,10 +396,12 @@ export function StudioApp() {
     }
 
     try {
-      await client.removeTeamMember(state.activeWorkspaceId, teamId, accountId);
-      await reloadReadyWorkspace(client, dispatch, state, "Team member removed.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await privateApi.request("remove-team-member", privateRequestKey(teamId, accountId), async () =>
+        client.removeTeamMember(state.activeWorkspaceId, teamId, accountId)
+      );
+      await reloadPrivateWorkspace(state, "Team member removed.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
     }
   }
 
@@ -272,10 +411,12 @@ export function StudioApp() {
     }
 
     try {
-      await client.createInvitation({ workspaceId: state.activeWorkspaceId, email, role: "member", teamIds: [teamId] });
-      await reloadReadyWorkspace(client, dispatch, state, "Invitation created.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await privateApi.request("create-invitation", privateRequestKey(teamId, email), async () =>
+        client.createInvitation({ workspaceId: state.activeWorkspaceId, email, role: "member", teamIds: [teamId] })
+      );
+      await reloadPrivateWorkspace(state, "Invitation created.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
     }
   }
 
@@ -285,10 +426,17 @@ export function StudioApp() {
     }
 
     try {
-      await Promise.all(policies.map((policy) => client.replaceLayerAccessPolicy(policy)));
-      await reloadReadyWorkspace(client, dispatch, state, "Layer access rules saved.");
-    } catch (error) {
-      dispatch({ type: "notice", error: errorMessage(error) });
+      await privateApi.request(
+        "save-access-policies",
+        policies.map((policy) => `${policy.layerId}:${policy.policyEpoch}`).sort().join(","),
+        async () => Promise.all(policies.map((policy) => client.replaceLayerAccessPolicy(policy)))
+      );
+      await reloadPrivateWorkspace(state, "Layer access rules saved.");
+    } catch (actionError) {
+      reportReadyActionError(actionError);
+      if (!isPrivateRequestCancelled(actionError)) {
+        throw actionError;
+      }
     }
   }
 
@@ -297,13 +445,14 @@ export function StudioApp() {
       return;
     }
 
-    await loadWorkspace(
-      client,
-      dispatch,
-      { account: state.account, session: state.session, workspaces: state.workspaces },
-      state.activeWorkspaceId
-    );
-    setFeedRefreshToken((value) => value + 1);
+    try {
+      await loadPrivateWorkspace(
+        { account: state.account, session: state.session, workspaces: state.workspaces },
+        state.activeWorkspaceId
+      );
+    } catch (actionError) {
+      reportReadyActionError(actionError);
+    }
   }
 
   if (state.status === "checking") {
@@ -316,7 +465,10 @@ export function StudioApp() {
         title="Server unavailable"
         detail={state.message}
         actionLabel="Retry"
-        onAction={() => void bootstrap(client, dispatch)}
+        onAction={() => {
+          privateApi.reset();
+          void bootstrap(client, dispatch);
+        }}
       />
     );
   }
@@ -346,7 +498,11 @@ export function StudioApp() {
   }
 
   return (
-    <StudioWorkspace
+    <StudioPrivateApiProvider api={privateApi}>
+      <StudioWorkspace
+      accessPolicies={accessPolicies}
+      accessRequestKey={accessRequestKey}
+      artifactRequestKey={feedRequestKey}
       isMock={isMock}
       lensRegistry={lensRegistry}
       onCreateSpace={handleCreateSpace}
@@ -364,11 +520,14 @@ export function StudioApp() {
       state={state}
       artifactFeed={artifactFeed}
       feedRefreshToken={feedRefreshToken}
-      timelineFeed={timelineFeed}
-    />
+      />
+    </StudioPrivateApiProvider>
   );
 }
 function StudioWorkspace({
+  accessPolicies,
+  accessRequestKey,
+  artifactRequestKey,
   isMock,
   lensRegistry,
   onCreateSpace,
@@ -385,9 +544,11 @@ function StudioWorkspace({
   route,
   state,
   artifactFeed,
-  feedRefreshToken,
-  timelineFeed
+  feedRefreshToken
 }: {
+  accessPolicies: AccessPolicyState;
+  accessRequestKey: string;
+  artifactRequestKey: string;
   isMock: boolean;
   lensRegistry: LensRegistryState;
   onCreateSpace: (input: { name: string; key: string; teamId?: string; description?: string }) => Promise<void>;
@@ -405,7 +566,6 @@ function StudioWorkspace({
   state: Extract<StudioState, { status: "ready" }>;
   artifactFeed: ArtifactFeedState;
   feedRefreshToken: number;
-  timelineFeed: TimelineFeedState;
 }) {
   const { notify } = useNotifications();
   const { snapshot } = state;
@@ -486,6 +646,7 @@ function StudioWorkspace({
       ) : route.name === "space" ? (
         <SpacePage
           account={state.account}
+          accessPolicies={accessPolicies.status !== "idle" && accessPolicies.key === accessRequestKey ? accessPolicies : { status: "idle" }}
           lensRegistry={lensRegistry}
           layers={selectedLayers}
           onNavigate={onNavigate}
@@ -495,7 +656,7 @@ function StudioWorkspace({
           onRefreshWorkspace={onRefreshWorkspace}
           selectedLayer={selectedLayer}
           snapshot={snapshot}
-          serverArtifacts={artifactFeed.status === "available" ? artifactFeed.items : undefined}
+          serverArtifacts={artifactFeed.status === "available" && artifactFeed.key === artifactRequestKey ? artifactFeed.items : undefined}
           refreshKey={feedRefreshToken}
           space={selectedSpace}
           workspaceId={snapshot.workspace.id}

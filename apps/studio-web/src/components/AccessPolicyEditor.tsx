@@ -10,7 +10,7 @@ import type {
   Team,
   WorkspaceMember
 } from "@layrs/client-sdk";
-import { EmptyState } from "./common";
+import { EmptyState, InlineAlert } from "./common";
 
 const ruleModes: LayerAccessRuleMode[] = ["restricted", "reserved_redacted"];
 const visibilityOptions: LayerAccessVisibility[] = ["full", "stub"];
@@ -36,15 +36,21 @@ export function AccessPolicyEditor({
   const currentPolicy = currentLayer ? policies.find((policy) => policy.layerId === currentLayer.id) : undefined;
   const [rules, setRules] = useState<LayerAccessRule[]>(currentPolicy?.rules ?? []);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(currentLayer ? [currentLayer.id] : []);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const accountOptions = useMemo(() => accountOptionsFor(account, workspaceMembers), [account, workspaceMembers]);
 
   useEffect(() => {
     setRules(currentPolicy?.rules ?? []);
     setSelectedLayerIds(currentLayer ? [currentLayer.id] : []);
+    setSaveError(null);
   }, [currentLayer?.id, currentPolicy]);
 
   if (!currentLayer) {
     return <EmptyState title="No Layer selected" detail="Select a Layer before editing access rules." />;
+  }
+  if (!currentPolicy) {
+    return <InlineAlert tone="danger">The current policy was not returned by Layrs. Editing is blocked.</InlineAlert>;
   }
   const activeLayer = currentLayer;
 
@@ -91,21 +97,26 @@ export function AccessPolicyEditor({
   async function save() {
     const targetIds = selectedLayerIds.length > 0 ? selectedLayerIds : [activeLayer.id];
     const nextPolicies = targetIds.map((layerId) => {
-      const layer = layers.find((item) => item.id === layerId) ?? activeLayer;
       const existing = policies.find((policy) => policy.layerId === layerId);
+      if (!existing) {
+        throw new Error(`Layrs did not return the policy for Layer ${layerId}.`);
+      }
       return {
-        schema: existing?.schema ?? "layrs.layer_access.v1",
-        workspaceId: existing?.workspaceId ?? currentPolicy?.workspaceId ?? "",
-        spaceId: existing?.spaceId ?? layer.spaceId,
-        layerId,
-        policyEpoch: existing?.policyEpoch ?? 1,
-        generatedAt: existing?.generatedAt ?? new Date().toISOString(),
-        rules,
-        signature: existing?.signature ?? { keyId: "studio-web-local", value: "unsigned" }
+        ...existing,
+        policyEpoch: existing.policyEpoch,
+        rules
       };
     });
 
-    await onSave(nextPolicies);
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(nextPolicies);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Access rules could not be saved.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -116,6 +127,7 @@ export function AccessPolicyEditor({
           <label key={layer.id}>
             <input
               checked={selectedLayerIds.includes(layer.id)}
+              disabled={!policies.some((policy) => policy.layerId === layer.id)}
               onChange={(event) => {
                 setSelectedLayerIds((items) =>
                   event.currentTarget.checked ? [...items, layer.id] : items.filter((item) => item !== layer.id)
@@ -220,10 +232,11 @@ export function AccessPolicyEditor({
         <button type="button" onClick={addRule}>
           Add path rule
         </button>
-        <button className="studio-primary-button" type="button" onClick={() => void save()}>
-          Save access rules
+        <button className="studio-primary-button" disabled={saving} type="button" onClick={() => void save()}>
+          {saving ? "Saving..." : "Save access rules"}
         </button>
       </div>
+      {saveError ? <InlineAlert tone="danger">{saveError}</InlineAlert> : null}
     </div>
   );
 }

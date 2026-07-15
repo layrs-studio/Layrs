@@ -1,15 +1,9 @@
 import { AppShell, StatusPill, useNotifications } from "@layrs/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DesktopConfirmations } from "./DesktopConfirmations";
 import { CommandErrors, SettingsView } from "./DesktopSettingsView";
 import { DesktopSidebar } from "./DesktopSidebar";
-import {
-  AvailableSpacesView,
-  DraftLocalSpaceView,
-  LocalSpacesView,
-  SpaceSettingsView,
-  SpaceWeavesView
-} from "./DesktopViews";
+import { AvailableSpacesView, DraftLocalSpaceView, LocalSpacesView, SpaceSettingsView, SpaceWeavesView } from "./DesktopViews";
 import {
   buildChanges,
   buildLayerFiles,
@@ -38,46 +32,33 @@ import {
   type PulseTarget,
   type TimelineItem
 } from "./desktopTypes";
+import { DesktopOperationController, isDesktopOperationCancelled } from "./desktopOperationQueue";
+import { isLayerRestricted, purgeRestrictedDiffWindows, purgeRestrictedWeaves, purgeRestrictedWorkingTrees, sanitizeWorkingTreeForAccess } from "./desktopPrivateState";
+import { resetDesktopPrivateRequests } from "./desktopPrivateApi";
+import { useDesktopAuthPurge } from "./useDesktopAuthPurge";
+import { useDesktopDiffWindow } from "./useDesktopDiffWindow";
+import { useDesktopLocalActions } from "./useDesktopLocalActions";
+import { useDesktopSyncActions } from "./useDesktopSyncActions";
 import {
   AvailableSpaceView,
   BootstrapData,
-  createDraftLocalSpace,
-  createLayerFromCurrent,
-  createLocalSpace,
-  clearLayerSteps,
-  deleteLayer,
-  disconnectLayerFromParent,
   DesktopSettings,
   DesktopShortcutSettings,
   DesktopStatus,
   DeviceLoginPollResponse,
   DeviceLoginStartResponse,
-  forgetLocalSpace,
   getDesktopStatus,
-  initLocalSpace,
   LensDiffEntry,
   listAvailableSpaces,
   listLocalSpaces,
   loadDesktopSettings,
-  loadDiffWindow,
   LocalSpaceSummary,
-  openLocalSpace,
   pollDeviceLogin,
-  publishLocalSpace,
   refreshBootstrap,
   saveDesktopSettings,
-  saveLocalStep,
   scanWorkingTree,
   selectFolder,
-  sendDraftLocalSpace,
   startDeviceLogin,
-  syncLocalSpace,
-  switchLayer,
-  abortWeave,
-  continueWeave,
-  resolveWeaveConflict,
-  weaveActiveLayerToParent,
-  weaveLayers,
   weaveStatus,
   WeaveSessionSummary,
   WorkingTreeScan
@@ -126,10 +107,35 @@ export function DesktopApp() {
   const [pulseTargets, setPulseTargets] = useState<Set<PulseTarget>>(new Set());
   const [commandErrors, setCommandErrors] = useState<Partial<Record<CommandKey, string>>>({});
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const operations = useMemo(() => new DesktopOperationController(setBusyAction), []);
+  const localSpacesRef = useRef<LocalSpaceSummary[]>([]);
   const pollInFlightRef = useRef(false);
-  const autoScanInFlightRef = useRef<Set<string>>(new Set());
   const lastFocusScanRef = useRef<{ localSpaceId: string; at: number }>({ localSpaceId: "", at: 0 });
   const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const purgeEphemeralPrivateState = useCallback(() => {
+    localSpacesRef.current = []; setCreateDrafts({}); setSendWorkspaceId("");
+    setWeaveSourceLayerId(""); setWeaveTargetLayerId(""); setConfirmWeaveParent(false);
+    setForgetTargetId(null); setDeleteLayerTargetId(null); setDisconnectLayerTargetId(null); setClearStepsTargetId(null);
+  }, []);
+  useDesktopAuthPurge({
+    onPurgePrivateState: purgeEphemeralPrivateState,
+    operations,
+    setAvailableSpaces,
+    setBootstrap,
+    setCommandErrors,
+    setDiffWindowOverrides,
+    setError,
+    setLoadState,
+    setLocalSpaces,
+    setPage,
+    setScanRevisions,
+    setSelectedDiffPath,
+    setSelectedLocalSpaceId,
+    setSelectedStepId,
+    setStatus,
+    setWeaveSessions,
+    setWorkingTrees
+  });
   const effectiveBootstrap = bootstrap ?? status?.cachedBootstrap ?? null;
   const isConnected = Boolean(status?.connected || effectiveBootstrap?.account);
   const recordCommandError = useCallback(
@@ -152,24 +158,41 @@ export function DesktopApp() {
       return next;
     });
   }, []);
-  const replaceLocalSpace = useCallback((nextSpace: LocalSpaceSummary) => {
-    setLocalSpaces((current) => {
-      const index = current.findIndex((space) => space.localSpaceId === nextSpace.localSpaceId);
-      if (index === -1) {
-        return [...current, nextSpace];
-      }
-      return current.map((space) => (space.localSpaceId === nextSpace.localSpaceId ? nextSpace : space));
-    });
+  const applyLocalSpaces = useCallback((nextSpaces: LocalSpaceSummary[]) => {
+    localSpacesRef.current = nextSpaces;
+    setLocalSpaces(nextSpaces);
+    setWorkingTrees((current) => purgeRestrictedWorkingTrees(nextSpaces, current));
+    setWeaveSessions((current) => purgeRestrictedWeaves(nextSpaces, current));
+    setDiffWindowOverrides((current) => purgeRestrictedDiffWindows(nextSpaces, current));
+    if (nextSpaces.some((space) => space.layers.some((layer) => isLayerRestricted(layer.access)))) {
+      setSelectedStepId(null);
+      setSelectedDiffPath(null);
+    }
   }, []);
-  const scanLocalSpace = useCallback(
+  const replaceLocalSpace = useCallback((nextSpace: LocalSpaceSummary) => {
+    const current = localSpacesRef.current;
+    const next = current.some((space) => space.localSpaceId === nextSpace.localSpaceId)
+      ? current.map((space) => (space.localSpaceId === nextSpace.localSpaceId ? nextSpace : space))
+      : [...current, nextSpace];
+    applyLocalSpaces(next);
+  }, [applyLocalSpaces]);
+  const performScan = useCallback(
     async (localSpaceId: string) => {
-      setBusyAction(`scan:${localSpaceId}`);
+      const space = localSpacesRef.current.find((entry) => entry.localSpaceId === localSpaceId);
+      const activeLayer = space?.layers.find((layer) => layer.layerId === space.activeLayerId);
+      if (activeLayer && isLayerRestricted(activeLayer.access)) {
+        applyLocalSpaces(localSpacesRef.current);
+        throw new Error("This Layer is restricted. Local previews and diffs were purged.");
+      }
       try {
         const [scan, activeWeave] = await Promise.all([
           scanWorkingTree(localSpaceId),
           weaveStatus(localSpaceId).catch(() => null)
         ]);
-        setWorkingTrees((current) => ({ ...current, [localSpaceId]: scan }));
+        const sanitized = space ? sanitizeWorkingTreeForAccess(scan, space) : scan;
+        if (sanitized) {
+          setWorkingTrees((current) => ({ ...current, [localSpaceId]: sanitized }));
+        }
         setWeaveSessions((current) => ({ ...current, [localSpaceId]: activeWeave }));
         setScanRevisions((current) => ({ ...current, [localSpaceId]: (current[localSpaceId] ?? 0) + 1 }));
         setDiffWindowOverrides((current) =>
@@ -182,29 +205,30 @@ export function DesktopApp() {
       } catch (nextError) {
         recordCommandError("scan", nextError);
         throw nextError;
-      } finally {
-        setBusyAction(null);
       }
     },
-    [clearCommandError, notify, recordCommandError]
+    [applyLocalSpaces, clearCommandError, recordCommandError]
+  );
+  const scanLocalSpace = useCallback(
+    (localSpaceId: string, background = false) =>
+      operations.run({
+        busyAction: background ? undefined : `scan:${localSpaceId}`,
+        coalesce: true,
+        key: `scan:${localSpaceId}`,
+        task: () => performScan(localSpaceId)
+      }),
+    [operations, performScan]
   );
   const runAutoScan = useCallback(
     (localSpaceId: string) => {
-      if (autoScanInFlightRef.current.has(localSpaceId)) {
-        return;
-      }
-      autoScanInFlightRef.current.add(localSpaceId);
-      void scanLocalSpace(localSpaceId)
+      void scanLocalSpace(localSpaceId, true)
         .catch(() => {
           // The scan command already records the visible error state.
-        })
-        .finally(() => {
-          autoScanInFlightRef.current.delete(localSpaceId);
         });
     },
     [scanLocalSpace]
   );
-  const loadSpaces = useCallback(
+  const performLoadSpaces = useCallback(
     async (showMessage = false) => {
       const [availableResult, localResult] = await Promise.allSettled([listAvailableSpaces(), listLocalSpaces()]);
       if (availableResult.status === "fulfilled") {
@@ -214,7 +238,7 @@ export function DesktopApp() {
         recordCommandError("available", availableResult.reason);
       }
       if (localResult.status === "fulfilled") {
-        setLocalSpaces(localResult.value);
+        applyLocalSpaces(localResult.value);
         clearCommandError("local");
         setSelectedLocalSpaceId((current) => current ?? localResult.value[0]?.localSpaceId ?? null);
       } else {
@@ -236,7 +260,15 @@ export function DesktopApp() {
         }
       }
     },
-    [clearCommandError, notify, recordCommandError]
+    [applyLocalSpaces, clearCommandError, notify, recordCommandError]
+  );
+  const loadSpaces = useCallback(
+    (showMessage = false) => operations.run({
+      coalesce: true,
+      key: "state-refresh",
+      task: () => performLoadSpaces(showMessage)
+    }),
+    [operations, performLoadSpaces]
   );
   const hydrateStatus = useCallback(async () => {
     setLoadState("loading");
@@ -269,7 +301,7 @@ export function DesktopApp() {
       } else {
         try {
           const localResult = await listLocalSpaces();
-          setLocalSpaces(localResult);
+          applyLocalSpaces(localResult);
           clearCommandError("local");
           setSelectedLocalSpaceId((current) => current ?? localResult[0]?.localSpaceId ?? null);
         } catch (nextLocalError) {
@@ -281,10 +313,13 @@ export function DesktopApp() {
       setLoadState("error");
       setError(errorMessage(nextError));
     }
-  }, [clearCommandError, loadSpaces, notify, recordCommandError]);
+  }, [applyLocalSpaces, clearCommandError, loadSpaces, notify, recordCommandError]);
   useEffect(() => {
     void hydrateStatus();
   }, [hydrateStatus]);
+  useEffect(() => {
+    localSpacesRef.current = localSpaces;
+  }, [localSpaces]);
   useEffect(() => {
     const applyHash = () => {
       const hash = window.location.hash;
@@ -315,9 +350,10 @@ export function DesktopApp() {
     setSendWorkspaceId((current) => current || effectiveBootstrap?.workspaces[0]?.id || "");
   }, [effectiveBootstrap]);
   const selectedLocalSpace = localSpaces.find((space) => space.localSpaceId === selectedLocalSpaceId) ?? localSpaces[0] ?? null;
-  const selectedWorkingTree = selectedLocalSpace ? workingTrees[selectedLocalSpace.localSpaceId] : undefined;
   const selectedLayer =
     selectedLocalSpace?.layers.find((layer) => layer.layerId === selectedLocalSpace.activeLayerId) ?? selectedLocalSpace?.layers[0] ?? null;
+  const selectedLayerRestricted = isLayerRestricted(selectedLayer?.access);
+  const selectedWorkingTree = selectedLocalSpace && !selectedLayerRestricted ? workingTrees[selectedLocalSpace.localSpaceId] : undefined;
   const files = buildLayerFiles(selectedWorkingTree, selectedLayer);
   const activeDiffStepId = localSpaceTab === "steps" ? selectedStepId : null;
   const activeDiffContextKey = activeDiffStepId ? `step:${activeDiffStepId}` : "workingTree";
@@ -326,6 +362,9 @@ export function DesktopApp() {
   const baseSelectedDiff =
     changes.find((change) => change.path === selectedDiffPath)?.diff ?? changes[0]?.diff ?? null;
   const selectedDiffKey = diffWindowKey(
+    selectedLocalSpace?.workspaceId,
+    selectedLocalSpace?.spaceId,
+    selectedLayer?.layerId,
     selectedLocalSpace?.localSpaceId,
     activeDiffStepId,
     baseSelectedDiff?.path
@@ -374,16 +413,16 @@ export function DesktopApp() {
   }, [selectedStepId, selectedWorkingTree]);
   useEffect(() => {
     if (
-      !selectedLocalSpace ||
+      !selectedLocalSpace || selectedLayerRestricted ||
       workingTrees[selectedLocalSpace.localSpaceId]
     ) {
       return;
     }
     runAutoScan(selectedLocalSpace.localSpaceId);
-  }, [runAutoScan, selectedLocalSpace, workingTrees]);
+  }, [runAutoScan, selectedLayerRestricted, selectedLocalSpace, workingTrees]);
   useEffect(() => {
     const localSpaceId = selectedLocalSpace?.localSpaceId;
-    if (!localSpaceId) {
+    if (!localSpaceId || selectedLayerRestricted) {
       return undefined;
     }
     function scanOnFocus() {
@@ -409,7 +448,7 @@ export function DesktopApp() {
       window.removeEventListener("focus", scanOnFocus);
       document.removeEventListener("visibilitychange", scanOnVisibilityChange);
     };
-  }, [runAutoScan, selectedLocalSpace?.localSpaceId]);
+  }, [runAutoScan, selectedLayerRestricted, selectedLocalSpace?.localSpaceId]);
   useEffect(
     () => () => {
       if (pulseTimerRef.current) {
@@ -513,15 +552,20 @@ export function DesktopApp() {
   }
   async function refreshConnectedBootstrap() {
     setError(null);
-    setBusyAction("refresh");
     try {
-      const response = await refreshBootstrap(defaultLocalRoot);
-      applyPollResponse(response);
-      await loadSpaces(true);
+      await operations.run({
+        busyAction: "refresh",
+        key: "connected-refresh",
+        task: async () => {
+          const response = await refreshBootstrap(defaultLocalRoot);
+          applyPollResponse(response);
+          await performLoadSpaces(true);
+        }
+      });
     } catch (nextError) {
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
+      if (!isDesktopOperationCancelled(nextError)) {
+        setError(errorMessage(nextError));
+      }
     }
   }
   async function chooseFolder(initialPath: string | undefined, onChoose: (folder: string) => void) {
@@ -561,6 +605,7 @@ export function DesktopApp() {
   }
   function applyPollResponse(response: DeviceLoginPollResponse) {
     if (response.status === "connected") {
+      resetDesktopPrivateRequests();
       setLogin(null);
       setPollStatus(null);
     } else {
@@ -630,611 +675,94 @@ export function DesktopApp() {
     setPage(nextPage);
     window.location.hash = `desktop-${nextPage}`;
   }
-  async function selectLocalSpace(localSpaceId: string) {
-    setSelectedLocalSpaceId(localSpaceId);
-    choosePage("local");
-    window.location.hash = `desktop-local:${encodeURIComponent(localSpaceId)}`;
-    if (!workingTrees[localSpaceId]) {
-      try {
-        await scanLocalSpace(localSpaceId);
-      } catch {
-        // Error state is already recorded for the scan action.
-      }
-    }
-  }
-  function returnToSelectedSpace() {
-    if (selectedLocalSpace) {
-      setPage("local");
-      window.location.hash = `desktop-local:${encodeURIComponent(selectedLocalSpace.localSpaceId)}`;
-      return;
-    }
-    choosePage("local");
-  }
-  async function handleCreateLocalSpace(space: AvailableSpaceView) {
-    const draft = createDrafts[space.spaceId] ?? defaultCreateDraft(space, defaultLocalRoot);
-    if (!draft.targetFolder.trim()) {
-      setError("Choose a target folder before creating a Local Space.");
-      return;
-    }
-    setBusyAction(`create:${space.spaceId}`);
-    setError(null);
-    try {
-      const result = await createLocalSpace(space.spaceId, draft.targetFolder.trim(), draft.layerId || undefined);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      choosePage("local");
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("create");
-      notify({
-        tone: "success",
-        title: result.created ? "Local Space created" : "Existing Local Space opened",
-        dedupeKey: "desktop-local-space-created"
-      });
-    } catch (nextError) {
-      recordCommandError("create", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleCreateDraftLocalSpace() {
-    const name = draftSpaceName.trim();
-    const targetFolder = draftSpaceFolder.trim();
-    if (!name) {
-      setError("Name the empty local Space before creating it.");
-      return;
-    }
-    if (!targetFolder) {
-      setError("Choose a folder before creating an empty local Space.");
-      return;
-    }
-    setBusyAction("create-draft");
-    setError(null);
-    try {
-      const result = await createDraftLocalSpace(name, targetFolder);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      setDraftSpaceName("");
-      choosePage("local");
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("create-draft");
-      notify({ tone: "success", title: "Draft Local Space created", dedupeKey: "desktop-draft-created" });
-    } catch (nextError) {
-      recordCommandError("create-draft", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleInitLocalSpace() {
-    const name = initSpaceName.trim();
-    const targetFolder = initSpaceFolder.trim();
-    if (!name) {
-      setError("Name the Local Space before initializing this folder.");
-      return;
-    }
-    if (!targetFolder) {
-      setError("Choose an existing folder before initializing a Local Space.");
-      return;
-    }
-    setBusyAction("init-local");
-    setError(null);
-    try {
-      const result = await initLocalSpace(name, targetFolder);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      setInitSpaceName("");
-      setInitSpaceFolder("");
-      setSelectedStepId(null);
-      setSelectedDiffPath(null);
-      setLocalSpaceTab("changes");
-      choosePage("local");
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("init-local");
-      triggerPulse(["changes", "steps"]);
-      notify({
-        tone: "success",
-        title: result.created ? "Folder initialized" : "Local Space opened",
-        dedupeKey: "desktop-local-init"
-      });
-    } catch (nextError) {
-      recordCommandError("init-local", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleSendDraftToStudio() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    if (!sendWorkspaceId.trim()) {
-      setError("Choose a Workspace before sending this Draft Local Space.");
-      return;
-    }
-    setBusyAction("send-draft");
-    setError(null);
-    try {
-      const result = await sendDraftLocalSpace(selectedLocalSpace.localSpaceId, sendWorkspaceId.trim());
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("send-draft");
-      notify({
-        tone: "success",
-        title: "Draft sent to Studio",
-        message: `${result.publishedLayers} Layer(s) published.`,
-        dedupeKey: "desktop-draft-sent"
-      });
-    } catch (nextError) {
-      recordCommandError("send-draft", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleOpenLocalSpace(localSpaceIdOrPath: string) {
-    setBusyAction(`open:${localSpaceIdOrPath}`);
-    setError(null);
-    try {
-      const nextSpace = await openLocalSpace(localSpaceIdOrPath);
-      replaceLocalSpace(nextSpace);
-      setSelectedLocalSpaceId(nextSpace.localSpaceId);
-      choosePage("local");
-      await scanLocalSpace(nextSpace.localSpaceId);
-      clearCommandError("open");
-      notify({ tone: "success", title: "Local Space opened", dedupeKey: "desktop-local-opened" });
-    } catch (nextError) {
-      recordCommandError("open", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleForgetLocalSpace(localSpaceId: string) {
-    const space = localSpaces.find((entry) => entry.localSpaceId === localSpaceId);
-    if (!space) {
-      return;
-    }
-    setForgetTargetId(localSpaceId);
-  }
-  async function confirmForgetLocalSpace(localSpaceId: string) {
-    setBusyAction("forget-local");
-    setError(null);
-    try {
-      const result = await forgetLocalSpace(localSpaceId);
-      setLocalSpaces((current) => current.filter((entry) => entry.localSpaceId !== localSpaceId));
-      setWorkingTrees((current) => {
-        const next = { ...current };
-        delete next[localSpaceId];
-        return next;
-      });
-      setScanRevisions((current) => {
-        const next = { ...current };
-        delete next[localSpaceId];
-        return next;
-      });
-      setDiffWindowOverrides((current) => {
-        const next: Record<string, LensDiffEntry> = {};
-        for (const [key, value] of Object.entries(current)) {
-          if (!key.startsWith(`${localSpaceId}:`)) {
-            next[key] = value;
-          }
-        }
-        return next;
-      });
-      setSelectedDiffPath(null);
-      setSelectedStepId(null);
-      setSelectedLocalSpaceId((current) => {
-        if (current !== localSpaceId) {
-          return current;
-        }
-        const nextSpace = localSpaces.find((entry) => entry.localSpaceId !== localSpaceId);
-        return nextSpace?.localSpaceId ?? null;
-      });
-      clearCommandError("forget-local");
-      notify({
-        tone: "success",
-        title: "Local Space forgotten",
-        message: result.archivedLayrsPath ? `${result.message} Archived metadata: ${result.archivedLayrsPath}` : result.message,
-        dedupeKey: "desktop-forgot-local"
-      });
-      await refreshConnectedBootstrap();
-    } catch (nextError) {
-      recordCommandError("forget-local", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-      setForgetTargetId(null);
-    }
-  }
-  async function handleSwitchLayer(layerId: string) {
-    if (!selectedLocalSpace || layerId === selectedLocalSpace.activeLayerId) {
-      return;
-    }
-    setBusyAction(`switch:${layerId}`);
-    setError(null);
-    try {
-      const result = await switchLayer(selectedLocalSpace.localSpaceId, layerId);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("switch");
-      triggerPulse(["layer", "steps"]);
-      notify({
-        tone: "success",
-        title: "Layer switched",
-        message: `${result.changedFiles} changed file(s) preserved in local Steps.`,
-        dedupeKey: "desktop-layer-switched"
-      });
-    } catch (nextError) {
-      recordCommandError("switch", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleCreateLayerFromCurrent() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    const layerName = layerSearchQuery.trim();
-    if (!layerName) {
-      setError("Name the new Layer before creating it.");
-      return;
-    }
-    setBusyAction("create-layer");
-    setError(null);
-    try {
-      const result = await createLayerFromCurrent(selectedLocalSpace.localSpaceId, layerName);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      setLayerSearchQuery("");
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("create-layer");
-      triggerPulse(["layer", "steps"]);
-      notify({ tone: "success", title: "Layer created from current files", dedupeKey: "desktop-layer-created" });
-    } catch (nextError) {
-      recordCommandError("create-layer", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleDeleteLayer(layerId: string) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setDeleteLayerTargetId(layerId);
-  }
-  async function confirmDeleteLayer(layerId: string) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction(`delete-layer:${layerId}`);
-    setError(null);
-    try {
-      const result = await deleteLayer(selectedLocalSpace.localSpaceId, layerId);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      setSelectedStepId(null);
-      setSelectedDiffPath(null);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("delete-layer");
-      triggerPulse(["layer"]);
-      notify({ tone: "success", title: "Layer deleted", message: result.message, dedupeKey: "desktop-layer-deleted" });
-    } catch (nextError) {
-      recordCommandError("delete-layer", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-      setDeleteLayerTargetId(null);
-    }
-  }
-  function handleDisconnectLayer(layerId: string) {
-    setDisconnectLayerTargetId(layerId);
-  }
-  async function confirmDisconnectLayer(layerId: string) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction("disconnect-layer");
-    setError(null);
-    try {
-      const result = await disconnectLayerFromParent(selectedLocalSpace.localSpaceId, layerId);
-      replaceLocalSpace(result.localSpace);
-      setSelectedLocalSpaceId(result.localSpace.localSpaceId);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("disconnect-layer");
-      triggerPulse(["layer"]);
-      notify({ tone: "success", title: "Layer disconnected", message: result.message, dedupeKey: "desktop-layer-disconnected" });
-    } catch (nextError) {
-      recordCommandError("disconnect-layer", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-      setDisconnectLayerTargetId(null);
-    }
-  }
-  function handleClearLayerSteps(layerId: string) {
-    setClearStepsTargetId(layerId);
-  }
-  async function confirmClearLayerSteps(layerId: string) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction("clear-steps");
-    setError(null);
-    try {
-      const result = await clearLayerSteps(selectedLocalSpace.localSpaceId, layerId);
-      replaceLocalSpace(result.localSpace);
-      setSelectedStepId(null);
-      setSelectedDiffPath(null);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("clear-steps");
-      triggerPulse(["steps", "layer"]);
-      notify({ tone: "success", title: "Layer Steps cleared", message: result.message, dedupeKey: "desktop-layer-steps-cleared" });
-    } catch (nextError) {
-      recordCommandError("clear-steps", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-      setClearStepsTargetId(null);
-    }
-  }
-  async function confirmWeaveActiveLayerToParent() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction("weave-parent");
-    setError(null);
-    try {
-      const result = await weaveActiveLayerToParent(selectedLocalSpace.localSpaceId, false);
-      replaceLocalSpace(result.localSpace);
-      setWeaveSessions((current) => ({ ...current, [result.localSpace.localSpaceId]: result.session }));
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("weave-parent");
-      triggerPulse(["steps", "layer", "changes"]);
-      if (result.session.status === "conflicted") {
-        choosePage("weaves");
-      }
-      notify({
-        tone: result.session.status === "conflicted" ? "warning" : "success",
-        title: result.session.status === "conflicted" ? "Weave needs resolution" : "Woven to parent",
-        message: result.message,
-        dedupeKey: "desktop-weave-parent"
-      });
-    } catch (nextError) {
-      recordCommandError("weave-parent", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-      setConfirmWeaveParent(false);
-    }
-  }
-  async function handleSaveStep() {
-    if (!selectedLocalSpace) {
-      notify({ tone: "warning", title: "No Local Space selected", dedupeKey: "desktop-save-no-space" });
-      return;
-    }
-    setBusyAction("save-step");
-    setError(null);
-    try {
-      const result = await saveLocalStep(selectedLocalSpace.localSpaceId);
-      replaceLocalSpace(result.localSpace);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("save-step");
-      if (result.status === "clean") {
-        notify({ tone: "info", title: "Nothing to save", message: result.message, dedupeKey: "desktop-save-clean" });
-      } else {
-        triggerPulse(["changes", "steps", "sync", "layer"]);
-        notify({
-          tone: "success",
-          title: "Step created",
-          message: `${result.changedFiles} file(s), +${result.diffStats.additions}, -${result.diffStats.deletions}`,
-          dedupeKey: "desktop-step-saved"
-        });
-      }
-    } catch (nextError) {
-      recordCommandError("save-step", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleSmartSaveShortcut() {
-    if (!selectedLocalSpace) {
-      notify({ tone: "warning", title: "No Local Space selected", dedupeKey: "desktop-save-no-space" });
-      return;
-    }
-    if (workingTreeChanges.length > 0) {
-      await handleSaveStep();
-      return;
-    }
-    if (shortcuts.smartSavePublishesPendingStep && (selectedWorkingTree?.pendingPublishCount ?? 0) > 0) {
-      await handlePublish();
-      return;
-    }
-    notify({ tone: "info", title: "Nothing to save", message: "No local changes or pending publish step.", dedupeKey: "desktop-save-nothing" });
-  }
-  async function handlePublish() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    if (selectedLocalSpace.state === "draft") {
-      if (!sendWorkspaceId.trim()) {
-        choosePage("spaceSettings");
-        notify({
-          tone: "warning",
-          title: "Choose a Workspace",
-          message: "Choose the target Workspace in Space Settings before creating this Draft in Studio.",
-          dedupeKey: "desktop-draft-publish-workspace"
-        });
-        setError("Choose a Workspace in Space Settings before publishing this Draft Local Space.");
-        return;
-      }
-      await handleSendDraftToStudio();
-      return;
-    }
-    setBusyAction("publish");
-    setError(null);
-    try {
-      const result = await publishLocalSpace(selectedLocalSpace.localSpaceId);
-      replaceLocalSpace(result.localSpace);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("publish");
-      triggerPulse(["sync", "steps"]);
-      notify({ tone: result.status === "clean" ? "info" : "success", title: "Publish complete", message: result.message, dedupeKey: "desktop-publish" });
-    } catch (nextError) {
-      recordCommandError("publish", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleSync() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    if (selectedLocalSpace.state === "draft") {
-      if (!sendWorkspaceId.trim()) {
-        choosePage("spaceSettings");
-        notify({
-          tone: "warning",
-          title: "Choose a Workspace",
-          message: "Choose the target Workspace in Space Settings before creating this Draft in Studio.",
-          dedupeKey: "desktop-draft-sync-workspace"
-        });
-        setError("Choose a Workspace in Space Settings before syncing this Draft Local Space.");
-        return;
-      }
-      await handleSendDraftToStudio();
-      return;
-    }
-    setBusyAction("sync");
-    setError(null);
-    try {
-      const result = await syncLocalSpace(selectedLocalSpace.localSpaceId);
-      replaceLocalSpace(result.localSpace);
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      await loadSpaces();
-      clearCommandError("sync");
-      triggerPulse(result.status === "conflicted" ? ["sync", "changes", "layer"] : ["sync", "steps", "changes"]);
-      notify({
-        tone: result.status === "conflicted" ? "warning" : "success",
-        title: result.status === "conflicted" ? "Sync needs resolution" : "Sync complete",
-        message: result.message,
-        dedupeKey: "desktop-sync"
-      });
-    } catch (nextError) {
-      recordCommandError("sync", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleWeave(preview: boolean) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    if (!weaveSourceLayerId || !weaveTargetLayerId) {
-      notify({ tone: "warning", title: "Choose two Layers", dedupeKey: "desktop-weave-missing-layers" });
-      return;
-    }
-    setBusyAction(preview ? "weave-preview" : "weave-apply");
-    setError(null);
-    try {
-      const result = await weaveLayers(
-        selectedLocalSpace.localSpaceId,
-        weaveSourceLayerId,
-        weaveTargetLayerId,
-        preview
-      );
-      replaceLocalSpace(result.localSpace);
-      setWeaveSessions((current) => ({ ...current, [result.localSpace.localSpaceId]: result.session }));
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("weave");
-      triggerPulse(["steps", "layer", "changes"]);
-      notify({
-        tone: result.session.status === "conflicted" ? "warning" : "success",
-        title: preview ? "Weave preview ready" : "Weave updated",
-        message: result.message,
-        dedupeKey: preview ? "desktop-weave-preview" : "desktop-weave-apply"
-      });
-    } catch (nextError) {
-      recordCommandError("weave", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleResolveWeaveConflict(path: string, resolution: string, manualText?: string) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction(`weave-resolve:${path}`);
-    setError(null);
-    try {
-      const result = await resolveWeaveConflict(selectedLocalSpace.localSpaceId, path, resolution, undefined, manualText);
-      replaceLocalSpace(result.localSpace);
-      setWeaveSessions((current) => ({ ...current, [result.localSpace.localSpaceId]: result.session }));
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("weave");
-      notify({ tone: "success", title: "Conflict resolved", message: result.message, dedupeKey: `desktop-weave-resolved-${path}` });
-    } catch (nextError) {
-      recordCommandError("weave", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleContinueWeave() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction("weave-continue");
-    setError(null);
-    try {
-      const result = await continueWeave(selectedLocalSpace.localSpaceId);
-      replaceLocalSpace(result.localSpace);
-      setWeaveSessions((current) => ({ ...current, [result.localSpace.localSpaceId]: null }));
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("weave");
-      triggerPulse(["steps", "layer", "sync"]);
-      notify({ tone: "success", title: "Weave complete", message: result.message, dedupeKey: "desktop-weave-continue" });
-    } catch (nextError) {
-      recordCommandError("weave", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
-  async function handleAbortWeave() {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction("weave-abort");
-    setError(null);
-    try {
-      const result = await abortWeave(selectedLocalSpace.localSpaceId);
-      replaceLocalSpace(result.localSpace);
-      setWeaveSessions((current) => ({ ...current, [result.localSpace.localSpaceId]: null }));
-      await scanLocalSpace(result.localSpace.localSpaceId);
-      clearCommandError("weave");
-      triggerPulse(["layer", "changes"]);
-      notify({ tone: "info", title: "Weave aborted", message: result.message, dedupeKey: "desktop-weave-abort" });
-    } catch (nextError) {
-      recordCommandError("weave", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
+  const {
+    confirmClearLayerSteps,
+    confirmDeleteLayer,
+    confirmDisconnectLayer,
+    confirmForgetLocalSpace,
+    handleClearLayerSteps,
+    handleCreateDraftLocalSpace,
+    handleCreateLayerFromCurrent,
+    handleCreateLocalSpace,
+    handleDeleteLayer,
+    handleDisconnectLayer,
+    handleForgetLocalSpace,
+    handleInitLocalSpace,
+    handleOpenLocalSpace,
+    handleSendDraftToStudio,
+    handleSwitchLayer,
+    selectLocalSpace
+  } = useDesktopLocalActions({
+    applyLocalSpaces,
+    choosePage,
+    clearCommandError,
+    createDrafts,
+    defaultLocalRoot,
+    draftSpaceFolder,
+    draftSpaceName,
+    initSpaceFolder,
+    initSpaceName,
+    layerSearchQuery,
+    loadSpaces,
+    localSpaces,
+    notify,
+    operations,
+    performScan,
+    recordCommandError,
+    refreshConnectedBootstrap,
+    replaceLocalSpace,
+    scanLocalSpace,
+    selectedLocalSpace,
+    sendWorkspaceId,
+    setBusyAction,
+    setClearStepsTargetId,
+    setDeleteLayerTargetId,
+    setDisconnectLayerTargetId,
+    setDraftSpaceName,
+    setError,
+    setForgetTargetId,
+    setInitSpaceFolder,
+    setInitSpaceName,
+    setLayerSearchQuery,
+    setLocalSpaceTab,
+    setSelectedDiffPath,
+    setSelectedLocalSpaceId,
+    setSelectedStepId,
+    triggerPulse,
+    workingTrees
+  });
+  const {
+    confirmWeaveActiveLayerToParent,
+    handleAbortWeave,
+    handleContinueWeave,
+    handlePublish,
+    handleResolveWeaveConflict,
+    handleSaveStep,
+    handleSmartSaveShortcut,
+    handleSync,
+    handleWeave
+  } = useDesktopSyncActions({
+    choosePage,
+    clearCommandError,
+    handleSendDraftToStudio,
+    notify,
+    operations,
+    performLoadSpaces,
+    performScan,
+    recordCommandError,
+    replaceLocalSpace,
+    selectedLocalSpace,
+    selectedWorkingTree,
+    sendWorkspaceId,
+    setConfirmWeaveParent,
+    setError,
+    setWeaveSessions,
+    shortcuts,
+    triggerPulse,
+    weaveSourceLayerId,
+    weaveTargetLayerId,
+    workingTreeChanges
+  });
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (
@@ -1265,28 +793,17 @@ export function DesktopApp() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [clearStepsTarget, confirmWeaveParent, deleteLayerTarget, disconnectLayerTarget, forgetTarget, loadState, selectedLocalSpace, shortcuts, workingTreeChanges.length, selectedWorkingTree?.pendingPublishCount]);
-  async function handleLoadDiffWindow(path: string, start: number, limit: number) {
-    if (!selectedLocalSpace) {
-      return;
-    }
-    setBusyAction(`diff-window:${path}`);
-    setError(null);
-    try {
-      const sourceStepId = localSpaceTab === "steps" ? selectedStepId : null;
-      const source = sourceStepId ? `localStep:${sourceStepId}` : "workingTree";
-      const nextDiff = await loadDiffWindow(selectedLocalSpace.localSpaceId, path, source, start, limit);
-      setDiffWindowOverrides((current) => ({
-        ...current,
-        [diffWindowKey(selectedLocalSpace.localSpaceId, sourceStepId, path)]: nextDiff
-      }));
-      clearCommandError("diff-window");
-    } catch (nextError) {
-      recordCommandError("diff-window", nextError);
-      setError(errorMessage(nextError));
-    } finally {
-      setBusyAction(null);
-    }
-  }
+  const handleLoadDiffWindow = useDesktopDiffWindow({
+    clearCommandError,
+    localSpaceTab,
+    localSpacesRef,
+    recordCommandError,
+    selectedLayerId: selectedLayer?.layerId,
+    selectedLocalSpace,
+    selectedStepId,
+    setDiffWindowOverrides,
+    setError
+  });
   function selectTimelineItem(item: TimelineItem) {
     setSelectedStepId(item.kind === "step" ? item.id : null);
     setSelectedDiffPath(null);
@@ -1383,7 +900,7 @@ export function DesktopApp() {
             busyAction={busyAction}
             changes={changes}
             commandErrors={commandErrors}
-            onBack={returnToSelectedSpace}
+            onBack={() => choosePage("local")}
             onForgetSpace={(localSpaceId) => void handleForgetLocalSpace(localSpaceId)}
             onOpenSpace={(localSpaceId) => void handleOpenLocalSpace(localSpaceId)}
             onSendDraft={() => void handleSendDraftToStudio()}
@@ -1398,7 +915,7 @@ export function DesktopApp() {
           <SpaceWeavesView
             busyAction={busyAction}
             commandErrors={commandErrors}
-            onBack={returnToSelectedSpace}
+            onBack={() => choosePage("local")}
             selectedSpace={selectedLocalSpace}
             weaveSession={selectedWeaveSession}
             weaveSourceLayerId={weaveSourceLayerId}
@@ -1436,10 +953,7 @@ export function DesktopApp() {
             login={login}
             pollStatus={pollStatus}
             pollInFlight={pollInFlight}
-            autoReceive={autoReceive}
-            autoPublish={autoPublish}
             autoLocalSteps={autoLocalSteps}
-            syncIntervalMinutes={syncIntervalMinutes}
             shortcuts={shortcuts}
             loadState={loadState}
             saving={busyAction === "settings"}
@@ -1452,17 +966,16 @@ export function DesktopApp() {
                 void pollOnce(login.deviceCode);
               }
             }}
-            onAutoReceiveChange={setAutoReceive}
-            onAutoPublishChange={setAutoPublish}
             onAutoLocalStepsChange={setAutoLocalSteps}
-            onSyncIntervalChange={setSyncIntervalMinutes}
             onShortcutsChange={setShortcuts}
           />
         ) : null}
       </section>
       <DesktopConfirmations
         activeParentLayer={activeParentLayer}
+        busyAction={busyAction}
         clearStepsTarget={clearStepsTarget}
+        commandErrors={commandErrors}
         confirmWeaveParent={confirmWeaveParent}
         deleteLayerTarget={deleteLayerTarget}
         disconnectLayerTarget={disconnectLayerTarget}

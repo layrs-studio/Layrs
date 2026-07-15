@@ -42,6 +42,18 @@
   white-space: nowrap;
 }
 
+.studio-step-file:disabled,
+.studio-step-file:disabled:hover,
+.studio-step-diff.is-redacted {
+  border-color: var(--layrs-line);
+  background: #f1f2f0;
+  color: var(--layrs-muted);
+}
+
+.studio-step-file:disabled {
+  cursor: not-allowed;
+}
+
 .studio-step-summary .studio-diff-stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

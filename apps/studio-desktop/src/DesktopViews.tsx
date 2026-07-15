@@ -718,7 +718,7 @@ export function LayerSettingsView({
             <button
               type="button"
               className="desktop-danger-button"
-              disabled={!canDisconnect || busyAction === "disconnect-layer" || Boolean(commandErrors["disconnect-layer"])}
+              disabled={!canDisconnect || busyAction === "disconnect-layer"}
               onClick={() => onDisconnectLayer(selectedLayer.layerId)}
             >
               Disconnect from parent
@@ -731,7 +731,7 @@ export function LayerSettingsView({
             <button
               type="button"
               className="desktop-danger-button"
-              disabled={busyAction === "clear-steps" || Boolean(commandErrors["clear-steps"])}
+              disabled={busyAction === "clear-steps"}
               onClick={() => onClearSteps(selectedLayer.layerId)}
             >
               Clear steps

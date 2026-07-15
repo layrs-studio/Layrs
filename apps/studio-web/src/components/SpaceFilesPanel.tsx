@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { Artifact, Layer } from "@layrs/client-sdk";
 import { EmptyState, PanelTitle, formatDate } from "./common";
 import { LensFileViewer, resolveLensForArtifact, type LensRegistryState } from "./LensFileViewer";
+import { isArtifactRestricted } from "../privateData";
+import { privateRequestKey } from "../studioPrivateApi";
 
 export function SpaceFilesPanel({
   artifacts,
@@ -85,7 +87,13 @@ export function SpaceFilesPanel({
               );
             })}
           </div>
-          <LensFileViewer artifact={selectedArtifact} layerId={layer?.id} lensRegistry={lensRegistry} workspaceId={workspaceId} />
+          <LensFileViewer
+            artifact={selectedArtifact}
+            key={privateRequestKey(workspaceId, selectedArtifact?.spaceId, layer?.id, selectedArtifact?.id)}
+            layerId={layer?.id}
+            lensRegistry={lensRegistry}
+            workspaceId={workspaceId}
+          />
         </div>
       )}
     </section>
@@ -93,5 +101,5 @@ export function SpaceFilesPanel({
 }
 
 function canOpenArtifact(artifact: Artifact): boolean {
-  return !artifact.access?.isRedacted && artifact.access?.canOpen !== false;
+  return !isArtifactRestricted(artifact);
 }

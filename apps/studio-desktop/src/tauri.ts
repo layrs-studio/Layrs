@@ -1,4 +1,5 @@
 import type { DiffModel } from "@layrs/client-sdk";
+import { guardDesktopPrivateRequest } from "./desktopPrivateApi";
 
 export interface SecretStoreStatus {
   available: boolean;
@@ -328,8 +329,19 @@ function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promis
     );
   }
 
-  return invoke<T>(command, args);
+  return PUBLIC_DESKTOP_COMMANDS.has(command)
+    ? invoke<T>(command, args)
+    : guardDesktopPrivateRequest(() => invoke<T>(command, args));
 }
+
+const PUBLIC_DESKTOP_COMMANDS = new Set([
+  "configure_server_endpoint",
+  "load_desktop_settings",
+  "poll_device_login",
+  "save_desktop_settings",
+  "select_folder",
+  "start_device_login"
+]);
 
 export function getDesktopStatus() {
   return tauriInvoke<DesktopStatus>("desktop_status");

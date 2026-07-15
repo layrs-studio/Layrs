@@ -12,16 +12,23 @@ import type { DiffModel } from "@layrs/lens-sdk";
 import { StatusPill } from "@layrs/ui";
 import { EmptyState, PanelTitle, formatTime } from "./common";
 import { resolveLensForArtifact, type LensRegistryState } from "./LensFileViewer";
+import { artifactAccessSignature, isArtifactRestricted } from "../privateData";
+import {
+  isPrivateRequestCancelled,
+  privateRequestKey,
+  type PrivateJsonFetcher,
+  useStudioPrivateApi
+} from "../studioPrivateApi";
 
 type StepFeedState =
-  | { status: "idle" | "loading" }
-  | { status: "available"; steps: LayerStepSummary[] }
-  | { status: "fallback"; message?: string };
+  | { status: "idle" | "loading"; requestKey: string }
+  | { status: "available"; requestKey: string; steps: LayerStepSummary[] }
+  | { status: "fallback"; requestKey: string; message?: string };
 
 type StepDiffState =
-  | { status: "idle" | "loading" }
-  | { status: "available"; diff: DiffModel; window?: ArtifactWindowMetadata; source: "step" | "artifact" | "embedded" }
-  | { status: "unavailable"; message: string };
+  | { status: "idle" | "loading"; requestKey: string }
+  | { status: "available"; requestKey: string; diff: DiffModel; window?: ArtifactWindowMetadata; source: "step" | "artifact" | "embedded" }
+  | { status: "unavailable"; requestKey: string; message: string };
 
 interface LayerStepSummary {
   id: string;
@@ -61,6 +68,7 @@ interface StepChangedFile {
   title?: string;
   diff?: DiffModel;
   artifact?: Artifact;
+  redacted?: boolean;
 }
 
 const STEP_DIFF_WINDOW_LIMIT = 400;
@@ -218,13 +226,14 @@ function ChangedFilesList({
       {files.map((file) => (
         <button
           className={selectedPath === file.path ? "studio-step-file is-selected" : "studio-step-file"}
+          disabled={file.redacted}
           key={file.path}
           onClick={() => onSelect(file.path)}
           type="button"
         >
-          <span>{file.state}</span>
+          <span>{file.redacted ? "redacted" : file.state}</span>
           <strong>{file.path}</strong>
-          <small>{file.lensId ?? file.artifact?.type ?? "raw"}</small>
+          <small>{file.redacted ? "Restricted by Layer access policy" : file.lensId ?? file.artifact?.type ?? "raw"}</small>
         </button>
       ))}
     </div>
@@ -244,6 +253,18 @@ function StepDiffViewer({
 }) {
   const window = diffState.status === "available" ? diffState.window : undefined;
   const isLoading = diffState.status === "loading";
+
+  if (file?.redacted) {
+    return (
+      <div className="studio-step-diff is-redacted">
+        <div className="studio-step-diff__meta">
+          <span>Restricted</span>
+          <strong>{file.path}</strong>
+          <p>Restricted by Layer access policy</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="studio-step-diff">
@@ -302,38 +323,46 @@ function useLayerStepsFeed({
   spaceId: string;
   workspaceId: string;
 }): StepFeedState {
-  const [state, setState] = useState<StepFeedState>({ status: "idle" });
+  const privateApi = useStudioPrivateApi();
+  const requestKey = privateRequestKey(
+    "layer-steps",
+    workspaceId,
+    spaceId,
+    layer?.id,
+    refreshKey,
+    artifactAccessSignature(artifacts)
+  );
+  const [state, setState] = useState<StepFeedState>({ status: "idle", requestKey: "" });
 
   useEffect(() => {
     if (!layer || isMockMode()) {
-      setState({ status: "idle" });
+      setState({ status: "idle", requestKey });
       return;
     }
 
-    const controller = new AbortController();
     const baseUrl = runtimeApiBaseUrl();
     const path = `/v1/workspaces/${encodeURIComponent(workspaceId)}/spaces/${encodeURIComponent(spaceId)}/layers/${encodeURIComponent(layer.id)}/steps`;
 
-    setState({ status: "loading" });
-    void fetchJson(`${baseUrl}${path}`, controller.signal)
+    setState({ status: "loading", requestKey });
+    void privateApi
+      .request("layer-steps", requestKey, ({ fetchJson }) => fetchJson(`${baseUrl}${path}`))
       .then((payload) => {
-        if (!controller.signal.aborted) {
-          setState({ status: "available", steps: normalizeLayerSteps(payload, artifacts, layer.id, spaceId) });
-        }
+        setState({ status: "available", requestKey, steps: normalizeLayerSteps(payload, artifacts, layer.id, spaceId) });
       })
       .catch((error) => {
-        if (!controller.signal.aborted) {
+        if (!isPrivateRequestCancelled(error)) {
           setState({
             status: "fallback",
+            requestKey,
             message: `Layer steps endpoint unavailable. Studio is using snapshot steps. ${optionalStatus(error)}`
           });
         }
       });
 
-    return () => controller.abort();
-  }, [artifacts, layer, refreshKey, spaceId, workspaceId]);
+    return () => privateApi.cancel("layer-steps", requestKey);
+  }, [artifacts, layer?.id, privateApi, requestKey, spaceId, workspaceId]);
 
-  return state;
+  return state.requestKey === requestKey ? state : { status: "loading", requestKey };
 }
 
 function useStepFileDiff({
@@ -351,60 +380,73 @@ function useStepFileDiff({
   windowStart: number;
   workspaceId: string;
 }): StepDiffState {
-  const [state, setState] = useState<StepDiffState>({ status: "idle" });
+  const privateApi = useStudioPrivateApi();
+  const requestKey = privateRequestKey(
+    "step-diff",
+    workspaceId,
+    spaceId,
+    layer?.id,
+    step?.id,
+    file?.artifactId,
+    file?.path,
+    windowStart,
+    file?.redacted ? "redacted" : "open"
+  );
+  const [state, setState] = useState<StepDiffState>({ status: "idle", requestKey: "" });
 
   useEffect(() => {
-    if (!file || !layer || !step) {
-      setState({ status: "idle" });
+    if (!file || !layer || !step || file.redacted) {
+      setState({ status: "idle", requestKey });
       return;
     }
 
     if (file.diff && windowStart === 0) {
-      setState({ status: "available", diff: file.diff, source: "embedded" });
+      setState({ status: "available", requestKey, diff: file.diff, source: "embedded" });
       return;
     }
 
-    const controller = new AbortController();
-    setState({ status: "loading" });
+    setState({ status: "loading", requestKey });
 
-    void loadStepFileDiff({ file, layer, spaceId, step, windowStart, workspaceId, signal: controller.signal })
+    void privateApi
+      .request("step-diff", requestKey, ({ fetchJson }) =>
+        loadStepFileDiff({ file, layer, spaceId, step, windowStart, workspaceId, fetchJson })
+      )
       .then((next) => {
-        if (!controller.signal.aborted) {
-          setState(next);
-        }
+        setState({ ...next, requestKey });
       })
       .catch((error) => {
-        if (!controller.signal.aborted) {
+        if (!isPrivateRequestCancelled(error)) {
           setState({
             status: "unavailable",
+            requestKey,
             message: `Diff is unavailable for this step file. ${optionalStatus(error)}`
           });
         }
       });
 
-    return () => controller.abort();
-  }, [file, layer, spaceId, step, windowStart, workspaceId]);
+    return () => privateApi.cancel("step-diff", requestKey);
+  }, [file, layer?.id, privateApi, requestKey, spaceId, step?.id, windowStart, workspaceId]);
 
-  return state;
+  return state.requestKey === requestKey ? state : { status: "loading", requestKey };
 }
 
 async function loadStepFileDiff({
+  fetchJson,
   file,
   layer,
-  signal,
   spaceId,
   step,
   windowStart,
   workspaceId
 }: {
+  fetchJson: PrivateJsonFetcher;
   file: StepChangedFile;
   layer: Layer;
-  signal: AbortSignal;
   spaceId: string;
   step: LayerStepSummary;
   windowStart: number;
   workspaceId: string;
-}): Promise<Extract<StepDiffState, { status: "available" }>> {
+}): Promise<Omit<Extract<StepDiffState, { status: "available" }>, "requestKey">> {
   const baseUrl = runtimeApiBaseUrl();
   const windowQuery = new URLSearchParams({
     path: file.path,
@@ -423,7 +465,7 @@ async function loadStepFileDiff({
     "diff"
   ].join("/");
 
-  const stepPayload = await fetchJson(`${baseUrl}${stepDiffPath}?${windowQuery}`, signal).catch(() => undefined);
+  const stepPayload = await fetchJson(`${baseUrl}${stepDiffPath}?${windowQuery}`).catch(() => undefined);
   const stepDiff = stepPayload ? diffFromWindowPayload(stepPayload) : undefined;
   if (stepDiff) {
     return { status: "available", ...stepDiff, source: "step" };
@@ -451,7 +493,7 @@ async function loadStepFileDiff({
     encodeURIComponent(file.artifact.id),
     "diff"
   ].join("/");
-  const artifactPayload = await fetchJson(`${baseUrl}${artifactPath}?${artifactQuery}`, signal);
+  const artifactPayload = await fetchJson(`${baseUrl}${artifactPath}?${artifactQuery}`);
   const artifactDiff = diffFromWindowPayload(artifactPayload);
   if (!artifactDiff) {
     throw new Error("Diff payload did not include a Lens diff.");
@@ -543,12 +585,7 @@ function filesFromPayload(record: Record<string, unknown>, artifactById: Map<str
   return artifactIds
     .map((artifactId) => artifactById.get(artifactId))
     .filter((artifact): artifact is Artifact => Boolean(artifact))
-    .map((artifact) => ({
-      path: artifact.location,
-      state: "modified",
-      artifactId: artifact.id,
-      artifact
-    }));
+    .map((artifact) => enrichFileWithArtifact({ path: artifact.location, state: "modified", artifactId: artifact.id }, artifactById));
 }
 
 function fileFromPayload(value: unknown, artifactById: Map<string, Artifact>): StepChangedFile | undefined {
@@ -567,6 +604,10 @@ function fileFromPayload(value: unknown, artifactById: Map<string, Artifact>): S
     stringPayload(record.location);
   if (!path) {
     return undefined;
+  }
+
+  if (isPayloadRestricted(record)) {
+    return { path, state: "redacted", redacted: true };
   }
 
   return enrichFileWithArtifact(
@@ -592,11 +633,34 @@ function enrichFileWithArtifact(file: StepChangedFile, artifactById: Map<string,
     (file.artifactId ? artifactById.get(file.artifactId) : undefined) ??
     [...artifactById.values()].find((candidate) => candidate.location === file.path);
 
+  if (file.redacted || artifact && isArtifactRestricted(artifact)) {
+    return {
+      path: file.path,
+      state: "redacted",
+      redacted: true
+    };
+  }
+
   return {
     ...file,
     artifact,
     artifactId: file.artifactId ?? artifact?.id
   };
+}
+
+function isPayloadRestricted(record: Record<string, unknown>): boolean {
+  const access = objectPayload(record.access) ?? objectPayload(record.accessDecision) ?? objectPayload(record.access_decision);
+  if (!access) {
+    return false;
+  }
+  return (
+    access.isRedacted === true ||
+    access.is_redacted === true ||
+    access.canOpen === false ||
+    access.can_open === false ||
+    access.mode === "redacted" ||
+    access.mode === "blocked"
+  );
 }
 
 function filesForStep(step: LayerStepSummary | undefined, artifacts: Artifact[]): StepChangedFile[] {
@@ -808,40 +872,6 @@ function runtimeApiBaseUrl(): string {
 function isMockMode(): boolean {
   const env = runtimeEnv();
   return env.VITE_LAYRS_STUDIO_MODE === "mock" || env.VITE_LAYRS_API_MOCK === "true";
-}
-
-async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { credentials: "include", signal });
-  const payload = await readOptionalJson(response);
-
-  if (!response.ok) {
-    throw new Error(errorMessageFromPayload(payload) ?? response.statusText);
-  }
-
-  return payload;
-}
-
-async function readOptionalJson(response: Response): Promise<unknown> {
-  if (response.status === 204) {
-    return undefined;
-  }
-
-  const text = await response.text();
-  if (!text) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-function errorMessageFromPayload(payload: unknown): string | undefined {
-  const record = objectPayload(payload);
-  const error = objectPayload(record?.error);
-  return stringPayload(record?.message) ?? stringPayload(error?.message) ?? stringPayload(record?.code) ?? stringPayload(error?.code);
 }
 
 function optionalStatus(error: unknown): string {

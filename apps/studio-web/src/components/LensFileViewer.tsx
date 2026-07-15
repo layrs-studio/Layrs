@@ -9,6 +9,8 @@ import { LensPreviewHost, listLenses, type LensSurfaceMetadata } from "@layrs/le
 import type { DiffKind, LensManifest, PreviewKind, PreviewModel } from "@layrs/lens-sdk";
 import { useEffect, useMemo, useState } from "react";
 import { EmptyState } from "./common";
+import { isArtifactRestricted } from "../privateData";
+import { isPrivateRequestCancelled, privateRequestKey, useStudioPrivateApi } from "../studioPrivateApi";
 
 export type LensRegistryStatus = "loading" | "available" | "fallback";
 
@@ -37,6 +39,8 @@ type ContentState =
   | { status: "idle" | "loading" }
   | { status: "available"; preview?: PreviewModel; window?: ArtifactWindowMetadata }
   | { status: "unavailable"; message: string };
+
+type KeyedContentState = ContentState & { requestKey: string };
 
 const SERVER_PREVIEW_WINDOW_LIMIT = 400;
 
@@ -71,7 +75,7 @@ export function LensFileViewer({
   }
 
   const restriction = artifact.access?.reason || "Restricted by Layer access policy";
-  if (artifact.access?.isRedacted === true || artifact.access?.canOpen === false) {
+  if (isArtifactRestricted(artifact)) {
     return (
       <div className="studio-file-viewer is-restricted">
         <div className="studio-file-viewer__meta">
@@ -223,16 +227,24 @@ function useArtifactContentPreview({
   windowStart: number;
   workspaceId: string;
 }): ContentState {
-  const [contentState, setContentState] = useState<ContentState>({ status: "idle" });
+  const privateApi = useStudioPrivateApi();
+  const artifactLayerId = artifact?.layerId ?? layerId;
+  const requestKey = privateRequestKey(
+    "artifact-preview",
+    workspaceId,
+    artifact?.spaceId,
+    artifactLayerId,
+    artifact?.id,
+    windowStart
+  );
+  const [contentState, setContentState] = useState<KeyedContentState>({ status: "idle", requestKey: "" });
 
   useEffect(() => {
-    const artifactLayerId = artifact?.layerId ?? layerId;
-    if (!artifact || !workspaceId || !artifactLayerId || artifact.access?.isRedacted === true || artifact.access?.canOpen === false) {
-      setContentState({ status: "idle" });
+    if (!artifact || !workspaceId || !artifactLayerId || isArtifactRestricted(artifact)) {
+      setContentState({ status: "idle", requestKey });
       return;
     }
 
-    const controller = new AbortController();
     const baseUrl = runtimeApiBaseUrl();
     const path = [
       "/v1/workspaces",
@@ -249,57 +261,55 @@ function useArtifactContentPreview({
       limit: String(SERVER_PREVIEW_WINDOW_LIMIT)
     });
 
-    setContentState({ status: "loading" });
+    setContentState({ status: "loading", requestKey });
 
-    void fetchJson(`${baseUrl}${path}/diff?${windowQuery}`, controller.signal)
-      .then((payload) => {
-        const windowed = previewFromWindowPayload(payload);
-        if (!controller.signal.aborted && windowed) {
-          setContentState({ status: "available", ...windowed });
+    void privateApi
+      .request("artifact-preview", requestKey, async ({ fetchJson, signal }) => {
+        let diffError: unknown;
+        try {
+          const payload = await fetchJson(`${baseUrl}${path}/diff?${windowQuery}`);
+          const windowed = previewFromWindowPayload(payload);
+          if (windowed) {
+            return { status: "available", ...windowed } as ContentState;
+          }
+        } catch (error) {
+          if (signal.aborted) {
+            throw error;
+          }
+          diffError = error;
         }
-        return windowed ? undefined : fetchJson(`${baseUrl}${path}/content`, controller.signal);
+
+        try {
+          const payload = await fetchJson(`${baseUrl}${path}/content`);
+          const preview = previewFromContentPayload(payload, artifact, lens, fallbackPreview);
+          return preview
+            ? ({ status: "available", preview } as ContentState)
+            : ({ status: "unavailable", message: "Preview content is not available for this file." } as ContentState);
+        } catch (error) {
+          if (signal.aborted) {
+            throw error;
+          }
+          return {
+            status: "unavailable",
+            message: `Preview content is unavailable. ${optionalStatus(diffError ?? error)}`
+          } as ContentState;
+        }
       })
-      .then((payload) => {
-        if (payload === undefined || controller.signal.aborted) {
-          return;
-        }
-        const preview = previewFromContentPayload(payload, artifact, lens, fallbackPreview);
-        if (!controller.signal.aborted) {
-          setContentState(
-            preview
-              ? { status: "available", preview }
-              : { status: "unavailable", message: "Preview content is not available for this file." }
-          );
-        }
-      })
+      .then((next) => setContentState({ ...next, requestKey }))
       .catch((error) => {
-        if (!controller.signal.aborted) {
-          void fetchJson(`${baseUrl}${path}/content`, controller.signal)
-            .then((payload) => {
-              const preview = previewFromContentPayload(payload, artifact, lens, fallbackPreview);
-              if (!controller.signal.aborted) {
-                setContentState(
-                  preview
-                    ? { status: "available", preview }
-                    : { status: "unavailable", message: "Preview content is not available for this file." }
-                );
-              }
-            })
-            .catch(() => {
-              if (!controller.signal.aborted) {
-                setContentState({
-                  status: "unavailable",
-                  message: `Preview content is unavailable. ${optionalStatus(error)}`
-                });
-              }
-            });
+        if (!isPrivateRequestCancelled(error)) {
+          setContentState({
+            status: "unavailable",
+            message: `Preview content is unavailable. ${optionalStatus(error)}`,
+            requestKey
+          });
         }
       });
 
-    return () => controller.abort();
-  }, [artifact, fallbackPreview, layerId, lens, windowStart, workspaceId]);
+    return () => privateApi.cancel("artifact-preview", requestKey);
+  }, [artifact, artifactLayerId, fallbackPreview, lens, privateApi, requestKey, workspaceId]);
 
-  return contentState;
+  return contentState.requestKey === requestKey ? contentState : { status: "loading" };
 }
 
 function previewFromWindowPayload(payload: unknown):
@@ -497,39 +507,6 @@ function runtimeEnv(): Record<string, string | undefined> {
 
 function runtimeApiBaseUrl(): string {
   return (runtimeEnv().VITE_LAYRS_API_URL ?? "").replace(/\/$/, "");
-}
-
-async function fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { credentials: "include", signal });
-  const payload = await readOptionalJson(response);
-
-  if (!response.ok) {
-    throw new Error(errorMessageFromPayload(payload) ?? response.statusText);
-  }
-
-  return payload;
-}
-
-async function readOptionalJson(response: Response): Promise<unknown> {
-  if (response.status === 204) {
-    return undefined;
-  }
-
-  const text = await response.text();
-  if (!text) {
-    return undefined;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-function errorMessageFromPayload(payload: unknown): string | undefined {
-  const record = objectValue(payload);
-  return stringValue(record?.message) ?? stringValue(record?.error);
 }
 
 function optionalStatus(error: unknown): string {
