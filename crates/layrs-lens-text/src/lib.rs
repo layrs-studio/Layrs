@@ -4,11 +4,15 @@ use layrs_lens_sdk::{
     InspectorValueType, LensCapability, LensConflictBlock, LensConflictSegment,
     LensConflictSegmentKind, LensError, LensManifest, LensReconcileContent, LensReconcileInput,
     LensReconcileResult, LensResolutionSegment, LensResult, MetadataValue, PreviewKind,
-    PreviewModel, ReconcileModel, ReconcileStatus, ReferenceKind, ResolutionMethod,
-    ResolutionMethods, ViewerContract, infer_media_type_from_path, span_at,
+    PreviewModel, ReferenceKind, ResolutionMethod, ResolutionMethods, ViewerContract, span_at,
 };
 
 pub const TEXT_LENS_ID: &str = "layrs.text";
+pub const TEXT_LENS_VERSION: &str = "1.0.0";
+pub const TEXT_LENS_DIGEST: &str =
+    "sha256:3ecc8843e714891f6a6ef9c899372e361fdaab0befa91f291e90bbcc412586f7";
+const LEGACY_ANALYSIS_RECONCILE_SUMMARY: &str =
+    "Legacy analysis reconcile status is non-authoritative; use reconcile_text";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TextLens;
@@ -39,7 +43,6 @@ pub fn manifest() -> LensManifest {
         vec![PreviewKind::Text],
         vec![DiffKind::TextLines],
     );
-    viewer.reconcile_statuses = reconcile_statuses_v1();
     viewer.inspector_fields = vec![
         InspectorField {
             key: "line_count".to_string(),
@@ -61,7 +64,7 @@ pub fn manifest() -> LensManifest {
     let mut manifest = LensManifest::new(
         TEXT_LENS_ID,
         "Text",
-        "0.0.0",
+        TEXT_LENS_VERSION,
         AnalyzerContract {
             supported_media_types: vec!["text/plain".to_string(), "text/markdown".to_string()],
             file_extensions: vec![
@@ -81,21 +84,14 @@ pub fn manifest() -> LensManifest {
             ],
         },
         viewer,
-    );
+    )
+    .with_digest(TEXT_LENS_DIGEST);
     manifest.resolution_methods = resolution_methods();
     manifest
 }
 
 pub fn resolution_methods() -> ResolutionMethods {
     ResolutionMethods::block(text_block_resolution_methods())
-}
-
-fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
-    vec![
-        ReconcileStatus::Unsupported,
-        ReconcileStatus::NeedsManualResolution,
-        ReconcileStatus::AutoResolvable,
-    ]
 }
 
 pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
@@ -106,7 +102,7 @@ pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
     let references = extract_references(text);
     let media_type = input
         .media_type
-        .or_else(|| infer_media_type_from_path(input.path))
+        .or_else(|| text_media_type_from_path(input.path))
         .unwrap_or("text/plain");
 
     let mut metadata = ArtifactMetadata::new(
@@ -156,14 +152,22 @@ pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
         let previous = String::from_utf8_lossy(previous);
         diff_lines(previous.as_ref(), text)
     });
-    let reconcile = reconcile_for_text_diff(diff.as_ref());
-
     let mut output = AnalysisOutput::new(metadata);
+    // Legacy analysis output cannot express canonical three-way results; use reconcile_text.
+    output.reconcile.summary = LEGACY_ANALYSIS_RECONCILE_SUMMARY.to_string();
     output.preview = Some(preview);
     output.diff = diff;
-    output.reconcile = reconcile;
     output.references = references;
     output
+}
+
+fn text_media_type_from_path(path: Option<&std::path::Path>) -> Option<&'static str> {
+    let extension = path?.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "md" | "markdown" => Some("text/markdown"),
+        "txt" | "rst" | "log" => Some("text/plain"),
+        _ => None,
+    }
 }
 
 pub fn line_stats(text: &str, utf8_lossy: bool) -> LineStats {
@@ -266,18 +270,6 @@ pub fn diff_lines(previous: &str, current: &str) -> DiffModel {
     diff
 }
 
-pub fn reconcile_for_text_diff(diff: Option<&DiffModel>) -> ReconcileModel {
-    match diff {
-        Some(diff) if diff.hunks.is_empty() => {
-            ReconcileModel::auto_resolvable("No text changes to reconcile")
-        }
-        Some(_) => ReconcileModel::needs_manual_resolution(
-            "Text changes require manual reconciliation in V1",
-        ),
-        None => ReconcileModel::unsupported("Reconciliation requires a previous text artifact"),
-    }
-}
-
 #[derive(Clone)]
 struct TextChangeRange {
     base_start: usize,
@@ -290,10 +282,10 @@ pub fn reconcile_text(input: LensReconcileInput<'_>) -> LensReconcileResult {
         return LensReconcileResult::unsupported("Base text is not valid UTF-8");
     };
     let Ok(ours_text) = side_text(input.ours.bytes, input.ours.exists) else {
-        return LensReconcileResult::unsupported("Target text is not valid UTF-8");
+        return LensReconcileResult::unsupported("Existing text is not valid UTF-8");
     };
     let Ok(theirs_text) = side_text(input.theirs.bytes, input.theirs.exists) else {
-        return LensReconcileResult::unsupported("Source text is not valid UTF-8");
+        return LensReconcileResult::unsupported("Incoming text is not valid UTF-8");
     };
 
     let base_lines = split_text_lines(base_text);
@@ -558,6 +550,7 @@ pub fn resolve_text_conflict(
 }
 
 fn resolved_block_text(block: &layrs_lens_sdk::LensBlockResolutionInput<'_>) -> LensResult<String> {
+    // Legacy hosts persist text already chosen by this Lens between block-resolution requests.
     if let Some(resolved_text) = block.resolved_text {
         return Ok(resolved_text.to_string());
     }
@@ -934,222 +927,4 @@ fn preview_body(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use layrs_lens_sdk::{
-        LensReconcileInput, LensReconcileResultStatus, LensReconcileSide, ReconcileStatus,
-    };
-
-    #[test]
-    fn manifest_is_text_fallback_not_code() {
-        let manifest = manifest();
-
-        assert_eq!(manifest.name, "Text");
-        assert_eq!(manifest.viewer.preview_kinds, vec![PreviewKind::Text]);
-        assert!(
-            !manifest
-                .analyzer
-                .file_extensions
-                .contains(&"rs".to_string())
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::View)
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Diff)
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Reconcile)
-        );
-        assert!(manifest.resolution_methods.file.is_empty());
-        assert_eq!(
-            manifest.resolution_methods.block,
-            vec![
-                ResolutionMethod::Existing,
-                ResolutionMethod::Incoming,
-                ResolutionMethod::Both,
-                ResolutionMethod::Manual
-            ]
-        );
-    }
-
-    #[test]
-    fn text_diff_marks_reconcile_manual_when_changed() {
-        let output = analyze(
-            AnalysisInput::new("artifact", b"one\ntwo\n").with_previous_bytes(b"one\nold\n"),
-        );
-
-        assert_eq!(
-            output.reconcile.status,
-            ReconcileStatus::NeedsManualResolution
-        );
-    }
-
-    #[test]
-    fn extracts_relative_and_url_references() {
-        let text = r#"
-import "./widgets/card.ts";
-background: url('../assets/bg.png');
-mask-image: URL(icons/mask.svg);
-docs: assets/readme.md
-skip: /var/tmp/file.txt https://example.test/app.css data:image/png;base64,aa
-"#;
-
-        let refs = extract_references(text);
-
-        assert!(refs.iter().any(|reference| {
-            reference.kind == ReferenceKind::RelativePath && reference.target == "./widgets/card.ts"
-        }));
-        assert!(refs.iter().any(|reference| {
-            reference.kind == ReferenceKind::UrlFunction && reference.target == "../assets/bg.png"
-        }));
-        assert!(refs.iter().any(|reference| {
-            reference.kind == ReferenceKind::UrlFunction && reference.target == "icons/mask.svg"
-        }));
-        assert!(refs.iter().any(|reference| {
-            reference.kind == ReferenceKind::RelativePath && reference.target == "assets/readme.md"
-        }));
-        assert!(
-            !refs
-                .iter()
-                .any(|reference| reference.target == "/var/tmp/file.txt")
-        );
-        assert!(
-            !refs
-                .iter()
-                .any(|reference| reference.target.starts_with("https://"))
-        );
-        assert!(
-            !refs
-                .iter()
-                .any(|reference| reference.target.starts_with("data:"))
-        );
-    }
-
-    #[test]
-    fn reconcile_auto_merges_non_overlapping_edits() {
-        let result = reconcile_case(
-            b"a\nb\nc\nd\n",
-            b"a\nours-b\nc\nd\n",
-            b"a\nb\ntheirs-c\nd\n",
-        );
-
-        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
-        assert_eq!(
-            String::from_utf8(result.resolved.expect("resolved").bytes).expect("utf8"),
-            "a\nours-b\ntheirs-c\nd\n"
-        );
-    }
-
-    #[test]
-    fn reconcile_auto_merges_same_edit_on_both_sides() {
-        let result = reconcile_case(b"a\nb\n", b"a\nshared\n", b"a\nshared\n");
-
-        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
-        assert_eq!(
-            String::from_utf8(result.resolved.expect("resolved").bytes).expect("utf8"),
-            "a\nshared\n"
-        );
-    }
-
-    #[test]
-    fn reconcile_reports_independent_text_conflict_blocks() {
-        let result = reconcile_case(
-            b"a\nx\nb\ny\nc\n",
-            b"a\nours-x\nb\nours-y\nc\n",
-            b"a\ntheirs-x\nb\ntheirs-y\nc\n",
-        );
-
-        assert_eq!(result.status, LensReconcileResultStatus::Conflicted);
-        assert_eq!(result.blocks.len(), 2);
-        assert_eq!(result.blocks[0].block_id, "block-1");
-        assert_eq!(result.blocks[1].block_id, "block-2");
-        assert_eq!(
-            result.blocks[0].supported_resolutions,
-            vec!["existing", "incoming", "both", "manual"]
-        );
-        assert!(result.file_methods.is_empty());
-        let marked = String::from_utf8(result.conflict.expect("conflict").bytes).expect("utf8");
-        assert_eq!(marked.matches("<<<<<<< target:target").count(), 2);
-        assert!(marked.contains("ours-x"));
-        assert!(marked.contains("theirs-y"));
-    }
-
-    #[test]
-    fn reconcile_preserves_crlf_and_trailing_newline() {
-        let result = reconcile_case(b"a\r\nb\r\n", b"a\r\nours\r\n", b"a\r\nours\r\n");
-
-        assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
-        assert_eq!(result.resolved.expect("resolved").bytes, b"a\r\nours\r\n");
-    }
-
-    #[test]
-    fn resolves_text_blocks_with_lens_choices() {
-        assert_eq!(
-            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "both", None)
-                .expect("resolve"),
-            "ours\ntheirs\n"
-        );
-        assert_eq!(
-            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "incoming", None)
-                .expect("incoming"),
-            "theirs\n"
-        );
-        assert_eq!(
-            resolve_text_block_choice("base\n", "ours\n", "theirs\n", "manual", Some("manual\n"))
-                .expect("manual"),
-            "manual\n"
-        );
-        assert!(resolve_text_block_choice("base\n", "ours\n", "theirs\n", "base", None).is_err());
-    }
-
-    #[test]
-    fn lens_assembles_text_resolution_from_segments() {
-        let blocks = [layrs_lens_sdk::LensBlockResolutionInput {
-            block_id: "block-1",
-            base: "base\n",
-            existing: "existing\n",
-            incoming: "incoming\n",
-            method: ResolutionMethod::Incoming,
-            manual_text: None,
-            resolved_text: None,
-        }];
-        let segments = [
-            layrs_lens_sdk::LensResolutionSegment {
-                kind: LensConflictSegmentKind::Text,
-                text: Some("before\n"),
-                block_id: None,
-            },
-            layrs_lens_sdk::LensResolutionSegment {
-                kind: LensConflictSegmentKind::Block,
-                text: None,
-                block_id: Some("block-1"),
-            },
-        ];
-
-        let content = resolve_text_conflict(&blocks, &segments).expect("resolved");
-
-        assert_eq!(content.bytes, b"before\nincoming\n");
-    }
-
-    fn reconcile_case(base: &[u8], ours: &[u8], theirs: &[u8]) -> LensReconcileResult {
-        reconcile_text(LensReconcileInput {
-            path: None,
-            media_type: Some("text/plain"),
-            base: LensReconcileSide::present(base, None),
-            ours: LensReconcileSide::present(ours, None),
-            theirs: LensReconcileSide::present(theirs, None),
-            ours_label: "target",
-            theirs_label: "source",
-        })
-    }
-}
+mod tests;

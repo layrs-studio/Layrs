@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "declaration": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "noEmit": false,
+    "baseUrl": ".",
+    "paths": {
+      "@layrs/lens-sdk": ["../lens-sdk/src/index.ts"]
+    },
+    "outDir": "../../tmp/lenses-tests",
+    "rootDir": ".."
+  },
+  "include": [
+    "src/manifests.ts",
+    "src/raw/reconcile.ts",
+    "src/shared/resolutionMethods.ts",
+    "src/text/reconcile.ts"
+  ]
+}

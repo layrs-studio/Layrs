@@ -1,13 +1,15 @@
 use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
     DiffKind, InspectorField, InspectorValueType, LensCapability, LensManifest, LensResult,
-    MetadataValue, PreviewKind, PreviewModel, ReconcileModel, ReconcileStatus, ViewerContract,
-    infer_media_type_from_path,
+    MetadataValue, PreviewKind, PreviewModel, ViewerContract, infer_media_type_from_path,
 };
 use layrs_lens_text::{diff_lines, extract_references, line_stats};
 use std::path::Path;
 
 pub const CODE_LENS_ID: &str = "layrs.code";
+pub const CODE_LENS_VERSION: &str = "1.0.0";
+pub const CODE_LENS_DIGEST: &str =
+    "sha256:76b4b9f1179a6d105706684fbdbb05bf4b92a8ee367e8e7332dfed3410e74090";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CodeLens;
@@ -29,7 +31,6 @@ pub fn manifest() -> LensManifest {
         vec![PreviewKind::Code],
         vec![DiffKind::TextLines],
     );
-    viewer.reconcile_statuses = reconcile_statuses_v1();
     viewer.inspector_fields = vec![
         InspectorField {
             key: "language".to_string(),
@@ -51,7 +52,7 @@ pub fn manifest() -> LensManifest {
     LensManifest::new(
         CODE_LENS_ID,
         "Code",
-        "0.0.0",
+        CODE_LENS_VERSION,
         AnalyzerContract {
             supported_media_types: vec![
                 "text/rust".to_string(),
@@ -72,7 +73,6 @@ pub fn manifest() -> LensManifest {
             capabilities: vec![
                 LensCapability::View,
                 LensCapability::Diff,
-                LensCapability::Reconcile,
                 LensCapability::Metadata,
                 LensCapability::Preview,
                 LensCapability::References,
@@ -80,14 +80,7 @@ pub fn manifest() -> LensManifest {
         },
         viewer,
     )
-}
-
-fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
-    vec![
-        ReconcileStatus::Unsupported,
-        ReconcileStatus::NeedsManualResolution,
-        ReconcileStatus::AutoResolvable,
-    ]
+    .with_digest(CODE_LENS_DIGEST)
 }
 
 pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
@@ -152,12 +145,9 @@ pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
         let previous = String::from_utf8_lossy(previous);
         diff_lines(previous.as_ref(), text)
     });
-    let reconcile = reconcile_for_code_diff(diff.as_ref());
-
     let mut output = AnalysisOutput::new(metadata);
     output.preview = Some(preview);
     output.diff = diff;
-    output.reconcile = reconcile;
     output.references = references;
     output
 }
@@ -197,18 +187,6 @@ pub fn code_extensions() -> &'static [&'static str] {
     ]
 }
 
-pub fn reconcile_for_code_diff(diff: Option<&layrs_lens_sdk::DiffModel>) -> ReconcileModel {
-    match diff {
-        Some(diff) if diff.hunks.is_empty() => {
-            ReconcileModel::auto_resolvable("No code changes to reconcile")
-        }
-        Some(_) => ReconcileModel::needs_manual_resolution(
-            "Code changes require manual reconciliation in V1",
-        ),
-        None => ReconcileModel::unsupported("Reconciliation requires a previous code artifact"),
-    }
-}
-
 fn preview_body(text: &str) -> String {
     const MAX_PREVIEW_BYTES: usize = 8 * 1024;
     if text.len() <= MAX_PREVIEW_BYTES {
@@ -225,42 +203,41 @@ fn preview_body(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use layrs_lens_sdk::ReconcileStatus;
+    use layrs_lens_sdk::{LENS_CONTRACT_VERSION, ReconcileStatus};
 
     #[test]
-    fn manifest_uses_code_identity_and_preview() {
+    fn manifest_matches_code_golden_contract_without_reconcile() {
         let manifest = manifest();
+        let pin = manifest.pin().expect("built-in Lens pin");
 
+        assert_eq!(manifest.contract_version, LENS_CONTRACT_VERSION);
         assert_eq!(manifest.id, CODE_LENS_ID);
+        assert_eq!(manifest.version, CODE_LENS_VERSION);
+        assert_eq!(manifest.digest.as_deref(), Some(CODE_LENS_DIGEST));
+        assert_eq!(pin.lens_id, CODE_LENS_ID);
+        assert_eq!(pin.version, CODE_LENS_VERSION);
+        assert_eq!(pin.digest, CODE_LENS_DIGEST);
         assert_eq!(manifest.viewer.preview_kinds, vec![PreviewKind::Code]);
+        assert_eq!(manifest.viewer.diff_kinds, vec![DiffKind::TextLines]);
+        assert!(manifest.viewer.reconcile_statuses.is_empty());
+        assert!(manifest.resolution_methods.file.is_empty());
+        assert!(manifest.resolution_methods.block.is_empty());
+        assert!(
+            !manifest
+                .analyzer
+                .capabilities
+                .contains(&LensCapability::Reconcile)
+        );
         assert!(
             manifest
                 .analyzer
                 .file_extensions
                 .contains(&"rs".to_string())
         );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::View)
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Diff)
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Reconcile)
-        );
     }
 
     #[test]
-    fn analyzes_code_with_line_diff_and_manual_reconcile_status() {
+    fn preview_and_diff_remain_available_without_reconcile() {
         let output = analyze(
             AnalysisInput::new("artifact", b"fn main() {}\n")
                 .with_path(Path::new("src/main.rs"))
@@ -270,9 +247,9 @@ mod tests {
         assert_eq!(output.metadata.kind, ArtifactKind::Code);
         assert_eq!(output.preview.as_ref().unwrap().kind, PreviewKind::Code);
         assert_eq!(
-            output.reconcile.status,
-            ReconcileStatus::NeedsManualResolution
+            output.diff.as_ref().expect("diff").kind,
+            DiffKind::TextLines
         );
-        assert!(output.diff.is_some());
+        assert_eq!(output.reconcile.status, ReconcileStatus::Unsupported);
     }
 }

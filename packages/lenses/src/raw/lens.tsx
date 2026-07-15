@@ -1,22 +1,12 @@
-import type { LayrsLens, LensCapability, LensDiffRendererProps, LensPreviewRendererProps } from "@layrs/lens-sdk";
-import { createLensManifest } from "@layrs/lens-sdk";
+import type { LayrsLens, LensDiffRendererProps, LensPreviewRendererProps } from "@layrs/lens-sdk";
 import type { ReactNode } from "react";
+import { rawManifest } from "../manifests";
 import { RawLensFallback } from "./fallback";
+import { prepareRawReconcile } from "./reconcile";
 import { RawLensReconcileSurface } from "./reconcileSurface";
 
-const CORE_CAPABILITIES: LensCapability[] = ["view", "diff", "reconcile"];
-
 export const rawLens: LayrsLens<ReactNode> = {
-  manifest: createLensManifest({
-    id: "layrs.raw",
-    name: "Raw",
-    component: "RawArtifactViewer",
-    previewKinds: ["raw"],
-    diffKinds: ["binary"],
-    supportedMediaTypes: ["application/octet-stream"],
-    fileExtensions: [],
-    capabilities: [...CORE_CAPABILITIES, "metadata", "preview"]
-  }),
+  manifest: rawManifest,
   priority: 100,
   viewer: {
     renderPreview: RawLensPreview,
@@ -24,13 +14,7 @@ export const rawLens: LayrsLens<ReactNode> = {
     renderReconcile: RawLensReconcileSurface
   },
   analyzer: {
-    reconcile: () => ({
-      status: "unsupported",
-      summary: "Raw reconciliation is not supported.",
-      blocks: [],
-      segments: [],
-      fields: {}
-    })
+    reconcile: prepareRawReconcile
   }
 };
 
