@@ -69,29 +69,65 @@ async fn weave_request_layer_ids(
     .ok_or_else(|| ApiError::not_found("weave request not found"))
 }
 
-async fn ensure_weave_request_read(
+async fn weave_request_access_paths(
     pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
     weave_id: &str,
-    account_id: &str,
-) -> Result<(String, String), ApiError> {
-    let (source_layer_id, target_layer_id) =
-        weave_request_layer_ids(pool, workspace_id, space_id, weave_id).await?;
-    ensure_layer_read(pool, workspace_id, space_id, &source_layer_id, account_id).await?;
-    ensure_layer_read(pool, workspace_id, space_id, &target_layer_id, account_id).await?;
-    let paths = sqlx::query_scalar::<_, String>(
+) -> Result<Vec<String>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT changed_paths, path_replays
+        FROM weave_step_replays
+        WHERE weave_id = $1
+        ORDER BY order_index ASC
+        "#,
+    )
+    .bind(weave_id)
+    .fetch_all(pool)
+    .await?;
+    let mut paths = BTreeMap::new();
+    for row in rows {
+        for path in row.get::<Vec<String>, _>("changed_paths") {
+            paths.insert(validate_publish_path(&path)?, ());
+        }
+        let path_replays = row.get::<Value, _>("path_replays");
+        let path_replays = path_replays
+            .as_array()
+            .ok_or_else(|| ApiError::internal("Weave replay path plan is invalid"))?;
+        for path_replay in path_replays {
+            let path = path_replay_path(path_replay)?;
+            paths.insert(validate_publish_path(&path)?, ());
+        }
+    }
+
+    let conflict_paths = sqlx::query_scalar::<_, String>(
         "SELECT logical_path FROM weave_conflicts WHERE weave_id = $1 ORDER BY logical_path",
     )
     .bind(weave_id)
     .fetch_all(pool)
     .await?;
-    for path in paths {
+    for path in conflict_paths {
+        paths.insert(validate_publish_path(&path)?, ());
+    }
+    Ok(paths.into_keys().collect())
+}
+
+async fn ensure_weave_layers_read(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    weave_id: &str,
+    source_layer_id: &str,
+    target_layer_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    ensure_layer_read(pool, workspace_id, space_id, source_layer_id, account_id).await?;
+    ensure_layer_read(pool, workspace_id, space_id, target_layer_id, account_id).await?;
+    for path in weave_request_access_paths(pool, weave_id).await? {
         let source = access_decision_for_path(
             pool,
             workspace_id,
             space_id,
-            &source_layer_id,
+            source_layer_id,
             &path,
             None,
             account_id,
@@ -101,7 +137,7 @@ async fn ensure_weave_request_read(
             pool,
             workspace_id,
             space_id,
-            &target_layer_id,
+            target_layer_id,
             &path,
             None,
             account_id,
@@ -109,10 +145,32 @@ async fn ensure_weave_request_read(
         .await?;
         if !source.can_read || !target.can_read {
             return Err(ApiError::forbidden(
-                "Weave conflict content is restricted by Layer access policy",
+                "Weave request is restricted by Layer access policy",
             ));
         }
     }
+    Ok(())
+}
+
+async fn ensure_weave_request_read(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    weave_id: &str,
+    account_id: &str,
+) -> Result<(String, String), ApiError> {
+    let (source_layer_id, target_layer_id) =
+        weave_request_layer_ids(pool, workspace_id, space_id, weave_id).await?;
+    ensure_weave_layers_read(
+        pool,
+        workspace_id,
+        space_id,
+        weave_id,
+        &source_layer_id,
+        &target_layer_id,
+        account_id,
+    )
+    .await?;
     Ok((source_layer_id, target_layer_id))
 }
 
@@ -153,10 +211,29 @@ async fn list_weave_requests(
     .fetch_all(&state.pool)
     .await?;
 
-    Ok(Json(json!(rows
-        .iter()
-        .map(weave_request_json)
-        .collect::<Vec<_>>())))
+    let mut visible = Vec::new();
+    for row in rows {
+        let weave_id = row.get::<String, _>("weave_id");
+        let source_layer_id = row.get::<String, _>("source_layer_id");
+        let target_layer_id = row.get::<String, _>("target_layer_id");
+        match ensure_weave_layers_read(
+            &state.pool,
+            &workspace_id,
+            &space_id,
+            &weave_id,
+            &source_layer_id,
+            &target_layer_id,
+            &user.id,
+        )
+        .await
+        {
+            Ok(()) => visible.push(weave_request_json(&row)),
+            Err(error) if error.status == StatusCode::FORBIDDEN => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(Json(json!(visible)))
 }
 
 async fn create_weave_request(
@@ -195,6 +272,13 @@ async fn create_weave_request(
     .await?;
     let pre_weave_target_step_id =
         latest_layer_step_id(&state.pool, &workspace_id, &space_id, &body.target_layer_id).await?;
+    let target_policy_epoch = current_policy_epoch(
+        &state.pool,
+        &workspace_id,
+        &space_id,
+        &body.target_layer_id,
+    )
+    .await?;
     let source_steps = source_step_replays_missing_from_target(
         &state.pool,
         &workspace_id,
@@ -287,7 +371,8 @@ async fn create_weave_request(
     .bind(json!({
         "plannedSteps": planned_steps,
         "replayCount": planned_steps.len(),
-        "conflictCount": conflict_count
+        "conflictCount": conflict_count,
+        "targetPolicyEpoch": target_policy_epoch
     }))
     .execute(&mut *tx)
     .await?;
@@ -532,8 +617,29 @@ async fn apply_weave_request(
             "target Layer changed after Weave preparation; prepare a new Weave plan",
         ));
     }
-    let policy_epoch =
-        current_policy_epoch(&state.pool, &workspace_id, &space_id, &target_layer_id).await?;
+    let mut payload = load_weave_session_payload_for_update_in_tx(&mut tx, &weave_id).await?;
+    let expected_policy_epoch = payload
+        .get("targetPolicyEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            ApiError::conflict(
+                "Weave plan predates target policy epoch capture; prepare a new Weave plan",
+            )
+        })?;
+    let policy_epoch = revalidate_weave_target_paths_in_tx(
+        &mut tx,
+        &workspace_id,
+        &space_id,
+        &weave_id,
+        &target_layer_id,
+        &user.id,
+    )
+    .await?;
+    if policy_epoch != expected_policy_epoch {
+        return Err(ApiError::conflict(
+            "target Layer access policy changed after Weave preparation; prepare a new Weave plan",
+        ));
+    }
     sqlx::query(
         "UPDATE weave_requests SET status = 'applying', updated_at = now() WHERE weave_id = $1",
     )
@@ -581,7 +687,6 @@ async fn apply_weave_request(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::not_found("weave request not found"))?;
-    let mut payload = load_weave_session_payload_for_update_in_tx(&mut tx, &weave_id).await?;
     if let Some(object) = payload.as_object_mut() {
         object.insert("appliedSteps".to_string(), json!(applied_steps));
     } else {
@@ -599,6 +704,8 @@ async fn apply_weave_request(
 }
 
 include!("weave_replay_plan.rs");
+
+include!("weave_apply_authz.rs");
 
 include!("weave_conflict_resolution.rs");
 

@@ -465,6 +465,102 @@ async fn effective_layer_role(
     .unwrap_or(inherited))
 }
 
+async fn account_team_ids_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    account_id: &str,
+) -> Result<HashSet<String>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT tm.team_id
+        FROM team_memberships tm
+        JOIN teams t ON t.team_id = tm.team_id
+        WHERE t.workspace_id = $1 AND tm.account_id = $2
+        FOR SHARE OF tm, t
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| row.get::<String, _>("team_id"))
+        .collect())
+}
+
+async fn effective_layer_role_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    layer_id: &str,
+    account_id: &str,
+    team_ids: &HashSet<String>,
+) -> Result<RepositoryRole, ApiError> {
+    let layer_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM layers WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3)",
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(layer_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !layer_exists {
+        return Err(ApiError::not_found("layer not found"));
+    }
+
+    let workspace_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM workspace_memberships WHERE workspace_id = $1 AND account_id = $2 AND state = 'active' FOR SHARE",
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let inherited = workspace_role
+        .as_deref()
+        .and_then(RepositoryRole::from_workspace_role)
+        .ok_or_else(|| ApiError::forbidden("workspace membership is required"))?;
+    let team_ids = team_ids.iter().cloned().collect::<Vec<_>>();
+
+    let layer_roles = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT role
+        FROM layer_memberships
+        WHERE layer_id = $1
+          AND (account_id = $2 OR team_id = ANY($3))
+        FOR SHARE
+        "#,
+    )
+    .bind(layer_id)
+    .bind(account_id)
+    .bind(&team_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    if let Some(role) = strongest_repository_role(layer_roles.iter().map(String::as_str)) {
+        return Ok(role);
+    }
+
+    let space_roles = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT role
+        FROM space_memberships
+        WHERE space_id = $1
+          AND (account_id = $2 OR team_id = ANY($3))
+        FOR SHARE
+        "#,
+    )
+    .bind(space_id)
+    .bind(account_id)
+    .bind(&team_ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(strongest_repository_role(
+        space_roles.iter().map(String::as_str),
+    )
+    .unwrap_or(inherited))
+}
+
 async fn ensure_layer_read(
     pool: &PgPool,
     workspace_id: &str,
