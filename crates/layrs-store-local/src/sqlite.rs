@@ -9,6 +9,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 
 use crate::error::{StoreError, StoreResult};
 use crate::fault::{self, FaultPoint};
+use crate::layout::open_read_no_follow;
 use crate::schema::{CURRENT_SCHEMA_VERSION, MIGRATIONS, Migration};
 
 const MIN_SQLITE_VERSION: (u32, u32, u32) = (3, 46, 0);
@@ -48,7 +49,8 @@ fn open_initialized_to(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     configure(&connection, options, true, false)?;
     apply_migrations(&mut connection, target_version)?;
@@ -75,7 +77,8 @@ pub(crate) fn open_read_only(path: &Path, options: SqliteOptions) -> StoreResult
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     configure(&connection, options, false, true)?;
     verify_applied_migrations(&connection, CURRENT_SCHEMA_VERSION)?;
@@ -104,7 +107,8 @@ pub(crate) fn open_read_only_unchecked(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     configure(&connection, options, false, true)?;
     Ok(connection)
@@ -123,7 +127,7 @@ fn refuse_uncheckpointed_wal(path: &Path) -> StoreResult<()> {
 
 fn verify_persistent_wal(path: &Path) -> StoreResult<()> {
     let mut header = [0_u8; 20];
-    fs::File::open(path)?.read_exact(&mut header)?;
+    open_read_no_follow(path)?.read_exact(&mut header)?;
     let actual = if header.starts_with(b"SQLite format 3\0") && header[18..20] == [2, 2] {
         "wal"
     } else {
@@ -396,6 +400,7 @@ fn apply_migrations(connection: &mut Connection, target_version: u32) -> StoreRe
 }
 
 fn apply_migration(connection: &mut Connection, migration: &Migration) -> StoreResult<()> {
+    verify_published_sql(migration)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(migration.sql)?;
     transaction.execute(
@@ -495,6 +500,7 @@ fn verify_migration(migration: &Migration, name: &str, actual: &str) -> StoreRes
             migration.version, migration.name
         )));
     }
+    verify_published_sql(migration)?;
     let expected = migration.checksum();
     if actual != expected {
         return Err(StoreError::MigrationChecksum {
@@ -502,6 +508,17 @@ fn verify_migration(migration: &Migration, name: &str, actual: &str) -> StoreRes
             expected,
             actual: actual.to_string(),
         });
+    }
+    Ok(())
+}
+
+fn verify_published_sql(migration: &Migration) -> StoreResult<()> {
+    let actual = migration.sql_checksum();
+    if actual != migration.published_checksum {
+        return Err(StoreError::InvalidState(format!(
+            "published migration {} SQL changed: expected {}, got {actual}",
+            migration.version, migration.published_checksum
+        )));
     }
     Ok(())
 }
@@ -554,6 +571,48 @@ mod tests {
                 )
                 .expect("query weave schema"),
             1
+        );
+
+        drop(upgraded);
+        fs::remove_dir_all(root).expect("remove root");
+    }
+
+    #[test]
+    fn published_v1_fixture_upgrades_to_current_schema() {
+        let root = unique_test_dir("published-v1-fixture");
+        fs::create_dir_all(&root).expect("create root");
+        let path = root.join("metadata.sqlite3");
+        let fixture = Connection::open(&path).expect("open fixture database");
+        fixture
+            .execute_batch(include_str!("../tests/fixtures/schema-v1.sql"))
+            .expect("install published v1 fixture");
+        drop(fixture);
+
+        let upgraded = open_initialized(&path, test_options()).expect("upgrade v1 fixture");
+        verify_applied_migrations(&upgraded, CURRENT_SCHEMA_VERSION)
+            .expect("verify upgraded fixture");
+        let versions: Vec<(u32, String)> = {
+            let mut statement = upgraded
+                .prepare("SELECT version, checksum FROM schema_migrations ORDER BY version")
+                .expect("prepare migration history");
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("query migration history")
+                .collect::<Result<_, _>>()
+                .expect("read migration history")
+        };
+        assert_eq!(
+            versions,
+            vec![
+                (
+                    1,
+                    "23794458e9e5342f83b254e6d6406b646d7d38fe6ebf0b3d2209346f4cd2a3dd".to_string(),
+                ),
+                (
+                    2,
+                    "18e03f2784a900574f552db161718dfa0ce8935db190435dced429371a6f37bc".to_string(),
+                ),
+            ]
         );
 
         drop(upgraded);

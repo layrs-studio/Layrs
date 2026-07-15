@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,7 +11,12 @@ use layrs_sync::{
 };
 
 use crate::fault::{self, FaultPoint};
-use crate::layout::{StoreLayout, create_dir_all_durable, durable_rename, sync_directory};
+#[cfg(windows)]
+use crate::layout::durable_rename;
+use crate::layout::{
+    StoreLayout, create_dir_all_durable, open_read_no_follow, reject_reparse_components,
+    sync_directory, validate_store_boundaries,
+};
 
 pub fn cas_path(cas_dir: impl AsRef<Path>, hash: &ContentHash) -> PathBuf {
     let hex = hash.hex();
@@ -217,6 +222,7 @@ pub struct StoredLocalStepRef {
 }
 
 pub(crate) fn write_temp_object(layout: &StoreLayout, bytes: &[u8]) -> io::Result<PendingObject> {
+    validate_store_boundaries(layout)?;
     create_dir_all_durable(&layout.tmp_dir)?;
     let mut attempts = 0_u8;
     loop {
@@ -284,14 +290,25 @@ fn install_pending(
     verify: impl Fn(&[u8]) -> io::Result<()>,
 ) -> io::Result<bool> {
     fault::hit(FaultPoint::BeforeTempHash)?;
-    verify(&fs::read(&pending.path)?)?;
+    validate_store_boundaries(layout)?;
+    if !pending.path.starts_with(&layout.tmp_dir) || !target.starts_with(&layout.cas_dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "CAS publication path escapes the store root",
+        ));
+    }
+    verify(&read_file_no_follow(&pending.path)?)?;
 
-    if target.exists() {
-        let target_bytes = fs::read(target)?;
-        let result = verify(&target_bytes);
-        cleanup_pending(layout, &pending.path)?;
-        result?;
-        return Ok(true);
+    match fs::symlink_metadata(target) {
+        Ok(_) => {
+            let target_bytes = read_file_no_follow(target)?;
+            let result = verify(&target_bytes);
+            cleanup_pending(layout, &pending.path)?;
+            result?;
+            return Ok(true);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
 
     let parent = target.parent().ok_or_else(|| {
@@ -301,22 +318,65 @@ fn install_pending(
         )
     })?;
     create_dir_all_durable(parent)?;
+    reject_reparse_components(parent)?;
     fault::hit(FaultPoint::BeforeRename)?;
-    if let Err(rename_error) = durable_rename(&pending.path, target) {
-        if target.exists() {
-            let target_bytes = fs::read(target)?;
-            let result = verify(&target_bytes);
-            cleanup_pending(layout, &pending.path)?;
-            result?;
-            return Ok(true);
-        }
-        return Err(rename_error);
+    if publish_no_clobber(&pending.path, target)? {
+        let target_bytes = read_file_no_follow(target)?;
+        let result = verify(&target_bytes);
+        cleanup_pending(layout, &pending.path)?;
+        result?;
+        return Ok(true);
     }
+    verify(&read_file_no_follow(target)?)?;
     fault::hit(FaultPoint::AfterRename)?;
     fault::hit(FaultPoint::BeforeDirectorySync)?;
     sync_directory(parent)?;
     sync_directory(&layout.tmp_dir)?;
     Ok(false)
+}
+
+fn publish_no_clobber(source: &Path, destination: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        match fs::hard_link(source, destination) {
+            Ok(()) => {
+                fs::remove_file(source)?;
+                Ok(false)
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        match durable_rename(source, destination) {
+            Ok(()) => Ok(false),
+            Err(error)
+                if error.kind() == io::ErrorKind::AlreadyExists
+                    || fs::symlink_metadata(destination).is_ok() =>
+            {
+                Ok(true)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, destination);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic no-clobber publication is unsupported on this platform",
+        ))
+    }
+}
+
+fn read_file_no_follow(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = open_read_no_follow(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn cleanup_pending(layout: &StoreLayout, path: &Path) -> io::Result<()> {
@@ -415,6 +475,7 @@ impl ScrubReport {
 }
 
 pub(crate) fn scrub(layout: &StoreLayout) -> io::Result<ScrubReport> {
+    validate_store_boundaries(layout)?;
     let mut report = ScrubReport::default();
     if layout.cas_dir.exists() {
         scrub_dir(&layout.cas_dir, &layout.cas_dir, &mut report)?;
@@ -452,7 +513,7 @@ fn scrub_file(root: &Path, path: &Path, report: &mut ScrubReport) -> io::Result<
     }
     let algorithm = components[0].as_os_str().to_string_lossy();
     let expected = components[3].as_os_str().to_string_lossy();
-    let bytes = fs::read(path)?;
+    let bytes = read_file_no_follow(path)?;
     let actual = match algorithm.as_ref() {
         "blake3" => blake3::hash(&bytes).to_hex().to_string(),
         "placeholder" => placeholder_hash_hex(&bytes),
@@ -485,6 +546,9 @@ fn temp_object_file_name(attempt: u8) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -593,6 +657,81 @@ mod tests {
 
         drop(store);
         fs::remove_dir_all(root).expect("remove root");
+    }
+
+    #[test]
+    fn concurrent_publishers_never_clobber_the_atomic_winner() {
+        let root = unique_test_dir("publish-race");
+        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
+        let first_bytes = b"first synchronized writer".to_vec();
+        let second_bytes = b"second synchronized writer".to_vec();
+        let first_pending =
+            write_temp_object(store.layout(), &first_bytes).expect("first pending object");
+        let second_pending =
+            write_temp_object(store.layout(), &second_bytes).expect("second pending object");
+        let target = store.layout().cas_dir.join("synchronized-race-winner");
+        let barrier = Arc::new(Barrier::new(2));
+
+        let first = spawn_racing_publish(
+            store.layout().clone(),
+            first_pending,
+            target.clone(),
+            first_bytes.clone(),
+            Arc::clone(&barrier),
+        );
+        let second = spawn_racing_publish(
+            store.layout().clone(),
+            second_pending,
+            target.clone(),
+            second_bytes.clone(),
+            barrier,
+        );
+        let outcomes = [
+            first.join().expect("first writer thread"),
+            second.join().expect("second writer thread"),
+        ];
+
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Ok(false)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_err()).count(),
+            1
+        );
+        let winner = fs::read(&target).expect("read atomic winner");
+        assert!(winner == first_bytes || winner == second_bytes);
+
+        drop(store);
+        fs::remove_dir_all(root).expect("remove root");
+    }
+
+    fn spawn_racing_publish(
+        layout: StoreLayout,
+        pending: PendingObject,
+        target: PathBuf,
+        expected: Vec<u8>,
+        barrier: Arc<Barrier>,
+    ) -> thread::JoinHandle<io::Result<bool>> {
+        thread::spawn(move || {
+            let first_verification = AtomicBool::new(true);
+            install_pending(&layout, &pending, &target, |stored| {
+                if first_verification.swap(false, Ordering::SeqCst) {
+                    barrier.wait();
+                }
+                if stored == expected {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "another synchronized writer won publication",
+                    ))
+                }
+            })
+        })
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

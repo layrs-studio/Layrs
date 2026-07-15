@@ -1,12 +1,13 @@
 //! Process-local coordination layered over real cross-process file locks.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::{StoreError, StoreResult};
+use crate::layout::{open_read_no_follow, open_read_write_no_follow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionMode {
@@ -34,7 +35,10 @@ pub(crate) struct StoreLock {
 
 impl StoreLock {
     pub fn acquire_existing(path: &Path, mode: SessionMode) -> StoreResult<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let file = match mode {
+            SessionMode::Shared => open_read_no_follow(path)?,
+            SessionMode::Exclusive => open_read_write_no_follow(path)?,
+        };
         let key = canonical_lock_key(path)?;
         claim_local(&key, mode)?;
 

@@ -6,6 +6,7 @@ pub(crate) struct Migration {
     pub version: u32,
     pub name: &'static str,
     pub sql: &'static str,
+    pub published_checksum: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,10 @@ pub struct MigrationInfo {
 
 impl Migration {
     pub fn checksum(&self) -> String {
+        self.published_checksum.to_string()
+    }
+
+    pub(crate) fn sql_checksum(&self) -> String {
         blake3::hash(self.sql.as_bytes()).to_hex().to_string()
     }
 
@@ -38,11 +43,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 1,
         name: "transactional_metadata_foundation",
         sql: MIGRATION_001,
+        published_checksum: "23794458e9e5342f83b254e6d6406b646d7d38fe6ebf0b3d2209346f4cd2a3dd",
     },
     Migration {
         version: 2,
         name: "weave_metadata",
         sql: MIGRATION_002,
+        published_checksum: "18e03f2784a900574f552db161718dfa0ce8935db190435dced429371a6f37bc",
     },
 ];
 
@@ -425,11 +432,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrations_are_ordered_and_checksums_are_stable_length() {
+    fn published_migration_checksums_are_exact_and_match_the_sources() {
+        const PUBLISHED: [&str; 2] = [
+            "23794458e9e5342f83b254e6d6406b646d7d38fe6ebf0b3d2209346f4cd2a3dd",
+            "18e03f2784a900574f552db161718dfa0ce8935db190435dced429371a6f37bc",
+        ];
         assert_eq!(MIGRATIONS.len(), CURRENT_SCHEMA_VERSION as usize);
         for (index, migration) in MIGRATIONS.iter().enumerate() {
             assert_eq!(migration.version as usize, index + 1);
-            assert_eq!(migration.checksum().len(), 64);
+            assert_eq!(migration.published_checksum, PUBLISHED[index]);
+            assert_eq!(migration.sql_checksum(), PUBLISHED[index]);
         }
     }
 }

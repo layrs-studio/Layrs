@@ -31,6 +31,7 @@ impl LocalStoreSession {
         options: sqlite::SqliteOptions,
         mode: SessionMode,
     ) -> StoreResult<Self> {
+        crate::layout::validate_store_boundaries(&layout)?;
         let store_lock = StoreLock::acquire_existing(&layout.lock_path(), mode)?;
         let connection = match mode {
             SessionMode::Shared => sqlite::open_read_only(&layout.sqlite_path, options)?,

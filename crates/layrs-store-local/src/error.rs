@@ -35,6 +35,7 @@ pub enum StoreError {
     },
     NotFound(String),
     Conflict(String),
+    InvalidFsckReport(String),
     InvalidState(String),
     CorruptMetadata(String),
 }
@@ -94,6 +95,9 @@ impl fmt::Display for StoreError {
             ),
             Self::NotFound(message) => write!(formatter, "not found: {message}"),
             Self::Conflict(message) => write!(formatter, "conflict: {message}"),
+            Self::InvalidFsckReport(message) => {
+                write!(formatter, "invalid fsck report: {message}")
+            }
             Self::InvalidState(message) => write!(formatter, "invalid state: {message}"),
             Self::CorruptMetadata(message) => write!(formatter, "corrupt metadata: {message}"),
         }

@@ -1,66 +1,26 @@
 //! Read-only consistency checks and metadata-only quarantine repair.
 
-use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Component, Path};
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 
-use crate::error::{StoreError, StoreResult};
+mod graph;
+mod repair;
+mod report;
+
+pub use repair::{RepairAction, RepairReport, repair};
+pub use report::{FsckCode, FsckIssue, FsckReport};
+
+use crate::error::StoreResult;
 use crate::layout::{
-    StoreLayout, contains_reparse_component, create_dir_all_durable, sync_directory,
+    StoreLayout, contains_reparse_component, open_read_no_follow, validate_store_boundaries,
 };
 use crate::lock::{SessionMode, StoreLock};
 use crate::schema::CURRENT_SCHEMA_VERSION;
 use crate::sqlite::{self, SqliteOptions};
-use crate::{LocalStore, MetadataRepository};
 
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FsckCode {
-    Integrity,
-    ForeignKey,
-    Migration,
-    SchemaVersion,
-    RefInvariant,
-    StepInvariant,
-    PendingInvariant,
-    JournalInvariant,
-    TimelineInvariant,
-    WeaveInvariant,
-    GcInvariant,
-    ObjectMissing,
-    ObjectCorrupt,
-    ObjectPathUnsafe,
-    ObjectGraphCycle,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FsckIssue {
-    pub code: FsckCode,
-    pub entity: Option<String>,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FsckReport {
-    pub sqlite_version: String,
-    pub schema_version: Option<u32>,
-    pub checked_objects: u64,
-    pub issues: Vec<FsckIssue>,
-}
-
-impl FsckReport {
-    pub fn is_clean(&self) -> bool {
-        self.issues.is_empty()
-    }
-
-    pub fn issues_with_code(&self, code: FsckCode) -> impl Iterator<Item = &FsckIssue> {
-        self.issues.iter().filter(move |issue| issue.code == code)
-    }
-}
 
 /// Opens only an existing database and lock file. This path never creates or
 /// migrates the store.
@@ -68,32 +28,51 @@ pub(crate) fn fsck_read_only(
     layout: &StoreLayout,
     options: SqliteOptions,
 ) -> StoreResult<FsckReport> {
+    validate_store_boundaries(layout)?;
     let _lock = StoreLock::acquire_existing(&layout.lock_path(), SessionMode::Shared)?;
     let connection = sqlite::open_read_only_unchecked(&layout.sqlite_path, options)?;
     check_connection(layout, &connection)
 }
 
 pub fn fsck_existing(config: &crate::LocalStoreConfig) -> StoreResult<FsckReport> {
-    let layout = config.layout();
+    let layout = config.validated_layout()?;
     fsck_read_only(&layout, config.sqlite_options())
 }
 
-fn check_connection(layout: &StoreLayout, connection: &Connection) -> StoreResult<FsckReport> {
+pub(super) fn check_connection(
+    layout: &StoreLayout,
+    connection: &Connection,
+) -> StoreResult<FsckReport> {
     let sqlite_version = connection.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
-    let schema_version = connection
+    let metadata_snapshot = connection
         .query_row(
-            "SELECT schema_version FROM store_meta WHERE singleton = 1",
+            "SELECT schema_version, quarantine_generation, created_at_ms, updated_at_ms
+             FROM store_meta WHERE singleton = 1",
             [],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
         )
         .optional()
         .unwrap_or(None);
-    let mut report = FsckReport {
+    let schema_version = metadata_snapshot.map(|snapshot| snapshot.0);
+    let quarantine_generation = metadata_snapshot.map(|snapshot| snapshot.1);
+    let created_at_ms = metadata_snapshot.map(|snapshot| snapshot.2);
+    let updated_at_ms = metadata_snapshot.map(|snapshot| snapshot.3);
+    let schema_cookie: u32 =
+        connection.pragma_query_value(None, "schema_version", |row| row.get(0))?;
+    let mut report = FsckReport::new(
+        layout,
         sqlite_version,
         schema_version,
-        checked_objects: 0,
-        issues: Vec::new(),
-    };
+        quarantine_generation,
+        created_at_ms,
+    )?;
 
     check_integrity(connection, &mut report)?;
     check_foreign_keys(connection, &mut report)?;
@@ -117,6 +96,7 @@ fn check_connection(layout: &StoreLayout, connection: &Connection) -> StoreResul
         check_object_graph(connection, &mut report)?;
         check_indexed_objects(layout, connection, &mut report)?;
     }
+    report.bind_snapshot(schema_cookie, updated_at_ms);
     Ok(report)
 }
 
@@ -258,31 +238,21 @@ fn collect_space_query(
 }
 
 fn check_object_graph(connection: &Connection, report: &mut FsckReport) -> StoreResult<()> {
-    let mut statement = connection.prepare(
-        "WITH RECURSIVE walk(root, node, visited, cycle) AS (
-            SELECT parent_object_id, child_object_id,
-                   ',' || parent_object_id || ',' || child_object_id || ',', 0
-            FROM object_edges
-            UNION ALL
-            SELECT walk.root, edge.child_object_id,
-                   walk.visited || edge.child_object_id || ',',
-                   instr(walk.visited, ',' || edge.child_object_id || ',') > 0
-            FROM walk
-            JOIN object_edges edge ON edge.parent_object_id = walk.node
-            WHERE walk.cycle = 0
-         )
-         SELECT DISTINCT root, node FROM walk WHERE cycle = 1 LIMIT 100",
-    )?;
+    let mut statement =
+        connection.prepare("SELECT parent_object_id, child_object_id FROM object_edges")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
+    let mut edges = Vec::new();
     for row in rows {
-        let (root, node) = row?;
+        edges.push(row?);
+    }
+    for (parent, child) in graph::cycle_edges(edges) {
         push_issue(
             report,
             FsckCode::ObjectGraphCycle,
-            Some(root),
-            format!("object graph cycle reaches {node}"),
+            Some(parent),
+            format!("object graph cycle reaches {child}"),
         );
     }
     Ok(())
@@ -402,7 +372,7 @@ fn stream_verify_object(
     let expected_hex = object_id
         .strip_prefix(&format!("{algorithm}:"))
         .unwrap_or(object_id);
-    let mut file = File::open(path)?;
+    let mut file = open_read_no_follow(path)?;
     let mut buffer = [0_u8; HASH_BUFFER_BYTES];
     let mut byte_len = 0_u64;
     let mut blake3 = blake3::Hasher::new();
@@ -464,195 +434,9 @@ fn push_issue(report: &mut FsckReport, code: FsckCode, entity: Option<String>, d
     });
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepairAction {
-    ObjectQuarantined(String),
-    SpaceQuarantined(String),
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RepairReport {
-    pub backup_path: std::path::PathBuf,
-    pub actions: Vec<RepairAction>,
-    pub skipped_issues: usize,
-}
-
-/// Applies metadata-only quarantine actions. Object bytes are never created,
-/// moved, rewritten, or removed by repair.
-pub fn repair(
-    store: &LocalStore,
-    findings: &FsckReport,
-    updated_at_ms: i64,
-) -> StoreResult<RepairReport> {
-    if updated_at_ms < 0 {
-        return Err(StoreError::InvalidState(
-            "repair timestamp must not be negative".to_string(),
-        ));
-    }
-    let mut session = store.session(SessionMode::Exclusive)?;
-    let backup_path = create_repair_backup(store.layout(), session.repository(), updated_at_ms)?;
-    let mut report = repair_repository(session.repository_mut(), findings, updated_at_ms)?;
-    report.backup_path = backup_path;
-    Ok(report)
-}
-
-fn create_repair_backup(
-    layout: &StoreLayout,
-    repository: &MetadataRepository,
-    timestamp_ms: i64,
-) -> StoreResult<std::path::PathBuf> {
-    let source_signature: (u32, u64) = repository.connection().query_row(
-        "SELECT schema_version, quarantine_generation FROM store_meta WHERE singleton = 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let backup_dir = layout.repair_backup_dir();
-    create_dir_all_durable(&backup_dir)?;
-    let backup_path = backup_dir.join(format!(
-        "layrs-repair-{timestamp_ms}-q{}.sqlite3",
-        source_signature.1
-    ));
-    if backup_path.exists() {
-        return Err(StoreError::Conflict(format!(
-            "repair backup already exists: {}",
-            backup_path.display()
-        )));
-    }
-    let backup_name = backup_path.to_str().ok_or_else(|| {
-        StoreError::InvalidState("repair backup path is not valid UTF-8".to_string())
-    })?;
-
-    let backup_result = (|| -> StoreResult<()> {
-        repository
-            .connection()
-            .execute("VACUUM main INTO ?1", [backup_name])?;
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&backup_path)?
-            .sync_all()?;
-        sync_directory(&backup_dir)?;
-        validate_repair_backup(&backup_path, source_signature)?;
-        Ok(())
-    })();
-    if let Err(error) = backup_result {
-        if backup_path.exists() {
-            let _ = fs::remove_file(&backup_path);
-            let _ = sync_directory(&backup_dir);
-        }
-        return Err(error);
-    }
-    Ok(backup_path)
-}
-
-fn validate_repair_backup(backup_path: &Path, source_signature: (u32, u64)) -> StoreResult<()> {
-    let connection = Connection::open_with_flags(
-        backup_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    connection.pragma_update(None, "trusted_schema", "OFF")?;
-    connection.pragma_update(None, "query_only", "ON")?;
-    let mut integrity = connection.prepare("PRAGMA integrity_check")?;
-    let rows = integrity.query_map([], |row| row.get::<_, String>(0))?;
-    for row in rows {
-        let message = row?;
-        if !message.eq_ignore_ascii_case("ok") {
-            return Err(StoreError::CorruptMetadata(format!(
-                "repair backup integrity check failed: {message}"
-            )));
-        }
-    }
-    drop(integrity);
-    sqlite::verify_applied_migrations(&connection, CURRENT_SCHEMA_VERSION)?;
-    let backup_signature: (u32, u64) = connection.query_row(
-        "SELECT schema_version, quarantine_generation FROM store_meta WHERE singleton = 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if backup_signature != source_signature {
-        return Err(StoreError::CorruptMetadata(format!(
-            "repair backup signature mismatch: expected {source_signature:?}, got {backup_signature:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn repair_repository(
-    repository: &mut MetadataRepository,
-    findings: &FsckReport,
-    updated_at_ms: i64,
-) -> StoreResult<RepairReport> {
-    let object_codes = [
-        FsckCode::ObjectMissing,
-        FsckCode::ObjectCorrupt,
-        FsckCode::ObjectPathUnsafe,
-    ];
-    let space_codes = [
-        FsckCode::RefInvariant,
-        FsckCode::StepInvariant,
-        FsckCode::PendingInvariant,
-        FsckCode::JournalInvariant,
-        FsckCode::TimelineInvariant,
-        FsckCode::WeaveInvariant,
-        FsckCode::GcInvariant,
-    ];
-    let objects: BTreeSet<_> = findings
-        .issues
-        .iter()
-        .filter(|issue| object_codes.contains(&issue.code))
-        .filter_map(|issue| issue.entity.clone())
-        .collect();
-    let spaces: BTreeSet<_> = findings
-        .issues
-        .iter()
-        .filter(|issue| space_codes.contains(&issue.code))
-        .filter_map(|issue| issue.entity.clone())
-        .collect();
-    let actionable = objects.len() + spaces.len();
-
-    let actions = repository.with_immediate_transaction(|transaction| {
-        let mut actions = Vec::new();
-        for object_id in &objects {
-            let changed = transaction.execute(
-                "UPDATE object_index SET state = 'quarantined'
-                 WHERE object_id = ?1 AND state <> 'quarantined'",
-                [object_id],
-            )?;
-            if changed == 1 {
-                actions.push(RepairAction::ObjectQuarantined(object_id.clone()));
-            }
-        }
-        for space_id in &spaces {
-            let changed = transaction.execute(
-                "UPDATE local_spaces SET state = 'quarantined', updated_at_ms = ?2
-                 WHERE space_id = ?1 AND state <> 'quarantined'",
-                params![space_id, updated_at_ms],
-            )?;
-            if changed == 1 {
-                actions.push(RepairAction::SpaceQuarantined(space_id.clone()));
-            }
-        }
-        if !actions.is_empty() {
-            transaction.execute(
-                "UPDATE store_meta
-                 SET quarantine_generation = quarantine_generation + 1,
-                     updated_at_ms = MAX(updated_at_ms, ?1)
-                 WHERE singleton = 1",
-                [updated_at_ms],
-            )?;
-        }
-        Ok(actions)
-    })?;
-
-    Ok(RepairReport {
-        backup_path: std::path::PathBuf::new(),
-        skipped_issues: findings.issues.len().saturating_sub(actionable),
-        actions,
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;

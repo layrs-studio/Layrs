@@ -60,7 +60,7 @@ pub struct LocalStore {
 impl LocalStore {
     /// Creates the store layout and initializes or upgrades the real SQLite DB.
     pub fn init(config: LocalStoreConfig) -> io::Result<Self> {
-        let layout = config.layout();
+        let layout = config.validated_layout()?;
         layout::ensure_layout(&layout)?;
         let store = Self { config, layout };
         session::initialize_store(&store).map_err(StoreError::into_io_error)?;
@@ -76,7 +76,7 @@ impl LocalStore {
             ));
         }
 
-        let layout = config.layout();
+        let layout = config.validated_layout()?;
         layout::ensure_layout(&layout)?;
         let store = Self { config, layout };
         session::initialize_store(&store).map_err(StoreError::into_io_error)?;

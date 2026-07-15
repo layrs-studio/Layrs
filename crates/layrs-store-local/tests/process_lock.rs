@@ -1,15 +1,20 @@
 use std::error::Error;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Stdio;
 use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use layrs_store_local::{LocalStore, LocalStoreConfig, SessionMode, StoreError};
+use fs2::FileExt;
+use layrs_store_local::{LocalStore, LocalStoreConfig, SessionMode, StoreError, fsck_existing};
 
 const CHILD_MARKER: &str = "--layrs-lock-child";
+const HOLD_SHARED: &str = "hold-shared";
+const PROBE_FSCK: &str = "probe-fsck";
 type FixtureResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn main() {
@@ -25,70 +30,187 @@ fn dispatch() -> FixtureResult {
         .iter()
         .position(|argument| argument == OsStr::new(CHILD_MARKER))
     {
-        let root = required_path(&arguments, index + 1, "store root")?;
-        let ready = required_path(&arguments, index + 2, "ready signal")?;
-        let release = required_path(&arguments, index + 3, "release signal")?;
-        hold_exclusive_lock(&root, &ready, &release)
+        let operation = arguments
+            .get(index + 1)
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing operation"))?;
+        let root = required_path(&arguments, index + 2, "store root")?;
+        match operation {
+            HOLD_SHARED => {
+                let ready = required_path(&arguments, index + 3, "ready signal")?;
+                let release = required_path(&arguments, index + 4, "release signal")?;
+                hold_shared_lock(&root, &ready, &release)
+            }
+            PROBE_FSCK => {
+                fsck_existing(&LocalStoreConfig::new(root))?;
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown child operation {operation}"),
+            )
+            .into()),
+        }
     } else {
-        verify_cross_process_contention()
+        verify_process_lock_matrix()
     }
 }
 
-fn verify_cross_process_contention() -> FixtureResult {
+fn verify_process_lock_matrix() -> FixtureResult {
     let root = unique_test_dir();
     let store = LocalStore::init(LocalStoreConfig::new(&root))?;
-    let ready = root.join("tmp").join("child-lock-ready");
-    let release = root.join("tmp").join("child-lock-release");
-    let executable = std::env::current_exe()?;
-    let mut child = ChildGuard::new(
-        Command::new(executable)
-            .arg(CHILD_MARKER)
-            .arg(&root)
-            .arg(&ready)
-            .arg(&release)
-            .spawn()?,
-    );
+    verify_shared_shared_and_shared_exclusive(&store)?;
+    verify_shared_open_with_read_only_lock(&store)?;
+    drop(store);
+    fs::remove_dir_all(&root)?;
 
+    println!(
+        "process_lock fixture: shared/shared, shared/exclusive, and read-only lock rights verified"
+    );
+    Ok(())
+}
+
+fn verify_shared_shared_and_shared_exclusive(store: &LocalStore) -> FixtureResult {
+    let ready = store.layout().tmp_dir.join("child-shared-ready");
+    let release = store.layout().tmp_dir.join("child-shared-release");
+    let mut child = spawn_child(HOLD_SHARED, &store.layout().root, Some((&ready, &release)))?;
     if !wait_for_path(&ready, Duration::from_secs(10)) {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "child process did not acquire the store lock",
+            "child process did not acquire the shared lock",
         )
         .into());
     }
 
+    let parent_shared = store.session(SessionMode::Shared)?;
+    drop(parent_shared);
     let contention = store.session(SessionMode::Exclusive);
-    let lock_was_busy = matches!(contention, Err(StoreError::LockBusy(_)));
+    let exclusive_was_busy = matches!(contention, Err(StoreError::LockBusy(_)));
     drop(contention);
+
     fs::write(&release, b"release")?;
     let status = child.wait()?;
-    drop(store);
-    fs::remove_dir_all(&root)?;
-
     if !status.success() {
-        return Err(io::Error::other(format!("lock helper exited with status {status}")).into());
+        return Err(io::Error::other(format!("shared holder exited with {status}")).into());
     }
-    if !lock_was_busy {
-        return Err(
-            io::Error::other("parent did not observe cross-process lock contention").into(),
-        );
+    if !exclusive_was_busy {
+        return Err(io::Error::other("shared process lock did not block exclusive access").into());
     }
-
-    println!("process_lock fixture: cross-process exclusive contention verified");
     Ok(())
 }
 
-fn hold_exclusive_lock(root: &Path, ready: &Path, release: &Path) -> FixtureResult {
-    let store = LocalStore::open(LocalStoreConfig::new(root))?;
-    let _session = store.session(SessionMode::Exclusive)?;
+#[cfg(not(windows))]
+fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
+    let lock_path = store.layout().lock_path();
+    let original_permissions = fs::metadata(&lock_path)?.permissions();
+    let mut read_only = original_permissions.clone();
+    read_only.set_readonly(true);
+    fs::set_permissions(&lock_path, read_only)?;
+
+    let probe_result = (|| -> FixtureResult<ExitStatus> {
+        let mut child = spawn_child(PROBE_FSCK, &store.layout().root, None)?;
+        Ok(child.wait()?)
+    })();
+    fs::set_permissions(&lock_path, original_permissions)?;
+    let status = probe_result?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "shared fsck could not open a read-only lock file: {status}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
+    let lock_path = store.layout().lock_path();
+    let sid = current_user_sid()?;
+    let grant = format!("*{sid}:(R)");
+    let restricted = Command::new("icacls")
+        .arg(&lock_path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(grant)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !restricted.success() {
+        return Err(io::Error::other(format!(
+            "icacls could not install read-only ACL: {restricted}"
+        ))
+        .into());
+    }
+
+    let probe_result = (|| -> FixtureResult<ExitStatus> {
+        let mut child = spawn_child(PROBE_FSCK, &store.layout().root, None)?;
+        Ok(child.wait()?)
+    })();
+    let restored = Command::new("icacls")
+        .arg(&lock_path)
+        .arg("/reset")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !restored.success() {
+        return Err(
+            io::Error::other(format!("icacls could not restore lock ACL: {restored}")).into(),
+        );
+    }
+    let status = probe_result?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "shared fsck could not open a read-only ACL lock file: {status}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn current_user_sid() -> FixtureResult<String> {
+    let output = Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!("whoami exited with {}", output.status)).into());
+    }
+    let row = String::from_utf8(output.stdout)?;
+    row.trim()
+        .split("\",\"")
+        .nth(1)
+        .map(|sid| sid.trim_matches('"').to_string())
+        .filter(|sid| sid.starts_with("S-"))
+        .ok_or_else(|| io::Error::other(format!("could not parse user SID from {row:?}")))
+        .map_err(Into::into)
+}
+
+fn spawn_child(
+    operation: &str,
+    root: &Path,
+    signals: Option<(&Path, &Path)>,
+) -> FixtureResult<ChildGuard> {
+    let executable = std::env::current_exe()?;
+    let mut command = Command::new(executable);
+    command.arg(CHILD_MARKER).arg(operation).arg(root);
+    if let Some((ready, release)) = signals {
+        command.arg(ready).arg(release);
+    }
+    Ok(ChildGuard::new(command.spawn()?))
+}
+
+fn hold_shared_lock(root: &Path, ready: &Path, release: &Path) -> FixtureResult {
+    let lock_path = LocalStoreConfig::new(root).layout().lock_path();
+    let file = OpenOptions::new().read(true).open(lock_path)?;
+    FileExt::try_lock_shared(&file)?;
     fs::write(ready, b"ready")?;
     if !wait_for_path(release, Duration::from_secs(15)) {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "parent did not release the child lock",
+            "parent did not release the shared child lock",
         )
         .into());
     }
+    FileExt::unlock(&file)?;
     Ok(())
 }
 
