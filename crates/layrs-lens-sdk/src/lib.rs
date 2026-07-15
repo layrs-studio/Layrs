@@ -6,9 +6,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 mod contract;
+mod validation;
 mod wire;
 
 pub use contract::*;
+pub use validation::{LensContractValidationError, is_sha256_digest, validate_sha256_digest};
 
 pub type MetadataMap = BTreeMap<String, MetadataValue>;
 pub type LensResult<T> = Result<T, LensError>;
@@ -20,7 +22,12 @@ pub struct LensManifest {
     pub id: String,
     pub name: String,
     pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "validation::serialize_optional_sha256_digest",
+        deserialize_with = "validation::deserialize_optional_sha256_digest"
+    )]
     pub digest: Option<String>,
     pub analyzer: AnalyzerContract,
     pub viewer: ViewerContract,
@@ -51,9 +58,19 @@ impl LensManifest {
         }
     }
 
-    pub fn with_digest(mut self, digest: impl Into<String>) -> Self {
-        self.digest = Some(digest.into());
-        self
+    pub fn with_digest(self, digest: impl Into<String>) -> Self {
+        self.try_with_digest(digest)
+            .expect("Lens manifest digest must be a valid sha256 digest")
+    }
+
+    pub fn try_with_digest(
+        mut self,
+        digest: impl Into<String>,
+    ) -> Result<Self, LensContractValidationError> {
+        let digest = digest.into();
+        validate_sha256_digest(&digest)?;
+        self.digest = Some(digest);
+        Ok(self)
     }
 
     pub fn with_bundle(mut self, bundle: LensBundleContract) -> Self {
@@ -62,9 +79,14 @@ impl LensManifest {
     }
 
     pub fn pin(&self) -> Option<LensPin> {
+        self.try_pin().ok().flatten()
+    }
+
+    pub fn try_pin(&self) -> Result<Option<LensPin>, LensContractValidationError> {
         self.digest
             .as_ref()
-            .map(|digest| LensPin::new(&self.id, &self.version, digest))
+            .map(|digest| LensPin::try_new(&self.id, &self.version, digest))
+            .transpose()
     }
 
     pub fn supports_capability(&self, capability: &LensCapability) -> bool {
@@ -538,79 +560,16 @@ impl LensReconcileContent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LensReconcileResult {
     pub status: LensReconcileResultStatus,
     pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<LensReconcileContent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<LensReconcileContent>,
-    #[serde(
-        default,
-        rename = "resolutionMethods",
-        serialize_with = "contract::serialize_file_methods",
-        deserialize_with = "contract::deserialize_file_methods"
-    )]
     pub file_methods: Vec<ResolutionMethod>,
-    #[serde(default)]
     pub blocks: Vec<LensConflictBlock>,
-    #[serde(default)]
     pub segments: Vec<LensConflictSegment>,
-    #[serde(default)]
     pub fields: MetadataMap,
-}
-
-impl LensReconcileResult {
-    pub fn auto_resolved(summary: impl Into<String>, content: LensReconcileContent) -> Self {
-        Self {
-            status: LensReconcileResultStatus::AutoResolved,
-            summary: summary.into(),
-            resolved: Some(content),
-            conflict: None,
-            file_methods: Vec::new(),
-            blocks: Vec::new(),
-            segments: Vec::new(),
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn conflicted(
-        summary: impl Into<String>,
-        content: LensReconcileContent,
-        blocks: Vec<LensConflictBlock>,
-        segments: Vec<LensConflictSegment>,
-    ) -> Self {
-        Self {
-            status: LensReconcileResultStatus::Conflicted,
-            summary: summary.into(),
-            resolved: None,
-            conflict: Some(content),
-            file_methods: Vec::new(),
-            blocks,
-            segments,
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn unsupported(summary: impl Into<String>) -> Self {
-        Self {
-            status: LensReconcileResultStatus::Unsupported,
-            summary: summary.into(),
-            resolved: None,
-            conflict: None,
-            file_methods: Vec::new(),
-            blocks: Vec::new(),
-            segments: Vec::new(),
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn with_file_methods(mut self, methods: Vec<ResolutionMethod>) -> Self {
-        self.file_methods = methods;
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -641,7 +600,6 @@ pub struct LensConflictBlock {
     #[serde(rename = "incoming")]
     pub theirs: String,
     #[serde(
-        default,
         rename = "resolutionMethods",
         serialize_with = "contract::serialize_block_methods",
         deserialize_with = "contract::deserialize_block_methods"

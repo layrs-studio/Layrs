@@ -307,16 +307,30 @@ export interface CanonicalLensConflictBlock {
 export type LensContractMetadataValue = string | number | boolean | string[];
 export type LensContractMetadata = Record<string, LensContractMetadataValue>;
 
-export interface CanonicalLensReconcileResult {
-  status: LensReconcileResultStatus;
+interface CanonicalLensReconcileResultBase {
   summary: string;
-  resolved?: CanonicalLensReconcileContent;
-  conflict?: CanonicalLensReconcileContent;
   resolutionMethods: ScopedResolutionMethod[];
   blocks: CanonicalLensConflictBlock[];
   segments: LensConflictSegment[];
   fields: LensContractMetadata;
 }
+
+export type CanonicalLensReconcileResult =
+  | (CanonicalLensReconcileResultBase & {
+      status: "auto_resolved";
+      resolved: CanonicalLensReconcileContent;
+      conflict?: never;
+    })
+  | (CanonicalLensReconcileResultBase & {
+      status: "conflicted";
+      resolved?: never;
+      conflict: CanonicalLensReconcileContent;
+    })
+  | (CanonicalLensReconcileResultBase & {
+      status: "unsupported";
+      resolved?: never;
+      conflict?: never;
+    });
 
 export interface LensReconcileResponse {
   contractVersion: typeof LENS_CONTRACT_VERSION;

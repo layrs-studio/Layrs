@@ -9,6 +9,7 @@ import type {
   ScopedResolutionMethod
 } from "./contracts";
 import { LENS_CONTRACT_VERSION } from "./contracts";
+import { assertSha256Digest } from "./validation";
 
 export function createLensManifest(input: {
   id: string;
@@ -25,7 +26,10 @@ export function createLensManifest(input: {
   resolutionMethods?: ScopedResolutionMethod[];
   reconcileStatuses?: ReconcileStatus[];
 }): LensManifest {
-  if (input.bundle && !input.digest) {
+  if (input.digest !== undefined) {
+    assertSha256Digest(input.digest, "Lens manifest digest");
+  }
+  if (input.bundle && input.digest === undefined) {
     throw new Error("A bundled lens manifest requires an explicit digest");
   }
 
@@ -55,13 +59,15 @@ export function createLensManifest(input: {
 }
 
 export function lensPinFromManifest(manifest: LensManifest): LensPin | undefined {
-  return manifest.digest
-    ? {
-        lensId: manifest.id,
-        version: manifest.version,
-        digest: manifest.digest
-      }
-    : undefined;
+  if (manifest.digest === undefined) {
+    return undefined;
+  }
+  assertSha256Digest(manifest.digest, "Lens manifest digest");
+  return {
+    lensId: manifest.id,
+    version: manifest.version,
+    digest: manifest.digest
+  };
 }
 
 export function supportsLensCapability(manifest: LensManifest, capability: LensCapability): boolean {

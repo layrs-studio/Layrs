@@ -7,8 +7,15 @@ const { contractFixture } = require(path.join(compiledRoot, "test/contract.fixtu
 const { createLensManifest, lensPinFromManifest, supportsLensCapability } = require(
   path.join(compiledRoot, "src/manifest.js")
 );
-const { toCanonicalLensReconcileResult } = require(path.join(compiledRoot, "src/reconcile.js"));
+const { toCanonicalLensReconcileResult, toLensReconcileResponse } = require(
+  path.join(compiledRoot, "src/reconcile.js")
+);
 const { createLensRegistry } = require(path.join(compiledRoot, "src/runtime.js"));
+const {
+  assertSchemaSubsetSupported,
+  assertValidDefinition,
+  validationErrorsForDefinition
+} = require("./schema-subset-validator.cjs");
 
 const fixturePath = path.resolve(__dirname, "../../../tests/fixtures/lenses/v1/contract.golden.json");
 const schemaPath = path.resolve(__dirname, "../../../schemas/lenses/v1/lens-contract.schema.json");
@@ -26,6 +33,34 @@ for (const definition of [
 ]) {
   assert.ok(schema.$defs[definition], `missing schema definition ${definition}`);
 }
+assertSchemaSubsetSupported(schema);
+for (const [definition, value] of [
+  ["lensManifest", expected.manifest],
+  ["previewWindow", expected.previewWindow],
+  ["diffWindow", expected.diffWindow],
+  ["reconcileRequest", expected.reconcileInput],
+  ["reconcileResponse", expected.reconcileResults.autoResolved],
+  ["reconcileResponse", expected.reconcileResults.conflicted],
+  ["reconcileResponse", expected.reconcileResults.unsupported]
+]) {
+  assertValidDefinition(schema, definition, value);
+}
+
+const invalidAutoResponse = clone(expected.reconcileResults.autoResolved);
+invalidAutoResponse.result.resolutionMethods = [{ method: "manual", scope: "file" }];
+assert.notEqual(validationErrorsForDefinition(schema, "reconcileResponse", invalidAutoResponse).length, 0);
+const invalidConflictResponse = clone(expected.reconcileResults.conflicted);
+invalidConflictResponse.result.segments[1].text = "not allowed";
+assert.notEqual(
+  validationErrorsForDefinition(schema, "reconcileResponse", invalidConflictResponse).length,
+  0
+);
+const invalidUnsupportedResponse = clone(expected.reconcileResults.unsupported);
+invalidUnsupportedResponse.result.resolutionMethods = [{ method: "manual", scope: "file" }];
+assert.notEqual(
+  validationErrorsForDefinition(schema, "reconcileResponse", invalidUnsupportedResponse).length,
+  0
+);
 
 const manifest = createLensManifest({
   id: "layrs.test.declared",
@@ -47,6 +82,14 @@ assert.equal(lensPinFromManifest(manifest), undefined);
 assert.throws(
   () => createLensManifest({ ...manifestInput("layrs.test.bundle"), bundle: expected.manifest.bundle }),
   /requires an explicit digest/
+);
+assert.throws(
+  () => createLensManifest({ ...manifestInput("layrs.test.digest"), digest: "sha256:abc" }),
+  /64 lowercase hexadecimal/
+);
+assert.throws(
+  () => lensPinFromManifest({ ...manifest, digest: "present-but-invalid" }),
+  /64 lowercase hexadecimal/
 );
 
 const declaredLens = {
@@ -83,17 +126,21 @@ const canonicalConflict = toCanonicalLensReconcileResult({
   status: "conflicted",
   summary: "legacy conflict",
   conflict: { exists: true, bytes: new Uint8Array([1, 2, 3]) },
-  fileMethods: ["existing"],
+  resolutionMethods: [{ method: "existing", scope: "file" }],
+  fileMethods: ["ours"],
   blocks: [
     {
       blockId: "b1",
       base: "base",
+      existing: "ours",
       ours: "ours",
+      incoming: "theirs",
       theirs: "theirs",
+      resolutionMethods: [{ method: "manual", scope: "block" }],
       supportedResolutions: ["manual"]
     }
   ],
-  segments: [],
+  segments: [{ kind: "block", blockId: "b1" }],
   fields: {}
 });
 assert.deepEqual(canonicalConflict.resolutionMethods, [{ method: "existing", scope: "file" }]);
@@ -110,6 +157,82 @@ assert.throws(
     }),
   /requires resolved content/
 );
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "auto_resolved",
+        resolved: { exists: true, bytes: new Uint8Array([1]) },
+        conflict: { exists: true, bytes: new Uint8Array([2]) }
+      })
+    ),
+  /cannot carry conflict content/
+);
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "conflicted",
+        conflict: { exists: true, bytes: new Uint8Array() },
+        fileMethods: ["banana"]
+      })
+    ),
+  /unsupported legacy resolution method banana/
+);
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "conflicted",
+        conflict: { exists: true, bytes: new Uint8Array() },
+        resolutionMethods: [{ method: "existing", scope: "file" }],
+        fileMethods: ["incoming"]
+      })
+    ),
+  /contradictory canonical and legacy resolution methods/
+);
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "conflicted",
+        conflict: { exists: true, bytes: new Uint8Array() },
+        blocks: [conflictBlock({ existing: "canonical", ours: "legacy" })],
+        segments: [{ kind: "block", blockId: "b1" }]
+      })
+    ),
+  /contradictory existing\/ours content/
+);
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "conflicted",
+        conflict: { exists: true, bytes: new Uint8Array() },
+        blocks: [conflictBlock({ incoming: "canonical", theirs: "legacy" })],
+        segments: [{ kind: "block", blockId: "b1" }]
+      })
+    ),
+  /contradictory incoming\/theirs content/
+);
+assert.throws(
+  () =>
+    toCanonicalLensReconcileResult(
+      reconcileResult({
+        status: "unsupported",
+        fileMethods: ["manual"]
+      })
+    ),
+  /cannot carry resolution methods/
+);
+assert.throws(
+  () =>
+    toLensReconcileResponse(
+      { lensId: "layrs.test", version: "1.0.0", digest: "sha256:invalid" },
+      reconcileResult()
+    ),
+  /Lens pin digest/
+);
 
 console.log("lens-sdk contract tests: ok");
 
@@ -124,4 +247,30 @@ function manifestInput(id) {
     fileExtensions: [],
     capabilities: ["view"]
   };
+}
+
+function reconcileResult(overrides = {}) {
+  return {
+    status: "unsupported",
+    summary: "test result",
+    blocks: [],
+    segments: [],
+    fields: {},
+    ...overrides
+  };
+}
+
+function conflictBlock(overrides = {}) {
+  return {
+    blockId: "b1",
+    base: "base",
+    existing: "existing",
+    incoming: "incoming",
+    resolutionMethods: [{ method: "manual", scope: "block" }],
+    ...overrides
+  };
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
 }

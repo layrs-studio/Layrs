@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::*;
@@ -108,12 +108,156 @@ fn scoped_methods_reject_the_wrong_scope() {
 }
 
 #[test]
+fn canonical_reconcile_deserialization_rejects_contradictory_states() {
+    let both_payloads = serde_json::json!({
+        "status": "auto_resolved",
+        "summary": "contradictory",
+        "resolved": {"exists": true, "bytes": [1]},
+        "conflict": {"exists": true, "bytes": [2]},
+        "resolutionMethods": [],
+        "blocks": [],
+        "segments": [],
+        "fields": {}
+    });
+    let error = serde_json::from_value::<LensReconcileResult>(both_payloads)
+        .expect_err("resolved plus conflict must be rejected");
+    assert!(error.to_string().contains("forbids conflict content"));
+
+    let unsupported_methods = serde_json::json!({
+        "status": "unsupported",
+        "summary": "contradictory",
+        "resolutionMethods": [{"method": "manual", "scope": "file"}],
+        "blocks": [],
+        "segments": [],
+        "fields": {}
+    });
+    let error = serde_json::from_value::<LensReconcileResult>(unsupported_methods)
+        .expect_err("unsupported methods must be rejected");
+    assert!(error.to_string().contains("forbids resolution methods"));
+
+    let missing_conflict = serde_json::json!({
+        "status": "conflicted",
+        "summary": "missing conflict",
+        "resolutionMethods": [],
+        "blocks": [],
+        "segments": [],
+        "fields": {}
+    });
+    let error = serde_json::from_value::<LensReconcileResult>(missing_conflict)
+        .expect_err("conflicted without conflict must be rejected");
+    assert!(error.to_string().contains("requires conflict content"));
+}
+
+#[test]
+fn canonical_reconcile_rejects_unknown_methods_and_legacy_alias_fields() {
+    let banana = serde_json::json!({
+        "status": "conflicted",
+        "summary": "unknown method",
+        "conflict": {"exists": true, "bytes": []},
+        "resolutionMethods": [{"method": "banana", "scope": "file"}],
+        "blocks": [],
+        "segments": [],
+        "fields": {}
+    });
+    assert!(serde_json::from_value::<LensReconcileResult>(banana).is_err());
+
+    let contradictory_alias = serde_json::json!({
+        "status": "conflicted",
+        "summary": "legacy alias",
+        "conflict": {"exists": true, "bytes": []},
+        "resolutionMethods": [],
+        "blocks": [{
+            "blockId": "block-1",
+            "base": "base",
+            "existing": "canonical",
+            "ours": "legacy",
+            "incoming": "incoming",
+            "resolutionMethods": []
+        }],
+        "segments": [{"kind": "block", "blockId": "block-1"}],
+        "fields": {}
+    });
+    let error = serde_json::from_value::<LensReconcileResult>(contradictory_alias)
+        .expect_err("canonical Rust input must reject legacy alias fields");
+    assert!(error.to_string().contains("unknown field `ours`"));
+}
+
+#[test]
+fn reconcile_constructors_and_serialization_refuse_invalid_states() {
+    let error =
+        LensReconcileResult::auto_resolved("resolved", LensReconcileContent::present(Vec::new()))
+            .try_with_file_methods(vec![ResolutionMethod::Manual])
+            .expect_err("auto_resolved methods must be rejected");
+    assert!(error.message().contains("forbids resolution methods"));
+
+    let block = LensConflictBlock::new(
+        "block-1",
+        "base",
+        "existing",
+        "incoming",
+        vec![ResolutionMethod::Manual],
+    );
+    assert!(
+        LensReconcileResult::try_conflicted(
+            "orphan block",
+            LensReconcileContent::present(Vec::new()),
+            vec![block],
+            Vec::new(),
+        )
+        .is_err()
+    );
+
+    let mut invalid = LensReconcileResult::unsupported("unsupported");
+    invalid.conflict = Some(LensReconcileContent::present(Vec::new()));
+    assert!(serde_json::to_value(invalid).is_err());
+}
+
+#[test]
+fn pins_require_strict_sha256_digests() {
+    assert!(LensPin::try_new("layrs.test", "1.0.0", "sha256:abc").is_err());
+    assert!(
+        LensPin::try_new(
+            "layrs.test",
+            "1.0.0",
+            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .is_err()
+    );
+
+    let pin = serde_json::json!({
+        "lensId": "layrs.test",
+        "version": "1.0.0",
+        "digest": "sha256:not-a-digest"
+    });
+    assert!(serde_json::from_value::<LensPin>(pin).is_err());
+
+    let mut manifest = LensManifest::new(
+        "layrs.test",
+        "Test",
+        "1.0.0",
+        AnalyzerContract {
+            supported_media_types: Vec::new(),
+            file_extensions: Vec::new(),
+            capabilities: Vec::new(),
+        },
+        ViewerContract::new("viewer", "Viewer", Vec::new(), Vec::new()),
+    );
+    manifest.digest = Some("present-but-invalid".to_string());
+    assert!(manifest.pin().is_none());
+    assert!(manifest.try_pin().is_err());
+    assert!(serde_json::to_value(manifest).is_err());
+}
+
+#[test]
 fn rust_contract_matches_the_shared_golden_fixture() {
     let actual = serde_json::to_value(golden_contract()).expect("contract serializes");
     let expected: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/lenses/v1/contract.golden.json"
     ))
     .expect("golden fixture parses");
+
+    let _: GoldenContract = serde_json::from_value(expected.clone())
+        .expect("golden fixture satisfies the Rust canonical contract");
 
     assert_eq!(actual, expected);
 }
@@ -144,7 +288,7 @@ fn canonical_schema_is_valid_json_with_expected_definitions() {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GoldenContract {
     manifest: LensManifest,
@@ -154,7 +298,7 @@ struct GoldenContract {
     reconcile_results: GoldenReconcileResults,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GoldenReconcileResults {
     auto_resolved: LensReconcileResponse,

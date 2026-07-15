@@ -656,7 +656,39 @@
           "type": "string",
           "minLength": 1
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "text"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "not": {
+            "required": [
+              "blockId"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "block"
+            }
+          },
+          "required": [
+            "blockId"
+          ],
+          "not": {
+            "required": [
+              "text"
+            ]
+          }
+        }
+      ]
     },
     "conflictBlock": {
       "type": "object",
@@ -777,6 +809,17 @@
             "required": [
               "resolved"
             ],
+            "properties": {
+              "resolutionMethods": {
+                "const": []
+              },
+              "blocks": {
+                "const": []
+              },
+              "segments": {
+                "const": []
+              }
+            },
             "not": {
               "required": [
                 "conflict"
@@ -812,6 +855,17 @@
             }
           },
           "then": {
+            "properties": {
+              "resolutionMethods": {
+                "const": []
+              },
+              "blocks": {
+                "const": []
+              },
+              "segments": {
+                "const": []
+              }
+            },
             "not": {
               "anyOf": [
                 {

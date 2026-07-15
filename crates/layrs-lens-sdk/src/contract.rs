@@ -14,6 +14,10 @@ pub const LENS_BUNDLE_FORMAT: &str = "layrslens.v1";
 pub struct LensPin {
     pub lens_id: String,
     pub version: String,
+    #[serde(
+        serialize_with = "crate::validation::serialize_sha256_digest",
+        deserialize_with = "crate::validation::deserialize_sha256_digest"
+    )]
     pub digest: String,
 }
 
@@ -23,11 +27,26 @@ impl LensPin {
         version: impl Into<String>,
         digest: impl Into<String>,
     ) -> Self {
-        Self {
+        Self::try_new(lens_id, version, digest)
+            .expect("Lens pin digest must be a valid sha256 digest")
+    }
+
+    pub fn try_new(
+        lens_id: impl Into<String>,
+        version: impl Into<String>,
+        digest: impl Into<String>,
+    ) -> Result<Self, crate::LensContractValidationError> {
+        let digest = digest.into();
+        crate::validate_sha256_digest(&digest)?;
+        Ok(Self {
             lens_id: lens_id.into(),
             version: version.into(),
-            digest: digest.into(),
-        }
+            digest,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), crate::LensContractValidationError> {
+        crate::validate_sha256_digest(&self.digest)
     }
 }
 
@@ -73,6 +92,10 @@ pub struct WasiLensEntrypoint {
     pub runtime: WasiEntrypointRuntime,
     pub path: String,
     pub export: String,
+    #[serde(
+        serialize_with = "crate::validation::serialize_sha256_digest",
+        deserialize_with = "crate::validation::deserialize_sha256_digest"
+    )]
     pub digest: String,
     pub resources: LensResourceQuotas,
 }
@@ -84,11 +107,14 @@ impl WasiLensEntrypoint {
         digest: impl Into<String>,
         resources: LensResourceQuotas,
     ) -> Self {
+        let digest = digest.into();
+        crate::validate_sha256_digest(&digest)
+            .expect("WASI Lens entrypoint digest must be a valid sha256 digest");
         Self {
             runtime: WasiEntrypointRuntime::Wasi,
             path: path.into(),
             export: export.into(),
-            digest: digest.into(),
+            digest,
             resources,
         }
     }
@@ -100,6 +126,10 @@ pub struct EsmLensEntrypoint {
     pub runtime: EsmEntrypointRuntime,
     pub path: String,
     pub export: String,
+    #[serde(
+        serialize_with = "crate::validation::serialize_sha256_digest",
+        deserialize_with = "crate::validation::deserialize_sha256_digest"
+    )]
     pub digest: String,
     pub resources: LensResourceQuotas,
 }
@@ -111,11 +141,14 @@ impl EsmLensEntrypoint {
         digest: impl Into<String>,
         resources: LensResourceQuotas,
     ) -> Self {
+        let digest = digest.into();
+        crate::validate_sha256_digest(&digest)
+            .expect("ESM Lens entrypoint digest must be a valid sha256 digest");
         Self {
             runtime: EsmEntrypointRuntime::Esm,
             path: path.into(),
             export: export.into(),
-            digest: digest.into(),
+            digest,
             resources,
         }
     }
@@ -137,6 +170,10 @@ pub struct LensBundleEntrypoints {
 pub struct LensSignatureMetadata {
     pub algorithm: String,
     pub key_id: String,
+    #[serde(
+        serialize_with = "crate::validation::serialize_sha256_digest",
+        deserialize_with = "crate::validation::deserialize_sha256_digest"
+    )]
     pub signed_digest: String,
     pub signature: String,
 }
@@ -245,7 +282,12 @@ impl LensDiffWindow {
 pub struct LensReconcileSideContract {
     pub exists: bool,
     pub bytes: Vec<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::validation::serialize_optional_sha256_digest",
+        deserialize_with = "crate::validation::deserialize_optional_sha256_digest"
+    )]
     pub content_hash: Option<String>,
     pub size: u64,
 }
@@ -253,6 +295,10 @@ pub struct LensReconcileSideContract {
 impl LensReconcileSideContract {
     pub fn present(bytes: impl Into<Vec<u8>>, content_hash: Option<String>) -> Self {
         let bytes = bytes.into();
+        if let Some(digest) = content_hash.as_deref() {
+            crate::validate_sha256_digest(digest)
+                .expect("reconcile content hash must be a valid sha256 digest");
+        }
         Self {
             exists: true,
             size: bytes.len() as u64,
@@ -346,11 +392,21 @@ pub struct LensReconcileResponse {
 
 impl LensReconcileResponse {
     pub fn new(lens: LensPin, result: LensReconcileResult) -> Self {
-        Self {
+        Self::try_new(lens, result)
+            .expect("Lens reconcile response requires a valid pin and result")
+    }
+
+    pub fn try_new(
+        lens: LensPin,
+        result: LensReconcileResult,
+    ) -> Result<Self, crate::LensContractValidationError> {
+        lens.validate()?;
+        result.validate()?;
+        Ok(Self {
             contract_version: LENS_CONTRACT_VERSION.to_string(),
             lens,
             result,
-        }
+        })
     }
 }
 
@@ -392,25 +448,6 @@ where
             }
         })
         .collect()
-}
-
-pub(crate) fn serialize_file_methods<S>(
-    methods: &[ResolutionMethod],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serialize_scoped_methods(methods, ResolutionScope::File, serializer)
-}
-
-pub(crate) fn deserialize_file_methods<'de, D>(
-    deserializer: D,
-) -> Result<Vec<ResolutionMethod>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_scoped_methods(deserializer, ResolutionScope::File)
 }
 
 pub(crate) fn serialize_block_methods<S>(
