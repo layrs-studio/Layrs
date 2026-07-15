@@ -1,64 +1,153 @@
 fn media_type_for_path(path: &str) -> &'static str {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if lower.ends_with(".webp") {
-        "image/webp"
-    } else if lower.ends_with(".gif") {
-        "image/gif"
-    } else if lower.ends_with(".svg") {
-        "image/svg+xml"
-    } else if lower.ends_with(".json") {
-        "application/json"
-    } else {
-        "text/plain"
-    }
+    layrs_lens_sdk::infer_media_type_from_path(Some(Path::new(path)))
+        .unwrap_or("application/octet-stream")
 }
 
 fn is_text_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".txt")
-        || lower.ends_with(".md")
-        || lower.ends_with(".log")
-        || lower.ends_with(".ini")
-        || lower.ends_with(".env")
+    lens_id_for_path(path) == layrs_lens_text::TEXT_LENS_ID
 }
 
 fn is_code_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".json")
-        || lower.ends_with(".toml")
-        || lower.ends_with(".yaml")
-        || lower.ends_with(".yml")
-        || lower.ends_with(".rs")
-        || lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".js")
-        || lower.ends_with(".jsx")
-        || lower.ends_with(".css")
-        || lower.ends_with(".html")
-        || lower.ends_with(".csv")
+    lens_id_for_path(path) == layrs_lens_code::CODE_LENS_ID
 }
 
 fn lens_id_for_path(path: &str) -> &'static str {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".webp")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".svg")
-    {
-        "layrs.image"
-    } else if is_code_path(path) {
-        "layrs.code"
-    } else if is_text_path(path) {
-        "layrs.text"
-    } else {
-        "layrs.raw"
+    select_builtin_lens(Some(path), None)
+        .map(|(manifest, _)| manifest.id.as_str())
+        .unwrap_or(layrs_lens_raw::RAW_LENS_ID)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LensMatchReason {
+    MediaType,
+    Extension,
+    RawFallback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LensSelectionError {
+    code: &'static str,
+    message: String,
+}
+
+impl std::fmt::Display for LensSelectionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
     }
+}
+
+fn select_builtin_lens(
+    path: Option<&str>,
+    media_type: Option<&str>,
+) -> Result<(&'static layrs_lens_sdk::LensManifest, LensMatchReason), LensSelectionError> {
+    select_lens_from_manifests(canonical_builtin_lens_manifests(), path, media_type)
+}
+
+fn built_in_lens_manifest(lens_id: &str) -> Option<&'static layrs_lens_sdk::LensManifest> {
+    canonical_builtin_lens_manifests()
+        .iter()
+        .find(|manifest| manifest.id == lens_id)
+}
+
+fn canonical_builtin_lens_manifests() -> &'static [layrs_lens_sdk::LensManifest; 4] {
+    static MANIFESTS: std::sync::OnceLock<[layrs_lens_sdk::LensManifest; 4]> =
+        std::sync::OnceLock::new();
+    MANIFESTS.get_or_init(|| {
+        [
+            layrs_lens_code::manifest(),
+            layrs_lens_image::manifest(),
+            layrs_lens_text::manifest(),
+            layrs_lens_raw::manifest(),
+        ]
+    })
+}
+
+fn select_lens_from_manifests<'a>(
+    manifests: &'a [layrs_lens_sdk::LensManifest],
+    path: Option<&str>,
+    media_type: Option<&str>,
+) -> Result<(&'a layrs_lens_sdk::LensManifest, LensMatchReason), LensSelectionError> {
+    if let Some(media_type) = normalize_lens_media_type(media_type) {
+        if let Some(manifest) =
+            unique_lens_match(manifests, "media type", &media_type, |manifest| {
+                manifest
+                    .analyzer
+                    .supported_media_types
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&media_type))
+            })?
+        {
+            return Ok((manifest, LensMatchReason::MediaType));
+        }
+    }
+
+    if let Some(extension) = lens_extension_from_path(path) {
+        if let Some(manifest) = unique_lens_match(manifests, "extension", &extension, |manifest| {
+            manifest
+                .analyzer
+                .file_extensions
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&extension))
+        })? {
+            return Ok((manifest, LensMatchReason::Extension));
+        }
+    }
+
+    manifests
+        .iter()
+        .find(|manifest| manifest.id == layrs_lens_raw::RAW_LENS_ID)
+        .map(|manifest| (manifest, LensMatchReason::RawFallback))
+        .ok_or_else(|| LensSelectionError {
+            code: "missing_raw_lens",
+            message: "canonical built-in Lens registry has no Raw fallback".to_string(),
+        })
+}
+
+fn unique_lens_match<'a>(
+    manifests: &'a [layrs_lens_sdk::LensManifest],
+    criterion: &str,
+    value: &str,
+    predicate: impl Fn(&layrs_lens_sdk::LensManifest) -> bool,
+) -> Result<Option<&'a layrs_lens_sdk::LensManifest>, LensSelectionError> {
+    let matches = manifests
+        .iter()
+        .filter(|manifest| predicate(manifest))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [manifest] => Ok(Some(*manifest)),
+        _ => {
+            let mut lens_ids = matches
+                .iter()
+                .map(|manifest| manifest.id.as_str())
+                .collect::<Vec<_>>();
+            lens_ids.sort_unstable();
+            Err(LensSelectionError {
+                code: "ambiguous_lens_match",
+                message: format!(
+                    "{criterion} `{value}` matches multiple Lenses: {}",
+                    lens_ids.join(", ")
+                ),
+            })
+        }
+    }
+}
+
+fn normalize_lens_media_type(media_type: Option<&str>) -> Option<String> {
+    media_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn lens_extension_from_path(path: Option<&str>) -> Option<String> {
+    Path::new(path?)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn url_path_segment(value: &str) -> String {
@@ -445,8 +534,8 @@ fn compare_steps_by_timeline(left: &StepFile, right: &StepFile) -> std::cmp::Ord
         (Some(left_position), Some(right_position)) => left_position.cmp(&right_position),
         _ => left.captured_at_unix.cmp(&right.captured_at_unix),
     }
-        .then_with(|| left.captured_at_unix.cmp(&right.captured_at_unix))
-        .then_with(|| left.step_id.cmp(&right.step_id))
+    .then_with(|| left.captured_at_unix.cmp(&right.captured_at_unix))
+    .then_with(|| left.step_id.cmp(&right.step_id))
 }
 
 #[allow(dead_code)]
@@ -462,4 +551,66 @@ pub fn scaffold_access_registry(
         pointer_path: pointer_path.display().to_string(),
         layers,
     })
+}
+
+#[cfg(test)]
+mod lens_selection_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_extensions_select_each_builtin_and_raw_fallback() {
+        let cases = [
+            ("src/Main.RS", layrs_lens_code::CODE_LENS_ID),
+            ("notes/readme.rst", layrs_lens_text::TEXT_LENS_ID),
+            ("assets/photo.WEBP", layrs_lens_image::IMAGE_LENS_ID),
+            ("assets/vector.svg", layrs_lens_raw::RAW_LENS_ID),
+            ("data/table.csv", layrs_lens_raw::RAW_LENS_ID),
+            ("opaque", layrs_lens_raw::RAW_LENS_ID),
+        ];
+
+        for (path, expected_lens_id) in cases {
+            assert_eq!(lens_id_for_path(path), expected_lens_id, "{path}");
+        }
+    }
+
+    #[test]
+    fn media_type_precedes_extension_and_is_normalized() {
+        let (manifest, reason) = select_builtin_lens(
+            Some("notes/readme.md"),
+            Some(" Application/JSON ; charset=utf-8"),
+        )
+        .expect("deterministic media match");
+
+        assert_eq!(manifest.id, layrs_lens_code::CODE_LENS_ID);
+        assert_eq!(reason, LensMatchReason::MediaType);
+
+        let (manifest, reason) = select_builtin_lens(Some("src/main.rs"), Some("unknown/type"))
+            .expect("extension fallback");
+        assert_eq!(manifest.id, layrs_lens_code::CODE_LENS_ID);
+        assert_eq!(reason, LensMatchReason::Extension);
+    }
+
+    #[test]
+    fn ambiguous_matches_fail_closed_with_sorted_candidates() {
+        let text = layrs_lens_text::manifest();
+        let mut duplicate = text.clone();
+        duplicate.id = "example.text".to_string();
+        let manifests = [text, duplicate, layrs_lens_raw::manifest()];
+
+        let error = select_lens_from_manifests(&manifests, Some("README.md"), None)
+            .expect_err("duplicate extension must fail closed");
+
+        assert_eq!(error.code, "ambiguous_lens_match");
+        assert!(error.message.contains("example.text, layrs.text"));
+    }
+
+    #[test]
+    fn media_type_inference_uses_sdk_contract_without_extra_extensions() {
+        assert_eq!(media_type_for_path("src/main.rs"), "text/rust");
+        assert_eq!(media_type_for_path("assets/photo.jpeg"), "image/jpeg");
+        assert_eq!(
+            media_type_for_path("assets/vector.svg"),
+            "application/octet-stream"
+        );
+    }
 }

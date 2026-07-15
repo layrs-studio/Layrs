@@ -1,15 +1,14 @@
 use super::{WeaveConflictBlockFile, WeaveConflictFile};
 use layrs_lens_sdk::{
-    LensBlockResolutionInput, LensResolutionSegment, ResolutionMethod, ResolutionMethods,
-    ResolutionScope,
+    LensBlockResolutionInput, LensCapability, LensResolutionSegment, ResolutionMethod,
+    ResolutionMethods, ResolutionScope,
 };
 
 fn lens_resolution_methods(lens_id: &str) -> ResolutionMethods {
-    match lens_id {
-        "layrs.text" => layrs_lens_text::resolution_methods(),
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::resolution_methods(),
-        _ => layrs_lens_raw::resolution_methods(),
-    }
+    super::built_in_lens_manifest(lens_id)
+        .filter(|manifest| manifest.supports_capability(&LensCapability::Reconcile))
+        .map(|manifest| manifest.resolution_methods.clone())
+        .unwrap_or_else(ResolutionMethods::none)
 }
 
 pub(super) fn resolution_method_labels_for_storage(methods: &[ResolutionMethod]) -> Vec<String> {
@@ -287,6 +286,20 @@ mod tests {
             ResolutionMethod::Existing
         );
         assert!(validate_block_resolution_method(&conflict, "1", "base").is_err());
+    }
+
+    #[test]
+    fn code_and_image_expose_no_raw_resolution_methods() {
+        for lens_id in [
+            layrs_lens_code::CODE_LENS_ID,
+            layrs_lens_image::IMAGE_LENS_ID,
+        ] {
+            let conflict = conflict_file(lens_id, Vec::new(), Vec::new());
+
+            assert!(conflict_file_method_labels(&conflict).is_empty());
+            assert!(conflict_block_method_labels(&conflict, &conflict.blocks[0]).is_empty());
+            assert!(validate_file_resolution_method(&conflict, "existing").is_err());
+        }
     }
 
     fn conflict_file(

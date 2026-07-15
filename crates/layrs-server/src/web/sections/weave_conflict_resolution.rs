@@ -82,12 +82,20 @@ async fn weave_conflict_value(
     row: &WeaveConflictRow,
     session_payload: &Value,
 ) -> Result<Value, ApiError> {
-    let base =
-        load_weave_conflict_side(pool, workspace_id, space_id, row.base_file_object_id.as_deref())
-            .await?;
-    let ours =
-        load_weave_conflict_side(pool, workspace_id, space_id, row.ours_file_object_id.as_deref())
-            .await?;
+    let base = load_weave_conflict_side(
+        pool,
+        workspace_id,
+        space_id,
+        row.base_file_object_id.as_deref(),
+    )
+    .await?;
+    let ours = load_weave_conflict_side(
+        pool,
+        workspace_id,
+        space_id,
+        row.ours_file_object_id.as_deref(),
+    )
+    .await?;
     let theirs = load_weave_conflict_side(
         pool,
         workspace_id,
@@ -257,6 +265,19 @@ fn reconcile_weave_conflict(
     ours: &WeaveConflictSide,
     theirs: &WeaveConflictSide,
 ) -> LensReconcileResult {
+    let Some(manifest) = crate::lenses::built_in_lens_manifest(&row.lens_id) else {
+        return LensReconcileResult::unsupported(format!(
+            "Lens {} is not registered for server-side Weave reconciliation",
+            row.lens_id
+        ));
+    };
+    if !manifest.supports_capability(&layrs_lens_sdk::LensCapability::Reconcile) {
+        return LensReconcileResult::unsupported(format!(
+            "Lens {} does not support Weave reconciliation",
+            manifest.id
+        ));
+    }
+
     let input = LensReconcileInput {
         path: Some(std::path::Path::new(&row.logical_path)),
         media_type: preferred_conflict_media_type(base, ours, theirs),
@@ -266,11 +287,11 @@ fn reconcile_weave_conflict(
         ours_label: &row.target_layer_id,
         theirs_label: &row.source_layer_id,
     };
-    match row.lens_id.as_str() {
-        "layrs.text" => layrs_lens_text::reconcile_text(input),
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::reconcile_raw(input),
+    match manifest.id.as_str() {
+        layrs_lens_text::TEXT_LENS_ID => layrs_lens_text::reconcile_text(input),
+        layrs_lens_raw::RAW_LENS_ID => layrs_lens_raw::reconcile_raw(input),
         lens_id => LensReconcileResult::unsupported(format!(
-            "Lens {lens_id} does not support server-side Weave reconciliation"
+            "Lens {lens_id} has no server-side Weave reconciler"
         )),
     }
 }
@@ -356,6 +377,10 @@ fn weave_conflict_segment_values(reconcile: &LensReconcileResult) -> Vec<Value> 
         .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "transactional resolution keeps the loaded conflict sides explicit"
+)]
 async fn resolve_weave_text_block_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     row: &WeaveConflictRow,
@@ -397,9 +422,13 @@ async fn resolve_weave_text_block_in_tx(
             "manual text block resolution requires manualText",
         ));
     }
-    let resolved_text =
-        layrs_lens_text::resolve_text_block_choice_by_method(&block.ours, &block.theirs, method, manual_text)
-            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let resolved_text = layrs_lens_text::resolve_text_block_choice_by_method(
+        &block.ours,
+        &block.theirs,
+        method,
+        manual_text,
+    )
+    .map_err(|error| ApiError::bad_request(error.to_string()))?;
     set_block_resolution_payload(
         payload,
         &row.conflict_id,
@@ -451,6 +480,10 @@ async fn resolve_weave_text_block_in_tx(
     save_weave_session_payload_in_tx(tx, row, payload).await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "transactional resolution keeps the loaded conflict sides explicit"
+)]
 async fn resolve_weave_file_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     row: &WeaveConflictRow,
@@ -472,11 +505,13 @@ async fn resolve_weave_file_in_tx(
         incoming: lens_side(theirs),
     };
     let content = match row.lens_id.as_str() {
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::resolve_raw_conflict(input),
+        layrs_lens_raw::RAW_LENS_ID => layrs_lens_raw::resolve_raw_conflict(input),
         lens_id => {
-            return Err(ApiError::bad_request(format!(
-                "Lens {lens_id} does not support file-level Weave resolution"
-            )));
+            return Err(unsupported_lens_reconcile_error(
+                lens_id,
+                "file",
+                &row.logical_path,
+            ));
         }
     }
     .map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -655,8 +690,8 @@ fn assemble_text_resolution(
         .blocks
         .iter()
         .map(|block| {
-            let block_payload =
-                block_payload(payload, &row.conflict_id, &block.block_id).ok_or_else(|| {
+            let block_payload = block_payload(payload, &row.conflict_id, &block.block_id)
+                .ok_or_else(|| {
                     ApiError::bad_request(format!(
                         "Text conflict block {} is not resolved",
                         block.block_id
@@ -682,7 +717,7 @@ fn assemble_text_resolution(
         .segments
         .iter()
         .map(|segment| LensResolutionSegment {
-            kind: segment.kind.clone(),
+            kind: segment.kind,
             text: segment.text.as_deref(),
             block_id: segment.block_id.as_deref(),
         })
@@ -692,11 +727,10 @@ fn assemble_text_resolution(
 }
 
 fn lens_resolution_methods(lens_id: &str) -> ResolutionMethods {
-    match lens_id {
-        "layrs.text" => layrs_lens_text::resolution_methods(),
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::resolution_methods(),
-        _ => ResolutionMethods::none(),
-    }
+    crate::lenses::built_in_lens_manifest(lens_id)
+        .filter(|manifest| manifest.supports_capability(&layrs_lens_sdk::LensCapability::Reconcile))
+        .map(|manifest| manifest.resolution_methods.clone())
+        .unwrap_or_else(ResolutionMethods::none)
 }
 
 fn resolution_method_labels(methods: &[ResolutionMethod]) -> Vec<String> {
@@ -713,6 +747,9 @@ fn ensure_resolution_method_allowed(
     if methods.contains(&method) {
         return Ok(());
     }
+    if methods.is_empty() {
+        return Err(unsupported_lens_reconcile_error(lens_id, scope, target));
+    }
     let available = resolution_method_labels(methods);
     let available = if available.is_empty() {
         "none".to_string()
@@ -723,6 +760,14 @@ fn ensure_resolution_method_allowed(
         "Lens {lens_id} does not declare {scope}-level resolution method `{}` for {target}. Available methods: {available}.",
         method.as_str()
     )))
+}
+
+fn unsupported_lens_reconcile_error(lens_id: &str, scope: &str, target: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "lens_reconcile_unsupported",
+        format!("Lens {lens_id} does not support {scope}-level Weave resolution for {target}"),
+    )
 }
 
 fn conflict_media_type(
@@ -765,11 +810,7 @@ fn conflict_payload<'a>(payload: &'a Value, conflict_id: &str) -> Option<&'a Val
         .and_then(|conflicts| conflicts.get(conflict_id))
 }
 
-fn block_payload<'a>(
-    payload: &'a Value,
-    conflict_id: &str,
-    block_id: &str,
-) -> Option<&'a Value> {
+fn block_payload<'a>(payload: &'a Value, conflict_id: &str, block_id: &str) -> Option<&'a Value> {
     conflict_payload(payload, conflict_id)
         .and_then(|conflict| conflict.get("blocks"))
         .and_then(|blocks| blocks.get(block_id))
@@ -799,7 +840,9 @@ fn set_conflict_resolution_payload(
     conflict.insert("resolution".to_string(), json!(resolution));
     conflict.insert(
         "resolvedFileObjectId".to_string(),
-        resolved_file_object_id.map(Value::from).unwrap_or(Value::Null),
+        resolved_file_object_id
+            .map(Value::from)
+            .unwrap_or(Value::Null),
     );
 }
 
@@ -846,9 +889,9 @@ fn text_resolution_has_manual(row: &WeaveConflictRow, payload: &Value) -> bool {
         .and_then(|conflict| conflict.get("blocks"))
         .and_then(Value::as_object)
         .map(|blocks| {
-            blocks.values().any(|block| {
-                block.get("method").and_then(Value::as_str) == Some("manual")
-            })
+            blocks
+                .values()
+                .any(|block| block.get("method").and_then(Value::as_str) == Some("manual"))
         })
         .unwrap_or(false)
 }
@@ -861,3 +904,7 @@ fn resolution_kind_for_method(method: ResolutionMethod) -> &'static str {
         ResolutionMethod::Manual => "manual",
     }
 }
+
+#[cfg(test)]
+#[path = "weave_conflict_resolution_tests.rs"]
+mod canonical_lens_host_tests;

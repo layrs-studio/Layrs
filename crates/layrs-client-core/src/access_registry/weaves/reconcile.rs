@@ -1,8 +1,11 @@
-use super::*;
 use super::weave_resolution::{labels_to_methods, resolution_method_labels_for_storage};
 use super::weave_session::conflict_dir;
 use super::weave_state::apply_file_choice;
-use layrs_lens_sdk::{LensFileResolutionInput, ResolutionMethod};
+use super::*;
+use layrs_lens_sdk::{
+    LensCapability, LensError, LensFileResolutionInput, LensManifest, LensReconcileContent,
+    LensReconcileInput, LensReconcileResult, LensResult, ResolutionMethod,
+};
 
 pub(super) enum PathReconcileOutcome {
     AutoResolved(Option<FileSnapshotEntry>),
@@ -55,8 +58,14 @@ pub(super) fn reconcile_path_with_lens_request(
     let base_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.base)?;
     let ours_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.ours)?;
     let theirs_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.theirs)?;
-    let lens_id = lens_id_for_path(request.path);
-    let input = layrs_lens_sdk::LensReconcileInput {
+    let (manifest, _) = select_builtin_lens(Some(request.path), None).map_err(|error| {
+        format!(
+            "Layrs Desktop could not select a Lens for {}: {error}",
+            request.path
+        )
+    })?;
+    let lens_id = manifest.id.as_str();
+    let input = LensReconcileInput {
         path: Some(Path::new(request.path)),
         media_type: None,
         base: reconcile_side(request.base, &base_bytes),
@@ -65,21 +74,15 @@ pub(super) fn reconcile_path_with_lens_request(
         ours_label: request.target_layer_id,
         theirs_label: request.source_layer_id,
     };
-    let result = match lens_id {
-        "layrs.text" => layrs_lens_text::reconcile_text(input),
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::reconcile_raw(input),
-        _ => layrs_lens_raw::reconcile_raw(input),
-    };
+    let result = reconcile_with_builtin_lens(manifest, input);
 
     if result.status == layrs_lens_sdk::LensReconcileResultStatus::AutoResolved {
-        let content = result
-            .resolved
-            .ok_or_else(|| {
-                format!(
-                    "Lens {lens_id} auto-resolved {} without content.",
-                    request.path
-                )
-            })?;
+        let content = result.resolved.ok_or_else(|| {
+            format!(
+                "Lens {lens_id} auto-resolved {} without content.",
+                request.path
+            )
+        })?;
         return Ok(PathReconcileOutcome::AutoResolved(
             write_reconciled_content(handle, request.path, content)?,
         ));
@@ -183,6 +186,26 @@ fn write_reconciled_content(
     }
 }
 
+fn reconcile_with_builtin_lens(
+    manifest: &LensManifest,
+    input: LensReconcileInput<'_>,
+) -> LensReconcileResult {
+    if !manifest.supports_capability(&LensCapability::Reconcile) {
+        return LensReconcileResult::unsupported(format!(
+            "Lens {} does not support Weave reconciliation",
+            manifest.id
+        ));
+    }
+
+    match manifest.id.as_str() {
+        layrs_lens_text::TEXT_LENS_ID => layrs_lens_text::reconcile_text(input),
+        layrs_lens_raw::RAW_LENS_ID => layrs_lens_raw::reconcile_raw(input),
+        lens_id => LensReconcileResult::unsupported(format!(
+            "Lens {lens_id} has no client-side Weave reconciler"
+        )),
+    }
+}
+
 fn reconcile_side<'a>(
     entry: Option<&'a FileSnapshotEntry>,
     bytes: &'a [u8],
@@ -248,20 +271,43 @@ pub(super) fn resolve_file_conflict_with_lens(
         existing: side_from_bytes(&existing_bytes),
         incoming: side_from_bytes(&incoming_bytes),
     };
-    let content = match conflict.lens_id.as_str() {
-        "layrs.raw" | "layrs.image" | "layrs.code" => layrs_lens_raw::resolve_raw_conflict(input),
-        other => {
-            return Err(format!(
-                "Lens {other} does not support file-level resolution for {}.",
-                conflict.path
-            ));
-        }
-    }
-    .map_err(|error| error.to_string())?;
+    let manifest = built_in_lens_manifest(&conflict.lens_id).ok_or_else(|| {
+        format!(
+            "unknown_lens: Lens {} is not registered for {}.",
+            conflict.lens_id, conflict.path
+        )
+    })?;
+    let content = resolve_file_conflict_with_builtin_lens(manifest, input)
+        .map_err(|error| error.to_string())?;
     if content.exists {
         Ok(content.bytes)
     } else {
         Ok(Vec::new())
+    }
+}
+
+fn resolve_file_conflict_with_builtin_lens(
+    manifest: &LensManifest,
+    input: LensFileResolutionInput<'_>,
+) -> LensResult<LensReconcileContent> {
+    if !manifest.supports_capability(&LensCapability::Reconcile)
+        || manifest.resolution_methods.file.is_empty()
+    {
+        return Err(LensError::new(
+            "lens_reconcile_unsupported",
+            format!(
+                "Lens {} does not support file-level Weave resolution",
+                manifest.id
+            ),
+        ));
+    }
+
+    match manifest.id.as_str() {
+        layrs_lens_raw::RAW_LENS_ID => layrs_lens_raw::resolve_raw_conflict(input),
+        lens_id => Err(LensError::new(
+            "lens_reconcile_unsupported",
+            format!("Lens {lens_id} has no file-level Weave resolver"),
+        )),
     }
 }
 
@@ -284,5 +330,64 @@ fn side_from_bytes(bytes: &[u8]) -> layrs_lens_sdk::LensReconcileSide<'_> {
         bytes,
         content_hash: None,
         size: bytes.len() as u64,
+    }
+}
+
+#[cfg(test)]
+mod canonical_lens_reconcile_tests {
+    use super::*;
+    use layrs_lens_sdk::{LensReconcileResultStatus, LensReconcileSide};
+
+    #[test]
+    fn code_and_image_reconcile_fail_closed_without_raw_fallback() {
+        for manifest in [layrs_lens_code::manifest(), layrs_lens_image::manifest()] {
+            let result = reconcile_with_builtin_lens(&manifest, reconcile_input());
+
+            assert_eq!(result.status, LensReconcileResultStatus::Unsupported);
+            assert!(result.resolved.is_none());
+            assert!(result.conflict.is_none());
+            assert!(result.file_methods.is_empty());
+
+            let error = resolve_file_conflict_with_builtin_lens(&manifest, file_input())
+                .expect_err("unsupported Lens must not route to Raw");
+            assert_eq!(error.code, "lens_reconcile_unsupported");
+        }
+    }
+
+    #[test]
+    fn text_and_raw_use_their_canonical_reconcilers() {
+        let text = reconcile_with_builtin_lens(&layrs_lens_text::manifest(), reconcile_input());
+        assert_eq!(text.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(text.resolved.expect("text result").bytes, b"incoming\n");
+
+        let raw = reconcile_with_builtin_lens(&layrs_lens_raw::manifest(), reconcile_input());
+        assert_eq!(raw.status, LensReconcileResultStatus::AutoResolved);
+        assert_eq!(raw.resolved.expect("raw result").bytes, b"incoming\n");
+
+        let raw_file =
+            resolve_file_conflict_with_builtin_lens(&layrs_lens_raw::manifest(), file_input())
+                .expect("Raw file resolution");
+        assert_eq!(raw_file.bytes, b"existing\n");
+    }
+
+    fn reconcile_input() -> LensReconcileInput<'static> {
+        LensReconcileInput {
+            path: Some(Path::new("notes/readme.txt")),
+            media_type: Some("text/plain"),
+            base: LensReconcileSide::present(b"base\n", None),
+            ours: LensReconcileSide::present(b"base\n", None),
+            theirs: LensReconcileSide::present(b"incoming\n", None),
+            ours_label: "target",
+            theirs_label: "source",
+        }
+    }
+
+    fn file_input() -> LensFileResolutionInput<'static> {
+        LensFileResolutionInput {
+            method: ResolutionMethod::Existing,
+            base: LensReconcileSide::present(b"base\n", None),
+            existing: LensReconcileSide::present(b"existing\n", None),
+            incoming: LensReconcileSide::present(b"incoming\n", None),
+        }
     }
 }

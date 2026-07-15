@@ -1,3 +1,4 @@
+use layrs_lens_sdk::LensManifest;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -5,6 +6,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 pub const LENSES_DIR_ENV: &str = "LAYRS_LENSES_DIR";
 
@@ -168,125 +170,29 @@ pub fn load_lens_registry(lenses_dir: impl AsRef<Path>) -> LensRegistry {
 }
 
 pub fn built_in_lens_manifests() -> Vec<Value> {
-    vec![
-        lens_manifest(
-            "layrs.code",
-            "Code",
-            "CodeArtifactViewer",
-            &["code"],
-            &["textLines"],
-            &[
-                "text/rust",
-                "text/typescript",
-                "text/javascript",
-                "text/css",
-                "text/html",
-                "application/json",
-                "application/toml",
-                "application/yaml",
-                "text/x-go",
-                "text/x-python",
-            ],
-            &[
-                "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "css", "html", "htm", "toml",
-                "yaml", "yml", "py", "go", "java", "kt", "kts", "swift", "c", "h", "cc", "cpp",
-                "cxx", "hpp", "cs", "php", "rb", "sh", "bash", "zsh", "ps1", "sql",
-            ],
-            &[
-                "view",
-                "diff",
-                "reconcile",
-                "metadata",
-                "preview",
-                "references",
-            ],
-        ),
-        lens_manifest(
-            "layrs.text",
-            "Text",
-            "TextArtifactViewer",
-            &["text"],
-            &["textLines"],
-            &["text/plain", "text/markdown"],
-            &["txt", "md", "markdown", "rst", "log"],
-            &[
-                "view",
-                "diff",
-                "reconcile",
-                "metadata",
-                "preview",
-                "references",
-            ],
-        ),
-        lens_manifest(
-            "layrs.image",
-            "Image",
-            "ImageArtifactViewer",
-            &["image"],
-            &["imageMetadata"],
-            &["image/png", "image/jpeg", "image/webp"],
-            &["png", "jpg", "jpeg", "webp"],
-            &[
-                "view",
-                "diff",
-                "reconcile",
-                "metadata",
-                "preview",
-                "proofRecipes",
-            ],
-        ),
-        lens_manifest(
-            "layrs.raw",
-            "Raw",
-            "RawArtifactViewer",
-            &["raw"],
-            &["binary"],
-            &["application/octet-stream"],
-            &[],
-            &["view", "diff", "reconcile", "metadata", "preview"],
-        ),
-    ]
+    canonical_built_in_lens_manifests()
+        .iter()
+        .map(|manifest| {
+            serde_json::to_value(manifest).expect("canonical built-in Lens manifest serializes")
+        })
+        .collect()
 }
 
-fn lens_manifest(
-    id: &str,
-    name: &str,
-    component: &str,
-    preview_kinds: &[&str],
-    diff_kinds: &[&str],
-    supported_media_types: &[&str],
-    file_extensions: &[&str],
-    capabilities: &[&str],
-) -> Value {
-    json!({
-        "id": id,
-        "name": name,
-        "version": "0.0.0",
-        "applies_to": {
-            "artifact_kinds": preview_kinds,
-            "media_types": supported_media_types,
-            "file_extensions": file_extensions
-        },
-        "capabilities": capabilities,
-        "permissions": {},
-        "analyzer": {
-            "supportedMediaTypes": supported_media_types,
-            "fileExtensions": file_extensions,
-            "capabilities": capabilities
-        },
-        "viewer": {
-            "viewerId": format!("layrs.viewer.{}", id.trim_start_matches("layrs.")),
-            "schemaVersion": "layrs.viewer.v1",
-            "component": component,
-            "previewKinds": preview_kinds,
-            "diffKinds": diff_kinds,
-            "reconcileStatuses": [
-                "unsupported",
-                "needs_manual_resolution",
-                "auto_resolvable"
-            ],
-            "inspectorFields": []
-        }
+pub(crate) fn built_in_lens_manifest(lens_id: &str) -> Option<&'static LensManifest> {
+    canonical_built_in_lens_manifests()
+        .iter()
+        .find(|manifest| manifest.id == lens_id)
+}
+
+fn canonical_built_in_lens_manifests() -> &'static [LensManifest; 4] {
+    static MANIFESTS: OnceLock<[LensManifest; 4]> = OnceLock::new();
+    MANIFESTS.get_or_init(|| {
+        [
+            layrs_lens_code::manifest(),
+            layrs_lens_text::manifest(),
+            layrs_lens_image::manifest(),
+            layrs_lens_raw::manifest(),
+        ]
     })
 }
 
@@ -534,6 +440,42 @@ mod tests {
 
         assert_eq!(lens_ids(&registry.items), built_in_ids());
         assert!(registry.errors.is_empty());
+    }
+
+    #[test]
+    fn built_ins_are_exact_versioned_canonical_manifests() {
+        let expected = [
+            layrs_lens_code::manifest(),
+            layrs_lens_text::manifest(),
+            layrs_lens_image::manifest(),
+            layrs_lens_raw::manifest(),
+        ]
+        .iter()
+        .map(|manifest| serde_json::to_value(manifest).expect("manifest serializes"))
+        .collect::<Vec<_>>();
+
+        let actual = built_in_lens_manifests();
+        assert_eq!(actual, expected);
+        assert!(actual.iter().all(|manifest| {
+            manifest.get("version").and_then(Value::as_str) == Some("1.0.0")
+                && manifest
+                    .get("digest")
+                    .and_then(Value::as_str)
+                    .is_some_and(|digest| digest.starts_with("sha256:"))
+        }));
+    }
+
+    #[test]
+    fn canonical_capabilities_exclude_code_and_image_reconcile() {
+        for lens_id in [
+            layrs_lens_code::CODE_LENS_ID,
+            layrs_lens_image::IMAGE_LENS_ID,
+        ] {
+            let manifest = built_in_lens_manifest(lens_id).expect("built-in manifest");
+            assert!(!manifest.supports_capability(&layrs_lens_sdk::LensCapability::Reconcile));
+            assert!(manifest.resolution_methods.file.is_empty());
+            assert!(manifest.resolution_methods.block.is_empty());
+        }
     }
 
     #[test]

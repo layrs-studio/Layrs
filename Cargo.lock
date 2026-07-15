@@ -906,6 +906,8 @@ name = "layrs-client-core"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "layrs-lens-code",
+ "layrs-lens-image",
  "layrs-lens-raw",
  "layrs-lens-sdk",
  "layrs-lens-text",
@@ -998,6 +1000,8 @@ dependencies = [
  "blake3",
  "hex",
  "layrs-api",
+ "layrs-lens-code",
+ "layrs-lens-image",
  "layrs-lens-raw",
  "layrs-lens-sdk",
  "layrs-lens-text",
