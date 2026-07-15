@@ -6,11 +6,13 @@ const studioWebPort = 15750;
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
-  reporter: [["list"], ["html", { open: "never" }]],
-  retries: process.env.CI ? 2 : 0,
+  outputDir: "test-results/renderer",
+  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report/renderer" }]],
+  retries: 0,
   use: {
-    trace: "on-first-retry",
-    screenshot: "only-on-failure"
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure"
   },
   webServer: [
     {

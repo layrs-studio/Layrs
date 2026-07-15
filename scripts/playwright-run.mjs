@@ -30,10 +30,6 @@ const playwrightArgs = ["test", "-c", config];
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let cleanupE2eServices = () => {};
 
-if (target === "renderer") {
-  playwrightArgs.push("--project", "Studio Web mock - Chromium");
-}
-
 if (isDebug) {
   playwrightArgs.push("--debug");
 } else if (isVisual) {
@@ -45,6 +41,7 @@ playwrightArgs.push(...extraArgs);
 const env = {
   ...process.env,
   LAYRS_E2E_ISOLATED: isIsolated ? "1" : "0",
+  LAYRS_PLAYWRIGHT_TARGET: target,
   LAYRS_E2E_VISUAL: isVisual ? "1" : "0",
   LAYRS_E2E_HEADLESS: isCi ? "1" : "0",
   LAYRS_E2E_SLOW_MO_MS: process.env.LAYRS_E2E_SLOW_MO_MS ?? (isVisual ? "250" : "0"),

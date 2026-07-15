@@ -15,16 +15,17 @@ export default defineConfig({
   testMatch: /studio-web-real\.spec\.ts/,
   fullyParallel: false,
   workers: 1,
-  reporter: [["list"], ["html", { open: "never" }]],
+  outputDir: "test-results/web",
+  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report/web" }]],
   timeout: 180_000,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   use: {
     ...devices["Desktop Chrome"],
     baseURL: `http://127.0.0.1:${studioWebPort}`,
     headless: process.env.LAYRS_E2E_HEADLESS === "1",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: process.env.LAYRS_E2E_VISUAL === "1" ? "retain-on-failure" : "off"
+    video: "retain-on-failure"
   },
   webServer: [
     {

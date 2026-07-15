@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "directory": "crates/layrs-store-server/migrations",
+  "hash": "sha256(utf8-lf)",
+  "migrations": [
+    {
+      "version": 1,
+      "file": "0001_v1_auth_workspace_layers_access.sql",
+      "sha256": "ad25717f584b2a95df0a0c3eee4b3ba4cd6629bd2e02882251a6e403691e50aa"
+    },
+    {
+      "version": 2,
+      "file": "0002_studio_v1_teams_invitations_access_rules.sql",
+      "sha256": "23d480a563a2fe6e4da8277db5333976ba08aec3c34859d6b2bf302ae8caec20"
+    },
+    {
+      "version": 3,
+      "file": "0003_merkle_chunks_sync_v2.sql",
+      "sha256": "fcdbf3184d1e99fff01814b07de1c2bc5084f953f6299d06d37d2d5198feaad7"
+    },
+    {
+      "version": 4,
+      "file": "0004_merkle_v2_blake3_digest.sql",
+      "sha256": "4fb050b33d2c03fcaeee66db3eccdf45477197b6d13a463de7eec16de9e3b1c0"
+    },
+    {
+      "version": 5,
+      "file": "0005_layer_steps.sql",
+      "sha256": "7b9e2e65e2376975c9e6e03d4db3714fa0ec5b0a034907201ddc6912944a6723"
+    },
+    {
+      "version": 6,
+      "file": "0006_chunk_storage_compression.sql",
+      "sha256": "2098aa9239943d887d25fc612e9cd210828e552cbfa15a9ef66f06058bd294e2"
+    },
+    {
+      "version": 7,
+      "file": "0007_space_chunk_availability.sql",
+      "sha256": "730d29726ffd6ff5a6fa3f513bc38f5096d36771a73d73c7e0e0a8fa4e1dbd34"
+    },
+    {
+      "version": 8,
+      "file": "0008_space_file_tree_availability.sql",
+      "sha256": "edf75a8ecb0b61e00ab00a678556252a52e25fb5414dc4c1c3ae22e6250d5478"
+    },
+    {
+      "version": 9,
+      "file": "0009_weave_sessions.sql",
+      "sha256": "5512b9610fff2d99b4c71e21e9c0481b351b124142b1ef4a2c455c81049c282b"
+    },
+    {
+      "version": 10,
+      "file": "0010_layer_step_metadata.sql",
+      "sha256": "bd4a1546995f4cf7c2af4030521f8e455f547332aea9a7542cb242d4a8a490d5"
+    },
+    {
+      "version": 11,
+      "file": "0011_layer_step_origin_layer_name.sql",
+      "sha256": "6673edec92897de185dc30c74e9fa85dff8d7ae4cbfad19a33495cb98da29a30"
+    },
+    {
+      "version": 12,
+      "file": "0012_layer_settings_lineage_clear_steps.sql",
+      "sha256": "cca56e64828089d5adb829962c4395977c9edba8d8c877a95763956b160457c4"
+    },
+    {
+      "version": 13,
+      "file": "0013_weave_step_replays.sql",
+      "sha256": "39873dfa8e58fb557873af10298c57e48b239a3395adb785c54d08263589be6f"
+    }
+  ]
+}

@@ -2,7 +2,7 @@ name: ${LAYRS_COMPOSE_PROJECT_NAME:-layrs-dev}
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${LAYRS_POSTGRES_IMAGE:-postgres:16.14-alpine3.23}
     container_name: ${LAYRS_POSTGRES_CONTAINER_NAME:-layrs-postgres}
     restart: unless-stopped
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 12
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: ${LAYRS_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z}
     container_name: ${LAYRS_MINIO_CONTAINER_NAME:-layrs-minio}
     command: server /data --console-address ":9001"
     restart: unless-stopped

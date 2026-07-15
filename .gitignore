@@ -23,6 +23,10 @@
 # Test artifacts
 /playwright-report/
 /test-results/
+/blob-report/
+/coverage/
+/.nyc_output/
+/junit/
 
 # Editors and operating systems
 .DS_Store
