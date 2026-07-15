@@ -4,5 +4,6 @@ mod tests {
     include!("tests/local_layers.rs");
     include!("tests/store_compaction.rs");
     include!("tests/sync_layers.rs");
+    include!("tests/sync_safety.rs");
     include!("tests/helpers.rs");
 }

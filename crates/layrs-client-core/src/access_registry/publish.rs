@@ -16,11 +16,13 @@ fn build_publish_v2_request(
     let mut store_objects = publish_store_objects_for_paths(handle, state, &publish_paths)?;
     for step in steps {
         let step_state = state_from_step(&handle.layrs_dir, step)?;
-        let step_paths = step
-            .changed_paths
+        // A later Step may delete a path that an earlier pending Step introduced.
+        // Send the complete closure of every pending Step tree, not only the
+        // paths still present in the final working state.
+        let step_paths = step_state
+            .files
             .iter()
-            .filter(|path| !deleted_paths.iter().any(|deleted| deleted == *path))
-            .cloned()
+            .map(|file| file.path.clone())
             .collect::<BTreeSet<_>>();
         extend_publish_store_objects_for_paths(
             &mut store_objects,
@@ -44,6 +46,65 @@ fn build_publish_v2_request(
         deleted_paths,
         steps: steps.iter().map(PublishStepRequest::from_step).collect(),
     })
+}
+
+fn acknowledged_publish_step_ids(
+    response: &Value,
+    requested_steps: &[StepFile],
+) -> Result<BTreeSet<String>, String> {
+    if requested_steps.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let acknowledged = response
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Layrs server did not acknowledge the pending Steps in its publish response."
+                .to_string()
+        })?
+        .iter()
+        .filter_map(|step| step.get("stepId").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let missing = requested_steps
+        .iter()
+        .map(|step| step.step_id.as_str())
+        .filter(|step_id| !acknowledged.contains(*step_id))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Layrs server did not acknowledge pending Step(s): {}. The local pending queue was preserved.",
+            missing.join(", ")
+        ));
+    }
+    Ok(requested_steps
+        .iter()
+        .map(|step| step.step_id.clone())
+        .collect())
+}
+
+fn remove_acknowledged_pending_steps(
+    layrs_dir: &Path,
+    layer_id: &str,
+    acknowledged_step_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    if acknowledged_step_ids.is_empty() {
+        return Ok(());
+    }
+    for pending in read_pending_publish_files(layrs_dir, layer_id)? {
+        if !acknowledged_step_ids.contains(&pending.step_id) {
+            continue;
+        }
+        let path =
+            pending_publish_dir(layrs_dir, layer_id).join(format!("{}.json", pending.step_id));
+        fs::remove_file(&path).map_err(|error| {
+            format!(
+                "Layrs Desktop could not remove acknowledged pending Step {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn upload_publish_chunks(

@@ -80,6 +80,22 @@ fn apply_receive_response(
         .content_objects
         .as_ref()
         .ok_or_else(|| "Layrs Desktop received V2 protocol without contentObjects.".to_string())?;
+    if !response
+        .layers
+        .iter()
+        .any(|layer| layer.id == active_layer_id)
+    {
+        return Err(format!(
+            "Studio did not return active Layer {active_layer_id} for this Local Space."
+        ));
+    }
+    // Validate the authoritative active Layer mapping before writing any received
+    // objects or materializing user files.
+    select_received_tree(
+        &active_layer_id,
+        response.root_tree_id.as_deref(),
+        &content_objects.tree_objects,
+    )?;
     ensure_received_v2_chunks(
         &handle.layrs_dir,
         endpoint,
@@ -91,24 +107,18 @@ fn apply_receive_response(
     write_received_v2_file_objects(&handle.layrs_dir, &content_objects.file_objects)?;
     write_received_v2_tree_objects(&handle.layrs_dir, content_objects)?;
 
+    let existing_layers = handle.meta.layers.clone();
     let mut metadata_layers = Vec::with_capacity(response.layers.len());
     let mut active_sync_path =
         layer_dir(&handle.layrs_dir, &active_layer_id).join("sync-state.json");
 
     for layer in &response.layers {
         let layer_id = layer.id.clone();
-        let access_kind = match layer.access.as_deref() {
-            Some("redacted" | "denied" | "restricted" | "no-access") => LayerAccessKind::Redacted,
-            _ => LayerAccessKind::Open,
-        };
-        let layer_meta = LocalLayerMetadata {
-            layer_id: layer_id.clone(),
-            display_name: layer.name.clone(),
-            parent_layer_id: layer.parent_layer_id.clone(),
-            lineage_status: default_layer_lineage_status(),
-            access: access_kind.clone(),
-            can_open: access_kind == LayerAccessKind::Open,
-        };
+        let existing = existing_layers
+            .iter()
+            .find(|existing| existing.layer_id == layer_id);
+        let layer_meta = received_layer_metadata(layer, existing);
+        let access_kind = layer_meta.access.clone();
         metadata_layers.push(layer_meta.clone());
 
         let view = LayerAccessView {
@@ -140,21 +150,22 @@ fn apply_receive_response(
             write_received_access_file(handle, &layer_id, &layer.name, policy)?;
         }
 
-        let layer_root_tree_id = if layer_id == active_layer_id {
-            response.root_tree_id.as_deref()
+        // A receive request advances only its requested active Layer. Other
+        // Layers are metadata/cache entries until they are explicitly received.
+        let state = if layer_id == active_layer_id {
+            received_v2_state(
+                &handle.layrs_dir,
+                endpoint,
+                token,
+                &response.workspace_id,
+                &response.space_id,
+                &layer_id,
+                response.root_tree_id.as_deref(),
+                content_objects,
+            )?
         } else {
             None
         };
-        let state = received_v2_state(
-            &handle.layrs_dir,
-            endpoint,
-            token,
-            &response.workspace_id,
-            &response.space_id,
-            &layer_id,
-            layer_root_tree_id,
-            content_objects,
-        )?;
         if let Some(state) = state {
             write_layer_state(&handle.layrs_dir, &layer_id, &state)?;
             if materialize_active && layer_id == active_layer_id {
@@ -179,13 +190,14 @@ fn apply_receive_response(
     }
     write_received_steps(&handle.layrs_dir, &response.steps)?;
 
-    if !metadata_layers
-        .iter()
-        .any(|layer| layer.layer_id == active_layer_id)
-    {
-        return Err(format!(
-            "Studio did not return active Layer {active_layer_id} for this Local Space."
-        ));
+    for existing in existing_layers {
+        if existing.lineage_status == "unlinked"
+            && !metadata_layers
+                .iter()
+                .any(|layer| layer.layer_id == existing.layer_id)
+        {
+            metadata_layers.push(existing);
+        }
     }
 
     handle.meta.layers = metadata_layers;
@@ -195,6 +207,35 @@ fn apply_receive_response(
     write_access_pointer_from_meta(handle)?;
     remember_local_space(&handle.meta, Some(active_layer_id))?;
     Ok(active_sync_path)
+}
+
+fn received_layer_metadata(
+    layer: &ReceivedLayer,
+    existing: Option<&LocalLayerMetadata>,
+) -> LocalLayerMetadata {
+    let access = match layer.access.as_deref() {
+        Some("redacted" | "denied" | "restricted" | "no-access") => LayerAccessKind::Redacted,
+        _ => LayerAccessKind::Open,
+    };
+    let preserve_disconnected = existing
+        .map(|existing| existing.lineage_status == "unlinked")
+        .unwrap_or(false);
+    LocalLayerMetadata {
+        layer_id: layer.id.clone(),
+        display_name: layer.name.clone(),
+        parent_layer_id: if preserve_disconnected {
+            existing.and_then(|existing| existing.parent_layer_id.clone())
+        } else {
+            layer.parent_layer_id.clone()
+        },
+        lineage_status: if preserve_disconnected {
+            "unlinked".to_string()
+        } else {
+            default_layer_lineage_status()
+        },
+        can_open: access == LayerAccessKind::Open,
+        access,
+    }
 }
 
 fn write_received_access_file(
@@ -279,7 +320,7 @@ fn received_v2_state(
     )?;
     write_received_v2_file_objects(layrs_dir, &objects.file_objects)?;
 
-    let tree = select_received_tree(layer_id, root_tree_id, &objects.tree_objects);
+    let tree = select_received_tree(layer_id, root_tree_id, &objects.tree_objects)?;
     let Some(tree) = tree else {
         return Ok(None);
     };
@@ -402,22 +443,31 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
         if let Some(base_tree_id) = step.base_tree_id.as_deref() {
             validate_blake3_id(base_tree_id)?;
         }
-        let timeline_position = match step
-            .timeline_position
-            .or_else(|| existing_step.as_ref().and_then(|step| step.timeline_position))
-        {
+        let timeline_position = match step.timeline_position.or_else(|| {
+            existing_step
+                .as_ref()
+                .and_then(|step| step.timeline_position)
+        }) {
             Some(position) => Some(position),
             None => Some(next_timeline_position(layrs_dir, layer_id)?),
         };
         let origin_layer_id = step
             .origin_layer_id
             .clone()
-            .or_else(|| existing_step.as_ref().and_then(|step| step.origin_layer_id.clone()))
+            .or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.origin_layer_id.clone())
+            })
             .or_else(|| Some(layer_id.to_string()));
         let origin_layer_name = step
             .origin_layer_name
             .clone()
-            .or_else(|| existing_step.as_ref().and_then(|step| step.origin_layer_name.clone()))
+            .or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.origin_layer_name.clone())
+            })
             .or_else(|| {
                 origin_layer_id
                     .as_deref()
@@ -428,22 +478,26 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
             schema: STEP_SCHEMA.to_string(),
             step_id: step.step_id.clone(),
             layer_id: layer_id.to_string(),
-            parent_step_id: step
-                .parent_step_id
-                .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.parent_step_id.clone())),
-            base_layer_id: step
-                .base_layer_id
-                .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.base_layer_id.clone())),
-            base_tree_id: step
-                .base_tree_id
-                .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.base_tree_id.clone())),
-            root_tree_id: step
-                .root_tree_id
-                .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.root_tree_id.clone())),
+            parent_step_id: step.parent_step_id.clone().or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.parent_step_id.clone())
+            }),
+            base_layer_id: step.base_layer_id.clone().or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.base_layer_id.clone())
+            }),
+            base_tree_id: step.base_tree_id.clone().or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.base_tree_id.clone())
+            }),
+            root_tree_id: step.root_tree_id.clone().or_else(|| {
+                existing_step
+                    .as_ref()
+                    .and_then(|step| step.root_tree_id.clone())
+            }),
             changed_paths: if step.changed_paths.is_empty() {
                 existing_step
                     .as_ref()
@@ -458,12 +512,20 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
             origin_step_id: step
                 .origin_step_id
                 .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.origin_step_id.clone()))
+                .or_else(|| {
+                    existing_step
+                        .as_ref()
+                        .and_then(|step| step.origin_step_id.clone())
+                })
                 .or_else(|| Some(step.step_id.clone())),
             step_kind: step
                 .step_kind
                 .clone()
-                .or_else(|| existing_step.as_ref().and_then(|step| step.step_kind.clone()))
+                .or_else(|| {
+                    existing_step
+                        .as_ref()
+                        .and_then(|step| step.step_kind.clone())
+                })
                 .or_else(|| Some("native".to_string())),
             captured_at_unix: step.captured_at_unix.unwrap_or_else(|| {
                 existing_step
@@ -501,15 +563,26 @@ fn select_received_tree<'a>(
     layer_id: &str,
     root_tree_id: Option<&str>,
     trees: &'a [ReceivedTreeObject],
-) -> Option<&'a ReceivedTreeObject> {
-    root_tree_id
-        .and_then(|tree_id| trees.iter().find(|tree| tree.tree_id == tree_id))
-        .or_else(|| {
-            trees
-                .iter()
-                .find(|tree| tree.layer_id.as_deref() == Some(layer_id))
+) -> Result<Option<&'a ReceivedTreeObject>, String> {
+    let matching = trees
+        .iter()
+        .filter(|tree| {
+            tree.layer_id.as_deref() == Some(layer_id)
+                && root_tree_id
+                    .map(|tree_id| tree.tree_id == tree_id)
+                    .unwrap_or(true)
         })
-        .or_else(|| (trees.len() == 1).then(|| &trees[0]))
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [] if root_tree_id.is_none() => Ok(None),
+        [] => Err(format!(
+            "Layrs Desktop did not receive an exact tree mapping for Layer {layer_id}."
+        )),
+        [tree] => Ok(Some(*tree)),
+        _ => Err(format!(
+            "Layrs Desktop received an ambiguous tree mapping for Layer {layer_id}."
+        )),
+    }
 }
 
 fn ensure_received_v2_chunks(

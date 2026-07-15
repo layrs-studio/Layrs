@@ -25,6 +25,107 @@ fn proposed_state_path(layrs_dir: &Path, weave_id: &str) -> PathBuf {
     weave_dir(layrs_dir, weave_id).join("proposed-state.json")
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncWeavePlanGuard {
+    schema: String,
+    layer_id: String,
+    planned_steps: Vec<String>,
+    received_tree_id: Option<String>,
+    proposed_tree_id: Option<String>,
+}
+
+fn sync_weave_plan_guard_path(layrs_dir: &Path, weave_id: &str) -> PathBuf {
+    weave_dir(layrs_dir, weave_id).join("sync-plan-guard.json")
+}
+
+fn write_sync_weave_plan_guard(
+    layrs_dir: &Path,
+    session: &WeaveSessionFile,
+    received_state: &WorkingStateFile,
+    proposed_state: &WorkingStateFile,
+) -> Result<(), String> {
+    write_json(
+        &sync_weave_plan_guard_path(layrs_dir, &session.weave_id),
+        &SyncWeavePlanGuard {
+            schema: "layrs.sync_weave_plan_guard.v1".to_string(),
+            layer_id: session.target_layer_id.clone(),
+            planned_steps: session.planned_steps.clone(),
+            received_tree_id: received_state.root_tree_id.clone(),
+            proposed_tree_id: proposed_state.root_tree_id.clone(),
+        },
+    )
+}
+
+fn ensure_sync_weave_plan_is_current(
+    handle: &LocalSpaceHandle,
+    session: &WeaveSessionFile,
+    proposed_state: &WorkingStateFile,
+) -> Result<(), String> {
+    let guard: SyncWeavePlanGuard = read_json(&sync_weave_plan_guard_path(
+        &handle.layrs_dir,
+        &session.weave_id,
+    ))
+    .map_err(|error| format!("Sync Weave plan guard is unavailable: {error}"))?;
+    if guard.layer_id != session.target_layer_id
+        || guard.planned_steps != session.planned_steps
+        || guard.proposed_tree_id != proposed_state.root_tree_id
+    {
+        return Err(
+            "Sync Weave plan changed since preparation. Abort and run Sync again.".to_string(),
+        );
+    }
+    let pending_ids = read_pending_publish_files(&handle.layrs_dir, &session.target_layer_id)?
+        .into_iter()
+        .map(|pending| pending.step_id)
+        .collect::<Vec<_>>();
+    if pending_ids != guard.planned_steps {
+        return Err(
+            "Sync Weave pending Step set changed since preparation. Abort and run Sync again; no pending Step was removed."
+                .to_string(),
+        );
+    }
+    let current_index = read_layer_index(&handle.layrs_dir, &session.target_layer_id)?;
+    if current_index.root_tree_id != guard.received_tree_id {
+        return Err(
+            "Sync Weave target changed since preparation. Abort and run Sync again.".to_string(),
+        );
+    }
+    let current_working = capture_working_state(&handle.root, &session.target_layer_id, true)?;
+    if current_working.root_tree_id != guard.proposed_tree_id {
+        return Err(
+            "Sync Weave working tree changed since preparation. No files or pending Steps were modified."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn ensure_local_weave_target_is_current(
+    handle: &LocalSpaceHandle,
+    session: &WeaveSessionFile,
+    proposed_state: &WorkingStateFile,
+) -> Result<(), String> {
+    let target_state = read_layer_state(&handle.layrs_dir, &session.target_layer_id)
+        .or_else(|_| read_layer_index(&handle.layrs_dir, &session.target_layer_id))?;
+    if target_state.root_tree_id != session.pre_weave_target_tree_id {
+        return Err(
+            "Weave target changed since preparation. Abort and prepare the Weave again."
+                .to_string(),
+        );
+    }
+    if handle.active.layer_id == session.target_layer_id {
+        let current_working = capture_working_state(&handle.root, &session.target_layer_id, true)?;
+        if current_working.root_tree_id != proposed_state.root_tree_id {
+            return Err(
+                "Weave working tree changed since preparation. No files or pending Steps were modified."
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn conflict_dir(layrs_dir: &Path, weave_id: &str, conflict_id: &str) -> PathBuf {
     weave_dir(layrs_dir, weave_id)
         .join("conflicts")
@@ -413,6 +514,11 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
         &handle.layrs_dir,
         &proposed_state_path(&handle.layrs_dir, &weave_id),
     )?;
+    if is_sync_weave_session(&session) {
+        ensure_sync_weave_plan_is_current(&handle, &session, &proposed_state)?;
+    } else {
+        ensure_local_weave_target_is_current(&handle, &session, &proposed_state)?;
+    }
     for conflict in &session.conflicts {
         let dir = conflict_dir(&handle.layrs_dir, &weave_id, &conflict.conflict_id);
         let bytes = fs::read(dir.join("resolved")).map_err(|error| {
@@ -459,15 +565,14 @@ fn apply_completed_sync_weave(
     proposed_state: &WorkingStateFile,
 ) -> Result<String, String> {
     let target_layer_id = session.target_layer_id.as_str();
-    let base_state = read_layer_index(&handle.layrs_dir, target_layer_id).unwrap_or_else(|_| {
-        WorkingStateFile {
+    let base_state =
+        read_layer_index(&handle.layrs_dir, target_layer_id).unwrap_or_else(|_| WorkingStateFile {
             schema: WORKING_STATE_SCHEMA.to_string(),
             layer_id: target_layer_id.to_string(),
             captured_at_unix: unix_now(),
             root_tree_id: None,
             files: Vec::new(),
-        }
-    });
+        });
     archive_planned_sync_steps(
         &handle.layrs_dir,
         target_layer_id,
@@ -532,14 +637,34 @@ fn archive_planned_sync_steps(
     for step_id in planned_steps {
         let step_path = steps_dir.join(format!("{step_id}.json"));
         if step_path.exists() {
-            fs::copy(&step_path, archive_steps_dir.join(format!("{step_id}.json"))).map_err(
-                |error| {
-                    format!(
-                        "Layrs Desktop could not archive pending Step {}: {error}",
-                        step_path.display()
-                    )
-                },
-            )?;
+            fs::copy(
+                &step_path,
+                archive_steps_dir.join(format!("{step_id}.json")),
+            )
+            .map_err(|error| {
+                format!(
+                    "Layrs Desktop could not archive pending Step {}: {error}",
+                    step_path.display()
+                )
+            })?;
+        }
+        let pending_path = pending_dir.join(format!("{step_id}.json"));
+        if pending_path.exists() {
+            fs::copy(
+                &pending_path,
+                archive_pending_dir.join(format!("{step_id}.json")),
+            )
+            .map_err(|error| {
+                format!(
+                    "Layrs Desktop could not archive pending publish entry {}: {error}",
+                    pending_path.display()
+                )
+            })?;
+        }
+    }
+    for step_id in planned_steps {
+        let step_path = steps_dir.join(format!("{step_id}.json"));
+        if step_path.exists() {
             fs::remove_file(&step_path).map_err(|error| {
                 format!(
                     "Layrs Desktop could not replace pending Step {}: {error}",
@@ -550,17 +675,15 @@ fn archive_planned_sync_steps(
 
         let pending_path = pending_dir.join(format!("{step_id}.json"));
         if pending_path.exists() {
-            fs::copy(&pending_path, archive_pending_dir.join(format!("{step_id}.json"))).map_err(
-                |error| {
-                    format!(
-                        "Layrs Desktop could not archive pending publish entry {}: {error}",
-                        pending_path.display()
-                    )
-                },
-            )?;
+            fs::remove_file(&pending_path).map_err(|error| {
+                format!(
+                    "Layrs Desktop could not remove applied pending Step {}: {error}",
+                    pending_path.display()
+                )
+            })?;
         }
     }
-    clear_pending_publish(layrs_dir, layer_id)
+    Ok(())
 }
 
 fn write_sync_woven_step(
