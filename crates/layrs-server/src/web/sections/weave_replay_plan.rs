@@ -121,7 +121,12 @@ async fn create_weave_step_replay_plan_in_tx(
 
         let changed_paths = path_replays
             .iter()
-            .filter_map(|value| value.get("path").and_then(Value::as_str).map(str::to_string))
+            .filter_map(|value| {
+                value
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .collect::<Vec<_>>();
         let replay_status = if path_replays.iter().any(|value| {
             matches!(
@@ -178,13 +183,17 @@ async fn create_weave_path_replay_in_tx(
     account_id: &str,
     path: &str,
 ) -> Result<Option<(Value, bool)>, ApiError> {
+    let layer_ids = vec![source_layer_id.to_string(), target_layer_id.to_string()];
+    let paths = vec![path.to_string()];
+    let artifacts =
+        weave_artifact_ids_for_paths(pool, workspace_id, space_id, &layer_ids, &paths).await?;
     let source_access = access_decision_for_path(
         pool,
         workspace_id,
         space_id,
         source_layer_id,
         path,
-        None,
+        artifacts.get(source_layer_id, path),
         account_id,
     )
     .await?;
@@ -194,7 +203,7 @@ async fn create_weave_path_replay_in_tx(
         space_id,
         target_layer_id,
         path,
-        None,
+        artifacts.get(target_layer_id, path),
         account_id,
     )
     .await?;
@@ -210,15 +219,18 @@ async fn create_weave_path_replay_in_tx(
     }
     let base_ref =
         tree_file_ref_for_path(pool, workspace_id, space_id, source_base_tree_id, path).await?;
-    let ours_ref = tree_file_ref_for_path(pool, workspace_id, space_id, target_tree_id, path).await?;
+    let ours_ref =
+        tree_file_ref_for_path(pool, workspace_id, space_id, target_tree_id, path).await?;
     let theirs_ref =
         tree_file_ref_for_path(pool, workspace_id, space_id, source_root_tree_id, path).await?;
     if same_tree_file_ref(base_ref.as_ref(), theirs_ref.as_ref()) {
         return Ok(None);
     }
 
-    let base = weave_side_from_tree_file_ref(pool, workspace_id, space_id, base_ref.as_ref()).await?;
-    let ours = weave_side_from_tree_file_ref(pool, workspace_id, space_id, ours_ref.as_ref()).await?;
+    let base =
+        weave_side_from_tree_file_ref(pool, workspace_id, space_id, base_ref.as_ref()).await?;
+    let ours =
+        weave_side_from_tree_file_ref(pool, workspace_id, space_id, ours_ref.as_ref()).await?;
     let theirs =
         weave_side_from_tree_file_ref(pool, workspace_id, space_id, theirs_ref.as_ref()).await?;
     let media_type = conflict_media_type_for_path(path, &base, &ours, &theirs);
@@ -320,8 +332,10 @@ async fn actual_step_changed_paths(
     };
     let mut changed = Vec::new();
     for path in candidates {
-        let base = tree_file_ref_for_path(pool, workspace_id, space_id, base_tree_id, &path).await?;
-        let root = tree_file_ref_for_path(pool, workspace_id, space_id, root_tree_id, &path).await?;
+        let base =
+            tree_file_ref_for_path(pool, workspace_id, space_id, base_tree_id, &path).await?;
+        let root =
+            tree_file_ref_for_path(pool, workspace_id, space_id, root_tree_id, &path).await?;
         if !same_tree_file_ref(base.as_ref(), root.as_ref()) {
             changed.push(path);
         }
@@ -642,7 +656,8 @@ async fn load_weave_request_row_for_update_in_tx(
         r#"
         SELECT weave_id, source_layer_id, target_layer_id, title, body, status,
                pre_weave_target_tree_id, pre_weave_target_step_id, planned_steps,
-               applied_steps, created_at::text AS created_at, updated_at::text AS updated_at
+               applied_steps, requested_by_account_id,
+               created_at::text AS created_at, updated_at::text AS updated_at
         FROM weave_requests
         WHERE workspace_id = $1 AND space_id = $2 AND weave_id = $3
         FOR UPDATE

@@ -388,9 +388,7 @@ impl RepositoryRole {
 }
 
 fn strongest_repository_role<'a>(roles: impl Iterator<Item = &'a str>) -> Option<RepositoryRole> {
-    roles
-        .filter_map(RepositoryRole::from_repository_role)
-        .max()
+    roles.filter_map(RepositoryRole::from_repository_role).max()
 }
 
 async fn effective_layer_role(
@@ -459,10 +457,7 @@ async fn effective_layer_role(
     .bind(workspace_id)
     .fetch_all(pool)
     .await?;
-    Ok(strongest_repository_role(
-        space_roles.iter().map(String::as_str),
-    )
-    .unwrap_or(inherited))
+    Ok(strongest_repository_role(space_roles.iter().map(String::as_str)).unwrap_or(inherited))
 }
 
 async fn account_team_ids_in_tx(
@@ -476,6 +471,7 @@ async fn account_team_ids_in_tx(
         FROM team_memberships tm
         JOIN teams t ON t.team_id = tm.team_id
         WHERE t.workspace_id = $1 AND tm.account_id = $2
+        ORDER BY tm.team_id ASC
         FOR SHARE OF tm, t
         "#,
     )
@@ -529,6 +525,7 @@ async fn effective_layer_role_in_tx(
         FROM layer_memberships
         WHERE layer_id = $1
           AND (account_id = $2 OR team_id = ANY($3))
+        ORDER BY membership_id ASC
         FOR SHARE
         "#,
     )
@@ -547,6 +544,7 @@ async fn effective_layer_role_in_tx(
         FROM space_memberships
         WHERE space_id = $1
           AND (account_id = $2 OR team_id = ANY($3))
+        ORDER BY membership_id ASC
         FOR SHARE
         "#,
     )
@@ -555,10 +553,7 @@ async fn effective_layer_role_in_tx(
     .bind(&team_ids)
     .fetch_all(&mut **tx)
     .await?;
-    Ok(strongest_repository_role(
-        space_roles.iter().map(String::as_str),
-    )
-    .unwrap_or(inherited))
+    Ok(strongest_repository_role(space_roles.iter().map(String::as_str)).unwrap_or(inherited))
 }
 
 async fn ensure_layer_read(

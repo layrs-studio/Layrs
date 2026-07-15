@@ -387,7 +387,25 @@ async fn access_decision_for_path(
         };
     let team_ids = account_team_ids(pool, workspace_id, account_id).await?;
     let rules = access_rule_rows_for_layer(pool, workspace_id, space_id, layer_id).await?;
-    let mut best: Option<AccessRuleRow> = None;
+    Ok(access_decision_from_rules(
+        repository_role,
+        &team_ids,
+        &rules,
+        account_id,
+        path,
+        artifact_id,
+    ))
+}
+
+fn access_decision_from_rules(
+    repository_role: RepositoryRole,
+    team_ids: &HashSet<String>,
+    rules: &[AccessRuleRow],
+    account_id: &str,
+    path: &str,
+    artifact_id: Option<&str>,
+) -> AccessDecision {
+    let mut best: Option<&AccessRuleRow> = None;
     for rule in rules {
         let artifact_matches = match (artifact_id, rule.artifact_id.as_deref()) {
             (Some(artifact_id), Some(rule_artifact_id)) => artifact_id == rule_artifact_id,
@@ -395,7 +413,6 @@ async fn access_decision_for_path(
         };
         if artifact_matches || path_matches_rule(path, &rule.path) {
             let replace = best
-                .as_ref()
                 .map(|current| rule.path.len() > current.path.len())
                 .unwrap_or(true);
             if replace {
@@ -404,38 +421,41 @@ async fn access_decision_for_path(
         }
     }
 
-    let repository_can_write = matches!(repository_role, RepositoryRole::Writer | RepositoryRole::Admin);
+    let repository_can_write = matches!(
+        repository_role,
+        RepositoryRole::Writer | RepositoryRole::Admin
+    );
     let Some(rule) = best else {
-        return Ok(AccessDecision {
+        return AccessDecision {
             can_read: true,
             can_write: repository_can_write,
             reason: "No restrictive Layer access rule matched".to_string(),
-        });
+        };
     };
     if rule.mode == "reserved_redacted" {
-        return Ok(AccessDecision {
+        return AccessDecision {
             can_read: false,
             can_write: false,
             reason: "Path is reserved redacted by Layer access policy".to_string(),
-        });
+        };
     }
 
     let account_read = rule.read_accounts.contains(account_id)
         || rule.write_accounts.contains(account_id)
         || rule.admin_accounts.contains(account_id);
-    let team_read = intersects(&team_ids, &rule.read_teams)
-        || intersects(&team_ids, &rule.write_teams)
-        || intersects(&team_ids, &rule.admin_teams);
+    let team_read = intersects(team_ids, &rule.read_teams)
+        || intersects(team_ids, &rule.write_teams)
+        || intersects(team_ids, &rule.admin_teams);
     let account_write =
         rule.write_accounts.contains(account_id) || rule.admin_accounts.contains(account_id);
     let team_write =
-        intersects(&team_ids, &rule.write_teams) || intersects(&team_ids, &rule.admin_teams);
+        intersects(team_ids, &rule.write_teams) || intersects(team_ids, &rule.admin_teams);
 
-    Ok(AccessDecision {
+    AccessDecision {
         can_read: account_read || team_read,
         can_write: repository_can_write && (account_write || team_write),
         reason: "Restricted by Layer access policy".to_string(),
-    })
+    }
 }
 
 async fn access_rule_rows_for_layer(
@@ -518,4 +538,3 @@ async fn account_team_ids(
         .map(|row| row.get::<String, _>("team_id"))
         .collect())
 }
-

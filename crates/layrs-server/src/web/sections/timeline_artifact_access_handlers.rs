@@ -199,7 +199,14 @@ async fn put_layer_access_policy(
         Some(&user.id),
     )
     .await?;
-    replace_layer_policy_rules(&state.pool, &workspace_id, &policy_id, &body).await?;
+    replace_layer_policy_rules(
+        &state.pool,
+        &workspace_id,
+        &policy_id,
+        &body,
+        Some(&user.id),
+    )
+    .await?;
     Ok(Json(
         layer_access_policy_value(&state.pool, &workspace_id, &space_id, &layer_id).await?,
     ))

@@ -316,8 +316,7 @@ async fn upsert_layer_policy(
         VALUES
             ($1, $2, $3, $4, $5, 1, $6, 'server_key_local', 'unsigned-dev')
         ON CONFLICT (layer_id) DO UPDATE
-        SET policy_epoch = layer_access_policies.policy_epoch + 1,
-            updated_by_account_id = excluded.updated_by_account_id,
+        SET updated_by_account_id = excluded.updated_by_account_id,
             updated_at = now()
         RETURNING policy_id
         "#,
@@ -358,6 +357,7 @@ async fn insert_layer_access_rule(
     account_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let mut tx = pool.begin().await?;
+    lock_policy_for_update_in_tx(&mut tx, policy_id).await?;
     insert_layer_access_rule_in_tx(&mut tx, policy_id, rule_id, rule).await?;
     bump_policy_epoch_in_tx(&mut tx, policy_id, account_id).await?;
     tx.commit().await?;
@@ -372,6 +372,7 @@ async fn update_layer_access_rule_row(
     account_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let mut tx = pool.begin().await?;
+    lock_policy_for_update_in_tx(&mut tx, policy_id).await?;
     let result = sqlx::query(
         r#"
         UPDATE layer_access_policy_rules
@@ -417,6 +418,7 @@ async fn delete_layer_access_rule_row(
     account_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let mut tx = pool.begin().await?;
+    lock_policy_for_update_in_tx(&mut tx, policy_id).await?;
     let result =
         sqlx::query("DELETE FROM layer_access_policy_rules WHERE policy_id = $1 AND rule_id = $2")
             .bind(policy_id)
@@ -484,13 +486,32 @@ async fn bump_policy_epoch_in_tx(
     Ok(())
 }
 
+async fn lock_policy_for_update_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    policy_id: &str,
+) -> Result<(), ApiError> {
+    let locked = sqlx::query_scalar::<_, String>(
+        "SELECT policy_id FROM layer_access_policies WHERE policy_id = $1 FOR UPDATE",
+    )
+    .bind(policy_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if locked.is_some() {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("layer access policy not found"))
+    }
+}
+
 async fn replace_layer_policy_rules(
     pool: &PgPool,
     workspace_id: &str,
     policy_id: &str,
     body: &LayerAccessPolicyBody,
+    account_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let mut tx = pool.begin().await?;
+    lock_policy_for_update_in_tx(&mut tx, policy_id).await?;
 
     if let Some(signature) = &body.signature {
         sqlx::query(
@@ -541,6 +562,7 @@ async fn replace_layer_policy_rules(
         .await?;
     }
 
+    bump_policy_epoch_in_tx(&mut tx, policy_id, account_id).await?;
     tx.commit().await?;
     Ok(())
 }
