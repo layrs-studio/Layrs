@@ -9,6 +9,11 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[[test]]
+name = "process_lock"
+path = "tests/process_lock.rs"
+harness = false
+
 [dependencies]
 blake3 = "1"
 fs2 = "0.4"

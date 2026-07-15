@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use layrs_store_local::{
     CURRENT_SCHEMA_VERSION, LocalStore, LocalStoreConfig, SessionMode, StoreError, fsck_existing,
@@ -141,61 +139,6 @@ fn two_shared_handles_coexist_and_exclusive_contention_is_explicit() {
 }
 
 #[test]
-fn exclusive_lock_contends_across_real_processes() {
-    let root = unique_test_dir("process-contention");
-    let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("initialize store");
-    let ready = root.join("tmp").join("child-lock-ready");
-    let release = root.join("tmp").join("child-lock-release");
-    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
-        .arg("--ignored")
-        .arg("--exact")
-        .arg("child_holds_exclusive_store_lock")
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env("LAYRS_LOCK_HELPER_ROOT", &root)
-        .env("LAYRS_LOCK_HELPER_READY", &ready)
-        .env("LAYRS_LOCK_HELPER_RELEASE", &release)
-        .spawn()
-        .expect("spawn lock helper process");
-
-    if !wait_for_path(&ready, Duration::from_secs(10)) {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("child process did not acquire the store lock");
-    }
-    let contention = store.session(SessionMode::Exclusive);
-    fs::write(&release, b"release").expect("release child lock");
-    let status = child.wait().expect("wait for lock helper");
-
-    assert!(status.success());
-    assert!(matches!(contention, Err(StoreError::LockBusy(_))));
-    drop(store);
-    fs::remove_dir_all(root).expect("remove root");
-}
-
-#[test]
-#[ignore = "spawned by exclusive_lock_contends_across_real_processes"]
-fn child_holds_exclusive_store_lock() {
-    let Ok(root) = std::env::var("LAYRS_LOCK_HELPER_ROOT") else {
-        return;
-    };
-    let ready =
-        PathBuf::from(std::env::var("LAYRS_LOCK_HELPER_READY").expect("lock helper ready path"));
-    let release = PathBuf::from(
-        std::env::var("LAYRS_LOCK_HELPER_RELEASE").expect("lock helper release path"),
-    );
-    let store = LocalStore::open(LocalStoreConfig::new(root)).expect("open helper store");
-    let _session = store
-        .session(SessionMode::Exclusive)
-        .expect("acquire helper lock");
-    fs::write(&ready, b"ready").expect("signal helper ready");
-    assert!(
-        wait_for_path(&release, Duration::from_secs(15)),
-        "parent did not release helper lock"
-    );
-}
-
-#[test]
 fn read_only_fsck_creates_no_files_or_sqlite_sidecars() {
     let root = unique_test_dir("fsck-no-files");
     let config = LocalStoreConfig::new(&root);
@@ -278,17 +221,6 @@ fn version_at_least(version: &str, minimum: (u32, u32, u32)) -> bool {
         .map(|part| part.parse::<u32>().expect("numeric SQLite version"))
         .collect();
     (parts[0], parts[1], parts[2]) >= minimum
-}
-
-fn wait_for_path(path: &std::path::Path, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if path.exists() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    false
 }
 
 fn snapshot_entries(root: &std::path::Path) -> BTreeMap<PathBuf, (bool, u64)> {
