@@ -154,13 +154,12 @@ async fn cross_space_object_ids_are_immutable() {
     .expect_err("file object metadata cannot be mutated cross-Space");
     assert_eq!(conflicting_media.status, StatusCode::CONFLICT);
 
-    let stored = sqlx::query(
-        "SELECT media_type, size_bytes FROM file_objects WHERE file_object_id = $1",
-    )
-    .bind(&file_object_id)
-    .fetch_one(&first.pool)
-    .await
-    .expect("original immutable file object remains");
+    let stored =
+        sqlx::query("SELECT media_type, size_bytes FROM file_objects WHERE file_object_id = $1")
+            .bind(&file_object_id)
+            .fetch_one(&first.pool)
+            .await
+            .expect("original immutable file object remains");
     assert_eq!(stored.get::<String, _>("media_type"), "text/plain");
     assert_eq!(stored.get::<i64, _>("size_bytes"), bytes.len() as i64);
     let second_file_reference: i64 = sqlx::query_scalar(

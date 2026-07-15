@@ -276,11 +276,7 @@ async fn receive_does_not_return_redacted_content() {
     let bytes = Bytes::from_static(b"TOP_SECRET");
     let chunk_id = blake3_digest_for_bytes(&bytes);
     let file_object_id = blake3_digest_for_bytes(&bytes);
-    let root_tree_id = test_tree_id(&[(
-        "secret/token.txt",
-        &file_object_id,
-        bytes.len(),
-    )]);
+    let root_tree_id = test_tree_id(&[("secret/token.txt", &file_object_id, bytes.len())]);
 
     let _ = put_space_chunk(
         State(test_state(fixture.pool.clone())),
