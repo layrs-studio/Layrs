@@ -1,1330 +1,278 @@
-    #[test]
-    fn canonical_store_objects_reject_inline_chunk_data() {
-        let chunk_id = blake3_digest_for_bytes(b"inline chunk");
-        let payload = json!({
-            "chunks": [{
-                "chunkId": chunk_id,
-                "digest": chunk_id,
-                "size": 12,
-                "encoding": "base64",
-                "data": "aW5saW5lIGNodW5r"
-            }],
-            "fileObjects": [],
-            "treeObjects": []
-        });
+use super::*;
 
-        let error = match serde_json::from_value::<PublishStoreObjectsBody>(payload) {
-            Ok(_) => panic!("inline chunk data is not part of canonical storeObjects"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("unknown field"));
-    }
+mod chunks_immutable;
+mod delete_shared_ownership;
+mod file_tree_objects;
+mod permissions_redaction_content;
 
-    #[tokio::test]
-    async fn v2_chunk_publish_receive_and_content_round_trips() {
-        let Some(fixture) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"MERKLE_V2_CONTENT");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = test_tree_id(&[("assets/hero.bin", &file_object_id, bytes.len())]);
+pub(super) struct SyncTestFixture {
+    pub(super) pool: PgPool,
+    pub(super) account_id: String,
+    pub(super) workspace_id: String,
+    pub(super) space_id: String,
+    pub(super) layer_id: String,
+    pub(super) bearer_token: String,
+}
 
-        let Json(upload_payload) = put_space_chunk(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            fixture.bearer_headers(),
-            bytes.clone(),
-        )
-        .await
-        .expect("chunk upload succeeds before metadata publish");
-        assert_eq!(
-            upload_payload.get("chunkId").and_then(Value::as_str),
-            Some(chunk_id.as_str())
-        );
-
-        let publish_body: SyncPublishBody = serde_json::from_value(json!({
-            "protocol": "layrs.sync.v2",
-            "layerId": fixture.layer_id,
-            "policyEpoch": 1,
-            "idempotencyKey": format!("idem_{}", Uuid::new_v4().simple()),
-            "sourceClientId": "test-client",
-            "rootTreeId": root_tree_id,
-            "changedPaths": ["assets/hero.bin"],
-            "storeObjects": {
-                "chunks": [{
-                    "chunkId": chunk_id,
-                    "digest": chunk_id,
-                    "size": bytes.len()
-                }],
-                "fileObjects": [{
-                    "fileObjectId": file_object_id,
-                    "size": bytes.len(),
-                    "chunks": [{
-                        "chunkId": chunk_id,
-                        "size": bytes.len()
-                    }]
-                }],
-                "treeObjects": [{
-                    "treeId": root_tree_id,
-                    "entries": [{
-                        "path": "assets/hero.bin",
-                        "fileObjectId": file_object_id,
-                        "size": bytes.len()
-                    }]
-                }],
-                "tombstones": [],
-                "deletedPaths": []
-            }
-        }))
-        .expect("canonical storeObjects payload deserializes");
-
-        let Json(publish_payload) = publish_local_space_sync(
-            State(test_state(fixture.pool.clone())),
-            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-            fixture.bearer_headers(),
-            Json(publish_body),
-        )
-        .await
-        .expect("v2 publish succeeds");
-
-        assert!(
-            publish_payload
-                .pointer("/layerHead/rootTreeId")
-                .and_then(Value::as_str)
-                .is_some()
-        );
-        let artifact_id = publish_payload
-            .get("published")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(|artifact| artifact.get("id"))
-            .and_then(Value::as_str)
-            .expect("published artifact id")
-            .to_string();
-
-        let Json(receive_payload) = receive_local_space_sync(
-            State(test_state(fixture.pool.clone())),
-            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-            fixture.bearer_headers(),
-            Json(SyncReceiveBody {
-                layer_id: Some(fixture.layer_id.clone()),
-                layer_id_camel: None,
-                cursor: None,
-                limit: Some(200),
-            }),
-        )
-        .await
-        .expect("receive succeeds");
-        let content_objects = receive_payload
-            .get("contentObjects")
-            .expect("receive has content objects");
-        assert_eq!(
-            content_objects
-                .get("chunks")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            content_objects
-                .pointer("/chunks/0/chunkId")
-                .and_then(Value::as_str),
-            Some(chunk_id.as_str())
-        );
-        assert_eq!(
-            receive_payload
-                .get("contents")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(0)
-        );
-        assert!(
-            !serde_json::to_string(&receive_payload)
-                .expect("receive serializes")
-                .contains(BASE64.encode(&bytes).as_str())
-        );
-
-        let Json(content_payload) = get_layer_artifact_content(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-                artifact_id,
-            )),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("content endpoint assembles chunks");
-        assert_eq!(
-            content_payload
-                .pointer("/content/encoding")
-                .and_then(Value::as_str),
-            Some("base64")
-        );
-        assert_eq!(
-            content_payload
-                .pointer("/content/value")
-                .and_then(Value::as_str),
-            Some(BASE64.encode(bytes).as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn same_global_chunk_can_be_published_in_another_space() {
-        let Some(fixture) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"shared chunk bytes\n");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
-        let second_space_id = format!("space_{}", Uuid::new_v4().simple());
-        let second_layer_id = format!("layer_{}", Uuid::new_v4().simple());
-
-        sqlx::query(
-            "INSERT INTO spaces (space_id, workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, $3, 'Second Sync Space', $4)",
-        )
-        .bind(&second_space_id)
-        .bind(&fixture.workspace_id)
-        .bind(format!("second-{}", Uuid::new_v4().simple()))
-        .bind(&fixture.account_id)
-        .execute(&fixture.pool)
-        .await
-        .expect("second space inserted");
-        sqlx::query(
-            "INSERT INTO layers (layer_id, workspace_id, space_id, name, created_by_account_id) VALUES ($1, $2, $3, 'Main', $4)",
-        )
-        .bind(&second_layer_id)
-        .bind(&fixture.workspace_id)
-        .bind(&second_space_id)
-        .bind(&fixture.account_id)
-        .execute(&fixture.pool)
-        .await
-        .expect("second layer inserted");
-        let mut tx = fixture.pool.begin().await.expect("policy tx begins");
-        insert_empty_layer_policy(
-            &mut tx,
-            &fixture.workspace_id,
-            &second_space_id,
-            &second_layer_id,
-            Some(&fixture.account_id),
-        )
-        .await
-        .expect("second policy inserted");
-        tx.commit().await.expect("policy tx commits");
-
-        let _ = put_space_chunk(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            fixture.bearer_headers(),
-            bytes.clone(),
-        )
-        .await
-        .expect("chunk upload into first space succeeds");
-
-        let _ = publish_local_space_sync(
-            State(test_state(fixture.pool.clone())),
-            Path((fixture.workspace_id.clone(), second_space_id.clone())),
-            fixture.bearer_headers(),
-            Json(
-                serde_json::from_value(json!({
-                    "protocol": "layrs.sync.v2",
-                    "layerId": second_layer_id,
-                    "policyEpoch": 1,
-                    "idempotencyKey": format!("shared_chunk_{}", Uuid::new_v4().simple()),
-                    "sourceClientId": "test-client",
-                    "rootTreeId": root_tree_id,
-                    "changedPaths": ["shared.txt"],
-                    "storeObjects": {
-                        "chunks": [{
-                            "chunkId": chunk_id,
-                            "digest": chunk_id,
-                            "size": bytes.len(),
-                            "rawSize": bytes.len(),
-                            "storedSize": bytes.len(),
-                            "compression": "identity"
-                        }],
-                        "fileObjects": [{
-                            "fileObjectId": file_object_id,
-                            "digest": file_object_id,
-                            "size": bytes.len(),
-                            "mediaType": "text/plain",
-                            "chunks": [{
-                                "chunkId": chunk_id,
-                                "size": bytes.len(),
-                                "rawSize": bytes.len(),
-                                "storedSize": bytes.len(),
-                                "compression": "identity"
-                            }]
-                        }],
-                        "treeObjects": [{
-                            "treeId": root_tree_id,
-                            "entries": [{
-                                "path": "shared.txt",
-                                "fileObjectId": file_object_id
-                            }]
-                        }]
-                    }
-                }))
-                .expect("publish body is valid"),
-            ),
-        )
-        .await
-        .expect("second space publish reuses the global chunk");
-
-        let availability_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT count(*)::bigint
-            FROM space_object_chunks
-            WHERE chunk_id = $1
-              AND workspace_id = $2
-              AND space_id = ANY($3)
-            "#,
-        )
-        .bind(&chunk_id)
-        .bind(&fixture.workspace_id)
-        .bind(vec![fixture.space_id.clone(), second_space_id])
-        .fetch_one(&fixture.pool)
-        .await
-        .expect("availability count");
-        assert_eq!(availability_count, 2);
-    }
-
-    #[tokio::test]
-    async fn cross_space_object_ids_are_immutable() {
-        let Some(first) = SyncTestFixture::create().await else {
-            return;
-        };
-        let Some(second) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"immutable shared bytes\n");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = chunk_id.clone();
-        let tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
-
-        let _ = put_space_chunk(
-            State(test_state(first.pool.clone())),
-            Path((
-                first.workspace_id.clone(),
-                first.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            first.bearer_headers(),
-            bytes.clone(),
-        )
-        .await
-        .expect("first Space stores immutable chunk");
-        let _: Json<Value> = publish_local_space_sync(
-            State(test_state(first.pool.clone())),
-            Path((first.workspace_id.clone(), first.space_id.clone())),
-            first.bearer_headers(),
-            Json(
-                serde_json::from_value(json!({
-                    "protocol": "layrs.sync.v2",
-                    "layerId": first.layer_id,
-                    "policyEpoch": 1,
-                    "idempotencyKey": format!("immutable_first_{}", Uuid::new_v4().simple()),
-                    "rootTreeId": tree_id,
-                    "changedPaths": ["shared.txt"],
-                    "storeObjects": {
-                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
-                        "fileObjects": [{
-                            "fileObjectId": file_object_id,
-                            "digest": file_object_id,
-                            "size": bytes.len(),
-                            "mediaType": "text/plain",
-                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
-                        }],
-                        "treeObjects": [{
-                            "treeId": tree_id,
-                            "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
-                        }]
-                    }
-                }))
-                .expect("first immutable publish body"),
-            ),
-        )
-        .await
-        .expect("first Space publishes immutable objects");
-
-        let tampered = Bytes::from_static(b"different bytes\n");
-        let error = put_space_chunk(
-            State(test_state(second.pool.clone())),
-            Path((
-                second.workspace_id.clone(),
-                second.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            second.bearer_headers(),
-            tampered,
-        )
-        .await
-        .expect_err("another Space cannot replace bytes under an existing chunk id");
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-
-        let compressed = Bytes::from(
-            zstd::stream::encode_all(std::io::Cursor::new(bytes.as_ref()), 3)
-                .expect("zstd compression succeeds"),
-        );
-        let mut alternate_encoding_headers = second.bearer_headers();
-        alternate_encoding_headers.insert(
-            "x-layrs-chunk-compression",
-            HeaderValue::from_static(CHUNK_COMPRESSION_ZSTD),
-        );
-        alternate_encoding_headers.insert(
-            "x-layrs-raw-size",
-            HeaderValue::from_str(&bytes.len().to_string()).expect("raw size header"),
-        );
-        alternate_encoding_headers.insert(
-            "x-layrs-stored-size",
-            HeaderValue::from_str(&compressed.len().to_string()).expect("stored size header"),
-        );
-        let Json(reused_chunk) = put_space_chunk(
-            State(test_state(second.pool.clone())),
-            Path((
-                second.workspace_id.clone(),
-                second.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            alternate_encoding_headers,
-            compressed,
-        )
-        .await
-        .expect("equivalent raw content can reuse an immutable chunk across encodings");
-        assert_eq!(
-            reused_chunk.get("compression").and_then(Value::as_str),
-            Some(CHUNK_COMPRESSION_IDENTITY),
-            "the stored representation remains unchanged"
-        );
-
-        let _ = put_space_chunk(
-            State(test_state(second.pool.clone())),
-            Path((
-                second.workspace_id.clone(),
-                second.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            second.bearer_headers(),
-            bytes.clone(),
-        )
-        .await
-        .expect("identical immutable chunk can be shared");
-        let conflicting_media = publish_local_space_sync(
-            State(test_state(second.pool.clone())),
-            Path((second.workspace_id.clone(), second.space_id.clone())),
-            second.bearer_headers(),
-            Json(
-                serde_json::from_value(json!({
-                    "protocol": "layrs.sync.v2",
-                    "layerId": second.layer_id,
-                    "policyEpoch": 1,
-                    "idempotencyKey": format!("immutable_second_{}", Uuid::new_v4().simple()),
-                    "rootTreeId": tree_id,
-                    "changedPaths": ["shared.txt"],
-                    "storeObjects": {
-                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
-                        "fileObjects": [{
-                            "fileObjectId": file_object_id,
-                            "digest": file_object_id,
-                            "size": bytes.len(),
-                            "mediaType": "application/octet-stream",
-                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
-                        }],
-                        "treeObjects": [{
-                            "treeId": tree_id,
-                            "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
-                        }]
-                    }
-                }))
-                .expect("conflicting immutable publish body"),
-            ),
-        )
-        .await
-        .expect_err("file object metadata cannot be mutated cross-Space");
-        assert_eq!(conflicting_media.status, StatusCode::CONFLICT);
-
-        let stored = sqlx::query(
-            "SELECT media_type, size_bytes FROM file_objects WHERE file_object_id = $1",
-        )
-        .bind(&file_object_id)
-        .fetch_one(&first.pool)
-        .await
-        .expect("original immutable file object remains");
-        assert_eq!(stored.get::<String, _>("media_type"), "text/plain");
-        assert_eq!(stored.get::<i64, _>("size_bytes"), bytes.len() as i64);
-        let second_file_reference: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM space_file_objects WHERE space_id = $1 AND file_object_id = $2",
-        )
-        .bind(&second.space_id)
-        .bind(&file_object_id)
-        .fetch_one(&second.pool)
-        .await
-        .expect("second Space reference count");
-        assert_eq!(second_file_reference, 0);
-    }
-
-    #[tokio::test]
-    async fn cross_space_tree_manifest_cannot_mutate() {
-        let Some(first) = SyncTestFixture::create().await else {
-            return;
-        };
-        let Some(second) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"tree immutable bytes\n");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = chunk_id.clone();
-        let tree_id = test_tree_id(&[("original.txt", &file_object_id, bytes.len())]);
-        for fixture in [&first, &second] {
-            let _ = put_space_chunk(
-                State(test_state(fixture.pool.clone())),
-                Path((
-                    fixture.workspace_id.clone(),
-                    fixture.space_id.clone(),
-                    chunk_id.clone(),
-                )),
-                fixture.bearer_headers(),
-                bytes.clone(),
-            )
+impl SyncTestFixture {
+    pub(super) async fn create() -> Option<Self> {
+        let database_url = test_database_url()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
             .await
-            .expect("identical chunk upload succeeds");
-        }
-        let publish = |fixture: &SyncTestFixture, path: &str| {
-            serde_json::from_value::<SyncPublishBody>(json!({
-                "protocol": "layrs.sync.v2",
-                "layerId": fixture.layer_id,
-                "policyEpoch": 1,
-                "idempotencyKey": format!("immutable_tree_{}", Uuid::new_v4().simple()),
-                "rootTreeId": tree_id,
-                "changedPaths": [path],
-                "storeObjects": {
-                    "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
-                    "fileObjects": [{
-                        "fileObjectId": file_object_id,
-                        "digest": file_object_id,
-                        "size": bytes.len(),
-                        "mediaType": "text/plain",
-                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
-                    }],
-                    "treeObjects": [{
-                        "treeId": tree_id,
-                        "entries": [{ "path": path, "fileObjectId": file_object_id }]
-                    }]
-                }
-            }))
-            .expect("immutable tree publish body")
-        };
-        let _: Json<Value> = publish_local_space_sync(
-            State(test_state(first.pool.clone())),
-            Path((first.workspace_id.clone(), first.space_id.clone())),
-            first.bearer_headers(),
-            Json(publish(&first, "original.txt")),
-        )
-        .await
-        .expect("first tree publish succeeds");
-        let error = publish_local_space_sync(
-            State(test_state(second.pool.clone())),
-            Path((second.workspace_id.clone(), second.space_id.clone())),
-            second.bearer_headers(),
-            Json(publish(&second, "renamed.txt")),
-        )
-        .await
-        .expect_err("same tree id cannot name a different manifest");
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        let second_tree_reference: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM space_tree_objects WHERE space_id = $1 AND tree_id = $2",
-        )
-        .bind(&second.space_id)
-        .bind(&tree_id)
-        .fetch_one(&second.pool)
-        .await
-        .expect("second tree reference count");
-        assert_eq!(second_tree_reference, 0);
-    }
-
-    #[tokio::test]
-    async fn deleting_one_space_preserves_shared_objects_for_another_space() {
-        let Some(first) = SyncTestFixture::create().await else {
-            return;
-        };
-        let Some(second) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"shared survives deletion\n");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = chunk_id.clone();
-        let tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
-        for fixture in [&first, &second] {
-            let _ = put_space_chunk(
-                State(test_state(fixture.pool.clone())),
-                Path((
-                    fixture.workspace_id.clone(),
-                    fixture.space_id.clone(),
-                    chunk_id.clone(),
-                )),
-                fixture.bearer_headers(),
-                bytes.clone(),
-            )
+            .expect("test database URL is set but cannot be reached");
+        MIGRATOR
+            .run(&pool)
             .await
-            .expect("shared chunk upload succeeds");
-            let _: Json<Value> = publish_local_space_sync(
-                State(test_state(fixture.pool.clone())),
-                Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-                fixture.bearer_headers(),
-                Json(
-                    serde_json::from_value(json!({
-                        "protocol": "layrs.sync.v2",
-                        "layerId": fixture.layer_id,
-                        "policyEpoch": 1,
-                        "idempotencyKey": format!("shared_delete_{}", Uuid::new_v4().simple()),
-                        "rootTreeId": tree_id,
-                        "changedPaths": ["shared.txt"],
-                        "storeObjects": {
-                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
-                            "fileObjects": [{
-                                "fileObjectId": file_object_id,
-                                "digest": file_object_id,
-                                "size": bytes.len(),
-                                "mediaType": "text/plain",
-                                "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
-                            }],
-                            "treeObjects": [{
-                                "treeId": tree_id,
-                                "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
-                            }]
-                        }
-                    }))
-                    .expect("shared object publish body"),
-                ),
-            )
-            .await
-            .expect("shared object publish succeeds");
-        }
+            .expect("test database migrations run");
 
-        let _ = delete_space(
-            State(test_state(first.pool.clone())),
-            Path((first.workspace_id.clone(), first.space_id.clone())),
-            first.bearer_headers(),
-        )
-        .await
-        .expect("first Space deletion succeeds");
-
-        assert_eq!(
-            file_object_bytes(
-                &second.pool,
-                &second.workspace_id,
-                &second.space_id,
-                &file_object_id,
-            )
-            .await
-            .expect("second Space still resolves shared file"),
-            bytes
-        );
-        for (table, id_column, id) in [
-            ("space_object_chunks", "chunk_id", chunk_id.as_str()),
-            (
-                "space_file_objects",
-                "file_object_id",
-                file_object_id.as_str(),
-            ),
-            ("space_tree_objects", "tree_id", tree_id.as_str()),
-        ] {
-            let query = format!(
-                "SELECT count(*)::bigint FROM {table} WHERE space_id = $1 AND {id_column} = $2"
-            );
-            let count: i64 = sqlx::query_scalar(&query)
-                .bind(&second.space_id)
-                .bind(id)
-                .fetch_one(&second.pool)
-                .await
-                .expect("second Space reference count");
-            assert_eq!(count, 1, "missing shared reference in {table}");
-        }
-    }
-
-    #[tokio::test]
-    async fn step_and_artifact_diff_endpoints_return_lens_window_segments() {
-        let Some(fixture) = SyncTestFixture::create().await else {
-            return;
-        };
-        let path = "src/main.rs";
-        let base_bytes = Bytes::from_static(b"base-line-ABCDEFGHIJ\nbase-two\n");
-        let target_bytes = Bytes::from_static(b"next-line-ABCDEFGHIJ\nnext-two\n");
-        let base_chunk_id = blake3_digest_for_bytes(&base_bytes);
-        let target_chunk_id = blake3_digest_for_bytes(&target_bytes);
-        let base_file_object_id = blake3_digest_for_bytes(&base_bytes);
-        let target_file_object_id = blake3_digest_for_bytes(&target_bytes);
-        let base_tree_id = test_tree_id(&[(path, &base_file_object_id, base_bytes.len())]);
-        let target_tree_id = test_tree_id(&[(path, &target_file_object_id, target_bytes.len())]);
-        let base_step_id = format!("step_{}", Uuid::new_v4().simple());
-        let target_step_id = format!("step_{}", Uuid::new_v4().simple());
-
-        for (chunk_id, bytes) in [
-            (base_chunk_id.clone(), base_bytes.clone()),
-            (target_chunk_id.clone(), target_bytes.clone()),
-        ] {
-            let _ = put_space_chunk(
-                State(test_state(fixture.pool.clone())),
-                Path((
-                    fixture.workspace_id.clone(),
-                    fixture.space_id.clone(),
-                    chunk_id,
-                )),
-                fixture.bearer_headers(),
-                bytes,
-            )
-            .await
-            .expect("chunk upload succeeds");
-        }
-
-        for (step_id, tree_id, file_object_id, chunk_id, bytes, base_tree) in [
-            (
-                base_step_id.as_str(),
-                base_tree_id.as_str(),
-                base_file_object_id.as_str(),
-                base_chunk_id.as_str(),
-                base_bytes.len(),
-                None,
-            ),
-            (
-                target_step_id.as_str(),
-                target_tree_id.as_str(),
-                target_file_object_id.as_str(),
-                target_chunk_id.as_str(),
-                target_bytes.len(),
-                Some(base_tree_id.as_str()),
-            ),
-        ] {
-            let mut body = json!({
-                "protocol": "layrs.sync.v2",
-                "layerId": fixture.layer_id,
-                "policyEpoch": 1,
-                "idempotencyKey": format!("idem_{}", Uuid::new_v4().simple()),
-                "sourceClientId": "test-client",
-                "rootTreeId": tree_id,
-                "changedPaths": [path],
-                "step": {
-                    "stepId": step_id,
-                    "layerId": fixture.layer_id,
-                    "rootTreeId": tree_id,
-                    "changedPaths": [path]
-                },
-                "storeObjects": {
-                    "chunks": [{
-                        "chunkId": chunk_id,
-                        "digest": chunk_id,
-                        "size": bytes
-                    }],
-                    "fileObjects": [{
-                        "fileObjectId": file_object_id,
-                        "digest": file_object_id,
-                        "size": bytes,
-                        "mediaType": "text/plain",
-                        "chunks": [{
-                            "chunkId": chunk_id,
-                            "digest": chunk_id,
-                            "size": bytes,
-                            "byteOffset": 0
-                        }]
-                    }],
-                    "treeObjects": [{
-                        "treeId": tree_id,
-                        "entries": [{
-                            "path": path,
-                            "fileObjectId": file_object_id,
-                            "size": bytes
-                        }]
-                    }]
-                }
-            });
-            if let Some(base_tree) = base_tree {
-                body["baseTreeId"] = json!(base_tree);
-                body["step"]["baseTreeId"] = json!(base_tree);
-            }
-            let _: Json<Value> = publish_local_space_sync(
-                State(test_state(fixture.pool.clone())),
-                Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-                fixture.bearer_headers(),
-                Json(serde_json::from_value(body).expect("publish body deserializes")),
-            )
-            .await
-            .expect("publish succeeds");
-        }
-
-        let Json(steps_payload) = list_layer_steps(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-            )),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("steps list succeeds");
-        assert!(
-            steps_payload
-                .get("items")
-                .and_then(Value::as_array)
-                .is_some_and(|steps| steps
-                    .iter()
-                    .any(|step| step.get("stepId").and_then(Value::as_str)
-                        == Some(target_step_id.as_str())))
-        );
-
-        let Json(step_payload) = get_layer_step(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-                target_step_id.clone(),
-            )),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("step detail succeeds");
-        assert_eq!(
-            step_payload
-                .pointer("/files/0/action")
-                .and_then(Value::as_str),
-            Some("modified")
-        );
-
-        let Json(step_diff) = get_layer_step_diff(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-                target_step_id.clone(),
-            )),
-            Query(StepDiffQuery {
-                path: None,
-                start: Some(0),
-                limit: Some(1),
-                column_start: Some(0),
-                column_start_camel: None,
-                column_limit: Some(4),
-                column_limit_camel: None,
-            }),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("step diff succeeds");
-        let diff_lines = step_diff
-            .pointer("/diff/hunks/0/lines")
-            .and_then(Value::as_array)
-            .expect("step diff includes hunk lines");
-        assert_eq!(
-            diff_lines[0].get("op").and_then(Value::as_str),
-            Some("delete")
-        );
-        assert_eq!(
-            diff_lines[0].get("textSegment").and_then(Value::as_str),
-            Some("base")
-        );
-        assert_eq!(
-            diff_lines[1].get("op").and_then(Value::as_str),
-            Some("insert")
-        );
-        assert_eq!(
-            diff_lines[1].get("textSegment").and_then(Value::as_str),
-            Some("next")
-        );
-        assert_eq!(
-            diff_lines[1].get("textLength").and_then(Value::as_u64),
-            Some(20)
-        );
-        assert_eq!(
-            diff_lines[1].get("columnStart").and_then(Value::as_u64),
-            Some(0)
-        );
-        assert_eq!(
-            diff_lines[1].get("columnEnd").and_then(Value::as_u64),
-            Some(4)
-        );
-        assert_eq!(
-            diff_lines[1].get("hasMoreColumns").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            step_diff
-                .pointer("/source/runtime/id")
-                .and_then(Value::as_str),
-            Some("layrs.server.lens-runtime.text")
-        );
-
-        let Json(artifacts_payload) = list_layer_artifacts(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-            )),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("artifacts list succeeds");
-        let artifact_id = artifacts_payload
-            .get("items")
-            .and_then(Value::as_array)
-            .and_then(|artifacts| artifacts.first())
-            .and_then(|artifact| artifact.get("id"))
-            .and_then(Value::as_str)
-            .expect("artifact id exists")
-            .to_string();
-        let Json(artifact_diff) = get_layer_artifact_diff(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                fixture.layer_id.clone(),
-                artifact_id,
-            )),
-            Query(ArtifactDiffQuery {
-                start: Some(0),
-                limit: Some(1),
-                column_start: Some(0),
-                column_start_camel: None,
-                column_limit: Some(4),
-                column_limit_camel: None,
-                base_layer_id: None,
-                base_layer_id_camel: None,
-            }),
-            fixture.bearer_headers(),
-        )
-        .await
-        .expect("artifact diff succeeds");
-        assert_eq!(
-            artifact_diff
-                .pointer("/diff/hunks/0/lines/0/textSegment")
-                .and_then(Value::as_str),
-            Some("next")
-        );
-        assert_eq!(
-            artifact_diff
-                .pointer("/diff/hunks/0/lines/0/hasMoreColumns")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
-
-    #[tokio::test]
-    async fn receive_does_not_return_redacted_content() {
-        let Some(fixture) = SyncTestFixture::create().await else {
-            return;
-        };
-        let bytes = Bytes::from_static(b"TOP_SECRET");
-        let chunk_id = blake3_digest_for_bytes(&bytes);
-        let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = test_tree_id(&[(
-            "secret/token.txt",
-            &file_object_id,
-            bytes.len(),
-        )]);
-
-        let _ = put_space_chunk(
-            State(test_state(fixture.pool.clone())),
-            Path((
-                fixture.workspace_id.clone(),
-                fixture.space_id.clone(),
-                chunk_id.clone(),
-            )),
-            fixture.bearer_headers(),
-            bytes.clone(),
-        )
-        .await
-        .expect("secret chunk upload succeeds");
-
-        let publish_body: SyncPublishBody = serde_json::from_value(json!({
-            "protocol": "layrs.sync.v2",
-            "layerId": fixture.layer_id,
-            "policyEpoch": 1,
-            "idempotencyKey": format!("idem_{}", Uuid::new_v4().simple()),
-            "sourceClientId": "test-client",
-            "rootTreeId": root_tree_id,
-            "changedPaths": ["secret/token.txt"],
-            "storeObjects": {
-                "chunks": [{
-                    "chunkId": chunk_id,
-                    "digest": chunk_id,
-                    "size": bytes.len()
-                }],
-                "fileObjects": [{
-                    "fileObjectId": file_object_id,
-                    "size": bytes.len(),
-                    "mediaType": "text/plain",
-                    "chunks": [{
-                        "chunkId": chunk_id,
-                        "size": bytes.len()
-                    }]
-                }],
-                "treeObjects": [{
-                    "treeId": root_tree_id,
-                    "entries": [{
-                        "path": "secret/token.txt",
-                        "fileObjectId": file_object_id,
-                        "size": bytes.len()
-                    }]
-                }]
-            }
-        }))
-        .expect("secret chunked publish body deserializes");
-        let _ = publish_local_space_sync(
-            State(test_state(fixture.pool.clone())),
-            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-            fixture.bearer_headers(),
-            Json(publish_body),
-        )
-        .await
-        .expect("secret chunked publish succeeds");
-
-        let policy_id = policy_id_for_layer(
-            &fixture.pool,
-            &fixture.workspace_id,
-            &fixture.space_id,
-            &fixture.layer_id,
-        )
-        .await
-        .expect("layer has policy");
-        sqlx::query(
-            r#"
-            INSERT INTO layer_access_policy_rules
-                (rule_id, policy_id, path, mode, visibility, read_account_ids)
-            VALUES
-                ($1, $2, 'secret/**', 'restricted', 'stub', $3)
-            "#,
-        )
-        .bind(prefixed_id("access_rule"))
-        .bind(&policy_id)
-        .bind(vec!["account_somebody_else".to_string()])
-        .execute(&fixture.pool)
-        .await
-        .expect("restricted rule inserted");
-
-        let Json(receive_payload) = receive_local_space_sync(
-            State(test_state(fixture.pool.clone())),
-            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
-            fixture.bearer_headers(),
-            Json(SyncReceiveBody {
-                layer_id: Some(fixture.layer_id.clone()),
-                layer_id_camel: None,
-                cursor: None,
-                limit: Some(200),
-            }),
-        )
-        .await
-        .expect("receive succeeds");
-
-        assert_eq!(
-            receive_payload
-                .get("contents")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(0)
-        );
-        assert_eq!(
-            receive_payload
-                .get("contentObjects")
-                .and_then(|objects| objects.get("chunks"))
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(0)
-        );
-        let serialized = serde_json::to_string(&receive_payload).expect("receive serializes");
-        assert!(!serialized.contains("TOP_SECRET"));
-        assert!(
-            receive_payload
-                .get("artifacts")
-                .and_then(Value::as_array)
-                .and_then(|artifacts| artifacts.first())
-                .and_then(|artifact| artifact.get("access"))
-                .and_then(|access| access.get("isRedacted"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        );
-    }
-
-    struct SyncTestFixture {
-        pool: PgPool,
-        account_id: String,
-        workspace_id: String,
-        space_id: String,
-        layer_id: String,
-        bearer_token: String,
-    }
-
-    impl SyncTestFixture {
-        async fn create() -> Option<Self> {
-            let database_url = test_database_url()?;
-            let pool = PgPoolOptions::new()
-                .max_connections(5)
-                .connect(&database_url)
-                .await
-                .expect("test database URL is set but cannot be reached");
-            MIGRATOR
-                .run(&pool)
-                .await
-                .expect("test database migrations run");
-
-            let suffix = Uuid::new_v4().simple().to_string();
-            let account_id = format!("account_{suffix}");
-            let workspace_id = format!("workspace_{suffix}");
-            let space_id = format!("space_{suffix}");
-            let layer_id = format!("layer_{suffix}");
-            let device_id = format!("device_{suffix}");
-            let bearer_token = token("desktop_test");
-
-            sqlx::query(
-                "INSERT INTO accounts (account_id, email, display_name) VALUES ($1, $2, 'Sync Tester')",
-            )
-            .bind(&account_id)
-            .bind(format!("sync-{suffix}@example.com"))
-            .execute(&pool)
-            .await
-            .expect("account inserted");
-            sqlx::query(
-                "INSERT INTO desktop_devices (device_id, account_id, display_name, public_key_thumbprint, last_seen_at) VALUES ($1, $2, 'Test Desktop', 'thumbprint-test', now())",
-            )
-            .bind(&device_id)
-            .bind(&account_id)
-            .execute(&pool)
-            .await
-            .expect("device inserted");
-            sqlx::query(
-                r#"
-                INSERT INTO desktop_device_tokens
-                    (token_id, device_id, account_id, access_token_digest, refresh_token_digest, expires_at)
-                VALUES
-                    ($1, $2, $3, $4, $5, now() + interval '1 day')
-                "#,
-            )
-            .bind(prefixed_id("desktop_token"))
-            .bind(&device_id)
-            .bind(&account_id)
-            .bind(digest_secret(&bearer_token))
-            .bind(digest_secret(&token("desktop_refresh_test")))
-            .execute(&pool)
-            .await
-            .expect("desktop token inserted");
-
-            let mut tx = pool.begin().await.expect("test tx begins");
-            sqlx::query(
-                "INSERT INTO workspaces (workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, 'Sync Workspace', $3)",
-            )
-            .bind(&workspace_id)
-            .bind(format!("sync-{suffix}"))
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .expect("workspace inserted");
-            sqlx::query(
-                "INSERT INTO workspace_memberships (membership_id, workspace_id, account_id, role) VALUES ($1, $2, $3, 'owner')",
-            )
-            .bind(prefixed_id("membership"))
-            .bind(&workspace_id)
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .expect("membership inserted");
-            sqlx::query(
-                "INSERT INTO spaces (space_id, workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, 'sync-space', 'Sync Space', $3)",
-            )
-            .bind(&space_id)
-            .bind(&workspace_id)
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .expect("space inserted");
-            sqlx::query(
-                "INSERT INTO layers (layer_id, workspace_id, space_id, name, created_by_account_id) VALUES ($1, $2, $3, 'Main', $4)",
-            )
-            .bind(&layer_id)
-            .bind(&workspace_id)
-            .bind(&space_id)
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .expect("layer inserted");
-            insert_empty_layer_policy(
-                &mut tx,
-                &workspace_id,
-                &space_id,
-                &layer_id,
-                Some(&account_id),
-            )
-            .await
-            .expect("policy inserted");
-            tx.commit().await.expect("test tx commits");
-
-            Some(Self {
-                pool,
-                account_id,
-                workspace_id,
-                space_id,
-                layer_id,
-                bearer_token,
-            })
-        }
-
-        fn bearer_headers(&self) -> HeaderMap {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", self.bearer_token))
-                    .expect("bearer header is valid"),
-            );
-            headers
-        }
-    }
-
-    async fn create_test_workspace_member_headers(
-        fixture: &SyncTestFixture,
-        role: &str,
-    ) -> (String, HeaderMap) {
         let suffix = Uuid::new_v4().simple().to_string();
         let account_id = format!("account_{suffix}");
+        let workspace_id = format!("workspace_{suffix}");
+        let space_id = format!("space_{suffix}");
+        let layer_id = format!("layer_{suffix}");
         let device_id = format!("device_{suffix}");
-        let bearer_token = token("desktop_test_member");
+        let bearer_token = token("desktop_test");
+
         sqlx::query(
-            "INSERT INTO accounts (account_id, email, display_name) VALUES ($1, $2, 'Test Member')",
+            "INSERT INTO accounts (account_id, email, display_name) VALUES ($1, $2, 'Sync Tester')",
         )
         .bind(&account_id)
-        .bind(format!("member-{suffix}@example.com"))
-        .execute(&fixture.pool)
+        .bind(format!("sync-{suffix}@example.com"))
+        .execute(&pool)
         .await
-        .expect("test member account inserted");
+        .expect("account inserted");
         sqlx::query(
-            "INSERT INTO workspace_memberships (membership_id, workspace_id, account_id, role) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(prefixed_id("membership"))
-        .bind(&fixture.workspace_id)
-        .bind(&account_id)
-        .bind(role)
-        .execute(&fixture.pool)
-        .await
-        .expect("test workspace membership inserted");
-        sqlx::query(
-            "INSERT INTO desktop_devices (device_id, account_id, display_name, public_key_thumbprint, last_seen_at) VALUES ($1, $2, 'Test Member Desktop', $3, now())",
+            "INSERT INTO desktop_devices (device_id, account_id, display_name, public_key_thumbprint, last_seen_at) VALUES ($1, $2, 'Test Desktop', 'thumbprint-test', now())",
         )
         .bind(&device_id)
         .bind(&account_id)
-        .bind(format!("thumbprint-{suffix}"))
-        .execute(&fixture.pool)
+        .execute(&pool)
         .await
-        .expect("test member device inserted");
+        .expect("device inserted");
         sqlx::query(
             r#"
             INSERT INTO desktop_device_tokens
-                (token_id, device_id, account_id, access_token_digest,
-                 refresh_token_digest, expires_at)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '1 day')
+                (token_id, device_id, account_id, access_token_digest, refresh_token_digest, expires_at)
+            VALUES
+                ($1, $2, $3, $4, $5, now() + interval '1 day')
             "#,
         )
         .bind(prefixed_id("desktop_token"))
         .bind(&device_id)
         .bind(&account_id)
         .bind(digest_secret(&bearer_token))
-        .bind(digest_secret(&token("desktop_refresh_member")))
-        .execute(&fixture.pool)
+        .bind(digest_secret(&token("desktop_refresh_test")))
+        .execute(&pool)
         .await
-        .expect("test member token inserted");
+        .expect("desktop token inserted");
+
+        let mut tx = pool.begin().await.expect("test tx begins");
+        sqlx::query(
+            "INSERT INTO workspaces (workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, 'Sync Workspace', $3)",
+        )
+        .bind(&workspace_id)
+        .bind(format!("sync-{suffix}"))
+        .bind(&account_id)
+        .execute(&mut *tx)
+        .await
+        .expect("workspace inserted");
+        sqlx::query(
+            "INSERT INTO workspace_memberships (membership_id, workspace_id, account_id, role) VALUES ($1, $2, $3, 'owner')",
+        )
+        .bind(prefixed_id("membership"))
+        .bind(&workspace_id)
+        .bind(&account_id)
+        .execute(&mut *tx)
+        .await
+        .expect("membership inserted");
+        sqlx::query(
+            "INSERT INTO spaces (space_id, workspace_id, slug, name, created_by_account_id) VALUES ($1, $2, 'sync-space', 'Sync Space', $3)",
+        )
+        .bind(&space_id)
+        .bind(&workspace_id)
+        .bind(&account_id)
+        .execute(&mut *tx)
+        .await
+        .expect("space inserted");
+        sqlx::query(
+            "INSERT INTO layers (layer_id, workspace_id, space_id, name, created_by_account_id) VALUES ($1, $2, $3, 'Main', $4)",
+        )
+        .bind(&layer_id)
+        .bind(&workspace_id)
+        .bind(&space_id)
+        .bind(&account_id)
+        .execute(&mut *tx)
+        .await
+        .expect("layer inserted");
+        insert_empty_layer_policy(
+            &mut tx,
+            &workspace_id,
+            &space_id,
+            &layer_id,
+            Some(&account_id),
+        )
+        .await
+        .expect("policy inserted");
+        tx.commit().await.expect("test tx commits");
+
+        Some(Self {
+            pool,
+            account_id,
+            workspace_id,
+            space_id,
+            layer_id,
+            bearer_token,
+        })
+    }
+
+    pub(super) fn bearer_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {bearer_token}"))
-                .expect("test member bearer header"),
+            HeaderValue::from_str(&format!("Bearer {}", self.bearer_token))
+                .expect("bearer header is valid"),
         );
-        (account_id, headers)
+        headers
     }
+}
 
-    fn test_database_url() -> Option<String> {
-        let database_url = std::env::var("LAYRS_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("LAYRS_DATABASE_URL"))
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .ok();
-        if database_url.is_none()
-            && std::env::var("LAYRS_REQUIRE_POSTGRES_TESTS").as_deref() == Ok("1")
-        {
-            panic!(
-                "Postgres integration tests are required: set LAYRS_TEST_DATABASE_URL to a reachable test database"
-            );
-        }
-        database_url
-    }
+pub(super) async fn create_test_workspace_member_headers(
+    fixture: &SyncTestFixture,
+    role: &str,
+) -> (String, HeaderMap) {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let account_id = format!("account_{suffix}");
+    let device_id = format!("device_{suffix}");
+    let bearer_token = token("desktop_test_member");
+    sqlx::query(
+        "INSERT INTO accounts (account_id, email, display_name) VALUES ($1, $2, 'Test Member')",
+    )
+    .bind(&account_id)
+    .bind(format!("member-{suffix}@example.com"))
+    .execute(&fixture.pool)
+    .await
+    .expect("test member account inserted");
+    sqlx::query(
+        "INSERT INTO workspace_memberships (membership_id, workspace_id, account_id, role) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(prefixed_id("membership"))
+    .bind(&fixture.workspace_id)
+    .bind(&account_id)
+    .bind(role)
+    .execute(&fixture.pool)
+    .await
+    .expect("test workspace membership inserted");
+    sqlx::query(
+        "INSERT INTO desktop_devices (device_id, account_id, display_name, public_key_thumbprint, last_seen_at) VALUES ($1, $2, 'Test Member Desktop', $3, now())",
+    )
+    .bind(&device_id)
+    .bind(&account_id)
+    .bind(format!("thumbprint-{suffix}"))
+    .execute(&fixture.pool)
+    .await
+    .expect("test member device inserted");
+    sqlx::query(
+        r#"
+        INSERT INTO desktop_device_tokens
+            (token_id, device_id, account_id, access_token_digest,
+             refresh_token_digest, expires_at)
+        VALUES ($1, $2, $3, $4, $5, now() + interval '1 day')
+        "#,
+    )
+    .bind(prefixed_id("desktop_token"))
+    .bind(&device_id)
+    .bind(&account_id)
+    .bind(digest_secret(&bearer_token))
+    .bind(digest_secret(&token("desktop_refresh_member")))
+    .execute(&fixture.pool)
+    .await
+    .expect("test member token inserted");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {bearer_token}"))
+            .expect("test member bearer header"),
+    );
+    (account_id, headers)
+}
 
-    fn test_tree_id(entries: &[(&str, &str, usize)]) -> String {
-        let mut entries = entries.to_vec();
-        entries.sort_by(|left, right| left.0.cmp(right.0));
-        let mut material = String::new();
-        for (path, file_object_id, size) in entries {
-            material.push_str(path);
-            material.push('\0');
-            material.push_str(file_object_id);
-            material.push('\0');
-            material.push_str(&size.to_string());
-            material.push('\n');
-        }
-        blake3_digest_for_bytes(material.as_bytes())
+fn test_database_url() -> Option<String> {
+    let database_url = std::env::var("LAYRS_TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("LAYRS_DATABASE_URL"))
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .ok();
+    if database_url.is_none()
+        && std::env::var("LAYRS_REQUIRE_POSTGRES_TESTS").as_deref() == Ok("1")
+    {
+        panic!(
+            "Postgres integration tests are required: set LAYRS_TEST_DATABASE_URL to a reachable test database"
+        );
     }
+    database_url
+}
 
-    fn test_state(pool: PgPool) -> AppState {
-        AppState {
-            pool,
-            config: WebServerConfig {
-                addr: "127.0.0.1:0".to_string(),
-                studio_url: "http://127.0.0.1:5173".to_string(),
-                database_url: "postgres://test".to_string(),
-                deployment_id: "test".to_string(),
-                cookie_secure: false,
-            },
-        }
+pub(super) fn test_tree_id(entries: &[(&str, &str, usize)]) -> String {
+    let mut entries = entries.to_vec();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    let mut material = String::new();
+    for (path, file_object_id, size) in entries {
+        material.push_str(path);
+        material.push('\0');
+        material.push_str(file_object_id);
+        material.push('\0');
+        material.push_str(&size.to_string());
+        material.push('\n');
     }
+    blake3_digest_for_bytes(material.as_bytes())
+}
 
-    fn publish_artifact(
-        path: &str,
-        kind: &str,
-        media_type: &str,
-        content: Value,
-    ) -> PublishArtifactBody {
-        PublishArtifactBody {
-            id: None,
-            artifact_id: None,
-            artifact_id_camel: None,
-            path: Some(path.to_string()),
-            logical_path: None,
-            logical_path_camel: None,
-            kind: Some(kind.to_string()),
-            artifact_type: None,
-            media_type: Some(media_type.to_string()),
-            media_type_camel: None,
-            content: Some(content),
-            file_object_id: None,
-            file_object_id_camel: None,
-            object_id: None,
-            object_id_camel: None,
-            tree_id: None,
-            tree_id_camel: None,
-            sha256: None,
-            content_hash: None,
-            size_bytes: None,
-            size_bytes_camel: None,
-            chunks: Vec::new(),
-            state: None,
-            operation: None,
-            action: None,
-            deleted: None,
-        }
+pub(super) fn test_state(pool: PgPool) -> AppState {
+    AppState {
+        pool,
+        config: WebServerConfig {
+            addr: "127.0.0.1:0".to_string(),
+            studio_url: "http://127.0.0.1:5173".to_string(),
+            database_url: "postgres://test".to_string(),
+            deployment_id: "test".to_string(),
+            cookie_secure: false,
+        },
     }
+}
+
+pub(super) fn publish_artifact(
+    path: &str,
+    kind: &str,
+    media_type: &str,
+    content: Value,
+) -> PublishArtifactBody {
+    PublishArtifactBody {
+        id: None,
+        artifact_id: None,
+        artifact_id_camel: None,
+        path: Some(path.to_string()),
+        logical_path: None,
+        logical_path_camel: None,
+        kind: Some(kind.to_string()),
+        artifact_type: None,
+        media_type: Some(media_type.to_string()),
+        media_type_camel: None,
+        content: Some(content),
+        file_object_id: None,
+        file_object_id_camel: None,
+        object_id: None,
+        object_id_camel: None,
+        tree_id: None,
+        tree_id_camel: None,
+        sha256: None,
+        content_hash: None,
+        size_bytes: None,
+        size_bytes_camel: None,
+        chunks: Vec::new(),
+        state: None,
+        operation: None,
+        action: None,
+        deleted: None,
+    }
+}
