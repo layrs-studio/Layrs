@@ -451,6 +451,42 @@ async fn inherit_parent_layer_history_in_tx(
         .await?;
     }
 
+    // A child Layer starts from the exact materialized state of its parent.
+    // The Merkle objects remain shared; only Layer-scoped artifact metadata is
+    // copied so Files/content APIs resolve the inherited tree immediately.
+    sqlx::query(
+        r#"
+        INSERT INTO artifacts
+            (artifact_id, workspace_id, space_id, layer_id, logical_path,
+             artifact_kind, state, created_by_account_id,
+             current_file_object_id, current_tree_id)
+        SELECT
+            ('artifact_' || md5(parent.artifact_id || ':' || $4)),
+            $1,
+            $2,
+            $4,
+            parent.logical_path,
+            parent.artifact_kind,
+            parent.state,
+            $5,
+            parent.current_file_object_id,
+            parent.current_tree_id
+        FROM artifacts parent
+        WHERE parent.workspace_id = $1
+          AND parent.space_id = $2
+          AND parent.layer_id = $3
+          AND parent.state <> 'deleted'
+        ON CONFLICT (layer_id, logical_path) DO NOTHING
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(space_id)
+    .bind(parent_layer_id)
+    .bind(child_layer_id)
+    .bind(account_id)
+    .execute(&mut **tx)
+    .await?;
+
     sqlx::query(
         r#"
         WITH ordered_parent_steps AS (
@@ -699,22 +735,6 @@ async fn delete_layer_storage_in_tx(
     .await?;
     sqlx::query(
         "DELETE FROM layer_states WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3",
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(layer_id)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-        r#"
-        UPDATE tree_entries
-        SET artifact_id = NULL
-        WHERE artifact_id IN (
-            SELECT artifact_id
-            FROM artifacts
-            WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3
-        )
-        "#,
     )
     .bind(workspace_id)
     .bind(space_id)

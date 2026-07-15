@@ -67,17 +67,8 @@ async fn upsert_store_objects_in_tx(
                     validate_object_digest(raw_object_id.as_deref().ok_or_else(|| {
                         ApiError::bad_request("storeObjects.objectId is required")
                     })?)?;
-                let tree_id = upsert_tree_object_shell_in_tx(
-                    tx,
-                    workspace_id,
-                    space_id,
-                    &object_id,
-                    object.size.map(|value| value as i32).unwrap_or_default(),
-                    account_id,
-                )
-                .await?;
-                tree_entries_by_tree.insert(tree_id.clone(), object.entries);
-                root_tree_id = Some(tree_id);
+                tree_entries_by_tree.insert(object_id.clone(), object.entries);
+                root_tree_id = Some(object_id);
             }
             "file" => {
                 let object_id =
@@ -150,6 +141,7 @@ async fn upsert_store_objects_in_tx(
     }
 
     for (tree_id, entries) in tree_entries_by_tree {
+        let mut immutable_entries = Vec::with_capacity(entries.len());
         for entry in entries {
             let path = validate_publish_path(entry.path.trim())?;
             let file_object_id = entry
@@ -167,23 +159,22 @@ async fn upsert_store_objects_in_tx(
                         ApiError::bad_request("tree entry references missing file object")
                     })?,
             };
-            sqlx::query(
-                r#"
-                INSERT INTO tree_entries
-                    (tree_id, logical_path, entry_kind, file_object_id)
-                VALUES
-                    ($1, $2, 'file', $3)
-                ON CONFLICT (tree_id, logical_path) DO UPDATE SET
-                    file_object_id = EXCLUDED.file_object_id
-                "#,
-            )
-            .bind(&tree_id)
-            .bind(&path)
-            .bind(&file.file_object_id)
-            .execute(&mut **tx)
-            .await?;
+            immutable_entries.push(ImmutableTreeEntry {
+                path: path.clone(),
+                file_object_id: file.file_object_id.clone(),
+                size_bytes: file.size_bytes,
+            });
             file_by_path.insert(path, file);
         }
+        insert_or_compare_tree_in_tx(
+            tx,
+            workspace_id,
+            space_id,
+            account_id,
+            Some(&tree_id),
+            immutable_entries,
+        )
+        .await?;
     }
 
     Ok(StoreObjectIndex {
@@ -287,36 +278,6 @@ async fn upsert_store_object_chunks_in_tx(
         next_offset = byte_offset + size_bytes;
     }
     Ok(descriptors)
-}
-
-async fn upsert_tree_object_shell_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    workspace_id: &str,
-    space_id: &str,
-    tree_id: &str,
-    entry_count: i32,
-    account_id: &str,
-) -> Result<String, ApiError> {
-    sqlx::query(
-        r#"
-        INSERT INTO tree_objects
-            (tree_id, workspace_id, space_id, digest, entry_count, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (tree_id) DO UPDATE SET
-            entry_count = EXCLUDED.entry_count
-        "#,
-    )
-    .bind(tree_id)
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(tree_id)
-    .bind(entry_count)
-    .bind(account_id)
-    .execute(&mut **tx)
-    .await?;
-    mark_tree_available_for_space_in_tx(tx, workspace_id, space_id, tree_id, account_id).await?;
-    Ok(tree_id.to_string())
 }
 
 fn apply_store_object_to_artifact(

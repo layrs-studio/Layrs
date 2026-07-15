@@ -58,6 +58,7 @@ include!("sections/step_tree_values.rs");
 include!("sections/workspace_invitation_values.rs");
 include!("sections/artifact_lens_values.rs");
 include!("sections/access_timeline_values.rs");
+include!("sections/immutable_store.rs");
 include!("sections/store_objects.rs");
 include!("sections/artifact_publish.rs");
 include!("sections/layer_state_publish.rs");

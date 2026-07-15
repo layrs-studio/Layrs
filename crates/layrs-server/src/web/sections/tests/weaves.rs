@@ -146,6 +146,265 @@
     }
 
     #[tokio::test]
+    async fn weave_apply_rejects_a_target_changed_after_prepare() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let source_layer_id = create_weave_test_layer(&fixture, "Source").await;
+        publish_weave_test_file(
+            &fixture,
+            &source_layer_id,
+            "source.txt",
+            b"source\n",
+            "text/plain",
+            None,
+            0,
+        )
+        .await;
+        let Json(created) = create_weave_request(
+            State(test_state(fixture.pool.clone())),
+            fixture.bearer_headers(),
+            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+            Json(CreateWeaveRequestBody {
+                source_layer_id,
+                target_layer_id: fixture.layer_id.clone(),
+                title: Some("Stale target guard".to_string()),
+                body: None,
+            }),
+        )
+        .await
+        .expect("Weave plan creates before target changes");
+        let weave_id = created
+            .get("weaveId")
+            .and_then(Value::as_str)
+            .expect("weave id")
+            .to_string();
+
+        publish_weave_test_file(
+            &fixture,
+            &fixture.layer_id,
+            "target.txt",
+            b"new target generation\n",
+            "text/plain",
+            None,
+            0,
+        )
+        .await;
+        let error = apply_weave_request(
+            State(test_state(fixture.pool.clone())),
+            fixture.bearer_headers(),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                weave_id.clone(),
+            )),
+        )
+        .await
+        .expect_err("stale Weave plan cannot advance target head");
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(error.message.contains("target Layer changed"));
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM weave_requests WHERE weave_id = $1",
+        )
+        .bind(&weave_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("weave status remains queryable");
+        assert_eq!(status, "open");
+        let applied_replays: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM weave_step_replays WHERE weave_id = $1 AND status = 'applied'",
+        )
+        .bind(&weave_id)
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("applied replay count");
+        assert_eq!(applied_replays, 0);
+        assert_eq!(
+            target_file_bytes(&fixture, &fixture.layer_id, "target.txt").await,
+            b"new target generation\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn weave_viewer_cannot_create_resolve_apply_or_abort() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let (_, viewer_headers) =
+            create_test_workspace_member_headers(&fixture, "viewer").await;
+        let source_layer_id = create_weave_test_layer(&fixture, "Viewer Source").await;
+        publish_weave_test_file(
+            &fixture,
+            &source_layer_id,
+            "viewer.txt",
+            b"viewer source\n",
+            "text/plain",
+            None,
+            0,
+        )
+        .await;
+        let create_error = create_weave_request(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers.clone(),
+            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+            Json(CreateWeaveRequestBody {
+                source_layer_id: source_layer_id.clone(),
+                target_layer_id: fixture.layer_id.clone(),
+                title: Some("Viewer must not mutate".to_string()),
+                body: None,
+            }),
+        )
+        .await
+        .expect_err("viewer cannot create a Weave request");
+        assert_eq!(create_error.status, StatusCode::FORBIDDEN);
+
+        let (conflicted_weave_id, conflict_id) = create_raw_conflicted_weave(&fixture).await;
+        let Json(conflict_detail) = get_weave_request(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers.clone(),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                conflicted_weave_id.clone(),
+            )),
+        )
+        .await
+        .expect("viewer may inspect an unrestricted Weave conflict");
+        assert_eq!(
+            conflict_detail
+                .get("conflicts")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        let resolve_error = resolve_weave_conflict(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers.clone(),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                conflicted_weave_id,
+                conflict_id,
+            )),
+            Json(ResolveWeaveConflictBody {
+                method: "incoming".to_string(),
+                block_id: None,
+                manual_text: None,
+            }),
+        )
+        .await
+        .expect_err("viewer cannot resolve an unrestricted Weave conflict");
+        assert_eq!(resolve_error.status, StatusCode::FORBIDDEN);
+
+        let Json(created) = create_weave_request(
+            State(test_state(fixture.pool.clone())),
+            fixture.bearer_headers(),
+            Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+            Json(CreateWeaveRequestBody {
+                source_layer_id,
+                target_layer_id: fixture.layer_id.clone(),
+                title: Some("Owner request".to_string()),
+                body: None,
+            }),
+        )
+        .await
+        .expect("owner creates Weave request");
+        let weave_id = created
+            .get("weaveId")
+            .and_then(Value::as_str)
+            .expect("weave id")
+            .to_string();
+        let apply_error = apply_weave_request(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers.clone(),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                weave_id.clone(),
+            )),
+        )
+        .await
+        .expect_err("viewer cannot apply a Weave");
+        assert_eq!(apply_error.status, StatusCode::FORBIDDEN);
+        let abort_error = abort_weave_request(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers,
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                weave_id,
+            )),
+        )
+        .await
+        .expect_err("viewer cannot abort a Weave");
+        assert_eq!(abort_error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn weave_conflict_bytes_obey_layer_path_policy() {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let (viewer_id, viewer_headers) =
+            create_test_workspace_member_headers(&fixture, "viewer").await;
+        let (weave_id, conflict_id) = create_raw_conflicted_weave(&fixture).await;
+        let policy_id = policy_id_for_layer(
+            &fixture.pool,
+            &fixture.workspace_id,
+            &fixture.space_id,
+            &fixture.layer_id,
+        )
+        .await
+        .expect("target policy exists");
+        sqlx::query(
+            r#"
+            INSERT INTO layer_access_policy_rules
+                (rule_id, policy_id, path, mode, visibility, read_account_ids,
+                 write_account_ids)
+            VALUES ($1, $2, 'asset.bin', 'restricted', 'stub', $3, $3)
+            "#,
+        )
+        .bind(prefixed_id("access_rule"))
+        .bind(&policy_id)
+        .bind(vec![fixture.account_id.clone()])
+        .execute(&fixture.pool)
+        .await
+        .expect("restricted target path rule inserted");
+
+        let detail_error = get_weave_request(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers.clone(),
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                weave_id.clone(),
+            )),
+        )
+        .await
+        .expect_err("viewer cannot read restricted conflict bytes");
+        assert_eq!(detail_error.status, StatusCode::FORBIDDEN);
+        let resolve_error = resolve_weave_conflict(
+            State(test_state(fixture.pool.clone())),
+            viewer_headers,
+            Path((
+                fixture.workspace_id.clone(),
+                fixture.space_id.clone(),
+                weave_id,
+                conflict_id,
+            )),
+            Json(ResolveWeaveConflictBody {
+                method: "incoming".to_string(),
+                block_id: None,
+                manual_text: None,
+            }),
+        )
+        .await
+        .expect_err("viewer cannot resolve restricted conflict");
+        assert_eq!(resolve_error.status, StatusCode::FORBIDDEN);
+        assert!(!viewer_id.is_empty());
+    }
+
+    #[tokio::test]
     async fn weave_child_layer_full_tree_publish_replays_only_changed_paths() {
         let Some(fixture) = SyncTestFixture::create().await else {
             return;
@@ -578,13 +837,11 @@
         changed_paths: &[&str],
         timeline_position: i64,
     ) -> PublishedWeaveStep {
-        let tree_id = blake3_digest_for_bytes(
-            format!("weave-test-tree:{}:{}", files.len(), Uuid::new_v4().simple()).as_bytes(),
-        );
         let step_id = format!("step_{}", Uuid::new_v4().simple());
         let mut chunks = Vec::new();
         let mut file_objects = Vec::new();
         let mut entries = Vec::new();
+        let mut tree_entries = Vec::new();
         for (path, bytes, media_type) in files {
             let bytes = Bytes::from(bytes.to_vec());
             let chunk_id = blake3_digest_for_bytes(&bytes);
@@ -623,7 +880,13 @@
                 "fileObjectId": file_object_id,
                 "size": bytes.len()
             }));
+            tree_entries.push(ImmutableTreeEntry {
+                path: (*path).to_string(),
+                file_object_id,
+                size_bytes: bytes.len() as i64,
+            });
         }
+        let tree_id = canonical_tree_id(&tree_entries);
         let mut body = json!({
             "protocol": "layrs.sync.v2",
             "layerId": layer_id,
@@ -679,9 +942,7 @@
         let bytes = Bytes::from(bytes.to_vec());
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let tree_id = blake3_digest_for_bytes(
-            format!("weave-test-tree:{path}:{}", Uuid::new_v4().simple()).as_bytes(),
-        );
+        let tree_id = test_tree_id(&[(path, &file_object_id, bytes.len())]);
         let step_id = format!("step_{}", Uuid::new_v4().simple());
         let _ = put_space_chunk(
             State(test_state(fixture.pool.clone())),

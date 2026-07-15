@@ -73,6 +73,7 @@ fn artifact_metadata_value(
         "name": path.rsplit('/').next().unwrap_or(path),
         "type": artifact_type(artifact_kind),
         "summary": if redacted { "Restricted by Layer access policy" } else { "Persisted artifact" },
+        "path": path,
         "location": path,
         "updatedAt": updated_at,
         "fileObjectId": file_object_id,
@@ -182,31 +183,6 @@ async fn object_chunk_exists(
     .fetch_one(pool)
     .await
     .map_err(ApiError::from)
-}
-
-async fn mark_chunk_available_for_space(
-    pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
-    chunk_id: &str,
-    account_id: &str,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        r#"
-        INSERT INTO space_object_chunks
-            (workspace_id, space_id, chunk_id, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4)
-        ON CONFLICT (workspace_id, space_id, chunk_id) DO NOTHING
-        "#,
-    )
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(chunk_id)
-    .bind(account_id)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 async fn mark_chunk_available_for_space_in_tx(

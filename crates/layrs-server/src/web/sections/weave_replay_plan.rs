@@ -178,6 +178,36 @@ async fn create_weave_path_replay_in_tx(
     account_id: &str,
     path: &str,
 ) -> Result<Option<(Value, bool)>, ApiError> {
+    let source_access = access_decision_for_path(
+        pool,
+        workspace_id,
+        space_id,
+        source_layer_id,
+        path,
+        None,
+        account_id,
+    )
+    .await?;
+    let target_access = access_decision_for_path(
+        pool,
+        workspace_id,
+        space_id,
+        target_layer_id,
+        path,
+        None,
+        account_id,
+    )
+    .await?;
+    if !source_access.can_read {
+        return Err(ApiError::forbidden(
+            "Weave source path is restricted by Layer access policy",
+        ));
+    }
+    if !target_access.can_write {
+        return Err(ApiError::forbidden(
+            "Weave target path is not writable under Layer access policy",
+        ));
+    }
     let base_ref =
         tree_file_ref_for_path(pool, workspace_id, space_id, source_base_tree_id, path).await?;
     let ours_ref = tree_file_ref_for_path(pool, workspace_id, space_id, target_tree_id, path).await?;

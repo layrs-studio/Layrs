@@ -59,18 +59,10 @@ async fn publish_artifact_v2_in_tx(
         ensure_file_object_in_space_in_tx(tx, workspace_id, space_id, &file_object_id).await?;
         file_object_id
     } else {
-        let digest = explicit_digest
-            .clone()
-            .or_else(|| {
-                if chunks.len() == 1 {
-                    Some(chunks[0].digest.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| hash_chunk_manifest(&chunks));
+        let (computed_digest, computed_size) = file_digest_for_chunks_in_tx(tx, &chunks).await?;
+        let digest = explicit_digest.clone().unwrap_or(computed_digest);
         let size_bytes =
-            explicit_size.unwrap_or_else(|| chunks.iter().map(|chunk| chunk.size_bytes).sum());
+            explicit_size.unwrap_or(computed_size);
         upsert_file_object_in_tx(
             tx,
             workspace_id,
@@ -311,55 +303,84 @@ async fn upsert_file_object_in_tx(
     chunks: &[ChunkDescriptor],
     account_id: &str,
 ) -> Result<String, ApiError> {
+    let (computed_digest, computed_size) = file_digest_for_chunks_in_tx(tx, chunks).await?;
+    let declared_digest = validate_object_digest(digest)?;
+    if declared_digest != computed_digest || size_bytes != computed_size {
+        return Err(ApiError::bad_request(
+            "file object digest or size does not match its chunk content",
+        ));
+    }
     let file_object_id = provided_file_object_id
         .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| prefixed_id("file_object"));
-    let file_object_id = sqlx::query_scalar::<_, String>(
+        .map(validate_object_digest)
+        .transpose()?
+        .unwrap_or_else(|| computed_digest.clone());
+    if file_object_id != computed_digest {
+        return Err(ApiError::bad_request(
+            "fileObjectId must match the file content blake3 digest",
+        ));
+    }
+
+    lock_content_id_in_tx(tx, &file_object_id).await?;
+    let existing = sqlx::query(
         r#"
-        INSERT INTO file_objects
-            (file_object_id, workspace_id, space_id, digest, size_bytes, media_type, chunk_count, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (file_object_id) DO UPDATE SET
-            media_type = EXCLUDED.media_type,
-            chunk_count = EXCLUDED.chunk_count
-        RETURNING file_object_id
+        SELECT digest, size_bytes, media_type, chunk_count
+        FROM file_objects
+        WHERE file_object_id = $1
+        FOR UPDATE
         "#,
     )
     .bind(&file_object_id)
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(digest)
-    .bind(size_bytes)
-    .bind(media_type)
-    .bind(chunks.len() as i32)
-    .bind(account_id)
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?;
-    mark_file_available_for_space_in_tx(tx, workspace_id, space_id, &file_object_id, account_id)
-        .await?;
-    for (index, chunk) in chunks.iter().enumerate() {
+    if let Some(row) = existing {
+        if row.get::<String, _>("digest") != computed_digest
+            || row.get::<i64, _>("size_bytes") != computed_size
+            || row.try_get::<String, _>("media_type").ok().as_deref() != Some(media_type)
+            || row.get::<i32, _>("chunk_count") != chunks.len() as i32
+        {
+            return Err(ApiError::conflict(
+                "immutable file object id already exists with different metadata",
+            ));
+        }
+        compare_file_object_chunks_in_tx(tx, &file_object_id, chunks).await?;
+    } else {
         sqlx::query(
             r#"
-            INSERT INTO file_object_chunks
-                (file_object_id, chunk_index, chunk_id, byte_offset, size_bytes)
-            VALUES
-                ($1, $2, $3, $4, $5)
-            ON CONFLICT (file_object_id, chunk_index) DO UPDATE SET
-                chunk_id = EXCLUDED.chunk_id,
-                byte_offset = EXCLUDED.byte_offset,
-                size_bytes = EXCLUDED.size_bytes
+            INSERT INTO file_objects
+                (file_object_id, workspace_id, space_id, digest, size_bytes,
+                 media_type, chunk_count, created_by_account_id)
+            VALUES ($1, $2, $3, $1, $4, $5, $6, $7)
             "#,
         )
         .bind(&file_object_id)
-        .bind(index as i32)
-        .bind(&chunk.chunk_id)
-        .bind(chunk.byte_offset)
-        .bind(chunk.size_bytes)
+        .bind(workspace_id)
+        .bind(space_id)
+        .bind(computed_size)
+        .bind(media_type)
+        .bind(chunks.len() as i32)
+        .bind(account_id)
         .execute(&mut **tx)
         .await?;
+        for (index, chunk) in chunks.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO file_object_chunks
+                    (file_object_id, chunk_index, chunk_id, byte_offset, size_bytes)
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+            )
+            .bind(&file_object_id)
+            .bind(index as i32)
+            .bind(&chunk.chunk_id)
+            .bind(chunk.byte_offset)
+            .bind(chunk.size_bytes)
+            .execute(&mut **tx)
+            .await?;
+        }
     }
+    mark_file_available_for_space_in_tx(tx, workspace_id, space_id, &file_object_id, account_id)
+        .await?;
     Ok(file_object_id)
 }
 

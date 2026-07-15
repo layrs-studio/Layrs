@@ -373,20 +373,18 @@ async fn access_decision_for_path(
     artifact_id: Option<&str>,
     account_id: &str,
 ) -> Result<AccessDecision, ApiError> {
-    let workspace_role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM workspace_memberships WHERE workspace_id = $1 AND account_id = $2 AND state = 'active'",
-    )
-    .bind(workspace_id)
-    .bind(account_id)
-    .fetch_optional(pool)
-    .await?;
-    let Some(workspace_role) = workspace_role else {
-        return Ok(AccessDecision {
-            can_read: false,
-            can_write: false,
-            reason: "Workspace membership is required".to_string(),
-        });
-    };
+    let repository_role =
+        match effective_layer_role(pool, workspace_id, space_id, layer_id, account_id).await {
+            Ok(role) => role,
+            Err(error) if error.status == StatusCode::FORBIDDEN => {
+                return Ok(AccessDecision {
+                    can_read: false,
+                    can_write: false,
+                    reason: "Workspace membership is required".to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
     let team_ids = account_team_ids(pool, workspace_id, account_id).await?;
     let rules = access_rule_rows_for_layer(pool, workspace_id, space_id, layer_id).await?;
     let mut best: Option<AccessRuleRow> = None;
@@ -406,11 +404,11 @@ async fn access_decision_for_path(
         }
     }
 
-    let workspace_can_write = matches!(workspace_role.as_str(), "owner" | "admin" | "member");
+    let repository_can_write = matches!(repository_role, RepositoryRole::Writer | RepositoryRole::Admin);
     let Some(rule) = best else {
         return Ok(AccessDecision {
             can_read: true,
-            can_write: workspace_can_write,
+            can_write: repository_can_write,
             reason: "No restrictive Layer access rule matched".to_string(),
         });
     };
@@ -435,7 +433,7 @@ async fn access_decision_for_path(
 
     Ok(AccessDecision {
         can_read: account_read || team_read,
-        can_write: workspace_can_write && (account_write || team_write),
+        can_write: repository_can_write && (account_write || team_write),
         reason: "Restricted by Layer access policy".to_string(),
     })
 }

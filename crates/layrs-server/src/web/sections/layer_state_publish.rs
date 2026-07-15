@@ -7,14 +7,15 @@ async fn rebuild_layer_tree_in_tx(
 ) -> Result<Option<String>, ApiError> {
     let rows = sqlx::query(
         r#"
-        SELECT artifact_id, logical_path, current_file_object_id
-        FROM artifacts
-        WHERE workspace_id = $1
-          AND space_id = $2
-          AND layer_id = $3
-          AND state = 'active'
-          AND current_file_object_id IS NOT NULL
-        ORDER BY logical_path ASC
+        SELECT a.logical_path, a.current_file_object_id, f.size_bytes
+        FROM artifacts a
+        JOIN file_objects f ON f.file_object_id = a.current_file_object_id
+        WHERE a.workspace_id = $1
+          AND a.space_id = $2
+          AND a.layer_id = $3
+          AND a.state = 'active'
+          AND a.current_file_object_id IS NOT NULL
+        ORDER BY a.logical_path ASC
         "#,
     )
     .bind(workspace_id)
@@ -25,53 +26,23 @@ async fn rebuild_layer_tree_in_tx(
     if rows.is_empty() {
         return Ok(None);
     }
-    let mut manifest = String::new();
-    for row in &rows {
-        manifest.push_str(row.get::<String, _>("logical_path").as_str());
-        manifest.push('\0');
-        manifest.push_str(row.get::<String, _>("current_file_object_id").as_str());
-        manifest.push('\n');
-    }
-    let digest = blake3_digest_for_bytes(manifest.as_bytes());
-    let tree_id = sqlx::query_scalar::<_, String>(
-        r#"
-        INSERT INTO tree_objects
-            (tree_id, workspace_id, space_id, digest, entry_count, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (tree_id) DO UPDATE SET
-            entry_count = EXCLUDED.entry_count
-        RETURNING tree_id
-        "#,
+    let entries = rows
+        .into_iter()
+        .map(|row| ImmutableTreeEntry {
+            path: row.get("logical_path"),
+            file_object_id: row.get("current_file_object_id"),
+            size_bytes: row.get("size_bytes"),
+        })
+        .collect();
+    let tree_id = insert_or_compare_tree_in_tx(
+        tx,
+        workspace_id,
+        space_id,
+        account_id,
+        None,
+        entries,
     )
-    .bind(&digest)
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(&digest)
-    .bind(rows.len() as i32)
-    .bind(account_id)
-    .fetch_one(&mut **tx)
     .await?;
-    mark_tree_available_for_space_in_tx(tx, workspace_id, space_id, &tree_id, account_id).await?;
-    for row in rows {
-        sqlx::query(
-            r#"
-            INSERT INTO tree_entries
-                (tree_id, logical_path, entry_kind, file_object_id, artifact_id)
-            VALUES
-                ($1, $2, 'file', $3, $4)
-            ON CONFLICT (tree_id, logical_path) DO UPDATE SET
-                file_object_id = EXCLUDED.file_object_id,
-                artifact_id = EXCLUDED.artifact_id
-            "#,
-        )
-        .bind(&tree_id)
-        .bind(row.get::<String, _>("logical_path"))
-        .bind(row.get::<String, _>("current_file_object_id"))
-        .bind(row.get::<String, _>("artifact_id"))
-        .execute(&mut **tx)
-        .await?;
-    }
     Ok(Some(tree_id))
 }
 
@@ -433,19 +404,6 @@ async fn insert_sync_batch_change_in_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
-}
-
-fn hash_chunk_manifest(chunks: &[ChunkDescriptor]) -> String {
-    let mut manifest = String::new();
-    for chunk in chunks {
-        manifest.push_str(&chunk.chunk_id);
-        manifest.push('\0');
-        manifest.push_str(&chunk.digest);
-        manifest.push('\0');
-        manifest.push_str(&chunk.size_bytes.to_string());
-        manifest.push('\n');
-    }
-    blake3_digest_for_bytes(manifest.as_bytes())
 }
 
 async fn write_timeline_in_tx(

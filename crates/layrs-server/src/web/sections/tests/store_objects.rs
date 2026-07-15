@@ -28,7 +28,7 @@
         let bytes = Bytes::from_static(b"MERKLE_V2_CONTENT");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = blake3_digest_for_bytes(b"test-root-tree");
+        let root_tree_id = test_tree_id(&[("assets/hero.bin", &file_object_id, bytes.len())]);
 
         let Json(upload_payload) = put_space_chunk(
             State(test_state(fixture.pool.clone())),
@@ -183,7 +183,7 @@
         let bytes = Bytes::from_static(b"shared chunk bytes\n");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = blake3_digest_for_bytes(b"shared-chunk-second-space-tree");
+        let root_tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
         let second_space_id = format!("space_{}", Uuid::new_v4().simple());
         let second_layer_id = format!("layer_{}", Uuid::new_v4().simple());
 
@@ -283,13 +283,374 @@
         .expect("second space publish reuses the global chunk");
 
         let availability_count: i64 = sqlx::query_scalar(
-            "SELECT count(*)::bigint FROM space_object_chunks WHERE chunk_id = $1",
+            r#"
+            SELECT count(*)::bigint
+            FROM space_object_chunks
+            WHERE chunk_id = $1
+              AND workspace_id = $2
+              AND space_id = ANY($3)
+            "#,
         )
         .bind(&chunk_id)
+        .bind(&fixture.workspace_id)
+        .bind(vec![fixture.space_id.clone(), second_space_id])
         .fetch_one(&fixture.pool)
         .await
         .expect("availability count");
         assert_eq!(availability_count, 2);
+    }
+
+    #[tokio::test]
+    async fn cross_space_object_ids_are_immutable() {
+        let Some(first) = SyncTestFixture::create().await else {
+            return;
+        };
+        let Some(second) = SyncTestFixture::create().await else {
+            return;
+        };
+        let bytes = Bytes::from_static(b"immutable shared bytes\n");
+        let chunk_id = blake3_digest_for_bytes(&bytes);
+        let file_object_id = chunk_id.clone();
+        let tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
+
+        let _ = put_space_chunk(
+            State(test_state(first.pool.clone())),
+            Path((
+                first.workspace_id.clone(),
+                first.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            first.bearer_headers(),
+            bytes.clone(),
+        )
+        .await
+        .expect("first Space stores immutable chunk");
+        let _: Json<Value> = publish_local_space_sync(
+            State(test_state(first.pool.clone())),
+            Path((first.workspace_id.clone(), first.space_id.clone())),
+            first.bearer_headers(),
+            Json(
+                serde_json::from_value(json!({
+                    "protocol": "layrs.sync.v2",
+                    "layerId": first.layer_id,
+                    "policyEpoch": 1,
+                    "idempotencyKey": format!("immutable_first_{}", Uuid::new_v4().simple()),
+                    "rootTreeId": tree_id,
+                    "changedPaths": ["shared.txt"],
+                    "storeObjects": {
+                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
+                        "fileObjects": [{
+                            "fileObjectId": file_object_id,
+                            "digest": file_object_id,
+                            "size": bytes.len(),
+                            "mediaType": "text/plain",
+                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
+                        }],
+                        "treeObjects": [{
+                            "treeId": tree_id,
+                            "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
+                        }]
+                    }
+                }))
+                .expect("first immutable publish body"),
+            ),
+        )
+        .await
+        .expect("first Space publishes immutable objects");
+
+        let tampered = Bytes::from_static(b"different bytes\n");
+        let error = put_space_chunk(
+            State(test_state(second.pool.clone())),
+            Path((
+                second.workspace_id.clone(),
+                second.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            second.bearer_headers(),
+            tampered,
+        )
+        .await
+        .expect_err("another Space cannot replace bytes under an existing chunk id");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+
+        let compressed = Bytes::from(
+            zstd::stream::encode_all(std::io::Cursor::new(bytes.as_ref()), 3)
+                .expect("zstd compression succeeds"),
+        );
+        let mut alternate_encoding_headers = second.bearer_headers();
+        alternate_encoding_headers.insert(
+            "x-layrs-chunk-compression",
+            HeaderValue::from_static(CHUNK_COMPRESSION_ZSTD),
+        );
+        alternate_encoding_headers.insert(
+            "x-layrs-raw-size",
+            HeaderValue::from_str(&bytes.len().to_string()).expect("raw size header"),
+        );
+        alternate_encoding_headers.insert(
+            "x-layrs-stored-size",
+            HeaderValue::from_str(&compressed.len().to_string()).expect("stored size header"),
+        );
+        let Json(reused_chunk) = put_space_chunk(
+            State(test_state(second.pool.clone())),
+            Path((
+                second.workspace_id.clone(),
+                second.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            alternate_encoding_headers,
+            compressed,
+        )
+        .await
+        .expect("equivalent raw content can reuse an immutable chunk across encodings");
+        assert_eq!(
+            reused_chunk.get("compression").and_then(Value::as_str),
+            Some(CHUNK_COMPRESSION_IDENTITY),
+            "the stored representation remains unchanged"
+        );
+
+        let _ = put_space_chunk(
+            State(test_state(second.pool.clone())),
+            Path((
+                second.workspace_id.clone(),
+                second.space_id.clone(),
+                chunk_id.clone(),
+            )),
+            second.bearer_headers(),
+            bytes.clone(),
+        )
+        .await
+        .expect("identical immutable chunk can be shared");
+        let conflicting_media = publish_local_space_sync(
+            State(test_state(second.pool.clone())),
+            Path((second.workspace_id.clone(), second.space_id.clone())),
+            second.bearer_headers(),
+            Json(
+                serde_json::from_value(json!({
+                    "protocol": "layrs.sync.v2",
+                    "layerId": second.layer_id,
+                    "policyEpoch": 1,
+                    "idempotencyKey": format!("immutable_second_{}", Uuid::new_v4().simple()),
+                    "rootTreeId": tree_id,
+                    "changedPaths": ["shared.txt"],
+                    "storeObjects": {
+                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
+                        "fileObjects": [{
+                            "fileObjectId": file_object_id,
+                            "digest": file_object_id,
+                            "size": bytes.len(),
+                            "mediaType": "application/octet-stream",
+                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
+                        }],
+                        "treeObjects": [{
+                            "treeId": tree_id,
+                            "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
+                        }]
+                    }
+                }))
+                .expect("conflicting immutable publish body"),
+            ),
+        )
+        .await
+        .expect_err("file object metadata cannot be mutated cross-Space");
+        assert_eq!(conflicting_media.status, StatusCode::CONFLICT);
+
+        let stored = sqlx::query(
+            "SELECT media_type, size_bytes FROM file_objects WHERE file_object_id = $1",
+        )
+        .bind(&file_object_id)
+        .fetch_one(&first.pool)
+        .await
+        .expect("original immutable file object remains");
+        assert_eq!(stored.get::<String, _>("media_type"), "text/plain");
+        assert_eq!(stored.get::<i64, _>("size_bytes"), bytes.len() as i64);
+        let second_file_reference: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM space_file_objects WHERE space_id = $1 AND file_object_id = $2",
+        )
+        .bind(&second.space_id)
+        .bind(&file_object_id)
+        .fetch_one(&second.pool)
+        .await
+        .expect("second Space reference count");
+        assert_eq!(second_file_reference, 0);
+    }
+
+    #[tokio::test]
+    async fn cross_space_tree_manifest_cannot_mutate() {
+        let Some(first) = SyncTestFixture::create().await else {
+            return;
+        };
+        let Some(second) = SyncTestFixture::create().await else {
+            return;
+        };
+        let bytes = Bytes::from_static(b"tree immutable bytes\n");
+        let chunk_id = blake3_digest_for_bytes(&bytes);
+        let file_object_id = chunk_id.clone();
+        let tree_id = test_tree_id(&[("original.txt", &file_object_id, bytes.len())]);
+        for fixture in [&first, &second] {
+            let _ = put_space_chunk(
+                State(test_state(fixture.pool.clone())),
+                Path((
+                    fixture.workspace_id.clone(),
+                    fixture.space_id.clone(),
+                    chunk_id.clone(),
+                )),
+                fixture.bearer_headers(),
+                bytes.clone(),
+            )
+            .await
+            .expect("identical chunk upload succeeds");
+        }
+        let publish = |fixture: &SyncTestFixture, path: &str| {
+            serde_json::from_value::<SyncPublishBody>(json!({
+                "protocol": "layrs.sync.v2",
+                "layerId": fixture.layer_id,
+                "policyEpoch": 1,
+                "idempotencyKey": format!("immutable_tree_{}", Uuid::new_v4().simple()),
+                "rootTreeId": tree_id,
+                "changedPaths": [path],
+                "storeObjects": {
+                    "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
+                    "fileObjects": [{
+                        "fileObjectId": file_object_id,
+                        "digest": file_object_id,
+                        "size": bytes.len(),
+                        "mediaType": "text/plain",
+                        "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
+                    }],
+                    "treeObjects": [{
+                        "treeId": tree_id,
+                        "entries": [{ "path": path, "fileObjectId": file_object_id }]
+                    }]
+                }
+            }))
+            .expect("immutable tree publish body")
+        };
+        let _: Json<Value> = publish_local_space_sync(
+            State(test_state(first.pool.clone())),
+            Path((first.workspace_id.clone(), first.space_id.clone())),
+            first.bearer_headers(),
+            Json(publish(&first, "original.txt")),
+        )
+        .await
+        .expect("first tree publish succeeds");
+        let error = publish_local_space_sync(
+            State(test_state(second.pool.clone())),
+            Path((second.workspace_id.clone(), second.space_id.clone())),
+            second.bearer_headers(),
+            Json(publish(&second, "renamed.txt")),
+        )
+        .await
+        .expect_err("same tree id cannot name a different manifest");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        let second_tree_reference: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM space_tree_objects WHERE space_id = $1 AND tree_id = $2",
+        )
+        .bind(&second.space_id)
+        .bind(&tree_id)
+        .fetch_one(&second.pool)
+        .await
+        .expect("second tree reference count");
+        assert_eq!(second_tree_reference, 0);
+    }
+
+    #[tokio::test]
+    async fn deleting_one_space_preserves_shared_objects_for_another_space() {
+        let Some(first) = SyncTestFixture::create().await else {
+            return;
+        };
+        let Some(second) = SyncTestFixture::create().await else {
+            return;
+        };
+        let bytes = Bytes::from_static(b"shared survives deletion\n");
+        let chunk_id = blake3_digest_for_bytes(&bytes);
+        let file_object_id = chunk_id.clone();
+        let tree_id = test_tree_id(&[("shared.txt", &file_object_id, bytes.len())]);
+        for fixture in [&first, &second] {
+            let _ = put_space_chunk(
+                State(test_state(fixture.pool.clone())),
+                Path((
+                    fixture.workspace_id.clone(),
+                    fixture.space_id.clone(),
+                    chunk_id.clone(),
+                )),
+                fixture.bearer_headers(),
+                bytes.clone(),
+            )
+            .await
+            .expect("shared chunk upload succeeds");
+            let _: Json<Value> = publish_local_space_sync(
+                State(test_state(fixture.pool.clone())),
+                Path((fixture.workspace_id.clone(), fixture.space_id.clone())),
+                fixture.bearer_headers(),
+                Json(
+                    serde_json::from_value(json!({
+                        "protocol": "layrs.sync.v2",
+                        "layerId": fixture.layer_id,
+                        "policyEpoch": 1,
+                        "idempotencyKey": format!("shared_delete_{}", Uuid::new_v4().simple()),
+                        "rootTreeId": tree_id,
+                        "changedPaths": ["shared.txt"],
+                        "storeObjects": {
+                            "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }],
+                            "fileObjects": [{
+                                "fileObjectId": file_object_id,
+                                "digest": file_object_id,
+                                "size": bytes.len(),
+                                "mediaType": "text/plain",
+                                "chunks": [{ "chunkId": chunk_id, "size": bytes.len() }]
+                            }],
+                            "treeObjects": [{
+                                "treeId": tree_id,
+                                "entries": [{ "path": "shared.txt", "fileObjectId": file_object_id }]
+                            }]
+                        }
+                    }))
+                    .expect("shared object publish body"),
+                ),
+            )
+            .await
+            .expect("shared object publish succeeds");
+        }
+
+        let _ = delete_space(
+            State(test_state(first.pool.clone())),
+            Path((first.workspace_id.clone(), first.space_id.clone())),
+            first.bearer_headers(),
+        )
+        .await
+        .expect("first Space deletion succeeds");
+
+        assert_eq!(
+            file_object_bytes(
+                &second.pool,
+                &second.workspace_id,
+                &second.space_id,
+                &file_object_id,
+            )
+            .await
+            .expect("second Space still resolves shared file"),
+            bytes
+        );
+        for (table, id_column, id) in [
+            ("space_object_chunks", "chunk_id", chunk_id.as_str()),
+            (
+                "space_file_objects",
+                "file_object_id",
+                file_object_id.as_str(),
+            ),
+            ("space_tree_objects", "tree_id", tree_id.as_str()),
+        ] {
+            let query = format!(
+                "SELECT count(*)::bigint FROM {table} WHERE space_id = $1 AND {id_column} = $2"
+            );
+            let count: i64 = sqlx::query_scalar(&query)
+                .bind(&second.space_id)
+                .bind(id)
+                .fetch_one(&second.pool)
+                .await
+                .expect("second Space reference count");
+            assert_eq!(count, 1, "missing shared reference in {table}");
+        }
     }
 
     #[tokio::test]
@@ -304,8 +665,8 @@
         let target_chunk_id = blake3_digest_for_bytes(&target_bytes);
         let base_file_object_id = blake3_digest_for_bytes(&base_bytes);
         let target_file_object_id = blake3_digest_for_bytes(&target_bytes);
-        let base_tree_id = blake3_digest_for_bytes(b"step-diff-base-tree");
-        let target_tree_id = blake3_digest_for_bytes(b"step-diff-target-tree");
+        let base_tree_id = test_tree_id(&[(path, &base_file_object_id, base_bytes.len())]);
+        let target_tree_id = test_tree_id(&[(path, &target_file_object_id, target_bytes.len())]);
         let base_step_id = format!("step_{}", Uuid::new_v4().simple());
         let target_step_id = format!("step_{}", Uuid::new_v4().simple());
 
@@ -568,7 +929,11 @@
         let bytes = Bytes::from_static(b"TOP_SECRET");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = blake3_digest_for_bytes(b"secret-redacted-tree");
+        let root_tree_id = test_tree_id(&[(
+            "secret/token.txt",
+            &file_object_id,
+            bytes.len(),
+        )]);
 
         let _ = put_space_chunk(
             State(test_state(fixture.pool.clone())),
@@ -825,11 +1190,94 @@
         }
     }
 
+    async fn create_test_workspace_member_headers(
+        fixture: &SyncTestFixture,
+        role: &str,
+    ) -> (String, HeaderMap) {
+        let suffix = Uuid::new_v4().simple().to_string();
+        let account_id = format!("account_{suffix}");
+        let device_id = format!("device_{suffix}");
+        let bearer_token = token("desktop_test_member");
+        sqlx::query(
+            "INSERT INTO accounts (account_id, email, display_name) VALUES ($1, $2, 'Test Member')",
+        )
+        .bind(&account_id)
+        .bind(format!("member-{suffix}@example.com"))
+        .execute(&fixture.pool)
+        .await
+        .expect("test member account inserted");
+        sqlx::query(
+            "INSERT INTO workspace_memberships (membership_id, workspace_id, account_id, role) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(prefixed_id("membership"))
+        .bind(&fixture.workspace_id)
+        .bind(&account_id)
+        .bind(role)
+        .execute(&fixture.pool)
+        .await
+        .expect("test workspace membership inserted");
+        sqlx::query(
+            "INSERT INTO desktop_devices (device_id, account_id, display_name, public_key_thumbprint, last_seen_at) VALUES ($1, $2, 'Test Member Desktop', $3, now())",
+        )
+        .bind(&device_id)
+        .bind(&account_id)
+        .bind(format!("thumbprint-{suffix}"))
+        .execute(&fixture.pool)
+        .await
+        .expect("test member device inserted");
+        sqlx::query(
+            r#"
+            INSERT INTO desktop_device_tokens
+                (token_id, device_id, account_id, access_token_digest,
+                 refresh_token_digest, expires_at)
+            VALUES ($1, $2, $3, $4, $5, now() + interval '1 day')
+            "#,
+        )
+        .bind(prefixed_id("desktop_token"))
+        .bind(&device_id)
+        .bind(&account_id)
+        .bind(digest_secret(&bearer_token))
+        .bind(digest_secret(&token("desktop_refresh_member")))
+        .execute(&fixture.pool)
+        .await
+        .expect("test member token inserted");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {bearer_token}"))
+                .expect("test member bearer header"),
+        );
+        (account_id, headers)
+    }
+
     fn test_database_url() -> Option<String> {
-        std::env::var("LAYRS_TEST_DATABASE_URL")
+        let database_url = std::env::var("LAYRS_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("LAYRS_DATABASE_URL"))
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .ok()
+            .ok();
+        if database_url.is_none()
+            && std::env::var("LAYRS_REQUIRE_POSTGRES_TESTS").as_deref() == Ok("1")
+        {
+            panic!(
+                "Postgres integration tests are required: set LAYRS_TEST_DATABASE_URL to a reachable test database"
+            );
+        }
+        database_url
+    }
+
+    fn test_tree_id(entries: &[(&str, &str, usize)]) -> String {
+        let mut entries = entries.to_vec();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        let mut material = String::new();
+        for (path, file_object_id, size) in entries {
+            material.push_str(path);
+            material.push('\0');
+            material.push_str(file_object_id);
+            material.push('\0');
+            material.push_str(&size.to_string());
+            material.push('\n');
+        }
+        blake3_digest_for_bytes(material.as_bytes())
     }
 
     fn test_state(pool: PgPool) -> AppState {

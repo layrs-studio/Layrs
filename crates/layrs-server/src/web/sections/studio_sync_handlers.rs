@@ -663,51 +663,29 @@ async fn put_space_chunk(
             "chunk_id must match the decoded chunk bytes blake3 digest",
         ));
     }
-    let stored_size_bytes = bytes.len() as i64;
-    let object_key = format!("chunks/global/{chunk_id}");
-    sqlx::query(
-        r#"
-        INSERT INTO object_chunks
-            (chunk_id, workspace_id, space_id, digest, size_bytes, stored_size_bytes, object_key, compression, state, content_bytes, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8, 'available', $9, $10)
-        ON CONFLICT (chunk_id) DO UPDATE SET
-            digest = EXCLUDED.digest,
-            size_bytes = EXCLUDED.size_bytes,
-            stored_size_bytes = EXCLUDED.stored_size_bytes,
-            object_key = EXCLUDED.object_key,
-            compression = EXCLUDED.compression,
-            state = 'available',
-            content_bytes = EXCLUDED.content_bytes,
-            updated_at = now()
-        "#,
+    let mut tx = state.pool.begin().await?;
+    let stored = insert_or_compare_chunk_in_tx(
+        &mut tx,
+        &workspace_id,
+        &space_id,
+        &user.id,
+        &chunk_id,
+        &bytes,
+        &compression,
     )
-    .bind(&chunk_id)
-    .bind(&workspace_id)
-    .bind(&space_id)
-    .bind(&digest)
-    .bind(raw_size)
-    .bind(stored_size_bytes)
-    .bind(&object_key)
-    .bind(&compression)
-    .bind(bytes.to_vec())
-    .bind(&user.id)
-    .execute(&state.pool)
     .await?;
-
-    mark_chunk_available_for_space(&state.pool, &workspace_id, &space_id, &chunk_id, &user.id)
-        .await?;
+    tx.commit().await?;
 
     Ok(Json(json!({
         "chunkId": chunk_id,
         "workspaceId": workspace_id,
         "spaceId": space_id,
-        "digest": digest,
-        "sizeBytes": raw_size,
-        "rawSize": raw_size,
-        "storedSize": stored_size_bytes,
-        "compression": compression,
-        "objectKey": object_key,
+        "digest": stored.digest,
+        "sizeBytes": stored.raw_size,
+        "rawSize": stored.raw_size,
+        "storedSize": stored.stored_size,
+        "compression": stored.compression,
+        "objectKey": stored.object_key,
         "state": "available"
     })))
 }

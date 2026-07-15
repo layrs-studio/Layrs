@@ -360,6 +360,136 @@ async fn ensure_workspace_write(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum RepositoryRole {
+    Reader,
+    Writer,
+    Admin,
+}
+
+impl RepositoryRole {
+    fn from_repository_role(value: &str) -> Option<Self> {
+        match value {
+            "reader" => Some(Self::Reader),
+            "writer" => Some(Self::Writer),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    fn from_workspace_role(value: &str) -> Option<Self> {
+        match value {
+            "viewer" => Some(Self::Reader),
+            "member" => Some(Self::Writer),
+            "owner" | "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+}
+
+fn strongest_repository_role<'a>(roles: impl Iterator<Item = &'a str>) -> Option<RepositoryRole> {
+    roles
+        .filter_map(RepositoryRole::from_repository_role)
+        .max()
+}
+
+async fn effective_layer_role(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    layer_id: &str,
+    account_id: &str,
+) -> Result<RepositoryRole, ApiError> {
+    ensure_layer_in_space(pool, workspace_id, space_id, layer_id).await?;
+    let workspace_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM workspace_memberships WHERE workspace_id = $1 AND account_id = $2 AND state = 'active'",
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    let inherited = workspace_role
+        .as_deref()
+        .and_then(RepositoryRole::from_workspace_role)
+        .ok_or_else(|| ApiError::forbidden("workspace membership is required"))?;
+
+    let layer_roles = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT lm.role
+        FROM layer_memberships lm
+        WHERE lm.layer_id = $1
+          AND (
+              lm.account_id = $2
+              OR lm.team_id IN (
+                  SELECT tm.team_id
+                  FROM team_memberships tm
+                  JOIN teams t ON t.team_id = tm.team_id
+                  WHERE tm.account_id = $2 AND t.workspace_id = $3
+              )
+          )
+        "#,
+    )
+    .bind(layer_id)
+    .bind(account_id)
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    if let Some(role) = strongest_repository_role(layer_roles.iter().map(String::as_str)) {
+        return Ok(role);
+    }
+
+    let space_roles = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sm.role
+        FROM space_memberships sm
+        WHERE sm.space_id = $1
+          AND (
+              sm.account_id = $2
+              OR sm.team_id IN (
+                  SELECT tm.team_id
+                  FROM team_memberships tm
+                  JOIN teams t ON t.team_id = tm.team_id
+                  WHERE tm.account_id = $2 AND t.workspace_id = $3
+              )
+          )
+        "#,
+    )
+    .bind(space_id)
+    .bind(account_id)
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(strongest_repository_role(
+        space_roles.iter().map(String::as_str),
+    )
+    .unwrap_or(inherited))
+}
+
+async fn ensure_layer_read(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    layer_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    effective_layer_role(pool, workspace_id, space_id, layer_id, account_id)
+        .await
+        .map(|_| ())
+}
+
+async fn ensure_layer_write(
+    pool: &PgPool,
+    workspace_id: &str,
+    space_id: &str,
+    layer_id: &str,
+    account_id: &str,
+) -> Result<(), ApiError> {
+    match effective_layer_role(pool, workspace_id, space_id, layer_id, account_id).await? {
+        RepositoryRole::Writer | RepositoryRole::Admin => Ok(()),
+        RepositoryRole::Reader => Err(ApiError::forbidden("Layer write permission is required")),
+    }
+}
+
 async fn workspace_value_for_account(
     pool: &PgPool,
     workspace_id: &str,

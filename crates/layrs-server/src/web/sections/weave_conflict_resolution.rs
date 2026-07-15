@@ -521,37 +521,16 @@ async fn write_resolved_file_object_in_tx(
     media_type: &str,
 ) -> Result<String, ApiError> {
     let digest = blake3_digest_for_bytes(bytes);
-    let object_key = format!("chunks/global/{digest}");
-    sqlx::query(
-        r#"
-        INSERT INTO object_chunks
-            (chunk_id, workspace_id, space_id, digest, size_bytes, stored_size_bytes, object_key,
-             compression, state, content_bytes, created_by_account_id)
-        VALUES
-            ($1, $2, $3, $4, $5, $5, $6, $7, 'available', $8, $9)
-        ON CONFLICT (chunk_id) DO UPDATE SET
-            digest = EXCLUDED.digest,
-            size_bytes = EXCLUDED.size_bytes,
-            stored_size_bytes = EXCLUDED.stored_size_bytes,
-            object_key = EXCLUDED.object_key,
-            compression = EXCLUDED.compression,
-            state = 'available',
-            content_bytes = EXCLUDED.content_bytes,
-            updated_at = now()
-        "#,
+    insert_or_compare_chunk_in_tx(
+        tx,
+        workspace_id,
+        space_id,
+        account_id,
+        &digest,
+        bytes,
+        CHUNK_COMPRESSION_IDENTITY,
     )
-    .bind(&digest)
-    .bind(workspace_id)
-    .bind(space_id)
-    .bind(&digest)
-    .bind(bytes.len() as i64)
-    .bind(&object_key)
-    .bind(CHUNK_COMPRESSION_IDENTITY)
-    .bind(bytes.to_vec())
-    .bind(account_id)
-    .execute(&mut **tx)
     .await?;
-    mark_chunk_available_for_space_in_tx(tx, workspace_id, space_id, &digest, account_id).await?;
     let chunks = vec![ChunkDescriptor {
         chunk_id: digest.clone(),
         digest: digest.clone(),

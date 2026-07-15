@@ -336,7 +336,11 @@
         let bytes = Bytes::from_static(b"child inherits this\n");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = blake3_digest_for_bytes(b"create-child-inherits-parent-tree");
+        let root_tree_id = test_tree_id(&[(
+            "src/inherited.txt",
+            &file_object_id,
+            bytes.len(),
+        )]);
         let step_id = format!("step_{}", Uuid::new_v4().simple());
 
         let _: Json<Value> = put_space_chunk(
@@ -525,7 +529,7 @@
         let bytes = Bytes::from_static(b"delete me\n");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let root_tree_id = blake3_digest_for_bytes(b"delete-space-tree");
+        let root_tree_id = test_tree_id(&[("delete.txt", &file_object_id, bytes.len())]);
 
         let _ = put_space_chunk(
             State(test_state(fixture.pool.clone())),
@@ -632,8 +636,8 @@
         let bytes = Bytes::from_static(b"fn main() {}\n");
         let chunk_id = blake3_digest_for_bytes(&bytes);
         let file_object_id = blake3_digest_for_bytes(&bytes);
-        let first_root_tree_id = blake3_digest_for_bytes(b"authorized-content-intermediate-tree");
-        let root_tree_id = blake3_digest_for_bytes(b"authorized-content-tree");
+        let root_tree_id = test_tree_id(&[("src/main.rs", &file_object_id, bytes.len())]);
+        let first_root_tree_id = root_tree_id.clone();
         let first_step_id = format!("step_{}", Uuid::new_v4().simple());
         let second_step_id = format!("step_{}", Uuid::new_v4().simple());
 
