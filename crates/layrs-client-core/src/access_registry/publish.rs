@@ -1,3 +1,19 @@
+struct PublishV2RequestInput<'a> {
+    layer_id: &'a str,
+    base_tree_id: Option<String>,
+    state: &'a WorkingStateFile,
+    changed_paths: Vec<String>,
+    deleted_paths: Vec<String>,
+    steps: &'a [StepFile],
+}
+
+// Kept as a narrow adapter for API-operation and test call sites outside this
+// file. The implementation itself uses a named request to make invariants
+// explicit and prevent positional argument mistakes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compatibility adapter for existing cross-module callers"
+)]
 fn build_publish_v2_request(
     handle: &LocalSpaceHandle,
     config: &DesktopConfig,
@@ -8,13 +24,33 @@ fn build_publish_v2_request(
     deleted_paths: Vec<String>,
     steps: &[StepFile],
 ) -> Result<PublishLayerRequest, String> {
-    let publish_paths = changed_paths
+    build_publish_v2_request_from(
+        handle,
+        config,
+        PublishV2RequestInput {
+            layer_id,
+            base_tree_id,
+            state,
+            changed_paths,
+            deleted_paths,
+            steps,
+        },
+    )
+}
+
+fn build_publish_v2_request_from(
+    handle: &LocalSpaceHandle,
+    config: &DesktopConfig,
+    input: PublishV2RequestInput<'_>,
+) -> Result<PublishLayerRequest, String> {
+    let publish_paths = input
+        .changed_paths
         .iter()
-        .filter(|path| !deleted_paths.contains(path))
+        .filter(|path| !input.deleted_paths.contains(path))
         .cloned()
         .collect::<BTreeSet<_>>();
-    let mut store_objects = publish_store_objects_for_paths(handle, state, &publish_paths)?;
-    for step in steps {
+    let mut store_objects = publish_store_objects_for_paths(handle, input.state, &publish_paths)?;
+    for step in input.steps {
         let step_state = state_from_step(&handle.layrs_dir, step)?;
         // A later Step may delete a path that an earlier pending Step introduced.
         // Send the complete closure of every pending Step tree, not only the
@@ -33,18 +69,26 @@ fn build_publish_v2_request(
         )?;
     }
     Ok(PublishLayerRequest {
-        layer_id: layer_id.to_string(),
+        layer_id: input.layer_id.to_string(),
         protocol: SYNC_PROTOCOL_V2.to_string(),
-        policy_epoch: layer_policy_epoch(handle, layer_id),
-        idempotency_key: publish_idempotency_key(layer_id, state.root_tree_id.as_deref(), steps),
+        policy_epoch: layer_policy_epoch(handle, input.layer_id),
+        idempotency_key: publish_idempotency_key(
+            input.layer_id,
+            input.state.root_tree_id.as_deref(),
+            input.steps,
+        ),
         source_client_id: config.device_id.clone(),
-        base_tree_id,
-        root_tree_id: state.root_tree_id.clone(),
-        changed_paths,
+        base_tree_id: input.base_tree_id,
+        root_tree_id: input.state.root_tree_id.clone(),
+        changed_paths: input.changed_paths,
         store_objects,
         artifacts: Vec::new(),
-        deleted_paths,
-        steps: steps.iter().map(PublishStepRequest::from_step).collect(),
+        deleted_paths: input.deleted_paths,
+        steps: input
+            .steps
+            .iter()
+            .map(PublishStepRequest::from_step)
+            .collect(),
     })
 }
 

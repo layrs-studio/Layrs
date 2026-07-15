@@ -68,6 +68,19 @@ fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
     }
 }
 
+fn clear_pending_publish_for_test(layrs_dir: &Path, layer_id: &str) {
+    let directory = pending_publish_dir(layrs_dir, layer_id);
+    if !directory.exists() {
+        return;
+    }
+    for entry in fs::read_dir(directory).expect("read pending publish directory") {
+        let path = entry.expect("read pending publish entry").path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            fs::remove_file(path).expect("remove pending publish fixture");
+        }
+    }
+}
+
 fn spawn_publish_server(
     acknowledge_all: bool,
 ) -> (String, mpsc::Receiver<Value>, thread::JoinHandle<()>) {
@@ -131,7 +144,7 @@ fn linked_space_with_two_net_zero_pending_steps(
     handle.meta.space_id = "space_sync_safety".to_string();
     handle.meta.server_space_id = Some(handle.meta.space_id.clone());
     write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
-    clear_pending_publish(&handle.layrs_dir, &handle.active.layer_id).unwrap();
+    clear_pending_publish_for_test(&handle.layrs_dir, &handle.active.layer_id);
 
     fs::write(space.join("note.txt"), "changed\n").unwrap();
     let changed = capture_working_state(&space, &handle.active.layer_id, true).unwrap();
@@ -302,7 +315,7 @@ fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
     handle.meta.workspace_id = "workspace_1".to_string();
     handle.meta.space_id = "space_1".to_string();
     write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
-    clear_pending_publish(&handle.layrs_dir, "layer_server").unwrap();
+    clear_pending_publish_for_test(&handle.layrs_dir, "layer_server");
     let base_state = read_layer_index(&handle.layrs_dir, "layer_server").unwrap();
 
     fs::write(space.join("note.txt"), "studio\n").unwrap();

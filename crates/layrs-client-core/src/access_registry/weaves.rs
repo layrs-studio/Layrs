@@ -283,15 +283,17 @@ pub fn weave_layers(
             apply_file_choice(&mut proposed_state, &path, theirs.cloned());
             continue;
         }
-        match reconcile_path_with_lens(
+        match reconcile_path_with_lens_request(
             &handle,
-            &weave_id,
-            &target_layer_id,
-            &source_layer_id,
-            &path,
-            base,
-            ours,
-            theirs,
+            PathReconcileRequest {
+                weave_id: &weave_id,
+                target_layer_id: &target_layer_id,
+                source_layer_id: &source_layer_id,
+                path: &path,
+                base,
+                ours,
+                theirs,
+            },
         )? {
             PathReconcileOutcome::AutoResolved(entry) => {
                 apply_file_choice(&mut proposed_state, &path, entry);
@@ -896,6 +898,20 @@ enum PathReconcileOutcome {
     Conflicted(WeaveConflictFile),
 }
 
+struct PathReconcileRequest<'a> {
+    weave_id: &'a str,
+    target_layer_id: &'a str,
+    source_layer_id: &'a str,
+    path: &'a str,
+    base: Option<&'a FileSnapshotEntry>,
+    ours: Option<&'a FileSnapshotEntry>,
+    theirs: Option<&'a FileSnapshotEntry>,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compatibility adapter for existing cross-module callers"
+)]
 fn reconcile_path_with_lens(
     handle: &LocalSpaceHandle,
     weave_id: &str,
@@ -906,19 +922,37 @@ fn reconcile_path_with_lens(
     ours: Option<&FileSnapshotEntry>,
     theirs: Option<&FileSnapshotEntry>,
 ) -> Result<PathReconcileOutcome, String> {
-    let conflict_id = format!("conflict-{}", safe_id_fragment(path));
-    let base_bytes = read_optional_entry_bytes(&handle.layrs_dir, base)?;
-    let ours_bytes = read_optional_entry_bytes(&handle.layrs_dir, ours)?;
-    let theirs_bytes = read_optional_entry_bytes(&handle.layrs_dir, theirs)?;
-    let lens_id = lens_id_for_path(path);
+    reconcile_path_with_lens_request(
+        handle,
+        PathReconcileRequest {
+            weave_id,
+            target_layer_id,
+            source_layer_id,
+            path,
+            base,
+            ours,
+            theirs,
+        },
+    )
+}
+
+fn reconcile_path_with_lens_request(
+    handle: &LocalSpaceHandle,
+    request: PathReconcileRequest<'_>,
+) -> Result<PathReconcileOutcome, String> {
+    let conflict_id = format!("conflict-{}", safe_id_fragment(request.path));
+    let base_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.base)?;
+    let ours_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.ours)?;
+    let theirs_bytes = read_optional_entry_bytes(&handle.layrs_dir, request.theirs)?;
+    let lens_id = lens_id_for_path(request.path);
     let input = layrs_lens_sdk::LensReconcileInput {
-        path: Some(Path::new(path)),
+        path: Some(Path::new(request.path)),
         media_type: None,
-        base: reconcile_side(base, &base_bytes),
-        ours: reconcile_side(ours, &ours_bytes),
-        theirs: reconcile_side(theirs, &theirs_bytes),
-        ours_label: target_layer_id,
-        theirs_label: source_layer_id,
+        base: reconcile_side(request.base, &base_bytes),
+        ours: reconcile_side(request.ours, &ours_bytes),
+        theirs: reconcile_side(request.theirs, &theirs_bytes),
+        ours_label: request.target_layer_id,
+        theirs_label: request.source_layer_id,
     };
     let result = match lens_id {
         "layrs.text" => layrs_lens_text::reconcile_text(input),
@@ -929,13 +963,18 @@ fn reconcile_path_with_lens(
     if result.status == layrs_lens_sdk::LensReconcileResultStatus::AutoResolved {
         let content = result
             .resolved
-            .ok_or_else(|| format!("Lens {lens_id} auto-resolved {path} without content."))?;
+            .ok_or_else(|| {
+                format!(
+                    "Lens {lens_id} auto-resolved {} without content.",
+                    request.path
+                )
+            })?;
         return Ok(PathReconcileOutcome::AutoResolved(
-            write_reconciled_content(handle, path, content)?,
+            write_reconciled_content(handle, request.path, content)?,
         ));
     }
 
-    let dir = conflict_dir(&handle.layrs_dir, weave_id, &conflict_id);
+    let dir = conflict_dir(&handle.layrs_dir, request.weave_id, &conflict_id);
     fs::create_dir_all(&dir).map_err(|error| {
         format!(
             "Layrs Desktop could not create Weave conflict directory {}: {error}",
@@ -943,18 +982,30 @@ fn reconcile_path_with_lens(
         )
     })?;
     fs::write(dir.join("base"), &base_bytes).map_err(|error| {
-        format!("Layrs Desktop could not write base conflict bytes for {path}: {error}")
+        format!(
+            "Layrs Desktop could not write base conflict bytes for {}: {error}",
+            request.path
+        )
     })?;
     fs::write(dir.join("ours"), &ours_bytes).map_err(|error| {
-        format!("Layrs Desktop could not write ours conflict bytes for {path}: {error}")
+        format!(
+            "Layrs Desktop could not write ours conflict bytes for {}: {error}",
+            request.path
+        )
     })?;
     fs::write(dir.join("theirs"), &theirs_bytes).map_err(|error| {
-        format!("Layrs Desktop could not write theirs conflict bytes for {path}: {error}")
+        format!(
+            "Layrs Desktop could not write theirs conflict bytes for {}: {error}",
+            request.path
+        )
     })?;
     if let Some(conflict_content) = result.conflict.as_ref() {
         if conflict_content.exists {
             fs::write(dir.join("marked"), &conflict_content.bytes).map_err(|error| {
-                format!("Layrs Desktop could not write marked conflict bytes for {path}: {error}")
+                format!(
+                    "Layrs Desktop could not write marked conflict bytes for {}: {error}",
+                    request.path
+                )
             })?;
         }
     }
@@ -998,7 +1049,7 @@ fn reconcile_path_with_lens(
     };
     Ok(PathReconcileOutcome::Conflicted(WeaveConflictFile {
         conflict_id,
-        path: path.to_string(),
+        path: request.path.to_string(),
         lens_id: lens_id.to_string(),
         status: "open".to_string(),
         message,
@@ -1503,15 +1554,17 @@ fn propagate_step_to_child(
             let weave_id =
                 unique_weave_id(&handle.layrs_dir, &source_step.layer_id, child_layer_id);
             let pre_weave_target_tree_id = child_state.root_tree_id.clone();
-            let outcome = reconcile_path_with_lens(
+            let outcome = reconcile_path_with_lens_request(
                 handle,
-                &weave_id,
-                child_layer_id,
-                &source_step.layer_id,
-                path,
-                base,
-                ours,
-                theirs,
+                PathReconcileRequest {
+                    weave_id: &weave_id,
+                    target_layer_id: child_layer_id,
+                    source_layer_id: &source_step.layer_id,
+                    path,
+                    base,
+                    ours,
+                    theirs,
+                },
             )?;
             let conflict = match outcome {
                 PathReconcileOutcome::AutoResolved(entry) => {

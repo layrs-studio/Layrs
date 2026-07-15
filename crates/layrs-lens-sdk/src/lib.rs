@@ -796,6 +796,31 @@ pub fn infer_media_type_from_path(path: Option<&Path>) -> Option<&'static str> {
     }
 }
 
+pub fn span_at(text: &str, start: usize, end: usize) -> TextSpan {
+    let mut line = 1usize;
+    let mut column = 1usize;
+
+    for (offset, ch) in text.char_indices() {
+        if offset >= start {
+            break;
+        }
+
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+
+    TextSpan {
+        start,
+        end,
+        line,
+        column,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,30 +901,5 @@ mod tests {
             "needs_manual_resolution"
         );
         assert_eq!(ReconcileStatus::AutoResolvable.as_str(), "auto_resolvable");
-    }
-}
-
-pub fn span_at(text: &str, start: usize, end: usize) -> TextSpan {
-    let mut line = 1usize;
-    let mut column = 1usize;
-
-    for (offset, ch) in text.char_indices() {
-        if offset >= start {
-            break;
-        }
-
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-
-    TextSpan {
-        start,
-        end,
-        line,
-        column,
     }
 }

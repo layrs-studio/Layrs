@@ -232,7 +232,7 @@
             diff.diff.fields.get("newTruncated"),
             Some(&Value::Bool(false))
         );
-        assert!(diff.diff.fields.get("lineTextTruncated").is_none());
+        assert!(!diff.diff.fields.contains_key("lineTextTruncated"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -262,7 +262,7 @@
         assert_ne!(diff.summary, "No text changes");
         assert!(diff.hunks[0].lines.iter().any(|line| line.op == "delete"));
         assert!(diff.hunks[0].lines.iter().any(|line| line.op == "insert"));
-        assert!(diff.fields.get("lineTextTruncated").is_none());
+        assert!(!diff.fields.contains_key("lineTextTruncated"));
         assert!(diff.hunks[0]
             .lines
             .iter()

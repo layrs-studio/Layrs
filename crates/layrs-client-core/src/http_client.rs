@@ -1,7 +1,8 @@
 use serde::{de::DeserializeOwned, Serialize};
+use std::fmt::Write as FmtWrite;
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::{Read, Write as IoWrite},
     net::TcpStream,
     time::Duration,
 };
@@ -229,10 +230,11 @@ fn request(
         "Content-Length: 0\r\n".to_string()
     };
 
-    let custom_headers = extra_headers
-        .iter()
-        .map(|(name, value)| format!("{name}: {value}\r\n"))
-        .collect::<String>();
+    let mut custom_headers = String::new();
+    for (name, value) in extra_headers {
+        write!(&mut custom_headers, "{name}: {value}\r\n")
+            .expect("writing to a String cannot fail");
+    }
     let request_head = format!(
         "{method} {path} HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\n{}{}{}Connection: close\r\n\r\n",
         target.host, target.port, auth, content_headers, custom_headers

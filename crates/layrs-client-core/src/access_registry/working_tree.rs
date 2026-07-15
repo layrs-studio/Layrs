@@ -331,8 +331,8 @@ fn write_step(
     state: &WorkingStateFile,
 ) -> Result<String, String> {
     let step_id = unique_step_id(layrs_dir, layer_id);
-    let (parent_step_id, base_layer_id, base_tree_id, base_state) = step_base(layrs_dir, layer_id)?;
-    let (added, modified, deleted) = diff_state(base_state.as_ref(), state);
+    let base = step_base(layrs_dir, layer_id)?;
+    let (added, modified, deleted) = diff_state(base.state.as_ref(), state);
     let changed_paths = added
         .iter()
         .chain(modified.iter())
@@ -348,9 +348,9 @@ fn write_step(
         schema: STEP_SCHEMA.to_string(),
         step_id: step_id.clone(),
         layer_id: layer_id.to_string(),
-        parent_step_id,
-        base_layer_id,
-        base_tree_id,
+        parent_step_id: base.parent_step_id,
+        base_layer_id: base.layer_id,
+        base_tree_id: base.tree_id,
         root_tree_id: Some(root_tree_id),
         changed_paths,
         timeline_position: Some(next_timeline_position(layrs_dir, layer_id)?),
@@ -501,59 +501,24 @@ fn pending_publish_steps(layrs_dir: &Path, layer_id: &str) -> Result<Vec<StepFil
         .collect()
 }
 
-fn clear_pending_publish(layrs_dir: &Path, layer_id: &str) -> Result<(), String> {
-    let dir = pending_publish_dir(layrs_dir, layer_id);
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(&dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not read pending publish directory {}: {error}",
-            dir.display()
-        )
-    })? {
-        let path = entry
-            .map_err(|error| {
-                format!(
-                    "Layrs Desktop could not read pending publish entry {}: {error}",
-                    dir.display()
-                )
-            })?
-            .path();
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            fs::remove_file(&path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not remove pending publish file {}: {error}",
-                    path.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
+struct StepBase {
+    parent_step_id: Option<String>,
+    layer_id: Option<String>,
+    tree_id: Option<String>,
+    state: Option<WorkingStateFile>,
 }
 
-fn step_base(
-    layrs_dir: &Path,
-    layer_id: &str,
-) -> Result<
-    (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<WorkingStateFile>,
-    ),
-    String,
-> {
+fn step_base(layrs_dir: &Path, layer_id: &str) -> Result<StepBase, String> {
     let mut steps = read_step_files(layrs_dir, layer_id)?;
     steps.sort_by(compare_steps_by_timeline);
     if let Some(previous_step) = steps.last() {
         let state = state_from_step(layrs_dir, previous_step)?;
-        return Ok((
-            Some(previous_step.step_id.clone()),
-            Some(layer_id.to_string()),
-            state.root_tree_id.clone(),
-            Some(state),
-        ));
+        return Ok(StepBase {
+            parent_step_id: Some(previous_step.step_id.clone()),
+            layer_id: Some(layer_id.to_string()),
+            tree_id: state.root_tree_id.clone(),
+            state: Some(state),
+        });
     }
 
     let parent_layer_id = read_json::<LocalSpaceFile>(&layrs_dir.join("local-space.json"))
@@ -566,14 +531,14 @@ fn step_base(
         });
     let base_layer_id = parent_layer_id.unwrap_or_else(|| layer_id.to_string());
     let base_state = read_layer_index(layrs_dir, &base_layer_id).ok();
-    Ok((
-        None,
-        Some(base_layer_id),
-        base_state
+    Ok(StepBase {
+        parent_step_id: None,
+        layer_id: Some(base_layer_id),
+        tree_id: base_state
             .as_ref()
             .and_then(|state| state.root_tree_id.clone()),
-        base_state,
-    ))
+        state: base_state,
+    })
 }
 
 fn state_from_step(layrs_dir: &Path, step: &StepFile) -> Result<WorkingStateFile, String> {

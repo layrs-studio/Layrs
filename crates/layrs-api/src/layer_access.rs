@@ -214,6 +214,12 @@ impl LayerAccessRegistry {
         format!(".layrs/layers/{}/access.json", layer_id.as_str())
     }
 
+    // The concrete error is part of the public API contract and is serialized
+    // directly by clients. Boxing it here would be a source-breaking change.
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the public conflict response ABI"
+    )]
     pub fn validate_access_policy(&self) -> Result<(), LayerAccessPolicyConflictResponse> {
         self.validate_shape().map_err(|error| {
             self.conflict(

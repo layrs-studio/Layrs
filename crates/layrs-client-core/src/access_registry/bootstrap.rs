@@ -487,7 +487,7 @@ fn archive_layrs_dir_at(root: &Path, layrs_dir: &Path) -> Result<Option<PathBuf>
 }
 
 fn path_compare_key(path: &Path) -> String {
-    let absolute = absolute_path(&path.to_path_buf()).unwrap_or_else(|_| path.to_path_buf());
+    let absolute = absolute_path(path).unwrap_or_else(|_| path.to_path_buf());
     #[cfg(windows)]
     {
         absolute.display().to_string().to_ascii_lowercase()

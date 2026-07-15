@@ -33,6 +33,23 @@ fn changed_file_count(previous: Option<&WorkingStateFile>, current: &WorkingStat
     added.len() + modified.len() + deleted.len()
 }
 
+struct LensDiffEntriesInput<'a> {
+    source: &'a str,
+    layer_id: &'a str,
+    step_id: Option<&'a str>,
+    previous: Option<&'a WorkingStateFile>,
+    current: &'a WorkingStateFile,
+    added: &'a [String],
+    modified: &'a [String],
+    deleted: &'a [String],
+}
+
+// Kept as a narrow adapter for call sites owned by the API-operations module.
+// New code should pass the named input structure to `lens_diff_entries_for`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compatibility adapter for existing cross-module callers"
+)]
 fn lens_diff_entries(
     handle: &LocalSpaceHandle,
     source: &str,
@@ -44,13 +61,34 @@ fn lens_diff_entries(
     modified: &[String],
     deleted: &[String],
 ) -> Vec<LensDiffEntry> {
-    let previous_files = previous
+    lens_diff_entries_for(
+        handle,
+        LensDiffEntriesInput {
+            source,
+            layer_id,
+            step_id,
+            previous,
+            current,
+            added,
+            modified,
+            deleted,
+        },
+    )
+}
+
+fn lens_diff_entries_for(
+    handle: &LocalSpaceHandle,
+    input: LensDiffEntriesInput<'_>,
+) -> Vec<LensDiffEntry> {
+    let previous_files = input
+        .previous
         .map(|state| file_entries(&state.files))
         .unwrap_or_default();
-    let current_files = file_entries(&current.files);
-    let mut diffs = Vec::with_capacity(added.len() + modified.len() + deleted.len());
+    let current_files = file_entries(&input.current.files);
+    let mut diffs =
+        Vec::with_capacity(input.added.len() + input.modified.len() + input.deleted.len());
 
-    for path in added {
+    for path in input.added {
         if let Some(diff) = lens_diff_entry(
             handle,
             path,
@@ -58,13 +96,13 @@ fn lens_diff_entries(
             "Added locally",
             None,
             current_files.get(path),
-            DiffWindowOptions::scan(source, layer_id, step_id),
+            DiffWindowOptions::scan(input.source, input.layer_id, input.step_id),
         ) {
             diffs.push(diff);
         }
     }
 
-    for path in modified {
+    for path in input.modified {
         if let Some(diff) = lens_diff_entry(
             handle,
             path,
@@ -72,13 +110,13 @@ fn lens_diff_entries(
             "Modified locally",
             previous_files.get(path),
             current_files.get(path),
-            DiffWindowOptions::scan(source, layer_id, step_id),
+            DiffWindowOptions::scan(input.source, input.layer_id, input.step_id),
         ) {
             diffs.push(diff);
         }
     }
 
-    for path in deleted {
+    for path in input.deleted {
         if let Some(diff) = lens_diff_entry(
             handle,
             path,
@@ -86,7 +124,7 @@ fn lens_diff_entries(
             "Deleted locally",
             previous_files.get(path),
             None,
-            DiffWindowOptions::scan(source, layer_id, step_id),
+            DiffWindowOptions::scan(input.source, input.layer_id, input.step_id),
         ) {
             diffs.push(diff);
         }
@@ -114,16 +152,18 @@ fn load_step_diff_window(
             .or_else(|| recorded_base_state_for_step(&handle.layrs_dir, &step))
             .or_else(|| initial_step_base_state(handle, &layer_id));
         if step.step_id == step_id {
-            return diff_window_for_path(
+            return diff_window_for_path_request(
                 handle,
-                "localStep",
-                &step.layer_id,
-                Some(&step.step_id),
-                base_state.as_ref(),
-                &current_state,
-                path,
-                start,
-                limit,
+                DiffWindowRequest {
+                    source: "localStep",
+                    layer_id: &step.layer_id,
+                    step_id: Some(&step.step_id),
+                    previous: base_state.as_ref(),
+                    current: &current_state,
+                    path,
+                    start,
+                    limit,
+                },
             );
         }
         previous_state = Some(current_state);
@@ -134,6 +174,21 @@ fn load_step_diff_window(
     ))
 }
 
+struct DiffWindowRequest<'a> {
+    source: &'a str,
+    layer_id: &'a str,
+    step_id: Option<&'a str>,
+    previous: Option<&'a WorkingStateFile>,
+    current: &'a WorkingStateFile,
+    path: &'a str,
+    start: usize,
+    limit: usize,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compatibility adapter for existing cross-module callers"
+)]
 fn diff_window_for_path(
     handle: &LocalSpaceHandle,
     source: &str,
@@ -145,12 +200,32 @@ fn diff_window_for_path(
     start: usize,
     limit: usize,
 ) -> Result<LensDiffEntry, String> {
-    let previous_files = previous
+    diff_window_for_path_request(
+        handle,
+        DiffWindowRequest {
+            source,
+            layer_id,
+            step_id,
+            previous,
+            current,
+            path,
+            start,
+            limit,
+        },
+    )
+}
+
+fn diff_window_for_path_request(
+    handle: &LocalSpaceHandle,
+    request: DiffWindowRequest<'_>,
+) -> Result<LensDiffEntry, String> {
+    let previous_files = request
+        .previous
         .map(|state| file_entries(&state.files))
         .unwrap_or_default();
-    let current_files = file_entries(&current.files);
-    let old_file = previous_files.get(path);
-    let new_file = current_files.get(path);
+    let current_files = file_entries(&request.current.files);
+    let old_file = previous_files.get(request.path);
+    let new_file = current_files.get(request.path);
     let (state, title) = match (old_file, new_file) {
         (None, Some(_)) => ("added", "Added locally"),
         (Some(_), None) => ("deleted", "Deleted locally"),
@@ -159,26 +234,39 @@ fn diff_window_for_path(
         }
         (Some(_), Some(_)) => {
             return Err(format!(
-                "Layrs Desktop did not find text changes for {path} in source {source}."
+                "Layrs Desktop did not find text changes for {} in source {}.",
+                request.path, request.source
             ));
         }
         (None, None) => {
             return Err(format!(
-                "Layrs Desktop could not find {path} in source {source}."
+                "Layrs Desktop could not find {} in source {}.",
+                request.path, request.source
             ));
         }
     };
 
     lens_diff_entry(
         handle,
-        path,
+        request.path,
         state,
         title,
         old_file,
         new_file,
-        DiffWindowOptions::requested(source, layer_id, step_id, start, limit),
+        DiffWindowOptions::requested(
+            request.source,
+            request.layer_id,
+            request.step_id,
+            request.start,
+            request.limit,
+        ),
     )
-    .ok_or_else(|| format!("Layrs Desktop could not build a diff for {path}."))
+    .ok_or_else(|| {
+        format!(
+            "Layrs Desktop could not build a diff for {}.",
+            request.path
+        )
+    })
 }
 
 fn local_step_summaries(
@@ -327,18 +415,18 @@ fn lens_diff_entry(
             old_text.truncated || new_text.truncated,
         );
         (
-            text_diff_model(
+            text_diff_model(TextDiffModelInput {
                 path,
                 state,
-                &lens_id,
-                old_text.text.as_deref().unwrap_or_default(),
-                new_text.text.as_deref().unwrap_or_default(),
+                lens_id: &lens_id,
+                old_text: old_text.text.as_deref().unwrap_or_default(),
+                new_text: new_text.text.as_deref().unwrap_or_default(),
                 old_file,
                 new_file,
-                old_text.truncated,
-                new_text.truncated,
-                &options,
-            ),
+                old_truncated: old_text.truncated,
+                new_truncated: new_text.truncated,
+                options: &options,
+            }),
             message,
         )
     } else if lens_id == "layrs.image" {
@@ -369,49 +457,64 @@ fn lens_diff_entry(
     })
 }
 
-fn text_diff_model(
-    path: &str,
-    state: &str,
-    lens_id: &str,
-    old_text: &str,
-    new_text: &str,
-    old_file: Option<&FileSnapshotEntry>,
-    new_file: Option<&FileSnapshotEntry>,
+struct TextDiffModelInput<'a> {
+    path: &'a str,
+    state: &'a str,
+    lens_id: &'a str,
+    old_text: &'a str,
+    new_text: &'a str,
+    old_file: Option<&'a FileSnapshotEntry>,
+    new_file: Option<&'a FileSnapshotEntry>,
     old_truncated: bool,
     new_truncated: bool,
-    options: &DiffWindowOptions<'_>,
-) -> DiffModel {
-    let old_lines = split_text_lines(old_text);
-    let new_lines = split_text_lines(new_text);
+    options: &'a DiffWindowOptions<'a>,
+}
+
+fn text_diff_model(input: TextDiffModelInput<'_>) -> DiffModel {
+    let old_lines = split_text_lines(input.old_text);
+    let new_lines = split_text_lines(input.new_text);
     let mut all_lines = diff_text_lines(&old_lines, &new_lines);
-    let old_hash = old_file.map(|file| file.hash.as_str());
-    let new_hash = new_file.map(|file| file.hash.as_str());
+    let old_hash = input.old_file.map(|file| file.hash.as_str());
+    let new_hash = input.new_file.map(|file| file.hash.as_str());
     if line_stats(&all_lines).additions == 0
         && line_stats(&all_lines).deletions == 0
         && old_hash != new_hash
     {
-        all_lines = synthetic_text_change_lines(old_file, new_file, old_truncated || new_truncated);
+        all_lines = synthetic_text_change_lines(
+            input.old_file,
+            input.new_file,
+            input.old_truncated || input.new_truncated,
+        );
     }
     let stats = line_stats(&all_lines);
     let total_diff_lines = all_lines.len();
-    let window_start = options.start.min(total_diff_lines);
-    let window_limit = clamp_diff_window_limit(options.limit);
+    let window_start = input.options.start.min(total_diff_lines);
+    let window_limit = clamp_diff_window_limit(input.options.limit);
     let window_end = window_start
         .saturating_add(window_limit)
         .min(total_diff_lines);
     let lines = all_lines[window_start..window_end].to_vec();
     let has_more = window_end < total_diff_lines;
-    let large_diff = old_truncated || new_truncated || has_more || total_diff_lines > window_limit;
-    let mut fields = common_diff_fields(path, state, lens_id, old_file, new_file);
+    let large_diff = input.old_truncated
+        || input.new_truncated
+        || has_more
+        || total_diff_lines > window_limit;
+    let mut fields = common_diff_fields(
+        input.path,
+        input.state,
+        input.lens_id,
+        input.old_file,
+        input.new_file,
+    );
     fields.insert(
         "source".to_string(),
-        Value::String(options.source.to_string()),
+        Value::String(input.options.source.to_string()),
     );
     fields.insert(
         "layerId".to_string(),
-        Value::String(options.layer_id.to_string()),
+        Value::String(input.options.layer_id.to_string()),
     );
-    if let Some(step_id) = options.step_id {
+    if let Some(step_id) = input.options.step_id {
         fields.insert("stepId".to_string(), Value::String(step_id.to_string()));
     }
     fields.insert("additions".to_string(), Value::from(stats.additions as u64));
@@ -434,14 +537,23 @@ fn text_diff_model(
     fields.insert("windowEnd".to_string(), Value::from(window_end as u64));
     fields.insert("hasMore".to_string(), Value::Bool(has_more));
     fields.insert("largeDiff".to_string(), Value::Bool(large_diff));
-    fields.insert("preview".to_string(), Value::Bool(options.preview));
+    fields.insert(
+        "preview".to_string(),
+        Value::Bool(input.options.preview),
+    );
     fields.insert(
         "windowUnit".to_string(),
         Value::String("diffLines".to_string()),
     );
-    fields.insert("oldTruncated".to_string(), Value::Bool(old_truncated));
-    fields.insert("newTruncated".to_string(), Value::Bool(new_truncated));
-    if old_truncated || new_truncated {
+    fields.insert(
+        "oldTruncated".to_string(),
+        Value::Bool(input.old_truncated),
+    );
+    fields.insert(
+        "newTruncated".to_string(),
+        Value::Bool(input.new_truncated),
+    );
+    if input.old_truncated || input.new_truncated {
         fields.insert("truncated".to_string(), Value::Bool(true));
     }
 
@@ -562,30 +674,40 @@ fn diff_text_lines(old_lines: &[String], new_lines: &[String]) -> Vec<DiffLine> 
 
     let mut lines = Vec::with_capacity(old_lines.len().max(new_lines.len()));
 
-    for index in 0..prefix {
+    for (index, text) in old_lines.iter().take(prefix).enumerate() {
         lines.push(DiffLine {
             op: "equal".to_string(),
             old_line: Some(index + 1),
             new_line: Some(index + 1),
-            text: old_lines[index].clone(),
+            text: text.clone(),
         });
     }
 
-    for old_index in prefix..old_lines.len().saturating_sub(suffix) {
+    for (old_index, text) in old_lines
+        .iter()
+        .enumerate()
+        .take(old_lines.len().saturating_sub(suffix))
+        .skip(prefix)
+    {
         lines.push(DiffLine {
             op: "delete".to_string(),
             old_line: Some(old_index + 1),
             new_line: None,
-            text: old_lines[old_index].clone(),
+            text: text.clone(),
         });
     }
 
-    for new_index in prefix..new_lines.len().saturating_sub(suffix) {
+    for (new_index, text) in new_lines
+        .iter()
+        .enumerate()
+        .take(new_lines.len().saturating_sub(suffix))
+        .skip(prefix)
+    {
         lines.push(DiffLine {
             op: "insert".to_string(),
             old_line: None,
             new_line: Some(new_index + 1),
-            text: new_lines[new_index].clone(),
+            text: text.clone(),
         });
     }
 

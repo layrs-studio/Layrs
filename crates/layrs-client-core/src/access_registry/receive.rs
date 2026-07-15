@@ -153,16 +153,16 @@ fn apply_receive_response(
         // A receive request advances only its requested active Layer. Other
         // Layers are metadata/cache entries until they are explicitly received.
         let state = if layer_id == active_layer_id {
-            received_v2_state(
-                &handle.layrs_dir,
+            received_v2_state(ReceivedV2StateRequest {
+                layrs_dir: &handle.layrs_dir,
                 endpoint,
                 token,
-                &response.workspace_id,
-                &response.space_id,
-                &layer_id,
-                response.root_tree_id.as_deref(),
-                content_objects,
-            )?
+                workspace_id: &response.workspace_id,
+                space_id: &response.space_id,
+                layer_id: &layer_id,
+                root_tree_id: response.root_tree_id.as_deref(),
+                objects: content_objects,
+            })?
         } else {
             None
         };
@@ -300,31 +300,38 @@ fn write_received_access_file(
     )
 }
 
-fn received_v2_state(
-    layrs_dir: &Path,
-    endpoint: Option<&str>,
-    token: Option<&str>,
-    workspace_id: &str,
-    space_id: &str,
-    layer_id: &str,
-    root_tree_id: Option<&str>,
-    objects: &ReceivedContentObjects,
-) -> Result<Option<WorkingStateFile>, String> {
-    ensure_received_v2_chunks(
-        layrs_dir,
-        endpoint,
-        token,
-        workspace_id,
-        space_id,
-        &objects.chunks,
-    )?;
-    write_received_v2_file_objects(layrs_dir, &objects.file_objects)?;
+struct ReceivedV2StateRequest<'a> {
+    layrs_dir: &'a Path,
+    endpoint: Option<&'a str>,
+    token: Option<&'a str>,
+    workspace_id: &'a str,
+    space_id: &'a str,
+    layer_id: &'a str,
+    root_tree_id: Option<&'a str>,
+    objects: &'a ReceivedContentObjects,
+}
 
-    let tree = select_received_tree(layer_id, root_tree_id, &objects.tree_objects)?;
+fn received_v2_state(request: ReceivedV2StateRequest<'_>) -> Result<Option<WorkingStateFile>, String> {
+    ensure_received_v2_chunks(
+        request.layrs_dir,
+        request.endpoint,
+        request.token,
+        request.workspace_id,
+        request.space_id,
+        &request.objects.chunks,
+    )?;
+    write_received_v2_file_objects(request.layrs_dir, &request.objects.file_objects)?;
+
+    let tree = select_received_tree(
+        request.layer_id,
+        request.root_tree_id,
+        &request.objects.tree_objects,
+    )?;
     let Some(tree) = tree else {
         return Ok(None);
     };
-    let file_objects = objects
+    let file_objects = request
+        .objects
         .file_objects
         .iter()
         .map(|object| (object.file_object_id.clone(), object))
@@ -365,10 +372,13 @@ fn received_v2_state(
         tree_id: tree.tree_id.clone(),
         files: files.clone(),
     };
-    write_json(&tree_object_path(layrs_dir, &tree.tree_id), &tree_object)?;
+    write_json(
+        &tree_object_path(request.layrs_dir, &tree.tree_id),
+        &tree_object,
+    )?;
     Ok(Some(WorkingStateFile {
         schema: WORKING_STATE_SCHEMA.to_string(),
-        layer_id: layer_id.to_string(),
+        layer_id: request.layer_id.to_string(),
         captured_at_unix: unix_now(),
         root_tree_id: Some(tree.tree_id.clone()),
         files,
