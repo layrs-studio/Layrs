@@ -9,7 +9,7 @@ import type {
   LensReconcileResult
 } from "./contracts";
 
-export type LensMatchReason = "explicit" | "pathRegex" | "mediaType" | "extension" | "utf8TextFallback" | "rawFallback";
+export type LensMatchReason = "explicit" | "mediaType" | "extension";
 
 export interface LensSurfaceMetadata extends Partial<ArtifactMetadata> {
   dimensions?: { width: number; height: number };
@@ -31,12 +31,12 @@ export interface LensDiffRendererProps {
   className?: string;
 }
 
-export type LensReconcileRequest = LensReconcileRendererProps;
+export type LensReconcileRenderRequest = LensReconcileRendererProps;
 
 export interface LensViewerModule<TNode = unknown> {
   renderPreview?: (props: LensPreviewRendererProps) => TNode;
   renderDiff?: (props: LensDiffRendererProps) => TNode;
-  renderReconcile?: (request: LensReconcileRequest) => TNode;
+  renderReconcile?: (request: LensReconcileRenderRequest) => TNode;
 }
 
 export interface LensAnalyzerModule {
@@ -48,7 +48,6 @@ export interface LensAnalyzerModule {
 export interface LayrsLens<TNode = unknown> {
   manifest: LensManifest;
   priority?: number;
-  pathRegex?: RegExp[];
   viewer: LensViewerModule<TNode>;
   analyzer?: LensAnalyzerModule;
 }
@@ -57,8 +56,6 @@ export interface LensResolutionRequest {
   lensId?: LensId;
   mediaType?: string;
   path?: string;
-  bytes?: Uint8Array;
-  isUtf8Text?: boolean;
 }
 
 export interface LensResolution<TNode = unknown> {
@@ -111,12 +108,6 @@ export class LensRegistry<TNode = unknown> {
       }
     }
 
-    const path = request.path ?? "";
-    const regexLens = this.list().find((lens) => lens.pathRegex?.some((regex) => regex.test(path)));
-    if (regexLens) {
-      return { lens: regexLens, reason: "pathRegex" };
-    }
-
     const mediaType = normalizeMediaType(request.mediaType);
     if (mediaType) {
       const mediaLens = this.list().find((lens) => lens.manifest.analyzer.supportedMediaTypes.includes(mediaType));
@@ -133,15 +124,7 @@ export class LensRegistry<TNode = unknown> {
       }
     }
 
-    if (request.isUtf8Text === true || (request.bytes && isUtf8(request.bytes))) {
-      const text = this.get("layrs.text");
-      if (text) {
-        return { lens: text, reason: "utf8TextFallback" };
-      }
-    }
-
-    const raw = this.get("layrs.raw");
-    return raw ? { lens: raw, reason: "rawFallback" } : undefined;
+    return undefined;
   }
 }
 
@@ -164,13 +147,4 @@ function extensionFromPath(path: string | undefined): string | undefined {
     return undefined;
   }
   return name.slice(dotIndex + 1).toLowerCase();
-}
-
-function isUtf8(bytes: Uint8Array): boolean {
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return true;
-  } catch {
-    return false;
-  }
 }

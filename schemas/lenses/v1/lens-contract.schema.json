@@ -1,0 +1,854 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.layrs.dev/lenses/v1/lens-contract.schema.json",
+  "title": "Layrs Lens Contract V1",
+  "description": "Canonical camelCase wire contract for Lens manifests and pinned Lens operations.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/lensManifest"
+    },
+    {
+      "$ref": "#/$defs/previewWindow"
+    },
+    {
+      "$ref": "#/$defs/diffWindow"
+    },
+    {
+      "$ref": "#/$defs/reconcileRequest"
+    },
+    {
+      "$ref": "#/$defs/reconcileResponse"
+    }
+  ],
+  "$defs": {
+    "contractVersion": {
+      "const": "layrs.lens.v1"
+    },
+    "lensId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lensPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lensId",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "lensId": {
+          "$ref": "#/$defs/lensId"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "resolutionMethod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "scope"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "existing",
+            "incoming",
+            "both",
+            "manual"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "file",
+            "block"
+          ]
+        }
+      }
+    },
+    "resourceQuotas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxMemoryBytes",
+        "maxExecutionMs",
+        "maxInputBytes",
+        "maxOutputBytes"
+      ],
+      "properties": {
+        "maxMemoryBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxExecutionMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxInputBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxFuel": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "bundlePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+    },
+    "wasiEntrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "path",
+        "export",
+        "digest",
+        "resources"
+      ],
+      "properties": {
+        "runtime": {
+          "const": "wasi"
+        },
+        "path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "export": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "resources": {
+          "$ref": "#/$defs/resourceQuotas"
+        }
+      }
+    },
+    "esmEntrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "path",
+        "export",
+        "digest",
+        "resources"
+      ],
+      "properties": {
+        "runtime": {
+          "const": "esm"
+        },
+        "path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "export": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "resources": {
+          "$ref": "#/$defs/resourceQuotas"
+        }
+      }
+    },
+    "bundleEntrypoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "analyzer": {
+          "$ref": "#/$defs/wasiEntrypoint"
+        },
+        "reconcile": {
+          "$ref": "#/$defs/wasiEntrypoint"
+        },
+        "viewer": {
+          "$ref": "#/$defs/esmEntrypoint"
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "keyId",
+        "signedDigest",
+        "signature"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keyId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signedDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^base64:[A-Za-z0-9+/]+={0,2}$"
+        }
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "entrypoints"
+      ],
+      "properties": {
+        "format": {
+          "const": "layrslens.v1"
+        },
+        "entrypoints": {
+          "$ref": "#/$defs/bundleEntrypoints"
+        },
+        "signature": {
+          "$ref": "#/$defs/signature"
+        }
+      }
+    },
+    "analyzerContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supportedMediaTypes",
+        "fileExtensions",
+        "capabilities"
+      ],
+      "properties": {
+        "supportedMediaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "fileExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "inspectorField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label",
+        "valueType"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "valueType": {
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "stringList"
+          ]
+        }
+      }
+    },
+    "viewerContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "viewerId",
+        "schemaVersion",
+        "component",
+        "previewKinds",
+        "diffKinds",
+        "reconcileStatuses",
+        "inspectorFields"
+      ],
+      "properties": {
+        "viewerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemaVersion": {
+          "const": "layrs.viewer.v1"
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1
+        },
+        "previewKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "diffKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "reconcileStatuses": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "unsupported",
+              "needs_manual_resolution",
+              "auto_resolvable"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "inspectorFields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inspectorField"
+          }
+        }
+      }
+    },
+    "lensManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "id",
+        "name",
+        "version",
+        "analyzer",
+        "viewer",
+        "resolutionMethods"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/contractVersion"
+        },
+        "id": {
+          "$ref": "#/$defs/lensId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "analyzer": {
+          "$ref": "#/$defs/analyzerContract"
+        },
+        "viewer": {
+          "$ref": "#/$defs/viewerContract"
+        },
+        "resolutionMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resolutionMethod"
+          },
+          "uniqueItems": true
+        },
+        "bundle": {
+          "$ref": "#/$defs/bundle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "bundle"
+            ]
+          },
+          "then": {
+            "required": [
+              "digest"
+            ]
+          }
+        }
+      ]
+    },
+    "windowRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "endExclusive",
+        "total"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endExclusive": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "previewWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "lens",
+        "artifactId",
+        "unit",
+        "window"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/contractVersion"
+        },
+        "lens": {
+          "$ref": "#/$defs/lensPin"
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "enum": [
+            "bytes",
+            "lines",
+            "items"
+          ]
+        },
+        "window": {
+          "$ref": "#/$defs/windowRange"
+        }
+      }
+    },
+    "diffWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "lens",
+        "path",
+        "lines"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/contractVersion"
+        },
+        "lens": {
+          "$ref": "#/$defs/lensPin"
+        },
+        "path": {
+          "type": "string"
+        },
+        "lines": {
+          "$ref": "#/$defs/windowRange"
+        },
+        "columns": {
+          "$ref": "#/$defs/windowRange"
+        }
+      }
+    },
+    "bytes": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      }
+    },
+    "reconcileSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exists",
+        "bytes",
+        "size"
+      ],
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/digest"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "reconcileLabels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existing",
+        "incoming"
+      ],
+      "properties": {
+        "existing": {
+          "type": "string",
+          "minLength": 1
+        },
+        "incoming": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reconcileRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "lens",
+        "path",
+        "base",
+        "existing",
+        "incoming",
+        "labels"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/contractVersion"
+        },
+        "lens": {
+          "$ref": "#/$defs/lensPin"
+        },
+        "path": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base": {
+          "$ref": "#/$defs/reconcileSide"
+        },
+        "existing": {
+          "$ref": "#/$defs/reconcileSide"
+        },
+        "incoming": {
+          "$ref": "#/$defs/reconcileSide"
+        },
+        "labels": {
+          "$ref": "#/$defs/reconcileLabels"
+        }
+      }
+    },
+    "reconcileContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exists",
+        "bytes"
+      ],
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "metadataValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/metadataValue"
+      }
+    },
+    "conflictSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "block"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "blockId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "conflictBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "base",
+        "existing",
+        "incoming",
+        "resolutionMethods"
+      ],
+      "properties": {
+        "blockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "string"
+        },
+        "incoming": {
+          "type": "string"
+        },
+        "resolutionMethods": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/resolutionMethod"
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "const": "block"
+                  }
+                }
+              }
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "reconcileResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "summary",
+        "resolutionMethods",
+        "blocks",
+        "segments",
+        "fields"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "auto_resolved",
+            "conflicted",
+            "unsupported"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "resolved": {
+          "$ref": "#/$defs/reconcileContent"
+        },
+        "conflict": {
+          "$ref": "#/$defs/reconcileContent"
+        },
+        "resolutionMethods": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/resolutionMethod"
+              },
+              {
+                "properties": {
+                  "scope": {
+                    "const": "file"
+                  }
+                }
+              }
+            ]
+          },
+          "uniqueItems": true
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/conflictBlock"
+          }
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/conflictSegment"
+          }
+        },
+        "fields": {
+          "$ref": "#/$defs/metadata"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "auto_resolved"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "resolved"
+            ],
+            "not": {
+              "required": [
+                "conflict"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "conflicted"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "conflict"
+            ],
+            "not": {
+              "required": [
+                "resolved"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unsupported"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "resolved"
+                  ]
+                },
+                {
+                  "required": [
+                    "conflict"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "reconcileResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "lens",
+        "result"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/contractVersion"
+        },
+        "lens": {
+          "$ref": "#/$defs/lensPin"
+        },
+        "result": {
+          "$ref": "#/$defs/reconcileResult"
+        }
+      }
+    }
+  }
+}

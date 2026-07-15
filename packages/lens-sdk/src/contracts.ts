@@ -1,3 +1,6 @@
+export const LENS_CONTRACT_VERSION = "layrs.lens.v1" as const;
+export const LENS_BUNDLE_FORMAT = "layrslens.v1" as const;
+
 export type LensCapability =
   | "view"
   | "reconcile"
@@ -19,21 +22,103 @@ export type ProofStatus = "pass" | "warn" | "notEvaluated";
 export type ReconcileStatus = "unsupported" | "needs_manual_resolution" | "auto_resolvable";
 export type LensReconcileResultStatus = "auto_resolved" | "conflicted" | "unsupported";
 export type LensConflictSegmentKind = "text" | "block";
-export type ResolutionMethod = "existing" | "incoming" | "both" | "manual" | (string & {});
+export type ResolutionMethod = "existing" | "incoming" | "both" | "manual";
 export type LensReconcileActionScope = "file" | "block";
+export type ResolutionScope = LensReconcileActionScope;
+export type LensPreviewWindowUnit = "bytes" | "lines" | "items";
+
+export interface LensPin {
+  lensId: LensId;
+  version: string;
+  digest: string;
+}
+
+export interface ScopedResolutionMethod {
+  method: ResolutionMethod;
+  scope: ResolutionScope;
+}
 
 export interface LensManifest {
+  contractVersion: typeof LENS_CONTRACT_VERSION;
   id: LensId;
   name: string;
   version: string;
+  digest?: string;
   analyzer: AnalyzerContract;
   viewer: ViewerContract;
+  resolutionMethods: ScopedResolutionMethod[];
+  bundle?: LensBundleContract;
 }
 
 export interface AnalyzerContract {
   supportedMediaTypes: string[];
   fileExtensions: string[];
   capabilities: LensCapability[];
+}
+
+export interface LensResourceQuotas {
+  maxMemoryBytes: number;
+  maxExecutionMs: number;
+  maxInputBytes: number;
+  maxOutputBytes: number;
+  maxFuel?: number;
+}
+
+export interface WasiLensEntrypoint {
+  runtime: "wasi";
+  path: string;
+  export: string;
+  digest: string;
+  resources: LensResourceQuotas;
+}
+
+export interface EsmLensEntrypoint {
+  runtime: "esm";
+  path: string;
+  export: string;
+  digest: string;
+  resources: LensResourceQuotas;
+}
+
+export interface LensBundleEntrypoints {
+  analyzer?: WasiLensEntrypoint;
+  reconcile?: WasiLensEntrypoint;
+  viewer?: EsmLensEntrypoint;
+}
+
+export interface LensSignatureMetadata {
+  algorithm: string;
+  keyId: string;
+  signedDigest: string;
+  signature: string;
+}
+
+export interface LensBundleContract {
+  format: typeof LENS_BUNDLE_FORMAT;
+  entrypoints: LensBundleEntrypoints;
+  signature?: LensSignatureMetadata;
+}
+
+export interface LensWindowRange {
+  start: number;
+  endExclusive: number;
+  total: number;
+}
+
+export interface LensPreviewWindow {
+  contractVersion: typeof LENS_CONTRACT_VERSION;
+  lens: LensPin;
+  artifactId: string;
+  unit: LensPreviewWindowUnit;
+  window: LensWindowRange;
+}
+
+export interface LensDiffWindow {
+  contractVersion: typeof LENS_CONTRACT_VERSION;
+  lens: LensPin;
+  path: string;
+  lines: LensWindowRange;
+  columns?: LensWindowRange;
 }
 
 export interface ArtifactMetadata {
@@ -153,6 +238,24 @@ export interface LensReconcileInput {
   theirsLabel: string;
 }
 
+export interface LensReconcileSideContract {
+  exists: boolean;
+  bytes: number[];
+  contentHash?: string;
+  size: number;
+}
+
+export interface LensReconcileRequest {
+  contractVersion: typeof LENS_CONTRACT_VERSION;
+  lens: LensPin;
+  path: string;
+  mediaType?: string;
+  base: LensReconcileSideContract;
+  existing: LensReconcileSideContract;
+  incoming: LensReconcileSideContract;
+  labels: LensReconcileLabels;
+}
+
 export interface LensReconcileContent {
   exists: boolean;
   bytes?: Uint8Array;
@@ -161,9 +264,13 @@ export interface LensReconcileContent {
 export interface LensConflictBlock {
   blockId: string;
   base: string;
-  ours: string;
-  theirs: string;
-  supportedResolutions: string[];
+  ours?: string;
+  theirs?: string;
+  existing?: string;
+  incoming?: string;
+  methods?: ResolutionMethod[];
+  supportedResolutions?: string[];
+  resolutionMethods?: ScopedResolutionMethod[];
 }
 
 export interface LensConflictSegment {
@@ -177,9 +284,44 @@ export interface LensReconcileResult {
   summary: string;
   resolved?: LensReconcileContent;
   conflict?: LensReconcileContent;
+  fileMethods?: ResolutionMethod[];
+  resolutionMethods?: ScopedResolutionMethod[];
   blocks: LensConflictBlock[];
   segments: LensConflictSegment[];
   fields: Record<string, unknown>;
+}
+
+export interface CanonicalLensReconcileContent {
+  exists: boolean;
+  bytes: number[];
+}
+
+export interface CanonicalLensConflictBlock {
+  blockId: string;
+  base: string;
+  existing: string;
+  incoming: string;
+  resolutionMethods: ScopedResolutionMethod[];
+}
+
+export type LensContractMetadataValue = string | number | boolean | string[];
+export type LensContractMetadata = Record<string, LensContractMetadataValue>;
+
+export interface CanonicalLensReconcileResult {
+  status: LensReconcileResultStatus;
+  summary: string;
+  resolved?: CanonicalLensReconcileContent;
+  conflict?: CanonicalLensReconcileContent;
+  resolutionMethods: ScopedResolutionMethod[];
+  blocks: CanonicalLensConflictBlock[];
+  segments: LensConflictSegment[];
+  fields: LensContractMetadata;
+}
+
+export interface LensReconcileResponse {
+  contractVersion: typeof LENS_CONTRACT_VERSION;
+  lens: LensPin;
+  result: CanonicalLensReconcileResult;
 }
 
 export interface LensReconcileConflictBlock {

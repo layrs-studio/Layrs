@@ -916,6 +916,10 @@ dependencies = [
 [[package]]
 name = "layrs-lens-sdk"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "layrs-lens-text"

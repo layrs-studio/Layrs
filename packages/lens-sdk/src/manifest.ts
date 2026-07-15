@@ -1,16 +1,14 @@
 import type {
+  LensBundleContract,
   DiffKind,
   LensCapability,
+  LensPin,
   LensManifest,
   PreviewKind,
-  ReconcileStatus
+  ReconcileStatus,
+  ScopedResolutionMethod
 } from "./contracts";
-
-const RECONCILE_STATUSES: ReconcileStatus[] = [
-  "unsupported",
-  "needs_manual_resolution",
-  "auto_resolvable"
-];
+import { LENS_CONTRACT_VERSION } from "./contracts";
 
 export function createLensManifest(input: {
   id: string;
@@ -22,24 +20,50 @@ export function createLensManifest(input: {
   supportedMediaTypes: string[];
   fileExtensions: string[];
   capabilities: LensCapability[];
+  digest?: string;
+  bundle?: LensBundleContract;
+  resolutionMethods?: ScopedResolutionMethod[];
+  reconcileStatuses?: ReconcileStatus[];
 }): LensManifest {
+  if (input.bundle && !input.digest) {
+    throw new Error("A bundled lens manifest requires an explicit digest");
+  }
+
   return {
+    contractVersion: LENS_CONTRACT_VERSION,
     id: input.id,
     name: input.name,
     version: input.version ?? "0.0.0",
+    ...(input.digest ? { digest: input.digest } : {}),
     analyzer: {
-      supportedMediaTypes: input.supportedMediaTypes,
-      fileExtensions: input.fileExtensions,
-      capabilities: input.capabilities
+      supportedMediaTypes: [...input.supportedMediaTypes],
+      fileExtensions: [...input.fileExtensions],
+      capabilities: [...input.capabilities]
     },
     viewer: {
       viewerId: `layrs.viewer.${input.id.replace(/^layrs\./, "")}`,
       schemaVersion: "layrs.viewer.v1",
       component: input.component,
-      previewKinds: input.previewKinds,
-      diffKinds: input.diffKinds,
-      reconcileStatuses: RECONCILE_STATUSES,
+      previewKinds: [...input.previewKinds],
+      diffKinds: [...input.diffKinds],
+      reconcileStatuses: [...(input.reconcileStatuses ?? [])],
       inspectorFields: []
-    }
+    },
+    resolutionMethods: [...(input.resolutionMethods ?? [])],
+    ...(input.bundle ? { bundle: input.bundle } : {})
   };
+}
+
+export function lensPinFromManifest(manifest: LensManifest): LensPin | undefined {
+  return manifest.digest
+    ? {
+        lensId: manifest.id,
+        version: manifest.version,
+        digest: manifest.digest
+      }
+    : undefined;
+}
+
+export function supportsLensCapability(manifest: LensManifest, capability: LensCapability): boolean {
+  return manifest.analyzer.capabilities.includes(capability);
 }
