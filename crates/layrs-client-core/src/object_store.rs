@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    io::{Cursor, Read, Seek, SeekFrom},
+    fs::{self, File, OpenOptions},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -270,6 +270,16 @@ pub fn read_chunk_raw(
 }
 
 pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, String> {
+    compact_loose_chunks_with_hook(layrs_dir, |_, _| Ok(()))
+}
+
+fn compact_loose_chunks_with_hook<F>(
+    layrs_dir: &Path,
+    before_verify: F,
+) -> Result<CompactStoreResult, String>
+where
+    F: FnOnce(&Path, &Path) -> Result<(), String>,
+{
     let chunks_dir = layrs_dir.join("objects").join("chunks");
     if !chunks_dir.exists() {
         return Ok(CompactStoreResult::default());
@@ -321,6 +331,16 @@ pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, Stri
     if pack_path.exists() && index_path.exists() {
         return Ok(CompactStoreResult::default());
     }
+    let temp_suffix = format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let temp_pack_path = pack_path.with_extension(format!("pack.{temp_suffix}"));
+    let temp_index_path = index_path.with_extension(format!("json.{temp_suffix}"));
 
     let mut offset = 0u64;
     let mut pack_bytes = Vec::new();
@@ -341,29 +361,45 @@ pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, Stri
         stored_bytes += chunk.stored_size;
     }
 
-    fs::write(&pack_path, &pack_bytes).map_err(|error| {
-        format!(
-            "Layrs could not write chunk pack {}: {error}",
-            pack_path.display()
-        )
-    })?;
-    write_json(
-        &index_path,
-        &ChunkPackIndex {
-            schema: PACK_SCHEMA.to_string(),
-            pack_id,
-            entries,
-        },
-    )?;
+    let index = ChunkPackIndex {
+        schema: PACK_SCHEMA.to_string(),
+        pack_id: pack_id.clone(),
+        entries,
+    };
+    let expected_ids = candidates
+        .iter()
+        .map(|chunk| chunk.chunk_id.clone())
+        .collect::<BTreeSet<_>>();
 
-    for chunk in &candidates {
-        let raw = read_chunk_raw(layrs_dir, &chunk.chunk_id, None)?;
-        if blake3_id(&raw) != chunk.chunk_id {
-            return Err(format!(
-                "Layrs compact verification failed for chunk {}.",
-                chunk.chunk_id
-            ));
+    let publish_result = (|| {
+        write_synced_file(&temp_pack_path, &pack_bytes)?;
+        write_synced_json(&temp_index_path, &index)?;
+        before_verify(&temp_pack_path, &temp_index_path)?;
+
+        verify_pack_files(&temp_pack_path, &temp_index_path, &pack_id, &expected_ids)?;
+
+        rename_new_file(&temp_pack_path, &pack_path)?;
+        sync_directory_best_effort(&packs_dir);
+        if let Err(error) = rename_new_file(&temp_index_path, &index_path) {
+            let _ = fs::remove_file(&pack_path);
+            sync_directory_best_effort(&packs_dir);
+            return Err(error);
         }
+        sync_directory_best_effort(&packs_dir);
+
+        if let Err(error) = verify_pack_files(&pack_path, &index_path, &pack_id, &expected_ids) {
+            let _ = fs::remove_file(&index_path);
+            let _ = fs::remove_file(&pack_path);
+            sync_directory_best_effort(&packs_dir);
+            return Err(error);
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = publish_result {
+        let _ = fs::remove_file(&temp_index_path);
+        let _ = fs::remove_file(&temp_pack_path);
+        return Err(error);
     }
 
     let mut removed = 0usize;
@@ -388,6 +424,7 @@ pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, Stri
             })?;
         }
     }
+    sync_directory_best_effort(&chunks_dir);
 
     Ok(CompactStoreResult {
         packed_chunks: candidates.len(),
@@ -396,6 +433,178 @@ pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, Stri
         stored_bytes,
         pack_path: Some(pack_path.display().to_string()),
     })
+}
+
+fn write_synced_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "Layrs could not create temporary pack file {}: {error}",
+                path.display()
+            )
+        })?;
+    file.write_all(bytes).map_err(|error| {
+        format!(
+            "Layrs could not write temporary pack file {}: {error}",
+            path.display()
+        )
+    })?;
+    file.sync_all().map_err(|error| {
+        format!(
+            "Layrs could not flush temporary pack file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn write_synced_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("Layrs could not encode JSON {}: {error}", path.display()))?;
+    write_synced_file(path, &body)
+}
+
+fn rename_new_file(source: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        return Err(format!(
+            "Layrs refused to replace existing pack file {}.",
+            destination.display()
+        ));
+    }
+    fs::rename(source, destination).map_err(|error| {
+        format!(
+            "Layrs could not publish pack file {} as {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn verify_pack_files(
+    pack_path: &Path,
+    index_path: &Path,
+    expected_pack_id: &str,
+    expected_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    let index = read_json::<ChunkPackIndex>(index_path)?;
+    if index.schema != PACK_SCHEMA {
+        return Err(format!(
+            "Layrs compact verification rejected pack index {} with schema {}.",
+            index_path.display(),
+            index.schema
+        ));
+    }
+    if index.pack_id != expected_pack_id {
+        return Err(format!(
+            "Layrs compact verification rejected pack index {} for unexpected pack {}.",
+            index_path.display(),
+            index.pack_id
+        ));
+    }
+
+    let pack_size = fs::metadata(pack_path)
+        .map_err(|error| {
+            format!(
+                "Layrs could not inspect chunk pack {}: {error}",
+                pack_path.display()
+            )
+        })?
+        .len();
+    let mut pack = File::open(pack_path).map_err(|error| {
+        format!(
+            "Layrs could not open chunk pack {} for verification: {error}",
+            pack_path.display()
+        )
+    })?;
+    let mut verified_ids = BTreeSet::new();
+    let mut expected_offset = 0u64;
+
+    for entry in &index.entries {
+        validate_blake3_id(&entry.chunk_id)?;
+        if !verified_ids.insert(entry.chunk_id.clone()) {
+            return Err(format!(
+                "Layrs compact verification found duplicate chunk {} in {}.",
+                entry.chunk_id,
+                index_path.display()
+            ));
+        }
+        if entry.offset != expected_offset {
+            return Err(format!(
+                "Layrs compact verification found a non-contiguous offset for chunk {}.",
+                entry.chunk_id
+            ));
+        }
+        let end = entry.offset.checked_add(entry.stored_size).ok_or_else(|| {
+            format!(
+                "Layrs compact verification found an overflowing range for chunk {}.",
+                entry.chunk_id
+            )
+        })?;
+        if end > pack_size {
+            return Err(format!(
+                "Layrs compact verification found chunk {} outside pack bounds.",
+                entry.chunk_id
+            ));
+        }
+
+        pack.seek(SeekFrom::Start(entry.offset)).map_err(|error| {
+            format!(
+                "Layrs could not seek chunk pack {} during verification: {error}",
+                pack_path.display()
+            )
+        })?;
+        let mut encoded = vec![0u8; entry.stored_size as usize];
+        pack.read_exact(&mut encoded).map_err(|error| {
+            format!(
+                "Layrs could not read chunk {} from pack {} during verification: {error}",
+                entry.chunk_id,
+                pack_path.display()
+            )
+        })?;
+        let compression = normalized_compression(&entry.compression);
+        let raw = decode_chunk(&encoded, &compression, entry.raw_size, &entry.chunk_id)?;
+        if blake3_id(&raw) != entry.chunk_id {
+            return Err(format!(
+                "Layrs compact verification failed for chunk {}.",
+                entry.chunk_id
+            ));
+        }
+        expected_offset = end;
+    }
+
+    if verified_ids != *expected_ids {
+        return Err(format!(
+            "Layrs compact verification found an incomplete chunk inventory in {}.",
+            index_path.display()
+        ));
+    }
+    if expected_offset != pack_size {
+        return Err(format!(
+            "Layrs compact verification found trailing bytes in pack {}.",
+            pack_path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn sync_directory_best_effort(path: &Path) {
+    #[cfg(unix)]
+    {
+        let _ = File::open(path).and_then(|directory| directory.sync_all());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let _ = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .and_then(|directory| directory.sync_all());
+    }
 }
 
 fn chunk_file(bytes: &[u8], profile: ChunkProfile) -> Vec<&[u8]> {
@@ -776,3 +985,7 @@ fn _debug_chunk_lengths(chunks: &[FileChunkRef]) -> BTreeMap<String, u64> {
         .map(|chunk| (chunk.chunk_id.clone(), chunk.size))
         .collect()
 }
+
+#[cfg(test)]
+#[path = "object_store_tests.rs"]
+mod tests;
