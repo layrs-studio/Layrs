@@ -67,6 +67,11 @@
       "version": 13,
       "file": "0013_weave_step_replays.sql",
       "sha256": "39873dfa8e58fb557873af10298c57e48b239a3395adb785c54d08263589be6f"
+    },
+    {
+      "version": 14,
+      "file": "0014_global_object_ownership.sql",
+      "sha256": "e56498e87f1e3f5d59eea988affcb49f3d74960db31858a5830c58d5dd85674d"
     }
   ]
 }
