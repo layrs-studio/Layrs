@@ -4,10 +4,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 version.workspace = true
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 blake3 = "1"
+fs2 = "0.4"
 layrs-sync = { path = "../layrs-sync" }
+# Keep libsqlite3-sys aligned with SQLx 0.8.6 across the workspace. Updating
+# rusqlite requires coordinating the workspace's single `links = "sqlite3"`.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
