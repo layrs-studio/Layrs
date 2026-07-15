@@ -1,6 +1,7 @@
 use layrs_lens_sdk::LensManifest;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -12,7 +13,7 @@ pub const LENSES_DIR_ENV: &str = "LAYRS_LENSES_DIR";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LensRegistry {
-    pub items: Vec<Value>,
+    pub items: Vec<LensManifest>,
     pub errors: Vec<LensManifestError>,
 }
 
@@ -64,8 +65,7 @@ pub fn load_lens_registry(lenses_dir: impl AsRef<Path>) -> LensRegistry {
     let mut ids = registry
         .items
         .iter()
-        .filter_map(|manifest| manifest.get("id").and_then(Value::as_str))
-        .map(str::to_string)
+        .map(|manifest| manifest.id.clone())
         .collect::<BTreeSet<_>>();
 
     let entries = match fs::read_dir(lenses_dir) {
@@ -130,7 +130,7 @@ pub fn load_lens_registry(lenses_dir: impl AsRef<Path>) -> LensRegistry {
                 continue;
             }
         };
-        let manifest = match serde_json::from_str::<Value>(&manifest_text) {
+        let manifest_value = match serde_json::from_str::<Value>(&manifest_text) {
             Ok(value) => value,
             Err(error) => {
                 registry.errors.push(registry_error(
@@ -141,24 +141,28 @@ pub fn load_lens_registry(lenses_dir: impl AsRef<Path>) -> LensRegistry {
                 continue;
             }
         };
-        let manifest = match normalize_manifest(manifest) {
-            Ok(value) => value,
-            Err(message) => {
-                registry
-                    .errors
-                    .push(registry_error(&manifest_path, "manifest_invalid", message));
+        let manifest = match serde_json::from_value::<LensManifest>(manifest_value) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                registry.errors.push(registry_error(
+                    &manifest_path,
+                    "manifest_invalid",
+                    format!("manifest.json is not a canonical LensManifest: {error}"),
+                ));
                 continue;
             }
         };
-        let id = manifest
-            .get("id")
-            .and_then(Value::as_str)
-            .expect("normalized manifest has an id");
-        if !ids.insert(id.to_string()) {
+        if let Err(message) = validate_external_manifest(&lens_dir, &manifest) {
+            registry
+                .errors
+                .push(registry_error(&manifest_path, "manifest_invalid", message));
+            continue;
+        }
+        if !ids.insert(manifest.id.clone()) {
             registry.errors.push(registry_error(
                 &manifest_path,
                 "duplicate_lens_id",
-                format!("lens id {id} is already registered"),
+                format!("lens id {} is already registered", manifest.id),
             ));
             continue;
         }
@@ -169,13 +173,8 @@ pub fn load_lens_registry(lenses_dir: impl AsRef<Path>) -> LensRegistry {
     registry
 }
 
-pub fn built_in_lens_manifests() -> Vec<Value> {
-    canonical_built_in_lens_manifests()
-        .iter()
-        .map(|manifest| {
-            serde_json::to_value(manifest).expect("canonical built-in Lens manifest serializes")
-        })
-        .collect()
+pub fn built_in_lens_manifests() -> Vec<LensManifest> {
+    canonical_built_in_lens_manifests().to_vec()
 }
 
 pub(crate) fn built_in_lens_manifest(lens_id: &str) -> Option<&'static LensManifest> {
@@ -188,250 +187,181 @@ fn canonical_built_in_lens_manifests() -> &'static [LensManifest; 4] {
     static MANIFESTS: OnceLock<[LensManifest; 4]> = OnceLock::new();
     MANIFESTS.get_or_init(|| {
         [
-            layrs_lens_code::manifest(),
-            layrs_lens_text::manifest(),
-            layrs_lens_image::manifest(),
-            layrs_lens_raw::manifest(),
+            pin_built_in_manifest(layrs_lens_code::manifest()),
+            pin_built_in_manifest(layrs_lens_text::manifest()),
+            pin_built_in_manifest(layrs_lens_image::manifest()),
+            pin_built_in_manifest(layrs_lens_raw::manifest()),
         ]
     })
 }
 
-fn normalize_manifest(manifest: Value) -> Result<Value, String> {
-    let mut object = match manifest {
-        Value::Object(object) => object,
-        _ => return Err("manifest must be a JSON object".to_string()),
+fn pin_built_in_manifest(mut manifest: LensManifest) -> LensManifest {
+    manifest.digest = Some(
+        built_in_implementation_digest(&manifest.id)
+            .expect("every built-in Lens has implementation sources"),
+    );
+    manifest
+        .validate()
+        .expect("built-in Lens manifest satisfies the canonical contract");
+    manifest
+}
+
+fn built_in_implementation_digest(lens_id: &str) -> Option<String> {
+    let mut sources: Vec<(&str, &[u8])> = match lens_id {
+        layrs_lens_code::CODE_LENS_ID => vec![
+            (
+                "crates/layrs-lens-code/src/lib.rs",
+                include_bytes!("../../layrs-lens-code/src/lib.rs"),
+            ),
+            (
+                "crates/layrs-lens-text/src/lib.rs",
+                include_bytes!("../../layrs-lens-text/src/lib.rs"),
+            ),
+        ],
+        layrs_lens_text::TEXT_LENS_ID => vec![(
+            "crates/layrs-lens-text/src/lib.rs",
+            include_bytes!("../../layrs-lens-text/src/lib.rs"),
+        )],
+        layrs_lens_image::IMAGE_LENS_ID => vec![(
+            "crates/layrs-lens-image/src/lib.rs",
+            include_bytes!("../../layrs-lens-image/src/lib.rs"),
+        )],
+        layrs_lens_raw::RAW_LENS_ID => vec![(
+            "crates/layrs-lens-raw/src/lib.rs",
+            include_bytes!("../../layrs-lens-raw/src/lib.rs"),
+        )],
+        _ => return None,
     };
-    move_alias(&mut object, "appliesTo", "applies_to");
+    sources.extend_from_slice(SDK_IMPLEMENTATION_SOURCES);
+    Some(implementation_digest(&sources))
+}
 
-    let id = required_string(&mut object, "id")?;
-    if !valid_lens_id(&id) {
-        return Err(
-            "id must use only ASCII letters, digits, dots, underscores or dashes".to_string(),
-        );
-    }
-    required_string(&mut object, "name")?;
-    required_string(&mut object, "version")?;
+const SDK_IMPLEMENTATION_SOURCES: &[(&str, &[u8])] = &[
+    (
+        "crates/layrs-lens-sdk/src/lib.rs",
+        include_bytes!("../../layrs-lens-sdk/src/lib.rs"),
+    ),
+    (
+        "crates/layrs-lens-sdk/src/contract.rs",
+        include_bytes!("../../layrs-lens-sdk/src/contract.rs"),
+    ),
+    (
+        "crates/layrs-lens-sdk/src/manifest_validation.rs",
+        include_bytes!("../../layrs-lens-sdk/src/manifest_validation.rs"),
+    ),
+    (
+        "crates/layrs-lens-sdk/src/selection.rs",
+        include_bytes!("../../layrs-lens-sdk/src/selection.rs"),
+    ),
+    (
+        "crates/layrs-lens-sdk/src/validation.rs",
+        include_bytes!("../../layrs-lens-sdk/src/validation.rs"),
+    ),
+    (
+        "crates/layrs-lens-sdk/src/wire.rs",
+        include_bytes!("../../layrs-lens-sdk/src/wire.rs"),
+    ),
+];
 
-    let mut analyzer = required_object(&mut object, "analyzer")?;
-    move_alias(
-        &mut analyzer,
-        "supported_media_types",
-        "supportedMediaTypes",
-    );
-    move_alias(&mut analyzer, "file_extensions", "fileExtensions");
-
-    let supported_media_types = required_string_array(&mut analyzer, "supportedMediaTypes", true)?;
-    let file_extensions = required_string_array(&mut analyzer, "fileExtensions", true)?;
-    if supported_media_types.is_empty() && file_extensions.is_empty() {
-        return Err(
-            "analyzer.supportedMediaTypes or analyzer.fileExtensions must include at least one value"
-                .to_string(),
-        );
-    }
-
-    let analyzer_capabilities = optional_string_array(&analyzer, "capabilities")?;
-    let manifest_capabilities = optional_string_array(&object, "capabilities")?;
-    let capabilities = manifest_capabilities
-        .clone()
-        .or_else(|| analyzer_capabilities.clone())
-        .ok_or_else(|| "capabilities or analyzer.capabilities is required".to_string())?;
-    if capabilities.is_empty() {
-        return Err("capabilities must include at least one value".to_string());
-    }
-    let analyzer_capabilities = analyzer_capabilities.unwrap_or_else(|| capabilities.clone());
-    if analyzer_capabilities.is_empty() {
-        return Err("analyzer.capabilities must include at least one value".to_string());
-    }
-    analyzer.insert(
-        "capabilities".to_string(),
-        string_array_value(&analyzer_capabilities),
-    );
-    object.insert(
-        "capabilities".to_string(),
-        string_array_value(&capabilities),
-    );
-
-    let applies_to = match object.remove("applies_to") {
-        Some(Value::Object(mut applies_to)) => {
-            normalize_optional_string_array(&mut applies_to, "artifact_kinds")?;
-            normalize_optional_string_array(&mut applies_to, "media_types")?;
-            normalize_optional_string_array(&mut applies_to, "file_extensions")?;
-            Value::Object(applies_to)
+fn validate_external_manifest(lens_dir: &Path, manifest: &LensManifest) -> Result<(), String> {
+    manifest.validate().map_err(|error| error.to_string())?;
+    let Some(bundle) = manifest.bundle.as_ref() else {
+        if manifest.digest.is_some() {
+            return Err(
+                "an external Lens without an executable bundle cannot declare a verifiable digest"
+                    .to_string(),
+            );
         }
-        Some(_) => return Err("applies_to must be a JSON object".to_string()),
-        None => json!({
-            "media_types": supported_media_types,
-            "file_extensions": file_extensions
-        }),
+        return Ok(());
     };
-    object.insert("applies_to".to_string(), applies_to);
 
-    let permissions = match object.remove("permissions") {
-        Some(Value::Object(permissions)) => Value::Object(permissions),
-        Some(_) => return Err("permissions must be a JSON object".to_string()),
-        None => json!({}),
-    };
-    object.insert("permissions".to_string(), permissions);
-
-    let mut viewer = required_object(&mut object, "viewer")?;
-    move_alias(&mut viewer, "viewer_id", "viewerId");
-    move_alias(&mut viewer, "schema_version", "schemaVersion");
-    move_alias(&mut viewer, "preview_kinds", "previewKinds");
-    move_alias(&mut viewer, "diff_kinds", "diffKinds");
-    move_alias(&mut viewer, "reconcile_statuses", "reconcileStatuses");
-    move_alias(&mut viewer, "inspector_fields", "inspectorFields");
-
-    required_string(&mut viewer, "viewerId")?;
-    let schema_version = required_string(&mut viewer, "schemaVersion")?;
-    if schema_version != "layrs.viewer.v1" {
-        return Err("viewer.schemaVersion must be layrs.viewer.v1".to_string());
+    if let Some(entrypoint) = bundle.entrypoints.analyzer.as_ref() {
+        validate_entrypoint_file(lens_dir, &entrypoint.path, &entrypoint.digest)?;
     }
-    required_string(&mut viewer, "component")?;
-    let preview_kinds = required_string_array(&mut viewer, "previewKinds", false)?;
-    let diff_kinds = required_string_array(&mut viewer, "diffKinds", false)?;
-    if preview_kinds.is_empty() {
-        return Err("viewer.previewKinds must include at least one value".to_string());
+    if let Some(entrypoint) = bundle.entrypoints.reconcile.as_ref() {
+        validate_entrypoint_file(lens_dir, &entrypoint.path, &entrypoint.digest)?;
     }
-    if diff_kinds.is_empty() {
-        return Err("viewer.diffKinds must include at least one value".to_string());
-    }
-    if !viewer.contains_key("reconcileStatuses") {
-        viewer.insert(
-            "reconcileStatuses".to_string(),
-            string_array_value(&["unsupported".to_string()]),
-        );
-    } else {
-        required_string_array(&mut viewer, "reconcileStatuses", true)?;
-    }
-    match viewer.get("inspectorFields") {
-        Some(Value::Array(_)) => {}
-        Some(_) => return Err("viewer.inspectorFields must be an array".to_string()),
-        None => {
-            viewer.insert("inspectorFields".to_string(), Value::Array(Vec::new()));
-        }
+    if let Some(entrypoint) = bundle.entrypoints.viewer.as_ref() {
+        validate_entrypoint_file(lens_dir, &entrypoint.path, &entrypoint.digest)?;
     }
 
-    object.insert("analyzer".to_string(), Value::Object(analyzer));
-    object.insert("viewer".to_string(), Value::Object(viewer));
+    let expected_identity = manifest_identity_digest(manifest)?;
+    if manifest.digest.as_deref() != Some(expected_identity.as_str()) {
+        return Err(format!(
+            "manifest identity digest does not match canonical contract and implementation digests; expected {expected_identity}"
+        ));
+    }
+    Ok(())
+}
 
-    Ok(Value::Object(object))
+fn validate_entrypoint_file(lens_dir: &Path, path: &str, expected: &str) -> Result<(), String> {
+    let root = fs::canonicalize(lens_dir)
+        .map_err(|error| format!("could not resolve external Lens directory: {error}"))?;
+    let entrypoint = fs::canonicalize(lens_dir.join(path))
+        .map_err(|error| format!("could not resolve bundle entrypoint {path}: {error}"))?;
+    if !entrypoint.starts_with(&root) || !entrypoint.is_file() {
+        return Err(format!(
+            "bundle entrypoint {path} must resolve to a file inside the Lens directory"
+        ));
+    }
+    let bytes = fs::read(&entrypoint)
+        .map_err(|error| format!("could not read bundle entrypoint {path}: {error}"))?;
+    let actual = sha256_digest(&bytes);
+    if actual != expected {
+        return Err(format!(
+            "bundle entrypoint {path} digest mismatch: expected {expected}, found {actual}"
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_identity_digest(manifest: &LensManifest) -> Result<String, String> {
+    let mut identity = manifest.clone();
+    identity.digest = None;
+    if let Some(bundle) = identity.bundle.as_mut() {
+        bundle.signature = None;
+    }
+    let payload = serde_json::to_vec(&identity)
+        .map_err(|error| format!("could not serialize canonical manifest identity: {error}"))?;
+    Ok(sha256_digest(&payload))
+}
+
+fn implementation_digest(parts: &[(&str, &[u8])]) -> String {
+    let mut hasher = Sha256::new();
+    for (path, bytes) in parts {
+        hasher.update((path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn sha256_digest(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
 fn registry_error(
-    path: &Path,
+    path: impl AsRef<Path>,
     code: &'static str,
     message: impl Into<String>,
 ) -> LensManifestError {
     LensManifestError {
-        path: path.display().to_string(),
+        path: path.as_ref().display().to_string(),
         code,
         message: message.into(),
     }
 }
 
-fn move_alias(object: &mut Map<String, Value>, alias: &str, canonical: &str) {
-    if !object.contains_key(canonical) {
-        if let Some(value) = object.remove(alias) {
-            object.insert(canonical.to_string(), value);
-        }
-    }
-}
-
-fn required_object(
-    object: &mut Map<String, Value>,
-    field: &'static str,
-) -> Result<Map<String, Value>, String> {
-    match object.remove(field) {
-        Some(Value::Object(value)) => Ok(value),
-        Some(_) => Err(format!("{field} must be a JSON object")),
-        None => Err(format!("{field} is required")),
-    }
-}
-
-fn required_string(object: &mut Map<String, Value>, field: &'static str) -> Result<String, String> {
-    let value = object
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{field} is required"))?
-        .to_string();
-    object.insert(field.to_string(), Value::String(value.clone()));
-    Ok(value)
-}
-
-fn required_string_array(
-    object: &mut Map<String, Value>,
-    field: &'static str,
-    allow_empty: bool,
-) -> Result<Vec<String>, String> {
-    let values = object
-        .get(field)
-        .ok_or_else(|| format!("{field} is required"))
-        .and_then(|value| string_array(value, field))?;
-    if !allow_empty && values.is_empty() {
-        return Err(format!("{field} must include at least one value"));
-    }
-    object.insert(field.to_string(), string_array_value(&values));
-    Ok(values)
-}
-
-fn optional_string_array(
-    object: &Map<String, Value>,
-    field: &'static str,
-) -> Result<Option<Vec<String>>, String> {
-    object
-        .get(field)
-        .map(|value| string_array(value, field))
-        .transpose()
-}
-
-fn normalize_optional_string_array(
-    object: &mut Map<String, Value>,
-    field: &'static str,
-) -> Result<(), String> {
-    if let Some(values) = optional_string_array(object, field)? {
-        object.insert(field.to_string(), string_array_value(&values));
-    }
-    Ok(())
-}
-
-fn string_array(value: &Value, field: &'static str) -> Result<Vec<String>, String> {
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{field} must be an array"))?;
-    let mut values = Vec::with_capacity(array.len());
-    for (index, item) in array.iter().enumerate() {
-        let value = item
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("{field}[{index}] must be a non-empty string"))?;
-        values.push(value.to_string());
-    }
-    Ok(values)
-}
-
-fn string_array_value(values: &[String]) -> Value {
-    Value::Array(
-        values
-            .iter()
-            .map(|value| Value::String(value.clone()))
-            .collect(),
-    )
-}
-
-fn valid_lens_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use layrs_lens_sdk::{
+        AnalyzerContract, DiffKind, LensBundleContract, LensBundleEntrypoints, LensCapability,
+        LensResourceQuotas, LensSelectionRequest, PreviewKind, ResolutionMethod, ResolutionMethods,
+        ViewerContract, WasiLensEntrypoint, select_lens_manifest,
+    };
+    use serde::Deserialize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -443,26 +373,21 @@ mod tests {
     }
 
     #[test]
-    fn built_ins_are_exact_versioned_canonical_manifests() {
-        let expected = [
-            layrs_lens_code::manifest(),
-            layrs_lens_text::manifest(),
-            layrs_lens_image::manifest(),
-            layrs_lens_raw::manifest(),
-        ]
-        .iter()
-        .map(|manifest| serde_json::to_value(manifest).expect("manifest serializes"))
-        .collect::<Vec<_>>();
+    fn built_ins_are_canonical_and_pinned_to_implementation_sources() {
+        let manifests = built_in_lens_manifests();
+        assert_eq!(lens_ids(&manifests), built_in_ids());
+        for manifest in manifests {
+            manifest.validate().expect("built-in manifest is canonical");
+            assert_eq!(
+                manifest.digest.as_deref(),
+                built_in_implementation_digest(&manifest.id).as_deref()
+            );
+        }
 
-        let actual = built_in_lens_manifests();
-        assert_eq!(actual, expected);
-        assert!(actual.iter().all(|manifest| {
-            manifest.get("version").and_then(Value::as_str) == Some("1.0.0")
-                && manifest
-                    .get("digest")
-                    .and_then(Value::as_str)
-                    .is_some_and(|digest| digest.starts_with("sha256:"))
-        }));
+        assert_ne!(
+            implementation_digest(&[("lens.rs", b"before")]),
+            implementation_digest(&[("lens.rs", b"after")])
+        );
     }
 
     #[test]
@@ -472,42 +397,18 @@ mod tests {
             layrs_lens_image::IMAGE_LENS_ID,
         ] {
             let manifest = built_in_lens_manifest(lens_id).expect("built-in manifest");
-            assert!(!manifest.supports_capability(&layrs_lens_sdk::LensCapability::Reconcile));
+            assert!(!manifest.supports_capability(&LensCapability::Reconcile));
             assert!(manifest.resolution_methods.file.is_empty());
             assert!(manifest.resolution_methods.block.is_empty());
         }
     }
 
     #[test]
-    fn external_lenses_are_merged_after_built_ins() {
-        let root = unique_temp_dir("merge");
-        fs::create_dir_all(root.join("markdown")).expect("lens dir is created");
-        fs::write(
-            root.join("markdown").join("manifest.json"),
-            r#"{
-                "id": "com.example.markdown",
-                "name": "Markdown Plus",
-                "version": "1.2.3",
-                "applies_to": {
-                    "media_types": ["text/markdown"],
-                    "file_extensions": ["mdx"]
-                },
-                "capabilities": ["view", "preview"],
-                "permissions": {},
-                "analyzer": {
-                    "supportedMediaTypes": ["text/markdown"],
-                    "fileExtensions": ["mdx"]
-                },
-                "viewer": {
-                    "viewerId": "com.example.viewer.markdown",
-                    "schemaVersion": "layrs.viewer.v1",
-                    "component": "MarkdownPlusViewer",
-                    "previewKinds": ["text"],
-                    "diffKinds": ["textLines"]
-                }
-            }"#,
-        )
-        .expect("manifest is written");
+    fn external_lenses_are_typed_canonical_manifests() {
+        let root = unique_temp_dir("canonical");
+        let lens_dir = root.join("markdown");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        write_manifest(&lens_dir, &external_manifest("com.example.markdown"));
 
         let registry = load_lens_registry(&root);
         let _ = fs::remove_dir_all(&root);
@@ -516,31 +417,29 @@ mod tests {
         expected_ids.push("com.example.markdown".to_string());
         assert_eq!(lens_ids(&registry.items), expected_ids);
         assert!(registry.errors.is_empty());
-
-        let external = registry.items.last().expect("external manifest is present");
-        assert_eq!(
-            external
-                .get("analyzer")
-                .and_then(|value| value.get("capabilities"))
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(2)
-        );
-        assert!(
-            external
-                .get("permissions")
-                .and_then(Value::as_object)
-                .is_some()
-        );
+        let external = registry.items.last().expect("external manifest");
+        external.validate().expect("external manifest is canonical");
+        let value = serde_json::to_value(external).expect("manifest serializes");
+        let object = value.as_object().expect("manifest object");
+        assert!(!object.contains_key("applies_to"));
+        assert!(!object.contains_key("capabilities"));
+        assert!(!object.contains_key("permissions"));
     }
 
     #[test]
-    fn invalid_external_manifests_are_non_fatal() {
-        let root = unique_temp_dir("invalid");
-        fs::create_dir_all(root.join("broken")).expect("lens dir is created");
+    fn legacy_external_manifest_fields_are_rejected() {
+        let root = unique_temp_dir("legacy");
+        let lens_dir = root.join("markdown");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        let mut value = serde_json::to_value(external_manifest("com.example.markdown"))
+            .expect("manifest serializes");
+        value.as_object_mut().expect("manifest object").insert(
+            "applies_to".to_string(),
+            json!({"media_types": ["text/markdown"]}),
+        );
         fs::write(
-            root.join("broken").join("manifest.json"),
-            r#"{"id": "bad lens"}"#,
+            lens_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&value).expect("manifest JSON"),
         )
         .expect("manifest is written");
 
@@ -553,32 +452,51 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_external_ids_are_rejected_without_replacing_built_ins() {
+    fn external_bundle_identity_tracks_executed_bytes() {
+        let root = unique_temp_dir("bundle");
+        let lens_dir = root.join("reconcile");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        let entrypoint = lens_dir.join("reconcile.wasm");
+        fs::write(&entrypoint, b"implementation-v1").expect("entrypoint is written");
+
+        let mut manifest = bundled_external_manifest(b"implementation-v1");
+        let first_identity = manifest.digest.clone().expect("identity digest");
+        write_manifest(&lens_dir, &manifest);
+        assert!(load_lens_registry(&root).errors.is_empty());
+
+        fs::write(&entrypoint, b"implementation-v2").expect("entrypoint is updated");
+        let stale_implementation = load_lens_registry(&root);
+        assert_eq!(stale_implementation.errors.len(), 1);
+        assert!(
+            stale_implementation.errors[0]
+                .message
+                .contains("digest mismatch")
+        );
+
+        manifest
+            .bundle
+            .as_mut()
+            .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+            .expect("reconcile entrypoint")
+            .digest = sha256_digest(b"implementation-v2");
+        write_manifest(&lens_dir, &manifest);
+        let stale_identity = load_lens_registry(&root);
+        assert_eq!(stale_identity.errors.len(), 1);
+        assert!(stale_identity.errors[0].message.contains("identity digest"));
+
+        manifest.digest = Some(manifest_identity_digest(&manifest).expect("identity digest"));
+        assert_ne!(manifest.digest.as_deref(), Some(first_identity.as_str()));
+        write_manifest(&lens_dir, &manifest);
+        assert!(load_lens_registry(&root).errors.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn duplicate_external_ids_do_not_replace_built_ins() {
         let root = unique_temp_dir("duplicate");
-        fs::create_dir_all(root.join("code")).expect("lens dir is created");
-        fs::write(
-            root.join("code").join("manifest.json"),
-            r#"{
-                "id": "layrs.code",
-                "name": "Shadow Code",
-                "version": "1.0.0",
-                "capabilities": ["view"],
-                "permissions": {},
-                "analyzer": {
-                    "supportedMediaTypes": ["text/plain"],
-                    "fileExtensions": ["txt"],
-                    "capabilities": ["view"]
-                },
-                "viewer": {
-                    "viewerId": "example.viewer.code",
-                    "schemaVersion": "layrs.viewer.v1",
-                    "component": "ShadowCodeViewer",
-                    "previewKinds": ["text"],
-                    "diffKinds": ["textLines"]
-                }
-            }"#,
-        )
-        .expect("manifest is written");
+        let lens_dir = root.join("code");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        write_manifest(&lens_dir, &external_manifest("layrs.code"));
 
         let registry = load_lens_registry(&root);
         let _ = fs::remove_dir_all(&root);
@@ -588,11 +506,120 @@ mod tests {
         assert_eq!(registry.errors[0].code, "duplicate_lens_id");
     }
 
-    fn lens_ids(items: &[Value]) -> Vec<String> {
-        items
-            .iter()
-            .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
-            .collect()
+    #[test]
+    fn rust_selector_matches_shared_fail_closed_vectors() {
+        let vectors: Vec<SelectionVector> = serde_json::from_str(include_str!(
+            "../../../packages/lens-sdk/test/selection.vectors.json"
+        ))
+        .expect("selection vectors parse");
+
+        for vector in vectors {
+            let mut manifests = built_in_lens_manifests();
+            if let Some(source_id) = vector.duplicate_from_lens_id.as_deref() {
+                let mut duplicate = manifests
+                    .iter()
+                    .find(|manifest| manifest.id == source_id)
+                    .expect("duplicate source manifest")
+                    .clone();
+                duplicate.id = vector
+                    .duplicate_lens_id
+                    .clone()
+                    .expect("duplicate id is present");
+                manifests.push(duplicate);
+            }
+
+            let result = select_lens_manifest(
+                &manifests,
+                LensSelectionRequest {
+                    lens_id: vector.lens_id.as_deref(),
+                    path: vector.path.as_deref(),
+                    media_type: vector.media_type.as_deref(),
+                    fallback_lens_id: vector.fallback_lens_id.as_deref(),
+                },
+            );
+            if let Some(expected_error) = vector.expected_error.as_deref() {
+                let error = result.expect_err(&vector.name);
+                assert_eq!(error.code(), expected_error, "{}", vector.name);
+                continue;
+            }
+            let (manifest, reason) = result
+                .expect(&vector.name)
+                .expect("selection vector expects a match");
+            assert_eq!(
+                Some(manifest.id.as_str()),
+                vector.expected_lens_id.as_deref(),
+                "{}",
+                vector.name
+            );
+            assert_eq!(
+                Some(reason.as_str()),
+                vector.expected_reason.as_deref(),
+                "{}",
+                vector.name
+            );
+        }
+    }
+
+    fn external_manifest(id: &str) -> LensManifest {
+        LensManifest::new(
+            id,
+            "External Lens",
+            "1.2.3",
+            AnalyzerContract {
+                supported_media_types: vec!["text/markdown".to_string()],
+                file_extensions: vec!["mdx".to_string()],
+                capabilities: vec![LensCapability::View, LensCapability::Preview],
+            },
+            ViewerContract::new(
+                "com.example.viewer",
+                "ExternalViewer",
+                vec![PreviewKind::Text],
+                vec![DiffKind::TextLines],
+            ),
+        )
+    }
+
+    fn bundled_external_manifest(bytes: &[u8]) -> LensManifest {
+        let mut manifest = external_manifest("com.example.reconcile");
+        manifest
+            .analyzer
+            .capabilities
+            .push(LensCapability::Reconcile);
+        manifest.resolution_methods =
+            ResolutionMethods::file(vec![ResolutionMethod::Existing, ResolutionMethod::Incoming]);
+        manifest.digest = Some(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        );
+        manifest.bundle = Some(LensBundleContract::new(LensBundleEntrypoints {
+            analyzer: None,
+            reconcile: Some(WasiLensEntrypoint::new(
+                "reconcile.wasm",
+                "reconcile",
+                sha256_digest(bytes),
+                LensResourceQuotas {
+                    max_memory_bytes: 64 * 1024 * 1024,
+                    max_execution_ms: 2_000,
+                    max_input_bytes: 16 * 1024 * 1024,
+                    max_output_bytes: 16 * 1024 * 1024,
+                    max_fuel: Some(10_000_000),
+                },
+            )),
+            viewer: None,
+        }));
+        manifest.digest = Some(manifest_identity_digest(&manifest).expect("identity digest"));
+        manifest
+    }
+
+    fn write_manifest(lens_dir: &Path, manifest: &LensManifest) {
+        fs::write(
+            lens_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(manifest).expect("manifest JSON"),
+        )
+        .expect("manifest is written");
+    }
+
+    fn lens_ids(items: &[LensManifest]) -> Vec<String> {
+        items.iter().map(|item| item.id.clone()).collect()
     }
 
     fn built_in_ids() -> Vec<String> {
@@ -613,5 +640,20 @@ mod tests {
             "layrs-lenses-{label}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SelectionVector {
+        name: String,
+        lens_id: Option<String>,
+        path: Option<String>,
+        media_type: Option<String>,
+        fallback_lens_id: Option<String>,
+        duplicate_from_lens_id: Option<String>,
+        duplicate_lens_id: Option<String>,
+        expected_lens_id: Option<String>,
+        expected_reason: Option<String>,
+        expected_error: Option<String>,
     }
 }

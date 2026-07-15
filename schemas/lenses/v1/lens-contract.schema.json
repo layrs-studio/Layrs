@@ -30,20 +30,24 @@
     },
     "version": {
       "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
     },
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "lensIdentityDigest": {
+      "description": "Identity digest pinned by Lens operations. It covers the validated contract and executable implementation identity.",
+      "$ref": "#/$defs/digest"
+    },
+    "implementationDigest": {
+      "description": "SHA-256 digest of the exact executable entrypoint bytes.",
+      "$ref": "#/$defs/digest"
+    },
     "lensPin": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "lensId",
-        "version",
-        "digest"
-      ],
+      "required": ["lensId", "version", "digest"],
       "properties": {
         "lensId": {
           "$ref": "#/$defs/lensId"
@@ -52,43 +56,27 @@
           "$ref": "#/$defs/version"
         },
         "digest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/lensIdentityDigest"
         }
       }
     },
     "resolutionMethod": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "method",
-        "scope"
-      ],
+      "required": ["method", "scope"],
       "properties": {
         "method": {
-          "enum": [
-            "existing",
-            "incoming",
-            "both",
-            "manual"
-          ]
+          "enum": ["existing", "incoming", "both", "manual"]
         },
         "scope": {
-          "enum": [
-            "file",
-            "block"
-          ]
+          "enum": ["file", "block"]
         }
       }
     },
     "resourceQuotas": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "maxMemoryBytes",
-        "maxExecutionMs",
-        "maxInputBytes",
-        "maxOutputBytes"
-      ],
+      "required": ["maxMemoryBytes", "maxExecutionMs", "maxInputBytes", "maxOutputBytes"],
       "properties": {
         "maxMemoryBytes": {
           "type": "integer",
@@ -119,13 +107,7 @@
     "wasiEntrypoint": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "runtime",
-        "path",
-        "export",
-        "digest",
-        "resources"
-      ],
+      "required": ["runtime", "path", "export", "digest", "resources"],
       "properties": {
         "runtime": {
           "const": "wasi"
@@ -138,7 +120,7 @@
           "minLength": 1
         },
         "digest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/implementationDigest"
         },
         "resources": {
           "$ref": "#/$defs/resourceQuotas"
@@ -148,13 +130,7 @@
     "esmEntrypoint": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "runtime",
-        "path",
-        "export",
-        "digest",
-        "resources"
-      ],
+      "required": ["runtime", "path", "export", "digest", "resources"],
       "properties": {
         "runtime": {
           "const": "esm"
@@ -167,7 +143,7 @@
           "minLength": 1
         },
         "digest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/implementationDigest"
         },
         "resources": {
           "$ref": "#/$defs/resourceQuotas"
@@ -193,12 +169,7 @@
     "signature": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "algorithm",
-        "keyId",
-        "signedDigest",
-        "signature"
-      ],
+      "required": ["algorithm", "keyId", "signedDigest", "signature"],
       "properties": {
         "algorithm": {
           "type": "string",
@@ -209,7 +180,7 @@
           "minLength": 1
         },
         "signedDigest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/lensIdentityDigest"
         },
         "signature": {
           "type": "string",
@@ -220,10 +191,7 @@
     "bundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "format",
-        "entrypoints"
-      ],
+      "required": ["format", "entrypoints"],
       "properties": {
         "format": {
           "const": "layrslens.v1"
@@ -239,11 +207,7 @@
     "analyzerContract": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "supportedMediaTypes",
-        "fileExtensions",
-        "capabilities"
-      ],
+      "required": ["supportedMediaTypes", "fileExtensions", "capabilities"],
       "properties": {
         "supportedMediaTypes": {
           "type": "array",
@@ -275,11 +239,7 @@
     "inspectorField": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "key",
-        "label",
-        "valueType"
-      ],
+      "required": ["key", "label", "valueType"],
       "properties": {
         "key": {
           "type": "string",
@@ -290,27 +250,14 @@
           "minLength": 1
         },
         "valueType": {
-          "enum": [
-            "string",
-            "number",
-            "boolean",
-            "stringList"
-          ]
+          "enum": ["string", "number", "boolean", "stringList"]
         }
       }
     },
     "viewerContract": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "viewerId",
-        "schemaVersion",
-        "component",
-        "previewKinds",
-        "diffKinds",
-        "reconcileStatuses",
-        "inspectorFields"
-      ],
+      "required": ["viewerId", "schemaVersion", "component", "previewKinds", "diffKinds", "reconcileStatuses", "inspectorFields"],
       "properties": {
         "viewerId": {
           "type": "string",
@@ -342,11 +289,7 @@
         "reconcileStatuses": {
           "type": "array",
           "items": {
-            "enum": [
-              "unsupported",
-              "needs_manual_resolution",
-              "auto_resolvable"
-            ]
+            "enum": ["unsupported", "needs_manual_resolution", "auto_resolvable"]
           },
           "uniqueItems": true
         },
@@ -361,15 +304,7 @@
     "lensManifest": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "contractVersion",
-        "id",
-        "name",
-        "version",
-        "analyzer",
-        "viewer",
-        "resolutionMethods"
-      ],
+      "required": ["contractVersion", "id", "name", "version", "analyzer", "viewer", "resolutionMethods"],
       "properties": {
         "contractVersion": {
           "$ref": "#/$defs/contractVersion"
@@ -385,7 +320,7 @@
           "$ref": "#/$defs/version"
         },
         "digest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/lensIdentityDigest"
         },
         "analyzer": {
           "$ref": "#/$defs/analyzerContract"
@@ -407,14 +342,10 @@
       "allOf": [
         {
           "if": {
-            "required": [
-              "bundle"
-            ]
+            "required": ["bundle"]
           },
           "then": {
-            "required": [
-              "digest"
-            ]
+            "required": ["digest"]
           }
         }
       ]
@@ -422,11 +353,7 @@
     "windowRange": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "start",
-        "endExclusive",
-        "total"
-      ],
+      "required": ["start", "endExclusive", "total"],
       "properties": {
         "start": {
           "type": "integer",
@@ -445,13 +372,7 @@
     "previewWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "contractVersion",
-        "lens",
-        "artifactId",
-        "unit",
-        "window"
-      ],
+      "required": ["contractVersion", "lens", "artifactId", "unit", "window"],
       "properties": {
         "contractVersion": {
           "$ref": "#/$defs/contractVersion"
@@ -464,11 +385,7 @@
           "minLength": 1
         },
         "unit": {
-          "enum": [
-            "bytes",
-            "lines",
-            "items"
-          ]
+          "enum": ["bytes", "lines", "items"]
         },
         "window": {
           "$ref": "#/$defs/windowRange"
@@ -478,12 +395,7 @@
     "diffWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "contractVersion",
-        "lens",
-        "path",
-        "lines"
-      ],
+      "required": ["contractVersion", "lens", "path", "lines"],
       "properties": {
         "contractVersion": {
           "$ref": "#/$defs/contractVersion"
@@ -513,11 +425,7 @@
     "reconcileSide": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "exists",
-        "bytes",
-        "size"
-      ],
+      "required": ["exists", "bytes", "size"],
       "properties": {
         "exists": {
           "type": "boolean"
@@ -532,15 +440,36 @@
           "type": "integer",
           "minimum": 0
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "exists": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bytes": {
+                "maxItems": 0
+              },
+              "size": {
+                "const": 0
+              }
+            },
+            "not": {
+              "required": ["contentHash"]
+            }
+          }
+        }
+      ]
     },
     "reconcileLabels": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "existing",
-        "incoming"
-      ],
+      "required": ["existing", "incoming"],
       "properties": {
         "existing": {
           "type": "string",
@@ -555,15 +484,7 @@
     "reconcileRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "contractVersion",
-        "lens",
-        "path",
-        "base",
-        "existing",
-        "incoming",
-        "labels"
-      ],
+      "required": ["contractVersion", "lens", "path", "base", "existing", "incoming", "labels"],
       "properties": {
         "contractVersion": {
           "$ref": "#/$defs/contractVersion"
@@ -595,10 +516,7 @@
     "reconcileContent": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "exists",
-        "bytes"
-      ],
+      "required": ["exists", "bytes"],
       "properties": {
         "exists": {
           "type": "boolean"
@@ -606,7 +524,25 @@
         "bytes": {
           "$ref": "#/$defs/bytes"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "exists": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bytes": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
     },
     "metadataValue": {
       "anyOf": [
@@ -639,15 +575,10 @@
     "conflictSegment": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "kind"
-      ],
+      "required": ["kind"],
       "properties": {
         "kind": {
-          "enum": [
-            "text",
-            "block"
-          ]
+          "enum": ["text", "block"]
         },
         "text": {
           "type": "string"
@@ -664,13 +595,9 @@
               "const": "text"
             }
           },
-          "required": [
-            "text"
-          ],
+          "required": ["text"],
           "not": {
-            "required": [
-              "blockId"
-            ]
+            "required": ["blockId"]
           }
         },
         {
@@ -679,13 +606,9 @@
               "const": "block"
             }
           },
-          "required": [
-            "blockId"
-          ],
+          "required": ["blockId"],
           "not": {
-            "required": [
-              "text"
-            ]
+            "required": ["text"]
           }
         }
       ]
@@ -693,13 +616,7 @@
     "conflictBlock": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "blockId",
-        "base",
-        "existing",
-        "incoming",
-        "resolutionMethods"
-      ],
+      "required": ["blockId", "base", "existing", "incoming", "resolutionMethods"],
       "properties": {
         "blockId": {
           "type": "string",
@@ -737,21 +654,10 @@
     "reconcileResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "status",
-        "summary",
-        "resolutionMethods",
-        "blocks",
-        "segments",
-        "fields"
-      ],
+      "required": ["status", "summary", "resolutionMethods", "blocks", "segments", "fields"],
       "properties": {
         "status": {
-          "enum": [
-            "auto_resolved",
-            "conflicted",
-            "unsupported"
-          ]
+          "enum": ["auto_resolved", "conflicted", "unsupported"]
         },
         "summary": {
           "type": "string"
@@ -806,9 +712,7 @@
             }
           },
           "then": {
-            "required": [
-              "resolved"
-            ],
+            "required": ["resolved"],
             "properties": {
               "resolutionMethods": {
                 "const": []
@@ -821,9 +725,7 @@
               }
             },
             "not": {
-              "required": [
-                "conflict"
-              ]
+              "required": ["conflict"]
             }
           }
         },
@@ -836,13 +738,9 @@
             }
           },
           "then": {
-            "required": [
-              "conflict"
-            ],
+            "required": ["conflict"],
             "not": {
-              "required": [
-                "resolved"
-              ]
+              "required": ["resolved"]
             }
           }
         },
@@ -869,14 +767,10 @@
             "not": {
               "anyOf": [
                 {
-                  "required": [
-                    "resolved"
-                  ]
+                  "required": ["resolved"]
                 },
                 {
-                  "required": [
-                    "conflict"
-                  ]
+                  "required": ["conflict"]
                 }
               ]
             }
@@ -887,11 +781,7 @@
     "reconcileResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "contractVersion",
-        "lens",
-        "result"
-      ],
+      "required": ["contractVersion", "lens", "result"],
       "properties": {
         "contractVersion": {
           "$ref": "#/$defs/contractVersion"

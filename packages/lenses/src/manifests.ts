@@ -1,13 +1,19 @@
 import type { LensManifest } from "@layrs/lens-sdk";
 
 export const BUILTIN_LENS_VERSION = "1.0.0";
+export const BUILTIN_LENS_IMPLEMENTATION_DIGESTS = {
+  "layrs.code": "sha256:c40fb651cc4255a5e48f30381563cdd649d85bb5cb2ea9dea5995e964a5543ba",
+  "layrs.image": "sha256:70abb30bb6d18f521edbfd2bab55d9ba01a483fdb470076cf7f47495ef66fef9",
+  "layrs.text": "sha256:773222c274cbb32bf1b058ba084a4085a69f3f23aa69b6cc3e532e59916a8c88",
+  "layrs.raw": "sha256:84eff9e01ee95a583981531b79c710def02ffe777832a6a399b3862af0edea3d"
+} as const;
 
 export const textManifest = {
   contractVersion: "layrs.lens.v1",
   id: "layrs.text",
   name: "Text",
   version: BUILTIN_LENS_VERSION,
-  digest: "sha256:3ecc8843e714891f6a6ef9c899372e361fdaab0befa91f291e90bbcc412586f7",
+  digest: BUILTIN_LENS_IMPLEMENTATION_DIGESTS["layrs.text"],
   analyzer: {
     supportedMediaTypes: ["text/plain", "text/markdown"],
     fileExtensions: ["txt", "md", "markdown", "rst", "log"],
@@ -39,7 +45,7 @@ export const rawManifest = {
   id: "layrs.raw",
   name: "Raw",
   version: BUILTIN_LENS_VERSION,
-  digest: "sha256:1cc07635972c4402981d6f7df708af8b7a001a850ebd3dea1fed7f4eb47453aa",
+  digest: BUILTIN_LENS_IMPLEMENTATION_DIGESTS["layrs.raw"],
   analyzer: {
     supportedMediaTypes: ["application/octet-stream"],
     fileExtensions: [],
@@ -69,7 +75,7 @@ export const codeManifest = {
   id: "layrs.code",
   name: "Code",
   version: BUILTIN_LENS_VERSION,
-  digest: "sha256:76b4b9f1179a6d105706684fbdbb05bf4b92a8ee367e8e7332dfed3410e74090",
+  digest: BUILTIN_LENS_IMPLEMENTATION_DIGESTS["layrs.code"],
   analyzer: {
     supportedMediaTypes: [
       "text/rust",
@@ -142,7 +148,7 @@ export const imageManifest = {
   id: "layrs.image",
   name: "Image",
   version: BUILTIN_LENS_VERSION,
-  digest: "sha256:948bb0e9e163708f43dd2a33f089ea6eaa70677aad26979ac0d4135705794c7f",
+  digest: BUILTIN_LENS_IMPLEMENTATION_DIGESTS["layrs.image"],
   analyzer: {
     supportedMediaTypes: ["image/png", "image/jpeg", "image/webp"],
     fileExtensions: ["png", "jpg", "jpeg", "webp"],
@@ -164,27 +170,3 @@ export const imageManifest = {
   },
   resolutionMethods: []
 } satisfies LensManifest;
-
-export function builtinManifestDigestPayload(manifest: LensManifest): string {
-  return JSON.stringify({
-    contractVersion: manifest.contractVersion,
-    id: manifest.id,
-    name: manifest.name,
-    version: manifest.version,
-    analyzer: {
-      supportedMediaTypes: manifest.analyzer.supportedMediaTypes,
-      fileExtensions: manifest.analyzer.fileExtensions,
-      capabilities: manifest.analyzer.capabilities
-    },
-    viewer: {
-      viewerId: manifest.viewer.viewerId,
-      schemaVersion: manifest.viewer.schemaVersion,
-      component: manifest.viewer.component,
-      previewKinds: manifest.viewer.previewKinds,
-      diffKinds: manifest.viewer.diffKinds,
-      reconcileStatuses: manifest.viewer.reconcileStatuses,
-      inspectorFields: manifest.viewer.inspectorFields
-    },
-    resolutionMethods: manifest.resolutionMethods
-  });
-}

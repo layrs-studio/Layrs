@@ -1,11 +1,19 @@
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
+const Module = require("node:module");
 const path = require("node:path");
 
 const compiledRoot = path.resolve(__dirname, "../../../tmp/lenses-tests/lenses/src");
+const compiledSdkEntry = path.resolve(__dirname, "../../../tmp/lenses-tests/lens-sdk/src/index.js");
+const originalResolveFilename = Module._resolveFilename;
+Module._resolveFilename = function resolveCompiledWorkspacePackage(request, parent, isMain, options) {
+  if (request === "@layrs/lens-sdk") {
+    return compiledSdkEntry;
+  }
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
 const {
-  builtinManifestDigestPayload,
+  BUILTIN_LENS_IMPLEMENTATION_DIGESTS,
   codeManifest,
   imageManifest,
   rawManifest,
@@ -20,18 +28,39 @@ const {
 const { prepareTextReconcile, resolveTextBlockChoice } = require(
   path.join(compiledRoot, "text/reconcile.js")
 );
+Module._resolveFilename = originalResolveFilename;
+const {
+  builtinImplementationDigests,
+  implementationDigest,
+  readImplementationEntries
+} = require("../scripts/implementation-digests.cjs");
 
 const goldenPath = path.resolve(__dirname, "builtin-manifests.golden.json");
+const negativeVectorsPath = path.resolve(__dirname, "../../lens-sdk/test/contract-negative.vectors.json");
 const golden = JSON.parse(fs.readFileSync(goldenPath, "utf8"));
+const negativeVectors = JSON.parse(fs.readFileSync(negativeVectorsPath, "utf8"));
 
 assert.deepEqual(JSON.parse(JSON.stringify(builtinManifests)), golden);
+const implementationEntries = readImplementationEntries();
+const computedDigests = builtinImplementationDigests(implementationEntries);
+assert.deepEqual(BUILTIN_LENS_IMPLEMENTATION_DIGESTS, computedDigests);
 for (const manifest of builtinManifests) {
-  const digest = `sha256:${crypto.createHash("sha256").update(builtinManifestDigestPayload(manifest)).digest("hex")}`;
   assert.equal(manifest.contractVersion, "layrs.lens.v1");
   assert.equal(manifest.version, "1.0.0");
-  assert.equal(manifest.digest, digest);
+  assert.equal(manifest.digest, computedDigests[manifest.id]);
   assert.match(manifest.digest, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(manifest.digest, `sha256:${"0".repeat(64)}`);
   assert.deepEqual(manifest.viewer.reconcileStatuses, []);
+}
+const changedImplementation = implementationEntries.map((entry, index) =>
+  index === 0 ? { ...entry, bytes: Buffer.concat([entry.bytes, Buffer.from("\n// changed")]) } : entry
+);
+for (const manifest of builtinManifests) {
+  assert.notEqual(
+    implementationDigest(manifest.id, changedImplementation),
+    manifest.digest,
+    `${manifest.id} identity must change when shipped implementation bytes change`
+  );
 }
 
 assert.deepEqual(declaredResolutionMethods(textManifest, "block"), ["existing", "incoming", "both", "manual"]);
@@ -90,6 +119,43 @@ const malformedRaw = prepareRawReconcile({
 });
 assert.equal(malformedRaw.status, "unsupported");
 
+for (const vector of negativeVectors.reconcileSides) {
+  const invalidSide = runtimeSide(vector.value);
+  assert.equal(
+    prepareRawReconcile({ ...rawConflictInput, ours: invalidSide }).status,
+    "unsupported",
+    `Raw: ${vector.name}`
+  );
+  assert.equal(
+    prepareTextReconcile({
+      ...reconcileInput("base", "existing", "incoming", "text/plain"),
+      ours: invalidSide
+    }).status,
+    "unsupported",
+    `Text: ${vector.name}`
+  );
+}
+
+for (const [name, prepare, mediaType] of [
+  ["Raw", prepareRawReconcile, "application/octet-stream"],
+  ["Text", prepareTextReconcile, "text/plain"]
+]) {
+  const emptyPresent = byteSide(new Uint8Array());
+  const emptyResult = prepare(tombstoneInput(mediaType, emptyPresent, emptyPresent, emptyPresent));
+  assert.equal(emptyResult.status, "auto_resolved", `${name}: empty present file is valid`);
+  assert.equal(emptyResult.resolved.exists, true, `${name}: empty file remains present`);
+  assert.equal(emptyResult.resolved.bytes.length, 0);
+
+  const absent = absentSide();
+  const deletedResult = prepare(tombstoneInput(mediaType, textSide("base"), absent, absent));
+  assert.equal(deletedResult.status, "auto_resolved", `${name}: matching tombstones resolve`);
+  assert.equal(deletedResult.resolved.exists, false, `${name}: tombstone remains absent`);
+
+  const createdEmpty = prepare(tombstoneInput(mediaType, absent, emptyPresent, absent));
+  assert.equal(createdEmpty.status, "auto_resolved", `${name}: empty creation resolves`);
+  assert.equal(createdEmpty.resolved.exists, true, `${name}: empty creation is not a tombstone`);
+}
+
 assert.deepEqual(
   surfaceResolutionMethods(textManifest, "block", { supportedMethods: ["incoming", "base"] }),
   ["incoming"]
@@ -121,6 +187,29 @@ function textSide(value) {
 
 function byteSide(bytes) {
   return { exists: true, bytes, size: bytes.length };
+}
+
+function absentSide() {
+  return { exists: false, bytes: new Uint8Array(), size: 0 };
+}
+
+function runtimeSide(value) {
+  return {
+    ...value,
+    ...(Object.hasOwn(value, "bytes") ? { bytes: Uint8Array.from(value.bytes) } : {})
+  };
+}
+
+function tombstoneInput(mediaType, base, ours, theirs) {
+  return {
+    path: "docs/tombstone.txt",
+    mediaType,
+    base,
+    ours,
+    theirs,
+    oursLabel: "existing",
+    theirsLabel: "incoming"
+  };
 }
 
 function decode(bytes) {

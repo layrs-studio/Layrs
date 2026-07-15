@@ -6,10 +6,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 mod contract;
+mod manifest_validation;
+mod selection;
 mod validation;
 mod wire;
 
 pub use contract::*;
+pub use manifest_validation::{
+    is_lens_id, is_semantic_version, validate_lens_id, validate_semantic_version,
+};
+pub use selection::*;
 pub use validation::{LensContractValidationError, is_sha256_digest, validate_sha256_digest};
 
 pub type MetadataMap = BTreeMap<String, MetadataValue>;
@@ -18,9 +24,21 @@ pub type LensResult<T> = Result<T, LensError>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LensManifest {
+    #[serde(
+        serialize_with = "manifest_validation::serialize_contract_version",
+        deserialize_with = "manifest_validation::deserialize_contract_version"
+    )]
     pub contract_version: String,
+    #[serde(
+        serialize_with = "manifest_validation::serialize_lens_id",
+        deserialize_with = "manifest_validation::deserialize_lens_id"
+    )]
     pub id: String,
     pub name: String,
+    #[serde(
+        serialize_with = "manifest_validation::serialize_semantic_version",
+        deserialize_with = "manifest_validation::deserialize_semantic_version"
+    )]
     pub version: String,
     #[serde(
         default,
@@ -83,6 +101,7 @@ impl LensManifest {
     }
 
     pub fn try_pin(&self) -> Result<Option<LensPin>, LensContractValidationError> {
+        self.validate()?;
         self.digest
             .as_ref()
             .map(|digest| LensPin::try_new(&self.id, &self.version, digest))
@@ -537,8 +556,7 @@ pub struct LensReconcileInput<'a> {
     pub theirs_label: &'a str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LensReconcileContent {
     pub exists: bool,
     pub bytes: Vec<u8>,

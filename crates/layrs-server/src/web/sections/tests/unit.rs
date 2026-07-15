@@ -195,30 +195,27 @@
             let object = manifest
                 .as_object()
                 .expect("lens manifest is a JSON object");
+            let typed: layrs_lens_sdk::LensManifest = serde_json::from_value(manifest.clone())
+                .expect("/v1/lenses emits only canonical LensManifest values");
+            typed
+                .validate()
+                .expect("/v1/lenses manifests satisfy the canonical contract");
+            assert_eq!(
+                serde_json::to_value(&typed).expect("LensManifest serializes"),
+                *manifest,
+                "/v1/lenses does not add a divergent compatibility shape"
+            );
 
-            assert!(object.get("id").and_then(Value::as_str).is_some());
-            assert!(object.get("name").and_then(Value::as_str).is_some());
-            assert!(object.get("version").and_then(Value::as_str).is_some());
+            assert_eq!(
+                object.get("contractVersion").and_then(Value::as_str),
+                Some("layrs.lens.v1")
+            );
             assert!(!object.contains_key("displayName"));
             assert!(!object.contains_key("serverProvided"));
-            assert!(
-                object
-                    .get("applies_to")
-                    .and_then(Value::as_object)
-                    .is_some()
-            );
-            assert!(
-                object
-                    .get("capabilities")
-                    .and_then(Value::as_array)
-                    .is_some_and(|values| !values.is_empty())
-            );
-            assert!(
-                object
-                    .get("permissions")
-                    .and_then(Value::as_object)
-                    .is_some()
-            );
+            assert!(!object.contains_key("applies_to"));
+            assert!(!object.contains_key("appliesTo"));
+            assert!(!object.contains_key("capabilities"));
+            assert!(!object.contains_key("permissions"));
 
             let analyzer = object
                 .get("analyzer")
@@ -269,7 +266,7 @@
                 viewer
                     .get("reconcileStatuses")
                     .and_then(Value::as_array)
-                    .is_some_and(|values| !values.is_empty())
+                    .is_some()
             );
             assert!(
                 viewer

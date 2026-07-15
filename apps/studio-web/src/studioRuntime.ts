@@ -9,9 +9,9 @@ import {
   type Layer,
   type LayerAccessPolicy,
   type LayrsClientLike,
-  type LensManifest,
   type TimelineItem
 } from "@layrs/client-sdk";
+import { parseLensManifestList, type LensManifest } from "@layrs/lens-sdk";
 import type { StudioRoute } from "./routes";
 import {
   defaultLayerForSpace,
@@ -237,29 +237,17 @@ export async function loadArtifactFeed(
 }
 
 function normalizeLensManifests(payload: unknown): LensManifest[] {
-  const items = arrayPayload(payload, "items") ?? arrayPayload(payload, "manifests") ?? (Array.isArray(payload) ? payload : []);
-  return items.filter(isLensManifest);
-}
-
-function isLensManifest(value: unknown): value is LensManifest {
-  const record = objectPayload(value);
-  const analyzer = objectPayload(record?.analyzer);
-  const viewer = objectPayload(record?.viewer);
-
-  return Boolean(
-    record &&
-      typeof record.id === "string" &&
-      typeof record.name === "string" &&
-      typeof record.version === "string" &&
-      analyzer &&
-      Array.isArray(analyzer.supportedMediaTypes) &&
-      Array.isArray(analyzer.fileExtensions) &&
-      Array.isArray(analyzer.capabilities) &&
-      viewer &&
-      typeof viewer.viewerId === "string" &&
-      Array.isArray(viewer.previewKinds) &&
-      Array.isArray(viewer.diffKinds)
-  );
+  const record = objectPayload(payload);
+  if (!record || !Array.isArray(record.items)) {
+    throw new Error("Lens registry response must contain a canonical items array");
+  }
+  if (Object.keys(record).some((key) => key !== "items" && key !== "errors")) {
+    throw new Error("Lens registry response contains unknown fields");
+  }
+  if (record.errors !== undefined && !Array.isArray(record.errors)) {
+    throw new Error("Lens registry response errors must be an array");
+  }
+  return parseLensManifestList(record.items);
 }
 
 function normalizeTimelineItems(payload: unknown): TimelineItem[] {

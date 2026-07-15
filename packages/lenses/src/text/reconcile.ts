@@ -7,6 +7,7 @@ import type {
   LensReconcileSide,
   ResolutionMethod
 } from "@layrs/lens-sdk";
+import { assertLensReconcileSide } from "@layrs/lens-sdk";
 import { textManifest } from "../manifests";
 import { declaredResolutionMethods } from "../shared/resolutionMethods";
 
@@ -17,6 +18,23 @@ interface TextChangeRange {
 }
 
 export function prepareTextReconcile(request: LensReconcileInput): LensReconcileResult {
+  const inputError = reconcileInputError(request);
+  if (inputError) {
+    return unsupported(inputError);
+  }
+  if (sameSide(request.ours, request.theirs)) {
+    return autoResolved("Text sides are identical", contentFromSide(request.ours));
+  }
+  if (sameSide(request.base, request.ours)) {
+    return autoResolved("Existing text is unchanged; taking incoming", contentFromSide(request.theirs));
+  }
+  if (sameSide(request.base, request.theirs)) {
+    return autoResolved("Incoming text is unchanged; keeping existing", contentFromSide(request.ours));
+  }
+  if (!request.base.exists || !request.ours.exists || !request.theirs.exists) {
+    return unsupported("Text delete/modify conflicts require explicit resolution");
+  }
+
   const baseText = decodeSide(request.base, "Base");
   if (typeof baseText !== "string") {
     return baseText;
@@ -178,17 +196,58 @@ export function resolveTextBlockChoice(
 }
 
 function decodeSide(side: LensReconcileSide, label: string): string | LensReconcileResult {
+  assertLensReconcileSide(side, `${label} text`);
   if (!side.exists) {
-    return "";
-  }
-  if (!side.bytes) {
-    return unsupported(`${label} text is missing bytes`);
+    return unsupported(`${label} text is absent`);
   }
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(side.bytes);
   } catch {
     return unsupported(`${label} text is not valid UTF-8`);
   }
+}
+
+function reconcileInputError(request: LensReconcileInput): string | undefined {
+  for (const [label, side] of [
+    ["Base text", request.base],
+    ["Existing text", request.ours],
+    ["Incoming text", request.theirs]
+  ] as const) {
+    try {
+      assertLensReconcileSide(side, label);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+  return undefined;
+}
+
+function sameSide(left: LensReconcileSide, right: LensReconcileSide): boolean {
+  if (left.exists !== right.exists) {
+    return false;
+  }
+  if (!left.exists || !right.exists) {
+    return true;
+  }
+  return left.bytes.length === right.bytes.length && left.bytes.every((byte, index) => byte === right.bytes[index]);
+}
+
+function contentFromSide(side: LensReconcileSide): LensReconcileContent {
+  assertLensReconcileSide(side, "Selected text side");
+  return side.exists
+    ? { exists: true, bytes: new Uint8Array(side.bytes) }
+    : { exists: false, bytes: new Uint8Array() };
+}
+
+function autoResolved(summary: string, resolved: LensReconcileContent): LensReconcileResult {
+  return {
+    status: "auto_resolved",
+    summary,
+    resolved,
+    blocks: [],
+    segments: [],
+    fields: {}
+  };
 }
 
 function unsupported(summary: string): LensReconcileResult {

@@ -149,6 +149,42 @@ fn canonical_reconcile_deserialization_rejects_contradictory_states() {
 }
 
 #[test]
+fn reconcile_tombstones_require_coherent_bytes_size_hash_and_existence() {
+    let present_empty = serde_json::json!({"exists": true, "bytes": [], "size": 0});
+    serde_json::from_value::<LensReconcileSideContract>(present_empty)
+        .expect("an empty present file is valid");
+
+    let vectors = contract_negative_vectors();
+    for vector in vectors.reconcile_sides {
+        assert!(
+            serde_json::from_value::<LensReconcileSideContract>(vector.value).is_err(),
+            "{}",
+            vector.name
+        );
+    }
+
+    serde_json::from_value::<LensReconcileContent>(
+        serde_json::json!({"exists": true, "bytes": []}),
+    )
+    .expect("an empty present result is valid");
+    serde_json::from_value::<LensReconcileContent>(
+        serde_json::json!({"exists": false, "bytes": []}),
+    )
+    .expect("a canonical tombstone is valid");
+    for vector in vectors.reconcile_contents {
+        assert!(
+            serde_json::from_value::<LensReconcileContent>(vector.value).is_err(),
+            "{}",
+            vector.name
+        );
+    }
+
+    let mut invalid_tombstone = LensReconcileSideContract::absent();
+    invalid_tombstone.bytes.push(1);
+    assert!(serde_json::to_value(invalid_tombstone).is_err());
+}
+
+#[test]
 fn canonical_reconcile_rejects_unknown_methods_and_legacy_alias_fields() {
     let banana = serde_json::json!({
         "status": "conflicted",
@@ -214,6 +250,13 @@ fn reconcile_constructors_and_serialization_refuse_invalid_states() {
 
 #[test]
 fn pins_require_strict_sha256_digests() {
+    for vector in contract_negative_vectors().pins {
+        assert!(
+            serde_json::from_value::<LensPin>(vector.value).is_err(),
+            "{}",
+            vector.name
+        );
+    }
     assert!(LensPin::try_new("layrs.test", "1.0.0", "sha256:abc").is_err());
     assert!(
         LensPin::try_new(
@@ -246,6 +289,66 @@ fn pins_require_strict_sha256_digests() {
     assert!(manifest.pin().is_none());
     assert!(manifest.try_pin().is_err());
     assert!(serde_json::to_value(manifest).is_err());
+}
+
+#[test]
+fn reconcile_responses_bind_to_the_validated_executed_implementation() {
+    let mut manifest = LensManifest::new(
+        "layrs.test.reconcile",
+        "Reconcile",
+        "1.0.0",
+        AnalyzerContract {
+            supported_media_types: vec!["text/plain".to_string()],
+            file_extensions: vec!["txt".to_string()],
+            capabilities: vec![LensCapability::Reconcile],
+        },
+        ViewerContract::new(
+            "layrs.viewer.test.reconcile",
+            "ReconcileViewer",
+            vec![PreviewKind::Text],
+            vec![DiffKind::TextLines],
+        ),
+    )
+    .with_digest(LENS_DIGEST)
+    .with_bundle(golden_bundle());
+    manifest.resolution_methods = ResolutionMethods::file(vec![ResolutionMethod::Existing]);
+
+    assert!(VerifiedLensReconcileExecution::try_new(&manifest, VIEWER_DIGEST).is_err());
+    let execution = VerifiedLensReconcileExecution::try_new(&manifest, RECONCILE_DIGEST)
+        .expect("reconcile entrypoint digest identifies the executed implementation");
+    assert_eq!(execution.implementation_digest(), RECONCILE_DIGEST);
+
+    let requested = manifest.try_pin().expect("valid manifest").expect("pin");
+    let response = LensReconcileResponse::try_for_execution(
+        &execution,
+        &requested,
+        LensReconcileResult::unsupported("unsupported"),
+    )
+    .expect("matching response pin");
+    assert_eq!(response.lens, requested);
+
+    for vector in contract_negative_vectors().response_pin_mismatches {
+        let mut mismatched = requested.clone();
+        if let Some(lens_id) = vector.pin_override.lens_id {
+            mismatched.lens_id = lens_id;
+        }
+        if let Some(version) = vector.pin_override.version {
+            mismatched.version = version;
+        }
+        if let Some(digest) = vector.pin_override.digest {
+            mismatched.digest = digest;
+        }
+        assert!(
+            LensReconcileResponse::try_for_execution(
+                &execution,
+                &mismatched,
+                LensReconcileResult::unsupported("unsupported"),
+            )
+            .is_err(),
+            "{}",
+            vector.name
+        );
+    }
 }
 
 #[test]
@@ -304,6 +407,43 @@ struct GoldenReconcileResults {
     auto_resolved: LensReconcileResponse,
     conflicted: LensReconcileResponse,
     unsupported: LensReconcileResponse,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContractNegativeVectors {
+    reconcile_sides: Vec<NamedValueVector>,
+    reconcile_contents: Vec<NamedValueVector>,
+    pins: Vec<NamedValueVector>,
+    response_pin_mismatches: Vec<ResponsePinMismatchVector>,
+}
+
+#[derive(Deserialize)]
+struct NamedValueVector {
+    name: String,
+    value: Value,
+}
+
+#[derive(Deserialize)]
+struct ResponsePinMismatchVector {
+    name: String,
+    #[serde(rename = "override")]
+    pin_override: PinOverride,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PinOverride {
+    lens_id: Option<String>,
+    version: Option<String>,
+    digest: Option<String>,
+}
+
+fn contract_negative_vectors() -> ContractNegativeVectors {
+    serde_json::from_str(include_str!(
+        "../../../packages/lens-sdk/test/contract-negative.vectors.json"
+    ))
+    .expect("shared negative contract vectors parse")
 }
 
 fn golden_contract() -> GoldenContract {
@@ -403,6 +543,12 @@ fn golden_contract() -> GoldenContract {
         MetadataValue::String("mediaType".to_string()),
     );
 
+    let execution = VerifiedLensReconcileExecution::try_new(&manifest, RECONCILE_DIGEST)
+        .expect("golden reconcile implementation matches its manifest");
+    let auto_resolved = LensReconcileResponse::for_execution(&execution, &pin, auto_resolved);
+    let conflicted = LensReconcileResponse::for_execution(&execution, &pin, conflicted);
+    let unsupported = LensReconcileResponse::for_execution(&execution, &pin, unsupported);
+
     GoldenContract {
         manifest,
         preview_window: LensPreviewWindow::new(
@@ -420,9 +566,9 @@ fn golden_contract() -> GoldenContract {
         },
         reconcile_input: golden_reconcile_request(pin.clone()),
         reconcile_results: GoldenReconcileResults {
-            auto_resolved: LensReconcileResponse::new(pin.clone(), auto_resolved),
-            conflicted: LensReconcileResponse::new(pin.clone(), conflicted),
-            unsupported: LensReconcileResponse::new(pin, unsupported),
+            auto_resolved,
+            conflicted,
+            unsupported,
         },
     }
 }

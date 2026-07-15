@@ -9,7 +9,14 @@ import type {
   ScopedResolutionMethod
 } from "./contracts";
 import { LENS_CONTRACT_VERSION } from "./contracts";
+import { assertLensManifest } from "./manifestValidation";
 import { assertSha256Digest } from "./validation";
+
+export interface VerifiedLensReconcileExecution {
+  manifest: LensManifest;
+  pin: LensPin;
+  implementationDigest: string;
+}
 
 export function createLensManifest(input: {
   id: string;
@@ -26,14 +33,7 @@ export function createLensManifest(input: {
   resolutionMethods?: ScopedResolutionMethod[];
   reconcileStatuses?: ReconcileStatus[];
 }): LensManifest {
-  if (input.digest !== undefined) {
-    assertSha256Digest(input.digest, "Lens manifest digest");
-  }
-  if (input.bundle && input.digest === undefined) {
-    throw new Error("A bundled lens manifest requires an explicit digest");
-  }
-
-  return {
+  const manifest: LensManifest = {
     contractVersion: LENS_CONTRACT_VERSION,
     id: input.id,
     name: input.name,
@@ -56,18 +56,40 @@ export function createLensManifest(input: {
     resolutionMethods: [...(input.resolutionMethods ?? [])],
     ...(input.bundle ? { bundle: input.bundle } : {})
   };
+  assertLensManifest(manifest);
+  return manifest;
 }
 
 export function lensPinFromManifest(manifest: LensManifest): LensPin | undefined {
+  assertLensManifest(manifest);
   if (manifest.digest === undefined) {
     return undefined;
   }
-  assertSha256Digest(manifest.digest, "Lens manifest digest");
   return {
     lensId: manifest.id,
     version: manifest.version,
     digest: manifest.digest
   };
+}
+
+export function verifyLensReconcileExecution(
+  manifest: LensManifest,
+  implementationDigest: string
+): VerifiedLensReconcileExecution {
+  assertLensManifest(manifest);
+  assertSha256Digest(implementationDigest, "Executed Lens implementation digest");
+  const pin = lensPinFromManifest(manifest);
+  if (!pin) {
+    throw new Error(`Executed Lens manifest ${manifest.id} is not pinned`);
+  }
+  const expectedImplementationDigest = manifest.bundle?.entrypoints.reconcile?.digest ?? manifest.digest;
+  if (!expectedImplementationDigest) {
+    throw new Error(`Lens manifest ${manifest.id} does not declare a reconcile implementation digest`);
+  }
+  if (implementationDigest !== expectedImplementationDigest) {
+    throw new Error("Executed Lens implementation digest does not match the validated manifest");
+  }
+  return { manifest, pin, implementationDigest };
 }
 
 export function supportsLensCapability(manifest: LensManifest, capability: LensCapability): boolean {

@@ -4,13 +4,27 @@ const path = require("node:path");
 
 const compiledRoot = path.resolve(__dirname, "../../../tmp/lens-sdk-tests");
 const { contractFixture } = require(path.join(compiledRoot, "test/contract.fixture.js"));
-const { createLensManifest, lensPinFromManifest, supportsLensCapability } = require(
+const {
+  createLensManifest,
+  lensPinFromManifest,
+  supportsLensCapability,
+  verifyLensReconcileExecution
+} = require(
   path.join(compiledRoot, "src/manifest.js")
 );
-const { toCanonicalLensReconcileResult, toLensReconcileResponse } = require(
+const {
+  assertLensReconcileSideContract,
+  toCanonicalLensReconcileResult,
+  toLensReconcileResponse
+} = require(
   path.join(compiledRoot, "src/reconcile.js")
 );
 const { createLensRegistry } = require(path.join(compiledRoot, "src/runtime.js"));
+const { LensSelectionError, selectLensManifest } = require(
+  path.join(compiledRoot, "src/selection.js")
+);
+const { assertLensPin } = require(path.join(compiledRoot, "src/validation.js"));
+const { formatJson } = require("../scripts/format-contract-schema.cjs");
 const {
   assertSchemaSubsetSupported,
   assertValidDefinition,
@@ -19,10 +33,17 @@ const {
 
 const fixturePath = path.resolve(__dirname, "../../../tests/fixtures/lenses/v1/contract.golden.json");
 const schemaPath = path.resolve(__dirname, "../../../schemas/lenses/v1/lens-contract.schema.json");
+const negativeVectorsPath = path.resolve(__dirname, "contract-negative.vectors.json");
+const selectionVectorsPath = path.resolve(__dirname, "selection.vectors.json");
 const expected = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
-const schema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+const schemaText = fs.readFileSync(schemaPath, "utf8");
+const schema = JSON.parse(schemaText);
+const negativeVectors = JSON.parse(fs.readFileSync(negativeVectorsPath, "utf8"));
+const selectionVectors = JSON.parse(fs.readFileSync(selectionVectorsPath, "utf8"));
 
 assert.deepEqual(JSON.parse(JSON.stringify(contractFixture)), expected);
+assert.equal(schemaText, formatJson(schema), "Lens schema uses the reproducible formatter");
+assert.ok(schemaText.split(/\r?\n/).length - 1 < 900, "Lens schema stays below 900 lines");
 assert.equal(schema.$id, "https://schemas.layrs.dev/lenses/v1/lens-contract.schema.json");
 for (const definition of [
   "lensManifest",
@@ -62,6 +83,37 @@ assert.notEqual(
   0
 );
 
+const emptyPresentRequest = clone(expected.reconcileInput);
+emptyPresentRequest.base = { exists: true, bytes: [], size: 0 };
+assertValidDefinition(schema, "reconcileRequest", emptyPresentRequest);
+
+const missingPresentBytesRequest = clone(expected.reconcileInput);
+delete missingPresentBytesRequest.base.bytes;
+assertSchemaRejects("reconcileRequest", missingPresentBytesRequest, "present side without bytes");
+for (const [label, side] of [
+  ["absent side with bytes", { exists: false, bytes: [1], size: 1 }],
+  ["absent side with size", { exists: false, bytes: [], size: 1 }],
+  [
+    "absent side with hash",
+    {
+      exists: false,
+      bytes: [],
+      contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      size: 0
+    }
+  ]
+]) {
+  const invalid = clone(expected.reconcileInput);
+  invalid.base = side;
+  assertSchemaRejects("reconcileRequest", invalid, label);
+}
+const missingPresentResultBytes = clone(expected.reconcileResults.autoResolved);
+delete missingPresentResultBytes.result.resolved.bytes;
+assertSchemaRejects("reconcileResponse", missingPresentResultBytes, "present result without bytes");
+const absentResultWithBytes = clone(expected.reconcileResults.autoResolved);
+absentResultWithBytes.result.resolved = { exists: false, bytes: [1] };
+assertSchemaRejects("reconcileResponse", absentResultWithBytes, "absent result with bytes");
+
 const manifest = createLensManifest({
   id: "layrs.test.declared",
   name: "Declared",
@@ -81,7 +133,16 @@ assert.equal(lensPinFromManifest(manifest), undefined);
 
 assert.throws(
   () => createLensManifest({ ...manifestInput("layrs.test.bundle"), bundle: expected.manifest.bundle }),
-  /requires an explicit digest/
+  /requires an explicit identity digest/
+);
+assert.throws(
+  () =>
+    createLensManifest({
+      ...manifestInput("layrs.test.empty-bundle"),
+      digest: expected.manifest.digest,
+      bundle: { ...expected.manifest.bundle, entrypoints: {} }
+    }),
+  /at least one entrypoint/
 );
 assert.throws(
   () => createLensManifest({ ...manifestInput("layrs.test.digest"), digest: "sha256:abc" }),
@@ -121,6 +182,97 @@ assert.equal(registry.resolve({ lensId: "layrs.test.declared" }).lens, declaredL
 assert.equal(registry.resolve({ path: "file.forced" }), undefined);
 assert.equal(registry.resolve({ bytes: new TextEncoder().encode("text") }), undefined);
 assert.equal(registry.resolve({ path: "unknown.bin" }), undefined);
+
+for (const vector of negativeVectors.reconcileSides) {
+  assert.throws(
+    () => assertLensReconcileSideContract(vector.value),
+    undefined,
+    vector.name
+  );
+}
+assert.doesNotThrow(() => assertLensReconcileSideContract({ exists: true, bytes: [], size: 0 }));
+for (const vector of negativeVectors.reconcileContents) {
+  const content = {
+    ...vector.value,
+    ...(Object.hasOwn(vector.value, "bytes")
+      ? { bytes: Uint8Array.from(vector.value.bytes) }
+      : {})
+  };
+  assert.throws(
+    () =>
+      toCanonicalLensReconcileResult(
+        reconcileResult({ status: "auto_resolved", resolved: content })
+      ),
+    undefined,
+    vector.name
+  );
+}
+for (const vector of negativeVectors.pins) {
+  assert.throws(() => assertLensPin(vector.value), undefined, vector.name);
+}
+
+const verifiedExecution = verifyLensReconcileExecution(
+  expected.manifest,
+  expected.manifest.bundle.entrypoints.reconcile.digest
+);
+assert.throws(
+  () =>
+    verifyLensReconcileExecution(
+      expected.manifest,
+      expected.manifest.bundle.entrypoints.viewer.digest
+    ),
+  /implementation digest does not match/
+);
+const matchingResponse = toLensReconcileResponse(
+  verifiedExecution,
+  expected.reconcileInput.lens,
+  reconcileResult()
+);
+assert.deepEqual(matchingResponse.lens, expected.reconcileInput.lens);
+assert.throws(
+  () =>
+    toLensReconcileResponse(
+      {
+        ...verifiedExecution,
+        pin: { ...verifiedExecution.pin, version: "1.2.4" }
+      },
+      expected.reconcileInput.lens,
+      reconcileResult()
+    ),
+  /Executed Lens pin does not match/
+);
+for (const vector of negativeVectors.responsePinMismatches) {
+  const requested = { ...expected.reconcileInput.lens, ...vector.override };
+  assert.throws(
+    () => toLensReconcileResponse(verifiedExecution, requested, reconcileResult()),
+    /Requested Lens pin does not match/,
+    vector.name
+  );
+}
+
+for (const vector of selectionVectors) {
+  const manifests = selectionManifests();
+  if (vector.duplicateFromLensId) {
+    const source = manifests.find((candidate) => candidate.id === vector.duplicateFromLensId);
+    assert.ok(source, `${vector.name}: duplicate source exists`);
+    const duplicate = clone(source);
+    duplicate.id = vector.duplicateLensId;
+    duplicate.viewer.viewerId = `layrs.viewer.${vector.duplicateLensId}`;
+    manifests.push(duplicate);
+  }
+
+  if (vector.expectedError) {
+    assert.throws(
+      () => selectLensManifest(manifests, vector),
+      (error) => error instanceof LensSelectionError && error.code === vector.expectedError,
+      vector.name
+    );
+    continue;
+  }
+  const selected = selectLensManifest(manifests, vector);
+  assert.equal(selected?.manifest.id, vector.expectedLensId, vector.name);
+  assert.equal(selected?.reason, vector.expectedReason, vector.name);
+}
 
 const canonicalConflict = toCanonicalLensReconcileResult({
   status: "conflicted",
@@ -225,15 +377,6 @@ assert.throws(
     ),
   /cannot carry resolution methods/
 );
-assert.throws(
-  () =>
-    toLensReconcileResponse(
-      { lensId: "layrs.test", version: "1.0.0", digest: "sha256:invalid" },
-      reconcileResult()
-    ),
-  /Lens pin digest/
-);
-
 console.log("lens-sdk contract tests: ok");
 
 function manifestInput(id) {
@@ -269,6 +412,31 @@ function conflictBlock(overrides = {}) {
     resolutionMethods: [{ method: "manual", scope: "block" }],
     ...overrides
   };
+}
+
+function selectionManifests() {
+  return [
+    selectionManifest("layrs.code", ["application/json"], ["rs"]),
+    selectionManifest("layrs.image", ["image/png"], ["png"]),
+    selectionManifest("layrs.text", ["text/plain"], ["md"]),
+    selectionManifest("layrs.raw", ["application/octet-stream"], [])
+  ];
+}
+
+function selectionManifest(id, supportedMediaTypes, fileExtensions) {
+  return createLensManifest({
+    ...manifestInput(id),
+    supportedMediaTypes,
+    fileExtensions
+  });
+}
+
+function assertSchemaRejects(definition, value, label) {
+  assert.notEqual(
+    validationErrorsForDefinition(schema, definition, value).length,
+    0,
+    label
+  );
 }
 
 function clone(value) {

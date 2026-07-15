@@ -18,6 +18,7 @@ const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   "items",
   "uniqueItems",
   "minItems",
+  "maxItems",
   "minProperties",
   "minLength",
   "minimum",
@@ -132,6 +133,9 @@ function validate(schema, value, rootSchema, path, resolvingRefs) {
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
       errors.push(`${path} must contain at least ${schema.minItems} items`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      errors.push(`${path} must contain at most ${schema.maxItems} items`);
     }
     if (schema.uniqueItems) {
       for (let left = 0; left < value.length; left += 1) {

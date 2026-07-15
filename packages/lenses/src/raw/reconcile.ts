@@ -5,13 +5,14 @@ import type {
   LensReconcileSide,
   ResolutionMethod
 } from "@layrs/lens-sdk";
+import { assertLensReconcileSide } from "@layrs/lens-sdk";
 import { rawManifest } from "../manifests";
 import { declaredResolutionMethods } from "../shared/resolutionMethods";
 
 export function prepareRawReconcile(request: LensReconcileInput): LensReconcileResult {
-  const invalidSide = firstInvalidSide(request);
-  if (invalidSide) {
-    return unsupported(`Raw ${invalidSide} content is missing bytes`);
+  const inputError = reconcileInputError(request);
+  if (inputError) {
+    return unsupported(inputError);
   }
 
   if (sameSide(request.ours, request.theirs)) {
@@ -48,9 +49,7 @@ export function resolveRawConflict(
   }
 
   const selected = method === "existing" ? request.ours : request.theirs;
-  if (selected.exists && !selected.bytes) {
-    throw new Error(`Raw ${method} content is missing bytes`);
-  }
+  assertLensReconcileSide(selected, `Raw ${method}`);
 
   switch (method) {
     case "existing":
@@ -83,15 +82,17 @@ function unsupported(summary: string): LensReconcileResult {
   };
 }
 
-function firstInvalidSide(request: LensReconcileInput): "base" | "existing" | "incoming" | undefined {
-  if (request.base.exists && !request.base.bytes) {
-    return "base";
-  }
-  if (request.ours.exists && !request.ours.bytes) {
-    return "existing";
-  }
-  if (request.theirs.exists && !request.theirs.bytes) {
-    return "incoming";
+function reconcileInputError(request: LensReconcileInput): string | undefined {
+  for (const [label, side] of [
+    ["base", request.base],
+    ["existing", request.ours],
+    ["incoming", request.theirs]
+  ] as const) {
+    try {
+      assertLensReconcileSide(side, `Raw ${label}`);
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   }
   return undefined;
 }
@@ -113,7 +114,8 @@ function sameSide(left: LensReconcileSide, right: LensReconcileSide): boolean {
 }
 
 function contentFromSide(side: LensReconcileSide): LensReconcileContent {
+  assertLensReconcileSide(side, "Raw selected side");
   return side.exists
-    ? { exists: true, bytes: new Uint8Array(side.bytes ?? []) }
+    ? { exists: true, bytes: new Uint8Array(side.bytes) }
     : { exists: false, bytes: new Uint8Array() };
 }

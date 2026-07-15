@@ -6,7 +6,15 @@ import {
   type ArtifactWindowMetadata
 } from "@layrs/client-sdk";
 import { LensPreviewHost, listLenses, type LensSurfaceMetadata } from "@layrs/lenses";
-import type { DiffKind, LensManifest, PreviewKind, PreviewModel } from "@layrs/lens-sdk";
+import {
+  LensSelectionError,
+  parseLensManifestList,
+  selectLensManifest,
+  type DiffKind,
+  type LensManifest,
+  type PreviewKind,
+  type PreviewModel
+} from "@layrs/lens-sdk";
 import { useEffect, useMemo, useState } from "react";
 import { EmptyState } from "./common";
 import { isArtifactRestricted } from "../privateData";
@@ -33,7 +41,9 @@ type ArtifactHints = Artifact & {
   url?: string;
 };
 
-export const fallbackLensManifests: LensManifest[] = listLenses().map((entry) => entry.manifest);
+export const fallbackLensManifests: LensManifest[] = parseLensManifestList(
+  listLenses().map((entry) => entry.manifest)
+);
 
 type ContentState =
   | { status: "idle" | "loading" }
@@ -159,31 +169,19 @@ export function LensFileViewer({
 }
 
 export function resolveLensForArtifact(artifact: Artifact, manifests: LensManifest[]): LensManifest | undefined {
-  const explicitLensId = optionalString(artifact, "lensId");
-  if (explicitLensId) {
-    const explicit = manifests.find((lens) => lens.id === explicitLensId);
-    if (explicit) {
-      return explicit;
+  try {
+    return selectLensManifest(manifests, {
+      lensId: optionalString(artifact, "lensId"),
+      mediaType: mediaTypeForArtifact(artifact),
+      path: artifact.location,
+      fallbackLensId: "layrs.raw"
+    })?.manifest;
+  } catch (error) {
+    if (error instanceof LensSelectionError) {
+      return undefined;
     }
+    throw error;
   }
-
-  const mediaType = mediaTypeForArtifact(artifact);
-  if (mediaType) {
-    const byMediaType = manifests.find((lens) => lens.analyzer.supportedMediaTypes.includes(mediaType));
-    if (byMediaType) {
-      return byMediaType;
-    }
-  }
-
-  const extension = extensionForArtifact(artifact);
-  if (extension) {
-    const byExtension = manifests.find((lens) => lens.analyzer.fileExtensions.includes(extension));
-    if (byExtension) {
-      return byExtension;
-    }
-  }
-
-  return fallbackLensManifests.find((lens) => lens.id === "layrs.raw");
 }
 
 export function diffKindForArtifact(artifact: Artifact, manifests: LensManifest[]): DiffKind {

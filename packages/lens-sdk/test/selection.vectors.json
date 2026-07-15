@@ -1,0 +1,49 @@
+[
+  {
+    "name": "explicit_precedes_content_hints",
+    "lensId": "layrs.image",
+    "path": "src/main.rs",
+    "mediaType": "text/plain",
+    "fallbackLensId": "layrs.raw",
+    "expectedLensId": "layrs.image",
+    "expectedReason": "explicit"
+  },
+  {
+    "name": "media_type_precedes_extension",
+    "path": "README.md",
+    "mediaType": " Application/JSON ; charset=utf-8",
+    "fallbackLensId": "layrs.raw",
+    "expectedLensId": "layrs.code",
+    "expectedReason": "mediaType"
+  },
+  {
+    "name": "extension_is_case_insensitive",
+    "path": "src/MAIN.RS",
+    "fallbackLensId": "layrs.raw",
+    "expectedLensId": "layrs.code",
+    "expectedReason": "extension"
+  },
+  {
+    "name": "fallback_is_explicit",
+    "path": "archive.unknown",
+    "fallbackLensId": "layrs.raw",
+    "expectedLensId": "layrs.raw",
+    "expectedReason": "fallback"
+  },
+  {
+    "name": "ambiguous_extension_fails_closed",
+    "path": "README.MD",
+    "fallbackLensId": "layrs.raw",
+    "duplicateFromLensId": "layrs.text",
+    "duplicateLensId": "example.text",
+    "expectedError": "ambiguous_lens_match"
+  },
+  {
+    "name": "ambiguous_media_type_fails_closed",
+    "mediaType": "image/png",
+    "fallbackLensId": "layrs.raw",
+    "duplicateFromLensId": "layrs.image",
+    "duplicateLensId": "example.image",
+    "expectedError": "ambiguous_lens_match"
+  }
+]

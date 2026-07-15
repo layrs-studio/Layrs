@@ -221,12 +221,21 @@ export interface ReconcileModel {
   fields: Record<string, unknown>;
 }
 
-export interface LensReconcileSide {
-  exists: boolean;
-  bytes?: Uint8Array;
+export interface PresentLensReconcileSide {
+  exists: true;
+  bytes: Uint8Array;
   contentHash?: string;
   size: number;
 }
+
+export interface AbsentLensReconcileSide {
+  exists: false;
+  bytes?: Uint8Array;
+  contentHash?: never;
+  size: 0;
+}
+
+export type LensReconcileSide = PresentLensReconcileSide | AbsentLensReconcileSide;
 
 export interface LensReconcileInput {
   path: string;
@@ -238,12 +247,23 @@ export interface LensReconcileInput {
   theirsLabel: string;
 }
 
-export interface LensReconcileSideContract {
-  exists: boolean;
+export interface PresentLensReconcileSideContract {
+  exists: true;
   bytes: number[];
   contentHash?: string;
   size: number;
 }
+
+export interface AbsentLensReconcileSideContract {
+  exists: false;
+  bytes: [];
+  contentHash?: never;
+  size: 0;
+}
+
+export type LensReconcileSideContract =
+  | PresentLensReconcileSideContract
+  | AbsentLensReconcileSideContract;
 
 export interface LensReconcileRequest {
   contractVersion: typeof LENS_CONTRACT_VERSION;
@@ -256,10 +276,9 @@ export interface LensReconcileRequest {
   labels: LensReconcileLabels;
 }
 
-export interface LensReconcileContent {
-  exists: boolean;
-  bytes?: Uint8Array;
-}
+export type LensReconcileContent =
+  | { exists: true; bytes: Uint8Array }
+  | { exists: false; bytes?: Uint8Array };
 
 export interface LensConflictBlock {
   blockId: string;
@@ -291,10 +310,9 @@ export interface LensReconcileResult {
   fields: Record<string, unknown>;
 }
 
-export interface CanonicalLensReconcileContent {
-  exists: boolean;
-  bytes: number[];
-}
+export type CanonicalLensReconcileContent =
+  | { exists: true; bytes: number[] }
+  | { exists: false; bytes: [] };
 
 export interface CanonicalLensConflictBlock {
   blockId: string;

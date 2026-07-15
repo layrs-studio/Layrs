@@ -8,8 +8,9 @@ import type {
   LensReconcileRendererProps,
   LensReconcileResult
 } from "./contracts";
+import { selectLensManifest, type LensMatchReason } from "./selection";
 
-export type LensMatchReason = "explicit" | "mediaType" | "extension";
+export type { LensMatchReason } from "./selection";
 
 export interface LensSurfaceMetadata extends Partial<ArtifactMetadata> {
   dimensions?: { width: number; height: number };
@@ -101,30 +102,13 @@ export class LensRegistry<TNode = unknown> {
   }
 
   resolve(request: LensResolutionRequest): LensResolution<TNode> | undefined {
-    if (request.lensId) {
-      const explicit = this.get(request.lensId);
-      if (explicit) {
-        return { lens: explicit, reason: "explicit" };
-      }
-    }
-
-    const mediaType = normalizeMediaType(request.mediaType);
-    if (mediaType) {
-      const mediaLens = this.list().find((lens) => lens.manifest.analyzer.supportedMediaTypes.includes(mediaType));
-      if (mediaLens) {
-        return { lens: mediaLens, reason: "mediaType" };
-      }
-    }
-
-    const extension = extensionFromPath(request.path);
-    if (extension) {
-      const extensionLens = this.list().find((lens) => lens.manifest.analyzer.fileExtensions.includes(extension));
-      if (extensionLens) {
-        return { lens: extensionLens, reason: "extension" };
-      }
-    }
-
-    return undefined;
+    const lenses = this.list();
+    const selection = selectLensManifest(
+      lenses.map((lens) => lens.manifest),
+      request
+    );
+    const lens = selection ? lenses.find((candidate) => candidate.manifest === selection.manifest) : undefined;
+    return selection && lens ? { lens, reason: selection.reason as Exclude<LensMatchReason, "fallback"> } : undefined;
   }
 }
 
@@ -134,17 +118,4 @@ export function createLensRegistry<TNode = unknown>(lenses: Array<LayrsLens<TNod
     registry.register(lens);
   }
   return registry;
-}
-
-function normalizeMediaType(mediaType: string | undefined): string | undefined {
-  return mediaType?.split(";")[0]?.trim().toLowerCase();
-}
-
-function extensionFromPath(path: string | undefined): string | undefined {
-  const name = path?.split(/[\\/]/).pop();
-  const dotIndex = name?.lastIndexOf(".") ?? -1;
-  if (!name || dotIndex < 0 || dotIndex === name.length - 1) {
-    return undefined;
-  }
-  return name.slice(dotIndex + 1).toLowerCase();
 }

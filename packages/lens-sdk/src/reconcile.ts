@@ -8,14 +8,18 @@ import type {
   LensConflictBlock,
   LensPin,
   LensReconcileContent,
+  LensReconcileRequest,
   LensReconcileResponse,
   LensReconcileResult,
   LensReconcileResultStatus,
+  LensReconcileSide,
+  LensReconcileSideContract,
   ResolutionMethod,
   ResolutionScope,
   ScopedResolutionMethod
 } from "./contracts";
-import { assertLensPin } from "./validation";
+import { verifyLensReconcileExecution, type VerifiedLensReconcileExecution } from "./manifest";
+import { assertLensPin, assertSha256Digest, lensPinsEqual } from "./validation";
 
 const RESOLUTION_METHOD_ALIASES: Readonly<Record<string, ResolutionMethod>> = {
   existing: "existing",
@@ -42,6 +46,104 @@ const RESULT_KEYS = new Set([
   "segments",
   "fields"
 ]);
+
+export function assertLensReconcileSide(
+  side: unknown,
+  label = "Lens reconcile side"
+): asserts side is LensReconcileSide {
+  assertRecord(side, label);
+  assertOnlyKeys(side, new Set(["exists", "bytes", "contentHash", "size"]), label);
+  if (typeof side.exists !== "boolean") {
+    throw new Error(`${label} exists must be a boolean`);
+  }
+  if (!Number.isSafeInteger(side.size) || Number(side.size) < 0) {
+    throw new Error(`${label} size must be a non-negative safe integer`);
+  }
+  if (side.exists) {
+    if (!(side.bytes instanceof Uint8Array)) {
+      throw new Error(`${label} present content requires Uint8Array bytes`);
+    }
+    if (side.size !== side.bytes.length) {
+      throw new Error(`${label} size must equal its byte length`);
+    }
+    if (side.contentHash !== undefined) {
+      assertSha256Digest(side.contentHash, `${label} contentHash`);
+    }
+    return;
+  }
+  if (side.bytes !== undefined && (!(side.bytes instanceof Uint8Array) || side.bytes.length > 0)) {
+    throw new Error(`${label} absent content forbids non-empty bytes`);
+  }
+  if (side.size !== 0) {
+    throw new Error(`${label} absent content requires size 0`);
+  }
+  if (side.contentHash !== undefined) {
+    throw new Error(`${label} absent content forbids contentHash`);
+  }
+}
+
+export function assertLensReconcileSideContract(
+  side: unknown,
+  label = "Lens reconcile side"
+): asserts side is LensReconcileSideContract {
+  assertRecord(side, label);
+  assertOnlyKeys(side, new Set(["exists", "bytes", "contentHash", "size"]), label);
+  if (typeof side.exists !== "boolean") {
+    throw new Error(`${label} exists must be a boolean`);
+  }
+  assertByteArray(side.bytes, `${label} bytes`);
+  if (!Number.isSafeInteger(side.size) || Number(side.size) < 0) {
+    throw new Error(`${label} size must be a non-negative safe integer`);
+  }
+  if (side.exists) {
+    if (side.size !== side.bytes.length) {
+      throw new Error(`${label} size must equal its byte length`);
+    }
+    if (side.contentHash !== undefined) {
+      assertSha256Digest(side.contentHash, `${label} contentHash`);
+    }
+    return;
+  }
+  if (side.bytes.length > 0) {
+    throw new Error(`${label} absent content forbids non-empty bytes`);
+  }
+  if (side.size !== 0) {
+    throw new Error(`${label} absent content requires size 0`);
+  }
+  if (side.contentHash !== undefined) {
+    throw new Error(`${label} absent content forbids contentHash`);
+  }
+}
+
+export function assertLensReconcileRequest(request: unknown): asserts request is LensReconcileRequest {
+  assertRecord(request, "Lens reconcile request");
+  assertOnlyKeys(
+    request,
+    new Set(["contractVersion", "lens", "path", "mediaType", "base", "existing", "incoming", "labels"]),
+    "Lens reconcile request"
+  );
+  if (request.contractVersion !== LENS_CONTRACT_VERSION) {
+    throw new Error(`Lens reconcile request contractVersion must be ${LENS_CONTRACT_VERSION}`);
+  }
+  assertLensPin(request.lens);
+  if (typeof request.path !== "string") {
+    throw new Error("Lens reconcile request path must be a string");
+  }
+  if (request.mediaType !== undefined && (typeof request.mediaType !== "string" || request.mediaType.length === 0)) {
+    throw new Error("Lens reconcile request mediaType must be a non-empty string");
+  }
+  assertLensReconcileSideContract(request.base, "Lens reconcile base");
+  assertLensReconcileSideContract(request.existing, "Lens reconcile existing");
+  assertLensReconcileSideContract(request.incoming, "Lens reconcile incoming");
+  assertRecord(request.labels, "Lens reconcile labels");
+  assertOnlyKeys(request.labels, new Set(["existing", "incoming"]), "Lens reconcile labels");
+  if (typeof request.labels.existing !== "string" || request.labels.existing.length === 0) {
+    throw new Error("Lens reconcile existing label must be a non-empty string");
+  }
+  if (typeof request.labels.incoming !== "string" || request.labels.incoming.length === 0) {
+    throw new Error("Lens reconcile incoming label must be a non-empty string");
+  }
+}
 
 export function toCanonicalLensReconcileResult(result: LensReconcileResult): CanonicalLensReconcileResult {
   assertRecord(result, "Lens reconcile result");
@@ -104,13 +206,25 @@ export function toCanonicalLensReconcileResult(result: LensReconcileResult): Can
 }
 
 export function toLensReconcileResponse(
-  lens: LensPin,
+  execution: VerifiedLensReconcileExecution,
+  requestedLens: LensPin,
   result: LensReconcileResult
 ): LensReconcileResponse {
-  assertLensPin(lens);
+  assertLensPin(requestedLens);
+  const verified = verifyLensReconcileExecution(
+    execution.manifest,
+    execution.implementationDigest
+  );
+  if (!lensPinsEqual(verified.pin, execution.pin)) {
+    throw new Error("Executed Lens pin does not match its validated manifest");
+  }
+  const executedLens = verified.pin;
+  if (!lensPinsEqual(executedLens, requestedLens)) {
+    throw new Error("Requested Lens pin does not match the executed Lens manifest");
+  }
   return {
     contractVersion: LENS_CONTRACT_VERSION,
-    lens: { ...lens },
+    lens: executedLens,
     result: toCanonicalLensReconcileResult(result)
   };
 }
@@ -146,13 +260,16 @@ function canonicalContent(content: LensReconcileContent, label: string): Canonic
   if (typeof content.exists !== "boolean") {
     throw new Error(`${label} content exists must be a boolean`);
   }
-  if (content.bytes !== undefined && !(content.bytes instanceof Uint8Array)) {
-    throw new Error(`${label} content bytes must be a Uint8Array`);
+  if (content.exists) {
+    if (!(content.bytes instanceof Uint8Array)) {
+      throw new Error(`${label} present content requires Uint8Array bytes`);
+    }
+    return { exists: true, bytes: Array.from(content.bytes) };
   }
-  return {
-    exists: content.exists,
-    bytes: Array.from(content.bytes ?? [])
-  };
+  if (content.bytes !== undefined && (!(content.bytes instanceof Uint8Array) || content.bytes.length > 0)) {
+    throw new Error(`${label} absent content forbids non-empty bytes`);
+  }
+  return { exists: false, bytes: [] };
 }
 
 function canonicalBlock(block: LensConflictBlock, index: number): CanonicalLensConflictBlock {
@@ -381,5 +498,14 @@ function assertOnlyKeys(value: object, allowed: Set<string>, label: string): voi
     if (!allowed.has(key)) {
       throw new Error(`${label} contains unknown field ${key}`);
     }
+  }
+}
+
+function assertByteArray(value: unknown, label: string): asserts value is number[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
+    throw new Error(`${label} must contain only byte integers`);
   }
 }
