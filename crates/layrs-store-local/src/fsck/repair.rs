@@ -255,7 +255,11 @@ fn repair_repository(
 
     Ok(RepairReport {
         backup_path: PathBuf::new(),
-        skipped_issues: findings.issues.len().saturating_sub(actionable),
+        skipped_issues: findings
+            .issues
+            .len()
+            .saturating_sub(actionable)
+            .saturating_add(usize::try_from(findings.omitted_issues).unwrap_or(usize::MAX)),
         actions,
     })
 }
@@ -263,10 +267,13 @@ fn repair_repository(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::LocalStoreConfig;
+    use crate::fault::{self, FaultPoint};
+    use crate::{LocalStoreConfig, ObjectRecord};
 
     #[test]
     fn forged_report_binding_is_refused_before_backup() {
@@ -288,6 +295,101 @@ mod tests {
         ));
         assert!(!store.layout().repair_backup_dir().exists());
 
+        drop(store);
+        fs::remove_dir_all(root).expect("remove root");
+    }
+
+    #[test]
+    fn publication_after_scan_fences_repair_and_preserves_available_object() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "layrs-store-local-repair-publication-race-{}-{timestamp}",
+            std::process::id()
+        ));
+        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("initialize store");
+        let bytes = b"published after fsck".to_vec();
+        let digest = layrs_sync::ObjectDigest::blake3_for(&bytes);
+        let target = store.cas_path_v2(&digest);
+        let relative_path = target
+            .strip_prefix(&store.layout().cas_dir)
+            .expect("relative CAS path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut session = store
+            .session(SessionMode::Exclusive)
+            .expect("exclusive session");
+        session
+            .repository_mut()
+            .insert_object(&ObjectRecord {
+                object_id: digest.hex().to_string(),
+                algorithm: "blake3".to_string(),
+                byte_len: bytes.len() as u64,
+                object_kind: "opaque".to_string(),
+                relative_path,
+                state: "available".to_string(),
+                verified_at_ms: None,
+                created_at_ms: 1,
+            })
+            .expect("index missing object");
+        drop(session);
+        let findings = store.fsck().expect("scan missing object");
+        assert_eq!(
+            findings.issues_with_code(FsckCode::ObjectMissing).count(),
+            1
+        );
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let writer_store = store.clone();
+        let writer_entered = Arc::clone(&entered);
+        let writer_release = Arc::clone(&release);
+        let writer_digest = digest.clone();
+        let writer = thread::spawn(move || {
+            fault::pause_once(FaultPoint::BeforeTempHash, writer_entered, writer_release);
+            writer_store.write_object_v2(&bytes, &writer_digest)
+        });
+
+        entered.wait();
+        assert!(matches!(
+            store.repair(&findings, 2),
+            Err(StoreError::ReentrantLock(_) | StoreError::LockBusy(_))
+        ));
+        release.wait();
+        writer
+            .join()
+            .expect("writer thread")
+            .expect("publish valid object");
+        assert_eq!(
+            fs::read(&target).expect("read published object"),
+            b"published after fsck"
+        );
+        assert!(!store.layout().repair_backup_dir().exists());
+        assert!(matches!(
+            store.repair(&findings, 2),
+            Err(StoreError::InvalidFsckReport(_))
+        ));
+        let session = store.session(SessionMode::Shared).expect("shared session");
+        let state: String = session
+            .repository()
+            .connection()
+            .query_row(
+                "SELECT state FROM object_index WHERE object_id = ?1",
+                [digest.hex()],
+                |row| row.get(0),
+            )
+            .expect("read object state");
+        assert_eq!(state, "available");
+        assert_eq!(
+            fs::read_dir(store.layout().repair_backup_dir())
+                .expect("read cleaned repair backup directory")
+                .count(),
+            0
+        );
+
+        drop(session);
         drop(store);
         fs::remove_dir_all(root).expect("remove root");
     }

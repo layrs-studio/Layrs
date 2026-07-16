@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 
-const MAX_OBJECT_GRAPH_ISSUES: usize = 100;
+use super::report::MAX_FSCK_ISSUES;
 
-pub(super) fn cycle_edges(edges: Vec<(String, String)>) -> Vec<(String, String)> {
+pub(super) struct CycleEdges {
+    pub(super) items: Vec<(String, String)>,
+    pub(super) truncated: bool,
+}
+
+pub(super) fn cycle_edges(edges: Vec<(String, String)>) -> CycleEdges {
     let mut indices = HashMap::<String, usize>::new();
     let mut labels = Vec::<String>::new();
     for (parent, child) in &edges {
@@ -22,6 +27,7 @@ pub(super) fn cycle_edges(edges: Vec<(String, String)>) -> Vec<(String, String)>
 
     let mut state = vec![0_u8; labels.len()];
     let mut cycles = Vec::new();
+    let mut truncated = false;
     for start in 0..labels.len() {
         if state[start] != 0 {
             continue;
@@ -41,14 +47,21 @@ pub(super) fn cycle_edges(edges: Vec<(String, String)>) -> Vec<(String, String)>
                     state[child] = 1;
                     stack.push((child, 0));
                 }
-                1 if cycles.len() < MAX_OBJECT_GRAPH_ISSUES => {
-                    cycles.push((labels[*node].clone(), labels[child].clone()));
+                1 => {
+                    if cycles.len() <= MAX_FSCK_ISSUES {
+                        cycles.push((labels[*node].clone(), labels[child].clone()));
+                    } else {
+                        truncated = true;
+                    }
                 }
                 _ => {}
             }
         }
     }
-    cycles
+    CycleEdges {
+        items: cycles,
+        truncated,
+    }
 }
 
 #[cfg(test)]
@@ -63,7 +76,7 @@ mod tests {
                 edges.push((format!("node-{parent}"), format!("node-{child}")));
             }
         }
-        assert!(cycle_edges(edges).is_empty());
+        assert!(cycle_edges(edges).items.is_empty());
     }
 
     #[test]
@@ -74,8 +87,9 @@ mod tests {
             .collect::<Vec<_>>();
         edges.push((format!("node-{depth}"), "node-0".to_string()));
         let cycles = cycle_edges(edges);
-        assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].1, "node-0");
+        assert_eq!(cycles.items.len(), 1);
+        assert_eq!(cycles.items[0].1, "node-0");
+        assert!(!cycles.truncated);
     }
 
     #[test]
@@ -85,6 +99,8 @@ mod tests {
             edges.push((format!("a-{cycle}"), format!("b-{cycle}")));
             edges.push((format!("b-{cycle}"), format!("a-{cycle}")));
         }
-        assert_eq!(cycle_edges(edges).len(), MAX_OBJECT_GRAPH_ISSUES);
+        let cycles = cycle_edges(edges);
+        assert_eq!(cycles.items.len(), MAX_FSCK_ISSUES + 1);
+        assert!(cycles.truncated);
     }
 }

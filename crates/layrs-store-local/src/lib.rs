@@ -14,6 +14,7 @@ mod lock;
 mod recovery;
 mod repository;
 mod schema;
+mod secure_fs;
 mod session;
 mod sqlite;
 
@@ -58,6 +59,13 @@ pub struct LocalStore {
 }
 
 impl LocalStore {
+    fn with_cas_lock<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        let _lock =
+            lock::StoreLock::acquire_existing(&self.layout.lock_path(), SessionMode::Shared)
+                .map_err(StoreError::into_io_error)?;
+        operation()
+    }
+
     /// Creates the store layout and initializes or upgrades the real SQLite DB.
     pub fn init(config: LocalStoreConfig) -> io::Result<Self> {
         let layout = config.validated_layout()?;
@@ -121,7 +129,7 @@ impl LocalStore {
     }
 
     pub fn write_temp_object(&self, bytes: &[u8]) -> io::Result<PendingObject> {
-        cas::write_temp_object(&self.layout, bytes)
+        self.with_cas_lock(|| cas::write_temp_object(&self.layout, bytes))
     }
 
     pub fn write_object_prehashed(
@@ -129,7 +137,7 @@ impl LocalStore {
         bytes: &[u8],
         hash: &ContentHash,
     ) -> io::Result<ObjectWriteOutcome> {
-        cas::write_object_prehashed(&self.layout, bytes, hash)
+        self.with_cas_lock(|| cas::write_object_prehashed(&self.layout, bytes, hash))
     }
 
     pub fn write_object_v2(
@@ -137,11 +145,11 @@ impl LocalStore {
         bytes: &[u8],
         digest: &ObjectDigest,
     ) -> io::Result<ObjectWriteOutcomeV2> {
-        cas::write_object_v2(&self.layout, bytes, digest)
+        self.with_cas_lock(|| cas::write_object_v2(&self.layout, bytes, digest))
     }
 
     pub fn write_chunk_v2(&self, bytes: &[u8]) -> io::Result<StoredChunkObject> {
-        cas::write_chunk_v2(&self.layout, bytes)
+        self.with_cas_lock(|| cas::write_chunk_v2(&self.layout, bytes))
     }
 
     pub fn build_file_v2(
@@ -149,18 +157,18 @@ impl LocalStore {
         bytes: &[u8],
         chunker: &dyn Chunker,
     ) -> io::Result<StoredFileObject> {
-        cas::build_file_v2(&self.layout, bytes, chunker)
+        self.with_cas_lock(|| cas::build_file_v2(&self.layout, bytes, chunker))
     }
 
     pub fn write_tree_v2(&self, entries: Vec<TreeEntry>) -> io::Result<StoredTreeObject> {
-        cas::write_tree_v2(&self.layout, entries)
+        self.with_cas_lock(|| cas::write_tree_v2(&self.layout, entries))
     }
 
     pub fn write_local_step_ref_v2(&self, step: LocalStepRef) -> io::Result<StoredLocalStepRef> {
-        cas::write_local_step_ref_v2(&self.layout, step)
+        self.with_cas_lock(|| cas::write_local_step_ref_v2(&self.layout, step))
     }
 
     pub fn scrub(&self) -> io::Result<ScrubReport> {
-        cas::scrub(&self.layout)
+        self.with_cas_lock(|| cas::scrub(&self.layout))
     }
 }

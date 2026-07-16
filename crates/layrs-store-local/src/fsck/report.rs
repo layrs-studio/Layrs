@@ -3,6 +3,9 @@ use std::fs;
 use crate::error::{StoreError, StoreResult};
 use crate::layout::{StoreLayout, normalize_path_key};
 
+pub(super) const MAX_FSCK_ISSUES: usize = 100;
+pub(super) const MAX_FSCK_TRAVERSAL_ROWS: usize = 10_000;
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FsckCode {
@@ -36,6 +39,8 @@ pub struct FsckReport {
     pub(super) schema_version: Option<u32>,
     pub(super) checked_objects: u64,
     pub(super) issues: Vec<FsckIssue>,
+    pub(super) omitted_issues: u64,
+    pub(super) truncated_checks: u64,
     pub(super) binding: FsckBinding,
 }
 
@@ -48,7 +53,7 @@ pub(super) struct FsckBinding {
 
 impl FsckReport {
     pub fn is_clean(&self) -> bool {
-        self.issues.is_empty()
+        self.issues.is_empty() && self.omitted_issues == 0 && self.truncated_checks == 0
     }
 
     pub fn issues_with_code(&self, code: FsckCode) -> impl Iterator<Item = &FsckIssue> {
@@ -71,6 +76,18 @@ impl FsckReport {
         &self.issues
     }
 
+    pub fn omitted_issues(&self) -> u64 {
+        self.omitted_issues
+    }
+
+    pub fn truncated_checks(&self) -> u64 {
+        self.truncated_checks
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        self.omitted_issues != 0 || self.truncated_checks != 0
+    }
+
     pub(super) fn new(
         layout: &StoreLayout,
         sqlite_version: String,
@@ -83,6 +100,8 @@ impl FsckReport {
             schema_version,
             checked_objects: 0,
             issues: Vec::new(),
+            omitted_issues: 0,
+            truncated_checks: 0,
             binding: FsckBinding {
                 store_identity: store_identity(layout, created_at_ms)?,
                 quarantine_generation,
@@ -93,6 +112,31 @@ impl FsckReport {
 
     pub(super) fn bind_snapshot(&mut self, schema_cookie: u32, updated_at_ms: Option<i64>) {
         self.binding.snapshot = snapshot_digest(self, schema_cookie, updated_at_ms);
+    }
+
+    pub(super) fn push_issue(&mut self, issue: FsckIssue) {
+        if self.issues.len() < MAX_FSCK_ISSUES {
+            self.issues.push(issue);
+        } else {
+            self.omitted_issues = self.omitted_issues.saturating_add(1);
+        }
+    }
+
+    pub(super) fn remaining_issue_capacity(&self) -> usize {
+        MAX_FSCK_ISSUES.saturating_sub(self.issues.len())
+    }
+
+    pub(super) fn issue_query_limit(&self) -> i64 {
+        self.remaining_issue_capacity().saturating_add(1) as i64
+    }
+
+    pub(super) fn note_issue_query_truncated(&mut self) {
+        self.omitted_issues = self.omitted_issues.saturating_add(1);
+        self.note_truncated_checks(1);
+    }
+
+    pub(super) fn note_truncated_checks(&mut self, count: u64) {
+        self.truncated_checks = self.truncated_checks.saturating_add(count);
     }
 }
 
@@ -196,6 +240,8 @@ fn snapshot_digest(report: &FsckReport, schema_cookie: u32, updated_at_ms: Optio
         &updated_at_ms.unwrap_or(i64::MIN).to_le_bytes(),
     );
     hash_field(&mut hasher, &report.checked_objects.to_le_bytes());
+    hash_field(&mut hasher, &report.omitted_issues.to_le_bytes());
+    hash_field(&mut hasher, &report.truncated_checks.to_le_bytes());
     let mut issues = report.issues.clone();
     issues.sort();
     for issue in issues {

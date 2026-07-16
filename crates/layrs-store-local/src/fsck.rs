@@ -3,21 +3,22 @@
 use std::io::{self, Read};
 use std::path::{Component, Path};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 mod graph;
 mod repair;
 mod report;
 
 pub use repair::{RepairAction, RepairReport, repair};
+use report::MAX_FSCK_TRAVERSAL_ROWS;
 pub use report::{FsckCode, FsckIssue, FsckReport};
 
 use crate::error::StoreResult;
-use crate::layout::{
-    StoreLayout, contains_reparse_component, open_read_no_follow, validate_store_boundaries,
-};
+use crate::fault::{self, FaultPoint};
+use crate::layout::{StoreLayout, validate_store_boundaries};
 use crate::lock::{SessionMode, StoreLock};
 use crate::schema::CURRENT_SCHEMA_VERSION;
+use crate::secure_fs::PinnedDirectory;
 use crate::sqlite::{self, SqliteOptions};
 
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
@@ -101,11 +102,15 @@ pub(super) fn check_connection(
 }
 
 fn check_integrity(connection: &Connection, report: &mut FsckReport) -> StoreResult<()> {
-    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let mut statement = connection.prepare("PRAGMA integrity_check(101)")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     for row in rows {
         let message = row?;
         if !message.eq_ignore_ascii_case("ok") {
+            if report.remaining_issue_capacity() == 0 {
+                report.note_issue_query_truncated();
+                break;
+            }
             push_issue(report, FsckCode::Integrity, None, message);
         }
     }
@@ -113,8 +118,10 @@ fn check_integrity(connection: &Connection, report: &mut FsckReport) -> StoreRes
 }
 
 fn check_foreign_keys(connection: &Connection, report: &mut FsckReport) -> StoreResult<()> {
-    let mut statement = connection.prepare("PRAGMA foreign_key_check")?;
-    let rows = statement.query_map([], |row| {
+    let limit = report.issue_query_limit();
+    let mut statement = connection
+        .prepare("SELECT * FROM pragma_foreign_key_check ORDER BY 1, 2, 3, 4 LIMIT ?1")?;
+    let rows = statement.query_map([limit], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<i64>>(1)?,
@@ -122,7 +129,12 @@ fn check_foreign_keys(connection: &Connection, report: &mut FsckReport) -> Store
             row.get::<_, i64>(3)?,
         ))
     })?;
-    for row in rows {
+    for (index, row) in rows.enumerate() {
+        if index as i64 == limit - 1 {
+            row?;
+            report.note_issue_query_truncated();
+            break;
+        }
         let (table, row_id, parent, fk_id) = row?;
         push_issue(
             report,
@@ -226,11 +238,18 @@ fn collect_space_query(
     sql: &str,
     label: &str,
 ) -> StoreResult<()> {
-    let mut statement = connection.prepare(sql)?;
-    let rows = statement.query_map([], |row| {
+    let limit = report.issue_query_limit();
+    let bounded = format!("SELECT * FROM ({sql}) ORDER BY 1, 2 LIMIT ?1");
+    let mut statement = connection.prepare(&bounded)?;
+    let rows = statement.query_map([limit], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    for row in rows {
+    for (index, row) in rows.enumerate() {
+        if index as i64 == limit - 1 {
+            row?;
+            report.note_issue_query_truncated();
+            break;
+        }
         let (space_id, detail) = row?;
         push_issue(report, code, Some(space_id), format!("{label}: {detail}"));
     }
@@ -238,16 +257,26 @@ fn collect_space_query(
 }
 
 fn check_object_graph(connection: &Connection, report: &mut FsckReport) -> StoreResult<()> {
-    let mut statement =
-        connection.prepare("SELECT parent_object_id, child_object_id FROM object_edges")?;
-    let rows = statement.query_map([], |row| {
+    let mut statement = connection.prepare(
+        "SELECT parent_object_id, child_object_id
+         FROM object_edges ORDER BY parent_object_id, child_object_id LIMIT ?1",
+    )?;
+    let rows = statement.query_map([MAX_FSCK_TRAVERSAL_ROWS as i64 + 1], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let mut edges = Vec::new();
-    for row in rows {
+    for (index, row) in rows.enumerate() {
+        if index == MAX_FSCK_TRAVERSAL_ROWS {
+            report.note_truncated_checks(1);
+            break;
+        }
         edges.push(row?);
     }
-    for (parent, child) in graph::cycle_edges(edges) {
+    let cycles = graph::cycle_edges(edges);
+    if cycles.truncated {
+        report.note_truncated_checks(1);
+    }
+    for (parent, child) in cycles.items {
         push_issue(
             report,
             FsckCode::ObjectGraphCycle,
@@ -263,11 +292,13 @@ fn check_indexed_objects(
     connection: &Connection,
     report: &mut FsckReport,
 ) -> StoreResult<()> {
+    let cas_root =
+        PinnedDirectory::open(&layout.cas_dir).map_err(|error| (error.kind(), error.to_string()));
     let mut statement = connection.prepare(
         "SELECT object_id, algorithm, byte_len, relative_path, state
-         FROM object_index ORDER BY object_id",
+         FROM object_index ORDER BY object_id LIMIT ?1",
     )?;
-    let rows = statement.query_map([], |row| {
+    let rows = statement.query_map(params![MAX_FSCK_TRAVERSAL_ROWS as i64 + 1], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -277,7 +308,11 @@ fn check_indexed_objects(
         ))
     })?;
 
-    for row in rows {
+    for (index, row) in rows.enumerate() {
+        if index == MAX_FSCK_TRAVERSAL_ROWS {
+            report.note_truncated_checks(1);
+            break;
+        }
         let (object_id, algorithm, expected_len, relative_path, state) = row?;
         report.checked_objects += 1;
         let Some(path) = safe_object_path(&layout.cas_dir, &relative_path) else {
@@ -289,26 +324,34 @@ fn check_indexed_objects(
             );
             continue;
         };
-        if contains_reparse_component(&path).unwrap_or(true) {
-            push_issue(
-                report,
-                FsckCode::ObjectPathUnsafe,
-                Some(object_id),
-                format!("object path crosses a reparse point: {}", path.display()),
-            );
-            continue;
-        }
-        if !path.is_file() {
-            if state == "available" {
+        fault::hit(FaultPoint::BeforeFsckObjectOpen)?;
+        let mut file = match &cas_root {
+            Ok(root) => root.open_relative_file(Path::new(&relative_path)),
+            Err((kind, detail)) => Err(io::Error::new(*kind, detail.clone())),
+        };
+        let file = match &mut file {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if state == "available" {
+                    push_issue(
+                        report,
+                        FsckCode::ObjectMissing,
+                        Some(object_id),
+                        format!("indexed object is missing: {}", path.display()),
+                    );
+                }
+                continue;
+            }
+            Err(error) => {
                 push_issue(
                     report,
-                    FsckCode::ObjectMissing,
+                    FsckCode::ObjectPathUnsafe,
                     Some(object_id),
-                    format!("indexed object is missing: {}", path.display()),
+                    format!("unsafe object path {}: {error}", path.display()),
                 );
+                continue;
             }
-            continue;
-        }
+        };
         let Ok(expected_len) = u64::try_from(expected_len) else {
             push_issue(
                 report,
@@ -318,7 +361,7 @@ fn check_indexed_objects(
             );
             continue;
         };
-        match stream_verify_object(&path, &algorithm, &object_id, expected_len)? {
+        match stream_verify_object(file.file_mut(), &algorithm, &object_id, expected_len)? {
             StreamVerification::Verified => {}
             StreamVerification::LengthMismatch { actual } => push_issue(
                 report,
@@ -364,7 +407,7 @@ enum StreamVerification {
 }
 
 fn stream_verify_object(
-    path: &Path,
+    file: &mut impl Read,
     algorithm: &str,
     object_id: &str,
     expected_len: u64,
@@ -372,7 +415,6 @@ fn stream_verify_object(
     let expected_hex = object_id
         .strip_prefix(&format!("{algorithm}:"))
         .unwrap_or(object_id);
-    let mut file = open_read_no_follow(path)?;
     let mut buffer = [0_u8; HASH_BUFFER_BYTES];
     let mut byte_len = 0_u64;
     let mut blake3 = blake3::Hasher::new();
@@ -427,7 +469,7 @@ fn has_table(connection: &Connection, name: &str) -> StoreResult<bool> {
 }
 
 fn push_issue(report: &mut FsckReport, code: FsckCode, entity: Option<String>, detail: String) {
-    report.issues.push(FsckIssue {
+    report.push_issue(FsckIssue {
         code,
         entity,
         detail,
@@ -437,9 +479,12 @@ fn push_issue(report: &mut FsckReport, code: FsckCode, entity: Option<String>, d
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::{LocalStore, LocalStoreConfig, ObjectRecord};
 
     #[test]
     fn rejects_parent_components_in_indexed_paths() {
@@ -460,13 +505,126 @@ mod tests {
         let bytes = vec![0x5a; HASH_BUFFER_BYTES * 3 + 17];
         fs::write(&path, &bytes).expect("write streamed fixture");
         let digest = blake3::hash(&bytes).to_hex().to_string();
+        let mut file = fs::File::open(&path).expect("open streamed fixture");
 
         assert_eq!(
-            stream_verify_object(&path, "blake3", &digest, bytes.len() as u64)
+            stream_verify_object(&mut file, "blake3", &digest, bytes.len() as u64)
                 .expect("stream object"),
             StreamVerification::Verified
         );
 
         fs::remove_file(path).expect("remove streamed fixture");
+    }
+
+    #[test]
+    fn swapped_object_ancestor_is_not_followed_during_fsck() {
+        let base = unique_test_dir("swapped-object-ancestor");
+        let root = base.join("store");
+        let outside = base.join("outside");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("initialize store");
+        let bytes = b"valid bytes only outside after swap";
+        let digest = layrs_sync::ObjectDigest::blake3_for(bytes);
+        let target = store
+            .write_object_v2(bytes, &digest)
+            .expect("write indexed object")
+            .path;
+        let relative_path = target
+            .strip_prefix(&store.layout().cas_dir)
+            .expect("relative object path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut session = store
+            .session(SessionMode::Exclusive)
+            .expect("exclusive session");
+        session
+            .repository_mut()
+            .insert_object(&ObjectRecord {
+                object_id: digest.hex().to_string(),
+                algorithm: digest.algorithm().to_string(),
+                byte_len: bytes.len() as u64,
+                object_kind: "opaque".to_string(),
+                relative_path,
+                state: "available".to_string(),
+                verified_at_ms: None,
+                created_at_ms: 1,
+            })
+            .expect("index object");
+        drop(session);
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let scan_store = store.clone();
+        let scan_entered = Arc::clone(&entered);
+        let scan_release = Arc::clone(&release);
+        let scan = thread::spawn(move || {
+            fault::pause_once(FaultPoint::BeforeFsckObjectOpen, scan_entered, scan_release);
+            scan_store.fsck()
+        });
+
+        entered.wait();
+        let algorithm = store.layout().cas_dir.join("blake3");
+        let parked = store.layout().cas_dir.join("blake3-pinned");
+        fs::rename(&algorithm, &parked).expect("park object algorithm directory");
+        let outside_target = outside
+            .join(&digest.hex()[0..2])
+            .join(&digest.hex()[2..4])
+            .join(digest.hex());
+        fs::create_dir_all(outside_target.parent().expect("outside object parent"))
+            .expect("create outside object shards");
+        fs::write(&outside_target, bytes).expect("write valid object outside store");
+        create_directory_link(&outside, &algorithm);
+        release.wait();
+
+        let report = scan
+            .join()
+            .expect("fsck thread")
+            .expect("fsck swapped object ancestor");
+        assert_eq!(
+            report.issues_with_code(FsckCode::ObjectPathUnsafe).count(),
+            1
+        );
+
+        remove_directory_link(&algorithm);
+        fs::rename(&parked, &algorithm).expect("restore algorithm directory");
+        drop(store);
+        fs::remove_dir_all(base).expect("remove fixture");
+    }
+
+    fn unique_test_dir(label: &str) -> std::path::PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "layrs-store-local-fsck-{label}-{}-{timestamp}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("run mklink");
+        assert!(status.success(), "create directory junction");
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_file(link).expect("remove directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_dir(link).expect("remove directory junction");
     }
 }

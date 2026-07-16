@@ -187,6 +187,108 @@ fn fsck_reports_foreign_key_corruption_inserted_with_checks_disabled() {
 }
 
 #[test]
+fn fsck_globally_caps_fk_invariant_and_object_corruption_issues() {
+    let root = unique_test_dir("global-issue-cap");
+    let config = LocalStoreConfig::new(&root);
+    let store = LocalStore::init(config.clone()).expect("initialize store");
+    let sqlite_path = store.layout().sqlite_path.clone();
+    let cas_dir = store.layout().cas_dir.clone();
+    drop(store);
+
+    let mut connection = Connection::open(sqlite_path).expect("open raw SQLite");
+    connection
+        .pragma_update(None, "foreign_keys", "OFF")
+        .expect("disable foreign keys");
+    let transaction = connection.transaction().expect("begin fixture transaction");
+    transaction
+        .execute_batch(
+            "INSERT INTO local_spaces (
+                space_id, canonical_root, display_name, case_sensitive, identity_token,
+                state, created_at_ms, updated_at_ms
+             ) VALUES ('space-cap', 'C:/fsck-cap', NULL, 0, NULL, 'active', 1, 1);
+             INSERT INTO layers (
+                layer_id, space_id, name, layer_kind, state, base_layer_id,
+                timeline_active, generation, created_at_ms, updated_at_ms
+             ) VALUES (
+                'layer-cap', 'space-cap', 'main', 'local', 'active', NULL, 0, 0, 1, 1
+             );",
+        )
+        .expect("seed valid relation owners");
+    for index in 0..25 {
+        transaction
+            .execute(
+                "INSERT INTO layers (
+                    layer_id, space_id, name, layer_kind, state, base_layer_id,
+                    timeline_active, generation, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 'local', 'active', NULL, 0, 0, 1, 1)",
+                rusqlite::params![
+                    format!("orphan-layer-{index:02}"),
+                    format!("missing-space-{index:02}"),
+                    format!("orphan-{index:02}"),
+                ],
+            )
+            .expect("insert FK corruption");
+        transaction
+            .execute(
+                "INSERT INTO refs (
+                    space_id, ref_name, ref_kind, layer_id, step_id, generation, updated_at_ms
+                 ) VALUES ('space-cap', ?1, 'layer_head', 'layer-cap', ?2, 1, 1)",
+                rusqlite::params![
+                    format!("invalid-ref-{index:02}"),
+                    format!("missing-step-{index:02}"),
+                ],
+            )
+            .expect("insert invariant corruption");
+    }
+    for index in 0..60 {
+        let relative_path = format!("corrupt/{index:02}/object");
+        let path = cas_dir.join(&relative_path);
+        fs::create_dir_all(path.parent().expect("corrupt object parent"))
+            .expect("create corrupt object parent");
+        fs::write(&path, b"bad").expect("write corrupt object");
+        transaction
+            .execute(
+                "INSERT INTO object_index (
+                    object_id, algorithm, byte_len, object_kind, relative_path,
+                    state, verified_at_ms, created_at_ms
+                 ) VALUES (?1, 'blake3', 3, 'opaque', ?2, 'available', NULL, 1)",
+                rusqlite::params![format!("{index:064x}"), relative_path],
+            )
+            .expect("index corrupt object");
+    }
+    transaction.commit().expect("commit corruption fixture");
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .expect("checkpoint corruption fixture");
+    drop(connection);
+
+    let report = layrs_store_local::fsck_existing(&config).expect("run bounded fsck");
+    assert_eq!(report.issues().len(), 100);
+    assert!(report.omitted_issues() > 0);
+    assert!(report.is_truncated());
+    assert!(
+        report
+            .issues_with_code(FsckCode::ForeignKey)
+            .next()
+            .is_some()
+    );
+    assert!(
+        report
+            .issues_with_code(FsckCode::RefInvariant)
+            .next()
+            .is_some()
+    );
+    assert!(
+        report
+            .issues_with_code(FsckCode::ObjectCorrupt)
+            .next()
+            .is_some()
+    );
+
+    fs::remove_dir_all(root).expect("remove root");
+}
+
+#[test]
 fn repair_refuses_report_from_another_store_identity() {
     let (first_root, first, _, _, _) = corrupted_object_store("cross-store-source");
     let report = first.fsck().expect("fsck source store");

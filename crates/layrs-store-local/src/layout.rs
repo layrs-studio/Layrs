@@ -232,47 +232,6 @@ pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(windows)]
-pub(crate) fn durable_rename(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    let source: Vec<u16> = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: both pointers refer to NUL-terminated UTF-16 buffers that
-    // remain alive for the duration of the Win32 call.
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 pub(crate) fn create_dir_all_durable(path: &Path) -> io::Result<()> {
     let path = absolute_lexical(path)?;
     let mut missing = Vec::new();

@@ -1,7 +1,7 @@
 //! Durable content-addressed object installation and verification.
 
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,12 +11,12 @@ use layrs_sync::{
 };
 
 use crate::fault::{self, FaultPoint};
-#[cfg(windows)]
-use crate::layout::durable_rename;
-use crate::layout::{
-    StoreLayout, create_dir_all_durable, open_read_no_follow, reject_reparse_components,
-    sync_directory, validate_store_boundaries,
-};
+use crate::layout::{StoreLayout, open_read_no_follow, validate_store_boundaries};
+use crate::secure_fs::PinnedDirectory;
+
+mod publication;
+
+use publication::install_pending;
 
 pub fn cas_path(cas_dir: impl AsRef<Path>, hash: &ContentHash) -> PathBuf {
     let hex = hash.hex();
@@ -223,17 +223,35 @@ pub struct StoredLocalStepRef {
 
 pub(crate) fn write_temp_object(layout: &StoreLayout, bytes: &[u8]) -> io::Result<PendingObject> {
     validate_store_boundaries(layout)?;
-    create_dir_all_durable(&layout.tmp_dir)?;
+    let root =
+        PinnedDirectory::open(&layout.root).map_err(|error| io_context(error, "pin store root"))?;
+    let temporary = root
+        .open_child(layout.tmp_dir.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "temporary directory has no file name",
+            )
+        })?)
+        .map_err(|error| io_context(error, "pin temporary directory"))?;
     let mut attempts = 0_u8;
     loop {
-        let path = layout.tmp_dir.join(temp_object_file_name(attempts));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                file.write_all(bytes)?;
+        let name = temp_object_file_name(attempts);
+        let path = layout.tmp_dir.join(&name);
+        match temporary.create_file(name.as_ref()) {
+            Ok(mut pending) => {
+                pending
+                    .file_mut()
+                    .write_all(bytes)
+                    .map_err(|error| io_context(error, "write pending object"))?;
                 fault::hit(FaultPoint::BeforeTempSync)?;
-                file.sync_all()?;
+                pending
+                    .file()
+                    .sync_all()
+                    .map_err(|error| io_context(error, "sync pending object"))?;
                 fault::hit(FaultPoint::AfterTempSync)?;
-                sync_directory(&layout.tmp_dir)?;
+                temporary
+                    .sync()
+                    .map_err(|error| io_context(error, "sync temporary directory"))?;
                 return Ok(PendingObject {
                     path,
                     bytes_len: bytes.len() as u64,
@@ -242,9 +260,13 @@ pub(crate) fn write_temp_object(layout: &StoreLayout, bytes: &[u8]) -> io::Resul
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempts < 16 => {
                 attempts += 1;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(io_context(error, "create pending object")),
         }
     }
+}
+
+fn io_context(error: io::Error, operation: &str) -> io::Error {
+    io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
 pub(crate) fn write_object_prehashed(
@@ -283,108 +305,11 @@ pub(crate) fn write_object_v2(
     })
 }
 
-fn install_pending(
-    layout: &StoreLayout,
-    pending: &PendingObject,
-    target: &Path,
-    verify: impl Fn(&[u8]) -> io::Result<()>,
-) -> io::Result<bool> {
-    fault::hit(FaultPoint::BeforeTempHash)?;
-    validate_store_boundaries(layout)?;
-    if !pending.path.starts_with(&layout.tmp_dir) || !target.starts_with(&layout.cas_dir) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "CAS publication path escapes the store root",
-        ));
-    }
-    verify(&read_file_no_follow(&pending.path)?)?;
-
-    match fs::symlink_metadata(target) {
-        Ok(_) => {
-            let target_bytes = read_file_no_follow(target)?;
-            let result = verify(&target_bytes);
-            cleanup_pending(layout, &pending.path)?;
-            result?;
-            return Ok(true);
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    let parent = target.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "CAS target has no parent directory",
-        )
-    })?;
-    create_dir_all_durable(parent)?;
-    reject_reparse_components(parent)?;
-    fault::hit(FaultPoint::BeforeRename)?;
-    if publish_no_clobber(&pending.path, target)? {
-        let target_bytes = read_file_no_follow(target)?;
-        let result = verify(&target_bytes);
-        cleanup_pending(layout, &pending.path)?;
-        result?;
-        return Ok(true);
-    }
-    verify(&read_file_no_follow(target)?)?;
-    fault::hit(FaultPoint::AfterRename)?;
-    fault::hit(FaultPoint::BeforeDirectorySync)?;
-    sync_directory(parent)?;
-    sync_directory(&layout.tmp_dir)?;
-    Ok(false)
-}
-
-fn publish_no_clobber(source: &Path, destination: &Path) -> io::Result<bool> {
-    #[cfg(unix)]
-    {
-        match fs::hard_link(source, destination) {
-            Ok(()) => {
-                fs::remove_file(source)?;
-                Ok(false)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(true),
-            Err(error) => Err(error),
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        match durable_rename(source, destination) {
-            Ok(()) => Ok(false),
-            Err(error)
-                if error.kind() == io::ErrorKind::AlreadyExists
-                    || fs::symlink_metadata(destination).is_ok() =>
-            {
-                Ok(true)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (source, destination);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "atomic no-clobber publication is unsupported on this platform",
-        ))
-    }
-}
-
 fn read_file_no_follow(path: &Path) -> io::Result<Vec<u8>> {
     let mut file = open_read_no_follow(path)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
-}
-
-fn cleanup_pending(layout: &StoreLayout, path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => sync_directory(&layout.tmp_dir),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 fn require_hash(bytes: &[u8], expected: &ContentHash) -> io::Result<()> {
@@ -545,203 +470,4 @@ fn temp_object_file_name(attempt: u8) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Barrier};
-    use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use super::*;
-    use crate::fault;
-    use crate::{LocalStore, LocalStoreConfig};
-    use layrs_sync::{DeterministicChunker, LocalStepRef, TreeEntry};
-
-    #[test]
-    fn cas_path_shards_by_algorithm_and_first_four_hex_chars() {
-        let hash = ContentHash::blake3("abcdef0123456789").expect("valid hash");
-        let path = cas_path(Path::new("store").join("objects"), &hash);
-
-        assert_eq!(
-            path,
-            Path::new("store")
-                .join("objects")
-                .join("blake3")
-                .join("ab")
-                .join("cd")
-                .join("abcdef0123456789")
-        );
-    }
-
-    #[test]
-    fn placeholder_object_write_preserves_public_cas_behavior() {
-        let root = unique_test_dir("placeholder");
-        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
-        let bytes = b"hello layrs";
-        let hash = ContentHash::placeholder_for(bytes);
-
-        let outcome = store
-            .write_object_prehashed(bytes, &hash)
-            .expect("write object");
-        assert!(!outcome.existed);
-        assert_eq!(outcome.verification, HashVerification::Verified);
-        assert_eq!(fs::read(outcome.path).expect("read object"), bytes);
-
-        drop(store);
-        fs::remove_dir_all(root).expect("remove root");
-    }
-
-    #[test]
-    fn build_file_tree_and_step_v2_persists_merkle_objects() {
-        let root = unique_test_dir("merkle-v2");
-        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
-        let chunker = DeterministicChunker::default();
-
-        let stored_file = store
-            .build_file_v2(b"hello merkle store", &chunker)
-            .expect("build file");
-        let stored_tree = store
-            .write_tree_v2(vec![TreeEntry::file("src/hello.txt", &stored_file.file)])
-            .expect("write tree");
-        let step = LocalStepRef::new(
-            "layer-main",
-            stored_tree.tree.tree_id.clone(),
-            None,
-            1,
-            "2026-06-30T12:00:00Z",
-            None,
-        )
-        .expect("step ref");
-        let stored_step = store.write_local_step_ref_v2(step).expect("write step ref");
-
-        assert_eq!(stored_file.chunks.len(), 1);
-        assert!(stored_file.file_write.path.is_file());
-        assert!(stored_tree.write.path.is_file());
-        assert!(stored_step.write.path.is_file());
-
-        drop(store);
-        fs::remove_dir_all(root).expect("remove root");
-    }
-
-    #[test]
-    fn detects_existing_corrupt_object_instead_of_accepting_it() {
-        let root = unique_test_dir("corrupt");
-        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
-        let bytes = b"durable bytes";
-        let hash = ContentHash::blake3_for(bytes);
-        let first = store
-            .write_object_prehashed(bytes, &hash)
-            .expect("write object");
-        fs::write(&first.path, b"corrupt").expect("corrupt object");
-
-        let error = store
-            .write_object_prehashed(bytes, &hash)
-            .expect_err("corruption must fail");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-
-        drop(store);
-        fs::remove_dir_all(root).expect("remove root");
-    }
-
-    #[test]
-    fn fault_before_rename_never_publishes_target() {
-        let root = unique_test_dir("fault");
-        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
-        let bytes = b"not published";
-        let hash = ContentHash::blake3_for(bytes);
-        fault::fail_once(FaultPoint::BeforeRename);
-
-        store
-            .write_object_prehashed(bytes, &hash)
-            .expect_err("fault must abort write");
-        assert!(!store.cas_path(&hash).exists());
-
-        drop(store);
-        fs::remove_dir_all(root).expect("remove root");
-    }
-
-    #[test]
-    fn concurrent_publishers_never_clobber_the_atomic_winner() {
-        let root = unique_test_dir("publish-race");
-        let store = LocalStore::init(LocalStoreConfig::new(&root)).expect("init store");
-        let first_bytes = b"first synchronized writer".to_vec();
-        let second_bytes = b"second synchronized writer".to_vec();
-        let first_pending =
-            write_temp_object(store.layout(), &first_bytes).expect("first pending object");
-        let second_pending =
-            write_temp_object(store.layout(), &second_bytes).expect("second pending object");
-        let target = store.layout().cas_dir.join("synchronized-race-winner");
-        let barrier = Arc::new(Barrier::new(2));
-
-        let first = spawn_racing_publish(
-            store.layout().clone(),
-            first_pending,
-            target.clone(),
-            first_bytes.clone(),
-            Arc::clone(&barrier),
-        );
-        let second = spawn_racing_publish(
-            store.layout().clone(),
-            second_pending,
-            target.clone(),
-            second_bytes.clone(),
-            barrier,
-        );
-        let outcomes = [
-            first.join().expect("first writer thread"),
-            second.join().expect("second writer thread"),
-        ];
-
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, Ok(false)))
-                .count(),
-            1
-        );
-        assert_eq!(
-            outcomes.iter().filter(|outcome| outcome.is_err()).count(),
-            1
-        );
-        let winner = fs::read(&target).expect("read atomic winner");
-        assert!(winner == first_bytes || winner == second_bytes);
-
-        drop(store);
-        fs::remove_dir_all(root).expect("remove root");
-    }
-
-    fn spawn_racing_publish(
-        layout: StoreLayout,
-        pending: PendingObject,
-        target: PathBuf,
-        expected: Vec<u8>,
-        barrier: Arc<Barrier>,
-    ) -> thread::JoinHandle<io::Result<bool>> {
-        thread::spawn(move || {
-            let first_verification = AtomicBool::new(true);
-            install_pending(&layout, &pending, &target, |stored| {
-                if first_verification.swap(false, Ordering::SeqCst) {
-                    barrier.wait();
-                }
-                if stored == expected {
-                    Ok(())
-                } else {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "another synchronized writer won publication",
-                    ))
-                }
-            })
-        })
-    }
-
-    fn unique_test_dir(label: &str) -> PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "layrs-store-local-cas-{label}-{}-{timestamp}",
-            std::process::id()
-        ))
-    }
-}
+mod tests;
