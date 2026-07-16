@@ -31,20 +31,26 @@ pub struct LensPin {
 }
 
 #[derive(Debug, Clone)]
-pub struct VerifiedLensReconcileExecution<'a> {
-    manifest: &'a LensManifest,
+pub struct VerifiedLensReconcileExecution {
+    manifest: LensManifest,
     pin: LensPin,
     implementation_digest: String,
 }
 
-impl<'a> VerifiedLensReconcileExecution<'a> {
-    pub fn try_new(
-        manifest: &'a LensManifest,
-        implementation_digest: impl Into<String>,
+#[derive(Debug)]
+pub struct LoadedLensReconcileImplementation {
+    implementation: Box<[u8]>,
+    execution: VerifiedLensReconcileExecution,
+}
+
+impl LoadedLensReconcileImplementation {
+    pub fn try_load(
+        manifest: &LensManifest,
+        implementation_bytes: impl AsRef<[u8]>,
     ) -> Result<Self, crate::LensContractValidationError> {
         manifest.validate()?;
-        let implementation_digest = implementation_digest.into();
-        crate::validate_sha256_digest(&implementation_digest)?;
+        let implementation = implementation_bytes.as_ref().to_vec().into_boxed_slice();
+        let implementation_digest = crate::sha256_digest(&implementation);
         let pin = manifest.try_pin()?.ok_or_else(|| {
             crate::LensContractValidationError::new(format!(
                 "executed Lens manifest {} is not pinned",
@@ -69,14 +75,27 @@ impl<'a> VerifiedLensReconcileExecution<'a> {
             ));
         }
         Ok(Self {
-            manifest,
-            pin,
-            implementation_digest,
+            implementation,
+            execution: VerifiedLensReconcileExecution {
+                manifest: manifest.clone(),
+                pin,
+                implementation_digest,
+            },
         })
     }
 
+    pub fn implementation_bytes(&self) -> &[u8] {
+        &self.implementation
+    }
+
+    pub const fn execution(&self) -> &VerifiedLensReconcileExecution {
+        &self.execution
+    }
+}
+
+impl VerifiedLensReconcileExecution {
     pub const fn manifest(&self) -> &LensManifest {
-        self.manifest
+        &self.manifest
     }
 
     pub fn pin(&self) -> &LensPin {
@@ -466,7 +485,7 @@ pub struct LensReconcileResponse {
 
 impl LensReconcileResponse {
     pub fn for_execution(
-        execution: &VerifiedLensReconcileExecution<'_>,
+        execution: &VerifiedLensReconcileExecution,
         requested_lens: &LensPin,
         result: LensReconcileResult,
     ) -> Self {
@@ -475,7 +494,7 @@ impl LensReconcileResponse {
     }
 
     pub fn try_for_execution(
-        execution: &VerifiedLensReconcileExecution<'_>,
+        execution: &VerifiedLensReconcileExecution,
         requested_lens: &LensPin,
         result: LensReconcileResult,
     ) -> Result<Self, crate::LensContractValidationError> {

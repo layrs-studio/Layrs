@@ -1,0 +1,21 @@
+{
+  "paths": [
+    { "name": "single_file", "value": "reconcile.wasm", "valid": true },
+    { "name": "nested_file", "value": "runtime/v1/reconcile.wasm", "valid": true },
+    { "name": "dot_prefixed_file", "value": "runtime/.entry.mjs", "valid": true },
+    { "name": "empty", "value": "", "valid": false },
+    { "name": "absolute", "value": "/runtime/reconcile.wasm", "valid": false },
+    { "name": "repeated_separator", "value": "runtime//reconcile.wasm", "valid": false },
+    { "name": "trailing_separator", "value": "runtime/", "valid": false },
+    { "name": "dot_segment", "value": "runtime/./reconcile.wasm", "valid": false },
+    { "name": "parent_segment", "value": "runtime/../reconcile.wasm", "valid": false },
+    { "name": "backslash", "value": "runtime\\reconcile.wasm", "valid": false },
+    { "name": "drive_prefix", "value": "C:/runtime/reconcile.wasm", "valid": false }
+  ],
+  "quotas": [
+    { "name": "minimum", "value": 1, "valid": true },
+    { "name": "portable_maximum", "value": 9007199254740991, "valid": true },
+    { "name": "zero", "value": 0, "valid": false },
+    { "name": "above_portable_maximum", "value": 9007199254740992, "valid": false }
+  ]
+}

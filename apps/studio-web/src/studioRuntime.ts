@@ -11,7 +11,7 @@ import {
   type LayrsClientLike,
   type TimelineItem
 } from "@layrs/client-sdk";
-import { parseLensManifestList, type LensManifest } from "@layrs/lens-sdk";
+import { parseLensRegistryResponse, type LensManifest } from "@layrs/lens-sdk";
 import type { StudioRoute } from "./routes";
 import {
   defaultLayerForSpace,
@@ -169,7 +169,7 @@ export function runtimeApiBaseUrl(): string {
 export async function loadLensRegistry(baseUrl: string, fetchJson: PrivateJsonFetcher): Promise<LensRegistryState> {
   try {
     const payload = await fetchJson(`${baseUrl}/v1/lenses`);
-    const manifests = normalizeLensManifests(payload);
+    const manifests = parseLensRegistryResponse(payload).items;
     if (manifests.length === 0) {
       return {
         status: "fallback",
@@ -234,20 +234,6 @@ export async function loadArtifactFeed(
       message: `Artifact endpoint unavailable. Studio is using snapshot files. ${optionalStatus(error)}`
     };
   }
-}
-
-function normalizeLensManifests(payload: unknown): LensManifest[] {
-  const record = objectPayload(payload);
-  if (!record || !Array.isArray(record.items)) {
-    throw new Error("Lens registry response must contain a canonical items array");
-  }
-  if (Object.keys(record).some((key) => key !== "items" && key !== "errors")) {
-    throw new Error("Lens registry response contains unknown fields");
-  }
-  if (record.errors !== undefined && !Array.isArray(record.errors)) {
-    throw new Error("Lens registry response errors must be an array");
-  }
-  return parseLensManifestList(record.items);
 }
 
 function normalizeTimelineItems(payload: unknown): TimelineItem[] {

@@ -1,4 +1,4 @@
-use layrs_lens_sdk::LensManifest;
+use layrs_lens_sdk::{LensManifest, LoadedLensReconcileImplementation};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -294,7 +294,25 @@ fn validate_external_manifest(lens_dir: &Path, manifest: &LensManifest) -> Resul
     Ok(())
 }
 
+pub fn load_external_reconcile_implementation(
+    lens_dir: &Path,
+    manifest: &LensManifest,
+) -> Result<LoadedLensReconcileImplementation, String> {
+    validate_external_manifest(lens_dir, manifest)?;
+    let entrypoint = manifest
+        .bundle
+        .as_ref()
+        .and_then(|bundle| bundle.entrypoints.reconcile.as_ref())
+        .ok_or_else(|| "Lens manifest does not declare a reconcile entrypoint".to_string())?;
+    let bytes = read_entrypoint_file(lens_dir, &entrypoint.path, &entrypoint.digest)?;
+    LoadedLensReconcileImplementation::try_load(manifest, bytes).map_err(|error| error.to_string())
+}
+
 fn validate_entrypoint_file(lens_dir: &Path, path: &str, expected: &str) -> Result<(), String> {
+    read_entrypoint_file(lens_dir, path, expected).map(|_| ())
+}
+
+fn read_entrypoint_file(lens_dir: &Path, path: &str, expected: &str) -> Result<Box<[u8]>, String> {
     let root = fs::canonicalize(lens_dir)
         .map_err(|error| format!("could not resolve external Lens directory: {error}"))?;
     let entrypoint = fs::canonicalize(lens_dir.join(path))
@@ -312,7 +330,7 @@ fn validate_entrypoint_file(lens_dir: &Path, path: &str, expected: &str) -> Resu
             "bundle entrypoint {path} digest mismatch: expected {expected}, found {actual}"
         ));
     }
-    Ok(())
+    Ok(bytes.into_boxed_slice())
 }
 
 fn manifest_identity_digest(manifest: &LensManifest) -> Result<String, String> {
@@ -492,6 +510,109 @@ mod tests {
     }
 
     #[test]
+    fn real_reconcile_loader_rejects_mutated_executable_bytes() {
+        let root = unique_temp_dir("loaded-bundle");
+        let lens_dir = root.join("reconcile");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        let entrypoint = lens_dir.join("reconcile.wasm");
+        fs::write(&entrypoint, b"implementation-v1").expect("entrypoint is written");
+        let manifest = bundled_external_manifest(b"implementation-v1");
+        write_manifest(&lens_dir, &manifest);
+
+        let loaded = load_external_reconcile_implementation(&lens_dir, &manifest)
+            .expect("real loader accepts matching executable bytes");
+        fs::write(&entrypoint, b"implementation-v2").expect("entrypoint is mutated");
+
+        assert_eq!(loaded.implementation_bytes(), b"implementation-v1");
+        let error = load_external_reconcile_implementation(&lens_dir, &manifest)
+            .expect_err("old manifest must not prove mutated executable bytes");
+        assert!(error.contains("digest mismatch"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn server_loader_matches_shared_bundle_validation_vectors() {
+        let vectors: BundleValidationVectors = serde_json::from_str(include_str!(
+            "../../../packages/lens-sdk/test/bundle-validation.vectors.json"
+        ))
+        .expect("bundle validation vectors parse");
+
+        for (index, vector) in vectors.paths.into_iter().enumerate() {
+            let root = unique_temp_dir(&format!("path-{index}"));
+            let lens_dir = root.join("reconcile");
+            fs::create_dir_all(&lens_dir).expect("lens dir is created");
+            let mut manifest = bundled_external_manifest(b"implementation");
+            manifest
+                .bundle
+                .as_mut()
+                .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+                .expect("reconcile entrypoint")
+                .path = vector.value.clone();
+            manifest.digest = Some(manifest_identity_digest(&manifest).expect("identity digest"));
+            if vector.valid {
+                let entrypoint = lens_dir.join(&vector.value);
+                fs::create_dir_all(entrypoint.parent().expect("entrypoint parent"))
+                    .expect("entrypoint parent is created");
+                fs::write(entrypoint, b"implementation").expect("entrypoint is written");
+            }
+            write_manifest(&lens_dir, &manifest);
+
+            let registry = load_lens_registry(&root);
+            assert_eq!(registry.errors.is_empty(), vector.valid, "{}", vector.name);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        for (index, vector) in vectors.quotas.into_iter().enumerate() {
+            let root = unique_temp_dir(&format!("quota-{index}"));
+            let lens_dir = root.join("reconcile");
+            fs::create_dir_all(&lens_dir).expect("lens dir is created");
+            fs::write(lens_dir.join("reconcile.wasm"), b"implementation")
+                .expect("entrypoint is written");
+            let mut manifest = bundled_external_manifest(b"implementation");
+            manifest
+                .bundle
+                .as_mut()
+                .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+                .expect("reconcile entrypoint")
+                .resources
+                .max_memory_bytes = vector.value;
+            manifest.digest = Some(manifest_identity_digest(&manifest).expect("identity digest"));
+            write_manifest(&lens_dir, &manifest);
+
+            let registry = load_lens_registry(&root);
+            assert_eq!(registry.errors.is_empty(), vector.valid, "{}", vector.name);
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn external_loader_rejects_symlink_escape() {
+        let root = unique_temp_dir("symlink");
+        let lens_dir = root.join("reconcile");
+        let outside = root.with_extension("outside.wasm");
+        fs::create_dir_all(&lens_dir).expect("lens dir is created");
+        fs::write(&outside, b"outside implementation").expect("outside file is written");
+        if !create_file_symlink(&outside, &lens_dir.join("reconcile.wasm")) {
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_file(&outside);
+            return;
+        }
+        let manifest = bundled_external_manifest(b"outside implementation");
+        write_manifest(&lens_dir, &manifest);
+
+        let registry = load_lens_registry(&root);
+
+        assert_eq!(registry.errors.len(), 1);
+        assert!(
+            registry.errors[0]
+                .message
+                .contains("inside the Lens directory")
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
     fn duplicate_external_ids_do_not_replace_built_ins() {
         let root = unique_temp_dir("duplicate");
         let lens_dir = root.join("code");
@@ -655,5 +776,45 @@ mod tests {
         expected_lens_id: Option<String>,
         expected_reason: Option<String>,
         expected_error: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct BundleValidationVectors {
+        paths: Vec<BundlePathVector>,
+        quotas: Vec<BundleQuotaVector>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct BundlePathVector {
+        name: String,
+        value: String,
+        valid: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct BundleQuotaVector {
+        name: String,
+        value: u64,
+        valid: bool,
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).expect("file symlink is created");
+        true
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => true,
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314) =>
+            {
+                false
+            }
+            Err(error) => panic!("file symlink is created: {error}"),
+        }
     }
 }

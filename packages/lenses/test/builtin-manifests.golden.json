@@ -4,7 +4,7 @@
     "id": "layrs.code",
     "name": "Code",
     "version": "1.0.0",
-    "digest": "sha256:c40fb651cc4255a5e48f30381563cdd649d85bb5cb2ea9dea5995e964a5543ba",
+    "digest": "sha256:af6e5c8a7b0f8d6a69a33e6e72a87d9d7123e7d321c8736098ba13ba6bbd4280",
     "analyzer": {
       "supportedMediaTypes": [
         "text/rust",
@@ -76,7 +76,7 @@
     "id": "layrs.image",
     "name": "Image",
     "version": "1.0.0",
-    "digest": "sha256:70abb30bb6d18f521edbfd2bab55d9ba01a483fdb470076cf7f47495ef66fef9",
+    "digest": "sha256:ab93cd2814c118c66afc7db0aab5457d053ab39e09037637c71e96f85bf12b03",
     "analyzer": {
       "supportedMediaTypes": ["image/png", "image/jpeg", "image/webp"],
       "fileExtensions": ["png", "jpg", "jpeg", "webp"],
@@ -103,7 +103,7 @@
     "id": "layrs.text",
     "name": "Text",
     "version": "1.0.0",
-    "digest": "sha256:773222c274cbb32bf1b058ba084a4085a69f3f23aa69b6cc3e532e59916a8c88",
+    "digest": "sha256:02eb0ff882af5ea16412bc4d8f86443d746f20f62488866e6ec385fc28e8a9cc",
     "analyzer": {
       "supportedMediaTypes": ["text/plain", "text/markdown"],
       "fileExtensions": ["txt", "md", "markdown", "rst", "log"],
@@ -134,7 +134,7 @@
     "id": "layrs.raw",
     "name": "Raw",
     "version": "1.0.0",
-    "digest": "sha256:84eff9e01ee95a583981531b79c710def02ffe777832a6a399b3862af0edea3d",
+    "digest": "sha256:447865d3586458fc74e7f6c984464b6dfcb4efc65e5a0e75a55e95cee62b7df9",
     "analyzer": {
       "supportedMediaTypes": ["application/octet-stream"],
       "fileExtensions": [],

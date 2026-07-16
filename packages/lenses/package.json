@@ -12,9 +12,10 @@
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
-    "check": "tsc --noEmit",
-    "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node test/contract-golden.test.cjs"
+    "check": "node scripts/implementation-digests.cjs --check && tsc --noEmit",
+    "build": "node scripts/implementation-digests.cjs --check && tsc -p tsconfig.json",
+    "test": "node scripts/implementation-digests.cjs --check && tsc -p tsconfig.test.json && node test/contract-golden.test.cjs",
+    "update-digests": "node scripts/implementation-digests.cjs --write"
   },
   "dependencies": {
     "@layrs/lens-sdk": "workspace:*"

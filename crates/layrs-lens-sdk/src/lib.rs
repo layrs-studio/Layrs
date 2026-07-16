@@ -8,14 +8,17 @@ use serde::{Deserialize, Serialize};
 mod contract;
 mod manifest_validation;
 mod selection;
+mod sha256;
 mod validation;
 mod wire;
 
 pub use contract::*;
 pub use manifest_validation::{
-    is_lens_id, is_semantic_version, validate_lens_id, validate_semantic_version,
+    MAX_PORTABLE_INTEGER, is_lens_id, is_semantic_version, validate_lens_id,
+    validate_semantic_version,
 };
 pub use selection::*;
+pub use sha256::sha256_digest;
 pub use validation::{LensContractValidationError, is_sha256_digest, validate_sha256_digest};
 
 pub type MetadataMap = BTreeMap<String, MetadataValue>;

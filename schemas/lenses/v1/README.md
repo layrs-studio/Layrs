@@ -14,6 +14,13 @@ preview and diff windows, and reconcile requests and responses.
 - `.layrslens` metadata reserves WASI analyzer/reconcile modules and an ESM
   viewer module, each with its own digest and resource quota. Bundle execution
   is intentionally disabled until a host verifies and sandboxes these fields.
+- Bundle paths are canonical `/`-separated relative paths: empty, repeated,
+  trailing, `.` and `..` segments are forbidden. Loaders must also reject a
+  canonicalized path that escapes the Lens directory through a symlink.
+- Resource quotas are positive integers no greater than
+  `9007199254740991`, the portable exact-integer maximum shared with JavaScript.
+- Execution proof is minted only from loader-owned implementation bytes after
+  SHA-256 verification; a manifest digest supplied by a caller is not proof.
 
 The shared golden fixture lives at
 `tests/fixtures/lenses/v1/contract.golden.json`. Rust and TypeScript package

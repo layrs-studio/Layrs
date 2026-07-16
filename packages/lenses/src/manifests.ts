@@ -1,12 +1,8 @@
 import type { LensManifest } from "@layrs/lens-sdk";
+import { BUILTIN_LENS_IMPLEMENTATION_DIGESTS } from "./implementationDigests.generated";
 
 export const BUILTIN_LENS_VERSION = "1.0.0";
-export const BUILTIN_LENS_IMPLEMENTATION_DIGESTS = {
-  "layrs.code": "sha256:c40fb651cc4255a5e48f30381563cdd649d85bb5cb2ea9dea5995e964a5543ba",
-  "layrs.image": "sha256:70abb30bb6d18f521edbfd2bab55d9ba01a483fdb470076cf7f47495ef66fef9",
-  "layrs.text": "sha256:773222c274cbb32bf1b058ba084a4085a69f3f23aa69b6cc3e532e59916a8c88",
-  "layrs.raw": "sha256:84eff9e01ee95a583981531b79c710def02ffe777832a6a399b3862af0edea3d"
-} as const;
+export { BUILTIN_LENS_IMPLEMENTATION_DIGESTS };
 
 export const textManifest = {
   contractVersion: "layrs.lens.v1",

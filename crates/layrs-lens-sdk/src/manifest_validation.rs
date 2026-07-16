@@ -10,6 +10,8 @@ use crate::{
     validate_sha256_digest,
 };
 
+pub const MAX_PORTABLE_INTEGER: u64 = 9_007_199_254_740_991;
+
 pub fn is_lens_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -305,14 +307,21 @@ fn validate_entrypoint(
     }
     validate_non_empty(export, &format!("{label} entrypoint export"))?;
     validate_sha256_digest(digest)?;
-    if resources.max_memory_bytes == 0
-        || resources.max_execution_ms == 0
-        || resources.max_input_bytes == 0
-        || resources.max_output_bytes == 0
-        || resources.max_fuel == Some(0)
+    let required_quotas = [
+        resources.max_memory_bytes,
+        resources.max_execution_ms,
+        resources.max_input_bytes,
+        resources.max_output_bytes,
+    ];
+    if required_quotas
+        .into_iter()
+        .any(|value| value == 0 || value > MAX_PORTABLE_INTEGER)
+        || resources
+            .max_fuel
+            .is_some_and(|value| value == 0 || value > MAX_PORTABLE_INTEGER)
     {
         return Err(LensContractValidationError::new(format!(
-            "{label} entrypoint resource quotas must be positive"
+            "{label} entrypoint resource quotas must be between 1 and {MAX_PORTABLE_INTEGER}"
         )));
     }
     Ok(())
@@ -349,8 +358,9 @@ fn valid_extension(value: &str) -> bool {
 
 fn valid_bundle_path(value: &str) -> bool {
     !value.is_empty()
-        && !value.starts_with('/')
-        && !value.split('/').any(|part| part == ".." || part.is_empty())
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'))

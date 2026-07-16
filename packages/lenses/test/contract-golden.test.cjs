@@ -52,6 +52,15 @@ for (const manifest of builtinManifests) {
   assert.notEqual(manifest.digest, `sha256:${"0".repeat(64)}`);
   assert.deepEqual(manifest.viewer.reconcileStatuses, []);
 }
+const crlfEntries = implementationEntries.map((entry) => ({
+  ...entry,
+  bytes: Buffer.from(entry.bytes.toString("utf8").replace(/\n/g, "\r\n"), "utf8")
+}));
+assert.deepEqual(
+  builtinImplementationDigests(crlfEntries),
+  computedDigests,
+  "built-in implementation digests are independent of LF or CRLF checkout endings"
+);
 const changedImplementation = implementationEntries.map((entry, index) =>
   index === 0 ? { ...entry, bytes: Buffer.concat([entry.bytes, Buffer.from("\n// changed")]) } : entry
 );

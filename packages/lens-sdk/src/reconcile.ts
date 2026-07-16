@@ -18,7 +18,10 @@ import type {
   ResolutionScope,
   ScopedResolutionMethod
 } from "./contracts";
-import { verifyLensReconcileExecution, type VerifiedLensReconcileExecution } from "./manifest";
+import {
+  assertVerifiedLensReconcileExecution,
+  type VerifiedLensReconcileExecution
+} from "./manifest";
 import { assertLensPin, assertSha256Digest, lensPinsEqual } from "./validation";
 
 const RESOLUTION_METHOD_ALIASES: Readonly<Record<string, ResolutionMethod>> = {
@@ -211,14 +214,8 @@ export function toLensReconcileResponse(
   result: LensReconcileResult
 ): LensReconcileResponse {
   assertLensPin(requestedLens);
-  const verified = verifyLensReconcileExecution(
-    execution.manifest,
-    execution.implementationDigest
-  );
-  if (!lensPinsEqual(verified.pin, execution.pin)) {
-    throw new Error("Executed Lens pin does not match its validated manifest");
-  }
-  const executedLens = verified.pin;
+  assertVerifiedLensReconcileExecution(execution);
+  const executedLens = execution.pin;
   if (!lensPinsEqual(executedLens, requestedLens)) {
     throw new Error("Requested Lens pin does not match the executed Lens manifest");
   }

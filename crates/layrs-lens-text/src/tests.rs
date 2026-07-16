@@ -174,6 +174,57 @@ fn reconcile_preserves_crlf_and_trailing_newline() {
 }
 
 #[test]
+fn reconcile_preserves_matching_deletion_as_absent() {
+    let result = reconcile_text(LensReconcileInput {
+        path: None,
+        media_type: Some("text/plain"),
+        base: LensReconcileSide::present(b"base\n", None),
+        ours: LensReconcileSide::absent(),
+        theirs: LensReconcileSide::absent(),
+        ours_label: "target",
+        theirs_label: "source",
+    });
+
+    let resolved = result.resolved.expect("resolved tombstone");
+    assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+    assert!(!resolved.exists);
+    assert!(resolved.bytes.is_empty());
+}
+
+#[test]
+fn reconcile_distinguishes_empty_present_from_deletion() {
+    let result = reconcile_text(LensReconcileInput {
+        path: None,
+        media_type: Some("text/plain"),
+        base: LensReconcileSide::absent(),
+        ours: LensReconcileSide::present(b"", None),
+        theirs: LensReconcileSide::present(b"", None),
+        ours_label: "target",
+        theirs_label: "source",
+    });
+
+    let resolved = result.resolved.expect("resolved empty file");
+    assert_eq!(result.status, LensReconcileResultStatus::AutoResolved);
+    assert!(resolved.exists);
+    assert!(resolved.bytes.is_empty());
+}
+
+#[test]
+fn reconcile_propagates_one_sided_deletion_when_other_side_is_unchanged() {
+    let result = reconcile_text(LensReconcileInput {
+        path: None,
+        media_type: Some("text/plain"),
+        base: LensReconcileSide::present(b"base\n", None),
+        ours: LensReconcileSide::present(b"base\n", None),
+        theirs: LensReconcileSide::absent(),
+        ours_label: "target",
+        theirs_label: "source",
+    });
+
+    assert!(!result.resolved.expect("resolved tombstone").exists);
+}
+
+#[test]
 fn text_lens_refuses_invalid_or_incomplete_block_methods() {
     assert_eq!(
         resolve_text_block_choice("base\n", "ours\n", "theirs\n", "both", None).expect("resolve"),

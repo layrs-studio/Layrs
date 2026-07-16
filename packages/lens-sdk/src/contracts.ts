@@ -1,5 +1,6 @@
 export const LENS_CONTRACT_VERSION = "layrs.lens.v1" as const;
 export const LENS_BUNDLE_FORMAT = "layrslens.v1" as const;
+export const MAX_PORTABLE_INTEGER = 9_007_199_254_740_991;
 
 export type LensCapability =
   | "view"

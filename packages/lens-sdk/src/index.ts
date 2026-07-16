@@ -3,6 +3,7 @@ export * from "./diff";
 export * from "./manifest";
 export * from "./manifestValidation";
 export * from "./reconcile";
+export * from "./registry";
 export * from "./runtime";
 export * from "./selection";
 export * from "./validation";

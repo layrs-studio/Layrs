@@ -313,14 +313,29 @@ fn reconcile_responses_bind_to_the_validated_executed_implementation() {
     .with_bundle(golden_bundle());
     manifest.resolution_methods = ResolutionMethods::file(vec![ResolutionMethod::Existing]);
 
-    assert!(VerifiedLensReconcileExecution::try_new(&manifest, VIEWER_DIGEST).is_err());
-    let execution = VerifiedLensReconcileExecution::try_new(&manifest, RECONCILE_DIGEST)
-        .expect("reconcile entrypoint digest identifies the executed implementation");
-    assert_eq!(execution.implementation_digest(), RECONCILE_DIGEST);
+    let implementation = b"immutable reconcile implementation";
+    let mut executable_manifest = manifest.clone();
+    executable_manifest
+        .bundle
+        .as_mut()
+        .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+        .expect("reconcile entrypoint")
+        .digest = sha256_digest(implementation);
+    assert!(
+        LoadedLensReconcileImplementation::try_load(&executable_manifest, b"different bytes")
+            .is_err()
+    );
+    let loaded = LoadedLensReconcileImplementation::try_load(&executable_manifest, implementation)
+        .expect("loader hashes the immutable reconcile implementation bytes");
+    let execution = loaded.execution();
+    assert_eq!(
+        execution.implementation_digest(),
+        sha256_digest(implementation)
+    );
 
     let requested = manifest.try_pin().expect("valid manifest").expect("pin");
     let response = LensReconcileResponse::try_for_execution(
-        &execution,
+        execution,
         &requested,
         LensReconcileResult::unsupported("unsupported"),
     )
@@ -340,7 +355,7 @@ fn reconcile_responses_bind_to_the_validated_executed_implementation() {
         }
         assert!(
             LensReconcileResponse::try_for_execution(
-                &execution,
+                execution,
                 &mismatched,
                 LensReconcileResult::unsupported("unsupported"),
             )
@@ -348,6 +363,58 @@ fn reconcile_responses_bind_to_the_validated_executed_implementation() {
             "{}",
             vector.name
         );
+    }
+}
+
+#[test]
+fn loaded_execution_owns_the_bytes_it_proves() {
+    let mut manifest = golden_contract().manifest;
+    let mut source = b"implementation-v1".to_vec();
+    manifest
+        .bundle
+        .as_mut()
+        .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+        .expect("reconcile entrypoint")
+        .digest = sha256_digest(&source);
+
+    let loaded = LoadedLensReconcileImplementation::try_load(&manifest, &source)
+        .expect("implementation loads");
+    source[0] = b'X';
+
+    assert_eq!(loaded.implementation_bytes(), b"implementation-v1");
+    assert_ne!(
+        loaded.execution().implementation_digest(),
+        sha256_digest(&source)
+    );
+}
+
+#[test]
+fn rust_bundle_validation_matches_shared_vectors() {
+    let vectors: BundleValidationVectors = serde_json::from_str(include_str!(
+        "../../../packages/lens-sdk/test/bundle-validation.vectors.json"
+    ))
+    .expect("bundle validation vectors parse");
+
+    for vector in vectors.paths {
+        let mut manifest = golden_contract().manifest;
+        manifest
+            .bundle
+            .as_mut()
+            .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+            .expect("reconcile entrypoint")
+            .path = vector.value;
+        assert_eq!(manifest.validate().is_ok(), vector.valid, "{}", vector.name);
+    }
+    for vector in vectors.quotas {
+        let mut manifest = golden_contract().manifest;
+        manifest
+            .bundle
+            .as_mut()
+            .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+            .expect("reconcile entrypoint")
+            .resources
+            .max_memory_bytes = vector.value;
+        assert_eq!(manifest.validate().is_ok(), vector.valid, "{}", vector.name);
     }
 }
 
@@ -543,11 +610,20 @@ fn golden_contract() -> GoldenContract {
         MetadataValue::String("mediaType".to_string()),
     );
 
-    let execution = VerifiedLensReconcileExecution::try_new(&manifest, RECONCILE_DIGEST)
-        .expect("golden reconcile implementation matches its manifest");
-    let auto_resolved = LensReconcileResponse::for_execution(&execution, &pin, auto_resolved);
-    let conflicted = LensReconcileResponse::for_execution(&execution, &pin, conflicted);
-    let unsupported = LensReconcileResponse::for_execution(&execution, &pin, unsupported);
+    let mut executable_manifest = manifest.clone();
+    let implementation = b"golden reconcile implementation";
+    executable_manifest
+        .bundle
+        .as_mut()
+        .and_then(|bundle| bundle.entrypoints.reconcile.as_mut())
+        .expect("reconcile entrypoint")
+        .digest = sha256_digest(implementation);
+    let loaded = LoadedLensReconcileImplementation::try_load(&executable_manifest, implementation)
+        .expect("golden reconcile implementation matches its executable manifest");
+    let auto_resolved =
+        LensReconcileResponse::for_execution(loaded.execution(), &pin, auto_resolved);
+    let conflicted = LensReconcileResponse::for_execution(loaded.execution(), &pin, conflicted);
+    let unsupported = LensReconcileResponse::for_execution(loaded.execution(), &pin, unsupported);
 
     GoldenContract {
         manifest,
@@ -658,4 +734,24 @@ fn golden_bundle() -> LensBundleContract {
             signature: "base64:ZXhhbXBsZS1zaWduYXR1cmU=".to_string(),
         }),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleValidationVectors {
+    paths: Vec<BundlePathVector>,
+    quotas: Vec<BundleQuotaVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundlePathVector {
+    name: String,
+    value: String,
+    valid: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleQuotaVector {
+    name: String,
+    value: u64,
+    valid: bool,
 }

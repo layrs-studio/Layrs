@@ -1,6 +1,7 @@
 import {
   LENS_BUNDLE_FORMAT,
   LENS_CONTRACT_VERSION,
+  MAX_PORTABLE_INTEGER,
   type EsmLensEntrypoint,
   type LensManifest,
   type LensResourceQuotas,
@@ -20,7 +21,7 @@ const MANIFEST_KEYS = new Set([
   "resolutionMethods",
   "bundle"
 ]);
-const BUNDLE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/;
+export const BUNDLE_PATH = /^(?!\.{1,2}(?:\/|$))(?!.*\/\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 
 export function assertLensManifest(value: unknown): asserts value is LensManifest {
   const manifest = record(value, "Lens manifest");
@@ -255,8 +256,8 @@ function stringArray(value: unknown, label: string, pattern?: RegExp): string[] 
 }
 
 function positiveInteger(value: unknown, label: string): void {
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
-    throw new Error(`${label} must be a positive safe integer`);
+  if (!Number.isSafeInteger(value) || Number(value) <= 0 || Number(value) > MAX_PORTABLE_INTEGER) {
+    throw new Error(`${label} must be an integer between 1 and ${MAX_PORTABLE_INTEGER}`);
   }
 }
 

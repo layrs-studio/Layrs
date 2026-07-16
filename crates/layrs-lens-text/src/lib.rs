@@ -278,6 +278,30 @@ struct TextChangeRange {
 }
 
 pub fn reconcile_text(input: LensReconcileInput<'_>) -> LensReconcileResult {
+    if same_side(input.ours, input.theirs) {
+        return LensReconcileResult::auto_resolved(
+            "Text sides are identical",
+            content_from_side(input.ours),
+        );
+    }
+    if same_side(input.base, input.ours) {
+        return LensReconcileResult::auto_resolved(
+            "Existing text is unchanged; taking incoming",
+            content_from_side(input.theirs),
+        );
+    }
+    if same_side(input.base, input.theirs) {
+        return LensReconcileResult::auto_resolved(
+            "Incoming text is unchanged; keeping existing",
+            content_from_side(input.ours),
+        );
+    }
+    if !input.base.exists || !input.ours.exists || !input.theirs.exists {
+        return LensReconcileResult::unsupported(
+            "Text delete/modify conflicts require explicit resolution",
+        );
+    }
+
     let Ok(base_text) = side_text(input.base.bytes, input.base.exists) else {
         return LensReconcileResult::unsupported("Base text is not valid UTF-8");
     };
@@ -567,6 +591,21 @@ fn side_text(bytes: &[u8], exists: bool) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(bytes)
     } else {
         Ok("")
+    }
+}
+
+fn same_side(
+    left: layrs_lens_sdk::LensReconcileSide<'_>,
+    right: layrs_lens_sdk::LensReconcileSide<'_>,
+) -> bool {
+    left.exists == right.exists && (!left.exists || left.bytes == right.bytes)
+}
+
+fn content_from_side(side: layrs_lens_sdk::LensReconcileSide<'_>) -> LensReconcileContent {
+    if side.exists {
+        LensReconcileContent::present(side.bytes.to_vec())
+    } else {
+        LensReconcileContent::absent()
     }
 }
 
