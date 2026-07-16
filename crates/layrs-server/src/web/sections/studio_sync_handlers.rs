@@ -360,6 +360,25 @@ async fn publish_local_space_sync_v2(
             });
         }
     }
+    let mut mutation_paths = publish_artifacts
+        .iter()
+        .map(required_artifact_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    mutation_paths.extend(
+        deleted_paths
+            .iter()
+            .map(|path| validate_publish_path(path))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let mutation_layer_ids = [layer_id.to_string()];
+    lock_layer_paths_in_tx(
+        &mut tx,
+        workspace_id,
+        space_id,
+        &mutation_layer_ids,
+        &mutation_paths,
+    )
+    .await?;
     let mut published_ids = Vec::new();
     let mut deleted_values = Vec::new();
     let mut event_ids = Vec::new();

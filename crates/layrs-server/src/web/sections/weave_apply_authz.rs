@@ -39,16 +39,46 @@ async fn lock_and_revalidate_weave_paths_in_tx(
         check.account_id,
     )
     .await?;
-    if snapshot.layer(check.target_layer_id)?.repository_role == RepositoryRole::Reader {
-        return Err(ApiError::forbidden(check.target_denied_message));
+    revalidate_weave_paths_in_tx(tx, workspace_id, space_id, &snapshot, check).await
+}
+
+fn ensure_weave_coarse_layer_access(
+    snapshot: &WeaveAuthorizationSnapshot,
+    source_layer_id: &str,
+    target_layer_id: &str,
+    target_denied_message: &'static str,
+) -> Result<(), ApiError> {
+    snapshot.layer(source_layer_id)?;
+    if snapshot.layer(target_layer_id)?.repository_role == RepositoryRole::Reader {
+        return Err(ApiError::forbidden(target_denied_message));
     }
+    Ok(())
+}
+
+async fn revalidate_weave_paths_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    snapshot: &WeaveAuthorizationSnapshot,
+    check: WeavePathAccessCheck<'_>,
+) -> Result<RevalidatedWeaveAccess, ApiError> {
+    ensure_weave_coarse_layer_access(
+        snapshot,
+        check.source_layer_id,
+        check.target_layer_id,
+        check.target_denied_message,
+    )?;
+    let layer_ids = vec![
+        check.source_layer_id.to_string(),
+        check.target_layer_id.to_string(),
+    ];
     let artifacts =
         weave_artifact_ids_for_paths_in_tx(tx, workspace_id, space_id, &layer_ids, check.paths)
             .await?;
 
     for path in check.paths {
         let (source, target) = weave_path_access_decisions(
-            &snapshot,
+            snapshot,
             &artifacts,
             check.source_layer_id,
             check.target_layer_id,

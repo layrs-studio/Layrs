@@ -74,8 +74,8 @@ async fn load_weave_authorization_snapshot_in_tx(
         ));
     }
 
-    // Global Weave mutation lock order: Layers -> identity/roles -> policies ->
-    // artifacts -> heads. Callers must finish artifact locking before heads.
+    // Apply continues from these sorted authorization locks into canonical
+    // Layer/path advisory keys, artifacts, heads, then Steps.
     lock_weave_layers_in_tx(tx, workspace_id, space_id, &layer_ids).await?;
 
     lock_active_weave_actor_in_tx(tx, account_id).await?;

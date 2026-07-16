@@ -496,7 +496,7 @@ async fn assert_create_revocation_rolls_back(revocation: &str) {
         _ => unreachable!(),
     }
     let title = format!("Create {revocation} revocation");
-    let (pool, pid) = dedicated_weave_pool(&fixture).await;
+    let (pool, pid) = dedicated_test_pool(&fixture).await;
     let workspace_id = fixture.workspace_id.clone();
     let space_id = fixture.space_id.clone();
     let target_layer_id = fixture.layer_id.clone();
@@ -553,158 +553,88 @@ async fn weave_apply_delete_layer_and_space_races_do_not_deadlock() {
         .await;
         let weave_id =
             create_planned_weave(&fixture, fixture.bearer_headers(), &source, "Delete race").await;
-        let (apply_pool, _) = dedicated_weave_pool(&fixture).await;
-        let (delete_pool, _) = dedicated_weave_pool(&fixture).await;
-        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
-        let apply_barrier = barrier.clone();
-        let apply_path = (
-            fixture.workspace_id.clone(),
-            fixture.space_id.clone(),
-            weave_id,
-        );
-        let apply_headers = fixture.bearer_headers();
-        let apply = tokio::spawn(async move {
-            apply_barrier.wait().await;
-            apply_weave_request(
-                State(test_state(apply_pool)),
-                apply_headers,
-                Path(apply_path),
-            )
-            .await
-        });
-        let delete_barrier = barrier.clone();
-        let delete_headers = fixture.bearer_headers();
-        let workspace_id = fixture.workspace_id.clone();
-        let space_id = fixture.space_id.clone();
-        let layer_id = fixture.layer_id.clone();
-        let delete = tokio::spawn(async move {
-            delete_barrier.wait().await;
-            if delete_space_target {
-                delete_space(
-                    State(test_state(delete_pool)),
-                    Path((workspace_id, space_id)),
-                    delete_headers,
-                )
-                .await
-            } else {
-                delete_layer(
-                    State(test_state(delete_pool)),
-                    Path((workspace_id, space_id, layer_id)),
-                    delete_headers,
-                )
-                .await
-            }
-        });
-        barrier.wait().await;
-        let (apply, delete) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            tokio::join!(apply, delete)
-        })
-        .await
-        .expect("Apply/Delete must complete without deadlock");
-        for result in [
-            apply.expect("Apply task joins"),
-            delete.expect("Delete task joins"),
-        ] {
-            if let Err(error) = result {
-                assert!(
-                    !error.message.contains("40P01")
-                        && !error.message.to_lowercase().contains("deadlock"),
-                    "unexpected deadlock: {}",
-                    error.message
-                );
-            }
-        }
+        assert_apply_delete_contention(&fixture, weave_id, delete_space_target).await;
     }
 }
 
 #[tokio::test]
-async fn weave_terminal_states_are_immutable() {
-    let Some(applied_fixture) = SyncTestFixture::create().await else {
+async fn weave_apply_waits_for_v2_publish_of_missing_target_path() {
+    let Some(fixture) = SyncTestFixture::create().await else {
         return;
     };
-    let source = create_weave_test_layer(&applied_fixture, "Applied Terminal Source").await;
+    let source = create_weave_test_layer(&fixture, "Missing Target Source").await;
+    let path = "new-target.txt";
+    let bytes = b"published while Apply waits\n";
     publish_weave_test_file(
-        &applied_fixture,
+        &fixture,
         &source,
-        "terminal.txt",
-        b"terminal\n",
+        path,
+        bytes,
         "text/plain",
         None,
         0,
     )
     .await;
-    let applied_id = create_planned_weave(
-        &applied_fixture,
-        applied_fixture.bearer_headers(),
+    let weave_id = create_planned_weave(
+        &fixture,
+        fixture.bearer_headers(),
         &source,
-        "Applied terminal",
+        "Missing target publish race",
     )
     .await;
-    let _ = apply_weave_request(
-        State(test_state(applied_fixture.pool.clone())),
-        applied_fixture.bearer_headers(),
-        Path((
-            applied_fixture.workspace_id.clone(),
-            applied_fixture.space_id.clone(),
-            applied_id.clone(),
-        )),
+    let target_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM artifacts WHERE workspace_id = $1 AND space_id = $2 AND layer_id = $3 AND logical_path = $4",
     )
+    .bind(&fixture.workspace_id)
+    .bind(&fixture.space_id)
+    .bind(&fixture.layer_id)
+    .bind(path)
+    .fetch_one(&fixture.pool)
     .await
-    .expect("Weave applies");
-    let before = weave_durable_state(&applied_fixture, &applied_id).await;
-    let _ = abort_weave_request(
-        State(test_state(applied_fixture.pool.clone())),
-        applied_fixture.bearer_headers(),
-        Path((
-            applied_fixture.workspace_id.clone(),
-            applied_fixture.space_id.clone(),
-            applied_id.clone(),
-        )),
-    )
-    .await
-    .expect_err("applied Weave cannot abort");
-    assert_eq!(
-        weave_durable_state(&applied_fixture, &applied_id).await,
-        before
-    );
+    .expect("missing target artifact count loads");
+    assert_eq!(target_count, 0);
 
-    let Some(aborted_fixture) = SyncTestFixture::create().await else {
-        return;
-    };
-    let (aborted_id, conflict_id) = create_raw_conflicted_weave(&aborted_fixture).await;
-    let _ = abort_weave_request(
-        State(test_state(aborted_fixture.pool.clone())),
-        aborted_fixture.bearer_headers(),
-        Path((
-            aborted_fixture.workspace_id.clone(),
-            aborted_fixture.space_id.clone(),
-            aborted_id.clone(),
-        )),
+    assert_apply_waits_for_paused_publish(
+        &fixture,
+        weave_id,
+        path,
+        &blake3_digest_for_bytes(bytes),
     )
-    .await
-    .expect("Weave aborts");
-    let before = weave_durable_state(&aborted_fixture, &aborted_id).await;
-    resolve_weave_conflict(
-        State(test_state(aborted_fixture.pool.clone())),
-        aborted_fixture.bearer_headers(),
-        Path((
-            aborted_fixture.workspace_id.clone(),
-            aborted_fixture.space_id.clone(),
-            aborted_id.clone(),
-            conflict_id,
-        )),
-        Json(ResolveWeaveConflictBody {
-            method: "incoming".to_string(),
-            block_id: None,
-            manual_text: None,
-        }),
-    )
-    .await
-    .expect_err("aborted Weave cannot resolve");
-    assert_eq!(
-        weave_durable_state(&aborted_fixture, &aborted_id).await,
-        before
-    );
+    .await;
+}
+
+#[tokio::test]
+async fn weave_terminal_transition_wins_request_row_races() {
+    for loser in ["resolve", "abort", "apply"] {
+        let Some(fixture) = SyncTestFixture::create().await else {
+            return;
+        };
+        let (weave_id, mutation) = if loser == "resolve" {
+            let (weave_id, conflict_id) = create_raw_conflicted_weave(&fixture).await;
+            (weave_id, TerminalWeaveLoser::Resolve(conflict_id))
+        } else {
+            let source = create_weave_test_layer(&fixture, "Terminal Race Source").await;
+            publish_weave_test_file(
+                &fixture,
+                &source,
+                "terminal-race.txt",
+                b"terminal\n",
+                "text/plain",
+                None,
+                0,
+            )
+            .await;
+            let weave_id =
+                create_planned_weave(&fixture, fixture.bearer_headers(), &source, loser).await;
+            let mutation = if loser == "abort" {
+                TerminalWeaveLoser::Abort
+            } else {
+                TerminalWeaveLoser::Apply
+            };
+            (weave_id, mutation)
+        };
+        assert_terminal_transition_wins(&fixture, weave_id, mutation).await;
+    }
 }
 
 #[tokio::test]
@@ -767,8 +697,39 @@ async fn weave_apply_normalizes_all_inaccessible_states() {
     )
     .await
     .expect("admin aborts");
+    let malformed_json = create_planned_weave(
+        &fixture,
+        fixture.bearer_headers(),
+        &source,
+        "Malformed replay JSON",
+    )
+    .await;
+    sqlx::query("UPDATE weave_step_replays SET path_replays = '{}'::jsonb WHERE weave_id = $1")
+        .bind(&malformed_json)
+        .execute(&fixture.pool)
+        .await
+        .expect("malformed replay JSON stages");
+    let malformed_path = create_planned_weave(
+        &fixture,
+        fixture.bearer_headers(),
+        &source,
+        "Malformed replay path",
+    )
+    .await;
+    sqlx::query("UPDATE weave_step_replays SET changed_paths = ARRAY['../private'] WHERE weave_id = $1")
+        .bind(&malformed_path)
+        .execute(&fixture.pool)
+        .await
+        .expect("malformed replay path stages");
     let mut normalized = None;
-    for weave_id in [open, applied, aborted, prefixed_id("missing_weave")] {
+    for weave_id in [
+        open,
+        applied,
+        aborted,
+        malformed_json,
+        malformed_path,
+        prefixed_id("missing_weave"),
+    ] {
         let error = apply_weave_request(
             State(test_state(fixture.pool.clone())),
             outsider.clone(),
@@ -790,11 +751,6 @@ async fn weave_apply_normalizes_all_inaccessible_states() {
             "Weave request is inaccessible".to_string()
         ))
     );
-}
-
-async fn weave_durable_state(fixture: &SyncTestFixture, weave_id: &str) -> Value {
-    sqlx::query_scalar("SELECT jsonb_build_object('request', to_jsonb(wr), 'session', to_jsonb(ws), 'conflicts', COALESCE((SELECT jsonb_agg(to_jsonb(wc) ORDER BY wc.conflict_id) FROM weave_conflicts wc WHERE wc.weave_id = wr.weave_id), '[]'::jsonb), 'resolutions', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.resolution_id) FROM weave_resolutions r JOIN weave_conflicts wc ON wc.conflict_id = r.conflict_id WHERE wc.weave_id = wr.weave_id), '[]'::jsonb)) FROM weave_requests wr JOIN weave_sessions ws ON ws.weave_id = wr.weave_id WHERE wr.weave_id = $1")
-        .bind(weave_id).fetch_one(&fixture.pool).await.expect("durable Weave state loads")
 }
 
 async fn create_planned_weave(
@@ -821,58 +777,6 @@ async fn create_planned_weave(
         .and_then(Value::as_str)
         .expect("Weave id")
         .to_string()
-}
-
-async fn spawn_weave_apply(
-    fixture: &SyncTestFixture,
-    headers: HeaderMap,
-    weave_id: String,
-) -> (tokio::task::JoinHandle<Result<Json<Value>, ApiError>>, i32) {
-    let (pool, pid) = dedicated_weave_pool(fixture).await;
-    let workspace_id = fixture.workspace_id.clone();
-    let space_id = fixture.space_id.clone();
-    let task = tokio::spawn(async move {
-        apply_weave_request(
-            State(test_state(pool)),
-            headers,
-            Path((workspace_id, space_id, weave_id)),
-        )
-        .await
-    });
-    (task, pid)
-}
-
-async fn dedicated_weave_pool(fixture: &SyncTestFixture) -> (PgPool, i32) {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(fixture.pool.connect_options().as_ref().clone())
-        .await
-        .expect("dedicated Weave test connection opens");
-    let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&pool)
-        .await
-        .expect("dedicated backend pid loads");
-    (pool, pid)
-}
-
-async fn wait_for_backend_lock(pool: &PgPool, pid: i32) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let blocked: bool = sqlx::query_scalar(
-                "SELECT wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0 FROM pg_stat_activity WHERE pid = $1",
-            )
-            .bind(pid)
-            .fetch_one(pool)
-            .await
-            .expect("backend lock state is observable");
-            if blocked {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("backend reaches an observable lock wait");
 }
 
 async fn weave_test_artifact_id(fixture: &SyncTestFixture, layer_id: &str, path: &str) -> String {

@@ -568,19 +568,6 @@ async fn ensure_layer_read(
         .map(|_| ())
 }
 
-async fn ensure_layer_write(
-    pool: &PgPool,
-    workspace_id: &str,
-    space_id: &str,
-    layer_id: &str,
-    account_id: &str,
-) -> Result<(), ApiError> {
-    match effective_layer_role(pool, workspace_id, space_id, layer_id, account_id).await? {
-        RepositoryRole::Writer | RepositoryRole::Admin => Ok(()),
-        RepositoryRole::Reader => Err(ApiError::forbidden("Layer write permission is required")),
-    }
-}
-
 async fn workspace_value_for_account(
     pool: &PgPool,
     workspace_id: &str,

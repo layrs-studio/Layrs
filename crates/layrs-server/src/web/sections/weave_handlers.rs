@@ -629,11 +629,32 @@ async fn apply_weave_request(
         .unwrap_or(None)
         .as_deref()
         == Some(&user.id);
-    let paths = weave_replay_paths_in_tx(&mut tx, &weave_id).await?;
-    let access = lock_and_revalidate_weave_paths_in_tx(
+    let layer_ids = vec![source_layer_id.clone(), target_layer_id.clone()];
+    let snapshot = load_weave_authorization_snapshot_in_tx(
         &mut tx,
         &workspace_id,
         &space_id,
+        &layer_ids,
+        &user.id,
+    )
+    .await
+    .map_err(|error| normalize_weave_apply_access_error(error, preserve_access_detail))?;
+    ensure_weave_coarse_layer_access(
+        &snapshot,
+        &source_layer_id,
+        &target_layer_id,
+        "Weave target Layer is no longer writable",
+    )
+    .map_err(|error| normalize_weave_apply_access_error(error, preserve_access_detail))?;
+    let paths = weave_replay_paths_in_tx(&mut tx, &weave_id).await?;
+    lock_layer_paths_in_tx(&mut tx, &workspace_id, &space_id, &layer_ids, &paths)
+        .await
+        .map_err(|error| normalize_weave_apply_access_error(error, preserve_access_detail))?;
+    let access = revalidate_weave_paths_in_tx(
+        &mut tx,
+        &workspace_id,
+        &space_id,
+        &snapshot,
         WeavePathAccessCheck {
             source_layer_id: &source_layer_id,
             target_layer_id: &target_layer_id,
@@ -647,7 +668,6 @@ async fn apply_weave_request(
     )
     .await
     .map_err(|error| normalize_weave_apply_access_error(error, preserve_access_detail))?;
-    let layer_ids = vec![source_layer_id.clone(), target_layer_id.clone()];
     let generations =
         lock_weave_layer_generations_in_tx(&mut tx, &workspace_id, &space_id, &layer_ids)
             .await

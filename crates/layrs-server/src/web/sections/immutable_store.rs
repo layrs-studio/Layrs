@@ -14,6 +14,45 @@ struct ImmutableTreeEntry {
     size_bytes: i64,
 }
 
+async fn lock_layer_paths_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: &str,
+    space_id: &str,
+    layer_ids: &[String],
+    logical_paths: &[String],
+) -> Result<(), ApiError> {
+    // Global mutable Layer order: Layer rows -> identity/roles -> policies ->
+    // canonical advisory keys (Layer, path) -> artifacts -> heads -> Steps.
+    // Callers that skip the leading authorization locks still enter at the
+    // advisory-key stage before touching artifacts or heads.
+    let logical_paths = sorted_unique_strings(logical_paths);
+    for layer_id in sorted_unique_strings(layer_ids) {
+        for logical_path in &logical_paths {
+            sqlx::query(
+                r#"
+                SELECT pg_advisory_xact_lock(hashtextextended(
+                    jsonb_build_array(
+                        'layrs.layer-path-mutation.v1',
+                        $1::text,
+                        $2::text,
+                        $3::text,
+                        $4::text
+                    )::text,
+                    0
+                ))
+                "#,
+            )
+            .bind(workspace_id)
+            .bind(space_id)
+            .bind(&layer_id)
+            .bind(logical_path)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn lock_content_id_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     object_id: &str,

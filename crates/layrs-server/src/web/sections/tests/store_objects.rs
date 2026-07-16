@@ -240,6 +240,275 @@ pub(super) fn test_state(pool: PgPool) -> AppState {
     }
 }
 
+pub(super) async fn dedicated_test_pool(fixture: &SyncTestFixture) -> (PgPool, i32) {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(fixture.pool.connect_options().as_ref().clone())
+        .await
+        .expect("dedicated test connection opens");
+    let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&pool)
+        .await
+        .expect("dedicated backend pid loads");
+    (pool, pid)
+}
+
+pub(super) async fn wait_for_backend_lock(pool: &PgPool, pid: i32) {
+    wait_for_backend_blocker(pool, pid, None).await;
+}
+
+pub(super) async fn wait_for_backend_blocked_by(pool: &PgPool, pid: i32, blocker_pid: i32) {
+    wait_for_backend_blocker(pool, pid, Some(blocker_pid)).await;
+}
+
+async fn wait_for_backend_blocker(pool: &PgPool, pid: i32, blocker_pid: Option<i32>) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                r#"
+                SELECT wait_event_type = 'Lock'
+                  AND cardinality(pg_blocking_pids(pid)) > 0
+                  AND ($2::int IS NULL OR $2 = ANY(pg_blocking_pids(pid)))
+                FROM pg_stat_activity
+                WHERE pid = $1
+                "#,
+            )
+            .bind(pid)
+            .bind(blocker_pid)
+            .fetch_one(pool)
+            .await
+            .expect("backend lock state is observable");
+            if blocked {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("backend reaches the expected observable lock wait");
+}
+
+pub(super) async fn spawn_weave_apply(
+    fixture: &SyncTestFixture,
+    headers: HeaderMap,
+    weave_id: String,
+) -> (tokio::task::JoinHandle<Result<Json<Value>, ApiError>>, i32) {
+    let (pool, pid) = dedicated_test_pool(fixture).await;
+    let path = (
+        fixture.workspace_id.clone(),
+        fixture.space_id.clone(),
+        weave_id,
+    );
+    let task = tokio::spawn(async move {
+        apply_weave_request(State(test_state(pool)), headers, Path(path)).await
+    });
+    (task, pid)
+}
+
+pub(super) async fn weave_durable_state(fixture: &SyncTestFixture, weave_id: &str) -> Value {
+    sqlx::query_scalar("SELECT jsonb_build_object('request', to_jsonb(wr), 'session', to_jsonb(ws), 'conflicts', COALESCE((SELECT jsonb_agg(to_jsonb(wc) ORDER BY wc.conflict_id) FROM weave_conflicts wc WHERE wc.weave_id = wr.weave_id), '[]'::jsonb), 'resolutions', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.resolution_id) FROM weave_resolutions r JOIN weave_conflicts wc ON wc.conflict_id = r.conflict_id WHERE wc.weave_id = wr.weave_id), '[]'::jsonb)) FROM weave_requests wr JOIN weave_sessions ws ON ws.weave_id = wr.weave_id WHERE wr.weave_id = $1")
+        .bind(weave_id).fetch_one(&fixture.pool).await.expect("durable Weave state loads")
+}
+
+pub(super) enum TerminalWeaveLoser {
+    Apply,
+    Abort,
+    Resolve(String),
+}
+
+pub(super) async fn assert_terminal_transition_wins(
+    fixture: &SyncTestFixture,
+    weave_id: String,
+    loser: TerminalWeaveLoser,
+) {
+    let (terminal_pool, terminal_pid) = dedicated_test_pool(fixture).await;
+    let mut terminal = terminal_pool.begin().await.expect("terminal tx begins");
+    let transitioned = sqlx::query(
+        "UPDATE weave_requests SET status = 'aborted', updated_at = now() WHERE weave_id = $1 AND status IN ('open', 'preview', 'conflicted', 'resolved')",
+    )
+    .bind(&weave_id)
+    .execute(&mut *terminal)
+    .await
+    .expect("terminal request transition stages");
+    assert_eq!(transitioned.rows_affected(), 1);
+    sqlx::query("UPDATE weave_sessions SET status = 'aborted', updated_at = now() WHERE weave_id = $1")
+        .bind(&weave_id)
+        .execute(&mut *terminal)
+        .await
+        .expect("terminal session transition stages");
+
+    let (loser_pool, loser_pid) = dedicated_test_pool(fixture).await;
+    let headers = fixture.bearer_headers();
+    let path = (
+        fixture.workspace_id.clone(),
+        fixture.space_id.clone(),
+        weave_id.clone(),
+    );
+    let task = tokio::spawn(async move {
+        match loser {
+            TerminalWeaveLoser::Apply => {
+                apply_weave_request(State(test_state(loser_pool)), headers, Path(path)).await
+            }
+            TerminalWeaveLoser::Abort => {
+                abort_weave_request(State(test_state(loser_pool)), headers, Path(path)).await
+            }
+            TerminalWeaveLoser::Resolve(conflict_id) => {
+                resolve_weave_conflict(
+                    State(test_state(loser_pool)),
+                    headers,
+                    Path((path.0, path.1, path.2, conflict_id)),
+                    Json(ResolveWeaveConflictBody {
+                        method: "incoming".to_string(),
+                        block_id: None,
+                        manual_text: None,
+                    }),
+                )
+                .await
+            }
+        }
+    });
+    wait_for_backend_blocked_by(&fixture.pool, loser_pid, terminal_pid).await;
+    terminal.commit().await.expect("terminal transition commits");
+    let terminal_snapshot = weave_durable_state(fixture, &weave_id).await;
+    let error = task
+        .await
+        .expect("competing mutation joins")
+        .expect_err("terminal request rejects competing mutation");
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    assert_eq!(weave_durable_state(fixture, &weave_id).await, terminal_snapshot);
+}
+
+pub(super) async fn assert_apply_waits_for_paused_publish(
+    fixture: &SyncTestFixture,
+    weave_id: String,
+    path: &str,
+    file_object_id: &str,
+) {
+    let policy_epoch = current_policy_epoch(
+        &fixture.pool,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        &fixture.layer_id,
+    )
+    .await
+    .expect("target policy epoch loads");
+    let (publish_pool, publish_pid) = dedicated_test_pool(fixture).await;
+    let mut publish = publish_pool.begin().await.expect("publish tx begins");
+    lock_layer_paths_in_tx(
+        &mut publish,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        std::slice::from_ref(&fixture.layer_id),
+        &[path.to_string()],
+    )
+    .await
+    .expect("publish takes target Layer/path lock");
+    let body = serde_json::from_value(json!({
+        "path": path,
+        "kind": "note",
+        "mediaType": "text/plain",
+        "fileObjectId": file_object_id
+    }))
+    .expect("paused publish body deserializes");
+    let (_, event_id, _) = publish_artifact_v2_in_tx(
+        &fixture.pool,
+        &mut publish,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        &fixture.layer_id,
+        &fixture.account_id,
+        body,
+    )
+    .await
+    .expect("publish inserts previously missing artifact");
+
+    let (apply, apply_pid) = spawn_weave_apply(fixture, fixture.bearer_headers(), weave_id).await;
+    wait_for_backend_blocked_by(&fixture.pool, apply_pid, publish_pid).await;
+    let root_tree_id = rebuild_layer_tree_in_tx(
+        &mut publish,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        &fixture.layer_id,
+        &fixture.account_id,
+    )
+    .await
+    .expect("paused publish rebuilds target tree");
+    advance_layer_head_in_tx(
+        &mut publish,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        &fixture.layer_id,
+        root_tree_id.as_deref(),
+        policy_epoch,
+        Some(&event_id),
+        &fixture.account_id,
+    )
+    .await
+    .expect("paused publish advances target head");
+    publish.commit().await.expect("paused publish commits");
+    let error = apply
+        .await
+        .expect("Apply task joins")
+        .expect_err("committed publish invalidates prepared target generation");
+    assert_eq!(error.status, StatusCode::CONFLICT);
+    assert!(!error.message.contains("40P01"));
+}
+
+pub(super) async fn assert_apply_delete_contention(
+    fixture: &SyncTestFixture,
+    weave_id: String,
+    delete_space_target: bool,
+) {
+    let policy_id = policy_id_for_layer(
+        &fixture.pool,
+        &fixture.workspace_id,
+        &fixture.space_id,
+        &fixture.layer_id,
+    )
+    .await
+    .expect("target policy id loads");
+    let (blocker_pool, blocker_pid) = dedicated_test_pool(fixture).await;
+    let mut blocker = blocker_pool.begin().await.expect("policy blocker begins");
+    sqlx::query("SELECT policy_id FROM layer_access_policies WHERE policy_id = $1 FOR UPDATE")
+        .bind(policy_id)
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("target policy row locks");
+    let (apply, apply_pid) = spawn_weave_apply(fixture, fixture.bearer_headers(), weave_id).await;
+    wait_for_backend_blocked_by(&fixture.pool, apply_pid, blocker_pid).await;
+
+    let (delete_pool, delete_pid) = dedicated_test_pool(fixture).await;
+    let headers = fixture.bearer_headers();
+    let workspace_id = fixture.workspace_id.clone();
+    let space_id = fixture.space_id.clone();
+    let layer_id = fixture.layer_id.clone();
+    let delete = tokio::spawn(async move {
+        if delete_space_target {
+            delete_space(State(test_state(delete_pool)), Path((workspace_id, space_id)), headers)
+                .await
+        } else {
+            delete_layer(
+                State(test_state(delete_pool)),
+                Path((workspace_id, space_id, layer_id)),
+                headers,
+            )
+            .await
+        }
+    });
+    wait_for_backend_blocked_by(&fixture.pool, delete_pid, apply_pid).await;
+    blocker.commit().await.expect("policy blocker commits");
+    let (apply, delete) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(apply, delete)
+    })
+    .await
+    .expect("contending Apply/Delete operations complete");
+    for result in [apply.expect("Apply task joins"), delete.expect("Delete task joins")] {
+        if let Err(error) = result {
+            assert!(!error.message.contains("40P01") && !error.message.contains("deadlock"));
+        }
+    }
+}
+
 pub(super) fn publish_artifact(
     path: &str,
     kind: &str,
