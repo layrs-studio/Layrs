@@ -1,6 +1,16 @@
 # Projection partielle : audit et options de livraison
 
-État au 20 septembre 2026 : **analyse seulement, aucun choix acquis**.
+État courant au 21 septembre 2026 : **choix acquis, implémentation en cours**.
+L'utilisateur demande un Worktree partiel éditable, avec noms et chemins visibles
+et interdiction de création/renommage/déplacement sur les emplacements réservés.
+Le moteur doit également refuser les collisions créées par un éditeur externe.
+Voir [ADR0024](../../decisions/0024-editable-partial-worktrees.md).
+Les lots ci-dessous sont conservés comme audit historique du 20 septembre ;
+ils ne décrivent plus un choix en attente et ne constituent pas des fonctions livrées.
+
+## Audit historique
+
+État au 20 septembre 2026 : **analyse seulement, aucun choix acquis à cette date**.
 La question utilisateur distingue une première version avec projets complets et
 gestion des accès fins dans l'interface, une projection locale en lecture seule,
 et un Worktree partiel éditable nécessitant un changement de modèle. Les deux

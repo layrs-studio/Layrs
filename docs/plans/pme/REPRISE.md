@@ -1,6 +1,20 @@
 # Point de reprise — travail repris, commits autorisés
 
-## Checkpoint courant — 20 septembre 2026, 21:53 UTC
+## Checkpoint courant — 21 septembre 2026, projection éditable
+
+Choix utilisateur acquis : droits complets par membre/fichier, noms et chemins
+visibles, emplacements réservés empêchant création/renommage/déplacement dans
+Layrs. Une collision créée par un autre éditeur doit être conservée et refusée
+par le moteur. Voir ADR0024 et PARTIAL-PROJECTION.md. Ce choix remplace la question
+encore ouverte dans le checkpoint historique ci-dessous.
+
+Implémentation en cours en trois lots parallèles, journaux PARTIAL-STORE,
+PARTIAL-SERVER et PARTIAL-UI. Racine : exploration paginée serveur/client,
+intégration et qualification. Les paquets qualified4 restent des preuves de
+l'état antérieur ; ils ne contiennent pas ces nouveaux développements.
+Ne pas déclarer T4.L terminé avant la recette éditable complète et la migration.
+
+## Checkpoint historique — 20 septembre 2026, 21:53 UTC
 
 Les modifications antérieures au fil sont enregistrées dans **3cf23b3**.
 Les correctifs et leurs preuves ont ensuite été séparés en commits cohérents,
