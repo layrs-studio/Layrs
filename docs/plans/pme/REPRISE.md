@@ -8,14 +8,37 @@ socle intégré existant, puis correctifs et qualifications dans des commits
 distincts. Secrets, caches et sorties de compilation restent ignorés.
 Les huit plans restent partiellement ouverts ; un commit ne vaut pas qualification.
 
-Défaut100MiB localisé : `remote::projection_dirty` appelle encore la capture
-en mémoire via `SnapshotLimits::default()` et `read_step_files` limité64MiB.
-Le parcours streaming existe déjà ; raccord et recette à faire après le commit
-du socle. Première relance globale Rust : deux échecs dans
-`legacy_local_data_safety`, commandes `compact` refusant le format historique
-`legacy_client_documents`. Journal `tmp/resume-baseline-rust-tests.log`.
-Il faut préserver la compatibilité historique ou expliciter correctement le
-routage prévu, sans supprimer ces tests. Linux lancé séparément.
+Commits de reprise : **3cf23b3** socle intégré/préexistant ; **4d3a0a6** contrôle
+dirty distant en streaming (65MiB PASS6,40s) ; **08b5f7a** routage compact
+historique/natif (18 tests legacy PASS3,77s + reprise native PASS1,30s).
+Les deux échecs de `tmp/resume-baseline-rust-tests.log` sont corrigés.
+Autres commits : **29a2818** spools privés Windows/Linux ; **5da2a5d** format et
+extraction de requête inchangée pour respecter la taille des sources ;
+**0453a88** recette réelle de redémarrage serveur et preuves100MiB ;
+**ead7ed4** assertion de compaction native actualisée, état exact conservé.
+
+Relance globale `tmp/resume-workspace-tests-2.log` :915 tests PASS,1 assertion
+obsolète FAIL,21 ignorés ; les doctests échouaient sur des versions d'artefacts
+recompilés en parallèle. Reprises ciblées : suite native CLI18PASS13,89s après
+correction de l'assertion, tous doctests workspace PASS en exécution séquentielle.
+Ne pas présenter le premier log global comme vert. Clippy workspace/all-targets
+final PASS26,84s ; format/tailles, TypeScript UI/Desktop/Web et16 migrations PASS.
+CLI74 commandes PASS19,525s ; Desktop équipe PASS2,6min. Navigateur Web recontrôlé :
+aucun disponible, qualification Web toujours ouverte. Aucune installation.
+
+Capture/matérialisation/recovery/fsck **1GiB Linux PASS113,45s**, heap Rust
+additionnel9 870 248 octets. Windows1GiB était PASS124,95s. Nouvelle recette
+HTTPS100MiB avec restore **PASS143,376s** :
+`tmp/native-streaming-100mib-20260920-204610.jsonl`. HTTPS1GiB en cours :
+`tmp/native-streaming-1gib-20260920-204911.jsonl`, publication, clone et réception
+inchangée déjà passés, modification/réception/restauration à terminer.
+Nouvelle recette99k en cours, session26811 :
+`measurements/T8-tls-volumes-streaming-2026-09-20.json`, log
+`tmp/tls-volume-streaming-20260920.log`. Binaire partagé copié indépendant
+`tmp/native-streaming-20260920-204610.exe`, SHA256
+`0f847e0db3b1a7530c596e6671cf5737c809650283b3fdaf9fb9545ff9601c88`.
+L'ancienne recette99k « leases » est arrêtée volontairement, pas qualifiée.
+Lire les derniers checkpoints avant les anciens paragraphes ci-dessous.
 
 **PASSE ACTIVE APRÈS LES ARTEFACTS qualified2 :**
 

@@ -63,7 +63,7 @@ for (const binary of binaries) {
   add(basename(source), readFileSync(source), true);
 }
 add("LICENSE", readFileSync(join(root, "LICENSE")));
-for (const document of ["README.md", "UPGRADING.md", "DISTRIBUTION.md", "BACKUPS.md", "RETENTION.md", "GC.md", "LOCAL-COMPACTION.md", "POLICIES.md", "OBSERVATIONS.md", "STORAGE-BUDGET.md", "OBSERVABILITY.md", "INVITATIONS.md", "NATIVE-CI.md", "NATIVE-CONFLICTS.md", "LOCAL-PILOT.md"]) {
+for (const document of ["README.md", "UPGRADING.md", "ARCHIVE-UPGRADE-TEST.md", "DISTRIBUTION.md", "BACKUPS.md", "RETENTION.md", "GC.md", "LOCAL-COMPACTION.md", "POLICIES.md", "OBSERVATIONS.md", "STORAGE-BUDGET.md", "OBSERVABILITY.md", "INVITATIONS.md", "NATIVE-CI.md", "NATIVE-CONFLICTS.md", "LOCAL-PILOT.md"]) {
   add(document, readFileSync(join(root, "deploy/selfhost", document)));
 }
 add("migrations.lock.json", readFileSync(join(root, "scripts/migrations.lock.json")));
