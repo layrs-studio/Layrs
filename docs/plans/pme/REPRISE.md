@@ -1,6 +1,6 @@
 # Point de reprise — travail repris, commits autorisés
 
-## Checkpoint courant — 20 septembre 2026, 21:32 UTC
+## Checkpoint courant — 20 septembre 2026, 21:53 UTC
 
 Les modifications antérieures au fil sont enregistrées dans **3cf23b3**.
 Les correctifs et leurs preuves ont ensuite été séparés en commits cohérents,
@@ -23,11 +23,12 @@ jusqu'à **46b5d52** (reprise d'objet après arrêt serveur) et **aa27016**
   Les commandes initiales échouées restent dans les logs ; ne pas les présenter
   comme vertes. Clippy Linux1.90 strict PASS14,80s, Windows1.85 PASS19,02s ;
   substitutions équivalentes et114 tests ciblés enregistrés dans **5ab6994**.
-- **99 000 fichiers HTTPS encore en cours**, session26811 : génération69,189s,
-  initialisation159,509s, publication308,774s, clone1645,222s, contrôle exhaustif
-  des octets119,406s et réception inchangée261,615s passés ; modification en cours.
-  `measurements/T8-tls-volumes-streaming-2026-09-20.json` est un checkpoint actif,
-  pas une qualification terminée.
+- **99 000 fichiers HTTPS terminés : PASS3827,27s**, session26811/code0.
+  Neuf phases réussies, dont clone, réception inchangée, modification/publication,
+  réception incrémentale et tous les octets finaux. Pic OS observé404,04Mio du
+  processus clients+serveur ; PostgreSQL/cache OS exclus. Profil debug, contenus
+  répétés et compilations concurrentes : aucune promesse de débit release.
+  [Mesure complète et limites](measurements/T8-tls-volumes-streaming-2026-09-20.md).
 - **Paquets qualified4 construits depuis5ab6994**, archives Windows/Linux avec
   empreinte Rust/Cargo.lock identique et MSI Windows. Vérification de25 fichiers
   par archive et huit parcours smoke par OS passés ; upgrade/rollback CLI2→4
@@ -40,16 +41,25 @@ jusqu'à **46b5d52** (reprise d'objet après arrêt serveur) et **aa27016**
   complet actuel. Choix produit demandé : projet complet avec lectures fines,
   projection en lecture seule, ou Worktree partiel éditable avec migration.
   Ne pas enlever la garde de complétude ni traiter un fichier interdit comme
-  absent. Les autres travaux continuent pendant ce choix.
+  absent. Ce choix demeure en attente ; aucun changement de format local implicite.
 - **Limites externes ouvertes** : navigateur Web indisponible (`browsers.list`
   vide), macOS non qualifié, pilote humain et signature non effectués.
   [Liste exacte des17 critères ouverts](REMAINING.md), audit commité **b75bb6b**.
 
 Contrôle de régression des rapports TLS complets livré dans **db300eb** :9 tests
 PASS, seuils explicites, aucun budget de performance promis sans calibration.
-Travail complémentaire actif : recette de disque PostgreSQL plein dans un
-conteneur neuf seulement ; aucune réussite encore revendiquée. Root seul réalise les commits ; tous les
-fichiers source antérieurs au fil et les correctifs livrés sont enregistrés.
+**PostgreSQL disque plein PASS112,456s** : PGDATA tmpfs256Mio réellement saturé,
+admission Layrs503/ENOSPC,14tables métier inchangées, pending/fichiers conservés,
+retry exact des160nouveaux Steps et rejeu sans effet supplémentaire. Conteneur,
+serveur et credential de fixture nettoyés. [Recette et exclusions](PG-DISK-FULL.md).
+
+Distribution/upgrade dans **e1bb01a**,19tests d'outillage locaux PASS et raccordement
+au workflow de packaging dans **6c387b7** ; aucune CI distante déclenchée.
+Tous les essais de cette reprise sont terminés. Root seul réalise les commits ;
+le dernier lot de mesures et journaux est enregistré avant de rendre la main.
+Les huit plans ne sont pas tous clos : projection partielle à trancher, navigateur
+Web indisponible, plateformes et installation réelle supplémentaires, calibration
+des performances et pilote humain restent détaillés dans REMAINING.
 
 Les paragraphes ci-dessous conservent les checkpoints précédents. Toute mention
 « en cours », « aucun commit » ou « absent » s'interprète à sa date ; le bloc

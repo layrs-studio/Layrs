@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "layrs.tls-volume-memory.v1",
+  "processId": 69036,
+  "processStartUtc": "2026-09-20T20:46:58.5042688Z",
+  "observationStartUtc": "2026-09-20T21:28:30.6259489Z",
+  "observedAtUtc": "2026-09-20T21:50:45.3709396Z",
+  "peakWorkingSetBytes": 423661568,
+  "peakPagedMemoryBytes": 416231424,
+  "samples": 1321,
+  "processExited": true,
+  "scope": "OS process lifetime peak counters; server and clients share one debug process; PostgreSQL and filesystem cache excluded",
+  "limitation": "Polling began after clone; OS lifetime peak counters include earlier phases, but final sub-second peak can be missed at process exit",
+  "executable": "tmp/native-streaming-20260920-204610.exe",
+  "executableSha256": "0f847e0db3b1a7530c596e6671cf5737c809650283b3fdaf9fb9545ff9601c88",
+  "volumeReport": "T8-tls-volumes-streaming-2026-09-20.json",
+  "testElapsedMs": 3827270
+}
