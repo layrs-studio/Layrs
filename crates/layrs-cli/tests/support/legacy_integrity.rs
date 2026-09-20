@@ -84,6 +84,18 @@ fn binary_asset_steps_compact_and_layer_switch_restore_exact_bytes() {
             .contains("diff --layrs Assets/hero.png")
     );
     run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
+    let resume_error = run_err(
+        &space,
+        [
+            "--json",
+            "--space",
+            &space.space_arg(),
+            "compact",
+            "--resume",
+        ],
+    );
+    assert!(resume_error.contains("requires a native Layrs checkout"));
+    assert_file_bytes(&space.space, "Assets/hero.png", &changed);
     run_json(&space, ["--json", "--space", &space.space_arg(), "compact"]);
 
     run_json(

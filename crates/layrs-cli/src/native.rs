@@ -153,9 +153,6 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
         Ok(root) => root,
         Err(e) => return Some(Err(error(e))),
     };
-    if let CliCommand::Compact { resume } = &cli.command {
-        return Some(maintenance::compact(&root, *resume));
-    }
     if let CliCommand::Init { name, path } = &cli.command {
         return Some((|| {
             let workspace =
@@ -195,6 +192,11 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
         .is_some_and(|p| p.join(".layrs/FORMAT").exists());
     if !native {
         return None;
+    }
+    // Route legacy stores to their original compactor. Native maintenance must
+    // still run before opening a Store fenced by an interrupted compaction.
+    if let CliCommand::Compact { resume } = &cli.command {
+        return Some(maintenance::compact(&root, *resume));
     }
     Some((|| {
         let workspace = NativeWorkspace::discover(&root).map_err(error)?;

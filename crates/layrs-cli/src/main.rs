@@ -85,7 +85,7 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         | CliCommand::ResolveBlock { .. }
         | CliCommand::ConflictVariant { .. }
         | CliCommand::Doctor
-        | CliCommand::Compact { .. } => {
+        | CliCommand::Compact { resume: true } => {
             return Err(CliError::runtime(
                 "This command requires a native Layrs checkout.",
             ));
@@ -117,6 +117,7 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
             render::init(engine.init_local_space(&name, path.as_deref())?)
         }
         CliCommand::Step => render::step(engine.save_local_step()?),
+        CliCommand::Compact { resume: false } => render::compact(engine.compact()?),
         CliCommand::Diff {
             step_id,
             stat,
