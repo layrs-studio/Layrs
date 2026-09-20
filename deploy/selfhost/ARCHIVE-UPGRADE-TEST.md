@@ -1,6 +1,12 @@
 # Recette de mise à jour des archives CLI
 
-Préparée, pas encore exécutée entre les archives `qualified2` et leur successeur.
+Exécutée sous Windows entre `qualified2` et `qualified3` le 20 septembre 2026 :
+lecture de l'historique exact, nouvelle capture, refus d'un binaire altéré et
+retour au snapshot sauvegardé au même emplacement réussis. Rapport conservé :
+`tmp/archive-upgrade-windows-qualified3/report.json`. La nouvelle capture reste
+dans l'état d'incident préservé ; elle ne fait pas partie du retour arrière.
+Une nouvelle paire d'archives et l'exécution Linux doivent être qualifiées
+séparément ; ce résultat ne vaut pas validation de tout successeur.
 Elle qualifie uniquement deux snapshots distincts utilisant déjà le Store natif
 format2 et V3 ; elle ne qualifie ni migration PostgreSQL, ni conversion de format,
 ni installation MSI, ni environnement de production.

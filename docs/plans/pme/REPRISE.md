@@ -1,5 +1,49 @@
 # Point de reprise — travail repris, commits autorisés
 
+## Checkpoint courant — 20 septembre 2026, 21:20 UTC
+
+Les modifications antérieures au fil sont enregistrées dans **3cf23b3**.
+Les correctifs et leurs preuves ont ensuite été séparés en commits cohérents,
+jusqu'à **46b5d52** (reprise d'objet après arrêt serveur) et **aa27016**
+(gardes CAS Windows/Linux). Aucun push ni installation n'a été effectué.
+
+- **HTTPS 100 Mio et 1 Gio terminés** : capture, publication, clone, réception
+  incrémentale et restauration exactes. Recette 1 Gio : 1092,828 s ; pic mémoire
+  OS du processus clients+serveur 62 513 152 octets, PostgreSQL/cache OS exclus.
+  Voir les mesures T4 dédiées ; aucune promesse de débit de production.
+- **Arrêts serveur aux trois frontières qualifiés** : objet avec préfixe durable,
+  transaction avant dispatch, commit avant réponse. Reprise exacte avec nouvelle
+  autorisation, aucun Store avant vérification complète ; PASS20,87s.
+- **Intégration complète HTTPS/PG/runner/backup PASS603,59s** ; six suites PG et
+  quotas passés séparément. Rapport `measurements/T4-T8-resumed-qualification-2026-09-20.md`.
+- **Windows** : 915 tests passés dans la relance globale, une assertion de test
+  périmée corrigée puis suite CLI18PASS ; doctests repassés séquentiellement.
+  **Linux** : 923 tests passés dans la commande initiale, quatre assertions
+  corrigées puis suites ciblées74PASS, soit927 scénarios distincts couverts.
+  Les commandes initiales échouées restent dans les logs ; ne pas les présenter
+  comme vertes. Clippy Linux1.90 : cinq corrections de style en cours.
+- **99 000 fichiers HTTPS encore en cours**, session26811 : génération69,189s,
+  initialisation159,509s et publication308,774s passées ; clone en cours.
+  `measurements/T8-tls-volumes-streaming-2026-09-20.json` est un checkpoint actif,
+  pas une qualification terminée.
+- **Paquets Windows qualified3 construits**, archive et MSI avec SHA256 ; smoke
+  et upgrade/rollback CLI réussis. Ils seront remplacés par `qualified4` après
+  gel commun des sources/tests/documents. Le guide opérateur a changé après la
+  copie du paquet3. Linux4 et Windows4 restent à produire ; aucun MSI installé.
+- **Projection partielle** : audit terminé, fonctionnalité absente du Store
+  complet actuel. Choix produit demandé : projet complet avec lectures fines,
+  projection en lecture seule, ou Worktree partiel éditable avec migration.
+  Ne pas enlever la garde de complétude ni traiter un fichier interdit comme
+  absent. Les autres travaux continuent pendant ce choix.
+- **Limites externes ouvertes** : navigateur Web indisponible (`browsers.list`
+  vide), macOS non qualifié, pilote humain et signature non effectués.
+
+Les paragraphes ci-dessous conservent les checkpoints précédents. Toute mention
+« en cours », « aucun commit » ou « absent » s'interprète à sa date ; le bloc
+ci-dessus et les derniers journaux de tâches font autorité pour la reprise.
+
+## Checkpoints précédents
+
 **Reprise explicitement demandée après la pause.** [PAUSE.md](PAUSE.md) conserve
 le dernier checkpoint arrêté. L’utilisateur demande désormais des commits
 cohérents au fil du travail, incluant les modifications antérieures au fil.
