@@ -1,8 +1,16 @@
 # Gros fichiers : flux bornés de bout en bout
 
-Lot ouvert le20septembre2026. Objectif100MiB/1GiB avec mémoire bornée, sans
-assimiler une hausse de limites à une implémentation streaming. Les archives
-qualified2 précèdent ce lot. Aucun support1GiB complet revendiqué à ce stade.
+Lot ouvert le20septembre2026, désormais qualifié sur les parcours bornés :
+capture, publication, clone, réception incrémentale et restauration100MiB/1GiB
+sur HTTPS réel, avec octets et FileIds exacts. Recette1GiB1092,828s ; pic mémoire
+OS du processus clients+serveur62513152octets, PostgreSQL/cacheOS exclus.
+[Mesure et limites](measurements/T4-streaming-1gib-20260920.md).
+Limites explicites :1GiB/fichier,4GiB de vérification et256MiB de métadonnées ;
+anciennes API Vec et fusion sémantique conservent leurs plafonds. Cette preuve
+ne qualifie pas une volumétrie illimitée ni toute la matrice99k fichiers.
+Les archives qualified2 précèdent ce lot. Les checkpoints ci-dessous sont
+historiques ou qualifient un parcours particulier ; ce résumé fait autorité
+sur l'état livré et n'est pas une promesse de débit en production.
 
 ## Reprise — qualification Linux et spool privé, 20 septembre2026
 
