@@ -9,7 +9,13 @@ impl PgCollaborationStore {
         members: &[PrincipalId],
     ) -> V3StoreResult<(ObjectId, Option<ObjectId>)> {
         let space = &authority.space_id;
-        super::super::super::policy_management::require_managed(&self.repository, tx, space, &authority.policy_set_id).await?;
+        super::super::super::policy_management::require_managed(
+            &self.repository,
+            tx,
+            space,
+            &authority.policy_set_id,
+        )
+        .await?;
         let logical: PolicyId = parse(format!("policy:{}", digest(&("space-team", space, team))?))?;
         let raw: String = sqlx::query_scalar(
             "SELECT canonical_record_jcs FROM policy_sets WHERE policy_set_id=$1 AND space_id=$2",

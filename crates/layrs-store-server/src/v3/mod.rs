@@ -18,6 +18,7 @@ pub use observations::{
     PublishedObservationFilter, PublishedObservationProvenance, PublishedObservationSnapshot,
     PublishedStepObservation,
 };
+mod content_policy;
 mod error;
 mod event_store;
 mod fetch_snapshot;
@@ -25,7 +26,6 @@ mod fs_cas;
 mod plan_store;
 mod plans;
 mod policy_authorizer;
-mod content_policy;
 pub use content_policy::*;
 mod policy_management;
 pub use policy_management::PolicyManagementState;

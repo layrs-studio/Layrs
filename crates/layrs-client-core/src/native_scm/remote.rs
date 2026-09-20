@@ -617,9 +617,9 @@ fn decode(kind: ObjectKind, bytes: &[u8]) -> RemoteResult<CanonicalObject> {
     Ok(object)
 }
 
+mod chunk_spool;
 mod file;
 mod graph;
-mod chunk_spool;
 mod observations;
 use graph::GraphObjects;
 

@@ -80,7 +80,9 @@ impl fmt::Display for V3StoreError {
             Self::InvalidCapability => f.write_str("invalid capability"),
             Self::ExpiredCapability => f.write_str("capability expired"),
             Self::AuthorizationEpochChanged => f.write_str("authorization epoch changed"),
-            Self::CustomPolicyRootActive => f.write_str("restore the exact managed policy root before using managed access APIs"),
+            Self::CustomPolicyRootActive => f.write_str(
+                "restore the exact managed policy root before using managed access APIs",
+            ),
             Self::ReleaseStateConflict => f.write_str("release lifecycle state changed"),
             Self::ReleaseGateRejected => f.write_str("release protection rejected publication"),
             Self::CapabilityBindingMismatch => f.write_str("capability binding mismatch"),

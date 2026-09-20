@@ -142,7 +142,13 @@ impl PgCollaborationStore {
             }
             return Ok(document(&self.invitation_row(&mut tx, &id, false).await?));
         }
-        super::super::policy_management::require_managed(&self.repository, &mut tx, space, &authority.policy_set_id).await?;
+        super::super::policy_management::require_managed(
+            &self.repository,
+            &mut tx,
+            space,
+            &authority.policy_set_id,
+        )
+        .await?;
         let recipient:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM principals WHERE principal_id=$1 AND deployment_id=$2 AND status='active' AND principal_kind IN ('account','bootstrap_admin'))").bind(request.recipient_principal_id.as_str()).bind(&principal.deployment_id).fetch_one(&mut *tx).await.map_err(pg_error)?;
         if !recipient {
             return Err(V3StoreError::NotFound);

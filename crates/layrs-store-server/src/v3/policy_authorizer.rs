@@ -1,8 +1,7 @@
 //! Bounded, explicit whole-Space authorization for native self-hosting.
 use super::{
-    load_space_descriptor, pg_error, read_canonical_object, AuthorizationCheck,
-    AuthorizationDecision, AuthorizationTarget, CatalogedCas, PolicyAuthorizer, V3Action,
-    V3StoreError, V3StoreResult,
+    AuthorizationCheck, AuthorizationDecision, AuthorizationTarget, CatalogedCas, PolicyAuthorizer,
+    V3Action, V3StoreError, V3StoreResult, load_space_descriptor, pg_error, read_canonical_object,
 };
 use async_trait::async_trait;
 use layrs_sync::v3::{NativePolicyRules, RuleEffect};
@@ -208,21 +207,25 @@ mod tests {
     }
     #[test]
     fn unknown_versions_actions_and_fields_fail_closed() {
-        assert!(serde_json::from_str::<SpacePolicyRules>(
-            r#"{"schemaVersion":"future","rules":[]}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<SpacePolicyRules>(
-            r#"{"schemaVersion":"layrs.space-policy-rules.v1","rules":[],"allowEveryone":true}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_str::<SpacePolicyRules>(r#"{"schemaVersion":"future","rules":[]}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<SpacePolicyRules>(
+                r#"{"schemaVersion":"layrs.space-policy-rules.v1","rules":[],"allowEveryone":true}"#
+            )
+            .is_err()
+        );
         let mut bad = rule(RuleEffect::Allow);
         bad.actions = vec!["*".into()];
-        assert!(SpacePolicyRules {
-            schema_version: SpacePolicyRulesVersion::V1,
-            rules: vec![bad]
-        }
-        .evaluate(&principal(), "transaction.apply")
-        .is_err());
+        assert!(
+            SpacePolicyRules {
+                schema_version: SpacePolicyRulesVersion::V1,
+                rules: vec![bad]
+            }
+            .evaluate(&principal(), "transaction.apply")
+            .is_err()
+        );
     }
 }

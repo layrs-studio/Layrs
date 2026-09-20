@@ -174,7 +174,13 @@ impl PgCollaborationStore {
         if !administrator {
             return Err(V3StoreError::InvalidCapability);
         }
-        super::super::policy_management::require_managed(&self.repository, &mut tx, space, &authority.policy_set_id).await?;
+        super::super::policy_management::require_managed(
+            &self.repository,
+            &mut tx,
+            space,
+            &authority.policy_set_id,
+        )
+        .await?;
         let owner:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships WHERE workspace_id=$1 AND principal_id=$2 AND role='owner')").bind(&workspace).bind(request.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
         if owner
             && !(request.principal_id == principal.principal_id
@@ -220,7 +226,13 @@ impl PgCollaborationStore {
             product_object,
             set_object,
         } = prepared;
-        super::super::policy_management::require_managed(&self.repository, tx, space, &authority.policy_set_id).await?;
+        super::super::policy_management::require_managed(
+            &self.repository,
+            tx,
+            space,
+            &authority.policy_set_id,
+        )
+        .await?;
         for object in [rules_object, product_object, set_object] {
             self.install(tx, space, object).await?;
         }

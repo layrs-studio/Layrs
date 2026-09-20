@@ -1,7 +1,7 @@
 //! Real TLS operator preview/apply, uncertain result recovery and exact managed restore.
 use layrs_client_core::native_scm::{NativePolicyPreview, NativeRemote, NativeWorkspace};
 use layrs_sync::v3::{LayerMutationMode, ReceiptStatus, RejectionCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -147,9 +147,11 @@ pub fn run(
     );
     assert!(remote.publish(&a, LayerMutationMode::Advance).is_err());
     assert!(remote.receive(&a).is_err());
-    assert!(remote
-        .preview_stored_policy(&a, &managed.current_policy_set_id)
-        .is_err());
+    assert!(
+        remote
+            .preview_stored_policy(&a, &managed.current_policy_set_id)
+            .is_err()
+    );
     let recovered = remote
         .preview_stored_policy(&a, &initial.current_policy_set_id)
         .unwrap();
@@ -212,9 +214,11 @@ pub fn run(
         json!({"schemaVersion":"layrs.space-policy-rules.v1","rules":[],"injected":true}),
         json!({"schemaVersion":"future","rules":[]}),
     ] {
-        assert!(remote
-            .preview_policy_rules(&a, &serde_json::to_vec(&malformed).unwrap())
-            .is_err());
+        assert!(
+            remote
+                .preview_policy_rules(&a, &serde_json::to_vec(&malformed).unwrap())
+                .is_err()
+        );
     }
     assert!(remote.preview_policy_rules(&a, &vec![b' '; 65537]).is_err());
     let inline = remote.preview_policy_rules(&a, &rule_bytes).unwrap();
@@ -274,11 +278,13 @@ pub fn run(
         remote.apply_policy_preview(&a, &preview_v2).unwrap().status,
         ReceiptStatus::Applied
     );
-    assert!(other
-        .bootstrap(&project.space_id)
-        .unwrap()
-        .content_access
-        .is_some());
+    assert!(
+        other
+            .bootstrap(&project.space_id)
+            .unwrap()
+            .content_access
+            .is_some()
+    );
     let restore_rules = remote
         .preview_stored_policy(&a, &managed.current_policy_set_id)
         .unwrap();
@@ -289,11 +295,13 @@ pub fn run(
             .status,
         ReceiptStatus::Applied
     );
-    assert!(other
-        .bootstrap(&project.space_id)
-        .unwrap()
-        .content_access
-        .is_none());
+    assert!(
+        other
+            .bootstrap(&project.space_id)
+            .unwrap()
+            .content_access
+            .is_none()
+    );
     assert_eq!(a.state().unwrap().operation.id(), before.operation.id());
     let stale = remote
         .preview_stored_policy(&a, &initial.current_policy_set_id)
@@ -308,10 +316,12 @@ pub fn run(
     );
     let rejection = remote.apply_policy_preview(&a, &stale).unwrap();
     assert_eq!(rejection.status, ReceiptStatus::Rejected);
-    assert!(rejection
-        .rejections
-        .iter()
-        .any(|r| r.code == RejectionCode::AuthorizationEpochChanged));
+    assert!(
+        rejection
+            .rejections
+            .iter()
+            .any(|r| r.code == RejectionCode::AuthorizationEpochChanged)
+    );
     assert_eq!(remote.apply_policy_preview(&a, &stale).unwrap(), rejection);
     let journal: Value =
         serde_json::from_slice(&std::fs::read(a.store_root().join("native-remote.json")).unwrap())

@@ -46,16 +46,14 @@ impl CompactionFaults for Interrupt {
 
 #[test]
 fn cli_compacts_from_nested_checkout_and_resumes_a_fenced_store_without_losing_history() {
-    let fixture = Fixture(
-        std::env::temp_dir().join(format!(
+    let fixture = Fixture(std::env::temp_dir().join(format!(
             "layrs-cli-maintenance-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        )),
-    );
+        )));
     fs::create_dir(&fixture.0).unwrap();
     let nested = fixture.0.join("nested");
     fs::create_dir(&nested).unwrap();

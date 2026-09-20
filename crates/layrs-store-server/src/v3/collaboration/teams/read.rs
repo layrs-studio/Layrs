@@ -45,7 +45,13 @@ impl PgCollaborationStore {
                     .clone())
             })
             .collect::<V3StoreResult<Vec<_>>>()?;
-        let policy_management = super::super::super::policy_management::state(&self.repository, &mut tx, space, &authority.policy_set_id).await?;
+        let policy_management = super::super::super::policy_management::state(
+            &self.repository,
+            &mut tx,
+            space,
+            &authority.policy_set_id,
+        )
+        .await?;
         Ok(
             serde_json::json!({"teams":teams,"policySetId":authority.policy_set_id,"authorizationEpoch":authority.authorization_epoch,"policyManagement":policy_management}),
         )

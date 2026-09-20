@@ -34,8 +34,8 @@ mod rewrite;
 pub use rewrite::{NativeRewriteKind, NativeRewritePlan, NativeRewriteSummary};
 mod references;
 mod restore;
-mod restore_projection;
 mod restore_preview;
+mod restore_projection;
 pub use restore_preview::{NativeRestorePreview, RestoreCollision, RestoreExpectation};
 mod prepare;
 mod projection;
@@ -49,9 +49,8 @@ mod selection;
 mod snapshot;
 mod workspace;
 pub use remote::{
-    NativeInlinePolicyRules, NativePolicyPreview,
-    NativeDevicePoll, NativeDeviceStart, NativeRemote, NativeRemoteError, NativeRemoteSession,
-    ReceiveReport, RemoteProvisionedSpace,
+    NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
+    NativeRemote, NativeRemoteError, NativeRemoteSession, ReceiveReport, RemoteProvisionedSpace,
 };
 
 pub use commands::{execute_workspace, WorkspaceAction};

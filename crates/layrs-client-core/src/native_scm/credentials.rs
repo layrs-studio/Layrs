@@ -6,7 +6,7 @@ use crate::secret_store::{OsSecretStore, SecretStore};
 use layrs_core::scm::{LayerId, ObjectId, SpaceId, StepId};
 use layrs_sync::v3::LayerMutationMode;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 
 #[derive(Deserialize, Serialize)]
@@ -317,7 +317,12 @@ fn execute_remote_with_store(
                 ),
                 NativeRemoteAction::ReadFile { step, path, output } => {
                     let (id, length) = remote
-                        .download_remote_file(&workspace, &step, &path, std::path::Path::new(&output))
+                        .download_remote_file(
+                            &workspace,
+                            &step,
+                            &path,
+                            std::path::Path::new(&output),
+                        )
                         .map_err(remote_error)?;
                     Ok(
                         json!({"fileId":id,"stepId":step,"path":path,"output":output,"byteLength":length}),
@@ -369,10 +374,10 @@ mod tests {
             candidates,
             NativeRemoteAction::PublishCandidatesCancellable { .. }
         ));
-        assert!(
-            serde_json::from_value::<NativeRemoteAction>(json!({"action":"publishCancellable"}))
-                .is_err()
-        );
+        assert!(serde_json::from_value::<NativeRemoteAction>(
+            json!({"action":"publishCancellable"})
+        )
+        .is_err());
     }
     #[test]
     fn credentials_are_scoped_to_the_exact_canonical_origin() {

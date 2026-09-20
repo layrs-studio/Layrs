@@ -4,7 +4,7 @@ use layrs_core::scm::{FileId, StepId, TreeEntryTarget};
 use layrs_store::scm::ScmReader;
 use layrs_store_local::scm_v1::{self, NativeScmReader};
 use layrs_sync::v3::{LayerMutationMode, ReceiptStatus};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},

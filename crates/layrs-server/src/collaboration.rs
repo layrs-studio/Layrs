@@ -32,7 +32,10 @@ impl CollaborationHttpState {
 }
 pub fn router(state: CollaborationHttpState) -> Router {
     Router::new()
-        .route("/v3/spaces/:space/policy-management", get(policy_management))
+        .route(
+            "/v3/spaces/:space/policy-management",
+            get(policy_management),
+        )
         .route(
             "/v3/spaces/:space/teams",
             get(teams::list).post(teams::create),
@@ -97,8 +100,16 @@ pub fn router(state: CollaborationHttpState) -> Router {
         .with_state(state)
 }
 struct Error(V3StoreError);
-async fn policy_management(State(s): State<CollaborationHttpState>, Path(id): Path<String>, h: HeaderMap) -> Result<Json<PolicyManagementState>, Error> {
-    Ok(Json(s.store.policy_management(&s.principal(&h).await?, &space(id)?).await?))
+async fn policy_management(
+    State(s): State<CollaborationHttpState>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+) -> Result<Json<PolicyManagementState>, Error> {
+    Ok(Json(
+        s.store
+            .policy_management(&s.principal(&h).await?, &space(id)?)
+            .await?,
+    ))
 }
 async fn correct_comment(
     State(s): State<CollaborationHttpState>,
@@ -140,7 +151,9 @@ impl IntoResponse for Error {
         let status = match self.0 {
             V3StoreError::NotFound => StatusCode::NOT_FOUND,
             V3StoreError::InvalidCapability => StatusCode::FORBIDDEN,
-            V3StoreError::AuthorizationEpochChanged | V3StoreError::CustomPolicyRootActive => StatusCode::CONFLICT,
+            V3StoreError::AuthorizationEpochChanged | V3StoreError::CustomPolicyRootActive => {
+                StatusCode::CONFLICT
+            }
             V3StoreError::ReleaseStateConflict => StatusCode::CONFLICT,
             V3StoreError::Backend(_) | V3StoreError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::BAD_REQUEST,

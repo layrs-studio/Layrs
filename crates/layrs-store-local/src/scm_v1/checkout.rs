@@ -87,20 +87,34 @@ impl CheckoutReader {
     ) -> io::Result<Vec<String>> {
         super::checkout_paths::validate(before)?;
         super::checkout_paths::validate(after)?;
-        self.untracked_obstruction_paths(before.iter().map(|e|e.path.as_str()).collect(),
-            after.iter().map(|e|e.path.as_str()).collect(),limits)
+        self.untracked_obstruction_paths(
+            before.iter().map(|e| e.path.as_str()).collect(),
+            after.iter().map(|e| e.path.as_str()).collect(),
+            limits,
+        )
     }
 
-    pub fn untracked_obstructions_projection(&self, before:&[CheckoutProjectionEntry],
-        after:&[CheckoutProjectionEntry], limits:CheckoutLimits)->io::Result<Vec<String>> {
+    pub fn untracked_obstructions_projection(
+        &self,
+        before: &[CheckoutProjectionEntry],
+        after: &[CheckoutProjectionEntry],
+        limits: CheckoutLimits,
+    ) -> io::Result<Vec<String>> {
         validate_streaming_projection(before)?;
         validate_streaming_projection(after)?;
-        self.untracked_obstruction_paths(before.iter().map(|e|e.path.as_str()).collect(),
-            after.iter().map(|e|e.path.as_str()).collect(),limits)
+        self.untracked_obstruction_paths(
+            before.iter().map(|e| e.path.as_str()).collect(),
+            after.iter().map(|e| e.path.as_str()).collect(),
+            limits,
+        )
     }
 
-    fn untracked_obstruction_paths(&self,known:std::collections::BTreeSet<&str>,
-        after:Vec<&str>,limits:CheckoutLimits)->io::Result<Vec<String>> {
+    fn untracked_obstruction_paths(
+        &self,
+        known: std::collections::BTreeSet<&str>,
+        after: Vec<&str>,
+        limits: CheckoutLimits,
+    ) -> io::Result<Vec<String>> {
         let mut pending = Vec::new();
         for entry in after {
             let path = self.root.join(entry);
