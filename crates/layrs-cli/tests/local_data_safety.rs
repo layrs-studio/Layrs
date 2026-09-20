@@ -240,13 +240,19 @@ fn unsupported_legacy_mutations_preserve_native_files_and_history() {
         vec!["--json", "layer", "clear-steps", "main", "--yes"],
         vec!["--json", "layer", "disconnect", "topic", "--yes"],
         vec!["--json", "layer", "delete", "topic", "--yes"],
-        vec!["--json", "compact"],
     ] {
         assert!(run_err(&s, args).contains("not yet connected"));
         assert_working_tree_snapshot(&s.space, &before);
         assert_eq!(cli(&s, &["timeline"]), timeline);
         assert_eq!(cli(&s, &["layers"]), layers);
     }
+    // Native compaction is implemented and must retain exactly the same state.
+    let report = cli(&s, &["compact"]);
+    assert_eq!(report["historyDeleted"], false);
+    assert_eq!(report["restartHistoryTraversal"], true);
+    assert_working_tree_snapshot(&s.space, &before);
+    assert_eq!(cli(&s, &["timeline"]), timeline);
+    assert_eq!(cli(&s, &["layers"]), layers);
     s.pass();
 }
 #[test]
