@@ -1,0 +1,29 @@
+# PostgreSQL disque plein — checkpoint de recette
+
+État : **PASS112,456s**, session72976, avec CLI/serveur release qualified4 inchangés. [Rapport structuré](measurements/T8-postgres-disk-full-20260920.json). PostgreSQL ENOSPC réellement qualifié dans la portée bornée ci-dessous ; les essais échoués restent conservés.
+
+Périmètre autorisé : conteneur PostgreSQL UUID neuf, image locale épinglée, PGDATA sur tmpfs256Mio, mémoire512Mio, port dynamique exposé uniquement127.0.0.1. Aucun service/volume existant, aucun fichier utilisateur. Serveur et CLI release qualified4 existants, intégrité vérifiée depuis leur manifeste ; aucune reconstruction ni modification de crates/apps/Cargo/guides livrés.
+
+Scénario : vraie publication de référence, captures locales additionnelles, uploads terminés puis barrière HTTP sur la transaction exacte. Fichier de pression propre à la fixture remplit uniquement son PGDATA. Exiger une erreur PostgreSQL ENOSPC réelle, aucune admission/receipt/View partielle, pending client et fichiers inchangés. Supprimer uniquement ce fichier de pression, reprendre le même pending, comparer reçu/rejeu et état métier. Un INSERT SQL générique n'est pas une preuve de transaction Layrs.
+
+## Résultat effectivement vérifié
+
+- Baseline publiée par le vrai CLI vers le serveur natif release, PostgreSQL sous rôle runtime sans superuser/CREATEDB/CREATEROLE. Proxy HTTPS de fixture avec feuille CA:false/serverAuth, certificat approuvé explicitement ; aucune façade Sync simulée.
+-160captures nouvelles ; transaction portant161Steps avec l'ancêtre déjà admis. Tous les uploads terminés avant la barrière transaction. `dd` remplit le seul fichier de pression jusqu'à ENOSPC et `df` confirme zéro octet disponible sur le tmpfs PGDATA.
+- Le backend renvoie503. Les logs PostgreSQL, non publiés, relient une erreur ENOSPC à une instruction INSERT d'admission Layrs du même PID : ce n'est ni un quota logique ni seulement un checkpoint de fond. Aucun secret dans le rapport.
+- Pending exact, octets et status client préservés. Après suppression du seul fichier de pression, empreintes/counts des14tables métier identiques au point précédant l'admission : Steps/parents/appartenance/observations, Views/références/têtes, Space/histoire/événements, snapshots d'autorisation et receipts.
+- Retry du même pending :160nouveaux StepIds exacts dans le reçu, les161Steps demandés présents dans la fermeture admise. Pending supprimé seulement après ce reçu ; rejeu HTTP avec même acteur/idempotencyKey renvoie exactement le même reçu et conserve toutes les empreintes métier.
+- Aucun redémarrage du conteneur et aucune réinitialisation de PGDATA. Serveur et credential de fixture arrêtés/supprimés, conteneur UUID supprimé après contrôle du label ; inventaire Docker final de ces labels vide. Durée globale112456ms, pas un benchmark de débit.
+
+Limites : saturation d'un tmpfs Linux contenant ensemble données et WAL PostgreSQL, avec client/serveur Windows release ; aucun disque Windows réellement rempli, aucun crash électrique ou test de volume WAL indépendant. Le CAS reste sur un disque sain. Les objets CAS préparés peuvent rester orphelins après échec ; aucune référence métier ni reçu partiel ne les rend admis. Cette preuve ne ferme pas toute la matrice d'incidents T8.
+
+Secrets aléatoires via environnement et stdin privés ; aucun token/URL de connexion dans rapport ou diagnostics. Terminaison des seuls processus enfants et du conteneur dont UUID/label sont vérifiés. **Ne jamais redémarrer le conteneur pour récupérer PG : son tmpfs serait détruit.** PostgreSQL peut récupérer dans ce même conteneur vivant après libération. Dossiers et rapport d'échec conservés, pas de suppression large.
+
+Préflight readonly : postgres17.6-bookworm local567d5d704a3e ; openssl/dd/truncate/df disponibles ; archive Windows qualified4, commit5ab6994e61cd, CLI/serveur exécutables présents. Script `scripts/test-postgres-disk-full.mjs`, résultat JSON sous `tmp` et résumé ici.
+
+## Essais conservés et reprise
+
+- `tmp/pg-disk-full-XE6wwl/report.json` et `tmp/pg-disk-full-j84we4/report.json` : refus CLI login avant saturation. Certificat de fixture OpenSSL CA:true incompatible avec le client Rust ; feuille CA:false/serverAuth corrige le transport. Aucun changement serveur. Les deux conteneurs ont été supprimés après contrôle UUID/label.
+- Session3262, `tmp/pg-disk-full-4IvWzO/report.json` : vraie publication de référence, 160captures supplémentaires, PGDATA réellement plein, PostgreSQL ENOSPC et réponse503 de l'admission Layrs. Pending, octets et état local identiques. Après suppression du seul filler, empreintes de14tables métier identiques, aucune admission/receipt/View partielle. Retry accepté, puis assertion de recette trop forte160≠161 : le request comporte aussi un ancien Step déjà admis, que le reçu ne compte pas parmi les nouveaux. Conteneur et credential de fixture nettoyés ; cette exécution reste un ÉCHEC global de recette.
+- Assertion corrigée : IDs des160nouveaux Steps exacts dans le reçu et tous les161Steps demandés présents dans space_steps après retry. Nouveau contrôle corrèle ENOSPC à une instruction SQL d'admission Layrs du même PID PostgreSQL, pas seulement à un checkpoint de fond. **PASS final** : `tmp/pg-disk-full-VDoFVA/report.json`, copié dans les mesures ci-dessus. Après ce PASS, une garde supplémentaire fait aussi marquer le rapport failed si un nettoyage final échoue ; elle ne change pas le scénario qualifié. Syntaxe Node vérifiée.
+- Reprise : définir `LAYRS_TEST_NATIVE_PACKAGE` vers le dossier extracted qualified4, `LAYRS_TEST_DOCKER_CONFIG/HOST` vers le moteur local, puis `node scripts/test-postgres-disk-full.mjs` avec accès au coffre OS. Aucun service existant requis. Délai de commandes90s et budget de lancement des enfants15minutes ; terminaison d'un enfant bornée10s. Les seuls conteneurs nettoyés portent UUID/label exact de cette invocation.
