@@ -1,8 +1,10 @@
 # Recette HTTPS — fichiers uniques de 100 Mio et 1 Gio
 
-État : **préparée, pas exécutée**. Attendre la disponibilité des parcours capture,
-publication, téléchargement et matérialisation en flux avant de lancer les tailles
-réelles. Ce document n'annonce aucune mesure de débit ou de mémoire.
+État initial : préparée avant disponibilité des parcours en flux. Après leur
+livraison et correction du contrôle dirty, la recette100Mio complète avec restore
+est [qualifiée dans un rapport séparé](T4-streaming-100mib-20260920.md).
+La recette1Gio est en cours ; le journalT4 distingue ses checkpoints du résultat
+final. Le présent document décrit le protocole, sans extrapoler ces mesures.
 
 Le helper `streaming_volume_drill.rs` utilise un projet indépendant par taille et
 le vrai serveur HTTPS/PostgreSQL du test `native_clients_v3`. Il génère chaque

@@ -3,8 +3,6 @@
 mod backup_drill;
 #[path = "support/cancellation_drill.rs"]
 mod cancellation_drill;
-#[path = "support/unchanged_drill.rs"]
-mod unchanged_drill;
 #[path = "support/choose_client_drill.rs"]
 mod choose_client_drill;
 #[path = "support/compare_drill.rs"]
@@ -17,22 +15,26 @@ mod concurrent_publications;
 mod conflict_drill;
 #[path = "support/durable_download_drill.rs"]
 mod durable_download_drill;
+#[path = "support/unchanged_drill.rs"]
+mod unchanged_drill;
 
 #[test]
 #[ignore = "child process invoked by durable spool recipe"]
 fn durable_download_child() {
     durable_download_drill::child();
 }
+#[path = "support/content_acl_drill.rs"]
+mod content_acl_drill;
 #[path = "support/fetch_pagination_drill.rs"]
 mod fetch_pagination_drill;
 #[path = "support/policy_client_drill.rs"]
 mod policy_client_drill;
-#[path = "support/content_acl_drill.rs"]
-mod content_acl_drill;
 #[path = "support/product_drill.rs"]
 mod product_drill;
 #[path = "support/publication_cancellation_drill.rs"]
 mod publication_cancellation_drill;
+#[path = "support/publication_restart_drill.rs"]
+mod publication_restart_drill;
 #[path = "support/release_drill.rs"]
 mod release_drill;
 #[path = "support/rename_conflict_drill.rs"]
@@ -43,16 +45,22 @@ mod rewrite_client_drill;
 mod runner_drill;
 #[path = "support/semantic_conflict_drill.rs"]
 mod semantic_conflict_drill;
-#[path = "support/sync_volume_drill.rs"]
-mod sync_volume_drill;
+#[path = "support/server_restart_drill.rs"]
+mod server_restart_drill;
 #[path = "support/streaming_volume_drill.rs"]
 mod streaming_volume_drill;
+#[path = "support/sync_volume_drill.rs"]
+mod sync_volume_drill;
 #[path = "support/transfer_drill.rs"]
 mod transfer_drill;
 #[path = "support/transfer_expiry_drill.rs"]
 mod transfer_expiry_drill;
-#[path = "support/publication_restart_drill.rs"]
-mod publication_restart_drill;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "private server child invoked by process restart recipe"]
+async fn server_restart_child() {
+    server_restart_drill::child().await;
+}
 
 #[test]
 #[ignore = "child process invoked by publication restart recipe"]
@@ -73,6 +81,7 @@ use layrs_store_server::v3::{
     PgV3Repository,
 };
 use layrs_sync::v3::{LayerMutationMode, ReceiptStatus};
+use sqlx::ConnectOptions;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 struct FailAt(MaterializationPoint);
@@ -181,6 +190,47 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
         })
         .await
         .unwrap();
+    if std::env::var_os("LAYRS_TEST_SERVER_RESTART_ONLY").is_some() {
+        // Release the fixture listener; each child binds the same pinned TLS origin.
+        drop(listener);
+        let settings = server_restart_drill::Settings {
+            database_url: pool.connect_options().to_url_lossy().to_string(),
+            origin: origin.clone(),
+            address: address.to_string(),
+            cas_root: root.clone(),
+            deployment: config.deployment_id.clone(),
+            store: config.store_id.clone(),
+            signing_key: config.signing_key.clone(),
+            ca: ca.clone(),
+            tls_key: cert.key_pair.serialize_pem(),
+            phase: 0,
+        };
+        let clients = root.with_extension("clients");
+        let child_root = clients.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            server_restart_drill::run(settings, session.access_token, &child_root)
+        })
+        .await;
+        pool.close().await;
+        maintenance.close().await;
+        sqlx::query(&format!("DROP DATABASE {db} WITH (FORCE)"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        sqlx::query(&format!("DROP ROLE {runtime}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+        for path in [&root, &clients] {
+            assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+            if path.exists() {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+        }
+        result.expect("server process restart fixture failed; child output withheld");
+        return;
+    }
     let cas = Arc::new(CatalogedFsCas::new(
         config.store_id.clone(),
         FsServerCas::open(&root, CasLimits::default())
@@ -199,10 +249,19 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
         EventCursorCodec::new(&config.signing_key).unwrap(),
         config.public_url.clone(),
     );
-    let short_plans = router(V3HttpState::new(Arc::new(ProductionV3Facade::new(
-        repository.clone(), identity.clone(), EventCursorCodec::new(&config.signing_key).unwrap(),
-        config.public_url.clone(),
-    ).with_plan_lifetime_seconds(3).unwrap()), V3HttpLimits::default()));
+    let short_plans = router(V3HttpState::new(
+        Arc::new(
+            ProductionV3Facade::new(
+                repository.clone(),
+                identity.clone(),
+                EventCursorCodec::new(&config.signing_key).unwrap(),
+                config.public_url.clone(),
+            )
+            .with_plan_lifetime_seconds(3)
+            .unwrap(),
+        ),
+        V3HttpLimits::default(),
+    ));
     let lose_response = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let corrupt_download = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let interrupted_download = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -422,19 +481,50 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
             return provision.space_id;
         }
         if std::env::var_os("LAYRS_TEST_CONTENT_ACL_ONLY").is_some() {
-            content_acl_drill::run(&remote,&client_root,&origin,&session.access_token,&ca);
+            content_acl_drill::run(&remote, &client_root, &origin, &session.access_token, &ca);
             return provision.space_id;
         }
         if std::env::var_os("LAYRS_TEST_POLICY_ONLY").is_none() {
-            transfer_expiry_drill::run(&remote, &client_root, &origin, &session.access_token, &ca, &expiry_probe);
-            publication_restart_drill::run(&remote, &client_root, &origin, &session.access_token, &ca, &restart_probe);
+            transfer_expiry_drill::run(
+                &remote,
+                &client_root,
+                &origin,
+                &session.access_token,
+                &ca,
+                &expiry_probe,
+            );
+            publication_restart_drill::run(
+                &remote,
+                &client_root,
+                &origin,
+                &session.access_token,
+                &ca,
+                &restart_probe,
+            );
         }
         if std::env::var_os("LAYRS_TEST_TRANSFER_RESTART_ONLY").is_some() {
             return provision.space_id;
         }
-        unchanged_drill::run(&remote, &client_root, &origin, &session.access_token, &ca, &unchanged_probe, &pending["pending"]);
-        if std::env::var_os("LAYRS_TEST_UNCHANGED_ONLY").is_some() { return provision.space_id; }
-        policy_client_drill::run(&remote, &client_root, &origin, &session.access_token, &ca, &lose_response);
+        unchanged_drill::run(
+            &remote,
+            &client_root,
+            &origin,
+            &session.access_token,
+            &ca,
+            &unchanged_probe,
+            &pending["pending"],
+        );
+        if std::env::var_os("LAYRS_TEST_UNCHANGED_ONLY").is_some() {
+            return provision.space_id;
+        }
+        policy_client_drill::run(
+            &remote,
+            &client_root,
+            &origin,
+            &session.access_token,
+            &ca,
+            &lose_response,
+        );
         if std::env::var_os("LAYRS_TEST_POLICY_ONLY").is_some() {
             return provision.space_id;
         }
