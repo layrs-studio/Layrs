@@ -4,7 +4,30 @@ Lot ouvert le20septembre2026. Objectif100MiB/1GiB avec mémoire bornée, sans
 assimiler une hausse de limites à une implémentation streaming. Les archives
 qualified2 précèdent ce lot. Aucun support1GiB complet revendiqué à ce stade.
 
-## PAUSE utilisateur — checkpoint operations, 20 septembre2026
+## Reprise — qualification Linux et spool privé, 20 septembre2026
+
+Après le commit de référence3cf23b3, qualification Linux en conteneur sans réseau,
+sources en lecture seule, Rust1.90 : recette1GiB **PASS113,45s**, compilation32,75s,
+heap Rust supplémentaire **9 870 248octets**, mesuré avant le fsck final. Même capture/interruption/recovery/
+retry/replay/réouverture/Marker historique/octets/fsck complet propre que Windows.
+Image locale `sha256:e8b8d5308857e25e2660628ddb839f138bdf944d30853f49937225e637508e02` ;
+conteneur supprimé automatiquement, volume de compilation rendu à fusion_native.
+Cette preuve concerne le parcours local ; elle ne qualifie pas HTTPS1GiB ni RSS.
+
+Nouveau helper commun `layrs_store_local::private_spool_file` raccordé capture,
+téléchargement temporaire et spool de graphe via son wrapper : Windows DACL
+protégée owner-only fournie à CreateFileW dès création, CREATE_NEW, partage nul,
+delete-on-close et vérification propriétaire/ACE sur le handle ; Unix0600 puis
+unlink immédiat. Aucun chemin de spool exposé à l'appelant. Tests Windows3
+PASS0,01s (DACL réelle, refus de seconde ouverture, suppression à fermeture,
+collision sans écrasement, lecture/seek et indépendance). Trois tests clients
+spool PASS0,07s (capture/graphe/download, corruption et troncation) ; Clippy strict
+Store/client libs PASS13,24s et Store tous targets PASS5,42s. Qualification Linux
+transmise par fusion_native : privacy2 PASS0,00s et clients spool3 PASS0,03s
+(compilation15,19s), permissions0600, propriétaire, unlink et collisions/symlink
+sans écrasement vérifiés. Sources du helper gelées et prêtes pour commit root.
+
+## Ancien checkpoint de pause — conservé pour traçabilité
 
 Travail arrêté à la demande explicite. Aucun processus de test operations actif.
 Session65768 s'est terminée normalement pendant l'arrêt contrôlé : recette locale

@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 mod leaf;
 mod privacy;
 pub(crate) use leaf::PinnedLeaf;
+pub use privacy::private_spool_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileIdentity {

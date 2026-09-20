@@ -16,6 +16,7 @@ mod recovery;
 mod repository;
 mod schema;
 pub mod scm_v1;
+pub use secure_fs::private_spool_file;
 mod secure_fs;
 mod session;
 mod sqlite;

@@ -274,21 +274,5 @@ fn copy_segment_controlled(
 /// An anonymous/private spool, removed on close (also on normal early return).
 /// It carries object bytes only, never credentials or capability tokens.
 pub(super) fn temporary_file() -> RemoteResult<File> {
-    let path = std::env::temp_dir().join(format!("layrs-download-{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(0).custom_flags(0x04000000); // FILE_FLAG_DELETE_ON_CLOSE
-    }
-    let file = options.open(&path)?;
-    #[cfg(unix)]
-    std::fs::remove_file(path)?;
-    Ok(file)
+    Ok(layrs_store_local::private_spool_file()?)
 }

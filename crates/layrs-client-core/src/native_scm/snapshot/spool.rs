@@ -1,7 +1,7 @@
 use layrs_core::scm::{Chunk, ChunkId};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
     sync::Mutex,
 };
@@ -17,22 +17,7 @@ pub(crate) struct SnapshotChunkSpool {
 
 impl SnapshotChunkSpool {
     pub(crate) fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("layrs-capture-{}.tmp", uuid::Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options.share_mode(0).custom_flags(0x04000000);
-        }
-        let file = options.open(&path)?;
-        #[cfg(unix)]
-        std::fs::remove_file(&path)?;
+        let file = layrs_store_local::private_spool_file()?;
         Ok(Self {
             file: Mutex::new(file),
             entries: BTreeMap::new(),
