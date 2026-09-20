@@ -248,27 +248,3 @@ pub(crate) fn require_allowed(decision: AuthorizationDecision) -> V3StoreResult<
 pub(crate) fn pg_error(error: sqlx::Error) -> V3StoreError {
     V3StoreError::Backend(error.to_string())
 }
-
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-
-    #[derive(Debug, Clone)]
-    pub struct DeterministicAuthorizer {
-        pub allowed_actions: Vec<V3Action>,
-    }
-
-    #[async_trait]
-    impl PolicyAuthorizer for DeterministicAuthorizer {
-        async fn authorize(
-            &self,
-            check: &AuthorizationCheck,
-        ) -> V3StoreResult<AuthorizationDecision> {
-            Ok(if self.allowed_actions.contains(&check.action) {
-                AuthorizationDecision::allow("deterministic_test_allow")
-            } else {
-                AuthorizationDecision::deny("deterministic_test_deny")
-            })
-        }
-    }
-}
