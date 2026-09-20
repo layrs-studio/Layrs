@@ -145,7 +145,9 @@ Les mesures de temps, mémoire et concurrence sont consignées dans
 configuration et leurs limites.
 
 - Changements fichier/dossier et symlinks Linux matérialisés avec sauvegarde et reprise, y compris après interruption. Modifications de symlinks refusées sous Windows/macOS ; bit exécutable non matérialisable sous Windows.
-- Scanner borné à 100 000 entrées, dossiers compris, 64 MiB par fichier, 256 MiB par capture. Les fichiers de 100 MiB et 1 GiB sont refusés avant changement d’Operation ; ce refus ne constitue pas une prise en charge des gros binaires.
+- Capture et restauration en flux bornées à 100 000 entrées, dossiers compris, 1 GiB par fichier et 4 GiB de contenu par projection. Les parcours locaux de 1 GiB sont qualifiés Windows/Linux ; les parcours HTTPS complets de 100 MiB et 1 GiB sont qualifiés sous Windows, avec modification incrémentale et restauration exactes. Mesures et limites dans les journaux T4/T8 ; les temps observés ne garantissent pas ceux d'une installation en production.
+- Les budgets de vérification du contenu historique restent bornés : 4 GiB logiques par parcours, 256 MiB de métadonnées, 64 MiB par objet. Les versions distinctes et reconstructions répétées consomment ce budget même si leurs chunks sont dédupliqués ; le dépasser entraîne un refus explicite. Ce ne sont pas des quotas de disque ni une garantie pour un historique arbitrairement volumineux.
+- Les gros diffs affichent chemins, identités, tailles et modes sans charger tout le texte ; le rendu détaillé est conservé pour les comparaisons totalisant au plus 8 MiB. Les API historiques retournant tous les octets et la résolution sémantique gardent leurs propres limites de 64/256 MiB.
 - Lens WASM isolée et reçus testés sous Windows et Linux x86_64 ; distribution signée, recette macOS et pilote PME externe restent à effectuer.
 - Certaines anciennes surfaces/code sont encore présents pendant le raccordement natif. Le pilote Compose HTTPS local est documenté dans `deploy/selfhost/LOCAL-PILOT.md`. La recette visuelle Web reste distincte de la recette Desktop native.
 

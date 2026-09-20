@@ -31,6 +31,15 @@ Les volumes `postgres`, `cas` et `caddy_data` sont persistants. Ne pas utiliser 
 
 Le journal HTTP contient identifiant de requête généré côté serveur, statut et latence. Il exclut URL, query string, headers et corps. La readiness effectue une requête DB et une écriture synchronisée temporaire dans le CAS. Les limites actuelles CAS sont de 64 MiB par objet ; cela ne constitue pas un quota global.
 
+La capture/restauration native traite les fichiers par blocs : plafond1GiB par
+fichier et4GiB par projection,100000entrées dossiers compris. Les parcours de
+vérification ont aussi un budget4GiB de contenu logique historique et256MiB de
+métadonnées ; les différentes versions d'un fichier consomment ce budget même
+si des blocs sont partagés. Un refus de budget ne supprime aucun historique.
+Prévoir de l'espace pour le spool temporaire, les sauvegardes et le checkout,
+en plus du CAS. Les gros diffs restent des résumés ; la fusion sémantique et
+les anciennes API retournant les octets entiers conservent des bornes plus basses.
+
 ## Sauvegarde et restauration
 
 Les quotas CAS logiques se configurent par `LAYRS_CAS_MAX_TOTAL_BYTES`,

@@ -53,9 +53,11 @@ Une métadonnée locale incomplète/non reconnue est refusée explicitement.
 
 Le décodage et l'identité canonique complète restent obligatoires après la
 réponse HTTP. L'admission locale attend toujours la fermeture vérifiée. Zstd ou
-absence de ranges : spool éphémère uniquement. Les bornes64Mio/objet et256Mio de
-fermeture restent inchangées ; ce mécanisme n'est pas le streaming global du
-Store ni un checkpoint de toute la traversée de graphe.
+absence de ranges : spool éphémère uniquement. La borne64Mio/objet reste distincte
+du fichier reconstruit. Les parcours streaming du Store bornent désormais un
+fichier à1Gio, le contenu logique vérifié à4Gio et les métadonnées à256Mio.
+Le cache durable256Mio est un mécanisme séparé : il ne doit pas retenir tout
+un fichier1Gio à la fois et n'est pas un checkpoint de la traversée du graphe.
 
 Qualification : tests Windows et Linux de droits/quota/intégrité ; recette
 HTTPS/PostgreSQL `LAYRS_TEST_DURABLE_DOWNLOAD_ONLY=1` dans
