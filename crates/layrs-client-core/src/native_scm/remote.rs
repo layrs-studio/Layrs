@@ -460,7 +460,8 @@ fn projection_dirty(workspace: &NativeWorkspace, state: &WorkspaceState) -> Remo
     if workspace.needs_repair()? {
         return Err(NativeRemoteError::Local(NativeClientError::NeedsRepair));
     }
-    let (_, snapshot) = workspace.capture_projection(state, SnapshotLimits::default())?;
+    let (_, snapshot) =
+        workspace.capture_projection_streaming(state, super::restore_projection::limits())?;
     let expected = state
         .view
         .worktrees()

@@ -1,4 +1,57 @@
 use super::*;
+
+#[test]
+fn remote_dirty_check_streams_files_above_legacy_limit_without_mutation() {
+    use std::io::{Seek, SeekFrom, Write};
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            assert_eq!(self.0.parent(), Some(std::env::temp_dir().as_path()));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = Directory(std::env::temp_dir().join(format!(
+        "layrs-remote-streaming-dirty-{}",
+        uuid::Uuid::new_v4()
+    )));
+    std::fs::create_dir(&directory.0).unwrap();
+    let path = directory.0.join("above-legacy-limit.bin");
+    {
+        let mut file = std::fs::File::create(&path).unwrap();
+        let mut block = vec![0; 1024 * 1024];
+        for index in 0..65u8 {
+            block.fill(index);
+            file.write_all(&block).unwrap();
+        }
+        file.sync_all().unwrap();
+    }
+    let workspace = NativeWorkspace::initialize(&directory.0, "Streaming dirty check").unwrap();
+    let state = workspace.state().unwrap();
+    assert!(!projection_dirty(&workspace, &state).unwrap());
+    let change = |byte| {
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(64 * 1024 * 1024 + 5)).unwrap();
+        file.write_all(&[byte]).unwrap();
+        file.sync_all().unwrap();
+    };
+    change(255);
+    assert!(projection_dirty(&workspace, &state).unwrap());
+    change(64);
+    assert!(!projection_dirty(&workspace, &state).unwrap());
+    let current = workspace.state().unwrap();
+    assert_eq!(current.operation, state.operation);
+    assert_eq!(current.view, state.view);
+    assert_eq!(current.worktree, state.worktree);
+    assert!(!workspace.store_root().join("native-remote.json").exists());
+    // The old whole-file API keeps its bound; only the metadata/stream path changed.
+    let step = state.view.layer_heads()[0].step_ids()[0].clone();
+    assert!(matches!(
+        workspace.read_step_files(&step),
+        Err(NativeClientError::InvalidState(
+            "materialization file limit exceeded"
+        ))
+    ));
+}
 #[test]
 fn error_responses_expose_only_bounded_machine_codes() {
     assert_eq!(
