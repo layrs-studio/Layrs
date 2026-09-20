@@ -38,8 +38,8 @@ async fn weave_list_and_detail_hide_requests_with_an_inaccessible_layer() {
         &fixture,
         &source_layer_id,
         "**",
-        &[fixture.account_id.clone()],
-        &[fixture.account_id.clone()],
+        std::slice::from_ref(&fixture.account_id),
+        std::slice::from_ref(&fixture.account_id),
     )
     .await;
 
@@ -124,7 +124,7 @@ async fn weave_apply_rejects_policy_drift_without_mutating_target() {
         &fixture.layer_id,
         "restricted.txt",
         &[fixture.account_id.clone(), writer_id],
-        &[fixture.account_id.clone()],
+        std::slice::from_ref(&fixture.account_id),
     )
     .await;
 

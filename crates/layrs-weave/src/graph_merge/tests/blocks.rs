@@ -9,7 +9,7 @@ fn fixture() -> (MergeObjects, GraphMergePlan) {
         std::slice::from_ref(&base),
     );
     let b = file_step(&mut objects, b"prefix\r\nB\r\nsame\r\nB\r\nfin", &[base]);
-    let merged = plan(&objects, &[a.clone()], &[b.clone()]);
+    let merged = plan(&objects, std::slice::from_ref(&a), std::slice::from_ref(&b));
     assert_eq!(merged.conflicts(), plan(&objects, &[b], &[a]).conflicts());
     assert_eq!(
         merged.conflicts.values().next().unwrap().0["blocks"]

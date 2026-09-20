@@ -19,7 +19,7 @@ async fn weave_artifact_rules_gate_list_detail_create_and_resolution() {
         &fixture.layer_id,
         &artifact_id,
         &[fixture.account_id.clone(), writer_id.clone()],
-        &[fixture.account_id.clone()],
+        std::slice::from_ref(&fixture.account_id),
     )
     .await;
 
@@ -139,7 +139,7 @@ async fn weave_apply_revalidates_target_artifact_write() {
         &fixture.layer_id,
         &artifact_id,
         &[fixture.account_id.clone(), writer_id],
-        &[fixture.account_id.clone()],
+        std::slice::from_ref(&fixture.account_id),
     )
     .await;
 

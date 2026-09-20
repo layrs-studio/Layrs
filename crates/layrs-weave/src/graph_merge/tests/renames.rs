@@ -43,7 +43,11 @@ fn exact_moves_unilateral_and_same_destination_remain_clean_without_changing_sou
         assert!(!analysis.exact.is_empty());
         assert!(analysis.ambiguous.is_empty());
         assert!(analysis.conflicts.is_empty());
-        let merged = plan(&objects, &[left.clone()], &[right.clone()]);
+        let merged = plan(
+            &objects,
+            std::slice::from_ref(&left),
+            std::slice::from_ref(&right),
+        );
         let tree = &merged.trees[merged.step.root_tree_id()];
         assert_eq!(tree.entries().len(), 1);
         assert_eq!(tree.entries()[0].name().as_str(), "b.txt");

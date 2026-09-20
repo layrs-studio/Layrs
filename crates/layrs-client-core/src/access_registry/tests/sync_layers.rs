@@ -50,7 +50,7 @@ fn publish_v2_payload_contains_store_objects_and_canonical_ids() {
         &state,
         vec!["note.txt".to_string()],
         Vec::new(),
-        &[step.clone()],
+        std::slice::from_ref(&step),
     )
     .unwrap();
     let json = serde_json::to_value(body).unwrap();
@@ -653,4 +653,3 @@ fn received_step_without_server_position_is_still_latest_by_time() {
 
     let _ = fs::remove_dir_all(root);
 }
-

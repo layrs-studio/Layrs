@@ -85,7 +85,7 @@ fn variant_comparison_preserves_absence_empty_binary_newlines_and_read_only_hist
         w.capture().unwrap();
         let preview = w
             .preview_structural_merge(
-                &[source.clone()],
+                std::slice::from_ref(&source),
                 &layer(&w),
                 policy(),
                 GraphMergeLimits::default(),
@@ -295,7 +295,7 @@ fn clean_acceptance_materializes_and_persists_canonical_receipt_with_replay() {
     let reader = NativeScmReader::new(&store).unwrap();
     assert_eq!(
         reader.products_in_space(state.space.id()).unwrap(),
-        [accepted.product_object_id.clone()]
+        std::slice::from_ref(&accepted.product_object_id)
     );
     let product = reader
         .get_product(&accepted.product_object_id)
@@ -539,7 +539,7 @@ fn partial_then_complete_resolution_preserves_ancestry_and_old_conflict() {
             .unwrap()
             .unwrap()
             .parent_step_ids(),
-        [partial.step_id.clone()]
+        std::slice::from_ref(&partial.step_id)
     );
     assert_eq!(
         reader

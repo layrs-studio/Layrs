@@ -78,10 +78,7 @@ impl EvidenceHasher {
     }
 
     pub fn update(&mut self, bytes: &[u8]) -> Result<(), EvidenceIdentityError> {
-        let actual = self
-            .byte_len
-            .checked_add(bytes.len() as u64)
-            .unwrap_or(u64::MAX);
+        let actual = self.byte_len.saturating_add(bytes.len() as u64);
         if actual > MAX_EVIDENCE_BYTE_LEN {
             return Err(EvidenceIdentityError::TooLarge {
                 max: MAX_EVIDENCE_BYTE_LEN,

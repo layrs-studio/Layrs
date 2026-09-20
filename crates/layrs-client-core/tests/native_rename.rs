@@ -89,7 +89,7 @@ fn rename_terms_apply_all_placements_after_reopen_and_undo_preserves_history() {
         let before = head(&w);
         let preview = w
             .preview_structural_merge(
-                &[source.clone()],
+                std::slice::from_ref(&source),
                 &layer(&w),
                 policy(),
                 GraphMergeLimits::default(),

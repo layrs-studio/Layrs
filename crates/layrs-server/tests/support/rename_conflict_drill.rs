@@ -55,7 +55,7 @@ pub fn run(
         .clone();
     let preview = a
         .preview_structural_merge(
-            &[source.clone()],
+            std::slice::from_ref(&source),
             &layer,
             FileMergePolicy {
                 unsupported: FailureAction::StructuralFallback,

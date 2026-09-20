@@ -89,7 +89,7 @@ fn replay_changes_only_selected_delta_records_map_and_keeps_honest_parent() {
     assert!(plan.conflicts().is_empty());
     assert_eq!(
         plan.summary().proposed_step.parent_step_ids(),
-        [parent.clone()]
+        std::slice::from_ref(&parent)
     );
     let rewritten = workspace.apply_rewrite(&plan).unwrap();
     assert_eq!(fs::read(fixture.0.join("code.ts")).unwrap(), b"A\nb\nC\n");
@@ -99,7 +99,7 @@ fn replay_changes_only_selected_delta_records_map_and_keeps_honest_parent() {
     assert_eq!(state.operation.rewrite_map()[0].old_step_id(), &selected);
     assert_eq!(
         state.operation.rewrite_map()[0].new_step_ids(),
-        [rewritten.clone()]
+        std::slice::from_ref(&rewritten)
     );
     assert_eq!(step(&workspace, &rewritten).parent_step_ids(), [parent]);
     let topic = state
@@ -303,7 +303,7 @@ fn replay_uses_selected_parent_delta_and_does_not_import_other_source_history() 
     assert_eq!(fs::read(fixture.0.join("code.ts")).unwrap(), b"A\nb\nc\n");
     assert_eq!(
         step(&workspace, &head(&workspace)).parent_step_ids(),
-        [root.clone()]
+        std::slice::from_ref(&root)
     );
     assert!(workspace.prepare_revert(&root, None).is_err());
     let other_fixture = Fixture::new();
