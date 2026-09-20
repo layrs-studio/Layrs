@@ -475,8 +475,18 @@ fn cas_publish_refuses_a_preplaced_reparse_shard() {
     let error = store
         .write_object_v2(bytes, &digest)
         .expect_err("reparse shard must reject publication");
+    #[cfg(windows)]
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    #[cfg(unix)]
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotADirectory
+        ),
+        "O_NOFOLLOW/O_DIRECTORY must reject the symlink: {error}"
+    );
     assert_eq!(fs::read_dir(&outside).expect("read outside").count(), 0);
+    assert!(!store.cas_path_v2(&digest).exists());
 
     remove_directory_link(&algorithm_boundary);
     drop(store);

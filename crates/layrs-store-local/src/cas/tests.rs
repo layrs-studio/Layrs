@@ -295,11 +295,31 @@ fn swapped_pending_source_never_poisons_cas_target() {
     fs::write(&pending, b"poison").expect("place poisoned replacement");
     release.wait();
 
-    let _ = writer.join().expect("writer thread");
-    assert_eq!(
-        fs::read(&target).expect("read CAS target"),
-        b"verified pending source"
-    );
+    let result = writer.join().expect("writer thread");
+    #[cfg(windows)]
+    {
+        // Windows publishes the pinned handle, independent of its replaced name.
+        result.expect("publish pinned original");
+        assert_eq!(
+            fs::read(&target).expect("read CAS target"),
+            b"verified pending source"
+        );
+    }
+    #[cfg(unix)]
+    {
+        // linkat publishes by name; the inode check must reject its replacement.
+        let error = result.expect_err("replaced pending inode must reject publication");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "pending source changed during CAS publication"
+        );
+        assert!(!target.exists(), "replacement was admitted into the CAS");
+        assert_eq!(
+            fs::read(&parked).expect("read pinned original"),
+            b"verified pending source"
+        );
+    }
     assert!(!pending.exists(), "poisoned replacement was not removed");
 
     drop(store);
@@ -382,7 +402,17 @@ fn mutated_pinned_pending_source_leaves_no_cas_target() {
         .join()
         .expect("writer thread")
         .expect_err("mutated source must fail publication");
+    #[cfg(windows)]
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    #[cfg(unix)]
+    {
+        // Name replacement is detected before verification of the modified bytes.
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "pending source changed during CAS publication"
+        );
+    }
     assert!(!target.exists(), "mutated bytes remained in the CAS");
     assert!(!pending.exists(), "replacement pending source remained");
 
