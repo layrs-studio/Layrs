@@ -46,4 +46,6 @@ La fixture HTTPS contient zéro annulation de run et zéro correction de comment
 
 ## Script de qualification
 
+Complément ciblé après cette passe complète : recette du processus serveur réellement tué aux frontières objet, avant transaction et après commit avant reçu, **PASS20,87s**, Clippy strict11,58s. Pour l'objet, un préfixe Identity est constaté sur disque avant la mort pendant le GET Range ; le redémarrage réacquiert un nouveau plan/capacité avec claim/objet/principal/Space/epoch/offset exacts, puis reconstruit tous les octets du fichier512Kio. Aucun changement de production, aucune panne PostgreSQL/physique ou reprise zstd revendiquée. Voir journal T4 et mode `LAYRS_TEST_SERVER_RESTART_ONLY`.
+
 `scripts/test-native-postgres.mjs` sélectionne désormais chaque vraie fixture par son nom exact. Les fonctions enfants du test de reprise ne sont jamais lancées directement ni comptées comme preuve PostgreSQL. Chaque fixture doit produire exactement un PASS ; un mode `LAYRS_TEST_*_ONLY` fait refuser la qualification complète. Syntaxe Node vérifiée. Les exécutions ci-dessus utilisent les commandes Cargo équivalentes ; le script complet n'a pas été relancé en doublon.

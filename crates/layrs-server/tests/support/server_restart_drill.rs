@@ -164,11 +164,14 @@ pub async fn child() {
         policy.validate_base(&settings.origin).unwrap(),
     );
     let phase = settings.phase;
+    let download_codec = CapabilityCodec::new(&settings.signing_key).unwrap();
     let app = router(V3HttpState::new(Arc::new(facade), V3HttpLimits::default()))
         .merge(identity.as_ref().clone().router())
-        .layer(middleware::from_fn(
-            move |request: Request, next: Next| async move {
+        .layer(middleware::from_fn(move |request: Request, next: Next| {
+            let download_codec = download_codec.clone();
+            async move {
                 let transaction = request.uri().path().ends_with("/transactions");
+                let download = download_probe(&request, &download_codec, phase);
                 if transaction && phase == 1 {
                     event(serde_json::json!({"event":"before_dispatch"}));
                     // Parent kills this actual server process, never releases this request.
@@ -176,6 +179,36 @@ pub async fn child() {
                     panic!("server restart fixture gate expired");
                 }
                 let response = next.run(request).await;
+                if let Some((offset, mut observation)) = download {
+                    assert_eq!(response.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+                    if offset > 0 {
+                        observation["event"] = serde_json::json!("download_range");
+                        event(observation);
+                        if phase == 3 {
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            panic!("download server death gate expired");
+                        }
+                    } else if phase == 3 {
+                        let (parts, body) = response.into_parts();
+                        let bytes = axum::body::to_bytes(body, 2 * 1024 * 1024).await.unwrap();
+                        let prefix = bytes.slice(..bytes.len() / 2);
+                        // Several actual body frames, followed by a transport error.
+                        // No elapsed delay is evidence: the next authorized Range
+                        // and the durable record below establish consumed bytes.
+                        let frames = prefix
+                            .chunks(4096)
+                            .map(bytes::Bytes::copy_from_slice)
+                            .map(Ok::<_, std::io::Error>)
+                            .chain(std::iter::once(Err(std::io::Error::other(
+                                "fixture partial object transport cut",
+                            ))))
+                            .collect::<Vec<_>>();
+                        return axum::response::Response::from_parts(
+                            parts,
+                            axum::body::Body::from_stream(futures_util::stream::iter(frames)),
+                        );
+                    }
+                }
                 if transaction && phase == 2 {
                     assert!(response.status().is_success());
                     let (_, body) = response.into_parts();
@@ -186,8 +219,8 @@ pub async fn child() {
                     panic!("server restart fixture gate expired");
                 }
                 response
-            },
-        ));
+            }
+        }));
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
         settings.ca.into_bytes(),
         settings.tls_key.into_bytes(),
@@ -323,7 +356,200 @@ pub fn run(mut settings: Settings, token: String, root: &Path) {
         assert!(!reopened.is_dirty().unwrap());
         drop(restarted);
     }
+    download_restart(&mut settings, &token, root, &workspace, &provision.space_id);
     eprintln!(
         "Server process restart PASS: before dispatch / after commit, exact pending and receipt, one View advance"
+    );
+}
+
+fn download_probe(
+    request: &Request,
+    codec: &CapabilityCodec,
+    phase: u8,
+) -> Option<(u64, serde_json::Value)> {
+    if !matches!(phase, 3 | 4) || request.uri().path() != "/v3/transfers/downloads" {
+        return None;
+    }
+    let token = request
+        .headers()
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let grant = codec.authenticate_download(token, now).unwrap();
+    if grant.descriptor.kind != layrs_sync::v3::ObjectKind::Chunk
+        || grant.descriptor.encoded_byte_len < 16384
+    {
+        return None;
+    }
+    assert_eq!(
+        grant.descriptor.compression,
+        layrs_sync::v3::Compression::Identity
+    );
+    let range = request.headers().get("range")?.to_str().ok()?;
+    let start = range
+        .strip_prefix("bytes=")?
+        .split('-')
+        .next()?
+        .parse::<u64>()
+        .unwrap();
+    Some((
+        start,
+        serde_json::json!({
+            "offset": start, "descriptor": grant.descriptor, "claim":grant.claim_digest,
+            "principal":grant.actor.principal_id, "space":grant.actor.space_id,
+            "epoch":grant.actor.authorization_epoch, "plan":grant.actor.plan_id,
+            "request":grant.actor.request_id, "tokenDigest":blake3::hash(token.as_bytes()).to_hex().to_string()
+        }),
+    ))
+}
+
+fn cache_parts(cache: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(cache).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name().to_string_lossy().starts_with("entry-") {
+            for part in std::fs::read_dir(entry.path()).unwrap() {
+                let part = part.unwrap();
+                if part.file_name().to_string_lossy().starts_with("part-") {
+                    paths.push(part.path());
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn download_restart(
+    settings: &mut Settings,
+    token: &str,
+    root: &Path,
+    workspace: &NativeWorkspace,
+    space: &layrs_core::scm::SpaceId,
+) {
+    let bytes = (0..512 * 1024)
+        .map(|index| ((index * 17 + index / 251) % 256) as u8)
+        .collect::<Vec<_>>();
+    std::fs::write(root.join("asset.bin"), &bytes).unwrap();
+    workspace.capture().unwrap();
+    settings.phase = 0;
+    let server = Server::start(settings);
+    let remote =
+        NativeRemote::with_trusted_ca(&settings.origin, token, settings.ca.as_bytes()).unwrap();
+    assert_eq!(
+        remote
+            .publish(workspace, LayerMutationMode::Advance)
+            .unwrap()
+            .status,
+        ReceiptStatus::Applied
+    );
+    drop(server);
+    let target = root.with_extension("download-target");
+    let cache = root.with_extension("download-cache");
+    // Keep every directory under the harness-owned clients root for cleanup.
+    let target = root.join(target.file_name().unwrap());
+    let cache = root.join(cache.file_name().unwrap());
+    std::fs::create_dir(&target).unwrap();
+    settings.phase = 3;
+    let server = Server::start(settings);
+    let (tx, rx) = mpsc::channel();
+    let (origin, ca, token_copy, space_copy, target_copy, cache_copy) = (
+        settings.origin.clone(),
+        settings.ca.clone(),
+        token.to_owned(),
+        space.clone(),
+        target.clone(),
+        cache.clone(),
+    );
+    let downloader = std::thread::spawn(move || {
+        let remote = NativeRemote::with_trusted_ca(&origin, &token_copy, ca.as_bytes())
+            .unwrap()
+            .with_download_cache(&cache_copy);
+        tx.send(
+            remote
+                .clone_into(&target_copy, &space_copy, "Interrupted server")
+                .is_err(),
+        )
+        .unwrap();
+    });
+    let boundary = server.event();
+    assert_eq!(boundary["event"], "download_range");
+    let offset = boundary["offset"].as_u64().unwrap();
+    assert!(offset > 0 && offset < boundary["descriptor"]["encodedByteLen"].as_u64().unwrap());
+    // Range cannot be emitted before resume.save; inspect the actual immutable
+    // checkpoint now, not after an arbitrary sleep or after the server kill.
+    let parts = cache_parts(&cache);
+    assert_eq!(parts.len(), 1);
+    let record = std::fs::read(&parts[0]).unwrap();
+    let header_length = u32::from_be_bytes(record[..4].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&record[4..4 + header_length]).unwrap();
+    let saved = &record[4 + header_length..];
+    assert_eq!(header["start"], 0);
+    assert_eq!(header["end"], offset);
+    assert_eq!(saved.len() as u64, offset);
+    assert_eq!(header["digest"], blake3::hash(saved).to_hex().to_string());
+    assert_eq!(header["capability_digest"], boundary["tokenDigest"]);
+    assert!(
+        !record
+            .windows(token.len())
+            .any(|slice| slice == token.as_bytes())
+    );
+    assert_eq!(
+        std::fs::read_dir(&target).unwrap().count(),
+        0,
+        "no local Store before verified closure"
+    );
+    drop(server);
+    assert!(
+        rx.recv_timeout(Duration::from_secs(35))
+            .expect("download must observe killed server")
+    );
+    downloader.join().unwrap();
+    assert_eq!(std::fs::read(&parts[0]).unwrap(), record);
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    settings.phase = 4;
+    let server = Server::start(settings);
+    let remote = NativeRemote::with_trusted_ca(&settings.origin, token, settings.ca.as_bytes())
+        .unwrap()
+        .with_download_cache(&cache);
+    remote
+        .clone_into(&target, space, "After server restart")
+        .unwrap();
+    let resumed = server.event();
+    for field in [
+        "event",
+        "offset",
+        "descriptor",
+        "claim",
+        "principal",
+        "space",
+        "epoch",
+    ] {
+        assert_eq!(
+            resumed[field], boundary[field],
+            "renewed exact binding {field}"
+        );
+    }
+    for field in ["tokenDigest", "plan", "request"] {
+        assert_ne!(
+            resumed[field], boundary[field],
+            "fresh authorization {field}"
+        );
+    }
+    assert_eq!(std::fs::read(target.join("asset.bin")).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read(target.join("content")).unwrap(),
+        std::fs::read(root.join("content")).unwrap()
+    );
+    assert!(!NativeWorkspace::open(&target).unwrap().is_dirty().unwrap());
+    assert!(cache_parts(&cache).is_empty());
+    drop(server);
+    eprintln!(
+        "Server object restart PASS: durable prefix before kill, fresh exact claim/capability, nonzero Range, complete bytes"
     );
 }
