@@ -23,8 +23,8 @@ jobs:
           node-version: 24.11.1
       - name: Install pinned Rust
         run: rustup toolchain install 1.85.0 --profile minimal --no-self-update
-      - name: Verify package corruption and path rejection
-        run: node --test scripts/verify-native-package.test.mjs
+      - name: Verify packages, upgrade lifecycle and benchmark comparisons
+        run: node --test scripts/verify-native-package.test.mjs scripts/native-upgrade-input.test.mjs scripts/native-upgrade-lifecycle.test.mjs scripts/compare-native-benchmarks.test.mjs
       - name: Build the supervised Windows Lens worker fixture
         if: runner.os == 'Windows'
         run: cargo build --locked -p layrs-weave --bin layrs-lens-worker
