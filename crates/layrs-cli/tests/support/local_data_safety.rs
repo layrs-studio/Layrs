@@ -21,6 +21,7 @@ pub struct TestSpace {
     xdg: PathBuf,
     home: PathBuf,
     cleanup: bool,
+    legacy: bool,
 }
 
 impl TestSpace {
@@ -50,11 +51,18 @@ impl TestSpace {
             xdg,
             home,
             cleanup: false,
+            legacy: false,
         }
     }
 
     pub fn space_arg(&self) -> String {
         self.space.display().to_string()
+    }
+
+    pub fn legacy(label: &str) -> Self {
+        let mut space = Self::new(label);
+        space.legacy = true;
+        space
     }
 
     pub fn pass(mut self) {
@@ -75,8 +83,8 @@ impl Drop for TestSpace {
     }
 }
 
-pub fn init_empty(label: &str) -> TestSpace {
-    let space = TestSpace::new(label);
+pub fn init_legacy_empty(label: &str) -> TestSpace {
+    let space = TestSpace::legacy(label);
     let init = run_json(
         &space,
         [
@@ -337,26 +345,27 @@ pub fn assert_timeline_origin_order(timeline: &Value, expected: &[(&str, &str, &
     assert_eq!(actual, expected, "timeline provenance order mismatch");
 }
 
-pub fn assert_latest_weave_conflict_files(root: &Path) {
-    let weave_dir = latest_weave_dir(root);
-    let conflicts_dir = weave_dir.join("conflicts");
-    let mut conflicts = fs::read_dir(&conflicts_dir)
-        .unwrap_or_else(|error| panic!("read conflicts {}: {error}", conflicts_dir.display()))
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .collect::<Vec<_>>();
-    conflicts.sort_by_key(|entry| entry.file_name());
-    let conflict = conflicts
-        .first()
-        .unwrap_or_else(|| panic!("no conflicts in {}", conflicts_dir.display()));
-    for name in ["base", "ours", "theirs"] {
-        assert!(
-            conflict.path().join(name).exists(),
-            "missing conflict file {} in {}",
-            name,
-            conflict.path().display()
-        );
+pub fn assert_latest_weave_conflict_files(space: &TestSpace) {
+    let result = run_json(space, ["__legacy-fixture-variants"]);
+    assert!(result["variantCount"].as_u64().unwrap() > 0);
+}
+
+fn inspect_legacy_variants() -> Value {
+    let root = std::env::current_dir().expect("fixture current directory");
+    let conflicts = layrs_client_core::access_registry::weave_conflicts(root.display().to_string())
+        .expect("stored conflicts");
+    assert!(!conflicts.is_empty(), "expected retained conflict variants");
+    for conflict in &conflicts {
+        for side in ["base", "ours", "theirs"] {
+            layrs_client_core::access_registry::read_weave_conflict_variant(
+                root.display().to_string(),
+                conflict.path.clone(),
+                side,
+            )
+            .expect("variant bytes retained in metadata store");
+        }
     }
+    serde_json::json!({"variantCount":conflicts.len()*3})
 }
 
 pub fn deterministic_png_like_bytes() -> Vec<u8> {
@@ -406,54 +415,26 @@ fn latest_weave_dir(root: &Path) -> PathBuf {
         .unwrap_or_else(|| panic!("no weave directories in {}", weaves.display()))
 }
 
-pub fn first_chunk_path(root: &Path, layer_id: &str, file_path: &str) -> PathBuf {
+pub fn first_chunk_path(root: &Path, _layer_id: &str, file_path: &str) -> PathBuf {
+    // Capture this pointer while the target layer is active; metadata lives in
+    // SQLite now. Decode and verify real manifests rather than old JSON state.
+    let expected = fs::read(root.join(file_path)).expect("target file");
     let layrs = root.join(".layrs");
-    let state_path = layrs
-        .join("layers")
-        .join(layer_id)
-        .join("working-state.json");
-    let state: Value = serde_json::from_str(
-        &fs::read_to_string(&state_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", state_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", state_path.display()));
-    let tree_id = state["rootTreeId"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing rootTreeId in {}", state_path.display()));
-    let tree_path = layrs
-        .join("objects")
-        .join("trees")
-        .join(format!("{}.json", object_file_stem(tree_id)));
-    let tree: Value = serde_json::from_str(
-        &fs::read_to_string(&tree_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", tree_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", tree_path.display()));
-    let files = tree["files"]
-        .as_array()
-        .unwrap_or_else(|| panic!("missing files array in tree object {}", tree_path.display()));
-    let file = files
-        .iter()
-        .find(|entry| entry["path"].as_str() == Some(file_path))
-        .unwrap_or_else(|| panic!("missing {file_path} in tree {}", tree_path.display()));
-    let object = file["object"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing object ref for {file_path}"));
-    let manifest_path = layrs.join(object);
-    let manifest: Value = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
-    let chunk_id = manifest["chunks"]
-        .as_array()
-        .and_then(|chunks| chunks.first())
-        .and_then(|chunk| chunk["chunkId"].as_str())
-        .unwrap_or_else(|| panic!("missing first chunk in {}", manifest_path.display()));
-    layrs
-        .join("objects")
-        .join("chunks")
-        .join(format!("{}.chunk", object_file_stem(chunk_id)))
+    for entry in fs::read_dir(layrs.join("objects/files")).expect("file manifests") {
+        let manifest_path = entry.expect("manifest entry").path();
+        let manifest =
+            layrs_client_core::object_store::read_file_object_manifest(&layrs, &manifest_path)
+                .expect("manifest");
+        let bytes = layrs_client_core::object_store::read_file_object_bytes(&layrs, &manifest)
+            .expect("verified manifest closure");
+        if bytes == expected {
+            let chunk = manifest.chunks.first().expect("nonempty fixture file");
+            return layrs
+                .join("objects/chunks")
+                .join(format!("{}.chunk", object_file_stem(&chunk.chunk_id)));
+        }
+    }
+    panic!("no verified manifest matches active target {file_path}")
 }
 
 pub fn deterministic_large_content(step: usize) -> String {
@@ -517,8 +498,28 @@ fn run_layrs_with_stdin(
     args: &[OsString],
     stdin: Option<&[u8]>,
 ) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_layrs"));
-    command.args(args);
+    let legacy_init = space.legacy
+        && args
+            .iter()
+            .any(|arg| arg == "init" || arg == "__legacy-fixture-variants");
+    let fixture_output = space.root.join(format!(
+        "legacy-init-{}.json",
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut command = if legacy_init {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command.args([
+            "--ignored",
+            "--exact",
+            "support::local_data_safety::legacy_fixture_init_subprocess",
+            "--nocapture",
+        ]);
+        command
+    } else {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_layrs"));
+        command.args(args);
+        command
+    };
     command.current_dir(cwd);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -540,6 +541,19 @@ fn run_layrs_with_stdin(
     command.env("TEMP", space.root.join("tmp"));
     command.env("TMPDIR", space.root.join("tmp"));
     command.env("NO_COLOR", "1");
+    if legacy_init {
+        command.env(
+            "LAYRS_TEST_LEGACY_INIT_ARGS",
+            serde_json::to_string(
+                &args
+                    .iter()
+                    .map(|v| v.to_str().expect("UTF-8 fixture argument"))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        );
+        command.env("LAYRS_TEST_LEGACY_INIT_OUTPUT", &fixture_output);
+    }
 
     if stdin.is_some() {
         command.stdin(Stdio::piped());
@@ -558,13 +572,63 @@ fn run_layrs_with_stdin(
             .write_all(stdin)
             .unwrap_or_else(|error| panic!("write layrs stdin: {error}"));
     }
-    child.wait_with_output().unwrap_or_else(|error| {
+    let mut output = child.wait_with_output().unwrap_or_else(|error| {
         panic!(
             "failed waiting for layrs with args {:?} in {}: {error}",
             args,
             cwd.display()
         )
+    });
+    if legacy_init {
+        output.stdout = fs::read(&fixture_output).unwrap_or_else(|e| {
+            panic!(
+                "legacy fixture helper failed: {e}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        output.stderr.clear();
+    }
+    output
+}
+
+/// Harness subprocess, not a skipped product test. The historical suites invoke
+/// it explicitly so the old engine writes only their isolated config roots.
+#[test]
+#[ignore = "fixture subprocess invoked by explicit legacy test initialization"]
+fn legacy_fixture_init_subprocess() {
+    let args: Vec<String> = serde_json::from_str(
+        &std::env::var("LAYRS_TEST_LEGACY_INIT_ARGS").expect("fixture-only invocation"),
+    )
+    .unwrap();
+    if args == ["__legacy-fixture-variants"] {
+        fs::write(
+            std::env::var_os("LAYRS_TEST_LEGACY_INIT_OUTPUT").expect("fixture output"),
+            serde_json::to_vec(&serde_json::json!({"ok":true,"data":inspect_legacy_variants()}))
+                .unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    let cli = layrs_cli::args::parse_args(args).unwrap();
+    let layrs_cli::args::CliCommand::Init { name, path } = cli.command else {
+        panic!("fixture supports only old-engine init")
+    };
+    let result = layrs_cli::engine::ClientCoreEngine::new(layrs_cli::engine::EngineContext {
+        space: cli.globals.space,
     })
+    .init_local_space(&name, path.as_deref());
+    let (body, success) = match result {
+        Ok(value) => (serde_json::json!({"ok":true,"data":value}), true),
+        Err(error) => (serde_json::json!({"ok":false,"error":error.message}), false),
+    };
+    fs::write(
+        std::env::var_os("LAYRS_TEST_LEGACY_INIT_OUTPUT").expect("fixture output"),
+        serde_json::to_vec(&body).unwrap(),
+    )
+    .unwrap();
+    if !success {
+        std::process::exit(1);
+    }
 }
 
 fn preserve_env(command: &mut Command, key: &str) {

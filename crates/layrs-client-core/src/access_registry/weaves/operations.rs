@@ -1,4 +1,3 @@
-use super::*;
 use super::weave_apply::{apply_completed_weave, unique_weave_id};
 use super::weave_reconcile::{
     apply_conflict_marker_to_state, reconcile_path_with_lens_request,
@@ -10,13 +9,14 @@ use super::weave_resolution::{
 };
 use super::weave_session::{
     active_weave_id, conflict_dir, ensure_local_weave_target_is_current,
-    ensure_sync_weave_plan_is_current, proposed_state_path, read_weave_session,
-    summarize_weave_session, write_active_weave_marker, write_weave_session,
+    ensure_sync_weave_plan_is_current, proposed_state_path, read_weave_blob, read_weave_session,
+    summarize_weave_session, write_active_weave_marker, write_weave_blob, write_weave_session,
 };
 use super::weave_state::{
     apply_file_choice, changed_paths_between_states, common_weave_base_state, ensure_layer_known,
     is_safe_take_theirs, latest_state_for_layer, sorted_steps, state_from_tree, target_has_origin,
 };
+use super::*;
 use layrs_lens_sdk::ResolutionMethod;
 
 pub fn weave_layers(
@@ -33,24 +33,29 @@ pub fn weave_layers(
     if source_layer_id == target_layer_id {
         return Err("Choose two different Layers to Weave.".to_string());
     }
-    if active_weave_id(&handle.layrs_dir)?.is_some() {
+    if active_weave_id(&handle.store, &handle.layrs_dir)?.is_some() {
         return Err(
             "A Weave is already active. Continue or abort it before starting another Weave."
                 .to_string(),
         );
     }
 
-    let source_state = latest_state_for_layer(&handle.layrs_dir, &source_layer_id)?;
-    let target_state = latest_state_for_layer(&handle.layrs_dir, &target_layer_id)?;
-    let source_steps = sorted_steps(&handle.layrs_dir, &source_layer_id)?;
-    let target_steps = sorted_steps(&handle.layrs_dir, &target_layer_id)?;
+    let source_state = latest_state_for_layer(&handle.store, &handle.layrs_dir, &source_layer_id)?;
+    let target_state = latest_state_for_layer(&handle.store, &handle.layrs_dir, &target_layer_id)?;
+    let source_steps = sorted_steps(&handle.store, &handle.layrs_dir, &source_layer_id)?;
+    let target_steps = sorted_steps(&handle.store, &handle.layrs_dir, &target_layer_id)?;
     let planned_steps = source_steps
         .iter()
         .filter(|source_step| !target_has_origin(&target_steps, source_step))
         .map(|step| step.step_id.clone())
         .collect::<Vec<_>>();
 
-    let weave_id = unique_weave_id(&handle.layrs_dir, &source_layer_id, &target_layer_id);
+    let weave_id = unique_weave_id(
+        &handle.store,
+        &handle.layrs_dir,
+        &source_layer_id,
+        &target_layer_id,
+    )?;
     let now = unix_now();
     let pre_step_id = target_steps.last().map(|step| step.step_id.clone());
     let mut session = WeaveSessionFile {
@@ -87,7 +92,7 @@ pub fn weave_layers(
             continue;
         }
         match reconcile_path_with_lens_request(
-            &handle,
+            &mut handle,
             PathReconcileRequest {
                 weave_id: &weave_id,
                 target_layer_id: &target_layer_id,
@@ -138,28 +143,36 @@ pub fn weave_layers(
     }
 
     if handle.active.layer_id == target_layer_id {
-        let current_state = capture_working_state(&handle.root, &target_layer_id, true)?;
+        let current_state =
+            capture_working_state(&mut handle.store, &handle.root, &target_layer_id)?;
         let changed_files = changed_file_count(Some(&target_state), &current_state);
         if changed_files > 0 {
-            let step_id = write_step(&handle.layrs_dir, &target_layer_id, &current_state)?;
-            let step = read_step_file(&handle.layrs_dir, &target_layer_id, &step_id)?;
-            write_pending_publish(&handle.layrs_dir, &step)?;
+            let step_id = write_step(
+                &mut handle.store,
+                &handle.layrs_dir,
+                &target_layer_id,
+                &current_state,
+            )?;
+            let step =
+                read_step_file(&handle.store, &handle.layrs_dir, &target_layer_id, &step_id)?;
+            write_pending_publish(&mut handle.store, &handle.layrs_dir, &step)?;
         }
     }
 
     write_json(
+        &mut handle.store,
         &proposed_state_path(&handle.layrs_dir, &weave_id),
         &storage_state(&handle.layrs_dir, &proposed_state)?,
     )?;
-    write_weave_session(&handle.layrs_dir, &session)?;
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
 
     if session.conflicts.is_empty() {
         apply_completed_weave(&mut handle, &session, &proposed_state, &source_steps)?;
-        write_active_weave_marker(&handle.layrs_dir, None)?;
-        let mut applied = read_weave_session(&handle.layrs_dir, &weave_id)?;
+        write_active_weave_marker(&mut handle.store, &handle.layrs_dir, None)?;
+        let mut applied = read_weave_session(&handle.store, &handle.layrs_dir, &weave_id)?;
         applied.status = "applied".to_string();
         applied.updated_at_unix = unix_now();
-        write_weave_session(&handle.layrs_dir, &applied)?;
+        write_weave_session(&mut handle.store, &handle.layrs_dir, &applied)?;
         Ok(WeaveOperationResult {
             local_space: summary_from_handle(&handle),
             session: summarize_weave_session(&applied),
@@ -167,9 +180,9 @@ pub fn weave_layers(
         })
     } else {
         if handle.active.layer_id == target_layer_id {
-            materialize_state(&handle.root, &proposed_state)?;
+            materialize_state(&mut handle.store, &handle.root, &proposed_state)?;
         }
-        write_active_weave_marker(&handle.layrs_dir, Some(&weave_id))?;
+        write_active_weave_marker(&mut handle.store, &handle.layrs_dir, Some(&weave_id))?;
         Ok(WeaveOperationResult {
             local_space: summary_from_handle(&handle),
             session: summarize_weave_session(&session),
@@ -183,10 +196,11 @@ pub fn weave_layers(
 
 pub fn weave_status(local_space: String) -> Result<Option<WeaveSessionSummary>, String> {
     let handle = open_local_space_handle(&local_space)?;
-    let Some(weave_id) = active_weave_id(&handle.layrs_dir)? else {
+    let Some(weave_id) = active_weave_id(&handle.store, &handle.layrs_dir)? else {
         return Ok(None);
     };
     Ok(Some(summarize_weave_session(&read_weave_session(
+        &handle.store,
         &handle.layrs_dir,
         &weave_id,
     )?)))
@@ -199,26 +213,94 @@ pub fn weave_conflicts(local_space: String) -> Result<Vec<WeaveConflictSummary>,
 }
 
 pub fn abort_weave(local_space: String) -> Result<WeaveOperationResult, String> {
-    let handle = open_local_space_handle(&local_space)?;
-    let weave_id = active_weave_id(&handle.layrs_dir)?
+    let mut handle = open_local_space_handle(&local_space)?;
+    let weave_id = active_weave_id(&handle.store, &handle.layrs_dir)?
         .ok_or_else(|| "No active Weave to abort.".to_string())?;
-    let mut session = read_weave_session(&handle.layrs_dir, &weave_id)?;
+    let mut session = read_weave_session(&handle.store, &handle.layrs_dir, &weave_id)?;
     let target_state = state_from_tree(
         &handle.layrs_dir,
         &session.target_layer_id,
         session.pre_weave_target_tree_id.clone(),
     )?;
     if handle.active.layer_id == session.target_layer_id {
-        materialize_state(&handle.root, &target_state)?;
+        materialize_state(&mut handle.store, &handle.root, &target_state)?;
     }
     session.status = "aborted".to_string();
     session.updated_at_unix = unix_now();
-    write_weave_session(&handle.layrs_dir, &session)?;
-    write_active_weave_marker(&handle.layrs_dir, None)?;
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
+    write_active_weave_marker(&mut handle.store, &handle.layrs_dir, None)?;
     Ok(WeaveOperationResult {
         local_space: summary_from_handle(&handle),
         session: summarize_weave_session(&session),
         message: "Weave aborted. Pre-Weave working tree restored.".to_string(),
+    })
+}
+
+/// Read a stored variant through the legacy metadata authority, not loose JSON.
+pub fn read_weave_conflict_variant(
+    local_space: String,
+    path: String,
+    side: &str,
+) -> Result<Vec<u8>, String> {
+    if !matches!(side, "base" | "ours" | "theirs" | "resolved") {
+        return Err("Unknown conflict variant".into());
+    }
+    let handle = open_local_space_handle(&local_space)?;
+    let id = active_weave_id(&handle.store, &handle.layrs_dir)?.ok_or("No active Weave")?;
+    let session = read_weave_session(&handle.store, &handle.layrs_dir, &id)?;
+    let conflict = session
+        .conflicts
+        .iter()
+        .find(|c| c.path == path || c.conflict_id == path)
+        .ok_or("No matching conflict")?;
+    read_weave_blob(
+        &handle.store,
+        &conflict_dir(&handle.layrs_dir, &id, &conflict.conflict_id).join(side),
+    )
+}
+
+/// Explicit whole-file replacement; it does not claim Lens reconciliation.
+pub fn resolve_weave_conflict_bytes(
+    local_space: String,
+    path: String,
+    bytes: &[u8],
+    resolution: &str,
+) -> Result<WeaveOperationResult, String> {
+    if bytes.len() > 64 * 1024 * 1024 || !matches!(resolution, "file" | "base") {
+        return Err("Invalid bounded replacement".into());
+    }
+    let mut handle = open_local_space_handle(&local_space)?;
+    let id = active_weave_id(&handle.store, &handle.layrs_dir)?.ok_or("No active Weave")?;
+    let mut session = read_weave_session(&handle.store, &handle.layrs_dir, &id)?;
+    let conflict = session
+        .conflicts
+        .iter_mut()
+        .find(|c| c.path == path || c.conflict_id == path)
+        .ok_or("No matching conflict")?;
+    let dir = conflict_dir(&handle.layrs_dir, &id, &conflict.conflict_id);
+    let base;
+    let bytes = if resolution == "base" {
+        base = read_weave_blob(&handle.store, &dir.join("base"))?;
+        &base
+    } else {
+        bytes
+    };
+    write_weave_blob(&mut handle.store, &dir.join("resolved"), bytes)?;
+    for block in &mut conflict.blocks {
+        block.status = "resolved".into();
+        block.resolution = Some(resolution.into());
+    }
+    conflict.status = "resolved".into();
+    conflict.resolution = Some(resolution.into());
+    if session.conflicts.iter().all(|c| c.status == "resolved") {
+        session.status = "resolved".into();
+    }
+    session.updated_at_unix = unix_now();
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
+    Ok(WeaveOperationResult {
+        local_space: summary_from_handle(&handle),
+        session: summarize_weave_session(&session),
+        message: "Conflict resolved by explicit replacement.".into(),
     })
 }
 
@@ -229,10 +311,10 @@ pub fn resolve_weave_conflict(
     replacement_file: Option<String>,
     manual_text: Option<String>,
 ) -> Result<WeaveOperationResult, String> {
-    let handle = open_local_space_handle(&local_space)?;
-    let weave_id = active_weave_id(&handle.layrs_dir)?
+    let mut handle = open_local_space_handle(&local_space)?;
+    let weave_id = active_weave_id(&handle.store, &handle.layrs_dir)?
         .ok_or_else(|| "No active Weave to resolve.".to_string())?;
-    let mut session = read_weave_session(&handle.layrs_dir, &weave_id)?;
+    let mut session = read_weave_session(&handle.store, &handle.layrs_dir, &weave_id)?;
     let conflict = session
         .conflicts
         .iter_mut()
@@ -251,12 +333,7 @@ pub fn resolve_weave_conflict(
             .all(|block| block.status == "resolved")
         {
             let bytes = assemble_text_conflict_resolution(conflict)?;
-            fs::write(dir.join("resolved"), bytes).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not write resolved conflict {}: {error}",
-                    conflict.path
-                )
-            })?;
+            write_weave_blob(&mut handle.store, &dir.join("resolved"), &bytes)?;
             conflict.status = "resolved".to_string();
             conflict.resolution = Some("blocks".to_string());
         }
@@ -269,12 +346,7 @@ pub fn resolve_weave_conflict(
             ));
         }
         let bytes = resolve_file_conflict_with_lens(&handle, &weave_id, conflict, method)?;
-        fs::write(dir.join("resolved"), bytes).map_err(|error| {
-            format!(
-                "Layrs Desktop could not write resolved conflict {}: {error}",
-                conflict.path
-            )
-        })?;
+        write_weave_blob(&mut handle.store, &dir.join("resolved"), &bytes)?;
         for block in &mut conflict.blocks {
             block.status = "resolved".to_string();
             block.resolution = Some(method.as_str().to_string());
@@ -291,7 +363,7 @@ pub fn resolve_weave_conflict(
         session.status = "resolved".to_string();
     }
     session.updated_at_unix = unix_now();
-    write_weave_session(&handle.layrs_dir, &session)?;
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
     Ok(WeaveOperationResult {
         local_space: summary_from_handle(&handle),
         session: summarize_weave_session(&session),
@@ -305,9 +377,9 @@ pub fn resolve_weave_conflict(
 
 pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, String> {
     let mut handle = open_local_space_handle(&local_space)?;
-    let weave_id = active_weave_id(&handle.layrs_dir)?
+    let weave_id = active_weave_id(&handle.store, &handle.layrs_dir)?
         .ok_or_else(|| "No active Weave to continue.".to_string())?;
-    let mut session = read_weave_session(&handle.layrs_dir, &weave_id)?;
+    let mut session = read_weave_session(&handle.store, &handle.layrs_dir, &weave_id)?;
     if session
         .conflicts
         .iter()
@@ -316,22 +388,18 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
         return Err("Resolve all Weave conflicts before continuing.".to_string());
     }
     let mut proposed_state = read_state_file(
+        &handle.store,
         &handle.layrs_dir,
         &proposed_state_path(&handle.layrs_dir, &weave_id),
     )?;
     if is_sync_weave_session(&session) {
-        ensure_sync_weave_plan_is_current(&handle, &session, &proposed_state)?;
+        ensure_sync_weave_plan_is_current(&mut handle, &session, &proposed_state)?;
     } else {
-        ensure_local_weave_target_is_current(&handle, &session, &proposed_state)?;
+        ensure_local_weave_target_is_current(&mut handle, &session, &proposed_state)?;
     }
     for conflict in &session.conflicts {
         let dir = conflict_dir(&handle.layrs_dir, &weave_id, &conflict.conflict_id);
-        let bytes = fs::read(dir.join("resolved")).map_err(|error| {
-            format!(
-                "Layrs Desktop could not read resolved conflict {}: {error}",
-                conflict.path
-            )
-        })?;
+        let bytes = read_weave_blob(&handle.store, &dir.join("resolved"))?;
         let entry = write_file_object(&handle.layrs_dir, &conflict.path, &bytes, true)?;
         apply_file_choice(&mut proposed_state, &conflict.path, Some(entry));
     }
@@ -342,8 +410,8 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
         session.applied_steps = vec![step_id];
         session.status = "applied".to_string();
         session.updated_at_unix = unix_now();
-        write_weave_session(&handle.layrs_dir, &session)?;
-        write_active_weave_marker(&handle.layrs_dir, None)?;
+        write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
+        write_active_weave_marker(&mut handle.store, &handle.layrs_dir, None)?;
         return Ok(WeaveOperationResult {
             local_space: summary_from_handle(&handle),
             session: summarize_weave_session(&session),
@@ -351,12 +419,12 @@ pub fn continue_weave(local_space: String) -> Result<WeaveOperationResult, Strin
                 .to_string(),
         });
     }
-    let source_steps = sorted_steps(&handle.layrs_dir, &session.source_layer_id)?;
+    let source_steps = sorted_steps(&handle.store, &handle.layrs_dir, &session.source_layer_id)?;
     apply_completed_weave(&mut handle, &session, &proposed_state, &source_steps)?;
     session.status = "applied".to_string();
     session.updated_at_unix = unix_now();
-    write_weave_session(&handle.layrs_dir, &session)?;
-    write_active_weave_marker(&handle.layrs_dir, None)?;
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
+    write_active_weave_marker(&mut handle.store, &handle.layrs_dir, None)?;
     Ok(WeaveOperationResult {
         local_space: summary_from_handle(&handle),
         session: summarize_weave_session(&session),
@@ -370,8 +438,8 @@ pub(super) fn apply_completed_sync_weave(
     proposed_state: &WorkingStateFile,
 ) -> Result<String, String> {
     let target_layer_id = session.target_layer_id.as_str();
-    let base_state =
-        read_layer_index(&handle.layrs_dir, target_layer_id).unwrap_or_else(|_| WorkingStateFile {
+    let base_state = read_layer_index(&handle.store, &handle.layrs_dir, target_layer_id)
+        .unwrap_or_else(|_| WorkingStateFile {
             schema: WORKING_STATE_SCHEMA.to_string(),
             layer_id: target_layer_id.to_string(),
             captured_at_unix: unix_now(),
@@ -379,26 +447,37 @@ pub(super) fn apply_completed_sync_weave(
             files: Vec::new(),
         });
     archive_planned_sync_steps(
+        &mut handle.store,
         &handle.layrs_dir,
         target_layer_id,
         &session.planned_steps,
         &session.weave_id,
     )?;
-    write_working_state(&handle.layrs_dir, target_layer_id, proposed_state)?;
+    write_working_state(
+        &mut handle.store,
+        &handle.layrs_dir,
+        target_layer_id,
+        proposed_state,
+    )?;
     if handle.active.layer_id == target_layer_id {
-        materialize_state(&handle.root, proposed_state)?;
+        materialize_state(&mut handle.store, &handle.root, proposed_state)?;
     }
     let step_id = write_sync_woven_step(
+        &mut handle.store,
         &handle.layrs_dir,
         target_layer_id,
         &base_state,
         proposed_state,
         &session.planned_steps,
     )?;
-    let step = read_step_file(&handle.layrs_dir, target_layer_id, &step_id)?;
-    write_pending_publish(&handle.layrs_dir, &step)?;
+    let step = read_step_file(&handle.store, &handle.layrs_dir, target_layer_id, &step_id)?;
+    write_pending_publish(&mut handle.store, &handle.layrs_dir, &step)?;
     handle.meta.updated_at_unix = unix_now();
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )?;
     remember_local_space(&handle.meta, Some(target_layer_id.to_string()))?;
     Ok(step_id)
 }
@@ -409,6 +488,7 @@ fn is_sync_weave_session(session: &WeaveSessionFile) -> bool {
 }
 
 fn archive_planned_sync_steps(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     planned_steps: &[String],
@@ -424,81 +504,43 @@ fn archive_planned_sync_steps(
         .join(safe_id_fragment(weave_id));
     let archive_steps_dir = archive_dir.join("steps");
     let archive_pending_dir = archive_dir.join("pending-publish");
-    fs::create_dir_all(&archive_steps_dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not create sync replay archive {}: {error}",
-            archive_steps_dir.display()
-        )
-    })?;
-    fs::create_dir_all(&archive_pending_dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not create sync replay archive {}: {error}",
-            archive_pending_dir.display()
-        )
-    })?;
-
     let steps_dir = layer_dir(layrs_dir, layer_id).join("steps");
     let pending_dir = pending_publish_dir(layrs_dir, layer_id);
     for step_id in planned_steps {
         let step_path = steps_dir.join(format!("{step_id}.json"));
-        if step_path.exists() {
-            fs::copy(
-                &step_path,
-                archive_steps_dir.join(format!("{step_id}.json")),
-            )
-            .map_err(|error| {
-                format!(
-                    "Layrs Desktop could not archive pending Step {}: {error}",
-                    step_path.display()
-                )
-            })?;
+        if store.exists(&step_path)? {
+            let step = store.read_value(&step_path)?;
+            store.write(&archive_steps_dir.join(format!("{step_id}.json")), &step)?;
         }
         let pending_path = pending_dir.join(format!("{step_id}.json"));
-        if pending_path.exists() {
-            fs::copy(
-                &pending_path,
-                archive_pending_dir.join(format!("{step_id}.json")),
-            )
-            .map_err(|error| {
-                format!(
-                    "Layrs Desktop could not archive pending publish entry {}: {error}",
-                    pending_path.display()
-                )
-            })?;
+        if store.exists(&pending_path)? {
+            let pending = store.read_value(&pending_path)?;
+            store.write(
+                &archive_pending_dir.join(format!("{step_id}.json")),
+                &pending,
+            )?;
         }
     }
     for step_id in planned_steps {
-        let step_path = steps_dir.join(format!("{step_id}.json"));
-        if step_path.exists() {
-            fs::remove_file(&step_path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not replace pending Step {}: {error}",
-                    step_path.display()
-                )
-            })?;
-        }
-
+        // Drop the pending reference before its Step: each write rebuilds the
+        // constrained SQLite projection. Both documents are already archived.
         let pending_path = pending_dir.join(format!("{step_id}.json"));
-        if pending_path.exists() {
-            fs::remove_file(&pending_path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not remove applied pending Step {}: {error}",
-                    pending_path.display()
-                )
-            })?;
-        }
+        store.remove(&pending_path)?;
+        let step_path = steps_dir.join(format!("{step_id}.json"));
+        store.remove(&step_path)?;
     }
     Ok(())
 }
 
 fn write_sync_woven_step(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     base_state: &WorkingStateFile,
     state: &WorkingStateFile,
     planned_steps: &[String],
 ) -> Result<String, String> {
-    let step_id = unique_step_id(layrs_dir, layer_id);
+    let step_id = unique_step_id(store, layrs_dir, layer_id)?;
     let root_tree_id = state
         .root_tree_id
         .clone()
@@ -511,7 +553,7 @@ fn write_sync_woven_step(
         .chain(deleted.iter())
         .cloned()
         .collect::<Vec<_>>();
-    let parent_step_id = sorted_steps(layrs_dir, layer_id)?
+    let parent_step_id = sorted_steps(store, layrs_dir, layer_id)?
         .last()
         .map(|step| step.step_id.clone());
     let origin_step_id = planned_steps
@@ -527,15 +569,16 @@ fn write_sync_woven_step(
         base_tree_id: base_state.root_tree_id.clone(),
         root_tree_id: Some(root_tree_id),
         changed_paths,
-        timeline_position: Some(next_timeline_position(layrs_dir, layer_id)?),
+        timeline_position: Some(next_timeline_position(store, layrs_dir, layer_id)?),
         origin_layer_id: Some(layer_id.to_string()),
-        origin_layer_name: step_layer_display_name(layrs_dir, layer_id),
+        origin_layer_name: step_layer_display_name(store, layrs_dir, layer_id),
         origin_step_id: Some(origin_step_id),
         step_kind: Some("woven".to_string()),
         captured_at_unix: state.captured_at_unix,
         files: Vec::new(),
     };
     write_json(
+        store,
         &layer_dir(layrs_dir, layer_id)
             .join("steps")
             .join(format!("{step_id}.json")),

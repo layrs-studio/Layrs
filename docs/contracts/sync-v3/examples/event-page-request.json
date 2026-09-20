@@ -1,0 +1,8 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "spaceEventPageRequest",
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "cursor": "cursor-demo-0",
+  "maxEvents": 100
+}

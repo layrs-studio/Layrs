@@ -1,5 +1,7 @@
 #![allow(async_fn_in_trait)]
 
+pub mod scm;
+
 use layrs_core::*;
 use layrs_graph::GraphEdge;
 use serde::{Deserialize, Serialize};

@@ -25,5 +25,9 @@ tauri-runtime = { version = "=2.0.0" }
 tauri-runtime-wry = { version = "=2.0.0" }
 tauri-utils = { version = "=2.0.0" }
 
+# Keep Tauri's macOS dependency compatible with the native SCM time baseline.
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "=1.7.0"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

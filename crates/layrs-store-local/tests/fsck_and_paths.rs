@@ -8,6 +8,19 @@ use layrs_store_local::{
 };
 use rusqlite::Connection;
 
+#[cfg(windows)]
+#[test]
+fn canonical_verbatim_root_opens_without_treating_drive_prefix_as_directory() {
+    let root = unique_test_dir("verbatim-prefix");
+    fs::create_dir_all(&root).unwrap();
+    let canonical = fs::canonicalize(&root).unwrap();
+    assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+    let store = LocalStore::init(LocalStoreConfig::new(&canonical)).unwrap();
+    drop(store);
+    LocalStore::open(LocalStoreConfig::new(&canonical)).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn fsck_detects_object_corruption_and_repair_only_quarantines_metadata() {
     let root = unique_test_dir("object-corruption");

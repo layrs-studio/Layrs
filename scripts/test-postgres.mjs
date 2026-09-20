@@ -27,13 +27,16 @@ try {
       ? ["test", "-p", "layrs-server", "--", "--test-threads=1"]
       : ["test", "--workspace", "--", "--test-threads=1"];
 
-  await run("cargo", cargoArgs, {
+  const environment = {
     ...process.env,
     DATABASE_URL: databaseUrl,
     LAYRS_TEST_DATABASE_URL: databaseUrl,
+    LAYRS_TEST_DATABASE_ISOLATED: "1",
     LAYRS_REQUIRE_TEST_DATABASE: "1",
     RUST_TEST_THREADS: "1"
-  });
+  };
+  await run("cargo", cargoArgs, environment);
+  await run(process.execPath, ["scripts/test-native-postgres.mjs"], environment);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`Layrs PostgreSQL test failed: ${message}`);

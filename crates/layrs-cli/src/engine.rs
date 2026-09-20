@@ -389,7 +389,7 @@ impl ClientCoreEngine {
     }
 
     pub fn spaces(&self) -> Result<SpacesOutput, CliError> {
-        let active = self.context.space.as_ref().map(path_key);
+        let active = self.context.space.as_deref().map(path_key);
         let spaces = map_core(core_space::list_available_spaces())?
             .into_iter()
             .map(|space| {
@@ -576,6 +576,12 @@ pub struct CliError {
 }
 
 impl CliError {
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: ExitCode::Usage,
+            message: message.into(),
+        }
+    }
     pub fn runtime(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -931,7 +937,10 @@ fn discover_current_space() -> Result<String, CliError> {
     let mut path = std::env::current_dir()
         .map_err(|error| CliError::runtime(format!("Layrs could not resolve cwd: {error}")))?;
     loop {
-        if path.join(".layrs").join("local-space.json").exists() {
+        let metadata = path.join(".layrs");
+        if metadata.join("local-space.json").is_file()
+            || metadata.join("metadata/layrs.sqlite3").is_file()
+        {
             return Ok(path_string(path));
         }
         if !path.pop() {
@@ -944,7 +953,7 @@ fn path_string(path: PathBuf) -> String {
     path.display().to_string()
 }
 
-fn path_key(path: &PathBuf) -> String {
+fn path_key(path: &Path) -> String {
     path_key_string(&path.display().to_string())
 }
 

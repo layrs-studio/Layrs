@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "clients": 2,
+      "elapsedMs": 2351,
+      "perClientMs": [
+        2349,
+        2350
+      ]
+    },
+    {
+      "clients": 10,
+      "elapsedMs": 3295,
+      "perClientMs": [
+        3241,
+        3290,
+        3289,
+        3264,
+        3291,
+        3188,
+        3186,
+        3241,
+        3259,
+        3278
+      ]
+    }
+  ],
+  "limitations": [
+    "Tiny shared fixture, warm server caches; build/test debug binaries.",
+    "Parallel download/clone and no-change receive; ten simultaneous publications are not measured.",
+    "Tokens, endpoints and private paths omitted."
+  ],
+  "platform": "windows",
+  "schemaVersion": "layrs.concurrent-clones.v1"
+}

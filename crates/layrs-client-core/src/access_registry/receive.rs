@@ -1,5 +1,5 @@
 fn write_sync_state(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     operation: &str,
     status: &str,
     changed_files: usize,
@@ -16,12 +16,12 @@ fn write_sync_state(
         "pending": false,
         "status": status
     });
-    write_json(&path, &sync_state)?;
+    write_json(&mut handle.store, &path, &sync_state)?;
     Ok(path)
 }
 
 fn write_linked_layer_sync_state(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     layer_id: &str,
     parent_layer_id: Option<&str>,
 ) -> Result<PathBuf, String> {
@@ -36,7 +36,7 @@ fn write_linked_layer_sync_state(
         "pending": false,
         "status": "linked"
     });
-    write_json(&path, &sync_state)?;
+    write_json(&mut handle.store, &path, &sync_state)?;
     Ok(path)
 }
 
@@ -44,8 +44,6 @@ fn apply_receive_response(
     handle: &mut LocalSpaceHandle,
     response: ReceiveLocalSpaceResponse,
     materialize_active: bool,
-    endpoint: Option<&str>,
-    token: Option<&str>,
 ) -> Result<PathBuf, String> {
     if response.workspace_id != handle.meta.workspace_id
         || response.space_id != handle.meta.space_id
@@ -96,14 +94,7 @@ fn apply_receive_response(
         response.root_tree_id.as_deref(),
         &content_objects.tree_objects,
     )?;
-    ensure_received_v2_chunks(
-        &handle.layrs_dir,
-        endpoint,
-        token,
-        &response.workspace_id,
-        &response.space_id,
-        &content_objects.chunks,
-    )?;
+    verify_received_v2_chunks(&handle.layrs_dir, &content_objects.chunks)?;
     write_received_v2_file_objects(&handle.layrs_dir, &content_objects.file_objects)?;
     write_received_v2_tree_objects(&handle.layrs_dir, content_objects)?;
 
@@ -145,7 +136,12 @@ fn apply_receive_response(
                 Some("Layer metadata is redacted by Studio access policy.".to_string())
             },
         };
-        scaffold_layer(&handle.layrs_dir, &handle.meta.local_space_id, &view)?;
+        scaffold_layer(
+            &mut handle.store,
+            &handle.layrs_dir,
+            &handle.meta.local_space_id,
+            &view,
+        )?;
         if let Some(policy) = policy_by_layer.get(&layer_id) {
             write_received_access_file(handle, &layer_id, &layer.name, policy)?;
         }
@@ -155,10 +151,6 @@ fn apply_receive_response(
         let state = if layer_id == active_layer_id {
             received_v2_state(ReceivedV2StateRequest {
                 layrs_dir: &handle.layrs_dir,
-                endpoint,
-                token,
-                workspace_id: &response.workspace_id,
-                space_id: &response.space_id,
                 layer_id: &layer_id,
                 root_tree_id: response.root_tree_id.as_deref(),
                 objects: content_objects,
@@ -167,9 +159,14 @@ fn apply_receive_response(
             None
         };
         if let Some(state) = state {
-            write_layer_state(&handle.layrs_dir, &layer_id, &state)?;
+            write_layer_state(
+                &mut handle.store,
+                &handle.layrs_dir,
+                &layer_id,
+                &state,
+            )?;
             if materialize_active && layer_id == active_layer_id {
-                materialize_state(&handle.root, &state)?;
+                materialize_state(&mut handle.store, &handle.root, &state)?;
             }
         } else if layer_id == active_layer_id {
             return Err(format!(
@@ -188,7 +185,7 @@ fn apply_receive_response(
         }
         write_received_timeline_cache(handle, &layer_id, &response.timeline)?;
     }
-    write_received_steps(&handle.layrs_dir, &response.steps)?;
+    write_received_steps(&mut handle.store, &handle.layrs_dir, &response.steps)?;
 
     for existing in existing_layers {
         if existing.lineage_status == "unlinked"
@@ -202,8 +199,16 @@ fn apply_receive_response(
 
     handle.meta.layers = metadata_layers;
     handle.meta.updated_at_unix = unix_now();
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
-    write_json(&handle.layrs_dir.join("active-layer.json"), &handle.active)?;
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )?;
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("active-layer.json"),
+        &handle.active,
+    )?;
     write_access_pointer_from_meta(handle)?;
     remember_local_space(&handle.meta, Some(active_layer_id))?;
     Ok(active_sync_path)
@@ -239,7 +244,7 @@ fn received_layer_metadata(
 }
 
 fn write_received_access_file(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     layer_id: &str,
     display_name: &str,
     policy: &Value,
@@ -295,6 +300,7 @@ fn write_received_access_file(
         rules,
     };
     write_json(
+        &mut handle.store,
         &layer_dir(&handle.layrs_dir, layer_id).join("access.json"),
         &access_file,
     )
@@ -302,24 +308,13 @@ fn write_received_access_file(
 
 struct ReceivedV2StateRequest<'a> {
     layrs_dir: &'a Path,
-    endpoint: Option<&'a str>,
-    token: Option<&'a str>,
-    workspace_id: &'a str,
-    space_id: &'a str,
     layer_id: &'a str,
     root_tree_id: Option<&'a str>,
     objects: &'a ReceivedContentObjects,
 }
 
 fn received_v2_state(request: ReceivedV2StateRequest<'_>) -> Result<Option<WorkingStateFile>, String> {
-    ensure_received_v2_chunks(
-        request.layrs_dir,
-        request.endpoint,
-        request.token,
-        request.workspace_id,
-        request.space_id,
-        &request.objects.chunks,
-    )?;
+    verify_received_v2_chunks(request.layrs_dir, &request.objects.chunks)?;
     write_received_v2_file_objects(request.layrs_dir, &request.objects.file_objects)?;
 
     let tree = select_received_tree(
@@ -372,7 +367,7 @@ fn received_v2_state(request: ReceivedV2StateRequest<'_>) -> Result<Option<Worki
         tree_id: tree.tree_id.clone(),
         files: files.clone(),
     };
-    write_json(
+    write_object_json(
         &tree_object_path(request.layrs_dir, &tree.tree_id),
         &tree_object,
     )?;
@@ -427,7 +422,7 @@ fn write_received_v2_tree_objects(
             });
         }
         files.sort_by(|left, right| left.path.cmp(&right.path));
-        write_json(
+        write_object_json(
             &tree_object_path(layrs_dir, &tree.tree_id),
             &TreeObjectFile {
                 schema: TREE_OBJECT_SCHEMA.to_string(),
@@ -439,14 +434,18 @@ fn write_received_v2_tree_objects(
     Ok(())
 }
 
-fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), String> {
+fn write_received_steps(
+    store: &mut LocalStoreSession,
+    layrs_dir: &Path,
+    steps: &[ReceivedStep],
+) -> Result<(), String> {
     for step in steps {
         validate_step_file_id(&step.step_id)?;
         let layer_id = step.layer_id.trim();
         if layer_id.is_empty() {
             return Err("Layrs Desktop received a step without layerId.".to_string());
         }
-        let existing_step = read_step_file(layrs_dir, layer_id, &step.step_id).ok();
+        let existing_step = read_step_file(store, layrs_dir, layer_id, &step.step_id).ok();
         if let Some(root_tree_id) = step.root_tree_id.as_deref() {
             validate_blake3_id(root_tree_id)?;
         }
@@ -459,7 +458,7 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
                 .and_then(|step| step.timeline_position)
         }) {
             Some(position) => Some(position),
-            None => Some(next_timeline_position(layrs_dir, layer_id)?),
+            None => Some(next_timeline_position(store, layrs_dir, layer_id)?),
         };
         let origin_layer_id = step
             .origin_layer_id
@@ -481,9 +480,11 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
             .or_else(|| {
                 origin_layer_id
                     .as_deref()
-                    .and_then(|origin_layer_id| step_layer_display_name(layrs_dir, origin_layer_id))
+                    .and_then(|origin_layer_id| {
+                        step_layer_display_name(store, layrs_dir, origin_layer_id)
+                    })
             })
-            .or_else(|| step_layer_display_name(layrs_dir, layer_id));
+            .or_else(|| step_layer_display_name(store, layrs_dir, layer_id));
         let step_file = StepFile {
             schema: STEP_SCHEMA.to_string(),
             step_id: step.step_id.clone(),
@@ -546,6 +547,7 @@ fn write_received_steps(layrs_dir: &Path, steps: &[ReceivedStep]) -> Result<(), 
             files: Vec::new(),
         };
         write_json(
+            store,
             &layer_dir(layrs_dir, layer_id)
                 .join("steps")
                 .join(format!("{}.json", step.step_id)),
@@ -667,6 +669,60 @@ fn ensure_received_v2_chunks(
     Ok(())
 }
 
+fn prefetch_receive_response_chunks(
+    layrs_dir: &Path,
+    endpoint: &str,
+    token: Option<&str>,
+    response: &ReceiveLocalSpaceResponse,
+) -> Result<(), String> {
+    let objects = response
+        .content_objects
+        .as_ref()
+        .ok_or_else(|| "Layrs Desktop received V2 protocol without contentObjects.".to_string())?;
+    ensure_received_v2_chunks(
+        layrs_dir,
+        Some(endpoint),
+        token,
+        &response.workspace_id,
+        &response.space_id,
+        &objects.chunks,
+    )
+}
+
+fn verify_received_v2_chunks(
+    layrs_dir: &Path,
+    chunks: &[ReceivedChunkObject],
+) -> Result<(), String> {
+    for chunk in chunks {
+        validate_blake3_id(&chunk.chunk_id)?;
+        if let Some(digest) = chunk.digest.as_deref() {
+            validate_blake3_id(digest)?;
+            if digest != chunk.chunk_id {
+                return Err(format!(
+                    "Layrs Desktop rejected V2 chunk {} because its digest differs from chunkId.",
+                    chunk.chunk_id
+                ));
+            }
+        }
+        let hint = FileChunkRef {
+            chunk_id: chunk.chunk_id.clone(),
+            size: chunk.raw_size.or(chunk.size).or(chunk.size_bytes).unwrap_or(0),
+            compression: chunk
+                .compression
+                .clone()
+                .unwrap_or_else(|| "identity".to_string()),
+            stored_size: chunk.stored_size,
+        };
+        read_chunk_raw(layrs_dir, &chunk.chunk_id, Some(&hint)).map_err(|error| {
+            format!(
+                "Layrs Desktop is missing verified bytes for received chunk {}: {error}",
+                chunk.chunk_id
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn write_received_v2_file_objects(
     layrs_dir: &Path,
     file_objects: &[ReceivedFileObject],
@@ -714,7 +770,7 @@ fn write_received_v2_file_objects(
             size,
             chunks,
         };
-        write_json(
+        write_object_json(
             &layrs_dir
                 .join("objects")
                 .join("files")
@@ -726,7 +782,7 @@ fn write_received_v2_file_objects(
 }
 
 fn write_received_sync_state(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     layer_id: &str,
     server_cursor: Option<String>,
     parent_layer_id: Option<&str>,
@@ -743,12 +799,12 @@ fn write_received_sync_state(
         "pending": false,
         "status": "received"
     });
-    write_json(&path, &sync_state)?;
+    write_json(&mut handle.store, &path, &sync_state)?;
     Ok(path)
 }
 
 fn write_received_timeline_cache(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     layer_id: &str,
     timeline: &[Value],
 ) -> Result<(), String> {
@@ -764,6 +820,7 @@ fn write_received_timeline_cache(
         .cloned()
         .collect::<Vec<_>>();
     write_json(
+        &mut handle.store,
         &layer_dir(&handle.layrs_dir, layer_id).join("timeline-cache.json"),
         &serde_json::json!({ "schema": "layrs.timeline_cache.v1", "items": items }),
     )

@@ -1,0 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+const root=fileURLToPath(new URL('../../',import.meta.url));
+const result=spawnSync('cargo',['build','-p','layrs-lens-wasm','--target','wasm32-unknown-unknown','--release'],{cwd:root,stdio:'inherit'});
+if(result.status!==0)process.exit(result.status??1);
+const bytes=readFileSync(new URL('../../target/wasm32-unknown-unknown/release/layrs_lens_wasm.wasm',import.meta.url));
+const directory=new URL('../layrs-weave/wasm/',import.meta.url);mkdirSync(directory,{recursive:true});
+writeFileSync(new URL('native-lenses-v1.wasm',directory),bytes);
+writeFileSync(new URL('native-lenses-v1.sha256',directory),createHash('sha256').update(bytes).digest('hex')+'\n');

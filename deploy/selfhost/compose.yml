@@ -1,0 +1,122 @@
+name: layrs
+x-server: &server
+  image: layrs-server:${LAYRS_IMAGE_TAG:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/selfhost/Dockerfile
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  tmpfs: ['/tmp:size=64m,mode=1777']
+  environment: &environment
+    LAYRS_PUBLIC_URL: https://${LAYRS_HOST:?Set LAYRS_HOST to the public DNS name}
+    LAYRS_SERVER_ADDR: 0.0.0.0:8787
+    LAYRS_CAS_ROOT: /var/lib/layrs/cas
+    LAYRS_DEPLOYMENT_ID: ${LAYRS_DEPLOYMENT_ID:?Set a stable deployment ID}
+    LAYRS_STORE_ID: ${LAYRS_STORE_ID:?Set a stable store ID}
+    LAYRS_SIGNING_KEY_FILE: /run/secrets/signing_key
+    LAYRS_DATABASE_URL_FILE: /run/secrets/runtime_database_url
+    # Optional passthrough: absent stays absent; explicit invalid/empty values
+    # are rejected by server configuration instead of disabling a quota.
+    LAYRS_CAS_MAX_TOTAL_BYTES:
+    LAYRS_CAS_MAX_TOTAL_OBJECTS:
+    LAYRS_CAS_MAX_SPACE_BYTES:
+    LAYRS_CAS_MAX_SPACE_OBJECTS:
+    LAYRS_STORAGE_QUOTA_WARN_PERCENT:
+    LAYRS_STORAGE_QUOTA_CRITICAL_PERCENT:
+    LAYRS_STORAGE_VOLUME_WARN_PERCENT:
+    LAYRS_STORAGE_VOLUME_CRITICAL_PERCENT:
+    LAYRS_STORAGE_DATABASE_WARN_BYTES:
+    LAYRS_STORAGE_DATABASE_CRITICAL_BYTES:
+  volumes:
+    - cas:/var/lib/layrs/cas
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: layrs
+      POSTGRES_USER: layrs_maintenance
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password, runtime_password]
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./postgres-runtime.sh:/docker-entrypoint-initdb.d/10-runtime.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U layrs_maintenance -d layrs]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  initialize:
+    <<: *server
+    command: [initialize]
+    environment:
+      <<: *environment
+      LAYRS_DATABASE_URL_FILE: /run/secrets/maintenance_database_url
+      LAYRS_BOOTSTRAP_SECRET_FILE: /run/secrets/bootstrap_secret
+      LAYRS_RUNTIME_ROLE: layrs_runtime
+    secrets: [signing_key, maintenance_database_url, bootstrap_secret]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: 'no'
+
+  server:
+    <<: *server
+    restart: unless-stopped
+    secrets: [signing_key, runtime_database_url]
+    depends_on:
+      initialize: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, layrs-server, healthcheck]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  proxy:
+    image: layrs-studio:${LAYRS_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: deploy/selfhost/Web.Dockerfile
+    restart: unless-stopped
+    ports: ['80:80', '443:443', '443:443/udp']
+    environment:
+      LAYRS_HOST: ${LAYRS_HOST:?Set LAYRS_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      server: {condition: service_healthy}
+
+  backup:
+    <<: *server
+    profiles: [backup]
+    restart: 'no'
+    entrypoint: [bash, /opt/layrs/scheduled-backup.sh]
+    command: []
+    environment:
+      <<: *environment
+      LAYRS_DATABASE_URL_FILE: /run/secrets/maintenance_database_url
+      LAYRS_BACKUP_ROOT: /backups
+    secrets: [signing_key, maintenance_database_url]
+    volumes:
+      - cas:/var/lib/layrs/cas:ro
+      - ${LAYRS_BACKUP_PATH:-./backups}:/backups
+      - ./scheduled-backup.sh:/opt/layrs/scheduled-backup.sh:ro
+
+volumes:
+  postgres:
+  cas:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  postgres_password: {file: ./secrets/postgres_password}
+  runtime_password: {file: ./secrets/runtime_password}
+  runtime_database_url: {file: ./secrets/runtime_database_url}
+  maintenance_database_url: {file: ./secrets/maintenance_database_url}
+  bootstrap_secret: {file: ./secrets/bootstrap_secret}
+  signing_key: {file: ./secrets/signing_key}

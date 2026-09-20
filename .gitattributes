@@ -6,3 +6,4 @@
 
 # SQLx migration checksums are byte-sensitive. Keep migrations stable on Windows.
 crates/layrs-store-server/migrations/*.sql text eol=lf
+crates/layrs-store-local/tests/fixtures/scm-v2.sql text eol=lf

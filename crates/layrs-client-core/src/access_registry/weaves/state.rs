@@ -17,21 +17,27 @@ pub(super) fn ensure_layer_known(
     }
 }
 
-pub(super) fn sorted_steps(layrs_dir: &Path, layer_id: &str) -> Result<Vec<StepFile>, String> {
-    let mut steps = read_step_files(layrs_dir, layer_id)?;
+pub(super) fn sorted_steps(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<Vec<StepFile>, String> {
+    let mut steps = read_step_files(store, layrs_dir, layer_id)?;
     steps.sort_by(compare_steps_by_timeline);
     Ok(steps)
 }
 
 pub(super) fn latest_state_for_layer(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
 ) -> Result<WorkingStateFile, String> {
-    let steps = sorted_steps(layrs_dir, layer_id)?;
+    let steps = sorted_steps(store, layrs_dir, layer_id)?;
     if let Some(step) = steps.last() {
         return state_from_step(layrs_dir, step);
     }
-    read_layer_state(layrs_dir, layer_id).or_else(|_| read_layer_index(layrs_dir, layer_id))
+    read_layer_state(store, layrs_dir, layer_id)
+        .or_else(|_| read_layer_index(store, layrs_dir, layer_id))
 }
 
 pub(super) fn state_from_tree(
@@ -101,8 +107,8 @@ pub(super) fn common_weave_base_state(
     source_layer_id: &str,
     target_layer_id: &str,
 ) -> Option<WorkingStateFile> {
-    let source_steps = sorted_steps(&handle.layrs_dir, source_layer_id).ok()?;
-    let target_steps = sorted_steps(&handle.layrs_dir, target_layer_id).ok()?;
+    let source_steps = sorted_steps(&handle.store, &handle.layrs_dir, source_layer_id).ok()?;
+    let target_steps = sorted_steps(&handle.store, &handle.layrs_dir, target_layer_id).ok()?;
     let mut latest_common: Option<StepFile> = None;
     for source_step in &source_steps {
         if let Some(target_step) = target_steps
@@ -122,7 +128,7 @@ pub(super) fn common_weave_base_state(
         .iter()
         .find(|layer| layer.layer_id == source_layer_id)?;
     if source_layer.parent_layer_id.as_deref() == Some(target_layer_id) {
-        return read_layer_index(&handle.layrs_dir, target_layer_id).ok();
+        return read_layer_index(&handle.store, &handle.layrs_dir, target_layer_id).ok();
     }
     let target_layer = handle
         .meta
@@ -130,7 +136,7 @@ pub(super) fn common_weave_base_state(
         .iter()
         .find(|layer| layer.layer_id == target_layer_id)?;
     if target_layer.parent_layer_id.as_deref() == Some(source_layer_id) {
-        return read_layer_index(&handle.layrs_dir, source_layer_id).ok();
+        return read_layer_index(&handle.store, &handle.layrs_dir, source_layer_id).ok();
     }
     None
 }

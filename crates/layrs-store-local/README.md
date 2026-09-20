@@ -2,9 +2,15 @@
 
 Durable local storage primitives for a Layrs store root (normally `.layrs`).
 This crate owns the content-addressed object directory, transactional metadata,
-recovery journal, locking, and conservative consistency checks. Client-core
-integration and any core layout migration are intentionally deferred to the
-next delivery.
+recovery journal, locking, and conservative consistency checks. Native client
+flows use the typed CAS and single-writer transaction boundary; format conversion
+is deliberately separate from opening or initializing a store.
+
+The native SCM API in `scm_v1` now initializes **FORMAT 2 / SQLite baseline 2**,
+including canonical Product CAS. `tests/fixtures/scm-v1.sql` is preserved;
+`scm-v2.sql` is the new checksummed baseline. Previous native versions are refused
+without mutation, with no automatic conversion. See
+[ADR 0014](../../docs/decisions/0014-native-product-cas-and-structural-host.md).
 
 ## SQLite pin
 

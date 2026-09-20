@@ -60,6 +60,7 @@ async fn source_step_replays_missing_from_target_in_tx(
         .collect())
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn create_weave_step_replay_plan_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     weave_id: &str,
@@ -158,6 +159,7 @@ async fn create_weave_step_replay_plan_in_tx(
     Ok((planned_steps, conflict_count))
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn create_weave_path_replay_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     weave_id: &str,
@@ -331,6 +333,7 @@ async fn tree_union_file_paths_in_tx(
     Ok(paths.into_keys().collect())
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn apply_weave_step_replays_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -595,6 +598,7 @@ async fn delete_weave_file_from_target_in_tx(
     .await
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn file_object_id_for_resolved_content_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,

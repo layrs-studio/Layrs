@@ -1,5 +1,5 @@
 use super::weave_resolution::{labels_to_methods, resolution_method_labels_for_storage};
-use super::weave_session::conflict_dir;
+use super::weave_session::{conflict_dir, read_weave_blob, write_weave_blob};
 use super::weave_state::apply_file_choice;
 use super::*;
 use layrs_lens_sdk::{
@@ -27,7 +27,7 @@ pub(super) struct PathReconcileRequest<'a> {
     reason = "compatibility adapter for existing cross-module callers"
 )]
 pub(super) fn reconcile_path_with_lens(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     weave_id: &str,
     target_layer_id: &str,
     source_layer_id: &str,
@@ -51,7 +51,7 @@ pub(super) fn reconcile_path_with_lens(
 }
 
 pub(super) fn reconcile_path_with_lens_request(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     request: PathReconcileRequest<'_>,
 ) -> Result<PathReconcileOutcome, String> {
     let conflict_id = format!("conflict-{}", safe_id_fragment(request.path));
@@ -64,6 +64,14 @@ pub(super) fn reconcile_path_with_lens_request(
             request.path
         )
     })?;
+    // Viewer-only image/code lenses do not implement reconciliation. Generic
+    // whole-file selection must use the raw resolver and its declared methods.
+    let manifest = if manifest.supports_capability(&LensCapability::Reconcile) {
+        manifest
+    } else {
+        built_in_lens_manifest(layrs_lens_raw::RAW_LENS_ID)
+            .ok_or("Raw reconciliation Lens is unavailable")?
+    };
     let lens_id = manifest.id.as_str();
     let input = LensReconcileInput {
         path: Some(Path::new(request.path)),
@@ -89,38 +97,16 @@ pub(super) fn reconcile_path_with_lens_request(
     }
 
     let dir = conflict_dir(&handle.layrs_dir, request.weave_id, &conflict_id);
-    fs::create_dir_all(&dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not create Weave conflict directory {}: {error}",
-            dir.display()
-        )
-    })?;
-    fs::write(dir.join("base"), &base_bytes).map_err(|error| {
-        format!(
-            "Layrs Desktop could not write base conflict bytes for {}: {error}",
-            request.path
-        )
-    })?;
-    fs::write(dir.join("ours"), &ours_bytes).map_err(|error| {
-        format!(
-            "Layrs Desktop could not write ours conflict bytes for {}: {error}",
-            request.path
-        )
-    })?;
-    fs::write(dir.join("theirs"), &theirs_bytes).map_err(|error| {
-        format!(
-            "Layrs Desktop could not write theirs conflict bytes for {}: {error}",
-            request.path
-        )
-    })?;
+    write_weave_blob(&mut handle.store, &dir.join("base"), &base_bytes)?;
+    write_weave_blob(&mut handle.store, &dir.join("ours"), &ours_bytes)?;
+    write_weave_blob(&mut handle.store, &dir.join("theirs"), &theirs_bytes)?;
     if let Some(conflict_content) = result.conflict.as_ref() {
         if conflict_content.exists {
-            fs::write(dir.join("marked"), &conflict_content.bytes).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not write marked conflict bytes for {}: {error}",
-                    request.path
-                )
-            })?;
+            write_weave_blob(
+                &mut handle.store,
+                &dir.join("marked"),
+                &conflict_content.bytes,
+            )?;
         }
     }
     let blocks = result
@@ -240,13 +226,8 @@ pub(super) fn apply_conflict_marker_to_state(
 ) -> Result<(), String> {
     let dir = conflict_dir(&handle.layrs_dir, weave_id, &conflict.conflict_id);
     let marked = dir.join("marked");
-    if marked.exists() {
-        let bytes = fs::read(&marked).map_err(|error| {
-            format!(
-                "Layrs Desktop could not read marked conflict file {}: {error}",
-                marked.display()
-            )
-        })?;
+    if handle.store.exists(&marked)? {
+        let bytes = read_weave_blob(&handle.store, &marked)?;
         let entry = write_file_object(&handle.layrs_dir, &conflict.path, &bytes, true)?;
         apply_file_choice(state, &conflict.path, Some(entry));
     } else {
@@ -262,9 +243,9 @@ pub(super) fn resolve_file_conflict_with_lens(
     method: ResolutionMethod,
 ) -> Result<Vec<u8>, String> {
     let dir = conflict_dir(&handle.layrs_dir, weave_id, &conflict.conflict_id);
-    let base_bytes = read_conflict_side(&dir, "base", conflict)?;
-    let existing_bytes = read_conflict_side(&dir, "ours", conflict)?;
-    let incoming_bytes = read_conflict_side(&dir, "theirs", conflict)?;
+    let base_bytes = read_conflict_side(&handle.store, &dir, "base", conflict)?;
+    let existing_bytes = read_conflict_side(&handle.store, &dir, "ours", conflict)?;
+    let incoming_bytes = read_conflict_side(&handle.store, &dir, "theirs", conflict)?;
     let input = LensFileResolutionInput {
         method,
         base: side_from_bytes(&base_bytes),
@@ -312,11 +293,12 @@ fn resolve_file_conflict_with_builtin_lens(
 }
 
 fn read_conflict_side(
+    store: &LocalStoreSession,
     dir: &Path,
     name: &str,
     conflict: &WeaveConflictFile,
 ) -> Result<Vec<u8>, String> {
-    fs::read(dir.join(name)).map_err(|error| {
+    read_weave_blob(store, &dir.join(name)).map_err(|error| {
         format!(
             "Layrs Desktop could not read resolution bytes for {}: {error}",
             conflict.path

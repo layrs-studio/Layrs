@@ -16,6 +16,7 @@ mod weave_state;
 pub use self::weave_operations::{
     abort_weave, continue_weave, resolve_weave_conflict, weave_conflicts, weave_layers,
     weave_status,
+    read_weave_conflict_variant, resolve_weave_conflict_bytes,
 };
 
 use self::weave_apply::unique_weave_id;

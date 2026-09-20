@@ -1,3 +1,4 @@
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn step_diff_window_value(
     pool: &PgPool,
     workspace_id: &str,
@@ -150,6 +151,7 @@ async fn first_tree_file_path(
     .map_err(ApiError::from)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn tree_text_window_for_path(
     pool: &PgPool,
     workspace_id: &str,

@@ -292,6 +292,7 @@ async fn chunk_descriptors(
     Ok(descriptors)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn upsert_file_object_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -414,6 +415,7 @@ async fn ensure_file_object_in_space_in_tx(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn upsert_artifact_metadata_v2_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,

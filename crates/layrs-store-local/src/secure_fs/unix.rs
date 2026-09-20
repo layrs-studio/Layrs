@@ -17,6 +17,26 @@ const O_RDONLY: c_int = 0;
 const O_RDWR: c_int = 2;
 const O_CREAT: c_int = 0o100;
 const O_EXCL: c_int = 0o200;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe extern "C" {
+    fn renameat2(
+        old_dir: c_int,
+        old_name: *const c_char,
+        new_dir: c_int,
+        new_name: *const c_char,
+        flags: c_uint,
+    ) -> c_int;
+}
+#[cfg(target_vendor = "apple")]
+unsafe extern "C" {
+    fn renameatx_np(
+        old_dir: c_int,
+        old_name: *const c_char,
+        new_dir: c_int,
+        new_name: *const c_char,
+        flags: c_uint,
+    ) -> c_int;
+}
 unsafe extern "C" {
     fn openat(directory: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     fn mkdirat(directory: c_int, path: *const c_char, mode: c_uint) -> c_int;
@@ -65,6 +85,23 @@ pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     )
 }
 
+pub(super) fn open_private_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    let name = c_name(name)?;
+    // SAFETY: parent descriptor and the terminated basename remain live.
+    if unsafe { mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    }
+    open_at(
+        parent.as_raw_fd(),
+        &name,
+        O_RDONLY | DIRECTORY_OPEN_FLAGS,
+        0,
+    )
+}
+
 pub(super) fn open_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     let name = c_name(name)?;
     open_at(
@@ -73,6 +110,59 @@ pub(super) fn open_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
         O_RDONLY | no_follow_close_exec(),
         0,
     )
+}
+
+pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -> io::Result<bool> {
+    let existing = open_file_at(&source.parent, &source.name)?;
+    if FileIdentity::from_metadata(&existing.metadata()?)? != source.identity {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "file changed before rename",
+        ));
+    }
+    let old_name = c_name(&source.name)?;
+    let new_name = c_name(name)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: both directory descriptors and NUL-terminated names are live.
+    let result = unsafe {
+        renameat2(
+            source.parent.as_raw_fd(),
+            old_name.as_ptr(),
+            destination.as_raw_fd(),
+            new_name.as_ptr(),
+            1,
+        )
+    };
+    #[cfg(target_vendor = "apple")]
+    // SAFETY: RENAME_EXCL forbids replacing a destination; descriptors are live.
+    let result = unsafe {
+        renameatx_np(
+            source.parent.as_raw_fd(),
+            old_name.as_ptr(),
+            destination.as_raw_fd(),
+            new_name.as_ptr(),
+            4,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    {
+        let _ = (old_name, new_name, destination);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic exclusive rename unavailable",
+        ));
+    }
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    if result == 0 {
+        Ok(false)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            Ok(true)
+        } else {
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn hard_link_at(
@@ -124,6 +214,27 @@ pub(super) fn unlink_name_at(parent: &File, name: &OsStr) -> io::Result<()> {
     let name = c_name(name)?;
     // SAFETY: the parent fd is live and `name` is NUL-terminated.
     if unsafe { unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub(super) fn remove_empty_directory_at(parent: &File, name: &OsStr) -> io::Result<()> {
+    // AT_REMOVEDIR atomically refuses regular files and symlinks. No recursive
+    // deletion is performed if another writer adds a child before this call.
+    let name = c_name(name)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flag = 0x200;
+    #[cfg(target_vendor = "apple")]
+    let flag = 0x80;
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "directory removal is unsupported on this platform",
+    ));
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    if unsafe { unlinkat(parent.as_raw_fd(), name.as_ptr(), flag) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

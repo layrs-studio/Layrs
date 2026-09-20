@@ -96,38 +96,62 @@ fn acknowledged_publish_step_ids(
     response: &Value,
     requested_steps: &[StepFile],
 ) -> Result<BTreeSet<String>, String> {
-    if requested_steps.is_empty() {
+    let requested_step_ids = requested_steps
+        .iter()
+        .map(|step| step.step_id.clone())
+        .collect::<Vec<_>>();
+    acknowledged_publish_step_ids_exact(response, &requested_step_ids)
+}
+
+fn acknowledged_publish_step_ids_exact(
+    response: &Value,
+    requested_step_ids: &[String],
+) -> Result<BTreeSet<String>, String> {
+    if requested_step_ids.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let acknowledged = response
+    let acknowledged_steps = response
         .get("steps")
         .and_then(Value::as_array)
         .ok_or_else(|| {
             "Layrs server did not acknowledge the pending Steps in its publish response."
                 .to_string()
-        })?
+        })?;
+    let acknowledged_ids = acknowledged_steps
         .iter()
-        .filter_map(|step| step.get("stepId").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
-    let missing = requested_steps
-        .iter()
-        .map(|step| step.step_id.as_str())
-        .filter(|step_id| !acknowledged.contains(*step_id))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
+        .map(|step| {
+            step.get("stepId")
+                .and_then(Value::as_str)
+                .filter(|step_id| !step_id.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    "Layrs server returned a publish Step acknowledgement without a stepId; the local pending queue was preserved."
+                        .to_string()
+                })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let acknowledged = acknowledged_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if acknowledged.len() != acknowledged_ids.len() {
+        return Err(
+            "Layrs server returned duplicate publish Step acknowledgements; the local pending queue was preserved."
+                .to_string(),
+        );
+    }
+    let requested = requested_step_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let missing = requested.difference(&acknowledged).cloned().collect::<Vec<_>>();
+    let unexpected = acknowledged.difference(&requested).cloned().collect::<Vec<_>>();
+    if !missing.is_empty() || !unexpected.is_empty() {
         return Err(format!(
-            "Layrs server did not acknowledge pending Step(s): {}. The local pending queue was preserved.",
-            missing.join(", ")
+            "Layrs server Step acknowledgement mismatch (missing: {}; unexpected: {}). The local pending queue was preserved.",
+            if missing.is_empty() { "none".to_string() } else { missing.join(", ") },
+            if unexpected.is_empty() { "none".to_string() } else { unexpected.join(", ") }
         ));
     }
-    Ok(requested_steps
-        .iter()
-        .map(|step| step.step_id.clone())
-        .collect())
+    Ok(requested)
 }
 
 fn remove_acknowledged_pending_steps(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     acknowledged_step_ids: &BTreeSet<String>,
@@ -135,24 +159,19 @@ fn remove_acknowledged_pending_steps(
     if acknowledged_step_ids.is_empty() {
         return Ok(());
     }
-    for pending in read_pending_publish_files(layrs_dir, layer_id)? {
+    for pending in read_pending_publish_files(store, layrs_dir, layer_id)? {
         if !acknowledged_step_ids.contains(&pending.step_id) {
             continue;
         }
         let path =
             pending_publish_dir(layrs_dir, layer_id).join(format!("{}.json", pending.step_id));
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Layrs Desktop could not remove acknowledged pending Step {}: {error}",
-                path.display()
-            )
-        })?;
+        store.remove(&path)?;
     }
     Ok(())
 }
 
 fn upload_publish_chunks(
-    handle: &LocalSpaceHandle,
+    layrs_dir: &Path,
     endpoint: &str,
     token: Option<&str>,
     workspace_id: &str,
@@ -217,7 +236,7 @@ fn upload_publish_chunks(
             compression: chunk.compression.clone(),
             stored_size: Some(chunk.stored_size),
         };
-        let encoded = read_chunk_encoded(&handle.layrs_dir, &file_chunk)?;
+        let encoded = read_chunk_encoded(layrs_dir, &file_chunk)?;
         if encoded.raw_size != chunk.raw_size {
             return Err(format!(
                 "Layrs Desktop chunk {} has raw size {}, expected {}.",
@@ -255,7 +274,10 @@ fn upload_publish_chunks(
 }
 
 fn layer_policy_epoch(handle: &LocalSpaceHandle, layer_id: &str) -> u64 {
-    read_json::<LayerAccessFile>(&layer_dir(&handle.layrs_dir, layer_id).join("access.json"))
+    read_json::<LayerAccessFile>(
+        &handle.store,
+        &layer_dir(&handle.layrs_dir, layer_id).join("access.json"),
+    )
         .map(|access| access.policy_epoch)
         .unwrap_or(1)
 }
@@ -374,7 +396,7 @@ fn publish_chunks_for_file(
     file: &FileSnapshotEntry,
 ) -> Result<Vec<PublishChunkObjectRequest>, String> {
     if file.object.starts_with("objects/files/") {
-        let manifest = read_json::<FileObjectFile>(&handle.layrs_dir.join(&file.object))?;
+        let manifest = read_object_json::<FileObjectFile>(&handle.layrs_dir.join(&file.object))?;
         let mut chunks = Vec::with_capacity(manifest.chunks.len());
         for chunk in manifest.chunks {
             chunks.push(PublishChunkObjectRequest {
@@ -397,7 +419,7 @@ fn publish_chunks_for_file(
         &bytes,
         media_type_for_path(&file.path),
     )?;
-    let manifest = read_json::<FileObjectFile>(&handle.layrs_dir.join(&file.object))?;
+    let manifest = read_object_json::<FileObjectFile>(&handle.layrs_dir.join(&file.object))?;
     for chunk in manifest.chunks {
         chunks.push(PublishChunkObjectRequest {
             digest: chunk.chunk_id.clone(),
@@ -427,26 +449,6 @@ fn apply_server_mapping_to_draft(
         .collect::<BTreeMap<_, _>>();
 
     let old_active_layer = handle.active.layer_id.clone();
-    for mapping in &created.layer_mappings {
-        let old_dir = layer_dir(&handle.layrs_dir, &mapping.local_layer_id);
-        let new_dir = layer_dir(&handle.layrs_dir, &mapping.server_layer_id);
-        if old_dir != new_dir && old_dir.exists() && !new_dir.exists() {
-            fs::rename(&old_dir, &new_dir).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not map local Layer {} to server Layer {}: {error}",
-                    mapping.local_layer_id, mapping.server_layer_id
-                )
-            })?;
-        }
-
-        rewrite_layer_files_after_mapping(
-            &handle.layrs_dir,
-            &mapping.local_layer_id,
-            &mapping.server_layer_id,
-            &created.space.workspace_id,
-            &created.space.id,
-        )?;
-    }
 
     for layer in &mut handle.meta.layers {
         if let Some(server_layer_id) = mapping_by_local.get(&layer.layer_id) {
@@ -471,49 +473,130 @@ fn apply_server_mapping_to_draft(
     }
     handle.active.updated_at_unix = unix_now();
 
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
-    write_json(&handle.layrs_dir.join("active-layer.json"), &handle.active)?;
-    write_access_pointer_from_meta(handle)?;
+    rewrite_layer_files_after_mapping(
+        handle,
+        &mapping_by_local,
+        &created.space.workspace_id,
+        &created.space.id,
+    )?;
     remember_local_space(&handle.meta, Some(handle.active.layer_id.clone()))
 }
 
 fn rewrite_layer_files_after_mapping(
-    layrs_dir: &Path,
-    old_layer_id: &str,
-    server_layer_id: &str,
+    handle: &mut LocalSpaceHandle,
+    mappings: &BTreeMap<String, String>,
     workspace_id: &str,
     space_id: &str,
 ) -> Result<(), String> {
-    let dir = layer_dir(layrs_dir, server_layer_id);
-    for file_name in ["index.json", "working-state.json"] {
-        let path = dir.join(file_name);
-        if path.exists() {
-            let mut state = read_state_file(layrs_dir, &path)?;
-            state.layer_id = server_layer_id.to_string();
-            let state = storage_state(layrs_dir, &state)?;
-            write_json(&path, &state)?;
+    let mut documents = handle.store.document_snapshot()?;
+    for (old_layer_id, server_layer_id) in mappings {
+        let old_prefix = format!(
+            "{}/",
+            handle
+                .store
+                .document_key(&layer_dir(&handle.layrs_dir, old_layer_id))?
+        );
+        let new_prefix = format!(
+            "{}/",
+            handle
+                .store
+                .document_key(&layer_dir(&handle.layrs_dir, server_layer_id))?
+        );
+        let paths = documents
+            .keys()
+            .filter(|path| path.starts_with(&old_prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        for old_path in paths {
+            if let Some(value) = documents.remove(&old_path) {
+                let suffix = old_path.strip_prefix(&old_prefix).ok_or_else(|| {
+                    format!("Layrs could not remap metadata path {old_path}.")
+                })?;
+                documents.insert(format!("{new_prefix}{suffix}"), value);
+            }
         }
     }
-
-    let access_path = dir.join("access.json");
-    if access_path.exists() {
-        let mut access = read_json::<LayerAccessFile>(&access_path)?;
-        access.workspace_id = workspace_id.to_string();
-        access.space_id = space_id.to_string();
-        access.layer_id = server_layer_id.to_string();
-        write_json(&access_path, &access)?;
+    for value in documents.values_mut() {
+        remap_document_layer_ids(value, mappings, workspace_id, space_id);
     }
+    documents.insert(
+        "local-space.json".to_string(),
+        serde_json::to_value(&handle.meta)
+            .map_err(|error| format!("Layrs could not encode mapped Local Space: {error}"))?,
+    );
+    documents.insert(
+        "active-layer.json".to_string(),
+        serde_json::to_value(&handle.active)
+            .map_err(|error| format!("Layrs could not encode mapped active Layer: {error}"))?,
+    );
+    documents.insert(
+        "access.json".to_string(),
+        serde_json::to_value(access_pointer_from_meta(handle))
+            .map_err(|error| format!("Layrs could not encode mapped access pointer: {error}"))?,
+    );
+    for (old_layer_id, server_layer_id) in mappings {
+        let sync_path = handle.store.document_key(
+            &layer_dir(&handle.layrs_dir, server_layer_id).join("sync-state.json"),
+        )?;
+        documents.insert(
+            sync_path,
+            serde_json::json!({
+                "schema": SYNC_STATE_SCHEMA,
+                "layerId": server_layer_id,
+                "previousLocalLayerId": old_layer_id,
+                "lastPublishUnix": unix_now(),
+                "pending": false,
+                "status": "linked"
+            }),
+        );
+    }
+    handle.store.replace_document_snapshot(documents)?;
+    Ok(())
+}
 
-    let sync_path = dir.join("sync-state.json");
-    write_json(
-        &sync_path,
-        &serde_json::json!({
-            "schema": SYNC_STATE_SCHEMA,
-            "layerId": server_layer_id,
-            "previousLocalLayerId": old_layer_id,
-            "lastPublishUnix": unix_now(),
-            "pending": false,
-            "status": "linked"
-        }),
-    )
+fn remap_document_layer_ids(
+    value: &mut Value,
+    mappings: &BTreeMap<String, String>,
+    workspace_id: &str,
+    space_id: &str,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remap_document_layer_ids(value, mappings, workspace_id, space_id);
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                if matches!(
+                    key.as_str(),
+                    "layerId"
+                        | "layer_id"
+                        | "parentLayerId"
+                        | "parent_layer_id"
+                        | "baseLayerId"
+                        | "base_layer_id"
+                        | "originLayerId"
+                        | "origin_layer_id"
+                        | "sourceLayerId"
+                        | "source_layer_id"
+                        | "targetLayerId"
+                        | "target_layer_id"
+                        | "activeLayerId"
+                        | "active_layer_id"
+                ) {
+                    if let Some(mapped) = value.as_str().and_then(|id| mappings.get(id)) {
+                        *value = Value::String(mapped.clone());
+                    }
+                } else if matches!(key.as_str(), "workspaceId" | "workspace_id") {
+                    *value = Value::String(workspace_id.to_string());
+                } else if matches!(key.as_str(), "spaceId" | "space_id") {
+                    *value = Value::String(space_id.to_string());
+                } else {
+                    remap_document_layer_ids(value, mappings, workspace_id, space_id);
+                }
+            }
+        }
+        _ => {}
+    }
 }

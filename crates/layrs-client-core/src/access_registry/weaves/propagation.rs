@@ -13,17 +13,18 @@ use super::weave_state::{
 };
 
 pub(super) fn inherit_parent_steps(
-    layrs_dir: &Path,
+    handle: &mut LocalSpaceHandle,
     parent_layer_id: &str,
     child_layer_id: &str,
 ) -> Result<(), String> {
-    let parent_steps = sorted_steps(layrs_dir, parent_layer_id)?;
+    let parent_steps = sorted_steps(&handle.store, &handle.layrs_dir, parent_layer_id)?;
     let planned = parent_steps
         .iter()
         .map(|step| step.step_id.clone())
         .collect::<Vec<_>>();
     let _ = copy_weave_steps_to_target(
-        layrs_dir,
+        &mut handle.store,
+        &handle.layrs_dir,
         &parent_steps,
         child_layer_id,
         &planned,
@@ -37,7 +38,12 @@ pub(super) fn propagate_step_to_linked_children(
     parent_layer_id: &str,
     source_step_id: &str,
 ) -> Result<(), String> {
-    let source_step = read_step_file(&handle.layrs_dir, parent_layer_id, source_step_id)?;
+    let source_step = read_step_file(
+        &handle.store,
+        &handle.layrs_dir,
+        parent_layer_id,
+        source_step_id,
+    )?;
     let children = handle
         .meta
         .layers
@@ -63,7 +69,7 @@ fn propagate_step_to_child(
     source_step: &StepFile,
     child_layer_id: &str,
 ) -> Result<Option<String>, String> {
-    let child_steps = sorted_steps(&handle.layrs_dir, child_layer_id)?;
+    let child_steps = sorted_steps(&handle.store, &handle.layrs_dir, child_layer_id)?;
     if target_has_origin(&child_steps, source_step) {
         return Ok(child_steps
             .iter()
@@ -102,7 +108,8 @@ fn propagate_step_to_child(
     let mut base_state = base_state;
     hydrate_state_files(&handle.layrs_dir, &mut base_state)?;
     let source_state = state_from_step(&handle.layrs_dir, source_step)?;
-    let mut child_state = latest_state_for_layer(&handle.layrs_dir, child_layer_id)?;
+    let mut child_state =
+        latest_state_for_layer(&handle.store, &handle.layrs_dir, child_layer_id)?;
     child_state.layer_id = child_layer_id.to_string();
     let base_files = file_entries(&base_state.files);
     let source_files = file_entries(&source_state.files);
@@ -116,8 +123,12 @@ fn propagate_step_to_child(
         if is_safe_take_theirs(base, ours, theirs) {
             apply_file_choice(&mut child_state, path, theirs.cloned());
         } else {
-            let weave_id =
-                unique_weave_id(&handle.layrs_dir, &source_step.layer_id, child_layer_id);
+            let weave_id = unique_weave_id(
+                &handle.store,
+                &handle.layrs_dir,
+                &source_step.layer_id,
+                child_layer_id,
+            )?;
             let pre_weave_target_tree_id = child_state.root_tree_id.clone();
             let outcome = reconcile_path_with_lens_request(
                 handle,
@@ -142,6 +153,7 @@ fn propagate_step_to_child(
             child_state.root_tree_id =
                 Some(write_tree_object(&handle.layrs_dir, &child_state.files)?);
             write_json(
+                &mut handle.store,
                 &proposed_state_path(&handle.layrs_dir, &weave_id),
                 &storage_state(&handle.layrs_dir, &child_state)?,
             )?;
@@ -160,15 +172,24 @@ fn propagate_step_to_child(
                 created_at_unix: unix_now(),
                 updated_at_unix: unix_now(),
             };
-            write_weave_session(&handle.layrs_dir, &session)?;
-            write_active_weave_marker(&handle.layrs_dir, Some(&weave_id))?;
+            write_weave_session(&mut handle.store, &handle.layrs_dir, &session)?;
+            write_active_weave_marker(
+                &mut handle.store,
+                &handle.layrs_dir,
+                Some(&weave_id),
+            )?;
             return Ok(None);
         }
     }
 
     child_state.root_tree_id = Some(write_tree_object(&handle.layrs_dir, &child_state.files)?);
-    write_layer_state(&handle.layrs_dir, child_layer_id, &child_state)?;
-    let step_id = unique_step_id(&handle.layrs_dir, child_layer_id);
+    write_layer_state(
+        &mut handle.store,
+        &handle.layrs_dir,
+        child_layer_id,
+        &child_state,
+    )?;
+    let step_id = unique_step_id(&handle.store, &handle.layrs_dir, child_layer_id)?;
     let step = StepFile {
         schema: STEP_SCHEMA.to_string(),
         step_id: step_id.clone(),
@@ -179,13 +200,17 @@ fn propagate_step_to_child(
             .last()
             .and_then(|step| step.root_tree_id.clone())
             .or_else(|| {
-                read_layer_index(&handle.layrs_dir, child_layer_id)
+                read_layer_index(&handle.store, &handle.layrs_dir, child_layer_id)
                     .ok()
                     .and_then(|state| state.root_tree_id)
             }),
         root_tree_id: child_state.root_tree_id.clone(),
         changed_paths: source_step.changed_paths.clone(),
-        timeline_position: Some(next_timeline_position(&handle.layrs_dir, child_layer_id)?),
+        timeline_position: Some(next_timeline_position(
+            &handle.store,
+            &handle.layrs_dir,
+            child_layer_id,
+        )?),
         origin_layer_id: Some(
             source_step
                 .origin_layer_id
@@ -195,7 +220,13 @@ fn propagate_step_to_child(
         origin_layer_name: source_step
             .origin_layer_name
             .clone()
-            .or_else(|| step_layer_display_name(&handle.layrs_dir, &source_step.layer_id)),
+            .or_else(|| {
+                step_layer_display_name(
+                    &handle.store,
+                    &handle.layrs_dir,
+                    &source_step.layer_id,
+                )
+            }),
         origin_step_id: Some(
             source_step
                 .origin_step_id
@@ -207,6 +238,7 @@ fn propagate_step_to_child(
         files: Vec::new(),
     };
     write_json(
+        &mut handle.store,
         &layer_dir(&handle.layrs_dir, child_layer_id)
             .join("steps")
             .join(format!("{step_id}.json")),

@@ -1,6 +1,6 @@
-use super::*;
 use super::weave_session::{read_weave_session, weave_dir, write_weave_session};
 use super::weave_state::{apply_file_choice, sorted_steps};
+use super::*;
 
 pub(super) fn apply_completed_weave(
     handle: &mut LocalSpaceHandle,
@@ -9,9 +9,14 @@ pub(super) fn apply_completed_weave(
     source_steps: &[StepFile],
 ) -> Result<(), String> {
     let target_layer_id = session.target_layer_id.as_str();
-    write_layer_state(&handle.layrs_dir, target_layer_id, proposed_state)?;
+    write_layer_state(
+        &mut handle.store,
+        &handle.layrs_dir,
+        target_layer_id,
+        proposed_state,
+    )?;
     if handle.active.layer_id == target_layer_id {
-        materialize_state(&handle.root, proposed_state)?;
+        materialize_state(&mut handle.store, &handle.root, proposed_state)?;
     }
     let copied_steps = if layers_are_linked(
         &handle.meta,
@@ -19,6 +24,7 @@ pub(super) fn apply_completed_weave(
         &session.target_layer_id,
     ) {
         weave_steps_into_linked_target(
+            &mut handle.store,
             &handle.layrs_dir,
             source_steps,
             target_layer_id,
@@ -27,6 +33,7 @@ pub(super) fn apply_completed_weave(
         )?
     } else {
         copy_weave_steps_to_target(
+            &mut handle.store,
             &handle.layrs_dir,
             source_steps,
             target_layer_id,
@@ -35,20 +42,25 @@ pub(super) fn apply_completed_weave(
         )?
     };
     for step_id in &copied_steps {
-        let step = read_step_file(&handle.layrs_dir, target_layer_id, step_id)?;
-        write_pending_publish(&handle.layrs_dir, &step)?;
+        let step = read_step_file(&handle.store, &handle.layrs_dir, target_layer_id, step_id)?;
+        write_pending_publish(&mut handle.store, &handle.layrs_dir, &step)?;
     }
-    let mut saved = read_weave_session(&handle.layrs_dir, &session.weave_id).unwrap_or_else(|_| {
-        let mut session = session.clone();
-        session.applied_steps = copied_steps.clone();
-        session
-    });
+    let mut saved = read_weave_session(&handle.store, &handle.layrs_dir, &session.weave_id)
+        .unwrap_or_else(|_| {
+            let mut session = session.clone();
+            session.applied_steps = copied_steps.clone();
+            session
+        });
     saved.applied_steps = copied_steps;
     saved.status = "applied".to_string();
     saved.updated_at_unix = unix_now();
-    write_weave_session(&handle.layrs_dir, &saved)?;
+    write_weave_session(&mut handle.store, &handle.layrs_dir, &saved)?;
     handle.meta.updated_at_unix = unix_now();
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta)?;
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )?;
     remember_local_space(&handle.meta, Some(target_layer_id.to_string()))?;
     Ok(())
 }
@@ -68,6 +80,7 @@ fn layers_are_linked(meta: &LocalSpaceFile, source_layer_id: &str, target_layer_
 }
 
 fn weave_steps_into_linked_target(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     source_steps: &[StepFile],
     target_layer_id: &str,
@@ -75,7 +88,7 @@ fn weave_steps_into_linked_target(
     step_kind: &str,
 ) -> Result<Vec<String>, String> {
     let planned = planned_steps.iter().collect::<BTreeSet<_>>();
-    let target_steps = sorted_steps(layrs_dir, target_layer_id)?;
+    let target_steps = sorted_steps(store, layrs_dir, target_layer_id)?;
     let mut target_by_origin = BTreeMap::new();
     for target_step in target_steps {
         target_by_origin.insert(step_origin_key(&target_step), target_step);
@@ -88,7 +101,7 @@ fn weave_steps_into_linked_target(
         if let Some(target_step) = target_by_origin.remove(&key) {
             ordered_steps.push(target_step);
         } else if planned.contains(&source.step_id) {
-            let step_id = unique_step_id(layrs_dir, target_layer_id);
+            let step_id = unique_step_id(store, layrs_dir, target_layer_id)?;
             copied.push(step_id.clone());
             ordered_steps.push(StepFile {
                 schema: STEP_SCHEMA.to_string(),
@@ -109,7 +122,7 @@ fn weave_steps_into_linked_target(
                 origin_layer_name: source
                     .origin_layer_name
                     .clone()
-                    .or_else(|| step_layer_display_name(layrs_dir, &source.layer_id)),
+                    .or_else(|| step_layer_display_name(store, layrs_dir, &source.layer_id)),
                 origin_step_id: Some(
                     source
                         .origin_step_id
@@ -127,23 +140,25 @@ fn weave_steps_into_linked_target(
     remaining_target_steps.sort_by(compare_steps_by_timeline);
     ordered_steps.extend(remaining_target_steps);
 
-    rewrite_linked_target_step_order(layrs_dir, target_layer_id, ordered_steps)?;
+    rewrite_linked_target_step_order(store, layrs_dir, target_layer_id, ordered_steps)?;
     Ok(copied)
 }
 
 fn rewrite_linked_target_step_order(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     target_layer_id: &str,
     ordered_steps: Vec<StepFile>,
 ) -> Result<(), String> {
     let mut previous_state: Option<WorkingStateFile> = None;
     let mut previous_step_id: Option<String> = None;
+    let mut documents = store.document_snapshot()?;
 
     for (index, mut step) in ordered_steps.into_iter().enumerate() {
         let base_state = previous_state
             .clone()
             .or_else(|| recorded_base_state_for_step(layrs_dir, &step))
-            .or_else(|| read_layer_index(layrs_dir, target_layer_id).ok())
+            .or_else(|| read_layer_index(store, layrs_dir, target_layer_id).ok())
             .unwrap_or_else(|| WorkingStateFile {
                 schema: WORKING_STATE_SCHEMA.to_string(),
                 layer_id: target_layer_id.to_string(),
@@ -158,16 +173,21 @@ fn rewrite_linked_target_step_order(
         step.base_tree_id = base_state.root_tree_id.clone();
         step.root_tree_id = replayed_state.root_tree_id.clone();
         step.timeline_position = Some((index + 1) as u64);
-        write_json(
-            &layer_dir(layrs_dir, target_layer_id)
-                .join("steps")
-                .join(format!("{}.json", step.step_id)),
-            &step,
-        )?;
+        let path = layer_dir(layrs_dir, target_layer_id)
+            .join("steps")
+            .join(format!("{}.json", step.step_id));
+        documents.insert(
+            store.document_key(&path)?,
+            serde_json::to_value(&step)
+                .map_err(|error| format!("Could not encode reordered Step: {error}"))?,
+        );
         previous_step_id = Some(step.step_id);
         previous_state = Some(replayed_state);
     }
 
+    // Reordering one row at a time temporarily duplicates positions. Install
+    // the complete permutation atomically under this existing exclusive session.
+    store.replace_document_snapshot(documents)?;
     Ok(())
 }
 
@@ -201,6 +221,7 @@ pub(super) fn step_origin_key(step: &StepFile) -> (String, String) {
 }
 
 pub(super) fn copy_weave_steps_to_target(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     source_steps: &[StepFile],
     target_layer_id: &str,
@@ -209,12 +230,12 @@ pub(super) fn copy_weave_steps_to_target(
 ) -> Result<Vec<String>, String> {
     let planned = planned_steps.iter().collect::<BTreeSet<_>>();
     let mut copied = Vec::new();
-    let mut position = next_timeline_position(layrs_dir, target_layer_id)?;
+    let mut position = next_timeline_position(store, layrs_dir, target_layer_id)?;
     for source in source_steps {
         if !planned.contains(&source.step_id) {
             continue;
         }
-        let step_id = unique_step_id(layrs_dir, target_layer_id);
+        let step_id = unique_step_id(store, layrs_dir, target_layer_id)?;
         let target_step = StepFile {
             schema: STEP_SCHEMA.to_string(),
             step_id: step_id.clone(),
@@ -234,7 +255,7 @@ pub(super) fn copy_weave_steps_to_target(
             origin_layer_name: source
                 .origin_layer_name
                 .clone()
-                .or_else(|| step_layer_display_name(layrs_dir, &source.layer_id)),
+                .or_else(|| step_layer_display_name(store, layrs_dir, &source.layer_id)),
             origin_step_id: Some(
                 source
                     .origin_step_id
@@ -246,6 +267,7 @@ pub(super) fn copy_weave_steps_to_target(
             files: Vec::new(),
         };
         write_json(
+            store,
             &layer_dir(layrs_dir, target_layer_id)
                 .join("steps")
                 .join(format!("{step_id}.json")),
@@ -258,10 +280,11 @@ pub(super) fn copy_weave_steps_to_target(
 }
 
 pub(super) fn unique_weave_id(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     source_layer_id: &str,
     target_layer_id: &str,
-) -> String {
+) -> Result<String, String> {
     let base = format!(
         "weave-{}-{}-{}",
         safe_id_fragment(source_layer_id),
@@ -270,9 +293,9 @@ pub(super) fn unique_weave_id(
     );
     let mut candidate = base.clone();
     let mut attempt = 2;
-    while weave_dir(layrs_dir, &candidate).exists() {
+    while store.exists(&weave_dir(layrs_dir, &candidate).join("session.json"))? {
         candidate = format!("{base}-{attempt}");
         attempt += 1;
     }
-    candidate
+    Ok(candidate)
 }

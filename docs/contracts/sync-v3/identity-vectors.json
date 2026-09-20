@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "layrs.sync.identity-vectors.v1",
+  "hashVectors": [
+    {
+      "name": "evidence-empty",
+      "kind": "evidence",
+      "domain": "layrs-evidence-v1",
+      "inputBase64": "",
+      "expectedByteLength": 0,
+      "expectedObjectId": "blake3:5c2342d0bb714f79a97ad9b13151ed909d20a1741df627afa2916eb4b4ed8ae6"
+    },
+    {
+      "name": "evidence-nonempty-binary",
+      "kind": "evidence",
+      "domain": "layrs-evidence-v1",
+      "inputBase64": "AP+AAGxheXJzCg==",
+      "expectedByteLength": 10,
+      "expectedObjectId": "blake3:0e99b39b4f4222e04068565695c9ec164ca03c7b541faf20ccc0b61e9c8524d9"
+    },
+    {
+      "name": "product-layer-variant",
+      "kind": "product",
+      "domain": "layrs-product-v1",
+      "input": {
+        "kind": "layer",
+        "productId": "layer:main",
+        "productObjectId": "blake3:e3ab1236ae9e53588eced914441294d10e6682a6128162caae37d1e1d8b4a06f",
+        "dependsOnStepIds": [],
+        "dependsOnProductIds": [],
+        "previousProductObjectId": null,
+        "record": {
+          "schemaVersion": "layrs.layer.v1",
+          "layerId": "layer:main",
+          "spaceId": "space:demo",
+          "name": "Main",
+          "kind": "base",
+          "status": "active",
+          "parentLayerIds": [],
+          "settings": { "automaticCapture": true, "automaticCaptureIdleMs": 2000 },
+          "createdAt": "2026-07-19T12:00:00Z",
+          "metadata": []
+        }
+      },
+      "expectedIdentityUtf8": "layrs-product-v1\u0000{\"dependsOnProductIds\":[],\"dependsOnStepIds\":[],\"kind\":\"layer\",\"previousProductObjectId\":null,\"productId\":\"layer:main\",\"record\":{\"createdAt\":\"2026-07-19T12:00:00Z\",\"kind\":\"base\",\"layerId\":\"layer:main\",\"metadata\":[],\"name\":\"Main\",\"parentLayerIds\":[],\"schemaVersion\":\"layrs.layer.v1\",\"settings\":{\"automaticCapture\":true,\"automaticCaptureIdleMs\":2000},\"spaceId\":\"space:demo\",\"status\":\"active\"}}",
+      "expectedObjectId": "blake3:e3ab1236ae9e53588eced914441294d10e6682a6128162caae37d1e1d8b4a06f"
+    }
+  ],
+  "rejectVectors": [
+    {
+      "name": "product-wrong-claim",
+      "kind": "wrongProductClaim",
+      "source": "product-layer-variant",
+      "claimedObjectId": "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "name": "product-wrong-descriptor-kind",
+      "kind": "wrongObjectKind",
+      "source": "product-layer-variant",
+      "descriptorKind": "evidence"
+    },
+    {
+      "name": "product-non-jcs-wire-bytes",
+      "kind": "nonJcsProduct",
+      "source": "product-layer-variant",
+      "wireEncoding": "pretty-json"
+    }
+  ]
+}

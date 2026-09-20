@@ -1,0 +1,44 @@
+{
+  "schema": "layrs.validation-measurement.v1",
+  "date": "2026-09-20",
+  "scope": "Native single-placement WASM text/code conflict synchronization",
+  "environment": "Windows, real HTTPS private CA, isolated PostgreSQL 16 runtime role, pinned WASM worker, local Docker runner and pg_dump/pg_restore",
+  "test": "cargo test --offline -p layrs-server --test native_clients_v3 -- --ignored --test-threads=1 --nocapture",
+  "result": "passed",
+  "full_scenario_seconds": 263.44,
+  "checks": [
+    "Publish a two-block UTF8/CRLF conflict and its exact Weave receipt",
+    "Clone to an independent native Store with verified fragment closure",
+    "Select one block, publish, reopen, receive identical partial state",
+    "Select final block, publish, receive exact original bytes",
+    "Reject seven forged receipt profiles/executions with recomputed identities",
+    "Reject shifted anchors even when block and Conflict identities are recomputed",
+    "Reject erasing an already published block decision",
+    "Reject fragment fetch at unrelated path and unauthenticated transaction",
+    "Replay identical rejection receipts without changing View, Products or graph roots",
+    "Client Choose exact preview, replay, stale refusal and retained discarded history",
+    "Interrupt and resume a 16 MiB file; final digest exact",
+    "Two and ten concurrent native publishers retain every divergence",
+    "Actual pinned Docker runner pending/begin workflow and protected Release gates",
+    "Actual exported PostgreSQL snapshot/CAS backup and isolated restore"
+  ],
+  "file_transfer_16mib_ms": 11288,
+  "backup": {
+    "objects": 563,
+    "canonical_bytes": 16679896,
+    "steps": 33,
+    "release_events": 6,
+    "backup_ms": 8479,
+    "restore_ms": 8924,
+    "cas_copy_window_seconds": 8,
+    "whole_drill_ms": 20517
+  },
+  "post_full_test_changes": "Explicit single-placement guard for upcoming local rename parser and stricter lineage aggregate limits; three targeted closure tests pass after these additions. Full project regression remains the parent integration gate.",
+  "limitations": [
+    "Authenticated publisher contract validation, not remote execution attestation",
+    "Only current embedded Text/Code WASM pins; no historical module registry",
+    "Multiple placements and virtual merge bases remain unsupported in this path",
+    "64 MiB per reconstructed File and 256 MiB aggregate payload; final validation uses memory",
+    "Remote CI and external production deployment were not executed"
+  ]
+}

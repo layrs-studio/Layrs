@@ -269,6 +269,28 @@ pub fn read_chunk_raw(
     )
 }
 
+/// Physical container for the legacy SQL projection. A packed chunk is read
+/// through its verified index entry; it no longer has a loose `.chunk` file.
+pub(crate) fn chunk_storage_paths(
+    layrs_dir: &Path,
+    chunk_id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    validate_blake3_id(chunk_id)?;
+    let loose = loose_chunk_path(layrs_dir, chunk_id);
+    if loose.is_file() {
+        return Ok(vec![loose]);
+    }
+    let packed = find_packed_chunk(layrs_dir, chunk_id)?
+        .ok_or_else(|| format!("Layrs could not find chunk object {chunk_id}."))?;
+    decode_chunk(
+        &packed.bytes,
+        &packed.metadata.compression,
+        packed.metadata.raw_size,
+        chunk_id,
+    )?;
+    Ok(vec![packed.path, packed.index_path])
+}
+
 pub fn compact_loose_chunks(layrs_dir: &Path) -> Result<CompactStoreResult, String> {
     compact_loose_chunks_with_hook(layrs_dir, |_, _| Ok(()))
 }
@@ -607,36 +629,6 @@ fn sync_directory_best_effort(path: &Path) {
     }
 }
 
-fn chunk_file(bytes: &[u8], profile: ChunkProfile) -> Vec<&[u8]> {
-    if bytes.is_empty() || bytes.len() <= profile.min() {
-        return vec![bytes];
-    }
-
-    let min = profile.min();
-    let target = profile.target();
-    let max = profile.max();
-    let mask = (target.next_power_of_two() as u64) - 1;
-    let mut chunks = Vec::new();
-    let mut start = 0usize;
-    let mut rolling = 0u64;
-
-    for (index, byte) in bytes.iter().enumerate() {
-        rolling = rolling.rotate_left(1).wrapping_add(gear_value(*byte));
-        let len = index + 1 - start;
-        let should_cut = len >= max || (len >= min && (rolling & mask) == 0);
-        if should_cut {
-            chunks.push(&bytes[start..index + 1]);
-            start = index + 1;
-            rolling = 0;
-        }
-    }
-
-    if start < bytes.len() {
-        chunks.push(&bytes[start..]);
-    }
-    chunks
-}
-
 fn write_chunk(layrs_dir: &Path, raw: &[u8]) -> Result<FileChunkRef, String> {
     let chunk_id = blake3_id(raw);
     if let Some(packed) = find_packed_chunk(layrs_dir, &chunk_id)? {
@@ -787,6 +779,8 @@ fn chunk_metadata(
 
 #[derive(Clone, Debug)]
 struct PackedChunk {
+    path: PathBuf,
+    index_path: PathBuf,
     metadata: ChunkMetadataFile,
     bytes: Vec<u8>,
 }
@@ -843,6 +837,8 @@ fn find_packed_chunk(layrs_dir: &Path, chunk_id: &str) -> Result<Option<PackedCh
             )
         })?;
         return Ok(Some(PackedChunk {
+            path: pack_path,
+            index_path,
             metadata: ChunkMetadataFile {
                 schema: CHUNK_METADATA_SCHEMA.to_string(),
                 chunk_id: chunk_id.to_string(),
@@ -925,13 +921,6 @@ fn identity() -> String {
     COMPRESSION_IDENTITY.to_string()
 }
 
-fn gear_value(byte: u8) -> u64 {
-    let mut value = (byte as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    value ^= value >> 33;
-    value = value.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
-    value ^ (value >> 29)
-}
-
 fn blake3_id(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
@@ -989,3 +978,7 @@ fn _debug_chunk_lengths(chunks: &[FileChunkRef]) -> BTreeMap<String, u64> {
 #[cfg(test)]
 #[path = "object_store_tests.rs"]
 mod tests;
+
+#[path = "object_store/chunking.rs"]
+mod chunking;
+use chunking::chunk_file;

@@ -68,17 +68,11 @@ fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
     }
 }
 
-fn clear_pending_publish_for_test(layrs_dir: &Path, layer_id: &str) {
+fn clear_pending_publish_for_test(store: &mut LocalStoreSession, layrs_dir: &Path, layer_id: &str) {
     let directory = pending_publish_dir(layrs_dir, layer_id);
-    if !directory.exists() {
-        return;
-    }
-    for entry in fs::read_dir(directory).expect("read pending publish directory") {
-        let path = entry.expect("read pending publish entry").path();
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            fs::remove_file(path).expect("remove pending publish fixture");
-        }
-    }
+    store
+        .remove_listed::<PendingPublishFile>(&directory, ".json")
+        .expect("clear pending publish documents");
 }
 
 fn spawn_publish_server(
@@ -143,22 +137,55 @@ fn linked_space_with_two_net_zero_pending_steps(
     handle.meta.workspace_id = "workspace_sync_safety".to_string();
     handle.meta.space_id = "space_sync_safety".to_string();
     handle.meta.server_space_id = Some(handle.meta.space_id.clone());
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
-    clear_pending_publish_for_test(&handle.layrs_dir, &handle.active.layer_id);
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )
+    .unwrap();
+    clear_pending_publish_for_test(
+        &mut handle.store,
+        &handle.layrs_dir,
+        &handle.active.layer_id,
+    );
 
     fs::write(space.join("note.txt"), "changed\n").unwrap();
-    let changed = capture_working_state(&space, &handle.active.layer_id, true).unwrap();
-    let changed_id = write_step(&handle.layrs_dir, &handle.active.layer_id, &changed).unwrap();
-    let changed_step =
-        read_step_file(&handle.layrs_dir, &handle.active.layer_id, &changed_id).unwrap();
-    write_pending_publish(&handle.layrs_dir, &changed_step).unwrap();
+    let changed =
+        capture_working_state(&mut handle.store, &space, &handle.active.layer_id).unwrap();
+    let changed_id = write_step(
+        &mut handle.store,
+        &handle.layrs_dir,
+        &handle.active.layer_id,
+        &changed,
+    )
+    .unwrap();
+    let changed_step = read_step_file(
+        &handle.store,
+        &handle.layrs_dir,
+        &handle.active.layer_id,
+        &changed_id,
+    )
+    .unwrap();
+    write_pending_publish(&mut handle.store, &handle.layrs_dir, &changed_step).unwrap();
 
     fs::write(space.join("note.txt"), "base\n").unwrap();
-    let reverted = capture_working_state(&space, &handle.active.layer_id, true).unwrap();
-    let reverted_id = write_step(&handle.layrs_dir, &handle.active.layer_id, &reverted).unwrap();
-    let reverted_step =
-        read_step_file(&handle.layrs_dir, &handle.active.layer_id, &reverted_id).unwrap();
-    write_pending_publish(&handle.layrs_dir, &reverted_step).unwrap();
+    let reverted =
+        capture_working_state(&mut handle.store, &space, &handle.active.layer_id).unwrap();
+    let reverted_id = write_step(
+        &mut handle.store,
+        &handle.layrs_dir,
+        &handle.active.layer_id,
+        &reverted,
+    )
+    .unwrap();
+    let reverted_step = read_step_file(
+        &handle.store,
+        &handle.layrs_dir,
+        &handle.active.layer_id,
+        &reverted_id,
+    )
+    .unwrap();
+    write_pending_publish(&mut handle.store, &handle.layrs_dir, &reverted_step).unwrap();
 
     let mut config = DesktopConfig::load_or_create().unwrap();
     config.server_endpoint = endpoint.to_string();
@@ -168,11 +195,19 @@ fn linked_space_with_two_net_zero_pending_steps(
 
 #[test]
 fn net_zero_publish_sends_all_pending_steps_in_order_and_clears_only_after_ack() {
+    if !isolated_legacy_test(
+        "net_zero_publish_sends_all_pending_steps_in_order_and_clears_only_after_ack",
+    ) {
+        return;
+    }
     let (endpoint, request, server) = spawn_publish_server(true);
     let (root, space, handle, step_ids) =
         linked_space_with_two_net_zero_pending_steps("net-zero-publish", &endpoint);
 
-    let result = publish_local_space(handle.meta.local_space_id.clone()).unwrap();
+    let local_id = handle.meta.local_space_id.clone();
+    drop(handle);
+    let result = publish_local_space(local_id.clone()).unwrap();
+    let handle = open_local_space_handle(&local_id).unwrap();
     let body = request.recv().expect("captured publish body");
     let sent_ids = body["steps"]
         .as_array()
@@ -183,7 +218,7 @@ fn net_zero_publish_sends_all_pending_steps_in_order_and_clears_only_after_ack()
     assert_eq!(sent_ids, step_ids);
     assert_eq!(result.status, "published");
     assert!(
-        read_pending_publish_files(&handle.layrs_dir, &handle.active.layer_id)
+        read_pending_publish_files(&handle.store, &handle.layrs_dir, &handle.active.layer_id)
             .unwrap()
             .is_empty()
     );
@@ -194,18 +229,27 @@ fn net_zero_publish_sends_all_pending_steps_in_order_and_clears_only_after_ack()
 
 #[test]
 fn publish_with_incomplete_step_ack_keeps_every_pending_step_and_user_file() {
+    if !isolated_legacy_test(
+        "publish_with_incomplete_step_ack_keeps_every_pending_step_and_user_file",
+    ) {
+        return;
+    }
     let (endpoint, request, server) = spawn_publish_server(false);
     let (root, space, handle, step_ids) =
         linked_space_with_two_net_zero_pending_steps("incomplete-publish-ack", &endpoint);
 
-    let error = publish_local_space(handle.meta.local_space_id.clone()).unwrap_err();
+    let local_id = handle.meta.local_space_id.clone();
+    drop(handle);
+    let error = publish_local_space(local_id.clone()).unwrap_err();
+    let handle = open_local_space_handle(&local_id).unwrap();
     let _ = request.recv().expect("captured publish body");
-    assert!(error.contains("did not acknowledge"), "{error}");
-    let remaining = read_pending_publish_files(&handle.layrs_dir, &handle.active.layer_id)
-        .unwrap()
-        .into_iter()
-        .map(|pending| pending.step_id)
-        .collect::<Vec<_>>();
+    assert!(error.contains("acknowledgement mismatch"), "{error}");
+    let remaining =
+        read_pending_publish_files(&handle.store, &handle.layrs_dir, &handle.active.layer_id)
+            .unwrap()
+            .into_iter()
+            .map(|pending| pending.step_id)
+            .collect::<Vec<_>>();
     assert_eq!(remaining, step_ids);
     assert_eq!(fs::read(space.join("note.txt")).unwrap(), b"base\n");
     server.join().unwrap();
@@ -213,7 +257,29 @@ fn publish_with_incomplete_step_ack_keeps_every_pending_step_and_user_file() {
 }
 
 #[test]
+fn publish_rejects_unexpected_step_acknowledgements() {
+    if !isolated_legacy_test("publish_rejects_unexpected_step_acknowledgements") {
+        return;
+    }
+    let requested = vec!["step-1".to_string()];
+    let response = serde_json::json!({
+        "steps": [
+            {"stepId": "step-1"},
+            {"stepId": "step-unexpected"}
+        ]
+    });
+
+    let error = acknowledged_publish_step_ids_exact(&response, &requested).unwrap_err();
+    assert!(error.contains("unexpected: step-unexpected"), "{error}");
+}
+
+#[test]
 fn receive_rejects_a_tree_owned_by_another_layer_before_mutating_local_state() {
+    if !isolated_legacy_test(
+        "receive_rejects_a_tree_owned_by_another_layer_before_mutating_local_state",
+    ) {
+        return;
+    }
     let root = unique_test_dir("receive-wrong-layer-tree");
     let config = root.join("config");
     let space = root.join("space");
@@ -229,8 +295,14 @@ fn receive_rejects_a_tree_owned_by_another_layer_before_mutating_local_state() {
     let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
     handle.meta.workspace_id = "workspace_1".to_string();
     handle.meta.space_id = "space_1".to_string();
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
-    let pending_before = read_pending_publish_files(&handle.layrs_dir, "layer_expected").unwrap();
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )
+    .unwrap();
+    let pending_before =
+        read_pending_publish_files(&handle.store, &handle.layrs_dir, "layer_expected").unwrap();
     let wrong_tree_id = blake3_id(b"wrong-layer-tree");
     let response = ReceiveLocalSpaceResponse {
         workspace_id: "workspace_1".to_string(),
@@ -261,11 +333,11 @@ fn receive_rejects_a_tree_owned_by_another_layer_before_mutating_local_state() {
         steps: Vec::new(),
     };
 
-    let error = apply_receive_response(&mut handle, response, true, None, None).unwrap_err();
+    let error = apply_receive_response(&mut handle, response, true).unwrap_err();
     assert!(error.contains("exact tree"), "{error}");
     assert_eq!(fs::read(space.join("note.txt")).unwrap(), b"local\n");
     assert_eq!(
-        read_pending_publish_files(&handle.layrs_dir, "layer_expected")
+        read_pending_publish_files(&handle.store, &handle.layrs_dir, "layer_expected")
             .unwrap()
             .len(),
         pending_before.len()
@@ -275,6 +347,9 @@ fn receive_rejects_a_tree_owned_by_another_layer_before_mutating_local_state() {
 
 #[test]
 fn received_metadata_preserves_an_existing_disconnected_lineage() {
+    if !isolated_legacy_test("received_metadata_preserves_an_existing_disconnected_lineage") {
+        return;
+    }
     let existing = LocalLayerMetadata {
         layer_id: "feature".to_string(),
         display_name: "Feature".to_string(),
@@ -299,6 +374,9 @@ fn received_metadata_preserves_an_existing_disconnected_lineage() {
 
 #[test]
 fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
+    if !isolated_legacy_test("conflicted_sync_refuses_continue_when_a_new_pending_step_appears") {
+        return;
+    }
     let root = unique_test_dir("sync-weave-pending-generation");
     let config = root.join("config");
     let space = root.join("space");
@@ -314,18 +392,35 @@ fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
     let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
     handle.meta.workspace_id = "workspace_1".to_string();
     handle.meta.space_id = "space_1".to_string();
-    write_json(&handle.layrs_dir.join("local-space.json"), &handle.meta).unwrap();
-    clear_pending_publish_for_test(&handle.layrs_dir, "layer_server");
-    let base_state = read_layer_index(&handle.layrs_dir, "layer_server").unwrap();
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("local-space.json"),
+        &handle.meta,
+    )
+    .unwrap();
+    clear_pending_publish_for_test(&mut handle.store, &handle.layrs_dir, "layer_server");
+    let base_state = read_layer_index(&handle.store, &handle.layrs_dir, "layer_server").unwrap();
 
     fs::write(space.join("note.txt"), "studio\n").unwrap();
-    let studio_state = capture_working_state(&space, "layer_server", true).unwrap();
+    let studio_state = capture_working_state(&mut handle.store, &space, "layer_server").unwrap();
     fs::write(space.join("note.txt"), "local\n").unwrap();
-    let local_state = capture_working_state(&space, "layer_server", true).unwrap();
-    let local_step_id = write_step(&handle.layrs_dir, "layer_server", &local_state).unwrap();
-    let local_step = read_step_file(&handle.layrs_dir, "layer_server", &local_step_id).unwrap();
-    write_pending_publish(&handle.layrs_dir, &local_step).unwrap();
-    let pending = pending_publish_steps(&handle.layrs_dir, "layer_server").unwrap();
+    let local_state = capture_working_state(&mut handle.store, &space, "layer_server").unwrap();
+    let local_step_id = write_step(
+        &mut handle.store,
+        &handle.layrs_dir,
+        "layer_server",
+        &local_state,
+    )
+    .unwrap();
+    let local_step = read_step_file(
+        &handle.store,
+        &handle.layrs_dir,
+        "layer_server",
+        &local_step_id,
+    )
+    .unwrap();
+    write_pending_publish(&mut handle.store, &handle.layrs_dir, &local_step).unwrap();
+    let pending = pending_publish_steps(&handle.store, &handle.layrs_dir, "layer_server").unwrap();
     let sync_state_path = handle.layrs_dir.join("sync-state.json");
     let result = weave_local_state_over_received_sync(
         &mut handle,
@@ -344,15 +439,19 @@ fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
     let mut late_step = local_step.clone();
     late_step.step_id = "step_created_after_conflict".to_string();
     late_step.parent_step_id = Some(local_step_id);
+    late_step.timeline_position =
+        Some(next_timeline_position(&handle.store, &handle.layrs_dir, "layer_server").unwrap());
     write_json(
+        &mut handle.store,
         &layer_dir(&handle.layrs_dir, "layer_server")
             .join("steps")
             .join("step_created_after_conflict.json"),
         &late_step,
     )
     .unwrap();
-    write_pending_publish(&handle.layrs_dir, &late_step).unwrap();
+    write_pending_publish(&mut handle.store, &handle.layrs_dir, &late_step).unwrap();
 
+    drop(handle);
     let conflicts = weave_conflicts(created.local_space.local_space_id.clone()).unwrap();
     for conflict in conflicts {
         for block in conflict.blocks {
@@ -369,8 +468,9 @@ fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
     let error = continue_weave(created.local_space.local_space_id.clone()).unwrap_err();
     assert!(error.contains("pending Step set changed"), "{error}");
     assert_eq!(fs::read(space.join("note.txt")).unwrap(), marker_bytes);
+    let handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
     assert_eq!(
-        read_pending_publish_files(&handle.layrs_dir, "layer_server")
+        read_pending_publish_files(&handle.store, &handle.layrs_dir, "layer_server")
             .unwrap()
             .len(),
         2
@@ -380,6 +480,11 @@ fn conflicted_sync_refuses_continue_when_a_new_pending_step_appears() {
 
 #[test]
 fn publish_manifest_keeps_objects_from_an_added_then_deleted_pending_path() {
+    if !isolated_legacy_test(
+        "publish_manifest_keeps_objects_from_an_added_then_deleted_pending_path",
+    ) {
+        return;
+    }
     let root = unique_test_dir("publish-historical-closure");
     let config = root.join("config");
     let space = root.join("space");
@@ -391,16 +496,35 @@ fn publish_manifest_keeps_objects_from_an_added_then_deleted_pending_path() {
         Some("layer_history".to_string()),
     )
     .unwrap();
-    let handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
-    let base = read_layer_index(&handle.layrs_dir, "layer_history").unwrap();
+    let mut handle = open_local_space_handle(&created.local_space.local_space_id).unwrap();
+    let base = read_layer_index(&handle.store, &handle.layrs_dir, "layer_history").unwrap();
     fs::write(space.join("transient.txt"), "must remain reachable\n").unwrap();
-    let added_state = capture_working_state(&space, "layer_history", true).unwrap();
-    let added_id = write_step(&handle.layrs_dir, "layer_history", &added_state).unwrap();
-    let added_step = read_step_file(&handle.layrs_dir, "layer_history", &added_id).unwrap();
+    let added_state = capture_working_state(&mut handle.store, &space, "layer_history").unwrap();
+    let added_id = write_step(
+        &mut handle.store,
+        &handle.layrs_dir,
+        "layer_history",
+        &added_state,
+    )
+    .unwrap();
+    let added_step =
+        read_step_file(&handle.store, &handle.layrs_dir, "layer_history", &added_id).unwrap();
     fs::remove_file(space.join("transient.txt")).unwrap();
-    let deleted_state = capture_working_state(&space, "layer_history", true).unwrap();
-    let deleted_id = write_step(&handle.layrs_dir, "layer_history", &deleted_state).unwrap();
-    let deleted_step = read_step_file(&handle.layrs_dir, "layer_history", &deleted_id).unwrap();
+    let deleted_state = capture_working_state(&mut handle.store, &space, "layer_history").unwrap();
+    let deleted_id = write_step(
+        &mut handle.store,
+        &handle.layrs_dir,
+        "layer_history",
+        &deleted_state,
+    )
+    .unwrap();
+    let deleted_step = read_step_file(
+        &handle.store,
+        &handle.layrs_dir,
+        "layer_history",
+        &deleted_id,
+    )
+    .unwrap();
     let desktop_config = DesktopConfig::load_or_create().unwrap();
 
     let request = build_publish_v2_request(

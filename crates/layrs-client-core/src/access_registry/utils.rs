@@ -191,8 +191,12 @@ fn layer_dir(layrs_dir: &Path, layer_id: &str) -> PathBuf {
     layrs_dir.join("layers").join(safe_id_fragment(layer_id))
 }
 
-fn step_layer_display_name(layrs_dir: &Path, layer_id: &str) -> Option<String> {
-    read_json::<LocalSpaceFile>(&layrs_dir.join("local-space.json"))
+fn step_layer_display_name(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Option<String> {
+    read_json::<LocalSpaceFile>(store, &layrs_dir.join("local-space.json"))
         .ok()
         .and_then(|meta| {
             meta.layers
@@ -207,46 +211,44 @@ fn pending_layer_deletions_path(layrs_dir: &Path) -> PathBuf {
     layrs_dir.join("sync").join("pending-layer-deletions.json")
 }
 
-fn read_pending_layer_deletions(layrs_dir: &Path) -> Result<PendingLayerDeletionsFile, String> {
+fn read_pending_layer_deletions(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+) -> Result<PendingLayerDeletionsFile, String> {
     let path = pending_layer_deletions_path(layrs_dir);
-    if !path.exists() {
+    if !store.exists(&path)? {
         return Ok(PendingLayerDeletionsFile {
             schema: PENDING_LAYER_DELETIONS_SCHEMA.to_string(),
             deleted_layers: Vec::new(),
         });
     }
 
-    let mut pending: PendingLayerDeletionsFile = read_json(&path)?;
+    let mut pending: PendingLayerDeletionsFile = read_json(store, &path)?;
     pending.schema = PENDING_LAYER_DELETIONS_SCHEMA.to_string();
     Ok(pending)
 }
 
 fn write_pending_layer_deletions(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     pending: &PendingLayerDeletionsFile,
 ) -> Result<(), String> {
     let path = pending_layer_deletions_path(layrs_dir);
     if pending.deleted_layers.is_empty() {
-        if path.exists() {
-            fs::remove_file(&path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not clear pending Layer deletions {}: {error}",
-                    path.display()
-                )
-            })?;
-        }
+        store.remove(&path)?;
         return Ok(());
     }
 
-    write_json(&path, pending)
+    write_json(store, &path, pending)
 }
 
 fn enqueue_pending_layer_deletion(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     display_name: &str,
 ) -> Result<(), String> {
-    let mut pending = read_pending_layer_deletions(layrs_dir)?;
+    let mut pending = read_pending_layer_deletions(store, layrs_dir)?;
     if let Some(existing) = pending
         .deleted_layers
         .iter_mut()
@@ -261,43 +263,67 @@ fn enqueue_pending_layer_deletion(
             deleted_at_unix: unix_now(),
         });
     }
-    write_pending_layer_deletions(layrs_dir, &pending)
+    write_pending_layer_deletions(store, layrs_dir, &pending)
 }
 
 fn delete_server_layer(
-    handle: &LocalSpaceHandle,
-    config: &DesktopConfig,
+    endpoint: &str,
+    token: &str,
+    workspace_id: &str,
+    space_id: &str,
     layer_id: &str,
 ) -> Result<(), String> {
-    ensure_linked_space_ready(handle)?;
-    let token = desktop_token(config)?;
     let delete_path = format!(
         "/v1/workspaces/{}/spaces/{}/layers/{}",
-        url_path_segment(&handle.meta.workspace_id),
-        url_path_segment(&handle.meta.space_id),
+        url_path_segment(workspace_id),
+        url_path_segment(space_id),
         url_path_segment(layer_id)
     );
-    let _: Value = delete_json(&config.server_endpoint, &delete_path, Some(&token))?;
+    let _: Value = delete_json(endpoint, &delete_path, Some(token))?;
     Ok(())
 }
 
 fn flush_pending_layer_deletions(
-    handle: &LocalSpaceHandle,
+    mut handle: LocalSpaceHandle,
     config: &DesktopConfig,
-) -> Result<usize, String> {
-    let pending = read_pending_layer_deletions(&handle.layrs_dir)?;
+) -> Result<(LocalSpaceHandle, usize), String> {
+    let pending = read_pending_layer_deletions(&handle.store, &handle.layrs_dir)?;
     if pending.deleted_layers.is_empty() {
-        return Ok(0);
+        return Ok((handle, 0));
     }
 
-    ensure_linked_space_ready(handle)?;
+    ensure_linked_space_ready(&handle)?;
+    let requested_layer_ids = pending
+        .deleted_layers
+        .iter()
+        .map(|deletion| deletion.layer_id.clone())
+        .collect::<Vec<_>>();
+    let journal = serde_json::json!({
+        "schema": "layrs.client_network_operation.v1",
+        "operation": "delete-layers",
+        "targetLayerId": null,
+        "targetLayerHead": null,
+        "expectedAckStepIds": [],
+        "requestedLayerIds": requested_layer_ids
+    });
+    let lease = handle
+        .store
+        .prepare_network(&handle.meta.space_id, "delete-layers", &journal)?;
+    let root = handle.root.clone();
+    let workspace_id = handle.meta.workspace_id.clone();
+    let space_id = handle.meta.space_id.clone();
+    let token = desktop_token(config)?;
+    drop(handle);
+
     let mut synced = 0usize;
+    let mut acknowledged_layer_ids = Vec::new();
     let mut remaining = Vec::new();
     let mut first_error = None;
 
     for deletion in pending.deleted_layers {
         if !is_probably_server_layer_id(&deletion.layer_id) {
             synced += 1;
+            acknowledged_layer_ids.push(deletion.layer_id);
             continue;
         }
 
@@ -306,9 +332,21 @@ fn flush_pending_layer_deletions(
             continue;
         }
 
-        match delete_server_layer(handle, config, &deletion.layer_id) {
-            Ok(()) => synced += 1,
-            Err(error) if is_layer_not_found_error(&error) => synced += 1,
+        match delete_server_layer(
+            &config.server_endpoint,
+            &token,
+            &workspace_id,
+            &space_id,
+            &deletion.layer_id,
+        ) {
+            Ok(()) => {
+                synced += 1;
+                acknowledged_layer_ids.push(deletion.layer_id);
+            }
+            Err(error) if is_layer_not_found_error(&error) => {
+                synced += 1;
+                acknowledged_layer_ids.push(deletion.layer_id);
+            }
             Err(error) => {
                 first_error = Some(error);
                 remaining.push(deletion);
@@ -316,12 +354,26 @@ fn flush_pending_layer_deletions(
         }
     }
 
+    let mut handle = open_local_space_at(root)?;
+    handle.store.begin_network_finalize(&lease)?;
+    let remaining_layer_ids = remaining
+        .iter()
+        .map(|deletion| deletion.layer_id.clone())
+        .collect::<Vec<_>>();
     write_pending_layer_deletions(
+        &mut handle.store,
         &handle.layrs_dir,
         &PendingLayerDeletionsFile {
             schema: PENDING_LAYER_DELETIONS_SCHEMA.to_string(),
             deleted_layers: remaining,
         },
+    )?;
+    handle.store.finish_network(
+        &lease,
+        &serde_json::json!({
+            "acknowledgedLayerIds": acknowledged_layer_ids,
+            "remainingLayerIds": remaining_layer_ids
+        }),
     )?;
 
     if let Some(error) = first_error {
@@ -330,7 +382,7 @@ fn flush_pending_layer_deletions(
         ));
     }
 
-    Ok(synced)
+    Ok((handle, synced))
 }
 
 fn unique_layer_id(handle: &LocalSpaceHandle, name: &str) -> String {
@@ -451,37 +503,40 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+fn read_json<T: for<'de> Deserialize<'de>>(
+    store: &LocalStoreSession,
+    path: &Path,
+) -> Result<T, String> {
+    store.read(path)
+}
+
+fn write_json<T: Serialize + ?Sized>(
+    store: &mut LocalStoreSession,
+    path: &Path,
+    value: &T,
+) -> Result<(), String> {
+    store.write(path, value).map(|_| ())
+}
+
+fn read_object_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let body = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Layrs Desktop could not read JSON file {}: {error}",
-            path.display()
-        )
+        format!("Layrs Desktop could not read object JSON {}: {error}", path.display())
     })?;
     serde_json::from_str(&body).map_err(|error| {
-        format!(
-            "Layrs Desktop JSON file {} is invalid: {error}",
-            path.display()
-        )
+        format!("Layrs Desktop object JSON {} is invalid: {error}", path.display())
     })
 }
 
-fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
+fn write_object_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Layrs Desktop could not create directory {}: {error}",
-                parent.display()
-            )
+            format!("Layrs Desktop could not create object directory {}: {error}", parent.display())
         })?;
     }
     let body = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("Layrs Desktop could not encode JSON: {error}"))?;
+        .map_err(|error| format!("Layrs Desktop could not encode object JSON: {error}"))?;
     fs::write(path, body).map_err(|error| {
-        format!(
-            "Layrs Desktop could not write JSON file {}: {error}",
-            path.display()
-        )
+        format!("Layrs Desktop could not write object JSON {}: {error}", path.display())
     })
 }
 

@@ -55,7 +55,7 @@ export async function launchNativeTauriDesktop(
 
   let browser: Browser | undefined;
   try {
-    await waitForCdp(debugPort, logs, 120_000);
+    await waitForCdp(debugPort, logs, 120_000, child);
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, {
       slowMo: visual ? visualSlowMoMs() : 0
     });
@@ -78,17 +78,17 @@ export async function launchNativeTauriDesktop(
         if (visual) {
           await delay(visualHoldMs());
         }
-        await attachLogs(testInfo, logs);
-        await browser?.close().catch(() => undefined);
+        await attachLogs(testInfo, logs).catch(() => undefined);
         stopProcessTree(child);
         await stopStaleE2eDesktopProcesses();
+        await Promise.race([browser?.close().catch(() => undefined), delay(2000)]);
       }
     };
   } catch (error) {
-    await attachLogs(testInfo, logs);
-    await browser?.close().catch(() => undefined);
+    await attachLogs(testInfo, logs).catch(() => undefined);
     stopProcessTree(child);
     await stopStaleE2eDesktopProcesses();
+    await Promise.race([browser?.close().catch(() => undefined), delay(2000)]);
     throw error;
   }
 }
@@ -158,8 +158,8 @@ function spawnTauriDev(
   const child = spawn(
     process.platform === "win32" ? "cmd.exe" : "pnpm",
     process.platform === "win32"
-      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev", "--config", configPath]
-      : ["tauri", "dev", "--config", configPath],
+      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev", "--no-watch", "--config", configPath]
+      : ["tauri", "dev", "--no-watch", "--config", configPath],
     {
       cwd: desktopAppDir,
       env,
@@ -176,10 +176,11 @@ function spawnTauriDev(
   return child;
 }
 
-async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number) {
+async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number, child: ChildProcessWithoutNullStreams) {
   const deadline = Date.now() + timeoutMs;
   const url = `http://127.0.0.1:${debugPort}/json/version`;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Tauri exited before WebView started.\n${logs.slice(-80).join("")}`);
     try {
       const response = await fetch(url);
       if (response.ok) {
@@ -219,7 +220,7 @@ async function writeE2eTauriConfig(stateRoot: string, desktopPort: number, insta
   const title = `Layrs Studio E2E ${instanceId}`;
   const config = {
     build: {
-      beforeDevCommand: `pnpm exec vite --host 127.0.0.1 --port ${desktopPort} --strictPort`,
+      beforeDevCommand: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${desktopPort} --strictPort`,
       devUrl: `http://127.0.0.1:${desktopPort}`
     },
     app: {

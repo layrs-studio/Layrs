@@ -141,7 +141,7 @@ fn load_step_diff_window(
     limit: usize,
 ) -> Result<LensDiffEntry, String> {
     let layer_id = handle.active.layer_id.clone();
-    let mut steps = read_step_files(&handle.layrs_dir, &layer_id)?;
+    let mut steps = read_step_files(&handle.store, &handle.layrs_dir, &layer_id)?;
     steps.sort_by(compare_steps_by_timeline);
 
     let mut previous_state: Option<WorkingStateFile> = None;
@@ -273,7 +273,7 @@ fn local_step_summaries(
     handle: &LocalSpaceHandle,
     layer_id: &str,
 ) -> Result<Vec<LocalStepSummary>, String> {
-    let mut steps = read_step_files(&handle.layrs_dir, layer_id)?;
+    let mut steps = read_step_files(&handle.store, &handle.layrs_dir, layer_id)?;
     steps.sort_by(compare_steps_by_timeline);
 
     let mut summaries = Vec::with_capacity(steps.len());
@@ -320,13 +320,14 @@ fn local_step_summaries(
 }
 
 fn layer_step_activities(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     layers: &[LocalLayerMetadata],
 ) -> Result<Vec<LayerStepActivity>, String> {
     let mut activities = Vec::with_capacity(layers.len());
 
     for layer in layers {
-        let steps = read_step_files(layrs_dir, &layer.layer_id)?;
+        let steps = read_step_files(store, layrs_dir, &layer.layer_id)?;
         let latest_step_at = steps
             .iter()
             .map(|step| step.captured_at_unix)
@@ -352,42 +353,23 @@ fn initial_step_base_state(handle: &LocalSpaceHandle, layer_id: &str) -> Option<
         .and_then(|layer| layer.parent_layer_id.as_deref());
 
     if let Some(parent_layer_id) = parent_layer_id {
-        read_layer_state(&handle.layrs_dir, parent_layer_id)
-            .or_else(|_| read_layer_index(&handle.layrs_dir, parent_layer_id))
+        read_layer_state(&handle.store, &handle.layrs_dir, parent_layer_id)
+            .or_else(|_| read_layer_index(&handle.store, &handle.layrs_dir, parent_layer_id))
             .ok()
     } else {
-        read_layer_index(&handle.layrs_dir, layer_id).ok()
+        read_layer_index(&handle.store, &handle.layrs_dir, layer_id).ok()
     }
 }
 
-fn read_step_files(layrs_dir: &Path, layer_id: &str) -> Result<Vec<StepFile>, String> {
+fn read_step_files(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<Vec<StepFile>, String> {
     let steps_dir = layer_dir(layrs_dir, layer_id).join("steps");
-    if !steps_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut steps = Vec::new();
-    let entries = fs::read_dir(&steps_dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not read Layer steps {}: {error}",
-            steps_dir.display()
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Layrs Desktop could not read Layer step entry {}: {error}",
-                steps_dir.display()
-            )
-        })?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            steps.push(read_json::<StepFile>(&path)?);
-        }
-    }
-
-    Ok(steps)
+    store
+        .list::<StepFile>(&steps_dir, ".json")
+        .map(|rows| rows.into_iter().map(|(_, step)| step).collect())
 }
 
 fn lens_diff_entry(

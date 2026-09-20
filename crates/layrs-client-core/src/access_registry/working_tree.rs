@@ -1,4 +1,17 @@
 fn capture_working_state(
+    store: &mut LocalStoreSession,
+    root: &Path,
+    layer_id: &str,
+) -> Result<WorkingStateFile, String> {
+    capture_working_state_impl(Some(store), root, layer_id, true)
+}
+
+fn inspect_working_state(root: &Path, layer_id: &str) -> Result<WorkingStateFile, String> {
+    capture_working_state_impl(None, root, layer_id, false)
+}
+
+fn capture_working_state_impl(
+    store: Option<&mut LocalStoreSession>,
     root: &Path,
     layer_id: &str,
     write_objects: bool,
@@ -26,7 +39,8 @@ fn capture_working_state(
         Some(tree_id_for_files(&files))
     };
     if write_objects {
-        write_scan_cache(&layrs_dir, next_cache)?;
+        let store = store.ok_or_else(|| "Layrs metadata session is required for a scan.".to_string())?;
+        write_scan_cache(store, &layrs_dir, next_cache)?;
     }
 
     Ok(WorkingStateFile {
@@ -209,8 +223,12 @@ fn read_ignore_rules(root: &Path) -> Result<IgnoreRules, String> {
     Ok(IgnoreRules { rules })
 }
 
-fn materialize_state(root: &Path, state: &WorkingStateFile) -> Result<(), String> {
-    let current = capture_working_state(root, &state.layer_id, false)?;
+fn materialize_state(
+    store: &mut LocalStoreSession,
+    root: &Path,
+    state: &WorkingStateFile,
+) -> Result<(), String> {
+    let current = inspect_working_state(root, &state.layer_id)?;
     let (added, modified, deleted) = diff_state(Some(&current), state);
     let target_files = file_entries(&state.files);
     let mut prepared = Vec::new();
@@ -223,55 +241,75 @@ fn materialize_state(root: &Path, state: &WorkingStateFile) -> Result<(), String
         prepared.push((path_key.clone(), bytes));
     }
 
-    for (path_key, bytes) in prepared {
-        let target = path_from_key(root, &path_key)?;
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not create directory while switching Layer {}: {error}",
-                    parent.display()
-                )
-            })?;
+    let changed_paths = added
+        .iter()
+        .chain(modified.iter())
+        .chain(deleted.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let lease = store.begin_materialization(root, changed_paths)?;
+    let applied = (|| {
+        for (path_key, bytes) in prepared {
+            let target = path_from_key(root, &path_key)?;
+            write_materialized_file(&target, &bytes)?;
         }
-        fs::write(&target, bytes).map_err(|error| {
-            format!(
-                "Layrs Desktop could not restore file {}: {error}",
-                target.display()
-            )
-        })?;
-    }
 
-    for path_key in deleted {
-        let path = path_from_key(root, &path_key)?;
-        if path.exists() {
-            fs::remove_file(&path).map_err(|error| {
-                format!(
-                    "Layrs Desktop could not remove file while switching Layer {}: {error}",
-                    path.display()
-                )
-            })?;
+        for path_key in deleted {
+            let path = path_from_key(root, &path_key)?;
+            remove_materialized_file(&path)?;
         }
-    }
+        Ok(())
+    })();
 
+    if let Err(error) = applied {
+        return match store.rollback_materialization(&lease) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!(
+                "{error} Layrs also could not roll back materialization: {rollback}"
+            )),
+        };
+    }
+    if let Err(error) = store.finish_materialization(&lease) {
+        return match store.rollback_materialization(&lease) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!(
+                "{error} Layrs also could not roll back materialization: {rollback}"
+            )),
+        };
+    }
     Ok(())
 }
 
-fn read_layer_state(layrs_dir: &Path, layer_id: &str) -> Result<WorkingStateFile, String> {
+fn read_layer_state(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<WorkingStateFile, String> {
     read_state_file(
+        store,
         layrs_dir,
         &layer_dir(layrs_dir, layer_id).join("working-state.json"),
     )
 }
 
-fn read_layer_index(layrs_dir: &Path, layer_id: &str) -> Result<WorkingStateFile, String> {
+fn read_layer_index(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<WorkingStateFile, String> {
     read_state_file(
+        store,
         layrs_dir,
         &layer_dir(layrs_dir, layer_id).join("index.json"),
     )
 }
 
-fn read_state_file(layrs_dir: &Path, path: &Path) -> Result<WorkingStateFile, String> {
-    let mut state = read_json::<WorkingStateFile>(path)?;
+fn read_state_file(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    path: &Path,
+) -> Result<WorkingStateFile, String> {
+    let mut state = read_json::<WorkingStateFile>(store, path)?;
     hydrate_state_files(layrs_dir, &mut state)?;
     Ok(state)
 }
@@ -303,35 +341,39 @@ fn storage_state(layrs_dir: &Path, state: &WorkingStateFile) -> Result<WorkingSt
 }
 
 fn write_layer_state(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     state: &WorkingStateFile,
 ) -> Result<(), String> {
     let dir = layer_dir(layrs_dir, layer_id);
     let state = storage_state(layrs_dir, state)?;
-    write_json(&dir.join("working-state.json"), &state)?;
-    write_json(&dir.join("index.json"), &state)
+    write_json(store, &dir.join("working-state.json"), &state)?;
+    write_json(store, &dir.join("index.json"), &state)
 }
 
 fn write_working_state(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     state: &WorkingStateFile,
 ) -> Result<(), String> {
     let state = storage_state(layrs_dir, state)?;
     write_json(
+        store,
         &layer_dir(layrs_dir, layer_id).join("working-state.json"),
         &state,
     )
 }
 
 fn write_step(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     state: &WorkingStateFile,
 ) -> Result<String, String> {
-    let step_id = unique_step_id(layrs_dir, layer_id);
-    let base = step_base(layrs_dir, layer_id)?;
+    let step_id = unique_step_id(store, layrs_dir, layer_id)?;
+    let base = step_base(store, layrs_dir, layer_id)?;
     let (added, modified, deleted) = diff_state(base.state.as_ref(), state);
     let changed_paths = added
         .iter()
@@ -353,15 +395,16 @@ fn write_step(
         base_tree_id: base.tree_id,
         root_tree_id: Some(root_tree_id),
         changed_paths,
-        timeline_position: Some(next_timeline_position(layrs_dir, layer_id)?),
+        timeline_position: Some(next_timeline_position(store, layrs_dir, layer_id)?),
         origin_layer_id: Some(layer_id.to_string()),
-        origin_layer_name: step_layer_display_name(layrs_dir, layer_id),
+        origin_layer_name: step_layer_display_name(store, layrs_dir, layer_id),
         origin_step_id: Some(step_id.clone()),
         step_kind: Some("native".to_string()),
         captured_at_unix: state.captured_at_unix,
         files: Vec::new(),
     };
     write_json(
+        store,
         &layer_dir(layrs_dir, layer_id)
             .join("steps")
             .join(format!("{step_id}.json")),
@@ -371,17 +414,22 @@ fn write_step(
 }
 
 fn write_step_and_pending_publish(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
     state: &WorkingStateFile,
 ) -> Result<String, String> {
-    let step_id = write_step(layrs_dir, layer_id, state)?;
-    let step = read_step_file(layrs_dir, layer_id, &step_id)?;
-    write_pending_publish(layrs_dir, &step)?;
+    let step_id = write_step(store, layrs_dir, layer_id, state)?;
+    let step = read_step_file(store, layrs_dir, layer_id, &step_id)?;
+    write_pending_publish(store, layrs_dir, &step)?;
     Ok(step_id)
 }
 
-fn unique_step_id(layrs_dir: &Path, layer_id: &str) -> String {
+fn unique_step_id(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<String, String> {
     let layer_hash = fnv1a_hex(layer_id.as_bytes());
     for attempt in 0..1000u32 {
         let now = SystemTime::now()
@@ -393,31 +441,40 @@ fn unique_step_id(layrs_dir: &Path, layer_id: &str) -> String {
             now.subsec_nanos(),
             layer_hash
         );
-        if !layer_dir(layrs_dir, layer_id)
+        let path = layer_dir(layrs_dir, layer_id)
             .join("steps")
-            .join(format!("{step_id}.json"))
-            .exists()
-        {
-            return step_id;
+            .join(format!("{step_id}.json"));
+        if !store.exists(&path)? {
+            return Ok(step_id);
         }
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{now}-{layer_hash}-fallback")
+    Ok(format!("{now}-{layer_hash}-fallback"))
 }
 
-fn next_timeline_position(layrs_dir: &Path, layer_id: &str) -> Result<u64, String> {
-    Ok(read_step_files(layrs_dir, layer_id)?
+fn next_timeline_position(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<u64, String> {
+    Ok(read_step_files(store, layrs_dir, layer_id)?
         .into_iter()
         .filter_map(|step| step.timeline_position)
         .max()
         .map_or(0, |position| position.saturating_add(1)))
 }
 
-fn read_step_file(layrs_dir: &Path, layer_id: &str, step_id: &str) -> Result<StepFile, String> {
+fn read_step_file(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+    step_id: &str,
+) -> Result<StepFile, String> {
     read_json(
+        store,
         &layer_dir(layrs_dir, layer_id)
             .join("steps")
             .join(format!("{step_id}.json")),
@@ -428,7 +485,11 @@ fn pending_publish_dir(layrs_dir: &Path, layer_id: &str) -> PathBuf {
     layer_dir(layrs_dir, layer_id).join("pending-publish")
 }
 
-fn write_pending_publish(layrs_dir: &Path, step: &StepFile) -> Result<(), String> {
+fn write_pending_publish(
+    store: &mut LocalStoreSession,
+    layrs_dir: &Path,
+    step: &StepFile,
+) -> Result<(), String> {
     let pending = PendingPublishFile {
         schema: PENDING_PUBLISH_SCHEMA.to_string(),
         step_id: step.step_id.clone(),
@@ -438,40 +499,22 @@ fn write_pending_publish(layrs_dir: &Path, step: &StepFile) -> Result<(), String
         created_at_unix: unix_now(),
     };
     write_json(
+        store,
         &pending_publish_dir(layrs_dir, &step.layer_id).join(format!("{}.json", step.step_id)),
         &pending,
     )
 }
 
 fn read_pending_publish_files(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
 ) -> Result<Vec<PendingPublishFile>, String> {
-    let dir = pending_publish_dir(layrs_dir, layer_id);
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut pending = Vec::new();
-    let entries = fs::read_dir(&dir).map_err(|error| {
-        format!(
-            "Layrs Desktop could not read pending publish directory {}: {error}",
-            dir.display()
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Layrs Desktop could not read pending publish entry {}: {error}",
-                dir.display()
-            )
-        })?;
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            pending.push(read_json::<PendingPublishFile>(&path)?);
-        }
-    }
+    let mut pending = store
+        .list::<PendingPublishFile>(&pending_publish_dir(layrs_dir, layer_id), ".json")?
+        .into_iter()
+        .map(|(_, pending)| pending)
+        .collect::<Vec<_>>();
 
     pending.sort_by(|left, right| {
         left.created_at_unix
@@ -482,22 +525,32 @@ fn read_pending_publish_files(
 }
 
 fn latest_pending_publish_step(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     layer_id: &str,
 ) -> Result<Option<StepFile>, String> {
-    let Some(pending) = read_pending_publish_files(layrs_dir, layer_id)?
+    let Some(pending) = read_pending_publish_files(store, layrs_dir, layer_id)?
         .last()
         .cloned()
     else {
         return Ok(None);
     };
-    Ok(Some(read_step_file(layrs_dir, layer_id, &pending.step_id)?))
+    Ok(Some(read_step_file(
+        store,
+        layrs_dir,
+        layer_id,
+        &pending.step_id,
+    )?))
 }
 
-fn pending_publish_steps(layrs_dir: &Path, layer_id: &str) -> Result<Vec<StepFile>, String> {
-    read_pending_publish_files(layrs_dir, layer_id)?
+fn pending_publish_steps(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<Vec<StepFile>, String> {
+    read_pending_publish_files(store, layrs_dir, layer_id)?
         .into_iter()
-        .map(|pending| read_step_file(layrs_dir, layer_id, &pending.step_id))
+        .map(|pending| read_step_file(store, layrs_dir, layer_id, &pending.step_id))
         .collect()
 }
 
@@ -508,8 +561,12 @@ struct StepBase {
     state: Option<WorkingStateFile>,
 }
 
-fn step_base(layrs_dir: &Path, layer_id: &str) -> Result<StepBase, String> {
-    let mut steps = read_step_files(layrs_dir, layer_id)?;
+fn step_base(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+    layer_id: &str,
+) -> Result<StepBase, String> {
+    let mut steps = read_step_files(store, layrs_dir, layer_id)?;
     steps.sort_by(compare_steps_by_timeline);
     if let Some(previous_step) = steps.last() {
         let state = state_from_step(layrs_dir, previous_step)?;
@@ -521,7 +578,7 @@ fn step_base(layrs_dir: &Path, layer_id: &str) -> Result<StepBase, String> {
         });
     }
 
-    let parent_layer_id = read_json::<LocalSpaceFile>(&layrs_dir.join("local-space.json"))
+    let parent_layer_id = read_json::<LocalSpaceFile>(store, &layrs_dir.join("local-space.json"))
         .ok()
         .and_then(|meta| {
             meta.layers
@@ -530,7 +587,7 @@ fn step_base(layrs_dir: &Path, layer_id: &str) -> Result<StepBase, String> {
                 .and_then(|layer| layer.parent_layer_id)
         });
     let base_layer_id = parent_layer_id.unwrap_or_else(|| layer_id.to_string());
-    let base_state = read_layer_index(layrs_dir, &base_layer_id).ok();
+    let base_state = read_layer_index(store, layrs_dir, &base_layer_id).ok();
     Ok(StepBase {
         parent_step_id: None,
         layer_id: Some(base_layer_id),
@@ -591,13 +648,13 @@ fn write_tree_object(layrs_dir: &Path, files: &[FileSnapshotEntry]) -> Result<St
             tree_id: tree_id.clone(),
             files: files.to_vec(),
         };
-        write_json(&path, &tree)?;
+        write_object_json(&path, &tree)?;
     }
     Ok(tree_id)
 }
 
 fn read_tree_object(layrs_dir: &Path, tree_id: &str) -> Result<TreeObjectFile, String> {
-    read_json(&tree_object_path(layrs_dir, tree_id))
+    read_object_json(&tree_object_path(layrs_dir, tree_id))
 }
 
 fn tree_object_path(layrs_dir: &Path, tree_id: &str) -> PathBuf {
@@ -634,7 +691,7 @@ fn read_snapshot_object_bytes(
 ) -> Result<Vec<u8>, String> {
     let object_path = layrs_dir.join(&file.object);
     if file.object.starts_with("objects/files/") {
-        let manifest = read_json::<FileObjectFile>(&object_path)?;
+        let manifest = read_object_json::<FileObjectFile>(&object_path)?;
         let bytes = read_file_object_bytes(layrs_dir, &manifest)?;
         if blake3_id(&bytes) != file.hash {
             return Err(format!(
@@ -654,6 +711,7 @@ fn read_snapshot_object_bytes(
 }
 
 fn write_scan_cache(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     entries: BTreeMap<String, ScanCacheEntry>,
 ) -> Result<(), String> {
@@ -661,7 +719,7 @@ fn write_scan_cache(
         schema: SCAN_CACHE_SCHEMA.to_string(),
         entries: entries.into_values().collect(),
     };
-    write_json(&layrs_dir.join("scan-cache.json"), &cache)
+    write_json(store, &layrs_dir.join("scan-cache.json"), &cache)
 }
 
 fn system_time_marker(time: SystemTime) -> String {

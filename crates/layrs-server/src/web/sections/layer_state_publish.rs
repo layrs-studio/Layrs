@@ -77,6 +77,7 @@ async fn ensure_tree_in_space_in_tx(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn insert_layer_step_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -315,6 +316,7 @@ fn cleaned_optional_text(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn advance_layer_head_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: &str,
@@ -372,6 +374,7 @@ async fn advance_layer_head_in_tx(
     Ok(layer_state_id)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn insert_sync_batch_change_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sync_batch_id: &str,

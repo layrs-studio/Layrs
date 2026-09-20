@@ -1,0 +1,24 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "syncTransactionRequest",
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "idempotencyKey": "example-key-0001",
+  "requestDigest": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+  "knownEventCursor": "cursor-demo-0",
+  "steps": [],
+  "observations": [],
+  "products": [],
+  "viewMutation": {
+    "mutationId": "mutation:view-1",
+    "expectedCurrentViewId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+    "expectedGeneration": 0,
+    "proposedView": {
+      "kind": "stored",
+      "repositoryViewId": "blake3:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "layerMutations": [{ "layerId": "layer:main", "mode": "integrate" }],
+    "expectedPolicyVersionObjectIds": []
+  },
+  "policyRootMutation": null
+}

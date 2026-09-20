@@ -163,6 +163,7 @@ async fn receive_store_objects_for_layers(
     }))
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn push_received_tree_object_for_layer(
     pool: &PgPool,
     workspace_id: &str,
@@ -408,6 +409,7 @@ async fn layer_step_detail_values(
     Ok(values)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn step_changed_file_values(
     pool: &PgPool,
     workspace_id: &str,

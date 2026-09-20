@@ -1,0 +1,16 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "fetchPlanRequest",
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "requestId": "request:fetch-1",
+  "claims": [{
+    "kind": "file",
+    "fileId": "blake3:5555555555555555555555555555555555555555555555555555555555555555",
+    "preferredManifestIds": [],
+    "root": { "kind": "step", "stepId": "blake3:6666666666666666666666666666666666666666666666666666666666666666" },
+    "repoPath": "src/main.rs"
+  }],
+  "pageCursor": null,
+  "maxObjects": 100
+}

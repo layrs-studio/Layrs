@@ -4,12 +4,12 @@ import { NotificationProvider } from "@layrs/ui";
 import "@layrs/ui/styles.css";
 import "@layrs/lenses/styles.css";
 import "./studio.css";
-import { StudioApp } from "./StudioApp";
+import { NativeStudio } from "./NativeStudio";
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <NotificationProvider>
-      <StudioApp />
+      <NativeStudio />
     </NotificationProvider>
   </React.StrictMode>
 );

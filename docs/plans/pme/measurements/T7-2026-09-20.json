@@ -1,0 +1,30 @@
+{
+  "peakWorkingSetBytes": 108642304,
+  "pilot": null,
+  "schemaVersion": "layrs.git-bridge.measurement.v1",
+  "synthetic": {
+    "canonicalObjects": 10005,
+    "commits": 2000,
+    "export": {
+      "bytes": 2343787,
+      "completed": 2001,
+      "elapsedMs": 278678,
+      "gitProcesses": 8014,
+      "objects": 10007,
+      "phase": "export_complete",
+      "total": 2001
+    },
+    "exportMs": 278687,
+    "installMs": 137804,
+    "scan": {
+      "bytes": 739791,
+      "completed": 2000,
+      "elapsedMs": 711,
+      "gitProcesses": 8,
+      "objects": 10005,
+      "phase": "import_complete",
+      "total": 2000
+    },
+    "scanMs": 716
+  }
+}

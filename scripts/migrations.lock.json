@@ -5,73 +5,83 @@
   "migrations": [
     {
       "version": 1,
-      "file": "0001_v1_auth_workspace_layers_access.sql",
-      "sha256": "ad25717f584b2a95df0a0c3eee4b3ba4cd6629bd2e02882251a6e403691e50aa"
+      "file": "0001_sync_v3_baseline.sql",
+      "sha256": "671989e88f78a88181e7fe0391bb52f1150a064913f780665f5d703367a5cd57"
     },
     {
       "version": 2,
-      "file": "0002_studio_v1_teams_invitations_access_rules.sql",
-      "sha256": "23d480a563a2fe6e4da8277db5333976ba08aec3c34859d6b2bf302ae8caec20"
+      "file": "0002_v3_identity.sql",
+      "sha256": "01e963085a19acfd0a57e65a176c808b2af2de0b3ee2255b82c3fdb0351f1731"
     },
     {
       "version": 3,
-      "file": "0003_merkle_chunks_sync_v2.sql",
-      "sha256": "fcdbf3184d1e99fff01814b07de1c2bc5084f953f6299d06d37d2d5198feaad7"
+      "file": "0003_v3_writer_access.sql",
+      "sha256": "b648c6e2b263bb6325420349f6f91089e17d00f1633966e9dc91e24779772ef7"
     },
     {
       "version": 4,
-      "file": "0004_merkle_v2_blake3_digest.sql",
-      "sha256": "4fb050b33d2c03fcaeee66db3eccdf45477197b6d13a463de7eec16de9e3b1c0"
+      "file": "0004_v3_devices.sql",
+      "sha256": "9ccb3f7b78abf35d7190e93cc6c31c0c536d717c0d9e099e39d9f819dcd77d91"
     },
     {
       "version": 5,
-      "file": "0005_layer_steps.sql",
-      "sha256": "7b9e2e65e2376975c9e6e03d4db3714fa0ec5b0a034907201ddc6912944a6723"
+      "file": "0005_v3_collaboration.sql",
+      "sha256": "d29e705b62491ed7bef3591a899f048a4cfa9743d9d3f4d955f4619c906e6164"
     },
     {
       "version": 6,
-      "file": "0006_chunk_storage_compression.sql",
-      "sha256": "2098aa9239943d887d25fc612e9cd210828e552cbfa15a9ef66f06058bd294e2"
+      "file": "0006_v3_webhooks.sql",
+      "sha256": "f95acf09c41ba55a286f63360e2cc3e303ff7ae029ea2b61804c51041dac01fb"
     },
     {
       "version": 7,
-      "file": "0007_space_chunk_availability.sql",
-      "sha256": "730d29726ffd6ff5a6fa3f513bc38f5096d36771a73d73c7e0e0a8fa4e1dbd34"
+      "file": "0007_v3_release_publications.sql",
+      "sha256": "b6efdb9aa96f7dcc8ceed8adb75fce774ec2262591a66c6fd7f70c16ad3264da"
     },
     {
       "version": 8,
-      "file": "0008_space_file_tree_availability.sql",
-      "sha256": "edf75a8ecb0b61e00ab00a678556252a52e25fb5414dc4c1c3ae22e6250d5478"
+      "file": "0008_v3_review_integrations.sql",
+      "sha256": "d1adb81be97c9c4269b712f9d19123bee5d291a3f4683f5015a45fda3b441083"
     },
     {
       "version": 9,
-      "file": "0009_weave_sessions.sql",
-      "sha256": "5512b9610fff2d99b4c71e21e9c0481b351b124142b1ef4a2c455c81049c282b"
+      "file": "0009_v3_run_pagination.sql",
+      "sha256": "a6ad9a03b6b6d186c01db8cc6a65b4d989f537083929b96a7c0a9149540dab36"
     },
     {
       "version": 10,
-      "file": "0010_layer_step_metadata.sql",
-      "sha256": "bd4a1546995f4cf7c2af4030521f8e455f547332aea9a7542cb242d4a8a490d5"
+      "file": "0010_v3_space_invitations.sql",
+      "sha256": "22fc825c3643164c88847b3eefd3db1eb9e4e84b095f1d3f071319db70cac238"
     },
     {
       "version": 11,
-      "file": "0011_layer_step_origin_layer_name.sql",
-      "sha256": "6673edec92897de185dc30c74e9fa85dff8d7ae4cbfad19a33495cb98da29a30"
+      "file": "0011_v3_run_cancellations.sql",
+      "sha256": "4f3291dc8644b42dd0c4f4593ddbe679e2d0b701d7db0a881ba900a31dde996b"
     },
     {
       "version": 12,
-      "file": "0012_layer_settings_lineage_clear_steps.sql",
-      "sha256": "cca56e64828089d5adb829962c4395977c9edba8d8c877a95763956b160457c4"
+      "file": "0012_v3_comment_corrections.sql",
+      "sha256": "d3d6e5219941e6afd9a1378300a0ccadea447e5b826297ea18e1bade5167f854"
     },
     {
       "version": 13,
-      "file": "0013_weave_step_replays.sql",
-      "sha256": "39873dfa8e58fb557873af10298c57e48b239a3395adb785c54d08263589be6f"
+      "file": "0013_v3_space_teams.sql",
+      "sha256": "6338d5c8f2d692baccfb19f75546bdc8f7980167e39d08073f9010258fea3e20"
     },
     {
       "version": 14,
-      "file": "0014_global_object_ownership.sql",
-      "sha256": "e56498e87f1e3f5d59eea988affcb49f3d74960db31858a5830c58d5dd85674d"
+      "file": "0014_v3_run_execution_state.sql",
+      "sha256": "d4d3d7b6fdaaaa871096c146331dfdb052c55d9b5048c1918b593aea57aa2565"
+    },
+    {
+      "version": 15,
+      "file": "0015_v3_published_observations.sql",
+      "sha256": "773210fb995da059c9e599dd828d31b97932e0d9363b662583d5a5bea5ba93cf"
+    },
+    {
+      "version": 16,
+      "file": "0016_v3_client_observations.sql",
+      "sha256": "fb519e5f0f718986365be8ba334c5ebb8908548f809a9bf2076fb2775fb8dbcc"
     }
   ]
 }

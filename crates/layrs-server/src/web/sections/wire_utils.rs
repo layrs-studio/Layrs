@@ -52,6 +52,7 @@ fn route_json(route: &RouteDescriptor) -> Value {
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 fn artifact_metadata_value(
     workspace_id: &str,
     space_id: &str,

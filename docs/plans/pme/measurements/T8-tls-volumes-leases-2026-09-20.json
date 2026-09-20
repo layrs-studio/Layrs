@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "directories": 99,
+      "files": 99000,
+      "measurements": [
+        {
+          "elapsedMs": 38723,
+          "phase": "generate"
+        },
+        {
+          "elapsedMs": 105145,
+          "phase": "initialize"
+        },
+        {
+          "elapsedMs": 193140,
+          "phase": "provision-publish"
+        },
+        {
+          "elapsedMs": 1468999,
+          "phase": "clone"
+        },
+        {
+          "elapsedMs": 112600,
+          "phase": "verify-all-clone-bytes"
+        },
+        {
+          "elapsedMs": 208992,
+          "phase": "receive-unchanged"
+        },
+        {
+          "elapsedMs": 320586,
+          "phase": "capture-publish-one-file"
+        }
+      ],
+      "payloadBytes": 25344000,
+      "result": "paused"
+    }
+  ],
+  "limitations": [
+    "Synthetic 256-byte files with only 200 unique payloads, directories counted separately.",
+    "Real verified HTTPS and PostgreSQL, one publisher and one independent clone per case.",
+    "One local run with warm caches and concurrent builds; not a production performance guarantee.",
+    "Peak process memory, unique large files and 100 MiB/1 GiB file support are not measured.",
+    "Partial report records completed phases; fixture cleanup belongs to native_clients_v3."
+  ],
+  "platform": "windows",
+  "profile": "debug",
+  "result": "paused",
+  "interruption": "User requested pause at 2026-09-20T18:02:13Z. Ctrl+C; incremental receive and final byte verification incomplete. No final qualification claimed.",
+  "schemaVersion": "layrs.tls-volume-measurement.v1"
+}

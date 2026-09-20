@@ -152,6 +152,7 @@ fn create_local_space_directories(layrs_dir: &Path) -> Result<(), String> {
 }
 
 fn scaffold_layer(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     local_space_id: &str,
     access: &LayerAccessView,
@@ -163,8 +164,8 @@ fn scaffold_layer(
         .unwrap_or_else(|| layer_dir(layrs_dir, &access.layer_id));
     let access_path = layer_path.join("access.json");
 
-    if access_path.exists() {
-        let existing = read_json::<LayerAccessFile>(&access_path)?;
+    if store.exists(&access_path)? {
+        let existing = read_json::<LayerAccessFile>(store, &access_path)?;
         if existing.access == LayerAccessKind::Redacted
             && access.access != LayerAccessKind::Redacted
         {
@@ -203,7 +204,7 @@ fn scaffold_layer(
         generated_at_unix: unix_now(),
         rules: Vec::new(),
     };
-    write_json(&access_path, &access_file)?;
+    write_json(store, &access_path, &access_file)?;
 
     let empty_tree_id = write_tree_object(layrs_dir, &[])?;
     let empty_state = WorkingStateFile {
@@ -216,8 +217,8 @@ fn scaffold_layer(
 
     for file_name in ["index.json", "working-state.json"] {
         let path = layer_path.join(file_name);
-        if !path.exists() {
-            write_json(&path, &empty_state)?;
+        if !store.exists(&path)? {
+            write_json(store, &path, &empty_state)?;
         }
     }
 
@@ -229,13 +230,14 @@ fn scaffold_layer(
         "pending": false
     });
     let sync_path = layer_path.join("sync-state.json");
-    if !sync_path.exists() {
-        write_json(&sync_path, &sync_state)?;
+    if !store.exists(&sync_path)? {
+        write_json(store, &sync_path, &sync_state)?;
     }
 
     let timeline_path = layer_path.join("timeline-cache.json");
-    if !timeline_path.exists() {
+    if !store.exists(&timeline_path)? {
         write_json(
+            store,
             &timeline_path,
             &serde_json::json!({ "schema": "layrs.timeline_cache.v1", "items": [] }),
         )?;
@@ -345,6 +347,7 @@ fn access_view(
 }
 
 fn write_access_pointer(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     local_space_id: &str,
     active_layer_id: Option<&str>,
@@ -362,10 +365,19 @@ fn write_access_pointer(
         layers: layers.to_vec(),
     };
 
-    write_json(&layrs_dir.join("access.json"), &pointer)
+    write_json(store, &layrs_dir.join("access.json"), &pointer)
 }
 
-fn write_access_pointer_from_meta(handle: &LocalSpaceHandle) -> Result<(), String> {
+fn write_access_pointer_from_meta(handle: &mut LocalSpaceHandle) -> Result<(), String> {
+    let pointer = access_pointer_from_meta(handle);
+    write_json(
+        &mut handle.store,
+        &handle.layrs_dir.join("access.json"),
+        &pointer,
+    )
+}
+
+fn access_pointer_from_meta(handle: &LocalSpaceHandle) -> LocalAccessPointer {
     let layers = handle
         .meta
         .layers
@@ -389,13 +401,17 @@ fn write_access_pointer_from_meta(handle: &LocalSpaceHandle) -> Result<(), Strin
             },
         })
         .collect::<Vec<_>>();
-
-    write_access_pointer(
-        &handle.layrs_dir,
-        &handle.meta.local_space_id,
-        Some(&handle.active.layer_id),
-        &layers,
-    )
+    LocalAccessPointer {
+        schema: ACCESS_POINTER_SCHEMA.to_string(),
+        local_space_id: handle.meta.local_space_id.clone(),
+        active_layer_id: Some(handle.active.layer_id.clone()),
+        redacted_reserved_paths: layers
+            .iter()
+            .filter(|layer| layer.access == LayerAccessKind::Redacted)
+            .filter_map(|layer| layer.local_path.clone())
+            .collect(),
+        layers,
+    }
 }
 
 fn open_local_space_handle(selector: &str) -> Result<LocalSpaceHandle, String> {
@@ -431,14 +447,16 @@ fn open_local_space_at(path: PathBuf) -> Result<LocalSpaceHandle, String> {
         path
     };
     let layrs_dir = root.join(LAYRS_DIR);
-    let meta = read_json::<LocalSpaceFile>(&layrs_dir.join("local-space.json"))?;
-    let active = read_json::<ActiveLayerFile>(&layrs_dir.join("active-layer.json"))?;
+    let store = LocalStoreSession::open_exclusive(&layrs_dir)?;
+    let meta = read_json::<LocalSpaceFile>(&store, &layrs_dir.join("local-space.json"))?;
+    let active = read_json::<ActiveLayerFile>(&store, &layrs_dir.join("active-layer.json"))?;
 
     Ok(LocalSpaceHandle {
         root,
         layrs_dir,
         meta,
         active,
+        store,
     })
 }
 

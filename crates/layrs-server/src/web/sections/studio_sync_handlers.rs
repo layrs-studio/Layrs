@@ -258,6 +258,7 @@ async fn publish_local_space_sync(
     .map(Json)
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn publish_local_space_sync_v2(
     pool: &PgPool,
     workspace_id: &str,

@@ -1,0 +1,66 @@
+//! Authoritative native server-side storage primitives for Sync V3.
+
+mod authorization;
+mod bootstrap_store;
+mod capability;
+mod cas;
+mod catalog;
+mod cataloged_cas;
+mod conflict;
+pub use conflict::conflict_object_references;
+mod closure;
+mod collaboration;
+mod compare;
+mod history;
+mod history_path;
+mod observations;
+pub use observations::{
+    PublishedObservationFilter, PublishedObservationProvenance, PublishedObservationSnapshot,
+    PublishedStepObservation,
+};
+mod error;
+mod event_store;
+mod fetch_snapshot;
+mod fs_cas;
+mod plan_store;
+mod plans;
+mod policy_authorizer;
+mod content_policy;
+pub use content_policy::*;
+mod policy_management;
+pub use policy_management::PolicyManagementState;
+mod postgres;
+mod provision;
+mod quota;
+mod s3_cas;
+pub mod schema;
+mod service_io;
+mod transaction_authorization;
+mod transaction_choose;
+mod transaction_plan;
+mod transaction_policy;
+mod transaction_products;
+mod transaction_store;
+
+pub use authorization::*;
+pub use bootstrap_store::*;
+pub use capability::*;
+pub use cas::*;
+pub use catalog::*;
+pub use cataloged_cas::*;
+pub use collaboration::*;
+pub use compare::*;
+pub use error::*;
+pub use event_store::*;
+pub use fetch_snapshot::build_fetch_snapshot_page;
+pub use fs_cas::*;
+pub use history::*;
+pub use plan_store::*;
+pub use plans::*;
+pub use policy_authorizer::*;
+pub use postgres::*;
+pub use provision::*;
+pub use quota::*;
+pub use s3_cas::*;
+pub use service_io::*;
+pub use transaction_store::*;

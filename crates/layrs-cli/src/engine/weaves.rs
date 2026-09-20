@@ -1,9 +1,8 @@
 use crate::args::ConflictResolveMethod;
 use layrs_client_core::access_registry as core_space;
 use serde::Serialize;
-use serde_json::Value;
 use std::io::{self, BufRead, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{CliError, ClientCoreEngine, map_core, resolve_layer_id};
 
@@ -469,174 +468,25 @@ impl ClientCoreEngine {
     }
 
     fn read_conflict_side_bytes(&self, path: &str, side: &str) -> Result<Vec<u8>, CliError> {
-        let (weave_dir, conflict_dir, _) = self.active_conflict_paths(path)?;
-        let side_path = conflict_dir.join(side);
-        std::fs::read(&side_path).map_err(|error| {
-            CliError::runtime(format!(
-                "Layrs could not read {side} conflict bytes in {}: {error}",
-                weave_dir.display()
-            ))
-        })
+        map_core(core_space::read_weave_conflict_variant(
+            self.space_selector()?,
+            path.into(),
+            side,
+        ))
     }
-
     fn resolve_conflict_bytes_compat(
         &self,
         path: &str,
         bytes: &[u8],
         resolution: &str,
     ) -> Result<WeaveOutput, CliError> {
-        let selector = self.space_selector()?;
-        let (weave_dir, conflict_dir, session_path) = self.active_conflict_paths(path)?;
-        std::fs::write(conflict_dir.join("resolved"), bytes).map_err(|error| {
-            CliError::runtime(format!(
-                "Layrs could not write resolved conflict bytes in {}: {error}",
-                conflict_dir.display()
-            ))
-        })?;
-
-        let mut session: Value =
-            serde_json::from_str(&std::fs::read_to_string(&session_path).map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not read active Weave session {}: {error}",
-                    session_path.display()
-                ))
-            })?)
-            .map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not parse active Weave session {}: {error}",
-                    session_path.display()
-                ))
-            })?;
-        let conflicts = session
-            .get_mut("conflicts")
-            .and_then(Value::as_array_mut)
-            .ok_or_else(|| {
-                CliError::runtime(format!(
-                    "Layrs active Weave session {} is missing conflicts.",
-                    session_path.display()
-                ))
-            })?;
-        let conflict = conflicts
-            .iter_mut()
-            .find(|conflict| {
-                conflict.get("path").and_then(Value::as_str) == Some(path)
-                    || conflict.get("conflictId").and_then(Value::as_str) == Some(path)
-            })
-            .ok_or_else(|| CliError::runtime(format!("No active conflict matches `{path}`.")))?;
-        if let Some(object) = conflict.as_object_mut() {
-            object.insert("status".to_string(), Value::String("resolved".to_string()));
-            object.insert(
-                "resolution".to_string(),
-                Value::String(resolution.to_string()),
-            );
-            if let Some(blocks) = object.get_mut("blocks").and_then(Value::as_array_mut) {
-                for block in blocks {
-                    if let Some(block) = block.as_object_mut() {
-                        block.insert("status".to_string(), Value::String("resolved".to_string()));
-                        block.insert(
-                            "resolution".to_string(),
-                            Value::String(resolution.to_string()),
-                        );
-                    }
-                }
-            }
-        }
-        let all_resolved = conflicts
-            .iter()
-            .all(|conflict| conflict.get("status").and_then(Value::as_str) == Some("resolved"));
-        if all_resolved {
-            session["status"] = Value::String("resolved".to_string());
-        }
-        session["updatedAtUnix"] = Value::from(unix_now_secs());
-        std::fs::write(
-            &session_path,
-            serde_json::to_string_pretty(&session).map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not encode active Weave session: {error}"
-                ))
-            })?,
-        )
-        .map_err(|error| {
-            CliError::runtime(format!(
-                "Layrs could not write active Weave session {}: {error}",
-                session_path.display()
-            ))
-        })?;
-
-        let space = map_core(core_space::open_local_space(selector))?;
-        let session = self.conflict_status()?.ok_or_else(|| {
-            CliError::runtime(format!(
-                "Layrs resolved conflict bytes in {}, but no active session remains.",
-                weave_dir.display()
-            ))
-        })?;
-        Ok(WeaveOutput {
-            message: "Conflict resolved.".to_string(),
-            local_space_id: space.local_space_id,
-            session,
-        })
-    }
-
-    fn active_conflict_paths(&self, path: &str) -> Result<(PathBuf, PathBuf, PathBuf), CliError> {
-        let selector = self.space_selector()?;
-        let layrs_dir = PathBuf::from(selector).join(".layrs");
-        let active_path = layrs_dir.join("weaves").join("active.json");
-        let active: Value =
-            serde_json::from_str(&std::fs::read_to_string(&active_path).map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not read active Weave marker {}: {error}",
-                    active_path.display()
-                ))
-            })?)
-            .map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not parse active Weave marker {}: {error}",
-                    active_path.display()
-                ))
-            })?;
-        let weave_id = active
-            .get("weaveId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CliError::runtime(format!(
-                    "Layrs active Weave marker {} is missing weaveId.",
-                    active_path.display()
-                ))
-            })?;
-        let weave_dir = layrs_dir
-            .join("weaves")
-            .join(safe_id_fragment_cli(weave_id));
-        let session_path = weave_dir.join("session.json");
-        let session: Value =
-            serde_json::from_str(&std::fs::read_to_string(&session_path).map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not read active Weave session {}: {error}",
-                    session_path.display()
-                ))
-            })?)
-            .map_err(|error| {
-                CliError::runtime(format!(
-                    "Layrs could not parse active Weave session {}: {error}",
-                    session_path.display()
-                ))
-            })?;
-        let conflict_id = session
-            .get("conflicts")
-            .and_then(Value::as_array)
-            .and_then(|conflicts| {
-                conflicts.iter().find_map(|conflict| {
-                    let matches = conflict.get("path").and_then(Value::as_str) == Some(path)
-                        || conflict.get("conflictId").and_then(Value::as_str) == Some(path);
-                    matches
-                        .then(|| conflict.get("conflictId").and_then(Value::as_str))
-                        .flatten()
-                })
-            })
-            .ok_or_else(|| CliError::runtime(format!("No active conflict matches `{path}`.")))?;
-        let conflict_dir = weave_dir
-            .join("conflicts")
-            .join(safe_id_fragment_cli(conflict_id));
-        Ok((weave_dir, conflict_dir, session_path))
+        map_core(core_space::resolve_weave_conflict_bytes(
+            self.space_selector()?,
+            path.into(),
+            bytes,
+            resolution,
+        ))
+        .map(WeaveOutput::from_result)
     }
 }
 
@@ -952,31 +802,4 @@ fn read_manual_text_from_stdin() -> Result<String, CliError> {
         ))
     })?;
     Ok(input)
-}
-
-fn safe_id_fragment_cli(value: &str) -> String {
-    let mut safe = String::with_capacity(value.len().max(4));
-    for ch in value.trim().chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-            safe.push(ch.to_ascii_lowercase());
-        } else if ch.is_whitespace() || matches!(ch, '/' | '\\' | ':') {
-            safe.push('-');
-        } else {
-            safe.push('_');
-        }
-    }
-
-    let safe = safe.trim_matches('-').to_string();
-    if safe.is_empty() {
-        "layer".to_string()
-    } else {
-        safe
-    }
-}
-
-fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

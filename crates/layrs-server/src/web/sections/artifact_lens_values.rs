@@ -96,6 +96,7 @@ async fn artifact_content_value(
     }))
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn artifact_v2_content_value(
     pool: &PgPool,
     workspace_id: &str,
@@ -321,6 +322,7 @@ fn lens_runtime_diff_value(input: LensRuntimeDiffRender<'_>) -> Value {
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "Keep explicit transaction and scope arguments in the retained legacy Web API")]
 async fn artifact_diff_window_value(
     pool: &PgPool,
     workspace_id: &str,
@@ -577,20 +579,18 @@ impl TextLineWindowBuilder {
         for character in text.chars() {
             if character == '\n' {
                 self.flush_line();
-            } else {
-                if character != '\r' {
+            } else if character != '\r' {
                     if self.total_lines >= self.start
                         && self.lines.len() < self.limit
                         && self.current_line_len >= self.column_start
                         && self
                             .column_limit
-                            .map_or(true, |limit| self.current_line_segment_len < limit)
+                            .is_none_or(|limit| self.current_line_segment_len < limit)
                     {
                         self.current_line_segment.push(character);
                         self.current_line_segment_len += 1;
                     }
                     self.current_line_len += 1;
-                }
             }
         }
     }

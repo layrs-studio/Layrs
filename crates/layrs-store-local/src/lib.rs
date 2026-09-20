@@ -5,6 +5,7 @@
 //! is performed here.
 
 mod cas;
+pub mod download_cache;
 mod error;
 mod fault;
 mod fsck;
@@ -14,6 +15,7 @@ mod lock;
 mod recovery;
 mod repository;
 mod schema;
+pub mod scm_v1;
 mod secure_fs;
 mod session;
 mod sqlite;

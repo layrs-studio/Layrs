@@ -441,6 +441,11 @@ pub fn contains_reparse_component(path: &Path) -> io::Result<bool> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        // A Windows prefix (notably \\?\C:) is not a directory by itself.
+        // Inspect the drive/UNC root after RootDir, then every descendant.
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata_has_reparse_point(&metadata) => return Ok(true),
             Ok(_) => {}

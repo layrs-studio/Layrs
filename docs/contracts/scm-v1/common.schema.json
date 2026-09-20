@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/common.schema.json",
+  "title": "Layrs SCM V1 common scalar contracts",
+  "description": "Single authority for content ObjectId and safe repository-relative path syntax.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {},
+  "$defs": {
+    "ObjectId": {
+      "description": "BLAKE3 content id over the object's normative identity bytes.",
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "RepoPath": {
+      "description": "Non-empty NFC-normalized repository-relative path using slash separators. Validators must reject non-NFC input; RFC 8785 does not normalize Unicode.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*\\u0000)(?!.*//)(?!(?:\\.|\\.\\.)(?:/|$))(?!.*(?:/)(?:\\.|\\.\\.)(?:/|$))[^/]{1,255}(?:/[^/]{1,255})*$",
+      "x-layrs-unicode-normalization": "NFC"
+    },
+    "RepoPathComponent": {
+      "description": "One non-empty NFC-normalized repository path component. Validators must reject non-NFC input.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!\\.$)(?!\\.\\.$)(?!.*[/\\\\\\u0000]).+$",
+      "x-layrs-unicode-normalization": "NFC"
+    }
+  }
+}

@@ -1,3 +1,4 @@
+// Historical linked-Layer engine contracts; native Weave is covered by native_workflow.
 mod support;
 
 use std::fs;
@@ -5,7 +6,7 @@ use support::local_data_safety::*;
 
 #[test]
 fn clean_weave_reorders_linked_history_without_losing_parent_steps() {
-    let space = init_empty("weave-clean-linked");
+    let space = init_legacy_empty("weave-clean-linked");
     fs::write(space.space.join("main-1.txt"), "main 1\n").expect("write main 1");
     let main_1 = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
     fs::write(space.space.join("main-2.txt"), "main 2\n").expect("write main 2");
@@ -156,7 +157,7 @@ fn clean_weave_reorders_linked_history_without_losing_parent_steps() {
 
 #[test]
 fn weave_parent_uses_active_layer_parent_without_source_target_selection() {
-    let space = init_empty("weave-parent-shortcut");
+    let space = init_legacy_empty("weave-parent-shortcut");
     fs::write(space.space.join("main.txt"), "main\n").expect("write main");
     run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
     run_json(
@@ -228,7 +229,7 @@ fn weave_conflict_abort_restores_pre_weave_target() {
     let marked = fs::read_to_string(space.space.join("story.txt")).expect("read marked conflict");
     assert!(marked.contains("<<<<<<< target:local_layer_main"));
     assert!(marked.contains(">>>>>>> source:feature-"));
-    assert_latest_weave_conflict_files(&space.space);
+    assert_latest_weave_conflict_files(&space);
 
     let conflicts = run_json(
         &space,
@@ -262,7 +263,7 @@ fn weave_conflict_abort_restores_pre_weave_target() {
 
 #[test]
 fn linked_parent_auto_step_conflicts_with_child_same_line_change_on_switch() {
-    let space = init_empty("linked-parent-auto-step-conflict");
+    let space = init_legacy_empty("linked-parent-auto-step-conflict");
     fs::write(space.space.join("story.txt"), "base\nline 2\n").expect("write base");
     let base_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
 
@@ -349,7 +350,7 @@ fn linked_parent_auto_step_conflicts_with_child_same_line_change_on_switch() {
     assert!(marked.contains("======="));
     assert!(marked.contains("main line 1"));
     assert!(marked.contains(">>>>>>> source:local_layer_main"));
-    assert_latest_weave_conflict_files(&space.space);
+    assert_latest_weave_conflict_files(&space);
 
     let feature_timeline = run_json(
         &space,
@@ -765,7 +766,7 @@ fn weave_text_conflict_resolution_modes_are_durable() {
 
 #[test]
 fn weave_text_conflict_resolves_independent_blocks_without_losing_context() {
-    let space = init_empty("weave-resolve-blocks");
+    let space = init_legacy_empty("weave-resolve-blocks");
     fs::write(
         space.space.join("story.txt"),
         "top\nfirst base\nmiddle\nsecond base\nbottom\n",
@@ -1016,7 +1017,7 @@ fn weave_binary_conflict_does_not_inject_markers_and_resolves_exact_bytes() {
         ],
     );
     assert_file_bytes(&space.space, "Assets/hero.png", &main_bytes);
-    assert_latest_weave_conflict_files(&space.space);
+    assert_latest_weave_conflict_files(&space);
     let conflicts = run_json(
         &space,
         [
@@ -1027,7 +1028,8 @@ fn weave_binary_conflict_does_not_inject_markers_and_resolves_exact_bytes() {
             "conflicts",
         ],
     );
-    assert_eq!(conflicts[0]["lens_id"].as_str(), Some("layrs.image"));
+    // Image previews cannot reconcile: Raw supplies explicit whole-file choices.
+    assert_eq!(conflicts[0]["lens_id"].as_str(), Some("layrs.raw"));
 
     run_json(
         &space,
@@ -1090,7 +1092,7 @@ fn weave_binary_conflict_resolve_file_uses_replacement_bytes() {
 }
 
 fn init_conflicting_weave_space(label: &str) -> TestSpace {
-    let space = init_empty(label);
+    let space = init_legacy_empty(label);
     fs::write(space.space.join("story.txt"), "base\n").expect("write base");
     run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
 
@@ -1175,7 +1177,7 @@ fn assert_text_conflict_resolution(label: &str, flag: &str, expected: &str) {
 }
 
 fn init_conflicting_binary_weave_space(label: &str) -> (TestSpace, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let space = init_empty(label);
+    let space = init_legacy_empty(label);
     fs::create_dir_all(space.space.join("Assets")).expect("create assets");
     let base = deterministic_png_like_bytes();
     let mut feature = base.clone();

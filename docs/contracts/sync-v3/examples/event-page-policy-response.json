@@ -1,0 +1,26 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "spaceEventPage",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 2,
+  "currentPolicySetId": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "spaceId": "space:demo",
+  "events": [{
+    "sequence": 1,
+    "eventId": "event:policy-1",
+    "kind": "policy.root_changed",
+    "actor": { "kind": "account", "actorId": "actor:alexa", "deviceId": "device:desktop-a" },
+    "transactionId": "transaction:policy-1",
+    "payload": {
+      "mutationId": "mutation:policy-1",
+      "oldPolicySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+      "newPolicySetId": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "oldAuthorizationEpoch": 1,
+      "newAuthorizationEpoch": 2
+    },
+    "createdAt": "2026-07-19T12:10:00Z"
+  }],
+  "scannedThroughSequence": 1,
+  "nextCursor": "cursor-demo-1",
+  "hasMore": false
+}

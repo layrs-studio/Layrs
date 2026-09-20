@@ -1,0 +1,39 @@
+import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { seedNativeProof } from "./fixtures/nativeProofSeed";
+
+test("Web uses the real native identity, project, review, proof and account services", async ({ page }) => {
+  if (!process.env.LAYRS_NATIVE_UI_FIXTURE) throw new Error("Native TLS fixture is mandatory");
+  const fixture = JSON.parse(await readFile(process.env.LAYRS_NATIVE_UI_FIXTURE, "utf8"));
+  await seedNativeProof(fixture);
+  await page.goto("/");
+  await page.getByLabel("Compte", { exact: true }).fill(fixture.accounts.alice.login);
+  await page.getByLabel("Mot de passe", { exact: true }).fill(fixture.accounts.alice.password);
+  await page.getByRole("button", { name: "Se connecter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Se déconnecter", exact: true })).toBeVisible();
+  await page.getByLabel("Identifiant du projet", { exact: true }).fill(fixture.spaceId);
+  await page.getByRole("button", { name: "Ouvrir le projet", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Layers et captures publiées" })).toBeVisible();
+  await page.getByText("Revues et validations", { exact: true }).click();
+  await page.getByRole("button", { name: "Actualiser les revues", exact: true }).click();
+  await page.getByRole("button", { name: "Ouvrir la revue", exact: true }).first().click();
+  const review = page.getByRole("region", { name: "Revue ouverte", exact: true });
+  await expect(review).toBeVisible();
+  const comment = `Commentaire Web ${Date.now()}`;
+  await review.getByLabel("Commentaire", { exact: true }).fill(comment);
+  await review.getByRole("button", { name: "Commenter", exact: true }).click();
+  await expect(review.getByText(comment, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Consulter les exécutions CI", exact: true }).click();
+  await page.getByRole("button", { name: "Consulter la preuve et le journal", exact: true }).first().click();
+  await expect(page.getByRole("region", { name: "Preuve et journal CI", exact: true }).getByText("UI proof fixture", { exact: true })).toBeVisible();
+  await page.getByText("Équipe, protections et intégrations", { exact: true }).click();
+  await page.getByText("Comptes et automatisations", { exact: true }).click();
+  await page.getByRole("button", { name: "Charger les comptes", exact: true }).click();
+  await expect(page.getByText("Bob — relecteur test", { exact: true })).toBeVisible();
+  // Session credentials live only in React memory; reload requires a new login.
+  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
+  await page.getByRole("button", { name: "Se déconnecter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
+});

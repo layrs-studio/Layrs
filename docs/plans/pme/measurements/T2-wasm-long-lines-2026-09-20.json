@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-20",
+  "environment": "Windows shared development machine; Rust debug host, release wasm32 guest; sequential real worker tests",
+  "scope": "Three-way text merge, two ASCII q lines separated by middle, disjoint leading/trailing edits; successful output compared byte-for-byte with pure engine",
+  "beforeModuleSha256": "db40cce505c875b8bb2a0c6d2e28a14dc0db86cd3ab466f5d74c837ddecdd2b0",
+  "afterModuleSha256": "97e72b2e6bc6630b1021ca7469df784e8d60feaaab5210a15160d5480802cf7b",
+  "optimization": "Canonical JSON directly encodes u64 values 0..255; all other numbers retain serde_jcs. Canonical bytes, fuel caps and default budgets unchanged.",
+  "defaultLimits": {"fuel": 100000000, "deadlineMs": 10000, "linearMemoryBytes": 33554432},
+  "explicitLimits": {"fuel": 1000000000, "deadlineMs": 30000, "linearMemoryBytes": 33554432},
+  "measurements": [
+    {"lineBytes": 1024, "recipe": "default success", "beforeMilliseconds": 1390, "afterMilliseconds": 1145, "beforeOutcome": "exact", "afterOutcome": "exact"},
+    {"lineBytes": 16384, "recipe": "default fuel refusal, explicit success, 2MiB growth refusal", "beforeMilliseconds": 10770, "afterMilliseconds": 5626, "beforeOutcome": "exact with explicit limits", "afterOutcome": "exact with explicit limits"},
+    {"lineBytes": 65536, "recipe": "default fuel refusal then explicit limit", "beforeMilliseconds": null, "afterMilliseconds": 14445, "beforeOutcome": "fuel refused even at 1 billion", "afterOutcome": "exact with explicit limits"}
+  ],
+  "linuxQualification": {
+    "environment": "Docker Linux x86_64 Rust1.90, network disabled, read-only sources; debug host and same release guest",
+    "line1KiBDefaultSuccessMilliseconds": 4577,
+    "line16KiBDefaultRefusalConfiguredSuccessMemoryRefusalMilliseconds": 12192,
+    "line64KiBDefaultRefusalConfiguredSuccessMilliseconds": 17675,
+    "longLineTestsPassed": 5,
+    "note": "Same exact bytes and budget outcomes; measurements include sealed image preparation and test setup. Not a cross-machine performance comparison."
+  },
+  "limitations": "Single local measurements include test setup, worker pinning and actual execution, not throughput guarantees or hard latency bounds. The 16KiB recipe also exercises two refusals. The 64KiB prior refusal had no separately comparable elapsed sample. No default budget increase. Windows and Linux x86_64 hosts qualified; macOS/other architectures remain unsupported. Pure engine Unicode/CRLF and 128KiB conflict cases are separately tested."
+}

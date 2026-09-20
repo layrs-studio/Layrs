@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/transaction.schema.json",
+  "title": "Layrs Sync V3 transaction request",
+  "description": "Atomic finalization of canonical objects and compare-and-swap advancement of the authoritative RepositoryView pointer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "type", "spaceId", "clientId", "idempotencyKey", "requestDigest", "knownEventCursor", "steps", "observations", "products", "viewMutation", "policyRootMutation"],
+  "properties": {
+    "protocol": { "const": "layrs.sync.v3" },
+    "type": { "const": "syncTransactionRequest" },
+    "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+    "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+    "idempotencyKey": { "$ref": "common.schema.json#/$defs/IdempotencyKey" },
+    "requestDigest": { "$ref": "common.schema.json#/$defs/ContentId" },
+    "knownEventCursor": {
+      "description": "Signed opaque principal/Space/authorization-epoch event consistency hint. It is not a RepositoryView or PolicyRoot CAS condition.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }]
+    },
+    "steps": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Step" }
+    },
+    "observations": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/StepObservation" }
+    },
+    "products": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "products.schema.json#/$defs/ProductEnvelope" }
+    },
+    "viewMutation": {
+      "oneOf": [{ "$ref": "#/$defs/RepositoryViewMutation" }, { "type": "null" }]
+    },
+    "policyRootMutation": {
+      "oneOf": [{ "$ref": "#/$defs/PolicyRootMutation" }, { "type": "null" }]
+    }
+  },
+  "anyOf": [
+    { "properties": { "steps": { "minItems": 1 } } },
+    { "properties": { "observations": { "minItems": 1 } } },
+    { "properties": { "products": { "minItems": 1 } } },
+    { "properties": { "viewMutation": { "type": "object" } } },
+    { "properties": { "policyRootMutation": { "type": "object" } } }
+  ],
+  "$defs": {
+    "ProposedRepositoryView": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "view"],
+          "properties": {
+            "kind": { "const": "inline" },
+            "view": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/PublishedRepositoryView" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "repositoryViewId"],
+          "properties": {
+            "kind": { "const": "stored" },
+            "repositoryViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" }
+          }
+        }
+      ]
+    },
+    "LayerMutationIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layerId", "mode"],
+      "properties": {
+        "layerId": { "$ref": "common.schema.json#/$defs/LayerId" },
+        "mode": { "type": "string", "enum": ["advance", "integrate", "choose"] },
+        "decisionProductObjectId": { "$ref": "common.schema.json#/$defs/ProductObjectId" }
+      },
+      "if": { "properties": { "mode": { "const": "choose" } }, "required": ["mode"] },
+      "then": { "required": ["decisionProductObjectId"] },
+      "else": { "not": { "required": ["decisionProductObjectId"] } }
+    },
+    "RepositoryViewMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutationId", "expectedCurrentViewId", "expectedGeneration", "proposedView", "layerMutations", "expectedPolicyVersionObjectIds"],
+      "properties": {
+        "mutationId": { "$ref": "common.schema.json#/$defs/MutationId" },
+        "expectedCurrentViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" },
+        "expectedGeneration": { "type": "integer", "minimum": 0 },
+        "proposedView": { "$ref": "#/$defs/ProposedRepositoryView" },
+        "layerMutations": {
+          "description": "Empty only for an inline reference-only mutation under exact View/generation CAS; authoritative validation requires unchanged Layer head sets, a changed View and immutable additive Marker/Release references (ADR 0015).",
+          "type": "array", "minItems": 0, "maxItems": 1000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/LayerMutationIntent" }
+        },
+        "expectedPolicyVersionObjectIds": {
+          "description": "Exact sorted set of Policy Product object IDs from the PolicySet captured and locked at transaction start; never a subset or client-selected policy list.",
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        }
+      },
+      "if": { "properties": { "layerMutations": { "maxItems": 0 } }, "required": ["layerMutations"] },
+      "then": { "properties": { "proposedView": { "properties": { "kind": { "const": "inline" } }, "required": ["kind"] } } }
+    },
+    "ProposedPolicySet": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "policySet"],
+          "properties": { "kind": { "const": "inline" }, "policySet": { "$ref": "authorization.schema.json#/$defs/PolicySet" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "policySetId"],
+          "properties": { "kind": { "const": "stored" }, "policySetId": { "$ref": "common.schema.json#/$defs/ContentId" } }
+        }
+      ]
+    },
+    "PolicyRootMutation": {
+      "description": "Compare-and-swap of the exact current PolicySet ID and authorization epoch pair.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutationId", "expectedPolicySetId", "expectedAuthorizationEpoch", "proposedPolicySet"],
+      "properties": {
+        "mutationId": { "$ref": "common.schema.json#/$defs/MutationId" },
+        "expectedPolicySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "expectedAuthorizationEpoch": { "type": "integer", "minimum": 1 },
+        "proposedPolicySet": { "$ref": "#/$defs/ProposedPolicySet" }
+      }
+    }
+  }
+}

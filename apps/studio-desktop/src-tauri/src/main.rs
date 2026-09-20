@@ -1,4 +1,5 @@
 mod folder_dialog;
+mod native;
 
 use layrs_client_core::{access_registry, auth, desktop_state};
 use tauri::{Manager, PhysicalSize, Size};
@@ -266,6 +267,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            native::native_workspace,
+            native::native_remote,
             desktop_status,
             configure_server_endpoint,
             start_device_login,

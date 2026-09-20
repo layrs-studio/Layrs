@@ -978,10 +978,10 @@ struct ScanCacheEntry {
     snapshot: FileSnapshotEntry,
 }
 
-#[derive(Clone, Debug)]
 struct LocalSpaceHandle {
     root: PathBuf,
     layrs_dir: PathBuf,
     meta: LocalSpaceFile,
     active: ActiveLayerFile,
+    store: LocalStoreSession,
 }

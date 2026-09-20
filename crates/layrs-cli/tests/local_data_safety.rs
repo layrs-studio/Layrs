@@ -1,1254 +1,447 @@
+//! Native CLI safety. Historical linked Layers, clear-steps and compaction
+//! remain explicit old-engine contracts in legacy_local_data_safety.
 mod support;
-
-use std::fs;
+use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 use support::local_data_safety::*;
 
-#[test]
-fn init_refuses_existing_space_files_and_discovers_from_child_directory() {
-    let space = init_empty("init-refusals");
-    let duplicate = run_err(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            "Duplicate",
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    assert!(duplicate.contains("existing Local Space"));
-
-    let file_target = space.root.join("plain-file.txt");
-    fs::write(&file_target, "not a directory\n").expect("write file target");
-    let file_error = run_err(
-        &space,
-        [
-            "--json",
-            "init",
-            "File Target",
-            "--path",
-            &file_target.display().to_string(),
-        ],
-    );
-    assert!(file_error.contains("Local Space in a file"));
-
-    let child = space.space.join("nested").join("child");
-    fs::create_dir_all(&child).expect("create child");
-    let status = read_json(&run_ok_in(&space, &child, ["--json", "status"]));
-    assert_eq!(status["changed"].as_bool(), Some(false));
-    assert_eq!(status["pending_steps"].as_u64(), Some(0));
-
-    space.pass();
+fn cli(s: &TestSpace, args: &[&str]) -> Value {
+    run_json(s, ["--json"].into_iter().chain(args.iter().copied()))
 }
-
-#[test]
-fn init_existing_realistic_tree_preserves_nested_text_and_binary_assets() {
-    let space = TestSpace::new("init-realistic");
-    let image_bytes = deterministic_png_like_bytes();
-    fs::create_dir_all(space.space.join("src")).expect("create src");
-    fs::create_dir_all(space.space.join("Assets").join("Textures")).expect("create assets");
-    fs::write(space.space.join("README.md"), "# Game\n").expect("write readme");
-    fs::write(
-        space.space.join("src").join("game.ts"),
-        "export const game = true;\n",
-    )
-    .expect("write game");
-    fs::write(
-        space.space.join("Assets").join("Textures").join("hero.png"),
-        &image_bytes,
-    )
-    .expect("write image");
-
-    let init = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            "Realistic",
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    assert_eq!(init["scanned_files"].as_u64(), Some(3));
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_json_array_contains(&diff["files"], "Assets/Textures/hero.png");
-    assert_json_array_contains(&diff["files"], "README.md");
-    assert_json_array_contains(&diff["files"], "src/game.ts");
-    assert_file(&space.space, "README.md", "# Game\n");
-    assert_file(&space.space, "src/game.ts", "export const game = true;\n");
-    assert_file_bytes(&space.space, "Assets/Textures/hero.png", &image_bytes);
-
-    space.pass();
+fn initialize(s: &TestSpace) {
+    cli(s, &["init", "Native safety"]);
+    assert!(s.space.join(".layrs/FORMAT").is_file());
 }
-
-#[test]
-fn layrsignore_excludes_temp_git_and_generated_paths() {
-    let space = TestSpace::new("ignore");
-    fs::create_dir_all(space.space.join("target").join("debug")).expect("create target");
-    fs::create_dir_all(space.space.join(".git").join("objects")).expect("create git");
-    fs::create_dir_all(space.space.join("logs")).expect("create logs");
-    fs::write(space.space.join(".layrsignore"), "target/\n*.tmp\nlogs/\n").expect("write ignore");
-    fs::write(space.space.join("keep.txt"), "tracked\n").expect("write keep");
-    fs::write(space.space.join("scratch.tmp"), "ignored\n").expect("write tmp");
-    fs::write(
-        space.space.join("target").join("debug").join("build.txt"),
-        "ignored\n",
-    )
-    .expect("write target");
-    fs::write(space.space.join(".git").join("HEAD"), "ignored\n").expect("write git");
-    fs::write(space.space.join("logs").join("run.log"), "ignored\n").expect("write log");
-
-    let init = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            "Ignore",
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    assert_eq!(init["scanned_files"].as_u64(), Some(2));
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_json_array_contains(&diff["files"], ".layrsignore");
-    assert_json_array_contains(&diff["files"], "keep.txt");
-    assert_json_array_not_contains(&diff["files"], "scratch.tmp");
-    assert_json_array_not_contains(&diff["files"], "target/debug/build.txt");
-    assert_json_array_not_contains(&diff["files"], ".git/HEAD");
-    assert_json_array_not_contains(&diff["files"], "logs/run.log");
-
-    space.pass();
+fn empty(label: &str) -> TestSpace {
+    let s = TestSpace::new(label);
+    initialize(&s);
+    assert_eq!(cli(&s, &["status"])["dirty"], false);
+    s
 }
-
-#[test]
-fn init_existing_folder_preserves_content_and_exposes_initial_pending_step() {
-    let space = TestSpace::new("init-existing");
-    fs::write(space.space.join("hello.txt"), "hello before layrs\n").expect("write hello");
-
-    let init = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            "Existing",
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    let step_id = init["initial_step_id"]
-        .as_str()
-        .expect("initial step id")
-        .to_string();
-
-    assert!(space.space.join(".layrs").is_dir());
-    assert_eq!(init["pending_publish_count"].as_u64(), Some(1));
-    assert_file(&space.space, "hello.txt", "hello before layrs\n");
-
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_eq!(diff["source"].as_str(), Some("latestPendingStep"));
-    assert_eq!(diff["step_id"].as_str(), Some(step_id.as_str()));
-    assert_eq!(
-        diff["message"].as_str(),
-        Some(
-            format!("No working tree changes; displaying latest pending Step {step_id}.").as_str()
-        )
-    );
-    assert_json_array_contains(&diff["files"], "hello.txt");
-
-    let timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert!(
-        json_steps(&timeline)
-            .iter()
-            .any(|step| step["step_id"] == step_id)
-    );
-
-    space.pass();
+fn step(s: &TestSpace) -> String {
+    cli(s, &["step"])["stepId"].as_str().unwrap().into()
 }
-
-#[test]
-fn added_file_step_becomes_latest_pending_and_addressable_by_id() {
-    let space = init_empty("added-file");
-    fs::create_dir_all(space.space.join("src")).expect("create src");
-    fs::write(space.space.join("src").join("new-file.txt"), "new file\n").expect("write new file");
-
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_eq!(diff["source"].as_str(), Some("workingTree"));
-    assert_json_array_contains(&diff["files"], "src/new-file.txt");
-
-    let step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let step_id = step["step_id"].as_str().expect("step id").to_string();
-    assert_eq!(step["changed_files"].as_u64(), Some(1));
-
-    let latest = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_eq!(latest["source"].as_str(), Some("latestPendingStep"));
-    assert_eq!(latest["step_id"].as_str(), Some(step_id.as_str()));
-    assert_eq!(
-        latest["message"].as_str(),
-        Some(
-            format!("No working tree changes; displaying latest pending Step {step_id}.").as_str()
-        )
-    );
-
-    let by_id = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "diff", &step_id],
-    );
-    assert_eq!(by_id["source"].as_str(), Some("step"));
-    assert_eq!(by_id["step_id"].as_str(), Some(step_id.as_str()));
-    assert_json_array_contains(&by_id["files"], "src/new-file.txt");
-
-    space.pass();
+fn changes(s: &TestSpace, id: Option<&str>) -> Vec<Value> {
+    let value = match id {
+        Some(id) => cli(s, &["diff", id]),
+        None => cli(s, &["diff"]),
+    };
+    value["changes"].as_array().unwrap().clone()
 }
-
-#[test]
-fn modifications_deletions_and_additions_step_cleanly_without_touching_files() {
-    let space = init_empty("modify-delete-add");
-    fs::write(space.space.join("keep.txt"), "keep v1\n").expect("write keep");
-    fs::write(space.space.join("edit.txt"), "edit v1\n").expect("write edit");
-    let base = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    assert_eq!(base["changed_files"].as_u64(), Some(2));
-
-    fs::write(space.space.join("edit.txt"), "edit v2\n").expect("modify edit");
-    fs::write(space.space.join("add.txt"), "add v1\n").expect("write add");
-    fs::remove_file(space.space.join("keep.txt")).expect("delete keep");
-
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_eq!(diff["source"].as_str(), Some("workingTree"));
-    assert_json_array_contains(&diff["files"], "add.txt");
-    assert_json_array_contains(&diff["files"], "edit.txt");
-    assert_json_array_contains(&diff["files"], "keep.txt");
-
-    let step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    assert_eq!(step["changed_files"].as_u64(), Some(3));
-
-    let status = run_json(&space, ["--json", "--space", &space.space_arg(), "status"]);
-    assert_eq!(status["changed"].as_bool(), Some(false));
-    assert_file(&space.space, "edit.txt", "edit v2\n");
-    assert_file(&space.space, "add.txt", "add v1\n");
-    assert!(
-        !space.space.join("keep.txt").exists(),
-        "deleted file was restored"
-    );
-
-    space.pass();
-}
-
-#[test]
-fn stepped_layer_switches_restore_each_layer_and_keep_timelines_separate() {
-    let space = init_empty("stepped-layers");
-    fs::write(space.space.join("shared.txt"), "main version\n").expect("write main");
-    let main_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let main_step_id = main_step["step_id"]
-        .as_str()
-        .expect("main step")
-        .to_string();
-
-    let feature = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
-    );
-    assert_eq!(feature["name"].as_str(), Some("Feature"));
-
-    fs::write(space.space.join("shared.txt"), "feature version\n").expect("write feature");
-    fs::write(space.space.join("feature-only.txt"), "feature only\n").expect("write feature only");
-    let feature_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let feature_step_id = feature_step["step_id"]
-        .as_str()
-        .expect("feature step")
-        .to_string();
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file(&space.space, "shared.txt", "main version\n");
-    assert!(!space.space.join("feature-only.txt").exists());
-    let main_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert!(
-        json_steps(&main_timeline)
-            .iter()
-            .any(|step| step["step_id"] == main_step_id)
-    );
-    assert!(
-        json_steps(&main_timeline)
-            .iter()
-            .all(|step| step["origin_step_id"].as_str() != Some(feature_step_id.as_str()))
-    );
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    assert_file(&space.space, "shared.txt", "feature version\n");
-    assert_file(&space.space, "feature-only.txt", "feature only\n");
-    let feature_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_timeline_has_origin(
-        &feature_timeline,
-        "local_layer_main",
-        &main_step_id,
-        "inherited",
-    );
-    assert_timeline_has_origin(
-        &feature_timeline,
-        feature["layer_id"].as_str().expect("feature layer id"),
-        &feature_step_id,
-        "native",
-    );
-
-    space.pass();
-}
-
-#[test]
-fn linked_child_layer_inherits_and_receives_parent_steps_in_order() {
-    let space = init_empty("linked-step-propagation");
-    fs::write(space.space.join("main-1.txt"), "main 1\n").expect("write main 1");
-    let main_1 = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    fs::write(space.space.join("main-2.txt"), "main 2\n").expect("write main 2");
-    let main_2 = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    let chunk_count_before_layer = loose_chunk_count(&space.space);
-    let feature = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
-    );
-    assert_eq!(loose_chunk_count(&space.space), chunk_count_before_layer);
-    let feature_layer_id = feature["layer_id"]
-        .as_str()
-        .expect("feature layer id")
-        .to_string();
-
-    let inherited = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_timeline_has_origin(
-        &inherited,
-        "local_layer_main",
-        main_1["step_id"].as_str().expect("main 1 step"),
-        "inherited",
-    );
-    assert_timeline_has_origin(
-        &inherited,
-        "local_layer_main",
-        main_2["step_id"].as_str().expect("main 2 step"),
-        "inherited",
-    );
-
-    fs::write(space.space.join("feature.txt"), "feature B\n").expect("write feature");
-    let feature_b = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    fs::write(space.space.join("main-3.txt"), "main 3\n").expect("write main 3");
-    let main_3 = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    assert_file(&space.space, "main-1.txt", "main 1\n");
-    assert_file(&space.space, "main-2.txt", "main 2\n");
-    assert_file(&space.space, "main-3.txt", "main 3\n");
-    assert_file(&space.space, "feature.txt", "feature B\n");
-
-    let feature_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_timeline_origin_order(
-        &feature_timeline,
-        &[
-            (
-                "local_layer_main",
-                main_1["step_id"].as_str().expect("main 1 step"),
-                "inherited",
-            ),
-            (
-                "local_layer_main",
-                main_2["step_id"].as_str().expect("main 2 step"),
-                "inherited",
-            ),
-            (
-                &feature_layer_id,
-                feature_b["step_id"].as_str().expect("feature step"),
-                "native",
-            ),
-            (
-                "local_layer_main",
-                main_3["step_id"].as_str().expect("main 3 step"),
-                "inherited",
-            ),
-        ],
-    );
-    assert_eq!(
-        timeline_step_by_origin(
-            &feature_timeline,
-            "local_layer_main",
-            main_1["step_id"].as_str().expect("main 1 step"),
-        )["origin_layer_name"]
-            .as_str(),
-        Some("Main")
-    );
-    assert_eq!(
-        timeline_step_by_origin(
-            &feature_timeline,
-            &feature_layer_id,
-            feature_b["step_id"].as_str().expect("feature step"),
-        )["origin_layer_name"]
-            .as_str(),
-        Some("Feature")
-    );
-
-    space.pass();
-}
-
-#[test]
-fn layer_disconnect_stops_future_parent_step_propagation() {
-    let space = init_empty("cli-layer-disconnect");
-    fs::write(space.space.join("main-1.txt"), "main 1\n").expect("write main 1");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
-    );
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "disconnect",
-            "Feature",
-            "--yes",
-        ],
-    );
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    fs::write(space.space.join("main-2.txt"), "main 2\n").expect("write main 2");
-    let main_2 = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    let feature_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert!(
-        json_steps(&feature_timeline)
-            .iter()
-            .all(|step| step["origin_step_id"].as_str() != main_2["step_id"].as_str()),
-        "disconnected layer should not receive the later parent step"
-    );
-
-    space.pass();
-}
-
-#[test]
-fn layer_clear_steps_hides_history_but_keeps_files() {
-    let space = init_empty("cli-layer-clear-steps");
-    fs::write(space.space.join("keep.txt"), "do not lose me\n").expect("write keep");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let clear = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "clear-steps",
-            "Main",
-            "--yes",
-        ],
-    );
-    assert!(clear["archived_steps_path"].as_str().is_some());
-    assert_file(&space.space, "keep.txt", "do not lose me\n");
-    let timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_eq!(json_steps(&timeline).len(), 0);
-
-    space.pass();
-}
-
-#[test]
-fn parent_auto_step_created_by_switch_stays_visible_on_parent_timeline() {
-    let space = init_empty("parent-auto-step-history");
-    fs::write(space.space.join("story.txt"), "line one\nline two\n").expect("write base story");
-    let base = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let base_step_id = base["step_id"].as_str().expect("base step").to_string();
-
-    let feature = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
-    );
-    let feature_layer_id = feature["layer_id"]
-        .as_str()
-        .expect("feature layer id")
-        .to_string();
-
-    fs::write(
-        space.space.join("story.txt"),
-        "feature line one\nline two\n",
-    )
-    .expect("write feature story");
-    let feature_step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let feature_step_id = feature_step["step_id"]
-        .as_str()
-        .expect("feature step")
-        .to_string();
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file(&space.space, "story.txt", "line one\nline two\n");
-
-    fs::write(space.space.join("story.txt"), "line one\nmain line two\n")
-        .expect("write unstepped main story");
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    assert_file(
-        &space.space,
-        "story.txt",
-        "feature line one\nmain line two\n",
-    );
-
-    let feature_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    let propagated_parent_step_id = json_steps(&feature_timeline)
+fn paths(changes: &[Value]) -> BTreeSet<String> {
+    changes
         .iter()
-        .find(|step| {
-            step["origin_layer_id"].as_str() == Some("local_layer_main")
-                && step["origin_step_id"].as_str() != Some(base_step_id.as_str())
-                && step["step_kind"].as_str() == Some("inherited")
+        .map(|v| v["path"].as_str().unwrap().into())
+        .collect()
+}
+fn history(s: &TestSpace, layer: &str) -> Vec<String> {
+    cli(
+        s,
+        &["history", &format!("@layer:{layer}"), "--limit", "100"],
+    )["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["stepId"].as_str().unwrap().into())
+        .collect()
+}
+fn files(root: &Path) -> BTreeSet<PathBuf> {
+    if !root.exists() {
+        return BTreeSet::new();
+    }
+    fs::read_dir(root)
+        .unwrap()
+        .flat_map(|e| {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                files(&p)
+            } else {
+                BTreeSet::from([p])
+            }
         })
-        .and_then(|step| step["origin_step_id"].as_str())
-        .expect("feature timeline has inherited parent auto-step")
-        .to_string();
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file(&space.space, "story.txt", "line one\nmain line two\n");
-    let main_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_timeline_has_origin(
-        &main_timeline,
-        "local_layer_main",
-        &propagated_parent_step_id,
-        "native",
-    );
-    assert_timeline_origin_order(
-        &main_timeline,
-        &[
-            ("local_layer_main", &base_step_id, "native"),
-            ("local_layer_main", &propagated_parent_step_id, "native"),
-        ],
-    );
-    let main_status = run_json(&space, ["--json", "--space", &space.space_arg(), "status"]);
-    assert_eq!(
-        main_status["pending_steps"].as_u64(),
-        Some(2),
-        "Main must keep both its explicit Step and its auto-step pending for sync"
-    );
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    let feature_timeline = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "timeline"],
-    );
-    assert_timeline_origin_order(
-        &feature_timeline,
-        &[
-            ("local_layer_main", &base_step_id, "inherited"),
-            (&feature_layer_id, &feature_step_id, "native"),
-            ("local_layer_main", &propagated_parent_step_id, "inherited"),
-        ],
-    );
-
-    space.pass();
+        .collect()
 }
 
 #[test]
-fn switching_away_from_unstepped_layer_work_auto_steps_and_restores_it() {
-    let space = init_empty("unstepped-layer-switch");
-    fs::write(space.space.join("note.txt"), "base\n").expect("write base");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
+fn init_refuses_existing_metadata_and_files_and_discovers_from_child() {
+    let s = empty("native-init-refusals");
+    let before = cli(&s, &["status"])["state"].clone();
+    run_err(&s, ["--json", "init", "Duplicate"]);
+    assert_eq!(cli(&s, &["status"])["state"], before);
+    let file = s.root.join("plain-file");
+    fs::write(&file, b"preserve").unwrap();
+    run_err(
+        &s,
+        ["--json", "init", "File", "--path", file.to_str().unwrap()],
     );
-    fs::write(space.space.join("note.txt"), "feature saved\n").expect("write feature");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    fs::write(space.space.join("scratch.txt"), "unstepped feature work\n").expect("write scratch");
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file(&space.space, "note.txt", "base\n");
-    assert!(!space.space.join("scratch.txt").exists());
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Feature",
-        ],
-    );
-    assert_file(&space.space, "note.txt", "feature saved\n");
-    assert_file(&space.space, "scratch.txt", "unstepped feature work\n");
-
-    let latest = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    let auto_step_id = latest["step_id"]
-        .as_str()
-        .expect("auto step id")
-        .to_string();
-    assert_eq!(latest["source"].as_str(), Some("latestPendingStep"));
-    assert_eq!(
-        latest["message"].as_str(),
-        Some(
-            format!("No working tree changes; displaying latest pending Step {auto_step_id}.")
-                .as_str()
-        )
-    );
-    assert_json_array_contains(&latest["files"], "scratch.txt");
-
-    space.pass();
+    assert_eq!(fs::read(file).unwrap(), b"preserve");
+    let child = s.space.join("nested/child");
+    fs::create_dir_all(&child).unwrap();
+    let status = read_json(&run_ok_in(&s, &child, ["--json", "status"]));
+    assert_eq!(status["dirty"], false);
+    assert_eq!(status["state"]["space"], before["space"]);
+    s.pass();
 }
-
 #[test]
-fn moved_file_is_delete_plus_add_without_losing_content_across_layers() {
-    let space = init_empty("move-file");
-    fs::create_dir_all(space.space.join("src")).expect("create src");
-    fs::write(space.space.join("src").join("a.txt"), "move me\n").expect("write a");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    fs::rename(
-        space.space.join("src").join("a.txt"),
-        space.space.join("src").join("b.txt"),
+fn init_preserves_nested_unicode_binary_and_empty_files() {
+    let s = TestSpace::new("native-realistic");
+    fs::create_dir_all(s.space.join("Assets/Textures")).unwrap();
+    fs::create_dir(s.space.join("src")).unwrap();
+    fs::write(
+        s.space.join("Assets/Textures/hero.png"),
+        deterministic_png_like_bytes(),
     )
-    .expect("rename");
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_json_array_contains(&diff["files"], "src/a.txt");
-    assert_json_array_contains(&diff["files"], "src/b.txt");
-    let step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let step_id = step["step_id"].as_str().expect("step id").to_string();
-    let by_id = run_json(
-        &space,
-        ["--json", "--space", &space.space_arg(), "diff", &step_id],
-    );
-    assert_json_array_contains(&by_id["files"], "src/a.txt");
-    assert_json_array_contains(&by_id["files"], "src/b.txt");
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Move Check",
-        ],
-    );
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert!(!space.space.join("src").join("a.txt").exists());
-    assert_file(&space.space, "src/b.txt", "move me\n");
-
-    space.pass();
-}
-
-#[test]
-fn binary_asset_steps_compact_and_layer_switch_restore_exact_bytes() {
-    let space = init_empty("binary-assets");
-    let original = deterministic_png_like_bytes();
-    let mut changed = original.clone();
-    changed.extend_from_slice(&[0, 255, 17, 99, 1, 2, 3]);
-    fs::create_dir_all(space.space.join("Assets")).expect("create assets");
-    fs::write(space.space.join("Assets").join("hero.png"), &original).expect("write original");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Art",
-        ],
-    );
-    fs::write(space.space.join("Assets").join("hero.png"), &changed).expect("write changed");
-    let diff = run_json(&space, ["--json", "--space", &space.space_arg(), "diff"]);
-    assert_json_array_contains(&diff["files"], "Assets/hero.png");
-    assert!(
-        diff["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("diff --layrs Assets/hero.png")
-    );
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    run_json(&space, ["--json", "--space", &space.space_arg(), "compact"]);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file_bytes(&space.space, "Assets/hero.png", &original);
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Art",
-        ],
-    );
-    assert_file_bytes(&space.space, "Assets/hero.png", &changed);
-
-    space.pass();
-}
-
-#[test]
-fn multiple_steps_timeline_limit_status_and_diff_options_are_stable() {
-    let space = init_empty("multi-step-options");
-    let mut step_ids = Vec::new();
-    for index in 1..=5 {
-        fs::write(
-            space.space.join("story.txt"),
-            format!("line {index}\n{}", "x".repeat(260)),
-        )
-        .expect("write story");
-        let step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-        step_ids.push(step["step_id"].as_str().expect("step id").to_string());
-    }
-
-    let status = run_json(&space, ["--json", "--space", &space.space_arg(), "status"]);
-    assert_eq!(status["changed"].as_bool(), Some(false));
-    assert_eq!(status["pending_steps"].as_u64(), Some(5));
-
-    let timeline = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "timeline",
-            "--limit",
-            "3",
-        ],
-    );
-    assert_eq!(json_steps(&timeline).len(), 3);
-
-    let name_only = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "diff",
-            "--name-only",
-            &step_ids[2],
-        ],
-    );
-    assert_eq!(name_only["text"].as_str(), Some("story.txt"));
-
-    let stat = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "diff",
-            "--stat",
-            &step_ids[4],
-        ],
-    );
-    assert!(
-        stat["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("story.txt | +")
-    );
-
-    let window = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "diff",
-            "--window",
-            "1:4",
-            "--wrap",
-            &step_ids[4],
-        ],
-    );
-    assert!(
-        window["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains(&"x".repeat(260))
-    );
-    assert_eq!(window["truncated"].as_bool(), Some(false));
-
-    let no_wrap = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "diff",
-            "--no-wrap",
-            &step_ids[4],
-        ],
-    );
-    assert!(
-        no_wrap["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains(&"x".repeat(260))
-    );
-
-    space.pass();
-}
-
-#[test]
-fn layer_lifecycle_lists_parents_and_refuses_unsafe_deletes() {
-    let space = init_empty("layer-lifecycle");
-    let layers = run_json(&space, ["--json", "--space", &space.space_arg(), "layers"]);
-    assert_eq!(layers["layers"].as_array().expect("layers").len(), 1);
-    assert_eq!(layers["layers"][0]["name"].as_str(), Some("Main"));
-    assert_eq!(layers["layers"][0]["active"].as_bool(), Some(true));
-
-    let feature = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Feature",
-        ],
-    );
-    assert_eq!(feature["name"].as_str(), Some("Feature"));
-    assert_eq!(feature["active"].as_bool(), Some(true));
-    assert!(feature["parent_layer_id"].as_str().is_some());
-
-    let no_yes = run_err(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "delete",
-            "Feature",
-        ],
-    );
-    assert!(no_yes.contains("without --yes"));
-
-    let active_delete = run_err(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "delete",
-            "Feature",
-            "--yes",
-        ],
-    );
-    assert!(active_delete.contains("Switch to another Layer"));
-
-    let nested = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Nested",
-        ],
-    );
-    assert_eq!(nested["name"].as_str(), Some("Nested"));
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    let parent_delete = run_err(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "delete",
-            "Feature",
-            "--yes",
-        ],
-    );
-    assert!(parent_delete.contains("child Layers"));
-
-    let deleted_nested = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "delete",
-            "Nested",
-            "--yes",
-        ],
-    );
-    assert_eq!(deleted_nested["deleted"].as_bool(), Some(true));
-
-    let deleted = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "delete",
-            "Feature",
-            "--yes",
-        ],
-    );
-    assert_eq!(deleted["deleted"].as_bool(), Some(true));
-    let final_layers = run_json(&space, ["--json", "--space", &space.space_arg(), "layers"]);
-    assert_eq!(final_layers["layers"].as_array().expect("layers").len(), 1);
-
-    space.pass();
-}
-
-#[test]
-fn corrupted_store_fails_loudly_without_deleting_current_files() {
-    let space = init_empty("corrupt-store");
-    fs::write(space.space.join("main.txt"), "main safe\n").expect("write main");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "create",
-            "Broken",
-        ],
-    );
-    fs::write(space.space.join("main.txt"), "broken target\n").expect("write broken");
-    run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-    let broken_status = run_json(&space, ["--json", "--space", &space.space_arg(), "status"]);
-    let broken_layer_id = broken_status["active_layer_id"]
-        .as_str()
-        .expect("active layer")
-        .to_string();
-
-    run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Main",
-        ],
-    );
-    assert_file(&space.space, "main.txt", "main safe\n");
-
-    let chunk_path = first_chunk_path(&space.space, &broken_layer_id, "main.txt");
-    fs::remove_file(&chunk_path)
-        .unwrap_or_else(|error| panic!("remove corrupt chunk {}: {error}", chunk_path.display()));
-    let switch_error = run_err(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "layer",
-            "use",
-            "Broken",
-        ],
-    );
-    assert!(switch_error.contains("could not find chunk object"));
-    assert_file(&space.space, "main.txt", "main safe\n");
-    let still_main = run_json(&space, ["--json", "--space", &space.space_arg(), "status"]);
+    .unwrap();
+    fs::write(s.space.join("src/été.txt"), "été\n").unwrap();
+    fs::write(s.space.join("README.md"), b"# Game\n").unwrap();
+    fs::write(s.space.join("empty"), []).unwrap();
+    let before = snapshot_working_tree(&s.space);
+    initialize(&s);
+    let initial = step(&s);
+    assert_working_tree_snapshot(&s.space, &before);
     assert_eq!(
-        still_main["active_layer_id"].as_str(),
-        Some("local_layer_main")
+        paths(&changes(&s, Some(&initial))),
+        BTreeSet::from([
+            "Assets/Textures/hero.png".into(),
+            "src/été.txt".into(),
+            "README.md".into(),
+            "empty".into()
+        ])
     );
-
-    space.pass();
+    assert!(changes(&s, None).is_empty());
+    s.pass();
 }
-
 #[test]
-fn compact_keeps_large_repeated_steps_small_and_diffable() {
-    let space = TestSpace::new("compact-weight");
-    let mut content = deterministic_large_content(0);
-    fs::write(space.space.join("big.txt"), &content).expect("write big");
-    let init = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            "Compact Weight",
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    assert_eq!(init["pending_publish_count"].as_u64(), Some(1));
-
-    let mut latest_step_id = init["initial_step_id"]
-        .as_str()
-        .expect("initial step")
-        .to_string();
-    let mut raw_cumulative = content.len() as u64;
-    for index in 1..=10 {
-        content = deterministic_large_content(index);
-        raw_cumulative += content.len() as u64;
-        fs::write(space.space.join("big.txt"), &content).expect("modify big");
-        let step = run_json(&space, ["--json", "--space", &space.space_arg(), "step"]);
-        assert_eq!(step["changed_files"].as_u64(), Some(1));
-        latest_step_id = step["step_id"].as_str().expect("step id").to_string();
+fn layrsignore_excludes_generated_files_from_capture_and_status() {
+    let s = TestSpace::new("native-ignore");
+    for d in ["target/debug", ".git/objects", "logs"] {
+        fs::create_dir_all(s.space.join(d)).unwrap();
     }
-
-    let step_dir = space
-        .space
-        .join(".layrs")
-        .join("layers")
-        .join("local_layer_main")
-        .join("steps");
-    for entry in fs::read_dir(&step_dir).expect("read step dir") {
-        let path = entry.expect("step entry").path();
-        let body = fs::read_to_string(&path).expect("read step json");
-        assert!(
-            body.len() < 16 * 1024,
-            "step JSON should stay small: {} has {} bytes",
-            path.display(),
-            body.len()
-        );
-        assert!(
-            !body.contains(&"a".repeat(4096)),
-            "step JSON unexpectedly contains full repeated file content: {}",
-            path.display()
-        );
+    fs::write(s.space.join(".layrsignore"), "target/\n*.tmp\nlogs/\n").unwrap();
+    for file in [
+        "keep.txt",
+        "scratch.tmp",
+        "target/debug/build.txt",
+        ".git/HEAD",
+        "logs/run.log",
+    ] {
+        fs::write(s.space.join(file), b"bytes\n").unwrap();
     }
-
-    let compact = run_json(&space, ["--json", "--space", &space.space_arg(), "compact"]);
-    let threshold = raw_cumulative * 35 / 100;
-    let stored_bytes = compact["stored_bytes"].as_u64().expect("stored_bytes");
-    let layrs_bytes = space_size_bytes(&space.space.join(".layrs"));
+    initialize(&s);
+    let initial = step(&s);
+    assert_eq!(
+        paths(&changes(&s, Some(&initial))),
+        BTreeSet::from([".layrsignore".into(), "keep.txt".into()])
+    );
+    fs::write(s.space.join("scratch.tmp"), b"ignored mutation").unwrap();
+    assert_eq!(cli(&s, &["status"])["dirty"], false);
+    assert!(changes(&s, None).is_empty());
+    s.pass();
+}
+#[test]
+fn initial_history_is_immutable_without_a_fake_pending_diff() {
+    let s = TestSpace::new("native-initial");
+    fs::write(s.space.join("hello"), b"hello\n").unwrap();
+    initialize(&s);
+    let initial = step(&s);
+    assert!(history(&s, "main").contains(&initial));
+    assert!(changes(&s, None).is_empty());
+    assert_eq!(changes(&s, Some(&initial))[0]["path"], "hello");
+    let operations = cli(&s, &["timeline"]);
+    assert_eq!(cli(&s, &["step"])["status"], "unchanged");
+    assert_eq!(cli(&s, &["timeline"]), operations);
+    s.pass();
+}
+#[test]
+fn added_file_remains_addressable_after_capture_and_working_diff_is_clean() {
+    let s = empty("native-add");
+    fs::create_dir(s.space.join("src")).unwrap();
+    fs::write(s.space.join("src/new.txt"), b"new file\n").unwrap();
+    assert_eq!(changes(&s, None)[0]["status"], "added");
+    let captured = step(&s);
+    assert!(changes(&s, None).is_empty());
+    assert_eq!(changes(&s, Some(&captured))[0]["path"], "src/new.txt");
+    assert_file(&s.space, "src/new.txt", "new file\n");
+    s.pass();
+}
+#[test]
+fn edits_deletions_additions_and_empty_files_remain_distinct() {
+    let s = empty("native-change-types");
+    for file in ["edit", "delete", "empty"] {
+        fs::write(s.space.join(file), b"before\n").unwrap();
+    }
+    step(&s);
+    fs::write(s.space.join("edit"), b"after\n").unwrap();
+    fs::remove_file(s.space.join("delete")).unwrap();
+    fs::write(s.space.join("empty"), []).unwrap();
+    fs::write(s.space.join("added"), b"new\n").unwrap();
+    let delta = changes(&s, None);
+    assert_eq!(delta.len(), 4);
+    assert!(delta.iter().find(|v| v["path"] == "delete").unwrap()["afterBytes"].is_null());
+    assert_eq!(
+        delta.iter().find(|v| v["path"] == "empty").unwrap()["afterBytes"],
+        0
+    );
+    let before = snapshot_working_tree(&s.space);
+    let captured = step(&s);
+    assert_eq!(changes(&s, Some(&captured)).len(), 4);
+    assert_working_tree_snapshot(&s.space, &before);
+    assert_eq!(cli(&s, &["status"])["dirty"], false);
+    s.pass();
+}
+#[test]
+fn independent_layers_preserve_exact_states_and_separate_new_histories() {
+    let s = empty("native-layers");
+    fs::write(s.space.join("story"), b"base\n").unwrap();
+    let base = step(&s);
+    cli(&s, &["layer", "create", "feature"]);
+    fs::write(s.space.join("story"), b"main\n").unwrap();
+    let main = step(&s);
+    cli(&s, &["layer", "use", "feature"]);
+    assert_file(&s.space, "story", "base\n");
+    fs::write(s.space.join("story"), b"feature\n").unwrap();
+    let feature = step(&s);
+    assert!(history(&s, "feature").contains(&base));
+    assert!(!history(&s, "feature").contains(&main));
+    assert!(!history(&s, "main").contains(&feature));
+    cli(&s, &["layer", "use", "main"]);
+    assert_file(&s.space, "story", "main\n");
+    cli(&s, &["layer", "use", "feature"]);
+    assert_file(&s.space, "story", "feature\n");
+    s.pass();
+}
+#[test]
+fn layer_creation_neither_switches_nor_propagates_later_parent_steps() {
+    let s = empty("native-independent");
+    let before = cli(&s, &["status"])["state"]["view"]["worktrees"].clone();
+    cli(&s, &["layer", "create", "topic"]);
+    assert_eq!(cli(&s, &["status"])["state"]["view"]["worktrees"], before);
+    fs::write(s.space.join("parent-only"), b"new\n").unwrap();
+    let parent = step(&s);
+    cli(&s, &["layer", "use", "topic"]);
+    assert!(!s.space.join("parent-only").exists());
+    assert!(!history(&s, "topic").contains(&parent));
+    s.pass();
+}
+#[test]
+fn unsupported_legacy_mutations_preserve_native_files_and_history() {
+    let s = empty("native-refuse-legacy");
+    fs::write(s.space.join("keep"), b"preserve\n").unwrap();
+    step(&s);
+    cli(&s, &["layer", "create", "topic"]);
+    let before = snapshot_working_tree(&s.space);
+    let timeline = cli(&s, &["timeline"]);
+    let layers = cli(&s, &["layers"]);
+    for args in [
+        vec!["--json", "layer", "clear-steps", "main", "--yes"],
+        vec!["--json", "layer", "disconnect", "topic", "--yes"],
+        vec!["--json", "layer", "delete", "topic", "--yes"],
+        vec!["--json", "compact"],
+    ] {
+        assert!(run_err(&s, args).contains("not yet connected"));
+        assert_working_tree_snapshot(&s.space, &before);
+        assert_eq!(cli(&s, &["timeline"]), timeline);
+        assert_eq!(cli(&s, &["layers"]), layers);
+    }
+    s.pass();
+}
+#[test]
+fn switch_auto_captures_unstepped_edits_and_untracked_files() {
+    let s = empty("native-auto-main");
+    fs::write(s.space.join("story"), b"base\n").unwrap();
+    step(&s);
+    cli(&s, &["layer", "create", "topic"]);
+    fs::write(s.space.join("story"), b"unsaved main\n").unwrap();
+    fs::write(s.space.join("untracked"), b"also preserve\n").unwrap();
+    cli(&s, &["layer", "use", "topic"]);
+    assert_file(&s.space, "story", "base\n");
+    assert!(!s.space.join("untracked").exists());
+    let main_history = history(&s, "main");
+    assert!(main_history.len() >= 3);
+    cli(&s, &["layer", "use", "main"]);
+    assert_file(&s.space, "story", "unsaved main\n");
+    assert_file(&s.space, "untracked", "also preserve\n");
+    assert!(paths(&changes(&s, Some(&main_history[0]))).contains("untracked"));
+    s.pass();
+}
+#[test]
+fn unstepped_feature_work_survives_switch_and_process_restart() {
+    let s = empty("native-auto-topic");
+    cli(&s, &["layer", "create", "topic"]);
+    cli(&s, &["layer", "use", "topic"]);
+    fs::write(s.space.join("draft"), b"unsaved topic\n").unwrap();
+    cli(&s, &["layer", "use", "main"]);
+    assert!(!s.space.join("draft").exists());
+    cli(&s, &["layer", "use", "topic"]);
+    assert_file(&s.space, "draft", "unsaved topic\n");
+    assert_eq!(cli(&s, &["status"])["dirty"], false);
+    s.pass();
+}
+#[test]
+fn moving_a_file_is_delete_plus_add_and_switch_preserves_both_names() {
+    let s = empty("native-move");
+    fs::write(s.space.join("before"), b"exact\n").unwrap();
+    step(&s);
+    cli(&s, &["layer", "create", "moved"]);
+    cli(&s, &["layer", "use", "moved"]);
+    fs::rename(s.space.join("before"), s.space.join("after")).unwrap();
+    let delta = changes(&s, None);
+    assert_eq!(delta.len(), 2);
     assert!(
-        stored_bytes < threshold,
-        "compact stored_bytes {stored_bytes} should be under 35% of raw cumulative {raw_cumulative}"
+        delta
+            .iter()
+            .any(|v| v["path"] == "before" && v["status"] == "deleted")
     );
     assert!(
-        layrs_bytes < threshold,
-        ".layrs size {layrs_bytes} should be under 35% of raw cumulative {raw_cumulative}"
+        delta
+            .iter()
+            .any(|v| v["path"] == "after" && v["status"] == "added")
     );
-
-    let diff = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "diff",
-            &latest_step_id,
-        ],
+    step(&s);
+    cli(&s, &["layer", "use", "main"]);
+    assert_file(&s.space, "before", "exact\n");
+    assert!(!s.space.join("after").exists());
+    cli(&s, &["layer", "use", "moved"]);
+    assert_file(&s.space, "after", "exact\n");
+    assert!(!s.space.join("before").exists());
+    s.pass();
+}
+#[test]
+fn binary_capture_switch_restore_and_undo_preserve_every_byte() {
+    let s = empty("native-binary");
+    let first = deterministic_png_like_bytes();
+    fs::write(s.space.join("asset"), &first).unwrap();
+    let original = step(&s);
+    cli(&s, &["layer", "create", "binary"]);
+    cli(&s, &["layer", "use", "binary"]);
+    let mut second = first.clone();
+    second[90..100].copy_from_slice(&[0, 255, 1, 254, 2, 253, 3, 252, 4, 251]);
+    fs::write(s.space.join("asset"), &second).unwrap();
+    assert_eq!(changes(&s, None)[0]["binary"], true);
+    let changed = step(&s);
+    cli(&s, &["layer", "use", "main"]);
+    assert_file_bytes(&s.space, "asset", &first);
+    cli(&s, &["layer", "use", "binary"]);
+    assert_file_bytes(&s.space, "asset", &second);
+    cli(&s, &["restore", &original, "--path", "asset"]);
+    assert_file_bytes(&s.space, "asset", &first);
+    cli(&s, &["undo"]);
+    assert_file_bytes(&s.space, "asset", &second);
+    assert!(history(&s, "binary").contains(&changed));
+    s.pass();
+}
+#[test]
+fn timeline_limit_and_human_diff_flags_do_not_modify_history_or_files() {
+    let s = empty("native-display");
+    fs::write(s.space.join("text"), b"old\nlast").unwrap();
+    step(&s);
+    fs::write(s.space.join("text"), b"new\nlast").unwrap();
+    let captured = step(&s);
+    assert_eq!(
+        cli(&s, &["timeline", "--limit", "1"])["operations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
-    assert_eq!(diff["source"].as_str(), Some("step"));
-    assert_json_array_contains(&diff["files"], "big.txt");
-
-    space.pass();
+    let timeline = cli(&s, &["timeline"]);
+    let before = snapshot_working_tree(&s.space);
+    assert_eq!(
+        run_ok(&s, ["diff", &captured, "--name-only"]).trim(),
+        "text"
+    );
+    let text = run_ok(&s, ["diff", &captured]);
+    assert!(text.contains("-old"));
+    assert!(text.contains("+new"));
+    assert!(text.contains("No newline at end of file"));
+    assert!(!run_ok(&s, ["diff", &captured, "--stat"]).contains("+new"));
+    run_ok(&s, ["diff", &captured, "--window", "0:1", "--no-wrap"]);
+    assert_eq!(cli(&s, &["timeline"]), timeline);
+    assert_working_tree_snapshot(&s.space, &before);
+    s.pass();
+}
+#[test]
+fn missing_target_chunk_refuses_switch_before_deleting_current_files() {
+    let s = empty("native-corrupt-chunk");
+    fs::write(s.space.join("story"), b"main safe\n").unwrap();
+    step(&s);
+    cli(&s, &["layer", "create", "broken"]);
+    cli(&s, &["layer", "use", "broken"]);
+    let chunk_root = s.space.join(".layrs/objects/chunk_raw");
+    let old = files(&chunk_root);
+    fs::write(s.space.join("story"), b"unique broken target bytes\n").unwrap();
+    step(&s);
+    let new = files(&chunk_root);
+    let added: Vec<_> = new.difference(&old).collect();
+    assert_eq!(added.len(), 1);
+    let missing = added[0].clone();
+    cli(&s, &["layer", "use", "main"]);
+    let before = snapshot_working_tree(&s.space);
+    let state = cli(&s, &["status"])["state"].clone();
+    fs::remove_file(missing).unwrap();
+    run_err(&s, ["--json", "layer", "use", "broken"]);
+    assert_working_tree_snapshot(&s.space, &before);
+    assert_eq!(cli(&s, &["status"])["state"], state);
+    s.pass();
+}
+#[test]
+fn large_snapshot_history_stays_readable_and_noop_adds_no_objects() {
+    let s = TestSpace::new("native-large-history");
+    let original = deterministic_large_content(0);
+    fs::write(s.space.join("big"), &original).unwrap();
+    initialize(&s);
+    let first = step(&s);
+    for index in 1..=5 {
+        fs::write(s.space.join("big"), deterministic_large_content(index)).unwrap();
+        step(&s);
+    }
+    let objects = files(&s.space.join(".layrs/objects"));
+    let timeline = cli(&s, &["timeline"]);
+    assert_eq!(cli(&s, &["step"])["status"], "unchanged");
+    assert_eq!(files(&s.space.join(".layrs/objects")), objects);
+    assert_eq!(cli(&s, &["timeline"]), timeline);
+    assert_eq!(changes(&s, Some(&first))[0]["afterBytes"], original.len());
+    cli(&s, &["restore", &first, "--path", "big"]);
+    assert_file(&s.space, "big", &original);
+    assert!(history(&s, "main").contains(&first));
+    s.pass();
+}
+#[test]
+fn restore_auto_captures_untracked_replacement_and_undo_recovers_it() {
+    let s = empty("native-restore-collision");
+    fs::write(s.space.join("file"), b"original\n").unwrap();
+    let first = step(&s);
+    fs::remove_file(s.space.join("file")).unwrap();
+    step(&s);
+    fs::write(s.space.join("file"), b"untracked replacement\n").unwrap();
+    fs::write(s.space.join("other"), b"independent\n").unwrap();
+    cli(&s, &["restore", &first, "--path", "file"]);
+    assert_file(&s.space, "file", "original\n");
+    assert_file(&s.space, "other", "independent\n");
+    cli(&s, &["undo"]);
+    assert_file(&s.space, "file", "untracked replacement\n");
+    assert_file(&s.space, "other", "independent\n");
+    s.pass();
+}
+#[test]
+fn invalid_selectors_and_escape_paths_preserve_checkout_and_history() {
+    let s = empty("native-invalid-target");
+    fs::write(s.space.join("keep"), b"safe\n").unwrap();
+    let first = step(&s);
+    let before = snapshot_working_tree(&s.space);
+    let timeline = cli(&s, &["timeline"]);
+    for args in [
+        vec!["--json", "layer", "use", "missing"],
+        vec!["--json", "restore", "not-a-step"],
+        vec!["--json", "restore", &first, "--path", "../outside"],
+    ] {
+        run_err(&s, args);
+        assert_working_tree_snapshot(&s.space, &before);
+        assert_eq!(cli(&s, &["timeline"]), timeline);
+    }
+    s.pass();
 }

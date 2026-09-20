@@ -41,8 +41,16 @@ const LOCAL_SPACE_STATE_DRAFT: &str = "draft";
 const TEXT_DIFF_DEFAULT_WINDOW_LIMIT: usize = 400;
 const TEXT_DIFF_MAX_WINDOW_LIMIT: usize = 2_000;
 
+mod local_store;
+
+use local_store::{remove_materialized_file, write_materialized_file, LocalStoreSession};
+
 include!("access_registry/models.rs");
-include!("access_registry/api_local_spaces.rs");
+mod api_local_spaces;
+#[cfg(test)]
+use api_local_spaces::create_local_space_internal;
+use api_local_spaces::link_active_local_layer_for_sync;
+pub use api_local_spaces::*;
 include!("access_registry/api_operations.rs");
 include!("access_registry/bootstrap.rs");
 include!("access_registry/working_tree.rs");

@@ -193,8 +193,11 @@ pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -
     let name_offset = offset_of!(RenameInformation, file_name);
     let total = name_offset
         .checked_add(name_bytes as usize)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename buffer overflow"))?;
-    let mut buffer = vec![0_u8; total];
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename buffer overflow"))?
+        .max(size_of::<RenameInformation>());
+    // The native API requires the complete C header even for a one-code-unit
+    // filename. Allocate pointer-aligned storage before writing pointer fields.
+    let mut buffer = vec![0_usize; total.div_ceil(size_of::<usize>())];
     let information = buffer.as_mut_ptr().cast::<RenameInformation>();
     // SAFETY: the allocation is sized through the flexible file-name field,
     // and all pointers remain valid for the native call.
@@ -204,7 +207,11 @@ pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -
         ptr::addr_of_mut!((*information).file_name_length).write(name_bytes);
         ptr::copy_nonoverlapping(
             name.as_ptr(),
-            buffer.as_mut_ptr().add(name_offset).cast::<u16>(),
+            buffer
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(name_offset)
+                .cast::<u16>(),
             name.len(),
         );
     }
@@ -248,12 +255,61 @@ pub(super) fn unlink_name_at(parent: &File, name: &OsStr) -> io::Result<()> {
     ))
 }
 
+pub(super) fn remove_empty_directory_at(parent: &File, name: &OsStr) -> io::Result<()> {
+    let file = open_at(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )?;
+    super::validate_directory_metadata(std::path::Path::new(name), &file.metadata()?)?;
+    let mut information = DispositionInformation { delete_file: 1 };
+    nt_result(set_information(
+        &file,
+        ptr::addr_of_mut!(information).cast(),
+        size_of::<DispositionInformation>() as u32,
+        FILE_DISPOSITION_INFORMATION,
+    ))
+}
+
 fn open_at(
     parent: &File,
     name: &OsStr,
     access: u32,
     disposition: u32,
     kind: u32,
+) -> io::Result<File> {
+    open_at_with_security(parent, name, access, disposition, kind, ptr::null_mut())
+}
+
+pub(super) fn open_private_directory_at(
+    parent: &File,
+    name: &OsStr,
+    security_descriptor: *mut c_void,
+) -> io::Result<File> {
+    open_at_with_security(
+        parent,
+        name,
+        FILE_TRAVERSE
+            | FILE_ADD_FILE
+            | FILE_ADD_SUBDIRECTORY
+            | FILE_READ_ATTRIBUTES
+            | SYNCHRONIZE
+            | 0x0002_0000,
+        FILE_OPEN_IF,
+        FILE_DIRECTORY_FILE,
+        security_descriptor,
+    )
+}
+
+fn open_at_with_security(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    disposition: u32,
+    kind: u32,
+    security_descriptor: *mut c_void,
 ) -> io::Result<File> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     let byte_length = name
@@ -271,7 +327,7 @@ fn open_at(
         root_directory: parent.as_raw_handle(),
         object_name: ptr::addr_of_mut!(unicode),
         attributes: OBJ_CASE_INSENSITIVE,
-        security_descriptor: ptr::null_mut(),
+        security_descriptor,
         security_quality_of_service: ptr::null_mut(),
     };
     let mut status_block = IoStatusBlock {

@@ -15,9 +15,19 @@ use layrs_sync::{PublishRequest, ReceiveRequest};
 use std::fmt;
 
 pub mod auth;
+pub mod backup;
+pub mod collaboration;
+pub mod config;
+pub mod identity;
+pub mod installation;
 pub mod lenses;
+pub mod retention;
 pub mod runtime;
+pub mod storage_budget;
+pub mod telemetry;
+pub mod v3;
 pub mod web;
+pub mod webhooks;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum HttpMethod {

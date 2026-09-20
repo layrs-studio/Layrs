@@ -36,3 +36,11 @@ export type {
 } from "./studio-components";
 
 export { useNotifications } from "./studio-components";
+
+export { NativeReviewSurface } from "./native-review";
+export type { NativeReviewContext } from "./native-review-context";
+
+export { NativeAdminSurface, nativeAdminRoute } from "./native-admin";
+export type { NativeAdminCommand } from "./native-admin";
+export { NativeReleaseSurface } from "./native-release";
+export { NativeHistorySurface } from "./native-history";

@@ -334,7 +334,9 @@ function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promis
     : guardDesktopPrivateRequest(() => invoke<T>(command, args));
 }
 
-const PUBLIC_DESKTOP_COMMANDS = new Set([
+  const PUBLIC_DESKTOP_COMMANDS = new Set([
+    "native_workspace",
+    "native_remote",
   "configure_server_endpoint",
   "load_desktop_settings",
   "poll_device_login",
@@ -538,4 +540,12 @@ export function selectFolder(initialDirectory?: string) {
   return tauriInvoke<string | null>("select_folder", {
     initialDirectory: initialDirectory || undefined
   });
+}
+
+export function nativeWorkspace<T>(root: string, request: { action: string; [key: string]: unknown }): Promise<T> {
+  return tauriInvoke<T>("native_workspace", { root, request });
+}
+
+export function nativeRemote<T>(root: string, request: { origin: string; caPem: string | null; action: { action: string; [key: string]: unknown } }): Promise<T> {
+  return tauriInvoke<T>("native_remote", { root, request });
 }

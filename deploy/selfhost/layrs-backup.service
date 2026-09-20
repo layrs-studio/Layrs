@@ -1,0 +1,11 @@
+[Unit]
+Description=Verified Layrs native backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/layrs/deploy/selfhost
+ExecStart=/usr/bin/docker compose --profile backup run --rm --no-deps backup
+# Backup may exceed a default service timeout on a large repository.
+TimeoutStartSec=infinity

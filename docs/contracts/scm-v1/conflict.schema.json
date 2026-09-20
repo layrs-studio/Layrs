@@ -1,0 +1,752 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/conflict.schema.json",
+  "title": "Layrs SCM V1 Conflict Object",
+  "description": "The sole normative ConflictObject contract. Identity is BLAKE3(domain || NUL || RFC8785(object without conflictId)).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "conflictId",
+    "kind",
+    "placements",
+    "bases",
+    "sides",
+    "lensPin",
+    "lensImplementationDigest",
+    "renderedObjectId",
+    "resolutionState",
+    "placementResolutions",
+    "blocks",
+    "segments",
+    "originStepIds"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "layrs.scm.conflict.v1"
+    },
+    "conflictId": {
+      "$ref": "#/$defs/ConflictId"
+    },
+    "kind": {
+      "enum": [
+        "content",
+        "delete_modify",
+        "rename",
+        "type",
+        "mode",
+        "directory_file",
+        "binary",
+        "reference",
+        "custom"
+      ]
+    },
+    "customKind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "placements": {
+      "description": "Set sorted by placementId ASCII bytes.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/Placement"
+      }
+    },
+    "bases": {
+      "description": "Set sorted by termId ASCII bytes.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/BaseTerm"
+      }
+    },
+    "sides": {
+      "description": "Set sorted by termId ASCII bytes. Execution-local source/target roles are not stored here.",
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/SideTerm"
+      }
+    },
+    "lensPin": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LensPin"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lensImplementationDigest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Sha256Id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "renderedObjectId": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Blake3Id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolutionState": {
+      "enum": [
+        "unresolved",
+        "partial"
+      ]
+    },
+    "placementResolutions": {
+      "description": "Set sorted by placementId ASCII bytes. Every resolution names canonical input termIds.",
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/PlacementResolution"
+      }
+    },
+    "blocks": {
+      "description": "Set sorted by blockId ASCII bytes.",
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/Block"
+      }
+    },
+    "segments": {
+      "description": "Semantic sequence used to reconstruct content; array order is authoritative.",
+      "type": "array",
+      "maxItems": 200000,
+      "items": {
+        "$ref": "#/$defs/Segment"
+      }
+    },
+    "originStepIds": {
+      "description": "Set sorted by Step ID ASCII bytes.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/Blake3Id"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "custom"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "customKind"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "customKind"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "lensPin": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "lensPin"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lensImplementationDigest": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "lensImplementationDigest": {
+            "$ref": "#/$defs/Sha256Id"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "Blake3Id": {
+      "$ref": "common.schema.json#/$defs/ObjectId"
+    },
+    "Sha256Id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ConflictId": {
+      "$ref": "#/$defs/Blake3Id"
+    },
+    "PlacementId": {
+      "$ref": "#/$defs/Blake3Id"
+    },
+    "TermId": {
+      "$ref": "#/$defs/Blake3Id"
+    },
+    "BlockId": {
+      "$ref": "#/$defs/Blake3Id"
+    },
+    "Placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "placementId",
+        "path",
+        "role"
+      ],
+      "properties": {
+        "placementId": {
+          "$ref": "#/$defs/PlacementId"
+        },
+        "path": {
+          "$ref": "common.schema.json#/$defs/RepoPath"
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "source",
+            "destination",
+            "affected"
+          ]
+        }
+      }
+    },
+    "BaseTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termId",
+        "termKind",
+        "provenance",
+        "values"
+      ],
+      "properties": {
+        "termId": {
+          "$ref": "#/$defs/TermId"
+        },
+        "termKind": {
+          "const": "base"
+        },
+        "provenance": {
+          "$ref": "#/$defs/BaseProvenance"
+        },
+        "values": {
+          "$ref": "#/$defs/PlacedValueSet"
+        }
+      }
+    },
+    "SideTerm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termId",
+        "termKind",
+        "provenance",
+        "values"
+      ],
+      "properties": {
+        "termId": {
+          "$ref": "#/$defs/TermId"
+        },
+        "termKind": {
+          "const": "side"
+        },
+        "provenance": {
+          "$ref": "#/$defs/StepProvenance"
+        },
+        "values": {
+          "$ref": "#/$defs/PlacedValueSet"
+        }
+      }
+    },
+    "StepProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "stepId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "step"
+        },
+        "stepId": {
+          "$ref": "core.schema.json#/$defs/StepId"
+        }
+      }
+    },
+    "BaseProvenance": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/StepProvenance"
+        },
+        {
+          "$ref": "#/$defs/VirtualBaseProvenance"
+        }
+      ]
+    },
+    "VirtualBaseProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sourceStepIds",
+        "algorithm",
+        "result"
+      ],
+      "properties": {
+        "kind": {
+          "const": "virtual"
+        },
+        "sourceStepIds": {
+          "description": "Set sorted by Step ID ASCII bytes.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "core.schema.json#/$defs/StepId"
+          }
+        },
+        "algorithm": {
+          "$ref": "#/$defs/AlgorithmVersion"
+        },
+        "result": {
+          "$ref": "#/$defs/VirtualBaseResult"
+        }
+      }
+    },
+    "AlgorithmVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "VirtualBaseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "objectId"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "tree",
+            "object"
+          ]
+        },
+        "objectId": {
+          "$ref": "#/$defs/Blake3Id"
+        }
+      }
+    },
+    "PlacedValueSet": {
+      "description": "Exactly one value per declared placement, sorted by placementId ASCII bytes.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/PlacedValue"
+      }
+    },
+    "PlacedValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "placementId",
+        "value"
+      ],
+      "properties": {
+        "placementId": {
+          "$ref": "#/$defs/PlacementId"
+        },
+        "value": {
+          "$ref": "#/$defs/ConflictValue"
+        }
+      }
+    },
+    "ConflictValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "absent"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "objectId",
+            "executable"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "file",
+                "tree",
+                "symlink"
+              ]
+            },
+            "objectId": {
+              "$ref": "#/$defs/Blake3Id"
+            },
+            "executable": {
+              "description": "File executable bit, or null when not applicable to the value kind; null is distinct from false.",
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ResolutionMethod": {
+      "enum": [
+        "select_term",
+        "combine_terms",
+        "manual",
+        "rename"
+      ]
+    },
+    "Resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "sourceTermIds",
+        "result"
+      ],
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/ResolutionMethod"
+        },
+        "sourceTermIds": {
+          "description": "Input term set sorted by termId ASCII bytes.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TermId"
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/ConflictValue"
+        }
+      }
+    },
+    "PlacementResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "placementId",
+        "resolution"
+      ],
+      "properties": {
+        "placementId": {
+          "$ref": "#/$defs/PlacementId"
+        },
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        }
+      }
+    },
+    "Block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockId",
+        "baseValues",
+        "sideValues",
+        "supportedMethods",
+        "occurrenceAnchor",
+        "resolution"
+      ],
+      "properties": {
+        "blockId": {
+          "$ref": "#/$defs/BlockId"
+        },
+        "baseValues": {
+          "$ref": "#/$defs/BlockTermValueSet"
+        },
+        "sideValues": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/BlockTermValueSet"
+            },
+            {
+              "minItems": 2
+            }
+          ]
+        },
+        "supportedMethods": {
+          "description": "Set sorted lexicographically by ASCII method name after duplicate rejection; included in blockId derivation.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ResolutionMethod"
+          }
+        },
+        "resolution": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Resolution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurrenceAnchor": {
+          "$ref": "#/$defs/OccurrenceAnchor"
+        }
+      }
+    },
+    "OccurrenceAnchor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TextOccurrenceAnchor"
+        },
+        {
+          "$ref": "#/$defs/StructuralOccurrenceAnchor"
+        }
+      ]
+    },
+    "TextOccurrenceAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "placementId",
+        "spans"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "placementId": {
+          "$ref": "#/$defs/PlacementId"
+        },
+        "spans": {
+          "description": "Set sorted by termId ASCII bytes. Byte offsets address immutable term objects and never a rendered marker file.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TermSpan"
+          }
+        }
+      }
+    },
+    "TermSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termId",
+        "startByte",
+        "endByte"
+      ],
+      "properties": {
+        "termId": {
+          "$ref": "#/$defs/TermId"
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "StructuralOccurrenceAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "placementId",
+        "nodePath",
+        "termIds"
+      ],
+      "properties": {
+        "kind": {
+          "const": "structural"
+        },
+        "placementId": {
+          "$ref": "#/$defs/PlacementId"
+        },
+        "nodePath": {
+          "description": "Canonical semantic sequence from the placement root; empty means the root node.",
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "common.schema.json#/$defs/RepoPathComponent"
+          }
+        },
+        "termIds": {
+          "description": "Set sorted by termId ASCII bytes.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TermId"
+          }
+        }
+      }
+    },
+    "BlockTermValueSet": {
+      "description": "Set sorted by termId ASCII bytes.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/BlockTermValue"
+      }
+    },
+    "BlockTermValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termId",
+        "value"
+      ],
+      "properties": {
+        "termId": {
+          "$ref": "#/$defs/TermId"
+        },
+        "value": {
+          "$ref": "#/$defs/ConflictValue"
+        }
+      }
+    },
+    "Segment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "objectId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "content"
+            },
+            "objectId": {
+              "$ref": "#/$defs/Blake3Id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "blockId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "block"
+            },
+            "blockId": {
+              "$ref": "#/$defs/BlockId"
+            }
+          }
+        }
+      ]
+    },
+    "LensPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lensId",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "lensId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "digest": {
+          "$ref": "#/$defs/Sha256Id"
+        }
+      }
+    }
+  }
+}

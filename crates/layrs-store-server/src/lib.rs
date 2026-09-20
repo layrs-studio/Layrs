@@ -3,6 +3,10 @@
 //! The concrete database schema and object storage backend are intentionally
 //! deferred. This crate defines the boundary that server handlers can target.
 
+/// Native server CAS and bounded Sync V3 planning. New code must target this
+/// module; the crate-root V2 boundary below remains only during cut-over.
+pub mod v3;
+
 use layrs_sync::{
     ChunkId, IdempotencyKey, PublishReceipt, ReceiveRequest, ReceiveResponse, SyncDecision,
     SyncManifest,

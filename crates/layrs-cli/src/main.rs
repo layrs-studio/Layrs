@@ -21,14 +21,22 @@ fn main() {
     };
 
     let json = cli.globals.json;
+    let diagnosis = matches!(cli.command, CliCommand::Doctor);
     match run(cli) {
         Ok(rendered) => {
+            let exit_code = if diagnosis
+                && (rendered.data["clean"] != true || rendered.data["complete"] != true)
+            {
+                ExitCode::Runtime
+            } else {
+                ExitCode::Success
+            };
             if json {
                 println!("{}", render::ok_json(rendered.data));
             } else {
                 println!("{}", rendered.human);
             }
-            std::process::exit(ExitCode::Success.as_i32());
+            std::process::exit(exit_code.as_i32());
         }
         Err(error) => {
             if json {
@@ -50,6 +58,9 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
     }
 
     let json_output = cli.globals.json;
+    if let Some(result) = layrs_cli::native::try_run(&cli) {
+        return result;
+    }
     let color = color_enabled(cli.globals.no_color, json_output);
     let engine = ClientCoreEngine::new(EngineContext {
         space: cli.globals.space,
@@ -57,6 +68,51 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
 
     let rendered = match cli.command {
         CliCommand::Help => unreachable!("handled above"),
+        CliCommand::Remote { .. } => unreachable!("native remote handled above"),
+        CliCommand::LocalIdentity { .. } => {
+            return Err(CliError::runtime(
+                "This command requires a native Layrs checkout.",
+            ));
+        }
+        CliCommand::Rewrite { .. } | CliCommand::ResolveTerm { .. } => {
+            return Err(CliError::runtime(
+                "This command requires a native Layrs checkout.",
+            ));
+        }
+        CliCommand::History { .. }
+        | CliCommand::OperationHistory { .. }
+        | CliCommand::ResolveFile { .. }
+        | CliCommand::ResolveBlock { .. }
+        | CliCommand::ConflictVariant { .. }
+        | CliCommand::Doctor
+        | CliCommand::Compact { .. } => {
+            return Err(CliError::runtime(
+                "This command requires a native Layrs checkout.",
+            ));
+        }
+        CliCommand::GitImport { .. }
+        | CliCommand::GitExport { .. }
+        | CliCommand::GitScanCache { .. }
+        | CliCommand::GitImportCache { .. } => {
+            return Err(CliError::runtime(
+                "Initialize or open a native Layrs project before importing or exporting Git.",
+            ));
+        }
+        CliCommand::MarkerShow { .. }
+        | CliCommand::Restore { .. }
+        | CliCommand::RestoreView { .. }
+        | CliCommand::Undo
+        | CliCommand::Redo { .. }
+        | CliCommand::Recover
+        | CliCommand::Markers
+        | CliCommand::MarkerCreate { .. }
+        | CliCommand::MarkerHide { .. }
+        | CliCommand::Releases
+        | CliCommand::ReleaseCreate { .. } => {
+            return Err(CliError::runtime(
+                "This command requires a native Layrs checkout.",
+            ));
+        }
         CliCommand::Init { name, path } => {
             render::init(engine.init_local_space(&name, path.as_deref())?)
         }
@@ -81,7 +137,6 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
         CliCommand::Publish { workspace } => render::publish(engine.publish(workspace.as_deref())?),
         CliCommand::Sync { workspace } => render::sync(engine.sync(workspace.as_deref())?),
         CliCommand::Receive => render::receive(engine.receive()?),
-        CliCommand::Compact => render::compact(engine.compact()?),
         CliCommand::Status => render::status(engine.status()?),
         CliCommand::Login { endpoint } => render::login(engine.login(endpoint.as_deref())?),
         CliCommand::Whoami => render::whoami(engine.whoami()?),

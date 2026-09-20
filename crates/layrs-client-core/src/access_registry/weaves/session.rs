@@ -29,17 +29,25 @@ struct SyncWeavePlanGuard {
     proposed_tree_id: Option<String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct WeaveBlobFile {
+    schema: String,
+    bytes_hex: String,
+}
+
 fn sync_weave_plan_guard_path(layrs_dir: &Path, weave_id: &str) -> PathBuf {
     weave_dir(layrs_dir, weave_id).join("sync-plan-guard.json")
 }
 
 pub(super) fn write_sync_weave_plan_guard(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     session: &WeaveSessionFile,
     received_state: &WorkingStateFile,
     proposed_state: &WorkingStateFile,
 ) -> Result<(), String> {
     write_json(
+        store,
         &sync_weave_plan_guard_path(layrs_dir, &session.weave_id),
         &SyncWeavePlanGuard {
             schema: "layrs.sync_weave_plan_guard.v1".to_string(),
@@ -52,14 +60,14 @@ pub(super) fn write_sync_weave_plan_guard(
 }
 
 pub(super) fn ensure_sync_weave_plan_is_current(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     session: &WeaveSessionFile,
     proposed_state: &WorkingStateFile,
 ) -> Result<(), String> {
-    let guard: SyncWeavePlanGuard = read_json(&sync_weave_plan_guard_path(
-        &handle.layrs_dir,
-        &session.weave_id,
-    ))
+    let guard: SyncWeavePlanGuard = read_json(
+        &handle.store,
+        &sync_weave_plan_guard_path(&handle.layrs_dir, &session.weave_id),
+    )
     .map_err(|error| format!("Sync Weave plan guard is unavailable: {error}"))?;
     if guard.layer_id != session.target_layer_id
         || guard.planned_steps != session.planned_steps
@@ -69,7 +77,11 @@ pub(super) fn ensure_sync_weave_plan_is_current(
             "Sync Weave plan changed since preparation. Abort and run Sync again.".to_string(),
         );
     }
-    let pending_ids = read_pending_publish_files(&handle.layrs_dir, &session.target_layer_id)?
+    let pending_ids = read_pending_publish_files(
+        &handle.store,
+        &handle.layrs_dir,
+        &session.target_layer_id,
+    )?
         .into_iter()
         .map(|pending| pending.step_id)
         .collect::<Vec<_>>();
@@ -79,13 +91,21 @@ pub(super) fn ensure_sync_weave_plan_is_current(
                 .to_string(),
         );
     }
-    let current_index = read_layer_index(&handle.layrs_dir, &session.target_layer_id)?;
+    let current_index = read_layer_index(
+        &handle.store,
+        &handle.layrs_dir,
+        &session.target_layer_id,
+    )?;
     if current_index.root_tree_id != guard.received_tree_id {
         return Err(
             "Sync Weave target changed since preparation. Abort and run Sync again.".to_string(),
         );
     }
-    let current_working = capture_working_state(&handle.root, &session.target_layer_id, true)?;
+    let current_working = capture_working_state(
+        &mut handle.store,
+        &handle.root,
+        &session.target_layer_id,
+    )?;
     if current_working.root_tree_id != guard.proposed_tree_id {
         return Err(
             "Sync Weave working tree changed since preparation. No files or pending Steps were modified."
@@ -96,12 +116,22 @@ pub(super) fn ensure_sync_weave_plan_is_current(
 }
 
 pub(super) fn ensure_local_weave_target_is_current(
-    handle: &LocalSpaceHandle,
+    handle: &mut LocalSpaceHandle,
     session: &WeaveSessionFile,
     proposed_state: &WorkingStateFile,
 ) -> Result<(), String> {
-    let target_state = read_layer_state(&handle.layrs_dir, &session.target_layer_id)
-        .or_else(|_| read_layer_index(&handle.layrs_dir, &session.target_layer_id))?;
+    let target_state = read_layer_state(
+        &handle.store,
+        &handle.layrs_dir,
+        &session.target_layer_id,
+    )
+    .or_else(|_| {
+        read_layer_index(
+            &handle.store,
+            &handle.layrs_dir,
+            &session.target_layer_id,
+        )
+    })?;
     if target_state.root_tree_id != session.pre_weave_target_tree_id {
         return Err(
             "Weave target changed since preparation. Abort and prepare the Weave again."
@@ -109,7 +139,11 @@ pub(super) fn ensure_local_weave_target_is_current(
         );
     }
     if handle.active.layer_id == session.target_layer_id {
-        let current_working = capture_working_state(&handle.root, &session.target_layer_id, true)?;
+        let current_working = capture_working_state(
+            &mut handle.store,
+            &handle.root,
+            &session.target_layer_id,
+        )?;
         if current_working.root_tree_id != proposed_state.root_tree_id {
             return Err(
                 "Weave working tree changed since preparation. No files or pending Steps were modified."
@@ -126,12 +160,56 @@ pub(super) fn conflict_dir(layrs_dir: &Path, weave_id: &str, conflict_id: &str) 
         .join(safe_id_fragment(conflict_id))
 }
 
-pub(super) fn active_weave_id(layrs_dir: &Path) -> Result<Option<String>, String> {
+pub(super) fn write_weave_blob(
+    store: &mut LocalStoreSession,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut bytes_hex = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut bytes_hex, "{byte:02x}")
+            .map_err(|error| format!("Layrs could not encode Weave bytes: {error}"))?;
+    }
+    write_json(
+        store,
+        path,
+        &WeaveBlobFile {
+            schema: "layrs.weave_blob.v1".to_string(),
+            bytes_hex,
+        },
+    )
+}
+
+pub(super) fn read_weave_blob(
+    store: &LocalStoreSession,
+    path: &Path,
+) -> Result<Vec<u8>, String> {
+    let blob: WeaveBlobFile = read_json(store, path)?;
+    if blob.schema != "layrs.weave_blob.v1" || blob.bytes_hex.len() % 2 != 0 {
+        return Err(format!("Layrs Weave blob {} is invalid.", path.display()));
+    }
+    blob.bytes_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair)
+                .map_err(|error| format!("Layrs Weave blob hex is invalid: {error}"))?;
+            u8::from_str_radix(text, 16)
+                .map_err(|error| format!("Layrs Weave blob hex is invalid: {error}"))
+        })
+        .collect()
+}
+
+pub(super) fn active_weave_id(
+    store: &LocalStoreSession,
+    layrs_dir: &Path,
+) -> Result<Option<String>, String> {
     let path = active_weave_marker_path(layrs_dir);
-    if !path.exists() {
+    if !store.exists(&path)? {
         return Ok(None);
     }
-    let value = read_json::<Value>(&path)?;
+    let value = read_json::<Value>(store, &path)?;
     Ok(value
         .get("weaveId")
         .and_then(Value::as_str)
@@ -139,12 +217,14 @@ pub(super) fn active_weave_id(layrs_dir: &Path) -> Result<Option<String>, String
 }
 
 pub(super) fn write_active_weave_marker(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     weave_id: Option<&str>,
 ) -> Result<(), String> {
     let path = active_weave_marker_path(layrs_dir);
     if let Some(weave_id) = weave_id {
         write_json(
+            store,
             &path,
             &serde_json::json!({
                 "schema": "layrs.active_weave.v1",
@@ -152,30 +232,27 @@ pub(super) fn write_active_weave_marker(
                 "updatedAtUnix": unix_now()
             }),
         )
-    } else if path.exists() {
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Layrs Desktop could not clear active Weave marker {}: {error}",
-                path.display()
-            )
-        })
+    } else if store.exists(&path)? {
+        store.remove(&path).map(|_| ())
     } else {
         Ok(())
     }
 }
 
 pub(super) fn read_weave_session(
+    store: &LocalStoreSession,
     layrs_dir: &Path,
     weave_id: &str,
 ) -> Result<WeaveSessionFile, String> {
-    read_json(&session_path(layrs_dir, weave_id))
+    read_json(store, &session_path(layrs_dir, weave_id))
 }
 
 pub(super) fn write_weave_session(
+    store: &mut LocalStoreSession,
     layrs_dir: &Path,
     session: &WeaveSessionFile,
 ) -> Result<(), String> {
-    write_json(&session_path(layrs_dir, &session.weave_id), session)
+    write_json(store, &session_path(layrs_dir, &session.weave_id), session)
 }
 
 pub(super) fn summarize_weave_session(session: &WeaveSessionFile) -> WeaveSessionSummary {

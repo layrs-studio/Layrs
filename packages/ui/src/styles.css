@@ -780,12 +780,6 @@ a {
   padding: 0;
 }
 
-  color: var(--layrs-ink);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 @media (max-width: 980px) {
   .layrs-shell {
     grid-template-columns: 1fr;

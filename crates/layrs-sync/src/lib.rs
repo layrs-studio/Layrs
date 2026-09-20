@@ -12,6 +12,10 @@ mod objects;
 mod requests;
 mod validation;
 
+/// Native, fail-closed synchronization contract. Legacy exports remain at the
+/// crate root only until the server/client cut-over is complete.
+pub mod v3;
+
 pub use chunking::*;
 pub use digest::*;
 pub use legacy::*;

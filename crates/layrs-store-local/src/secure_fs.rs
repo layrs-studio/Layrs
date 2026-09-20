@@ -5,6 +5,10 @@ use std::fs::{self, File, Metadata};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+mod leaf;
+mod privacy;
+pub(crate) use leaf::PinnedLeaf;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileIdentity {
     volume: u64,
@@ -113,7 +117,7 @@ impl PinnedDirectory {
         self.open_child_with_access(name, true)
     }
 
-    fn open_child_for_traversal(&self, name: &OsStr) -> io::Result<Self> {
+    pub(crate) fn open_child_for_traversal(&self, name: &OsStr) -> io::Result<Self> {
         self.open_child_with_access(name, false)
     }
 
@@ -169,6 +173,40 @@ impl PinnedDirectory {
         platform::unlink_name_at(&self.file, name)
     }
 
+    /// Remove one empty directory through its pinned parent. Never recursive,
+    /// never follows a symlink/reparse point and never deletes a regular file.
+    pub(crate) fn remove_empty_child(&self, name: &OsStr) -> io::Result<()> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        platform::remove_empty_directory_at(&self.file, name)?;
+        self.sync()
+    }
+
+    pub(crate) fn existing_parent(
+        &self,
+        relative: &Path,
+    ) -> io::Result<(Self, std::ffi::OsString)> {
+        let mut components = relative.components().peekable();
+        let mut directory = self.try_clone()?;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "noncanonical relative path",
+                ));
+            };
+            if components.peek().is_none() {
+                directory.verify_path_identity()?;
+                return Ok((directory, name.to_os_string()));
+            }
+            directory = directory.open_child_for_traversal(name)?;
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path has no leaf",
+        ))
+    }
+
     pub(crate) fn open_relative_file(&self, relative: &Path) -> io::Result<PinnedFile> {
         let mut components = relative.components().peekable();
         let mut directory = self.try_clone()?;
@@ -204,6 +242,13 @@ impl PinnedDirectory {
 
     pub(crate) fn sync(&self) -> io::Result<()> {
         sync_directory_handle(&self.file)
+    }
+
+    pub(crate) fn identity_token(&self) -> String {
+        format!(
+            "fs:v1:{:016x}:{:016x}",
+            self.identity.volume, self.identity.file
+        )
     }
 
     pub(crate) fn verify_path_identity(&self) -> io::Result<()> {
@@ -279,7 +324,7 @@ impl PinnedFile {
         platform::hard_link_at(self, &destination.file, name)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     pub(crate) fn rename_to(
         &self,
         destination: &PinnedDirectory,

@@ -29,12 +29,13 @@
     "test:desktop": "node scripts/playwright-run.mjs native visual",
     "test:e2e": "node scripts/playwright-run.mjs real visual",
     "test:web": "node scripts/playwright-run.mjs web visual",
-    "test:desktop:ci": "node scripts/playwright-run.mjs native ci",
+    "test:desktop:ci": "node scripts/test-native-ui-ci.mjs desktop",
     "test:e2e:ci": "node scripts/playwright-run.mjs real ci",
-    "test:web:ci": "node scripts/playwright-run.mjs web ci",
+    "test:web:ci": "node scripts/test-native-ui-ci.mjs web",
     "test:desktop:debug": "node scripts/playwright-run.mjs native debug",
     "test:e2e:debug": "node scripts/playwright-run.mjs real debug",
     "test:core": "node scripts/test-core.mjs",
+    "test:scm-contracts": "node docs/contracts/scm-v1/verify-golden.mjs",
     "test:e2e:renderer": "node scripts/playwright-run.mjs renderer ci",
     "test:e2e:native": "node scripts/playwright-run.mjs native ci",
     "test:e2e:real": "node scripts/playwright-run.mjs real ci",
@@ -43,6 +44,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
-    "@playwright/test": "^1.56.0"
+    "@playwright/test": "^1.56.0",
+    "ajv": "8.17.1"
   }
 }

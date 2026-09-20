@@ -14,6 +14,26 @@ pub const CODE_LENS_DIGEST: &str =
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CodeLens;
 
+/// Explicit three-way code reconciliation using exact UTF-8 lines (no AST or
+/// lossy decoding). Hosts must enforce resource limits before calling it.
+/// The legacy analysis manifest remains unchanged until all hosts migrate.
+pub fn reconcile_code(
+    input: layrs_lens_sdk::LensReconcileInput<'_>,
+) -> layrs_lens_sdk::LensReconcileResult {
+    layrs_lens_text::reconcile_text(input)
+}
+
+/// Opt-in manifest for the new reconciliation host. The host replaces the digest
+/// with its verified implementation identity before publishing or executing it.
+pub fn reconciliation_manifest() -> LensManifest {
+    let mut result = manifest();
+    result.version = "1.1.0".to_string();
+    result.digest = None;
+    result.analyzer.capabilities.push(LensCapability::Reconcile);
+    result.resolution_methods = layrs_lens_text::resolution_methods();
+    result
+}
+
 impl Analyzer for CodeLens {
     fn manifest(&self) -> LensManifest {
         manifest()

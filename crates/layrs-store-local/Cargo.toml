@@ -17,7 +17,18 @@ harness = false
 [dependencies]
 blake3 = "1"
 fs2 = "0.4"
+layrs-core = { path = "../layrs-core" }
+layrs-graph = { path = "../layrs-graph" }
+layrs-store = { path = "../layrs-store" }
 layrs-sync = { path = "../layrs-sync" }
+layrs-weave = { path = "../layrs-weave" }
 # Keep libsqlite3-sys aligned with SQLx 0.8.6 across the workspace. Updating
 # rusqlite requires coordinating the workspace's single `links = "sqlite3"`.
 rusqlite = { version = "=0.32.1", features = ["backup", "bundled"] }
+serde = { workspace = true }
+serde_json = "1"
+serde_jcs = "0.1"
+time = { version = "=0.3.36", features = ["parsing"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading"] }
