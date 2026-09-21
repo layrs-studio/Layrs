@@ -15,6 +15,14 @@ pub fn router(state: V3HttpState) -> Router {
         .route("/v3/workspaces/provision", post(endpoints::provision_space))
         .route("/v3/spaces/:space_id/bootstrap", get(endpoints::bootstrap))
         .route(
+            "/v3/spaces/:space_id/path-patches",
+            post(endpoints::submit_path_patch),
+        )
+        .route(
+            "/v3/spaces/:space_id/projection",
+            post(endpoints::projection_page),
+        )
+        .route(
             "/v3/spaces/:space_id/history",
             post(endpoints::step_history),
         )

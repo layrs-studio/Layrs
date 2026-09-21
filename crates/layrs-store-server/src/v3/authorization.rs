@@ -43,6 +43,8 @@ impl PrincipalContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V3Action {
     Bootstrap,
+    ReadProjection,
+    ScopedPathWrite,
     PlanUpload,
     CompleteUpload,
     PlanFetch,
@@ -64,6 +66,8 @@ impl V3Action {
     pub const fn as_policy_action(self) -> &'static str {
         match self {
             Self::Bootstrap => "space.bootstrap",
+            Self::ReadProjection => "space.bootstrap",
+            Self::ScopedPathWrite => "transaction.apply",
             Self::PlanUpload => "object.plan_upload",
             Self::CompleteUpload => "object.complete_upload",
             Self::PlanFetch => "object.plan_fetch",
@@ -94,6 +98,14 @@ pub enum AuthorizationTarget {
         space_id: SpaceId,
         repo_path: RepoPath,
     },
+    /// Only the server constructs this after validating the base Step/Tree.
+    /// Grants apply to this path, not implicitly to its descendants or aliases.
+    ScopedPath {
+        space_id: SpaceId,
+        base_step_id: StepId,
+        root_tree_id: TreeId,
+        repo_path: RepoPath,
+    },
     /// Created only after canonical Step/Tree traversal validates the exact leaf.
     ContentPath {
         space_id: SpaceId,
@@ -118,6 +130,7 @@ impl AuthorizationTarget {
             Self::Space(space_id)
             | Self::Object { space_id, .. }
             | Self::Path { space_id, .. }
+            | Self::ScopedPath { space_id, .. }
             | Self::ContentPath { space_id, .. }
             | Self::Product { space_id, .. }
             | Self::Event { space_id, .. } => space_id,

@@ -10,6 +10,9 @@ use layrs_sync::v3::{ObjectKind, PolicySet, ProductEnvelope};
 use layrs_sync::v3::{PrincipalId, SpacePolicyRule, SpacePolicyRules, SpacePolicyRulesVersion};
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
+#[cfg(test)]
+#[path = "policy_authorizer_scoped_tests.rs"]
+mod scoped_tests;
 
 #[derive(Clone)]
 pub struct PgPolicyAuthorizer {
@@ -62,7 +65,6 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
         {
             return Err(V3StoreError::IdentityMismatch);
         }
-        let mut allowed = false;
         let mut content_rules = Vec::new();
         for entry in set.policy_versions {
             let descriptor =
@@ -93,26 +95,28 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
             let bytes = read_canonical_object(self.cas.as_ref(), &descriptor, 1024 * 1024).await?;
             let rules: NativePolicyRules =
                 serde_json::from_slice(&bytes).map_err(|_| V3StoreError::InvalidCapability)?;
-            match rules
-                .evaluate(
-                    &check.principal.principal_id,
-                    check.action.as_policy_action(),
-                )
-                .map_err(|_| V3StoreError::InvalidCapability)?
-            {
-                Some(RuleEffect::Deny) => {
-                    return Ok(AuthorizationDecision::deny("explicit_policy_deny"));
-                }
-                Some(RuleEffect::Allow) => allowed = true,
-                None => {}
-            }
             content_rules.push(rules);
         }
+        let allowed = match action_grants(check, &content_rules)? {
+            Some(RuleEffect::Deny) => {
+                return Ok(AuthorizationDecision::deny("explicit_policy_deny"));
+            }
+            Some(RuleEffect::Allow) => true,
+            None => false,
+        };
         let restricted = content_rules
             .iter()
             .any(|r| r.restricted(&check.principal.principal_id));
+        // New scoped entrypoints never inherit an unscoped transaction grant.
+        // This shape/path check also applies to unrestricted principals.
+        if !scoped_target_allowed(check, &content_rules) {
+            let mut decision = AuthorizationDecision::deny("scoped_path_access_denied");
+            decision.content_restricted = restricted;
+            return Ok(decision);
+        }
         if restricted {
             let content_allowed = match check.action {
+                V3Action::ReadProjection | V3Action::ScopedPathWrite => true,
                 V3Action::Bootstrap | V3Action::PlanFetch | V3Action::ReadEvents => true,
                 V3Action::FetchObject => match &check.target {
                     AuthorizationTarget::Space(_) => true, // Envelope check only; no bytes.
@@ -147,6 +151,54 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
         };
         decision.content_restricted = restricted;
         Ok(decision)
+    }
+}
+
+fn action_grants(
+    check: &AuthorizationCheck,
+    rules: &[NativePolicyRules],
+) -> V3StoreResult<Option<RuleEffect>> {
+    let required: &[&str] = match (&check.action, &check.target) {
+        (V3Action::ReadProjection, AuthorizationTarget::ScopedPath { .. }) => {
+            &["space.bootstrap", "object.plan_fetch", "object.fetch"]
+        }
+        (V3Action::ScopedPathWrite, _) => &[
+            "space.bootstrap",
+            "object.plan_fetch",
+            "object.fetch",
+            "transaction.apply",
+        ],
+        _ => &[check.action.as_policy_action()],
+    };
+    let mut all_allowed = true;
+    for action in required {
+        let mut granted = false;
+        for policy in rules {
+            match policy
+                .evaluate(&check.principal.principal_id, action)
+                .map_err(|_| V3StoreError::InvalidCapability)?
+            {
+                Some(RuleEffect::Deny) => return Ok(Some(RuleEffect::Deny)),
+                Some(RuleEffect::Allow) => granted = true,
+                None => {}
+            }
+        }
+        all_allowed &= granted;
+    }
+    Ok(all_allowed.then_some(RuleEffect::Allow))
+}
+
+fn scoped_target_allowed(check: &AuthorizationCheck, rules: &[NativePolicyRules]) -> bool {
+    match (&check.action, &check.target) {
+        (V3Action::ReadProjection, AuthorizationTarget::Space(_)) => true,
+        (V3Action::ReadProjection, AuthorizationTarget::ScopedPath { repo_path, .. }) => rules
+            .iter()
+            .all(|r| r.content_allowed(&check.principal.principal_id, repo_path)),
+        (V3Action::ScopedPathWrite, AuthorizationTarget::ScopedPath { repo_path, .. }) => rules
+            .iter()
+            .all(|r| r.write_allowed(&check.principal.principal_id, repo_path)),
+        (V3Action::ReadProjection | V3Action::ScopedPathWrite, _) => false,
+        _ => true,
     }
 }
 

@@ -152,6 +152,45 @@ impl ProductionV3Facade {
 
 #[async_trait]
 impl V3Facade for ProductionV3Facade {
+    async fn submit_path_patch(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        submission: PathPatchSubmission,
+    ) -> Result<PathPatchReceipt, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .submit(&principal, &submission)
+        .await
+        .map_err(|error| match error {
+            store::TransactionServiceError::Store(error) => map_error(error),
+            store::TransactionServiceError::RequestDigestMismatch => V3ServiceError::Conflict {
+                code: "request_digest_mismatch",
+            },
+            store::TransactionServiceError::IdempotencyDigestMismatch => {
+                V3ServiceError::IdempotencyDigestMismatch
+            }
+            store::TransactionServiceError::Busy => V3ServiceError::Conflict {
+                code: "view_generation_conflict",
+            },
+        })
+    }
+    async fn projection_page(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        request: ProjectionPageRequest,
+    ) -> Result<ProjectionPage, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        let authority = self.authority(space).await?;
+        self.repository
+            .projection_page(&principal, &authority, request)
+            .await
+            .map_err(map_error)
+    }
     async fn step_history(
         &self,
         principal: &AuthenticatedPrincipal,

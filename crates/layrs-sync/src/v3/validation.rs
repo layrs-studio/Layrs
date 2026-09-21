@@ -257,6 +257,17 @@ impl ValidateV3 for SyncTransactionRequest {
             sorted_unique(steps, "products.dependsOnStepIds")?;
             sorted_unique(products, "products.dependsOnProductIds")?;
             for dependency in products {
+                // A Policy revision references its previously admitted version by
+                // exact object ID, while the projected logical ID stays the same.
+                // This is not an in-batch self dependency. Admission must verify
+                // the predecessor outside the batch, including its immutable version.
+                let previous_policy_version = matches!(product,
+                    ProductEnvelope::Policy { previous_product_object_id, record, .. }
+                    if previous_product_object_id.as_ref().is_some_and(|id| id != product.object_id())
+                        && dependency.as_str() == record.policy_id.as_str());
+                if previous_policy_version {
+                    continue;
+                }
                 if product_positions
                     .get(dependency.as_str())
                     .is_some_and(|p| *p >= index)

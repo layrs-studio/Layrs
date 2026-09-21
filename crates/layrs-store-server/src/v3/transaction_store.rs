@@ -71,6 +71,24 @@ impl PgTransactionStore {
         principal: &PrincipalContext,
         request: &SyncTransactionRequest,
     ) -> Result<PersistedReceipt, TransactionServiceError> {
+        self.transact_inner(principal, request, None).await
+    }
+
+    pub(crate) async fn transact_scoped(
+        &self,
+        principal: &PrincipalContext,
+        request: &SyncTransactionRequest,
+        scope: &super::path_patch_scope::ScopedPatch,
+    ) -> Result<PersistedReceipt, TransactionServiceError> {
+        self.transact_inner(principal, request, Some(scope)).await
+    }
+
+    async fn transact_inner(
+        &self,
+        principal: &PrincipalContext,
+        request: &SyncTransactionRequest,
+        scope: Option<&super::path_patch_scope::ScopedPatch>,
+    ) -> Result<PersistedReceipt, TransactionServiceError> {
         if request.computed_request_digest().map_err(json_error)? != request.request_digest {
             return Err(TransactionServiceError::RequestDigestMismatch);
         }
@@ -79,7 +97,7 @@ impl PgTransactionStore {
             if let Some(stored) = self.replay(principal, request).await? {
                 return Ok(stored);
             }
-            let mut prepared = self.prepare(principal, request).await?;
+            let mut prepared = self.prepare(principal, request, scope).await?;
             let _budget_writer = self.repository.cas_budget_writer().await;
             let mut tx = self.repository.pool().begin().await.map_err(pg_error)?;
             self.repository.lock_cas_budget(&mut tx).await?;
@@ -208,7 +226,7 @@ impl PgTransactionStore {
         Err(TransactionServiceError::Busy)
     }
 
-    async fn replay(
+    pub(crate) async fn replay(
         &self,
         principal: &PrincipalContext,
         request: &SyncTransactionRequest,
@@ -224,6 +242,7 @@ impl PgTransactionStore {
         &self,
         principal: &PrincipalContext,
         request: &SyncTransactionRequest,
+        scope: Option<&super::path_patch_scope::ScopedPatch>,
     ) -> V3StoreResult<Prepared> {
         let authority = PgBootstrapStore::new(self.repository.clone(), self.cursors.clone())
             .load_authority(&request.space_id)
@@ -270,6 +289,7 @@ impl PgTransactionStore {
             &authority,
             &policy,
             &timestamp,
+            scope,
         )
         .await?;
         let mut prepared = Prepared {

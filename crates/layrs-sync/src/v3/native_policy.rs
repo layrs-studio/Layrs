@@ -2,6 +2,9 @@
 use super::{PrincipalId, V3ValidationError};
 use layrs_core::scm::RepoPath;
 use serde::{Deserialize, Serialize};
+#[path = "native_policy_v3.rs"]
+mod v3;
+pub use v3::*;
 type PolicyRulesResult<T> = Result<T, V3ValidationError>;
 fn invalid() -> V3ValidationError {
     V3ValidationError {
@@ -43,6 +46,15 @@ impl SpacePolicyRules {
         principal: &PrincipalId,
         action: &str,
     ) -> PolicyRulesResult<Option<RuleEffect>> {
+        self.evaluate_with(principal, action, known_action)
+    }
+
+    fn evaluate_with(
+        &self,
+        principal: &PrincipalId,
+        action: &str,
+        known: fn(&str) -> bool,
+    ) -> PolicyRulesResult<Option<RuleEffect>> {
         if self.rules.len() > 256 {
             return Err(invalid());
         }
@@ -53,7 +65,7 @@ impl SpacePolicyRules {
                 || rule.principal_ids.len() > 256
                 || rule.actions.is_empty()
                 || rule.actions.len() > 32
-                || rule.actions.iter().any(|a| !known_action(a))
+                || rule.actions.iter().any(|a| !known(a))
             {
                 return Err(invalid());
             }
@@ -101,6 +113,7 @@ fn known_action(action: &str) -> bool {
 pub enum NativePolicyRules {
     V1(SpacePolicyRules),
     V2(ContentPolicyRules),
+    V3(PathPolicyRules),
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -157,6 +170,7 @@ impl NativePolicyRules {
     ) -> PolicyRulesResult<Option<RuleEffect>> {
         match self {
             Self::V1(rules) => rules.evaluate(principal, action),
+            Self::V3(rules) => rules.evaluate(principal, action),
             Self::V2(rules) => {
                 if rules.content_policies.is_empty() || rules.content_policies.len() > 64 {
                     return Err(invalid());
@@ -188,9 +202,22 @@ impl NativePolicyRules {
         }
     }
     pub fn restricted(&self, principal: &PrincipalId) -> bool {
-        matches!(self, Self::V2(rules) if rules.content_policies.iter().any(|p| p.principal_ids.contains(principal)))
+        match self {
+            Self::V1(_) => false,
+            Self::V2(rules) => rules
+                .content_policies
+                .iter()
+                .any(|p| p.principal_ids.contains(principal)),
+            Self::V3(rules) => rules
+                .path_policies
+                .iter()
+                .any(|p| p.principal_ids.contains(principal)),
+        }
     }
     pub fn content_allowed(&self, principal: &PrincipalId, path: &RepoPath) -> bool {
+        if let Self::V3(rules) = self {
+            return rules.read_allowed(principal, path);
+        }
         let Self::V2(rules) = self else {
             return true;
         };
@@ -210,6 +237,16 @@ impl NativePolicyRules {
                 }
                 allowed
             })
+    }
+
+    /// A v2 content restriction remains read-only even when another Policy grants a patch action.
+    /// Every Policy in the captured PolicySet must agree before a scoped write is permitted.
+    pub fn write_allowed(&self, principal: &PrincipalId, path: &RepoPath) -> bool {
+        match self {
+            Self::V1(_) => true,
+            Self::V2(_) => !self.restricted(principal),
+            Self::V3(rules) => rules.write_allowed(principal, path),
+        }
     }
 }
 

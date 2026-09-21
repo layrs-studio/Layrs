@@ -44,6 +44,32 @@ impl PgPlanStore {
         context: &PlanContext,
         requested: Vec<ObjectDescriptor>,
     ) -> V3StoreResult<ObjectPlan> {
+        self.create_object_plan_inner(principal, context, requested, None)
+            .await
+    }
+
+    pub(crate) async fn create_scoped_object_plan(
+        &self,
+        principal: &PrincipalContext,
+        context: &PlanContext,
+        requested: Vec<ObjectDescriptor>,
+        scope: &super::path_patch_scope::ScopedPatch,
+        transaction: &layrs_sync::v3::SyncTransactionRequest,
+    ) -> V3StoreResult<ObjectPlan> {
+        self.create_object_plan_inner(principal, context, requested, Some((scope, transaction)))
+            .await
+    }
+
+    async fn create_object_plan_inner(
+        &self,
+        principal: &PrincipalContext,
+        context: &PlanContext,
+        requested: Vec<ObjectDescriptor>,
+        scope: Option<(
+            &super::path_patch_scope::ScopedPatch,
+            &layrs_sync::v3::SyncTransactionRequest,
+        )>,
+    ) -> V3StoreResult<ObjectPlan> {
         if context.actor.plan_id
             != deterministic_plan_id(
                 &context.actor.space_id,
@@ -59,18 +85,37 @@ impl PgPlanStore {
         {
             return Err(V3StoreError::AuthorizationEpochChanged);
         }
-        require_allowed(
-            self.repository
-                .authorizer()
-                .authorize(&AuthorizationCheck {
-                    principal: principal.clone(),
-                    action: V3Action::PlanUpload,
-                    target: AuthorizationTarget::Space(context.actor.space_id.clone()),
-                    policy_set_id,
-                    authorization_epoch: epoch,
-                })
-                .await?,
-        )?;
+        if let Some((scope, transaction)) = scope {
+            let authority = super::SpaceAuthority {
+                space_id: context.actor.space_id.clone(),
+                repository_view_id: scope.request.expected_repository_view_id.clone(),
+                repository_view_generation: scope.request.expected_generation,
+                policy_set_id: policy_set_id.clone(),
+                authorization_epoch: epoch,
+                watermark_sequence: 0,
+            };
+            if scope
+                .decisions(&self.repository, principal, &authority, transaction, &[])
+                .await?
+                .iter()
+                .any(|d| !d.allowed)
+            {
+                return Err(V3StoreError::InvalidCapability);
+            }
+        } else {
+            require_allowed(
+                self.repository
+                    .authorizer()
+                    .authorize(&AuthorizationCheck {
+                        principal: principal.clone(),
+                        action: V3Action::PlanUpload,
+                        target: AuthorizationTarget::Space(context.actor.space_id.clone()),
+                        policy_set_id,
+                        authorization_epoch: epoch,
+                    })
+                    .await?,
+            )?;
+        }
 
         let request_digest =
             super::capability::digest_json("layrs.sync.v3/object-plan-request", &requested)?;

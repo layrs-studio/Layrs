@@ -4,6 +4,7 @@ use bytes::Bytes;
 use layrs_core::scm::Timestamp;
 use layrs_sync::v3::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn snapshot(
     repository: &PgV3Repository,
     principal: &PrincipalContext,
@@ -11,17 +12,22 @@ pub(crate) async fn snapshot(
     authority: &SpaceAuthority,
     policy: &PolicySet,
     timestamp: &Timestamp,
+    scope: Option<&super::path_patch_scope::ScopedPatch>,
 ) -> V3StoreResult<(AuthorizationSnapshot, PreparedCasObject, bool)> {
-    let decision = repository
-        .authorizer()
-        .authorize(&AuthorizationCheck {
-            principal: principal.clone(),
-            action: V3Action::ApplyTransaction,
-            target: AuthorizationTarget::Space(request.space_id.clone()),
-            policy_set_id: authority.policy_set_id.clone(),
-            authorization_epoch: authority.authorization_epoch,
-        })
-        .await?;
+    let decision = if scope.is_none() {
+        repository
+            .authorizer()
+            .authorize(&AuthorizationCheck {
+                principal: principal.clone(),
+                action: V3Action::ApplyTransaction,
+                target: AuthorizationTarget::Space(request.space_id.clone()),
+                policy_set_id: authority.policy_set_id.clone(),
+                authorization_epoch: authority.authorization_epoch,
+            })
+            .await?
+    } else {
+        super::AuthorizationDecision::deny("scoped_authorization_required")
+    };
     let mut versions: Vec<_> = policy
         .policy_versions
         .iter()
@@ -70,11 +76,29 @@ pub(crate) async fn snapshot(
                     space_id: request.space_id.clone(),
                 },
                 allowed: decision.allowed,
-                policy_version_ids: versions,
+                policy_version_ids: versions.clone(),
                 reason_code: decision.reason_code,
             });
         snapshot.decisions.sort_by(|a, b| a.action.cmp(&b.action));
     }
+    if let Some(scope) = scope {
+        snapshot.decisions = scope
+            .decisions(repository, principal, authority, request, &versions)
+            .await?;
+    }
+    let mut keyed = snapshot
+        .decisions
+        .into_iter()
+        .map(|decision| {
+            serde_jcs::to_string(&decision)
+                .map(|key| (key, decision))
+                .map_err(json_error)
+        })
+        .collect::<V3StoreResult<Vec<_>>>()?;
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    snapshot.decisions = keyed.into_iter().map(|(_, decision)| decision).collect();
+    let authorized = !snapshot.decisions.is_empty()
+        && snapshot.decisions.iter().all(|decision| decision.allowed);
     snapshot.authorization_snapshot_id = snapshot.computed_id().map_err(json_error)?;
     let snapshot_object = repository
         .cas()
@@ -83,11 +107,7 @@ pub(crate) async fn snapshot(
             Bytes::from(serde_jcs::to_vec(&snapshot).map_err(json_error)?),
         )
         .await?;
-    Ok((
-        snapshot,
-        snapshot_object,
-        decision.allowed && choose_allowed,
-    ))
+    Ok((snapshot, snapshot_object, authorized && choose_allowed))
 }
 fn json_error(e: impl std::fmt::Display) -> V3StoreError {
     V3StoreError::Backend(e.to_string())

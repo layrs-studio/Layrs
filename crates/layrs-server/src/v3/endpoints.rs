@@ -58,6 +58,69 @@ pub async fn compare_steps(
     .into_response())
 }
 
+pub async fn projection_page(
+    State(state): State<V3HttpState>,
+    Path(space): Path<String>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body: layrs_sync::v3::ProjectionPageRequest = limited_json(request, 8192).await?;
+    let response = state
+        .facade()
+        .projection_page(&principal, &space_id, body.clone())
+        .await?;
+    if response.principal_id != principal.principal_id
+        || response.space_id != space_id
+        || response.step_id != body.step_id
+        || response.policy_set_id != body.expected_policy_set_id
+        || response.authorization_epoch != body.expected_authorization_epoch
+        || response.entries.len() > usize::from(body.limit)
+        || response
+            .entries
+            .iter()
+            .any(|entry| entry.writable && !entry.content_readable)
+    {
+        return Err(V3ServiceError::Internal.into());
+    }
+    Ok(Json(response).into_response())
+}
+
+pub async fn submit_path_patch(
+    State(state): State<V3HttpState>,
+    Path(space): Path<String>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body: layrs_sync::v3::PathPatchSubmission = limited_json(request, 24 * 1024 * 1024).await?;
+    if body.request.space_id != space_id {
+        return Err(V3HttpError::invalid_request("space_mismatch"));
+    }
+    body.request
+        .validate()
+        .map_err(|_| V3HttpError::invalid_request("invalid_path_patch"))?;
+    let digest = body.request.request_digest.clone();
+    let client = body.request.client_id.clone();
+    let key = body.request.idempotency_key.clone();
+    let response = state.facade().submit_path_patch(&principal, body).await?;
+    if response.request_digest != digest
+        || response.receipt.principal_id != principal.principal_id
+        || response.receipt.space_id != space_id
+        || response.receipt.client_id != client
+        || response.receipt.idempotency_key != key
+    {
+        return Err(V3ServiceError::Internal.into());
+    }
+    layrs_sync::v3::ValidateV3::validate_v3(&response.receipt)
+        .map_err(|_| V3ServiceError::Internal)?;
+    Ok(Json(response).into_response())
+}
+
 pub async fn step_history(
     State(state): State<V3HttpState>,
     Path(space): Path<String>,
