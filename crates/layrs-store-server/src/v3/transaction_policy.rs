@@ -1,16 +1,20 @@
-//! Strict v1 policy admission. New policies are inert until an explicit root CAS.
+//! Immutable native policy admission. Policies are inert until an explicit root CAS.
 use super::*;
 use bytes::Bytes;
 use layrs_core::scm::{ObjectId, SpaceId};
 use layrs_sync::v3::*;
 use sqlx::{Postgres, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+#[path = "transaction_policy_tests.rs"]
+mod tests;
 
 #[derive(Default)]
 pub(crate) struct PreparedPolicies {
     pub products: Vec<(ProductEnvelope, PreparedCasObject)>,
     pub proposed: Option<(PolicySet, PreparedCasObject)>,
     pub availability: BTreeSet<ObjectId>,
+    pub predecessors: BTreeSet<ObjectId>,
 }
 pub(crate) fn required(request: &SyncTransactionRequest) -> bool {
     request.policy_root_mutation.is_some()
@@ -67,7 +71,7 @@ async fn validate_product(
     repository: &PgV3Repository,
     space: &SpaceId,
     product: &ProductEnvelope,
-) -> V3StoreResult<ObjectId> {
+) -> V3StoreResult<Vec<ObjectId>> {
     product.validate_v3().map_err(bad)?;
     product.verify_identity().map_err(bad)?;
     let ProductEnvelope::Policy {
@@ -80,13 +84,27 @@ async fn validate_product(
     else {
         return Err(invalid());
     };
-    // v1 has one opaque rules Evidence, interpreted exclusively by the native authorizer.
-    if record.space_id != *space
-        || !depends_on_step_ids.is_empty()
-        || !depends_on_product_ids.is_empty()
-        || previous_product_object_id.is_some()
-    {
+    if record.space_id != *space || !depends_on_step_ids.is_empty() {
         return Err(invalid());
+    }
+    let mut dependencies = vec![record.rules_object_id.clone()];
+    match previous_product_object_id.as_ref() {
+        None if !depends_on_product_ids.is_empty() => return Err(invalid()),
+        None => {}
+        Some(previous) => {
+            // A byte upload alone is insufficient: predecessor must be an already
+            // admitted immutable Policy in this Space, never a same-batch claim.
+            let admitted: Option<String> = sqlx::query_scalar("SELECT canonical_envelope_jcs FROM products WHERE space_id=$1 AND product_object_id=$2 AND product_kind='policy'")
+                .bind(space.as_str()).bind(previous.as_str()).fetch_optional(repository.pool()).await.map_err(pg_error)?;
+            let admitted = admitted.ok_or_else(invalid)?;
+            let bytes = object(repository, space, previous, ObjectKind::Product).await?;
+            if admitted.as_bytes() != bytes {
+                return Err(V3StoreError::IdentityMismatch);
+            }
+            let parent: ProductEnvelope = serde_json::from_slice(&bytes).map_err(bad)?;
+            validate_predecessor(product, &parent)?;
+            dependencies.push(previous.clone());
+        }
     }
     let bytes = object(
         repository,
@@ -106,7 +124,37 @@ async fn validate_product(
             "policy.administer",
         )
         .map_err(bad)?;
-    Ok(record.rules_object_id.clone())
+    dependencies.sort();
+    dependencies.dedup();
+    Ok(dependencies)
+}
+
+fn validate_predecessor(product: &ProductEnvelope, parent: &ProductEnvelope) -> V3StoreResult<()> {
+    parent.validate_v3().map_err(bad)?;
+    parent.verify_identity().map_err(bad)?;
+    let (
+        ProductEnvelope::Policy {
+            record,
+            previous_product_object_id,
+            depends_on_product_ids,
+            ..
+        },
+        ProductEnvelope::Policy { record: old, .. },
+    ) = (product, parent)
+    else {
+        return Err(invalid());
+    };
+    let expected_logical = ProductLogicalId::parse(old.policy_id.as_str()).map_err(bad)?;
+    if previous_product_object_id.as_ref() != Some(parent.object_id())
+        || parent.object_id() == product.object_id()
+        || record.space_id != old.space_id
+        || record.policy_id != old.policy_id
+        || record.version_id == old.version_id
+        || depends_on_product_ids != &[expected_logical]
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 pub(crate) async fn prepare(
@@ -124,8 +172,17 @@ pub(crate) async fn prepare(
         if result.products.len() >= 32 {
             return Err(invalid());
         }
-        let dependency = validate_product(repository, &request.space_id, product).await?;
-        result.availability.insert(dependency);
+        let dependencies = validate_product(repository, &request.space_id, product).await?;
+        result.availability.extend(dependencies);
+        if let ProductEnvelope::Policy {
+            previous_product_object_id,
+            ..
+        } = product
+        {
+            result
+                .predecessors
+                .extend(previous_product_object_id.as_ref().cloned());
+        }
         let bytes = product.canonical_bytes().map_err(bad)?;
         total += bytes.len();
         if bytes.len() > 1024 * 1024 || total > 8 * 1024 * 1024 {
@@ -203,17 +260,26 @@ pub(crate) async fn prepare(
                     product
                 }
             };
-            let dependency = validate_product(repository, &request.space_id, &product).await?;
+            let dependencies = validate_product(repository, &request.space_id, &product).await?;
+            if let ProductEnvelope::Policy {
+                previous_product_object_id,
+                ..
+            } = &product
+            {
+                result
+                    .predecessors
+                    .extend(previous_product_object_id.as_ref().cloned());
+            }
             let ProductEnvelope::Policy { record, .. } = &product else {
                 return Err(invalid());
             };
             if record.policy_id != entry.policy_id
                 || record.version_id != entry.policy_version_id
-                || entry.dependency_object_ids != vec![dependency.clone()]
+                || entry.dependency_object_ids != dependencies
             {
                 return Err(invalid());
             }
-            result.availability.insert(dependency);
+            result.availability.extend(dependencies);
         }
         let bytes = serde_jcs::to_vec(&set).map_err(bad)?;
         if bytes.len() > 1024 * 1024 {
@@ -268,6 +334,19 @@ pub(crate) async fn recheck(
             )));
         }
     }
+    for id in &prepared.predecessors {
+        // Products are immutable to the runtime role. The surrounding CAS budget
+        // lock excludes GC, and the dependency FK protects insertion atomically.
+        // FOR SHARE would require granting UPDATE on immutable Product rows.
+        let found: Option<String> = sqlx::query_scalar("SELECT product_object_id FROM products WHERE space_id=$1 AND product_object_id=$2 AND product_kind='policy'")
+            .bind(space.as_str()).bind(id.as_str()).fetch_optional(&mut **tx).await.map_err(pg_error)?;
+        if found.is_none() {
+            return Ok(Some(super::transaction_plan::reject(
+                RejectionCode::MissingObject,
+                "Policy predecessor is no longer admitted",
+            )));
+        }
+    }
     let mut versions = BTreeMap::new();
     for (product, _) in &prepared.products {
         let ProductEnvelope::Policy { record, .. } = product else {
@@ -308,12 +387,21 @@ pub(crate) async fn install(
             .await?;
         let inserted = sqlx::query("INSERT INTO products(product_object_id,space_id,product_kind,logical_id,canonical_envelope_jcs) VALUES($1,$2,'policy',$3,$4) ON CONFLICT DO NOTHING").bind(product.object_id().as_str()).bind(space.as_str()).bind(product.logical_id()).bind(serde_jcs::to_string(product).map_err(bad)?).execute(&mut **tx).await.map_err(pg_error)?.rows_affected() == 1;
         let ProductEnvelope::Policy {
-            product_id, record, ..
+            product_id,
+            record,
+            previous_product_object_id,
+            ..
         } = product
         else {
             return Err(invalid());
         };
         sqlx::query("INSERT INTO canonical_object_edges(source_object_id,ordinal,edge_kind,target_object_id) VALUES($1,0,'policy_dependency',$2) ON CONFLICT DO NOTHING").bind(product.object_id().as_str()).bind(record.rules_object_id.as_str()).execute(&mut **tx).await.map_err(pg_error)?;
+        if let Some(previous) = previous_product_object_id.as_ref() {
+            sqlx::query("INSERT INTO canonical_object_edges(source_object_id,ordinal,edge_kind,target_object_id) VALUES($1,1,'policy_dependency',$2) ON CONFLICT DO NOTHING")
+                .bind(product.object_id().as_str()).bind(previous.as_str()).execute(&mut **tx).await.map_err(pg_error)?;
+            sqlx::query("INSERT INTO product_dependencies(space_id,product_object_id,ordinal,dependency_product_object_id) VALUES($1,$2,0,$3) ON CONFLICT DO NOTHING")
+                .bind(space.as_str()).bind(product.object_id().as_str()).bind(previous.as_str()).execute(&mut **tx).await.map_err(pg_error)?;
+        }
         if inserted {
             accepted.push(ProductRoot::Policy {
                 logical_id: product_id.clone(),
