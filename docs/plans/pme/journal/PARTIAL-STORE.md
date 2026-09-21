@@ -61,3 +61,29 @@ format3 complet. Ne pas déclarer le Worktree partiel entièrement livré tant q
 ces parcours et la publication réelle ne sont pas qualifiés. Les sources de ce
 lot sont `core/src/projection*` et `store-local/src/projection*`, avec seuls
 exports `lib.rs` ajoutés. Parent seul responsable des commits.
+
+Checkpoint publication (après commit fondation/capture768e1ec) :
+
+- Linux isolation/source RO/réseau none : Core2 et Store15 PASS (0,61s Store),
+  y compris liens symboliques DB et checkout. Pas de fichier externe suivi.
+- `begin_publication(sequence,generation,requestJcs)` conserve les octets exacts
+  avant HTTP ; requête et reçu JSON objets JCS bornés24MiB, digest et capture/base
+  liés. `pending_publication` reste accessible après réouverture. Captures,
+  installation et CAS refusés tant que publication en attente ; lectures permises.
+- `record_publication_receipt` conserve le reçu exact même si une révocation ou
+  une panne empêche ensuite de récupérer la nouvelle projection. Aucun succès
+  d'acceptation locale implicite. Retry du reçu différent refusé.
+- `finish_publication(sequence,receipt,Some(snapshot))` accepte seulement les
+  feuilles capturées et nouveaux IDs Step/racine, mêmes permissions/epoch et
+  namespace ; suppression représentée explicitement Absent, non oubliée. Reçu,
+  snapshot et retrait du pending forment une transaction SQLite. Avec None,
+  rejet terminal conservé sans changer la base. `completed_publication` permet
+  de retrouver reçu et état après perte de réponse client, sans republier.
+- Tests Windows projection16 PASS0,62s : début durable, rollback avant receipt,
+  reprise après receipt durable, received-pending, changement protégé/epoch
+  refusé, requête corrompue/noncanonique/tropgrande refusée. Publication HTTP
+  réelle raccordée et qualifiée par parent séparément, pas revendiquée ici.
+- Sources nouvelles `projection/publication.rs` et `publication/storage.rs`,
+  nouvelles tables natives3 uniquement. Le format3 est encore en développement :
+  fixtures locales créées avant ces tables doivent être recréées explicitement.
+  Aucun Store2 ni donnée utilisateur n'est converti.

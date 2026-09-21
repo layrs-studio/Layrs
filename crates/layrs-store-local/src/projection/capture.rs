@@ -1,6 +1,6 @@
 //! Durable, base-relative local patches; never incomplete SCM admission.
 mod scan;
-mod storage;
+pub(super) mod storage;
 use super::*;
 use layrs_core::scm::{FileId, RepoPath, canonical_json};
 
@@ -68,7 +68,7 @@ impl ProjectionStore {
         faults: &dyn CaptureFaults,
     ) -> Result<CapturedPatch> {
         let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_idle(&access.connection)?;
+        database::require_mutable(&access.connection)?;
         let state = database::current(&access.connection)?;
         if state.generation != expected_generation {
             return Err(ProjectionStoreError::Stale {

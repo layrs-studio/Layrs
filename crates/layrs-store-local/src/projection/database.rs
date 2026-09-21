@@ -9,6 +9,8 @@ CREATE TABLE projection_head(singleton INTEGER PRIMARY KEY CHECK(singleton=1),ge
 CREATE TABLE projection_install(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
 CREATE TABLE projection_capture_files(file_id TEXT PRIMARY KEY CHECK(length(file_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)<=16777216)) STRICT;
 CREATE TABLE projection_captures(sequence INTEGER PRIMARY KEY CHECK(sequence>0),digest TEXT NOT NULL UNIQUE CHECK(length(digest)=71),projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+CREATE TABLE projection_publication_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),sequence INTEGER NOT NULL UNIQUE REFERENCES projection_captures(sequence) ON DELETE RESTRICT,projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,projection_digest TEXT NOT NULL CHECK(length(projection_digest)=64),capture_digest TEXT NOT NULL CHECK(length(capture_digest)=71),request_digest TEXT NOT NULL CHECK(length(request_digest)=71),request_bytes BLOB NOT NULL CHECK(length(request_bytes)<=25165824),receipt_digest TEXT CHECK(length(receipt_digest)=71),receipt_bytes BLOB CHECK(length(receipt_bytes)<=25165824),CHECK((receipt_digest IS NULL)=(receipt_bytes IS NULL))) STRICT;
+CREATE TABLE projection_publications(sequence INTEGER PRIMARY KEY REFERENCES projection_captures(sequence) ON DELETE RESTRICT,request_digest TEXT NOT NULL CHECK(length(request_digest)=71),receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=71),receipt_bytes BLOB NOT NULL CHECK(length(receipt_bytes)<=25165824),next_snapshot BLOB CHECK(length(next_snapshot)<=67108864),projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,projection_digest TEXT NOT NULL CHECK(length(projection_digest)=64),after_state BLOB NOT NULL CHECK(length(after_state)<=68157440)) STRICT;
 "#;
 pub(super) fn connect(path: &Path, write: bool) -> Result<Connection> {
     let flags = if write {
@@ -172,6 +174,20 @@ pub(super) fn require_idle(c: &Connection) -> Result<()> {
     if pending {
         return Err(invalid(
             "projection installation pending; explicit resume required",
+        ));
+    }
+    Ok(())
+}
+pub(super) fn require_mutable(c: &Connection) -> Result<()> {
+    require_idle(c)?;
+    let pending: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_publication_pending)",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending {
+        return Err(invalid(
+            "publication pending; retry exact durable request before local mutation",
         ));
     }
     Ok(())

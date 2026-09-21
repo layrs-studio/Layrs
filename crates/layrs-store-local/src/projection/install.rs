@@ -62,7 +62,7 @@ pub(super) fn install(
 ) -> Result<VersionedProjection> {
     target.canonical_bytes()?;
     let mut access = format::access(store, SessionMode::Exclusive)?;
-    database::require_idle(&access.connection)?;
+    database::require_mutable(&access.connection)?;
     let current = database::current(&access.connection)?;
     if current.generation == expected.saturating_add(1) && current.snapshot == *target {
         return Ok(current);

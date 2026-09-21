@@ -10,7 +10,12 @@ mod database;
 mod file;
 mod format;
 mod install;
+mod publication;
 pub use install::{InstallFaults, InstallPoint, NoInstallFaults};
+pub use publication::{
+    CompletedPublication, NoPublicationFaults, PendingPublication, PublicationFaults,
+    PublicationPoint,
+};
 #[cfg(test)]
 mod tests;
 
@@ -168,7 +173,7 @@ impl ProjectionStore {
     ) -> Result<VersionedProjection> {
         let bytes = next.canonical_bytes()?;
         let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_idle(&access.connection)?;
+        database::require_mutable(&access.connection)?;
         let tx = access
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

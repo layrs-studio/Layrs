@@ -54,7 +54,7 @@ pub(super) fn persist(
     faults.check(CapturePoint::AfterCommit)?;
     Ok(patch)
 }
-pub(super) fn load(
+pub(in crate::projection) fn load(
     c: &Connection,
     store: &ProjectionStore,
     sequence: u64,

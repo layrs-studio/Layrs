@@ -1,5 +1,6 @@
 use super::*;
 mod capture;
+mod publication;
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry},
     scm::{FileId, ObjectId, RepoPath, StepId, TreeEntryTarget, TreeId},

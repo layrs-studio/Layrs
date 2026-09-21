@@ -1,5 +1,5 @@
 use super::*;
-fn ready(readonly: bool) -> (Fixture, ProjectionStore) {
+pub(super) fn ready(readonly: bool) -> (Fixture, ProjectionStore) {
     let fixture = Fixture::new();
     let (mut initial, mut target) = hydration();
     if readonly {
