@@ -6,6 +6,7 @@
 
 mod cas;
 pub mod download_cache;
+pub mod projection;
 mod error;
 mod fault;
 mod fsck;

@@ -5,6 +5,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub mod scm;
+pub mod projection;
 
 pub type Metadata = BTreeMap<String, String>;
 
