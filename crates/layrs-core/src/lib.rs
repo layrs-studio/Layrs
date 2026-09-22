@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
-pub mod scm;
 pub mod projection;
+pub mod scm;
 
 pub type Metadata = BTreeMap<String, String>;
 

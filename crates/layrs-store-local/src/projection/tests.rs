@@ -3,8 +3,8 @@ mod capture;
 mod maintenance;
 mod namespace;
 mod publication;
-mod restore;
 mod refresh;
+mod restore;
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry},
     scm::{FileId, ObjectId, RepoPath, StepId, TreeEntryTarget, TreeId},

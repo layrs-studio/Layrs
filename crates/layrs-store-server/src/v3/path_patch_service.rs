@@ -2,9 +2,7 @@
 //! Internal preparation supplies all file bytes and reconstructs all changed
 //! Trees; clients can never nominate an arbitrary full Tree or privileged actor.
 use super::*;
-use layrs_core::scm::{
-    LayerHeadSet, ObjectId, RepositoryView, Step, Tree, TreeEntryTarget,
-};
+use layrs_core::scm::{LayerHeadSet, ObjectId, RepositoryView, Step, Tree, TreeEntryTarget};
 use layrs_sync::v3::*;
 use std::collections::BTreeMap;
 

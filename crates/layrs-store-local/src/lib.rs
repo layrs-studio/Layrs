@@ -6,13 +6,13 @@
 
 mod cas;
 pub mod download_cache;
-pub mod projection;
 mod error;
 mod fault;
 mod fsck;
 mod journal;
 mod layout;
 mod lock;
+pub mod projection;
 mod recovery;
 mod repository;
 mod schema;
