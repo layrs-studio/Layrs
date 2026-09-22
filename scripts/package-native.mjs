@@ -63,7 +63,7 @@ for (const binary of binaries) {
   add(basename(source), readFileSync(source), true);
 }
 add("LICENSE", readFileSync(join(root, "LICENSE")));
-for (const document of ["README.md", "UPGRADING.md", "ARCHIVE-UPGRADE-TEST.md", "DISTRIBUTION.md", "BACKUPS.md", "RETENTION.md", "GC.md", "LOCAL-COMPACTION.md", "POLICIES.md", "OBSERVATIONS.md", "STORAGE-BUDGET.md", "OBSERVABILITY.md", "INVITATIONS.md", "NATIVE-CI.md", "NATIVE-CONFLICTS.md", "LOCAL-PILOT.md"]) {
+for (const document of ["README.md", "UPGRADING.md", "ARCHIVE-UPGRADE-TEST.md", "DISTRIBUTION.md", "BACKUPS.md", "RETENTION.md", "GC.md", "LOCAL-COMPACTION.md", "POLICIES.md", "PARTIAL-CHECKOUTS.md", "OBSERVATIONS.md", "STORAGE-BUDGET.md", "OBSERVABILITY.md", "INVITATIONS.md", "NATIVE-CI.md", "NATIVE-CONFLICTS.md", "LOCAL-PILOT.md"]) {
   add(document, readFileSync(join(root, "deploy/selfhost", document)));
 }
 add("migrations.lock.json", readFileSync(join(root, "scripts/migrations.lock.json")));
@@ -80,6 +80,7 @@ const manifest = {
   schema: "layrs.native-distribution.v1", createdAt: new Date().toISOString(),
   source: { commit, dirty, treeSha256: sourcesBeforeBuild, cargoLockSha256: sha256(readFileSync(join(root, "Cargo.lock"))) },
   target, profile: options.profile, rust, signature: "unsigned", protocol: "V3", localStore: "native-format-2",
+  partialLocalStore: "native-format-3",
   semanticLensHost: process.platform === "win32" ? "windows-job-object-wasmi" : "linux-seccomp-rlimit-wasmi",
   files,
 };

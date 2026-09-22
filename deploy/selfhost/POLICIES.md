@@ -7,6 +7,10 @@ personnalisées. Les règles de contenu v2 peuvent limiter la lecture à certain
 chemins. Les noms de fichiers et la structure restent visibles : ces règles
 protègent les octets des fichiers, pas leur existence.
 
+Les règles v3 ajoutent les droits d'écriture par chemin et les projets partiels
+éditables. Voir [Projets partiels et fichiers réservés](PARTIAL-CHECKOUTS.md) pour
+le formulaire membre/fichier, le remplacement versionné et la migration explicite.
+
 Le changement requiert un rôle propriétaire/administrateur du Workspace et
 `policy.administer` selon la politique actuelle. La nouvelle politique ne peut
 pas donner au demandeur le droit de s’autoriser lui-même. Elle peut lui retirer

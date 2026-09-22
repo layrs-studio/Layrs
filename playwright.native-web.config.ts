@@ -15,6 +15,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.LAYRS_NATIVE_WEB_URL,
     headless: true,
+    channel: process.env.LAYRS_NATIVE_WEB_BROWSER_CHANNEL === "msedge" ? "msedge" : undefined,
     // Scope trust to the generated certificate's public key. The HTTPS proxy
     // independently validates the backend CA; no global TLS bypass is used.
     launchOptions: { args: [`--ignore-certificate-errors-spki-list=${process.env.LAYRS_NATIVE_WEB_CERT_PIN}`] },

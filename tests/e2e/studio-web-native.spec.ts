@@ -5,7 +5,7 @@ import { seedNativeProof } from "./fixtures/nativeProofSeed";
 test("Web uses the real native identity, project, review, proof and account services", async ({ page }) => {
   if (!process.env.LAYRS_NATIVE_UI_FIXTURE) throw new Error("Native TLS fixture is mandatory");
   const fixture = JSON.parse(await readFile(process.env.LAYRS_NATIVE_UI_FIXTURE, "utf8"));
-  await seedNativeProof(fixture);
+  const proof = await seedNativeProof(fixture);
   await page.goto("/");
   await page.getByLabel("Compte", { exact: true }).fill(fixture.accounts.alice.login);
   await page.getByLabel("Mot de passe", { exact: true }).fill(fixture.accounts.alice.password);
@@ -14,6 +14,18 @@ test("Web uses the real native identity, project, review, proof and account serv
   await page.getByLabel("Identifiant du projet", { exact: true }).fill(fixture.spaceId);
   await page.getByRole("button", { name: "Ouvrir le projet", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Layers et captures publiées" })).toBeVisible();
+  const history = page.getByRole("region", { name: "Historique publié", exact: true });
+  await history.getByLabel("Capture publiée à explorer", { exact: true }).fill(fixture.stepId);
+  await history.getByLabel("Chemin exact publié, facultatif", { exact: true }).fill("docs/readme.txt");
+  await history.getByRole("button", { name: "Lire l’historique publié", exact: true }).click();
+  await expect(history.locator("ol > li")).toHaveCount(2);
+  await expect(history.locator("ol").getByText(fixture.firstStepId, { exact: true }).last()).toBeVisible();
+  await page.getByText("Fichiers distants et droits d’accès", { exact: true }).click();
+  await page.getByRole("button", { name: "Charger les captures du projet", exact: true }).click();
+  await page.getByRole("button", { name: "Afficher les chemins", exact: true }).click();
+  const files = page.getByRole("region", { name: "Chemins du projet distant", exact: true });
+  await expect(files.getByText("docs/readme.txt", { exact: true })).toBeVisible();
+  await expect(files.getByText("Lecture et écriture autorisées au serveur", { exact: false }).first()).toBeVisible();
   await page.getByText("Revues et validations", { exact: true }).click();
   await page.getByRole("button", { name: "Actualiser les revues", exact: true }).click();
   await page.getByRole("button", { name: "Ouvrir la revue", exact: true }).first().click();
@@ -24,7 +36,8 @@ test("Web uses the real native identity, project, review, proof and account serv
   await review.getByRole("button", { name: "Commenter", exact: true }).click();
   await expect(review.getByText(comment, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Consulter les exécutions CI", exact: true }).click();
-  await page.getByRole("button", { name: "Consulter la preuve et le journal", exact: true }).first().click();
+  await page.locator("article").filter({ hasText: proof.proofObjectId })
+    .getByRole("button", { name: "Consulter la preuve et le journal", exact: true }).click();
   await expect(page.getByRole("region", { name: "Preuve et journal CI", exact: true }).getByText("UI proof fixture", { exact: true })).toBeVisible();
   await page.getByText("Équipe, protections et intégrations", { exact: true }).click();
   await page.getByText("Comptes et automatisations", { exact: true }).click();

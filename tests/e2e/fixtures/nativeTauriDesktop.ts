@@ -212,7 +212,8 @@ async function waitForTauriPage(
     await delay(250);
   }
 
-  throw new Error(`Timed out waiting for a Tauri WebView page at ${desktopUrl}.\n${logs.slice(-80).join("")}`);
+  const observed=browser.contexts().flatMap(context=>context.pages()).map(page=>page.url());
+  throw new Error(`Timed out waiting for a Tauri WebView page at ${desktopUrl}. Observed page URLs: ${JSON.stringify(observed)}.\n${logs.slice(-80).join("")}`);
 }
 
 async function writeE2eTauriConfig(stateRoot: string, desktopPort: number, instanceId: string): Promise<string> {

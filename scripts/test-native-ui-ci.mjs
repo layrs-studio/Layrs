@@ -10,7 +10,7 @@ import { nativeUiProxy } from './native-ui-proxy.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const target = process.argv[2];
-if (!['web', 'desktop', 'desktop-team', 'cli', 'lifecycle'].includes(target)) throw new Error('Expected web, desktop, desktop-team, cli or lifecycle');
+if (!['web', 'desktop', 'desktop-team', 'desktop-partial', 'cli', 'lifecycle'].includes(target)) throw new Error('Expected web, desktop, desktop-team, desktop-partial, cli or lifecycle');
 const temporary = resolve(root, 'tmp');
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 const directory = mkdtempSync(join(temporary, 'native-ui-ci-'));
@@ -49,7 +49,7 @@ try {
   const env = { ...database.environment, LAYRS_TEST_UI_FIXTURE_FILE: fixtureFile, LAYRS_TEST_UI_RESOURCE_FILE: resourceFile };
   run('cargo', ['build', '--locked', '--target-dir', join(root, 'target'), '-p', 'layrs-server', '--example', 'native_ui_fixture'], env);
   if (target === 'cli') run('cargo', ['build', '--locked', '--target-dir', join(root, 'target'), '-p', 'layrs-cli'], env);
-  if (target === 'desktop' || target === 'desktop-team') {
+  if (target === 'desktop' || target === 'desktop-team' || target === 'desktop-partial') {
     run('cargo', ['build', '--locked', '--target-dir', join(root, 'target'), '-p', 'layrs-weave', '--bin', 'layrs-lens-worker'], env);
     env.LAYRS_LENS_WORKER = join(root, 'target/debug', `layrs-lens-worker${suffix}`);
     env.LAYRS_LENS_WORKER_SHA256 = `sha256:${createHash('sha256').update(readFileSync(env.LAYRS_LENS_WORKER)).digest('hex')}`;
@@ -74,8 +74,9 @@ try {
     run(process.execPath, ['scripts/test-native-cli-remote.mjs'], { ...env, LAYRS_NATIVE_UI_FIXTURE: fixtureFile });
   } else if (target !== 'lifecycle') {
     const config = target === 'web' ? 'playwright.native-web.config.ts' : 'playwright.native.config.ts';
-    await runBrowser(['node_modules/@playwright/test/cli.js', 'test', '-c', config,...(target === 'desktop-team' ? ['tests/e2e/desktop-native-team.spec.ts'] : [])], {
+    await runBrowser(['node_modules/@playwright/test/cli.js', 'test', '-c', config,...(target === 'desktop-team' ? ['tests/e2e/desktop-native-team.spec.ts'] : target === 'desktop-partial' ? ['tests/e2e/desktop-native-partial.spec.ts'] : [])], {
       ...env, ...extra, CI: 'true', LAYRS_NATIVE_UI_FIXTURE: fixtureFile, LAYRS_NATIVE_UI_REQUIRED: '1',
+      LAYRS_NATIVE_UI_TARGET: target,
       LAYRS_E2E_VISUAL: '0', LAYRS_E2E_HEADLESS: '1',
     });
   }
