@@ -1,4 +1,4 @@
-import { NativeAdminSurface } from "@layrs/ui";
+import { NativeAdminSurface, NativeRemoteProjectFiles } from "@layrs/ui";
 import { useEffect, useRef, useState } from "react";
 import { nativeRemote } from "./tauri";
 import { NativeReviewPanel } from "./NativeReviewPanel";
@@ -11,6 +11,8 @@ export function NativeRemotePanel({ root, localSpaceId, opened, busy, onBusy, on
   const [workspace, setWorkspace] = useState("");
   const [slug, setSlug] = useState("");
   const [space, setSpace] = useState("");
+  const [projectionStep,setProjectionStep]=useState("");
+  const [migrationDestination,setMigrationDestination]=useState(""),[migrationLayer,setMigrationLayer]=useState("");
   const [reply, setReply] = useState<Reply | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -51,7 +53,8 @@ export function NativeRemotePanel({ root, localSpaceId, opened, busy, onBusy, on
       if (next.status === "authorized" || next.status === "signedOut") { setSessionEpoch(value => value + 1); setSelectedReview(null); }
       setMessage(next.status === "pending" ? "Validez la connexion dans votre navigateur, puis vérifiez ici." : next.status === "authorized" ? "Connexion autorisée. Le jeton est conservé dans le coffre du système." : next.status === "signedOut" ? "Session révoquée." : next.received?.divergent ? "Réception terminée. Plusieurs têtes sont conservées ; une intégration reste nécessaire." : "Opération terminée.");
       if(action.action==="publishCandidates")setMessage("Captures candidates admises. Les têtes distantes restent inchangées ; prévisualisez maintenant votre choix.");
-      if (["clone", "receive", "publish", "provision"].includes(action.action)) refresh = next.state?.worktree.checkoutRoot || root;
+      if (["clone", "cloneProjection", "receive", "publish", "provision"].includes(action.action)) refresh = next.state?.worktree.checkoutRoot || root;
+      if(action.action==="migrateProjection")refresh=String(action.destination);
     } catch (e) {
       const detail=String(e);
       if(/remote_unauthorized|Sign in to this server first/.test(detail)){setPrincipal("");setSessionEpoch(value=>value+1);setSelectedReview(null);}
@@ -78,9 +81,14 @@ export function NativeRemotePanel({ root, localSpaceId, opened, busy, onBusy, on
       <div className="native-toolbar"><button disabled={busy || !origin} onClick={() => void run({ action: "publish", integrate: false })}>Publier</button><button disabled={busy || !origin} onClick={() => void run({ action: "receive" })}>Recevoir</button><button disabled={busy || !origin} onClick={() => void run({ action: "publish", integrate: true })}>Publier en conservant les têtes concurrentes</button></div>
     </> : <div className="native-open"><label>Identifiant du projet distant<input value={space} disabled={busy} onChange={e => setSpace(e.target.value)} placeholder="space:…" /></label><button disabled={busy || !origin || !root || !space} onClick={() => void run({ action: "clone", space, name: space })}>Cloner dans le dossier vide sélectionné</button></div>}
     {message && <p role="status">{message}</p>}{error && <p className="native-error" role="alert">{error}</p>}
+    {!opened&&<details><summary>Cloner explicitement une projection partielle</summary><p>Le dossier doit être vide. Seuls les fichiers autorisés sont matérialisés ; les chemins interdits restent réservés et visibles.</p><label>Capture publiée à projeter<input value={projectionStep} disabled={busy} onChange={e=>setProjectionStep(e.target.value)} placeholder="blake3:…"/></label><button disabled={busy||!origin||!root||!space||!/^blake3:[a-f0-9]{64}$/.test(projectionStep)} onClick={()=>void run({action:"cloneProjection",space,step:projectionStep})}>Cloner les fichiers autorisés</button></details>}
+    {opened&&<details><summary>Passer à une projection partielle</summary><p>Le projet doit être publié et sans modifications locales. Les fichiers autorisés seront copiés dans un autre dossier vide ; le dossier actuel et son historique seront conservés.</p><label>Dossier vide de destination<input value={migrationDestination} disabled={busy} onChange={e=>setMigrationDestination(e.target.value)}/></label><label>Layer publié à projeter<input value={migrationLayer} disabled={busy} onChange={e=>setMigrationLayer(e.target.value)} placeholder="layer:…"/></label><button disabled={busy||!origin||!migrationDestination.trim()||!migrationLayer.trim()} onClick={()=>void run({action:"migrateProjection",destination:migrationDestination.trim(),layerId:migrationLayer.trim()})}>Créer la projection et conserver ce dossier</button></details>}
     {transferId && <p role="status">Transfert en cours. <button disabled={cancelling} onClick={()=>void cancelTransfer()}>Annuler le transfert</button></p>}
+    {opened && principal && <NativeRemoteProjectFiles key={`files:${sessionEpoch}:${origin}:${root}:${principal}`} scope={`${sessionEpoch}:${origin}:${root}:${principal}:${ca}`} busy={busy || !origin} onBusy={onBusy}
+      loadContext={()=>nativeRemote(root,{origin,caPem:ca||null,action:{action:"collaboration",command:{action:"projectionContext"}}})}
+      loadPage={request=>nativeRemote(root,{origin,caPem:ca||null,action:{action:"collaboration",command:{action:"projectionPage",...request}}})} />}
     {opened && principal && <NativeChoosePanel key={`choose:${sessionEpoch}:${origin}:${root}:${principal}`} root={root} origin={origin} ca={ca} busy={busy} onBusy={onBusy} onPublishCandidates={()=>void run({action:"publishCandidates"})} />}
-    <NativeAdminSurface onOpenReview={setSelectedReview} key={`admin:${sessionEpoch}:${origin}:${root}`} scope={`${sessionEpoch}:${origin}:${root}`} busy={busy} onBusy={onBusy} transport={async <T,>(command: { action: string; [key: string]: unknown }) => nativeRemote<T>(root, { origin, caPem: ca || null, action: { action: "administration", command } })} policyTransport={async <T,>(action: {action: string; [key: string]: unknown}) => nativeRemote<T>(root, {origin,caPem:ca || null,action})} />
+    <NativeAdminSurface onOpenReview={setSelectedReview} key={`admin:${sessionEpoch}:${origin}:${root}:${principal}`} scope={`${sessionEpoch}:${origin}:${root}:${principal}`} busy={busy} onBusy={onBusy} transport={async <T,>(command: { action: string; [key: string]: unknown }) => nativeRemote<T>(root, { origin, caPem: ca || null, action: { action: "administration", command } })} policyTransport={async <T,>(action: {action: string; [key: string]: unknown}) => nativeRemote<T>(root, {origin,caPem:ca || null,action})} />
     {opened && <NativeReviewPanel key={`${sessionEpoch}:${principal}`} root={root} spaceId={localSpaceId} origin={origin} principal={principal} selectedReview={selectedReview} ca={ca} busy={busy} onBusy={onBusy} />}
   </details>;
 }

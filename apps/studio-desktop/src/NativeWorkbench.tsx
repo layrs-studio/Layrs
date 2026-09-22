@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { nativeWorkspace, selectFolder } from "./tauri";
+import { nativeWorkspace, nativeCheckoutKind, selectFolder } from "./tauri";
+import { NativePartialWorkbench } from "./NativePartialWorkbench";
 import "./native-workbench.css";
 import { NativeRemotePanel } from "./NativeRemotePanel";
 import { NativeMergePanel } from "./NativeMergePanel";
@@ -21,6 +22,7 @@ type Snapshot = {
 type Preview = { expected?: unknown; collisions?: {path:string;reason:string}[]; changes?: Change[]; layerHeads?: unknown[]; markerIds?: string[]; releaseIds?: string[]; rewrite?: RewriteSummary };
 
 export function NativeWorkbench() {
+  const [partialRoot,setPartialRoot]=useState("");
   const [root, setRoot] = useState(() => localStorage.getItem("layrs.native.checkout") || "");
   const [openedRoot, setOpenedRoot] = useState("");
   const [name, setName] = useState("");
@@ -54,6 +56,9 @@ export function NativeWorkbench() {
     if (running.current) return;
     setWorking(true); setError("");
     try {
+      if(request.action==="status" && await nativeCheckoutKind(selectedRoot)==="projection"){
+        setData(null);setOpenedRoot("");setPreview(null);setPartialRoot(selectedRoot);localStorage.setItem("layrs.native.checkout",selectedRoot);return;
+      }
       const next = await nativeWorkspace<Snapshot>(selectedRoot, request);
       setData(next); setOpenedRoot(next.state.worktree.checkoutRoot); setPreview(null);
       localStorage.setItem("layrs.native.checkout", next.state.worktree.checkoutRoot);
@@ -107,6 +112,7 @@ export function NativeWorkbench() {
     void inspect({ action: "previewRestore", step: target, path: null }, { action: "restore", step: target, path: null });
   }
 
+  if(partialRoot)return <NativePartialWorkbench root={partialRoot} onClose={()=>{setPartialRoot("");setOpenedRoot("");setData(null);setError("");}}/>;
   return <main className="native-workbench">
     <header><div><p className="native-eyebrow">LAYRS · PROJET LOCAL</p><h1>{data?.state.space.name || "Votre projet, son histoire"}</h1></div><a href="#local">Espaces et compte</a></header>
     <section className="native-open" aria-label="Ouvrir un projet">

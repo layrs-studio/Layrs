@@ -545,6 +545,12 @@ export function selectFolder(initialDirectory?: string) {
 export function nativeWorkspace<T>(root: string, request: { action: string; [key: string]: unknown }): Promise<T> {
   return tauriInvoke<T>("native_workspace", { root, request });
 }
+export function nativeCheckoutKind(root:string):Promise<"complete"|"projection"|"absent"> {
+  return tauriInvoke("native_checkout_kind",{root});
+}
+export function nativeProjection<T>(root:string,request:{action:string;[key:string]:unknown}):Promise<T> {
+  return tauriInvoke("native_projection",{root,request});
+}
 
 export function nativeRemote<T>(root: string, request: { origin: string; caPem: string | null; action: { action: string; [key: string]: unknown } }): Promise<T> {
   return tauriInvoke<T>("native_remote", { root, request });

@@ -159,9 +159,7 @@ fn receive_local_space(
 }
 
 #[tauri::command]
-fn save_local_step(
-    local_space: String,
-) -> Result<access_registry::SaveLocalStepResult, String> {
+fn save_local_step(local_space: String) -> Result<access_registry::SaveLocalStepResult, String> {
     access_registry::save_local_step(local_space)
 }
 
@@ -173,9 +171,7 @@ fn publish_local_space(
 }
 
 #[tauri::command]
-fn sync_local_space(
-    local_space: String,
-) -> Result<access_registry::SyncOperationResult, String> {
+fn sync_local_space(local_space: String) -> Result<access_registry::SyncOperationResult, String> {
     access_registry::sync_local_space(local_space)
 }
 
@@ -198,12 +194,16 @@ fn weave_active_layer_to_parent(
 }
 
 #[tauri::command]
-fn weave_status(local_space: String) -> Result<Option<access_registry::WeaveSessionSummary>, String> {
+fn weave_status(
+    local_space: String,
+) -> Result<Option<access_registry::WeaveSessionSummary>, String> {
     access_registry::weave_status(local_space)
 }
 
 #[tauri::command]
-fn weave_conflicts(local_space: String) -> Result<Vec<access_registry::WeaveConflictSummary>, String> {
+fn weave_conflicts(
+    local_space: String,
+) -> Result<Vec<access_registry::WeaveConflictSummary>, String> {
     access_registry::weave_conflicts(local_space)
 }
 
@@ -215,7 +215,13 @@ fn resolve_weave_conflict(
     replacement_file: Option<String>,
     manual_text: Option<String>,
 ) -> Result<access_registry::WeaveOperationResult, String> {
-    access_registry::resolve_weave_conflict(local_space, path, resolution, replacement_file, manual_text)
+    access_registry::resolve_weave_conflict(
+        local_space,
+        path,
+        resolution,
+        replacement_file,
+        manual_text,
+    )
 }
 
 #[tauri::command]
@@ -269,6 +275,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             native::native_workspace,
             native::native_remote,
+            native::native_checkout_kind,
+            native::native_projection,
             desktop_status,
             configure_server_endpoint,
             start_device_login,

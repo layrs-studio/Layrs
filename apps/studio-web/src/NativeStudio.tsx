@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { NativeReviewSurface, NativeReleaseSurface, NativeAdminSurface, NativeHistorySurface, nativeAdminRoute } from "@layrs/ui";
+import { NativeReviewSurface, NativeReleaseSurface, NativeAdminSurface, NativeHistorySurface, NativeRemoteProjectFiles, nativeAdminRoute } from "@layrs/ui";
 import "@layrs/ui/native.css";
 
 type Bootstrap = { spaceId: string; layers: { record: { layerId: string; name: string }; headStepIds: string[] }[]; markers: { record: { name: string; targetStepId: string } }[]; releases: { record: { version: string; targetStepId: string } }[] };
@@ -96,6 +96,9 @@ export function NativeStudio() {
       <NativeAdminSurface onOpenReview={setSelectedReview} key={`admin:${principal}:${data?.spaceId || ""}`} scope={`${principal}:${data?.spaceId || ""}`} transport={administration} busy={busy} onBusy={setBusy} />
       {data && <NativeReleaseSurface key={`release:${principal}:${data.spaceId}`} scope={`${principal}:${data.spaceId}`} transport={collaboration} busy={busy} onBusy={setBusy} />}
       {data && <NativeHistorySurface key={`history:${principal}:${data.spaceId}`} scope={`${principal}:${data.spaceId}`} transport={collaboration} busy={busy} onBusy={setBusy} />}
+      {data && <NativeRemoteProjectFiles key={`files:${principal}:${data.spaceId}`} scope={`${location.origin}:${principal}:${data.spaceId}`} busy={busy} onBusy={setBusy}
+        loadContext={()=>api(`/v3/spaces/${encodeURIComponent(data.spaceId)}/bootstrap`)}
+        loadPage={request=>api(`/v3/spaces/${encodeURIComponent(data.spaceId)}/projection`,"POST",request)} />}
       {data && <><section><h2>Layers et captures publiées</h2>{data.layers.map(layer => <article key={layer.record.layerId}><strong>{layer.record.name}</strong><code>{layer.record.layerId}</code>{layer.headStepIds.map(id => <code key={id}>{id}</code>)}{layer.headStepIds.length > 1 && <p>Plusieurs têtes : intégration nécessaire.</p>}</article>)}<h2>Versions nommées</h2>{data.markers.map((marker, i) => <article key={`marker-${i}`}><strong>{marker.record.name}</strong><code>{marker.record.targetStepId}</code></article>)}{data.releases.map((release, i) => <article key={`release-${i}`}><strong>{release.record.version}</strong><code>{release.record.targetStepId}</code></article>)}</section><NativeReviewSurface spaceId={data.spaceId} selectedReview={selectedReview} draftIdentity={{origin:location.origin,principalId:principal}} key={`${principal}:${data.spaceId}`} scope={`${principal}:${data.spaceId}`} busy={busy} onBusy={setBusy} transport={collaboration} /></>}
     </>}{busy && <p role="status">Opération en cours…</p>}{error && <p className="native-error" role="alert">{error}</p>}
   </main>;
