@@ -1,6 +1,62 @@
-# Projection partielle — intégration, 21 septembre 2026
+# Projection partielle — intégration
 
-Décision : ADR0024. Travail repris, **T4.L encore ouvert**.
+Décision : ADR0024. Le checkpoint le plus récent prévaut sur les étapes historiques.
+
+## Checkpoint du 22 septembre 2026
+
+- Serveur `82c0254`, opérations locales `0638dc2`, client/CLI `deb5937`.
+- HTTPS/PostgreSQL réel **PASS 61,17 s** : migration distincte Store2→Store3,
+  clone, capture immuable, publication, reprise après réponse perdue/réouverture,
+  refus sous un autre compte, concurrence CAS, règles de chemins et Gates.
+  Création puis renommage avant publication, collisions externes préservées,
+  réception, révocation/réautorisation, restauration/annulation/rétablissement
+  et refus d'un aperçu après révocation sont inclus.
+  Log : `tmp/partial-full-20260922-combined.log`.
+- Desktop réel WebView2/Tauri **PASS 29,8 s** (recette 30,3 s) : migration,
+  chemins réservés/alias, création/déplacement, capture/publication/réception,
+  collision externe, restauration depuis capture et annulation exacte,
+  vérification finale du Store. `tmp/desktop-partial-restore-20260922.log`.
+- Web réel Edge **PASS 4,6 s** : identité, projet, historique exact de deux Steps,
+  chemin publié, droits affichés, commentaire de revue, preuve/journal CI,
+  comptes et déconnexion sans credentials persistés dans le navigateur.
+  `tmp/native-web-partial-20260922-final.log`. Cette recette seule ne qualifie
+  pas toutes les clauses Web composées des huit plans.
+- Store3 Windows **42 tests PASS**, Clippy strict ; Linux réception **11 PASS**,
+  restauration **6 PASS**, namespace **24 PASS**. Client namespace/droits **10 PASS**.
+  UI **38 tests Node PASS**, TypeScript UI/Desktop/Web PASS.
+- Clippy strict workspace/all-targets **PASS 35,63 s** ; format Rust, taille des
+  fichiers, immutabilité des migrations et `git diff --check` vérifiés.
+- Limites assumées : publication partielle de fichiers ordinaires, 16 Mio et
+  1024 chemins par capture ; pas de déplacement de dossier ni de remplacement
+  d'un dossier physique par un fichier. Les Gates restent appliquées.
+- Reste à ce checkpoint : tests CLI dédiés, paquets actualisés Windows/Linux/MSI,
+  vérification des archives et journaux finaux. Les qualifications humaines,
+  machine vierge, macOS/ARM et CI distante demeurent externes.
+
+Les paragraphes ci-dessous sont historiques ; les tâches qu'ils annoncent
+« en cours » sont remplacées par ce checkpoint.
+
+## Dernier checkpoint — 21 septembre, publication réelle qualifiée
+
+- Commits : `768e1ec` fondation Store3/capture ; `6d76172` journal de publication.
+  Le remplacement versionné des politiques est aussi enregistré dans un commit dédié.
+- HTTPS combiné **PASS 35,62 s**, sauvegarde/restauration comprise : vrai clone
+  partiel, collision externe préservée et capture refusée, capture immuable,
+  perte de réponse après commit, réouverture du Store et rejeu exact, acceptation
+  de la nouvelle base sans écraser les modifications locales ultérieures.
+- Serveur : batch atomique, concurrence CAS, révocation/réautorisation, Gates et
+  lecture des chemins présents/absents vérifiés. Reçu lié au digest original
+  dans le snapshot d'autorisation v2 ; rejeu indépendant des anciens Trees CAS.
+- Store : 16 tests de publication/capture et Clippy strict PASS. Fondation aussi
+  testée Linux (2 Core + 15 Store à cette étape). Client/CLI compilent.
+- CLI : `remote clone-partial`, `partial status`, `partial capture GENERATION`,
+  `remote publish-partial SEQUENCE LAYER_ID`, lecture et remplacement de politique.
+- En cours : création/déplacement locaux journalisés, raccord UI, réception et
+  changements de droits, vérification intégrale de l'historique Store3.
+- Restent ensuite : recette des nouveaux parcours, migration explicite,
+  restauration/annulation, transport des gros patchs et nouveaux paquets.
+  Les sections suivantes décrivent les étapes historiques ; leur ancien statut
+  « en cours » ne remplace pas ce checkpoint. Aucun résultat non terminé n'est clos.
 
 ## Réalisé et vérifié
 

@@ -337,7 +337,7 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
                     if response.status().is_server_error() {
                         eprintln!("Native test backend failure: {} {path}", response.status());
                     }
-                    if path.ends_with("/transactions")
+                    if (path.ends_with("/transactions") || path.ends_with("/path-patches"))
                         && lose.swap(false, std::sync::atomic::Ordering::SeqCst)
                     {
                         return axum::response::Response::builder()
@@ -481,7 +481,14 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
             return provision.space_id;
         }
         if std::env::var_os("LAYRS_TEST_CONTENT_ACL_ONLY").is_some() {
-            content_acl_drill::run(&remote, &client_root, &origin, &session.access_token, &ca);
+            content_acl_drill::run(
+                &remote,
+                &client_root,
+                &origin,
+                &session.access_token,
+                &ca,
+                &lose_response,
+            );
             return provision.space_id;
         }
         if std::env::var_os("LAYRS_TEST_POLICY_ONLY").is_none() {
@@ -528,7 +535,14 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
         if std::env::var_os("LAYRS_TEST_POLICY_ONLY").is_some() {
             return provision.space_id;
         }
-        content_acl_drill::run(&remote, &client_root, &origin, &session.access_token, &ca);
+        content_acl_drill::run(
+            &remote,
+            &client_root,
+            &origin,
+            &session.access_token,
+            &ca,
+            &lose_response,
+        );
         fetch_pagination_drill::run(&remote, &client_root, &origin, &session.access_token, &ca);
         if std::env::var_os("LAYRS_TEST_FETCH_PAGINATION_ONLY").is_some() {
             return provision.space_id;

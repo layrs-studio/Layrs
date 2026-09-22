@@ -1,6 +1,8 @@
 //! Real native authority replacement: old authority, exact CAS and managed-mode fences.
 use super::*;
 use layrs_store_server::v3::{CompareStepsRequest, StepHistoryRequest};
+#[path = "policy_version_drill.rs"]
+mod policy_version_drill;
 
 fn bind(value: &mut SyncTransactionRequest, label: &str) {
     value.idempotency_key = IdempotencyKey::parse(format!("policy-{label}-00000000")).unwrap();
@@ -717,4 +719,5 @@ pub async fn run(
     eprintln!(
         "PolicyRoot v1: real enforcement, inert admission, exact CAS/race/no-op/replay, managed API fences/restore and invalid/corrupt rules passed"
     );
+    policy_version_drill::run(facade, principal, repository, &seed, &product).await;
 }

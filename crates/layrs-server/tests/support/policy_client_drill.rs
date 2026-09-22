@@ -1,4 +1,6 @@
 //! Real TLS operator preview/apply, uncertain result recovery and exact managed restore.
+#[path = "policy_replacement_drill.rs"]
+mod replacement;
 use layrs_client_core::native_scm::{NativePolicyPreview, NativeRemote, NativeWorkspace};
 use layrs_sync::v3::{LayerMutationMode, ReceiptStatus, RejectionCode};
 use serde_json::{Value, json};
@@ -303,6 +305,7 @@ pub fn run(
             .is_none()
     );
     assert_eq!(a.state().unwrap().operation.id(), before.operation.id());
+    replacement::run(remote, &other, &a, lose);
     let stale = remote
         .preview_stored_policy(&a, &initial.current_policy_set_id)
         .unwrap();

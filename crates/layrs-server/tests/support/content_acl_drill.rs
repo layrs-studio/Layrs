@@ -4,6 +4,10 @@ use layrs_core::scm::{FileId, ObjectId, RepoPath, Step, StepId, Timestamp, Tree,
 use layrs_sync::v3::*;
 use serde_json::{Value, json};
 use std::path::Path;
+#[path = "path_patch_drill.rs"]
+mod path_patch_drill;
+#[path = "projection_drill.rs"]
+mod projection_drill;
 
 struct Http<'a> {
     client: &'a reqwest::blocking::Client,
@@ -228,7 +232,14 @@ fn denied(plan: FetchPlanResponse) {
     assert_eq!(plan.denied_claims.len(), 1);
 }
 
-pub fn run(remote: &NativeRemote, root: &Path, origin: &str, token: &str, ca: &str) {
+pub fn run(
+    remote: &NativeRemote,
+    root: &Path,
+    origin: &str,
+    token: &str,
+    ca: &str,
+    lose_response: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let aroot = root.join("content-acl-author");
     std::fs::create_dir_all(aroot.join("public")).unwrap();
     for path in ["public/allowed.txt", "private.txt", "public/blocked.txt"] {
@@ -345,6 +356,7 @@ pub fn run(remote: &NativeRemote, root: &Path, origin: &str, token: &str, ca: &s
     let (set, product, receipt) = admin.activate(&bootstrap, &principal, false);
     let restricted = reader.bootstrap(&provision.space_id).unwrap();
     assert!(restricted.content_access.is_some());
+    let projection_cursor = projection_drill::verify(&read, &reader, &restricted, &step);
     assert!(
         remote
             .bootstrap(&provision.space_id)
@@ -608,6 +620,7 @@ pub fn run(remote: &NativeRemote, root: &Path, origin: &str, token: &str, ca: &s
     );
     let now = remote.bootstrap(&provision.space_id).unwrap();
     admin.activate(&now, &principal, true);
+    projection_drill::stale(&read, projection_cursor);
     assert!(
         !read
             .download(&allowed.download_capabilities[0])
@@ -615,6 +628,17 @@ pub fn run(remote: &NativeRemote, root: &Path, origin: &str, token: &str, ca: &s
             .is_success()
     );
     denied(read.plan(file_claim(&step, &file, "public/allowed.txt")));
+    path_patch_drill::run(
+        remote,
+        &a,
+        &reader,
+        &read,
+        &bootstrap,
+        &step,
+        &principal,
+        &admin,
+        lose_response,
+    );
     eprintln!(
         "HTTPS ACL v2: exact/subtree deny, alias FileId, foreign content/root and opaque refusal, Range revocation, writes replay, full clone/receive/cache preserve local files and Operations PASS"
     );

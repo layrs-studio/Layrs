@@ -74,7 +74,10 @@ concurrent d'installation. Une première version du test de révocation utilisai
 à tort le CAS simple pour changer les droits ; corrigée pour passer par le
 refresh journalisé. La dernière qualification est verte.
 
+Qualification Linux par refresh_finish : **6 tests restore PASS (2,27 s)**,
+0 ignoré, exit0 ; journal brut `tmp/restore-linux-final-20260922.log`.
+
 Restant à l'intégration parent : parcours client/serveur et UI restore, ainsi que
-renommage de créations ; qualification Linux restore confiée à refresh_finish.
+renommage de créations.
 La restauration de l'état complet d'un ancien checkout, les symlinks et les
 répertoires restent hors de cette API explicite de feuilles capturées.
