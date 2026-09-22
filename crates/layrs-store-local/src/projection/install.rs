@@ -1,5 +1,5 @@
 //! Selective hydration: verified newly readable files, absent destinations only.
-mod files;
+pub(super) mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
 use layrs_core::{
@@ -231,6 +231,12 @@ fn finish(
     journal: &Journal,
     faults: &dyn InstallFaults,
 ) -> Result<VersionedProjection> {
+    let conflicts: bool = access.connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending)",
+        [], |r| r.get(0))?;
+    if conflicts {
+        return Err(invalid("another operation blocks installation recovery"));
+    }
     let current = database::current(&access.connection)?;
     if journal.schema_version != "layrs.projection-install.v1"
         || journal.expected_generation != current.generation

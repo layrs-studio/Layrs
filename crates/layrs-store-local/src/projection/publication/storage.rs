@@ -16,7 +16,7 @@ pub(super) fn json_digest(domain: &[u8], bytes: &[u8]) -> Result<String> {
     h.update(bytes);
     Ok(format!("blake3:{}", h.finalize()))
 }
-pub(super) fn pending(
+pub(in crate::projection) fn pending(
     c: &Connection,
     store: &ProjectionStore,
 ) -> Result<Option<PendingPublication>> {
@@ -58,11 +58,12 @@ pub(super) fn pending(
 }
 pub(super) fn completed(
     c: &Connection,
+    store: &ProjectionStore,
     sequence: u64,
     receipt: &[u8],
     next: Option<&[u8]>,
 ) -> Result<Option<VersionedProjection>> {
-    let Some((record, stored_next)) = completed_record(c, sequence)? else {
+    let Some((record, stored_next)) = completed_record(c, store, sequence)? else {
         return Ok(None);
     };
     if record.receipt_bytes != receipt || stored_next.as_deref() != next {
@@ -70,8 +71,9 @@ pub(super) fn completed(
     }
     Ok(Some(record.projection))
 }
-pub(super) fn completed_record(
+pub(in crate::projection) fn completed_record(
     c: &Connection,
+    store: &ProjectionStore,
     sequence: u64,
 ) -> Result<Option<(CompletedPublication, Option<Vec<u8>>)>> {
     let exists: bool = c.query_row(
@@ -119,6 +121,32 @@ pub(super) fn completed_record(
         || database::digest(generation, parent.as_deref(), &stored_bytes) != stored_digest
     {
         return Err(invalid("completed publication snapshot changed"));
+    }
+    let capture = super::super::capture::storage::load(c, store, sequence)?;
+    match &stored_next {
+        Some(next) => {
+            if next != &snapshot
+                || capture.projection_generation.checked_add(1) != Some(generation)
+                || parent.as_ref() != Some(&capture.projection_digest)
+            {
+                return Err(invalid("completed publication transition changed"));
+            }
+            // Loading the capture already validates this bounded, canonical base.
+            let base_bytes: Vec<u8> = c.query_row(
+                "SELECT payload FROM projection_snapshots WHERE generation=?1",
+                [capture.projection_generation],
+                |r| r.get(0),
+            )?;
+            let base: ProjectionSnapshot = serde_json::from_slice(&base_bytes).map_err(invalid)?;
+            validate_applied(&base, &state.snapshot, &capture)?;
+        }
+        None => {
+            if generation != capture.projection_generation
+                || state.digest != capture.projection_digest
+            {
+                return Err(invalid("rejected publication changed its projection base"));
+            }
+        }
     }
     Ok(Some((
         CompletedPublication {

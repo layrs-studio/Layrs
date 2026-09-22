@@ -1,5 +1,5 @@
 //! Durable, base-relative local patches; never incomplete SCM admission.
-mod scan;
+pub(super) mod scan;
 pub(super) mod storage;
 use super::*;
 use layrs_core::scm::{FileId, RepoPath, canonical_json};

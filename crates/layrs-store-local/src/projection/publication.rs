@@ -1,6 +1,6 @@
 //! A durable local request journal. Network authority is always revalidated by
 //! the client/server; opaque JSON here is not an authorization capability.
-mod storage;
+pub(super) mod storage;
 use super::*;
 use layrs_core::{
     projection::EntryState,
@@ -47,8 +47,8 @@ impl ProjectionStore {
     pub fn completed_publication(&self, sequence: u64) -> Result<Option<CompletedPublication>> {
         let access = format::access(self, SessionMode::Shared)?;
         database::require_idle(&access.connection)?;
-        let result =
-            storage::completed_record(&access.connection, sequence)?.map(|(record, _)| record);
+        let result = storage::completed_record(&access.connection, self, sequence)?
+            .map(|(record, _)| record);
         access.verify()?;
         Ok(result)
     }
@@ -189,6 +189,7 @@ impl ProjectionStore {
         database::require_idle(&access.connection)?;
         if let Some(previous) = storage::completed(
             &access.connection,
+            self,
             sequence,
             receipt_bytes,
             next_bytes.as_deref(),

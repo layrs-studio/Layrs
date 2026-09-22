@@ -87,3 +87,39 @@ Checkpoint publication (après commit fondation/capture768e1ec) :
   nouvelles tables natives3 uniquement. Le format3 est encore en développement :
   fixtures locales créées avant ces tables doivent être recréées explicitement.
   Aucun Store2 ni donnée utilisateur n'est converti.
+
+Checkpoint namespace (après commit publication6d76172) :
+
+- `observe_absent_paths(generation,digest,paths)` enregistre uniquement des
+  destinations absentes explicitement classifiées par le serveur sur la même
+  identité/base/epoch ; le client est responsable de cette vérification fraîche.
+  Namespace local inconnu ≠ permission. Toutes collisions physiques, réservations
+  exactes/ancêtres/descendants et aliases sont refusés avant CAS SQLite.
+- `preview_namespace` renvoie un NamespacePreview sérialisable : operationId,
+  génération/digest projection, mutation Create ou Move (rename identique),
+  descripteur source et empreinte complète des fichiers visibles. `apply_namespace`
+  revalide ces témoins sous verrou, vérifie droits observés et destination encore
+  absente, puis conserve un journal avant rename sans écrasement. Création≤16MiB,
+  déplacement de fichier régulier, budget global de patch1024changements/16MiB
+  prévalidé avant mutation. Réseau effectué avant ce verrou par le client.
+- Le renommage utilise le même handle épinglé qui a été vérifié. Création stage
+  durable ; reprise exige même inode/contenu, jamais adoption d'un fichier externe
+  identique. Capture durable + historique namespace + retrait du pending forment
+  une transaction SQLite. `resume_namespace(root)` reprend après interruption,
+  l'ouverture normale refuse le pending. Les répertoires temporaires abandonnés
+  sont conservés, aucune suppression automatique de données.
+- Les IDs distants restent identiques après la mutation locale ; déplacement
+  signifie suppression/création dans CapturedPatch contre la base distante,
+  jamais Step artificiellement complète. Rejeu du même preview strict, rejet
+  si bytes de création différents. Le nouvel ID d'opération évite de confondre
+  une intention nouvelle avec un ancien retry après retour au même état.
+- Tests Windows22 PASS1,54s :4 nouveaux tests namespace dont8 interruptions
+  create/move, replay, capture ancienne conservée, source modifiée depuispreview,
+  collision externe, réservé/alias/read-only, reprise refusée après remplacement
+  inode même contenu. Fsck parent enrichi `namespace_operations` et validation
+  canonique de chaque opération liée à sa capture/destination/source.
+- Reste à cette frontière : undo/redo/restore de captures, déplacement de
+  répertoire, symlink, réception/réautorisation et migration explicite. L'agent
+  fusion prend le moteur refresh/quarantaine ; root prend réception client ;
+  selectors prend contrôles serveur frais et UI namespace. Aucune revendication
+  de complétude du Worktree partiel avant leurs recettes intégrées.

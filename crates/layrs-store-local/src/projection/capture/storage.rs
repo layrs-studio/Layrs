@@ -9,6 +9,19 @@ pub(super) fn persist(
     scan: scan::Scan,
     faults: &dyn CaptureFaults,
 ) -> Result<CapturedPatch> {
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let patch = persist_in_transaction(&tx, store, state, scan)?;
+    faults.check(CapturePoint::BeforeCommit)?;
+    tx.commit()?;
+    faults.check(CapturePoint::AfterCommit)?;
+    Ok(patch)
+}
+pub(in crate::projection) fn persist_in_transaction(
+    c: &Connection,
+    store: &ProjectionStore,
+    state: &VersionedProjection,
+    scan: scan::Scan,
+) -> Result<CapturedPatch> {
     let previous: Option<u64> =
         c.query_row("SELECT MAX(sequence) FROM projection_captures", [], |r| {
             r.get(0)
@@ -39,19 +52,15 @@ pub(super) fn persist(
     if payload.len() > MAX_DOCUMENT {
         return Err(invalid("capture document exceeds8MiB"));
     }
-    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (id, bytes) in scan.bytes {
         if FileId::from_bytes(&bytes) != id {
             return Err(invalid("capture preparation hash mismatch"));
         }
-        tx.execute("INSERT INTO projection_capture_files(file_id,bytes) VALUES(?1,?2) ON CONFLICT(file_id) DO NOTHING",params![id.as_str(),bytes])?;
+        c.execute("INSERT INTO projection_capture_files(file_id,bytes) VALUES(?1,?2) ON CONFLICT(file_id) DO NOTHING",params![id.as_str(),bytes])?;
     }
-    tx.execute("INSERT INTO projection_captures(sequence,digest,projection_generation,payload) VALUES(?1,?2,?3,?4)",params![sequence,patch.digest,state.generation,payload])?;
+    c.execute("INSERT INTO projection_captures(sequence,digest,projection_generation,payload) VALUES(?1,?2,?3,?4)",params![sequence,patch.digest,state.generation,payload])?;
     // Includes hashes of existing deduplicated blobs: corruption never becomes a successful capture.
-    validate(&tx, store, &patch)?;
-    faults.check(CapturePoint::BeforeCommit)?;
-    tx.commit()?;
-    faults.check(CapturePoint::AfterCommit)?;
+    validate(c, store, &patch)?;
     Ok(patch)
 }
 pub(in crate::projection) fn load(
@@ -169,7 +178,7 @@ fn validate(c: &Connection, store: &ProjectionStore, patch: &CapturedPatch) -> R
     }
     Ok(())
 }
-pub(super) fn file_bytes(c: &Connection, file: &CapturedFile) -> Result<Vec<u8>> {
+pub(in crate::projection) fn file_bytes(c: &Connection, file: &CapturedFile) -> Result<Vec<u8>> {
     let len: u64 = c.query_row(
         "SELECT length(bytes) FROM projection_capture_files WHERE file_id=?1",
         [file.file_id.as_str()],

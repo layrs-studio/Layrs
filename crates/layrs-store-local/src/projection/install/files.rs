@@ -1,6 +1,10 @@
 use super::*;
 use std::io::Read;
-pub(super) fn destination_absent(root: &PinnedDirectory, base: &Path, path: &str) -> Result<()> {
+pub(in crate::projection) fn destination_absent(
+    root: &PinnedDirectory,
+    base: &Path,
+    path: &str,
+) -> Result<()> {
     let mut parent = String::new();
     for component in path.split('/').take(path.split('/').count() - 1) {
         if !parent.is_empty() {
@@ -61,7 +65,7 @@ pub(super) fn verify_file(path: &Path, record: &FileRecord) -> Result<()> {
     pinned.verify(path)?;
     Ok(())
 }
-pub(super) fn set_mode(file: &fs::File, executable: bool) -> io::Result<()> {
+pub(in crate::projection) fn set_mode(file: &fs::File, executable: bool) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -77,7 +81,7 @@ pub(super) fn set_mode(file: &fs::File, executable: bool) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) struct FileWriter<'a> {
+pub(in crate::projection) struct FileWriter<'a> {
     out: &'a mut dyn Write,
     hasher: blake3::Hasher,
     count: u64,

@@ -10,11 +10,23 @@ mod database;
 mod file;
 mod format;
 mod install;
+mod refresh;
+pub use refresh::{NoRefreshFaults, RefreshFaults, RefreshPoint};
+mod namespace;
+pub use namespace::{
+    NamespaceFaults, NamespaceMutation, NamespacePoint, NamespacePreview, NoNamespaceFaults,
+};
+mod maintenance;
+pub use maintenance::{ProjectionCheck, ProjectionHistoryPage};
 mod publication;
+mod restore;
 pub use install::{InstallFaults, InstallPoint, NoInstallFaults};
 pub use publication::{
     CompletedPublication, NoPublicationFaults, PendingPublication, PublicationFaults,
     PublicationPoint,
+};
+pub use restore::{
+    NoRestoreFaults, RestoreFaults, RestorePoint, RestorePreview, RestoreReceipt, RestoreSource,
 };
 #[cfg(test)]
 mod tests;

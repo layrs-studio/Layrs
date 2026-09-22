@@ -26,13 +26,13 @@ impl DatabasePin {
     }
 }
 #[cfg(unix)]
-fn identity(file: &File) -> io::Result<String> {
+pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
     use std::os::unix::fs::MetadataExt;
     let m = file.metadata()?;
     Ok(format!("{}:{}", m.dev(), m.ino()))
 }
 #[cfg(windows)]
-fn identity(file: &File) -> io::Result<String> {
+pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
@@ -48,7 +48,7 @@ fn identity(file: &File) -> io::Result<String> {
     ))
 }
 #[cfg(not(any(unix, windows)))]
-fn identity(_: &File) -> io::Result<String> {
+pub(in crate::projection) fn identity(_: &File) -> io::Result<String> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "projection requires stable file identities",

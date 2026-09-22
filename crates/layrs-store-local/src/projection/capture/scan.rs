@@ -10,7 +10,7 @@ use std::{
     io::Read,
 };
 
-pub(super) struct Scan {
+pub(in crate::projection) struct Scan {
     pub files: BTreeMap<String, Option<CapturedFile>>,
     pub changes: Vec<CapturedChange>,
     pub bytes: BTreeMap<FileId, Vec<u8>>,
@@ -18,7 +18,7 @@ pub(super) struct Scan {
 const MAX_FILE: u64 = 1024 * 1024 * 1024;
 const MAX_TOTAL: u64 = 4 * MAX_FILE;
 
-pub(super) fn scan(
+pub(in crate::projection) fn scan(
     store: &ProjectionStore,
     snapshot: &ProjectionSnapshot,
     retain: bool,

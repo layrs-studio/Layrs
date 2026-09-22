@@ -1,6 +1,10 @@
 use super::*;
 mod capture;
+mod maintenance;
+mod namespace;
 mod publication;
+mod restore;
+mod refresh;
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry},
     scm::{FileId, ObjectId, RepoPath, StepId, TreeEntryTarget, TreeId},
@@ -12,13 +16,15 @@ use std::{
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "layrs-projection-{}-{}",
+            "layrs-projection-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&p).unwrap();
         Self(p)

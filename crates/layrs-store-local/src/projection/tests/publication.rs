@@ -203,3 +203,33 @@ fn journal_rejects_noncanonical_oversized_and_corrupted_requests_before_replay()
     );
     assert!(store.capture_patch(1).is_err());
 }
+
+#[test]
+fn completed_receipt_checks_the_exact_capture_transition_before_replay() {
+    for altered_next in [Some(b"{}".as_slice()), None] {
+        let (f, store, capture, next) = pending();
+        store
+            .begin_publication(capture.sequence, 1, REQUEST)
+            .unwrap();
+        store
+            .finish_publication(capture.sequence, RECEIPT, Some(&next))
+            .unwrap();
+        assert!(store.fsck().is_ok());
+        let db =
+            rusqlite::Connection::open(f.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
+        db.execute(
+            "UPDATE projection_publications SET next_snapshot=?1",
+            [altered_next],
+        )
+        .unwrap();
+        drop(db);
+        assert!(store.completed_publication(capture.sequence).is_err());
+        assert!(store.fsck().is_err());
+        assert!(
+            store
+                .finish_publication(capture.sequence, RECEIPT, None)
+                .is_err()
+        );
+        assert_eq!(fs::read(f.0.join("a.txt")).unwrap(), b"published bytes");
+    }
+}
