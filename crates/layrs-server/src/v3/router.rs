@@ -19,6 +19,10 @@ pub fn router(state: V3HttpState) -> Router {
             post(endpoints::submit_path_patch),
         )
         .route(
+            "/v3/spaces/:space_id/projection/access",
+            post(endpoints::projection_access),
+        )
+        .route(
             "/v3/spaces/:space_id/projection",
             post(endpoints::projection_page),
         )

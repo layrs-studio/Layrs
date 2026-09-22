@@ -178,6 +178,19 @@ impl V3Facade for ProductionV3Facade {
             },
         })
     }
+    async fn projection_access(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        request: ProjectionAccessRequest,
+    ) -> Result<ProjectionAccess, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        let authority = self.authority(space).await?;
+        self.repository
+            .projection_access(&principal, &authority, request)
+            .await
+            .map_err(map_error)
+    }
     async fn projection_page(
         &self,
         principal: &AuthenticatedPrincipal,

@@ -84,7 +84,7 @@ recette client HTTPS Policy versionnée PASS 28,49 s, incluant lecture exacte de
 règles, refus opaque du membre restreint, perte de réponse/reprise et restauration
 de la politique gérée ; sa preuve détaillée reste dans son journal.
 
-## Audit indépendant de la publication partielle — en cours
+## Audit indépendant de la publication partielle — checkpoint initial
 
 Sources auditées en lecture seule : `path_patch_service`, `path_patch_scope`,
 `transaction_authorization`, `transaction_store`, `plan_store` et catalogue CAS.
@@ -100,3 +100,72 @@ autorisé comme paire delete/create, révocation puis rétablissement de droits 
 rejeu exact des reçus terminaux. Root raccorde le helper ; Gates/perte de réponse
 attendent ses paramètres HTTP et la barrière du harnais. Ne pas compter ces tests
 comme réussis avant leur résultat réel.
+
+## Publication partielle et classification du namespace — qualification finale
+
+2026-09-21 : recette HTTPS `native_clients_v3`, mode
+`LAYRS_TEST_CONTENT_ACL_ONLY=1`, **PASS 35,62 s**, compilation 34,18 s,
+session 21044 terminée avec code 0. Log privé :
+`tmp/path-patch-security-20260921-combined.log`. La fixture isolée et son rôle
+PostgreSQL ont été nettoyés par le harnais.
+
+Le helper `support/path_patch_security_drill.rs` prouve désormais :
+
+- Un batch comportant un chemin autorisé et un chemin interdit est rejeté
+  atomiquement, sans Step admis, View déplacée ni nouvel événement.
+- Deux requêtes concurrentes sur la même View ont un seul gagnant ; le perdant
+  reçoit un rejet durable. Les deux reçus se rejouent exactement.
+- Le renommage autorisé d'un fichier est une paire delete/create atomique ;
+  les identités des fichiers masqués restent inchangées.
+- La révocation après préparation refuse la requête ; rétablir les droits ne
+  transforme pas ce reçu rejeté en publication. Un reçu déjà appliqué reste
+  rejouable par le membre actif après révocation des droits de contenu.
+- Des octets de transport volontairement invalides sur ce rejeu prouvent que
+  le reçu est retrouvé avant décodage ou relecture du contenu.
+- Une Layer protégée bloque la publication. La perte déterministe d'une réponse
+  HTTP après commit, puis les réessais exacts, ne déplacent la View qu'une fois.
+
+Le lot client raccordé par root passe dans la même recette : collision locale
+sur chemin protégé refusée sans perte d'octets, capture immuable, perte de réponse,
+réouverture du Store format 3 avec publication pending, reprise exacte, acceptation
+de la nouvelle base et conservation d'une édition locale postérieure à la capture.
+
+Liaison d'audit : `AuthorizationSnapshot` v2 porte obligatoirement
+`requestBinding.pathPatchRequestDigest` ; v1 conserve sa sérialisation antérieure.
+La validation v2 impose un principal, 1..1024 décisions `transaction.apply`,
+uniquement des chemins uniques issus du même Step. Au rejeu, les chemins et le
+Step audités doivent correspondre exactement au patch ; un reçu Applied avec
+une décision refusée est rejeté. Hashs/JCS, identité, client, clé et digest restent
+vérifiés. Les snapshots clients restent interdits à l'upload.
+
+`POST /v3/spaces/:space/projection/access` classe 1..200 chemins triés uniques,
+avec Step admis, PolicySet et epoch exacts. Réponse `ProjectionAccess` v1 :
+principal, Space, Step, root Tree, PolicySet, epoch et une entrée par chemin
+(`target` nullable, executable, contentReadable, writable). Aucun contenu ni
+capability n'est renvoyé. Le parcours prouve la présence ou l'absence ; un
+ancêtre fichier/symlink/conflit/tombstone refuse la requête entière. Les règles
+ACL s'appliquent au chemin exact, même absent ; `.git`/`.layrs` ne sont jamais
+des emplacements d'écriture. L'autorité et l'identité sont recontrôlées après le
+parcours. Bornes : corps HTTP 1 Mio, chemin 4096 octets/profondeur 128, métadonnées
+64 Mio au total, objet Step/Tree 1 Mio. Les noms restent visibles selon le contrat.
+
+Preuves endpoint HTTPS : présence et absence, y compris parent absent, droits
+read/write exacts, refus sous ancêtre fichier, chemins dupliqués/201 chemins,
+absence d'authentification et epoch périmé. Contrats Sync : 2 tests snapshots
+(mutations réhachées incluses), 1 test borne/fermeture access, 26 régressions PASS.
+Clippy strict sync/store-server libs/tests et cible serveur native_clients_v3
+PASS 22,86 s. Backup de la recette : 140 objets, 94 253 octets canoniques,
+12 Steps ; backup 1277 ms, restauration 2371 ms, exercice total 4927 ms.
+
+Incident de recette : le premier scénario perte de réponse était placé après
+activation d'une protection ; même minimumApprovals=0 conserve le contrôle
+d'admission préalable du Step. Déplacé avant le scénario Gate, sans changement
+production. Deux essais ont donc échoué puis nettoyé leur fixture ; un autre
+essai s'est arrêté à compilation pendant les éditions parallèles du Store.
+
+Limites restantes de ce lot : endpoint patch limité aux fichiers ordinaires et
+16 Mio fournis ; pas d'écriture aveugle, remplacement opaque de dossier, publication
+de conflit ou symlink. Un nouveau Step destiné à une Layer protégée nécessite le
+parcours de revue/admission approprié ; le refus est qualifié, pas une approbation
+de patch protégé. Le raccordement du namespace au Store/client est le lot selectors ;
+le présent endpoint ne constitue ni une réservation durable ni une capability.

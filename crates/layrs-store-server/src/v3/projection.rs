@@ -9,6 +9,8 @@ use layrs_sync::v3::{
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
+mod access;
+
 const MAX_ENTRIES: u32 = 100_000;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 

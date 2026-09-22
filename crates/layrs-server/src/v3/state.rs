@@ -106,6 +106,14 @@ pub enum V3ServiceError {
 
 #[async_trait]
 pub trait V3Facade: Send + Sync {
+    async fn projection_access(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _request: layrs_sync::v3::ProjectionAccessRequest,
+    ) -> Result<layrs_sync::v3::ProjectionAccess, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
     async fn submit_path_patch(
         &self,
         _principal: &AuthenticatedPrincipal,

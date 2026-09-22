@@ -43,7 +43,11 @@ pub(crate) async fn snapshot(
     };
     let choose_allowed = choose_authorization.as_ref().is_none_or(|d| d.allowed);
     let mut snapshot = AuthorizationSnapshot {
-        schema_version: AuthorizationSnapshotSchemaVersion::V1,
+        schema_version: if scope.is_some() {
+            AuthorizationSnapshotSchemaVersion::V2
+        } else {
+            AuthorizationSnapshotSchemaVersion::V1
+        },
         authorization_snapshot_id: request.request_digest.clone(),
         space_id: request.space_id.clone(),
         subject: AuthorizationSubject::Principal {
@@ -55,6 +59,7 @@ pub(crate) async fn snapshot(
             client_id: request.client_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
             request_digest: request.request_digest.clone(),
+            path_patch_request_digest: scope.map(|scope| scope.request.request_digest.clone()),
         },
         decisions: vec![layrs_sync::v3::AuthorizationDecision {
             action: V3Action::ApplyTransaction.as_policy_action().into(),

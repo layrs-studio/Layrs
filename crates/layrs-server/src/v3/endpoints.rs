@@ -58,6 +58,43 @@ pub async fn compare_steps(
     .into_response())
 }
 
+pub async fn projection_access(
+    State(state): State<V3HttpState>,
+    Path(space): Path<String>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body: layrs_sync::v3::ProjectionAccessRequest = limited_json(request, 1024 * 1024).await?;
+    body.validate()
+        .map_err(|_| V3HttpError::invalid_request("invalid_projection_paths"))?;
+    let response = state
+        .facade()
+        .projection_access(&principal, &space_id, body.clone())
+        .await?;
+    if response.principal_id != principal.principal_id
+        || response.space_id != space_id
+        || response.step_id != body.step_id
+        || response.policy_set_id != body.expected_policy_set_id
+        || response.authorization_epoch != body.expected_authorization_epoch
+        || response.entries.len() != body.paths.len()
+        || response
+            .entries
+            .iter()
+            .zip(&body.paths)
+            .any(|(entry, path)| {
+                &entry.path != path
+                    || (entry.writable && !entry.content_readable)
+                    || (entry.target.as_ref().is_none() && entry.executable)
+            })
+    {
+        return Err(V3ServiceError::Internal.into());
+    }
+    Ok(Json(response).into_response())
+}
+
 pub async fn projection_page(
     State(state): State<V3HttpState>,
     Path(space): Path<String>,

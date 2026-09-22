@@ -13,7 +13,7 @@ pub struct V3ValidationError {
     pub message: String,
 }
 impl V3ValidationError {
-    fn new(code: &'static str, field: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn new(code: &'static str, field: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             field,
@@ -453,6 +453,45 @@ impl ValidateV3 for PolicySet {
 }
 impl ValidateV3 for AuthorizationSnapshot {
     fn validate_v3(&self) -> V3Result<()> {
+        if (self.schema_version == AuthorizationSnapshotSchemaVersion::V2)
+            != self.request_binding.path_patch_request_digest.is_some()
+        {
+            return Err(V3ValidationError::new(
+                "invalid_patch_binding",
+                "requestBinding",
+                "only snapshot v2 carries a mandatory path patch digest",
+            ));
+        }
+        if self.schema_version == AuthorizationSnapshotSchemaVersion::V2 {
+            let mut paths = std::collections::BTreeSet::new();
+            let mut base = None;
+            let mut valid = matches!(self.subject, AuthorizationSubject::Principal { .. })
+                && !self.decisions.is_empty()
+                && self.decisions.len() <= 1024;
+            for decision in &self.decisions {
+                valid &= decision.action == "transaction.apply";
+                match &decision.scope {
+                    AuthorizationScope::Path {
+                        root: AuthorizationRoot::Step { step_id },
+                        repo_path,
+                    } => {
+                        valid &= base.is_none_or(|previous| previous == step_id);
+                        base = Some(step_id);
+                        valid &= paths.insert(repo_path);
+                        valid &= repo_path.as_str().len() <= 4096
+                            && repo_path.as_str().split('/').count() <= 128;
+                    }
+                    _ => valid = false,
+                }
+            }
+            if !valid {
+                return Err(V3ValidationError::new(
+                    "invalid_patch_decisions",
+                    "decisions",
+                    "patch snapshots require one principal and unique paths at one Step",
+                ));
+            }
+        }
         if self.authorization_epoch == 0 {
             return Err(V3ValidationError::new(
                 "invalid_epoch",

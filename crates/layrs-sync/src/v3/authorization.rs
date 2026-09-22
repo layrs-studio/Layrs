@@ -105,12 +105,16 @@ pub struct AuthorizationRequestBinding {
     pub client_id: ClientId,
     pub idempotency_key: IdempotencyKey,
     pub request_digest: ObjectId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_patch_request_digest: Option<ObjectId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorizationSnapshotSchemaVersion {
     #[serde(rename = "layrs.authorization-snapshot.v1")]
     V1,
+    #[serde(rename = "layrs.authorization-snapshot.v2")]
+    V2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

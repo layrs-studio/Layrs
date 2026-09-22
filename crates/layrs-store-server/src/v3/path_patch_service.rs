@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 mod content;
 mod prepare;
+mod replay;
 use path_patch_scope::ScopedPatch;
 
 pub struct PgPathPatchService {
@@ -37,6 +38,9 @@ impl PgPathPatchService {
     ) -> Result<PathPatchReceipt, TransactionServiceError> {
         let patch = &submission.request;
         patch.validate().map_err(invalid)?;
+        if let Some(receipt) = self.replay_patch(principal, patch).await? {
+            return Ok(receipt);
+        }
         let authority = PgBootstrapStore::new(self.repository.clone(), self.cursors.clone())
             .load_authority(&patch.space_id)
             .await?;

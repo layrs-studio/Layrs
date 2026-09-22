@@ -61,6 +61,7 @@ fn authorization_snapshot() -> AuthorizationSnapshot {
         policy_set_id: object_id('1'),
         authorization_epoch: 7,
         request_binding: AuthorizationRequestBinding {
+            path_patch_request_digest: None,
             client_id: ClientId::parse("client:cataloged-test").unwrap(),
             idempotency_key: IdempotencyKey::parse("cataloged-test-key-0001").unwrap(),
             request_digest: object_id('2'),
