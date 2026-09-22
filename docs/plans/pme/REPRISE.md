@@ -1,6 +1,24 @@
 # Point de reprise — travail repris, commits autorisés
 
-## Checkpoint courant — 21 septembre 2026, projection éditable
+## Checkpoint courant — 22 septembre 2026
+
+Projection éditable livrée et qualifiée : serveur `82c0254`, opérations locales
+`0638dc2`, client/CLI `deb5937`, UI `161d26a`, intégration `c75b3f3`, recette
+Desktop et guide `20b870e`. **T4.L chemins réservés est clos** dans le périmètre
+documenté : noms visibles, contenu interdit absent, création/déplacement refusés,
+collision externe préservée, migration distincte, réception, restauration et reprise.
+
+HTTPS/PostgreSQL61,17s PASS, Desktop réel29,8s PASS, Web Edge4,6s PASS,
+Store3 Windows42tests PASS, Linux réception11/restauration6 PASS,
+client natif41tests PASS7,46s, UI38tests et TypeScript PASS,
+Clippy workspace strict PASS35,63s. [Journal détaillé](journal/PARTIAL-INTEGRATION.md).
+
+En cours à ce checkpoint : commandes CLI dédiées, nouvelle distribution,
+recette Web multi-surfaces complémentaire. Les anciens paquets qualified4
+ne contiennent pas la projection éditable. Les qualifications machine vierge,
+pilote humain, autres plateformes et CI distante restent séparées.
+
+## Checkpoint historique — 21 septembre 2026, projection éditable
 
 Choix utilisateur acquis : droits complets par membre/fichier, noms et chemins
 visibles, emplacements réservés empêchant création/renommage/déplacement dans
