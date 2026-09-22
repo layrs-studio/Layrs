@@ -33,6 +33,31 @@ Décision : ADR0024. Le checkpoint le plus récent prévaut sur les étapes hist
   vérification des archives et journaux finaux. Les qualifications humaines,
   machine vierge, macOS/ARM et CI distante demeurent externes.
 
+Suite du checkpoint : les **5 tests CLI dédiés PASS 0,69s** sont enregistrés
+dans `6436fb0` ; statut/capture/historique/fsck, collision conservée et reprise
+de restauration avec inverse sont exécutés via le vrai binaire. Les tests CLI
+des previews distants vérifient parsing/refus HTTPS sans réseau : ils ne sont
+pas présentés comme une nouvelle preuve d'authentification distante.
+**41 tests client natif PASS 7,46s** ; build production Web PASS.
+Les paquets qualified5 Windows/Linux et MSI sont construits sur les sources
+figées `6436fb0`. Les archives contiennent 26 fichiers vérifiés, partagent la
+même empreinte source et passent 8 parcours smoke par OS ainsi que
+upgrade/rollback4→5. MSI construit et hash vérifié, non installé/non signé.
+[Rapport et manifestes](../measurements/partial-qualification-2026-09-22.md).
+[Suites fonctionnelles Store3 identifiées](../PARTIAL-FOLLOWUP.md).
+
+Complément **Web/CLI/Desktop même instance PASS33,4s** : vrai CLI et Tauri,
+deux Stores, publications/réceptions dans les deux sens, deux Markers et Release
+aux cibles exactes dans les trois interfaces ; commentaire Web relu CLI, preuve
+exacte, Gate refusée sans événement, compte restreint avec chemins visibles et
+capacité de contenu refusée, historique403 et vues effacées après bootstrap403.
+Log `tmp/web-three-clients-20260922-final.log`. Les tentatives précédentes
+échouées (sélecteur de test et comparaison de route encodée) restent conservées.
+TypeScript strict des recettes E2E PASS. Aucun changement de production après
+le gel des paquets ; les annotations du helper Tauri ne concernent que les tests.
+Les sept clauses Web correspondantes sont closes ; les neuf qualifications
+restantes et les extensions Store3 sont explicites dans REMAINING.
+
 Les paragraphes ci-dessous sont historiques ; les tâches qu'ils annoncent
 « en cours » sont remplacées par ce checkpoint.
 

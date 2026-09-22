@@ -2,7 +2,7 @@
 
 Suivi d'exécution : [journal T3](journal/T3.md). Coordination et reprise : [REPRISE.md](REPRISE.md).
 
-Statut : en cours — 24/27 cases vérifiées au 20 septembre 2026 ; les cases composées encore partielles restent ouvertes. Priorité : P1. Référence : audit du 19 septembre 2026, actualisé par les preuves du journal T3.
+Statut au 22 septembre 2026 : 27/27 cases vérifiées dans le périmètre documenté. Priorité : P1. L'historique publié complet reste refusé aux comptes à contenu restreint ; leur projection de chemins et l'historique local Store3 sont distincts. Voir PARTIAL-FOLLOWUP.md pour les extensions.
 
 ## Résultat attendu
 
@@ -42,7 +42,7 @@ Reporté : langage de requêtes généraliste, réécriture interactive arbitrai
 - [x] **T3.H4** Définir l'historique par fichier sans promettre une identité à travers tous les renommages. Afficher une continuité uniquement quand elle est démontrée, et signaler l'ambiguïté.
 - [x] **T3.H5** Ajouter des projections de recherche reconstructibles ; le cache ne devient pas l'autorité des références.
 - [x] **T3.H6** Captures automatiques regroupées visuellement, deux IDs distincts conservés dans le groupe déplié et Marker initial visible : Desktop PASS25,7s. Markers/Releases restent des points nommés distincts ; parcours de publication de Release Desktop PASS28,6s.
-- [ ] **T3.H7** Exposer CLI/Desktop puis Web via T4, avec contrôle d'accès sur les métadonnées et les contenus.
+- [x] **T3.H7** Exposer CLI/Desktop puis Web via T4, avec contrôle d'accès sur les métadonnées et les contenus. Recette commune réelle22sept PASS33,4s : historique autorisé, compte restreint refusé sur historique complet, chemins visibles/verrouillés et capacité de contenu refusée ; retrait d'accès efface les vues. [Preuve](measurements/partial-qualification-2026-09-22.md).
 
 **Sortie T3.H :** un point peut être nommé, retrouvé et utilisé pour consulter/restaurer exactement son état local. La publication distante attend T4.P.
 
@@ -64,7 +64,7 @@ Reporté : langage de requêtes généraliste, réécriture interactive arbitrai
 - [x] **T3.V4** Historique paginé sans doublons/pertes pendant captures concurrentes ; filtrage de droits sans fuite de chemin ou de titre. Pagination locale et distante ancrée, snapshot d'observations validé, append concurrents exclus, curseurs Space/Principal/epoch/filtre vérifiés ; accès révoqué et hors Space refusés. Les droits distants actuels portent sur le Space entier, sans vue partielle par chemin. PG+backup PASS55,56s ; CLI45/Desktop56,4s.
 - [x] **T3.V5** Replay propre/conflictuel, regroupement et rewrite map ; aucun déplacement implicite des points nommés.
 - [x] **T3.V6** CLI et Desktop : nommer une version, travailler ensuite, retrouver la version et restaurer un fichier via T1. Recettes CLI native et Desktop avec marker baseline, aperçu protégé, undo/redo et transformation passent.
-- [ ] **T3.V7** Second client : mêmes Markers/Releases et cibles exactes après T4.P ; Web rend le même résultat.
+- [x] **T3.V7** Second client : mêmes Markers/Releases et cibles exactes après T4.P ; Web rend le même résultat. Deux Stores, publication Desktop→CLI puis CLI→Desktop, deux Markers et Release aux cibles exactes dans les trois interfaces, PASS33,4s le22septembre.
 
 ## Preuves associées aux cases cochées
 

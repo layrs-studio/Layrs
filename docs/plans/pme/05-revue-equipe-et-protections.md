@@ -2,7 +2,7 @@
 
 Suivi d'exécution : [journal T5](journal/T5.md). Coordination et reprise : [REPRISE.md](REPRISE.md).
 
-Statut : implementation avancee, qualification partielle. Les cases ouvertes restent obligatoires dans le perimetre initial.
+Statut au 22 septembre 2026 : 27/27 cases vérifiées dans le périmètre initial. La collaboration autonome des comptes à contenu restreint reste une extension Store3 non livrée ; voir [PARTIAL-FOLLOWUP.md](PARTIAL-FOLLOWUP.md).
 
 ## Résultat attendu
 
@@ -62,7 +62,7 @@ Reporté : tickets/projets complets, chat, règles organisationnelles complexes,
 - [x] **T5.V5** Tests d'accès direct aux APIs : utilisateur non membre, lien connu, changement de droits entre lecture et application.
 - [x] **T5.V6** Notifications sans doublons sur reprise et sans fuite de contenu après révocation.
 - [x] **T5.V7** Une Layer protégée refuse le même contournement depuis chaque surface.
-- [ ] **T5.V8** Parcours Web réel et CLI contre le serveur V3 ; tests de composants seuls insuffisants.
+- [x] **T5.V8** Parcours Web réel et CLI contre le serveur V3 ; tests de composants seuls insuffisants. Recette commune22sept PASS33,4s : vraie revue Web, commentaire écrit dans Web et relu par CLI sur la même instance HTTPS, références partagées et refus de Gate visible. Les comptes restreints restent refusés sur la collaboration non filtrée.
 
 ## Dépendances et parallélisme
 

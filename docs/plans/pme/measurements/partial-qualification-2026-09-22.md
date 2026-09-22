@@ -8,7 +8,8 @@ compilées. [Manifestes, empreintes et rapports](partial-artifacts-2026-09-22.js
 | --- | --- |
 | HTTPS/PostgreSQL intégré | PASS61,17s : clone/migration, capture/publication/reprise, namespace, réception, ACL, restauration/inverse, concurrence et Gates |
 | Desktop réel Tauri/WebView2 | PASS29,8s : projet partiel, chemins réservés, collision externe, publication/réception, restauration et annulation |
-| Web réel Edge | PASS4,6s : login, historique exact de deux Steps, chemins/droits, revue, preuve CI, comptes, logout |
+| Web réel Edge autonome | PASS4,1s (recette4,9s) sur le code final, sans complément Desktop : login, historique exact de deux Steps, chemins/droits, revue, preuve CI, comptes, logout |
+| Web/CLI/Desktop même instance | PASS33,4s : deux Stores et octets exacts, publications/réceptions dans les deux sens, deux Markers et Release aux mêmes cibles ; commentaire Web relu CLI, preuve exacte, Gate refusée sans nouvel événement, ACL et purge des vues refusées |
 | Store3 Windows | 42 tests PASS ; Clippy strict PASS |
 | Store3 Linux | Réception11 PASS, restauration6 PASS ; namespace24 PASS lors du lot précédent |
 | Client natif | 41 tests PASS7,46s |
@@ -23,6 +24,20 @@ compilées. [Manifestes, empreintes et rapports](partial-artifacts-2026-09-22.js
 Les tests de parsing des previews distants CLI n'effectuent aucun accès réseau.
 Les preuves HTTPS de restauration appartiennent au client natif et à Desktop.
 Les anciennes tentatives de fixture échouées ne sont pas comptées comme réussies.
+
+La recette trois-clients est activée explicitement avec
+`LAYRS_NATIVE_SHARED_CLIENTS=1` et `LAYRS_NATIVE_WEB_BROWSER_CHANNEL=msedge`
+avant `node scripts/test-native-ui-ci.mjs web`. Elle exige le vrai CLI construit
+dans `target/debug`, les dépendances Tauri/Desktop et les variables PostgreSQL
+privées habituelles. Sans ce flag, la recette Web seule conserve sa portabilité
+Linux ; ne pas lui attribuer les assertions Desktop du complément Windows.
+Le compte restreint voit les chemins et leurs cadenas, mais reçoit403 pour
+l'historique complet ; son fetch-plan ne fournit aucune capacité de contenu.
+La preuve CI de ce test est synthétique, admise par le vrai service : son
+affichage est qualifié, sans prétendre exécuter le runner dans cette recette.
+Le runner réel dispose de preuves séparées dans le journal T6.
+Logs finaux : `tmp/web-three-clients-20260922-final.log` et
+`tmp/web-standalone-20260922-final.log`. TypeScript strict des recettes PASS.
 
 ## Artefacts courants
 

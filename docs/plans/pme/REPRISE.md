@@ -13,10 +13,26 @@ Store3 Windows42tests PASS, Linux réception11/restauration6 PASS,
 client natif41tests PASS7,46s, UI38tests et TypeScript PASS,
 Clippy workspace strict PASS35,63s. [Journal détaillé](journal/PARTIAL-INTEGRATION.md).
 
-En cours à ce checkpoint : commandes CLI dédiées, nouvelle distribution,
-recette Web multi-surfaces complémentaire. Les anciens paquets qualified4
-ne contiennent pas la projection éditable. Les qualifications machine vierge,
-pilote humain, autres plateformes et CI distante restent séparées.
+CLI dédiée : 5 tests PASS0,69s, Clippy strict PASS46,86s. Archives qualified5
+Windows/Linux : 26 fichiers vérifiés, 8 parcours smoke par OS, upgrade/rollback4→5
+PASS et sources identiques. MSI construit et hash vérifié, non installé/non signé.
+[Rapport de distribution](measurements/partial-qualification-2026-09-22.md).
+Recette Web/CLI/Desktop sur la même instance HTTPS **PASS33,4s** : deux Stores,
+publication/réception dans les deux sens, références/cibles exactes, commentaire
+Web relu CLI, preuve CI, Gate refusée sans événement, chemins verrouillés et
+refus réels de contenu/historique/métadonnées. Les sept clauses Web sont closes.
+Il reste **9 critères de qualification** dans T2/T8, plus les limites
+fonctionnelles documentées ; les huit plans ne sont pas entièrement clos.
+Les qualifications machine vierge, pilote humain, autres plateformes et CI
+distante restent séparées. Les suites fonctionnelles Store3 sont explicites dans
+[PARTIAL-FOLLOWUP.md](PARTIAL-FOLLOWUP.md) ; elles ne sont pas qualifiées par les
+tests de refus des Gates.
+
+Toutes les exécutions de ce lot sont terminées. Dernier contrôle : recette
+commune avec flag explicite33,4s PASS, Web autonome4,1s PASS, TypeScript strict
+des E2E PASS. Production et paquets restent liés à `6436fb0` ; seuls tests et
+journaux ont évolué depuis. Prochain développement : les lots dépendants et
+parallélisables de PARTIAL-FOLLOWUP. Aucun push, déploiement ou MSI installé.
 
 ## Checkpoint historique — 21 septembre 2026, projection éditable
 

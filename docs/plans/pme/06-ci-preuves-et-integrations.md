@@ -2,7 +2,7 @@
 
 Suivi d'exécution : [journal T6](journal/T6.md). Coordination et reprise : [REPRISE.md](REPRISE.md).
 
-Statut : implementation avancee, qualification partielle. Les cases ouvertes restent obligatoires dans le perimetre initial.
+Statut au 22 septembre 2026 : 26/26 cases vérifiées dans le périmètre initial ; runner et preuves réels, affichage Web et refus de Gate qualifiés. CI distante du dépôt et collaboration filtrée Store3 restent des sujets distincts.
 
 ## Résultat attendu
 
@@ -60,7 +60,7 @@ Reporté : infrastructure d'exécution hébergée multi-tenant, ordonnanceur com
 - [x] **T6.V3** Callback perdu puis rejoué, deux tentatives concurrentes, expiration et changement de policy pendant l'exécution.
 - [x] **T6.V4** Webhook accepté en base puis serveur arrêté : livraison reprise au redémarrage ; signatures et limites de retry vérifiées.
 - [x] **T6.V5** Destinations interdites/redirections inattendues refusées ; absence de secrets dans logs et réponses.
-- [ ] **T6.V6** Une Gate imposée par le serveur bloque également l'API directe et la CLI ; affichage cohérent dans Web.
+- [x] **T6.V6** Une Gate imposée par le serveur bloque également l'API directe et la CLI ; affichage cohérent dans Web. Refus serveur/API/CLI déjà qualifiés ; complément Web réel22sept PASS33,4s : preuve/journal exacts affichés, publication Release sans preuve recevable refusée avec `release_gate_rejected`, aucun nouvel événement de publication.
 - [x] **T6.V7** Recette documentée reproductible avec un exécuteur externe simple, sans dépendre d'un service propriétaire particulier.
 
 ## Dépendances et parallélisme
