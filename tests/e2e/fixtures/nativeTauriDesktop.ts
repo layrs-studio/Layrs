@@ -1,10 +1,12 @@
 import { chromium, expect, type Browser, type Page, type TestInfo } from "@playwright/test";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
+type NativeDesktopProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 export interface NativeTauriDesktop {
   browser: Browser;
@@ -127,7 +129,7 @@ function spawnTauriDev(
   logs: string[],
   options: NativeTauriDesktopOptions,
   visual: boolean
-): ChildProcessWithoutNullStreams {
+): NativeDesktopProcess {
   const isolatedAppEnv =
     process.platform === "win32"
       ? {
@@ -138,7 +140,7 @@ function spawnTauriDev(
           HOME: resolve(stateRoot, "Home"),
           XDG_CONFIG_HOME: resolve(stateRoot, "xdg-config")
         };
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...isolatedAppEnv,
     ...(options.selectedFolder ? { LAYRS_E2E_SELECTED_FOLDER: options.selectedFolder } : {}),
@@ -176,7 +178,7 @@ function spawnTauriDev(
   return child;
 }
 
-async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number, child: ChildProcessWithoutNullStreams) {
+async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number, child: NativeDesktopProcess) {
   const deadline = Date.now() + timeoutMs;
   const url = `http://127.0.0.1:${debugPort}/json/version`;
   while (Date.now() < deadline) {
@@ -263,7 +265,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-function stopProcessTree(child: ChildProcessWithoutNullStreams) {
+function stopProcessTree(child: NativeDesktopProcess) {
   if (child.killed) {
     return;
   }
@@ -317,7 +319,7 @@ function pushLog(logs: string[], chunk: unknown) {
 }
 
 function delay(ms: number) {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+  return new Promise<void>((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function visualSlowMoMs() {
