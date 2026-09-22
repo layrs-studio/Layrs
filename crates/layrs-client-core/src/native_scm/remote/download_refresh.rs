@@ -61,7 +61,7 @@ impl NativeRemote {
         Ok(())
     }
 
-    fn fetch_plan(
+    pub(super) fn fetch_plan(
         &self,
         binding: &Binding,
         claim: &FetchClaim,

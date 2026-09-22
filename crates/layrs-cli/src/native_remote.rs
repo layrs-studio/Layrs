@@ -60,12 +60,17 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         && args.first().is_none_or(|arg| {
             !matches!(
                 arg.as_str(),
-                "choose-preview" | "policy-preview" | "policy-preview-rules" | "file"
+                "choose-preview"
+                    | "policy-preview"
+                    | "policy-preview-rules"
+                    | "policy-replace"
+                    | "partial-restore-preview"
+                    | "file"
             )
         })
     {
         return Err(CliError::usage(
-            "--output is only supported by remote choose-preview, policy-preview, policy-preview-rules or file",
+            "--output requires a policy/choose preview or file download",
         ));
     }
     let expected_last = option(&mut args, "--expected-last")?;
@@ -137,6 +142,46 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         ["policy-preview-rules", file] => Action::PreviewPolicyRules {
             rules: json_file(file)?,
         },
+        ["policy-read"] => Action::ReadPolicyRules {},
+        ["policy-replace", policy, file] => Action::PreviewReplacePolicyRules {
+            policy_id: serde_json::from_value(serde_json::json!(policy)).map_err(error)?,
+            rules: json_file(file)?,
+        },
+        ["publish-partial", sequence, layer] => Action::PublishProjection {
+            patch_id: sequence
+                .parse()
+                .map_err(|_| CliError::usage("invalid capture sequence"))?,
+            layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+        },
+        ["receive-partial", layer] => Action::ReceiveProjection {
+            layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+        },
+        ["migrate-partial", layer, destination] => Action::MigrateProjection {
+            layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+            destination: (*destination).to_owned(),
+        },
+        ["partial-restore-preview", file] => {
+            let mut request = json_file(file)?;
+            let fields = request
+                .as_object_mut()
+                .ok_or_else(|| CliError::usage("restore request must be a JSON object"))?;
+            if fields.contains_key("action") {
+                return Err(CliError::usage("restore request must not supply an action"));
+            }
+            fields.insert(
+                "action".into(),
+                serde_json::json!("previewProjectionRestore"),
+            );
+            serde_json::from_value(request).map_err(error)?
+        }
+        ["partial-restore-apply", file] => {
+            let document = json_file(file)?;
+            let preview = document.get("data").unwrap_or(&document);
+            serde_json::from_value(
+                serde_json::json!({"action":"applyProjectionRestore","preview":preview}),
+            )
+            .map_err(error)?
+        }
         [action @ ("choose-apply" | "policy-apply"), file] => {
             let document = json_file(file)?;
             let preview = document
@@ -279,6 +324,13 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         ["publish-candidates"] => Action::PublishCandidates,
         ["publish", "--integrate"] => Action::Publish { integrate: true },
         ["receive"] => Action::Receive,
+        ["clone-partial", space, step, path] => {
+            root = PathBuf::from(path);
+            Action::CloneProjection {
+                space: layrs_core::scm::SpaceId::parse(*space).map_err(error)?,
+                step: layrs_core::scm::StepId::parse(*step).map_err(error)?,
+            }
+        }
         ["clone", space, path] => {
             root = PathBuf::from(path);
             Action::Clone {
@@ -298,6 +350,8 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
     let file_read = matches!(&action, Action::ReadFile { .. });
     let observation = matches!(&action, Action::ObserveStep { .. });
     let publication = matches!(&action, Action::Publish { .. } | Action::PublishCandidates);
+    let partial_publication = matches!(&action, Action::PublishProjection { .. });
+    let restore_preview = matches!(&action, Action::PreviewProjectionRestore { .. });
     let mut data = crate::native_interrupt::run_remote(
         &root,
         NativeRemoteRequest {
@@ -307,6 +361,16 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         },
     )
     .map_err(error)?;
+    if partial_publication && data["receipt"]["receipt"]["status"] != "applied" {
+        return Err(CliError::runtime(
+            "Partial publication refused; the durable receipt is retained. Receive current state and verify permissions before preparing another capture.",
+        ));
+    }
+    if partial_publication && data["pendingLocalAcceptance"] == true {
+        return Err(CliError::runtime(
+            "Partial publication committed remotely; local acceptance is pending. Retry the same capture sequence to finish it.",
+        ));
+    }
     if publication && data["receipt"]["status"] != "applied" {
         return Err(CliError::runtime(
             "Remote publication was refused. Receive the current View and verify permissions, gates and heads before retrying.",
@@ -329,7 +393,12 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
     }
     if let Some(path) = choose_output.filter(|_| !file_read) {
         use std::io::Write;
-        let bytes = serde_json::to_vec_pretty(&data["preview"]).map_err(error)?;
+        let bytes = serde_json::to_vec_pretty(if restore_preview {
+            &data
+        } else {
+            &data["preview"]
+        })
+        .map_err(error)?;
         if bytes.len() > 256 * 1024 {
             return Err(CliError::usage(
                 "preview exceeds the 256 KiB request file limit",

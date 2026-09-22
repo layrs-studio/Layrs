@@ -74,6 +74,14 @@ pub struct CorrectCommentRequest {
     deny_unknown_fields
 )]
 pub enum CollaborationCommand {
+    ProjectionContext,
+    ProjectionPage {
+        step_id: StepId,
+        expected_policy_set_id: ObjectId,
+        expected_authorization_epoch: u64,
+        cursor: Option<String>,
+        limit: u16,
+    },
     StepHistory {
         anchor: StepId,
         cursor: Option<String>,
@@ -153,6 +161,26 @@ pub(super) fn execute(
 ) -> RemoteResult<Value> {
     let base = format!("v3/spaces/{space}");
     match command {
+        CollaborationCommand::ProjectionContext => {
+            serde_json::to_value(remote.bootstrap(space)?).map_err(NativeRemoteError::from)
+        }
+        CollaborationCommand::ProjectionPage {
+            step_id,
+            expected_policy_set_id,
+            expected_authorization_epoch,
+            cursor,
+            limit,
+        } => {
+            let request = layrs_sync::v3::ProjectionPageRequest {
+                step_id,
+                expected_policy_set_id,
+                expected_authorization_epoch,
+                cursor,
+                limit,
+            };
+            let page = remote.projection_page(space, &request)?;
+            serde_json::to_value(page).map_err(NativeRemoteError::from)
+        }
         CollaborationCommand::ListReleases => remote.get(&format!("{base}/releases")),
         CollaborationCommand::ReleasePublications { release } => {
             remote.get(&format!("{base}/releases/{release}/publications"))

@@ -40,12 +40,23 @@ impl NativeRemote {
         path: &RepoPath,
     ) -> RemoteResult<(GraphObjects, FileId)> {
         let binding = self.binding(workspace)?;
+        let mut graph = GraphObjects::default();
+        let file_id = self.fetch_authorized_file(&binding, step, path, &mut graph)?;
+        Ok((graph, file_id))
+    }
+
+    pub(super) fn fetch_authorized_file(
+        &self,
+        binding: &Binding,
+        step: &StepId,
+        path: &RepoPath,
+        graph: &mut GraphObjects,
+    ) -> RemoteResult<FileId> {
         let root = AuthorizationRoot::Step {
             step_id: step.clone(),
         };
-        let mut graph = GraphObjects::default();
         self.fetch_visit(
-            &binding,
+            binding,
             FetchClaim::Object {
                 object: ObjectReference {
                     kind: ObjectKind::Step,
@@ -68,7 +79,7 @@ impl NativeRemote {
         }
         for (index, part) in parts.iter().enumerate() {
             self.fetch_visit(
-                &binding,
+                binding,
                 FetchClaim::Object {
                     object: ObjectReference {
                         kind: ObjectKind::Tree,
@@ -101,7 +112,7 @@ impl NativeRemote {
                     // Always claim this exact path, even if a manifest for the
                     // same FileId happened to arrive under another claim.
                     self.fetch_visit(
-                        &binding,
+                        binding,
                         FetchClaim::File {
                             file_id: file_id.clone(),
                             preferred_manifest_ids: vec![],
@@ -110,7 +121,7 @@ impl NativeRemote {
                         },
                         |object| graph.insert(object),
                     )?;
-                    return Ok((graph, file_id));
+                    return Ok(file_id);
                 }
                 _ => {
                     return Err(NativeRemoteError::Invalid(

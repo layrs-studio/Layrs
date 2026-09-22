@@ -55,6 +55,35 @@ pub enum NativeRemoteAction {
         name: String,
         transfer_id: String,
     },
+    CloneProjection {
+        space: SpaceId,
+        step: StepId,
+    },
+    PublishProjection {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    ReceiveProjection {
+        layer_id: LayerId,
+    },
+    MigrateProjection {
+        destination: String,
+        layer_id: LayerId,
+    },
+    PreviewProjectionNamespace {
+        expected_generation: u64,
+        mutation: super::NativeProjectionNamespaceMutation,
+    },
+    ApplyProjectionNamespace {
+        preview: Box<super::NativeProjectionNamespacePreview>,
+    },
+    PreviewProjectionRestore {
+        expected_generation: u64,
+        source: layrs_store_local::projection::RestoreSource,
+    },
+    ApplyProjectionRestore {
+        preview: Box<super::remote::NativeProjectionRestorePreview>,
+    },
     CancelTransfer {
         transfer_id: String,
     },
@@ -72,6 +101,11 @@ pub enum NativeRemoteAction {
     PreviewPolicyRules {
         rules: serde_json::Value,
     },
+    PreviewReplacePolicyRules {
+        policy_id: layrs_sync::v3::PolicyId,
+        rules: serde_json::Value,
+    },
+    ReadPolicyRules {},
     ApplyPolicy {
         preview: Box<super::NativePolicyPreview>,
     },
@@ -215,6 +249,92 @@ fn execute_remote_with_store(
                 .map_err(remote_error)?;
             Ok(json!({"status":"cloned","state":workspace.state().map_err(|e|e.to_string())?}))
         }
+        NativeRemoteAction::CloneProjection { space, step } => {
+            let store = remote
+                .clone_projection_into(root, &space, &step)
+                .map_err(remote_error)?;
+            Ok(
+                json!({"status":"projectionCloned","identity":store.identity(),"projection":store.state().map_err(|e|e.to_string())?}),
+            )
+        }
+        NativeRemoteAction::PublishProjection { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .publish_projection(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection publication response".into())
+        }
+        NativeRemoteAction::ReceiveProjection { layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .receive_projection(&store, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection receive response".into())
+        }
+        NativeRemoteAction::MigrateProjection {
+            destination,
+            layer_id,
+        } => {
+            let workspace = NativeWorkspace::discover(root).map_err(|e| e.to_string())?;
+            serde_json::to_value(
+                remote
+                    .migrate_projection_into(&workspace, Path::new(&destination), &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection migration response".into())
+        }
+        NativeRemoteAction::PreviewProjectionNamespace {
+            expected_generation,
+            mutation,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_namespace(&store, expected_generation, &mutation)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid namespace preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionNamespace { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_namespace(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid namespace application response".into())
+        }
+        NativeRemoteAction::PreviewProjectionRestore {
+            expected_generation,
+            source,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_restore(&store, expected_generation, &source)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid restoration preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionRestore { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_restore(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid restoration application response".into())
+        }
         action => {
             let workspace = NativeWorkspace::discover(root).map_err(|e| e.to_string())?;
             match action {
@@ -304,6 +424,13 @@ fn execute_remote_with_store(
                 NativeRemoteAction::PreviewPolicyRules { rules } => Ok(
                     json!({"preview":remote.preview_policy_rules(&workspace,&serde_json::to_vec(&rules).map_err(|_|"invalid policy rules JSON")?).map_err(remote_error)?}),
                 ),
+                NativeRemoteAction::PreviewReplacePolicyRules { policy_id, rules } => Ok(
+                    json!({"preview":remote.preview_replace_policy_rules(&workspace,&policy_id,&serde_json::to_vec(&rules).map_err(|_|"invalid policy rules JSON")?).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::ReadPolicyRules {} => serde_json::to_value(
+                    remote.read_policy_rules(&workspace).map_err(remote_error)?,
+                )
+                .map_err(|_| "invalid policy rules response".into()),
                 NativeRemoteAction::ApplyPolicy { preview } => Ok(
                     json!({"receipt":remote.apply_policy_preview(&workspace, &preview).map_err(remote_error)?}),
                 ),

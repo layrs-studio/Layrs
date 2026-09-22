@@ -19,11 +19,22 @@ Commands:
   layrs remote publish [--integrate] | receive --endpoint HTTPS_URL
   layrs remote publish-candidates --endpoint HTTPS_URL
   layrs remote clone SPACE_ID EMPTY_DIRECTORY --endpoint HTTPS_URL
+  layrs remote clone-partial SPACE_ID STEP_ID EMPTY_DIRECTORY --endpoint HTTPS_URL
+  layrs partial status | capture EXPECTED_GENERATION | resume-installation
+  layrs partial fsck | history [BEFORE_SEQUENCE]
+  layrs partial resume-namespace | resume-refresh | resume-restore
+  layrs remote publish-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
+  layrs remote receive-partial LAYER_ID --endpoint HTTPS_URL
+  layrs remote migrate-partial LAYER_ID EMPTY_DIRECTORY --endpoint HTTPS_URL
+  layrs remote partial-restore-preview REQUEST_JSON [--output NEW_PREVIEW_FILE] --endpoint HTTPS_URL
+  layrs remote partial-restore-apply PREVIEW_FILE --endpoint HTTPS_URL
   layrs remote history STEP_ID [CURSOR] [--path PATH] [--actor ACTOR_ID] [--since RFC3339] [--until RFC3339] --endpoint HTTPS_URL
   layrs remote teams | team-members --endpoint HTTPS_URL
   layrs remote policy-management --endpoint HTTPS_URL
   layrs remote policy-preview POLICY_SET_ID [--output NEW_PREVIEW_FILE] --endpoint HTTPS_URL
   layrs remote policy-preview-rules RULES_JSON [--output NEW_PREVIEW_FILE] --endpoint HTTPS_URL
+  layrs remote policy-read --endpoint HTTPS_URL
+  layrs remote policy-replace POLICY_ID RULES_JSON [--output NEW_PREVIEW_FILE] --endpoint HTTPS_URL
   layrs remote policy-apply PREVIEW_FILE --endpoint HTTPS_URL
   layrs remote observe JSON_FILE --endpoint HTTPS_URL
     Declare step, observedAt (RFC3339), reason, idempotencyKey; identity comes from the authenticated account.

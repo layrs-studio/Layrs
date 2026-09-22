@@ -50,10 +50,13 @@ mod snapshot;
 mod workspace;
 pub use remote::{
     NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
-    NativeRemote, NativeRemoteError, NativeRemoteSession, ReceiveReport, RemoteProvisionedSpace,
+    NativePolicyReplacement, NativePolicyRulesEntry, NativePolicyRulesSnapshot,
+    NativeProjectionNamespaceMutation, NativeProjectionNamespacePreview, NativeRemote,
+    NativeRemoteError, NativeRemoteSession, ReceiveReport, RemoteProvisionedSpace,
 };
 
 pub use commands::{execute_workspace, WorkspaceAction};
+mod partial;
 pub use diff::{NativeDiffLine, NativeFileChange};
 pub use filesystem::capture_checkout;
 pub use layrs_graph::scm::{ReferenceSelector, StepSelector};
@@ -62,6 +65,7 @@ pub use merge::{
     BlockResolutionChoice, NativeAcceptedMerge, NativeAcceptedResolution, NativeMergePreview,
     NativeResolutionPreview,
 };
+pub use partial::{checkout_kind, execute_projection, ProjectionAction};
 pub use prepare::{
     prepare_initialize, CaptureBase, CapturePlan, MutationStamp, NativeClient, PreparedMutation,
 };

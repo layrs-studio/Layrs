@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 url = "2"
 blake3 = "1"
+base64 = "0.22"
 layrs-core = { path = "../layrs-core" }
 layrs-graph = { path = "../layrs-graph" }
 layrs-weave = { path = "../layrs-weave" }

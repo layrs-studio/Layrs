@@ -621,7 +621,21 @@ mod chunk_spool;
 mod file;
 mod graph;
 mod observations;
+mod path_patch;
+mod projection;
+mod projection_namespace;
+pub use projection_namespace::{
+    NativeProjectionNamespaceMutation, NativeProjectionNamespacePreview,
+};
+mod projection_clone;
+mod projection_migrate;
+mod projection_publish;
+mod projection_receive;
+mod projection_restore;
 use graph::GraphObjects;
+pub use projection_migrate::ProjectionMigrationOutcome;
+pub use projection_publish::ProjectionPublicationOutcome;
+pub use projection_restore::NativeProjectionRestorePreview;
 
 fn conflict_references(
     conflict: &CanonicalConflict,
@@ -702,4 +716,7 @@ mod policy;
 mod policy_journal;
 #[path = "remote/publication.rs"]
 mod publication;
-pub use policy::{NativeInlinePolicyRules, NativePolicyPreview};
+pub use policy::{
+    NativeInlinePolicyRules, NativePolicyPreview, NativePolicyReplacement, NativePolicyRulesEntry,
+    NativePolicyRulesSnapshot,
+};

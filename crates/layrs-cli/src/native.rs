@@ -51,6 +51,9 @@ fn bridge_selection(references: &[String]) -> layrs_git_bridge::ImportSelection 
 }
 
 pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
+    if let CliCommand::Partial { args } = &cli.command {
+        return Some(partial_command(cli, args));
+    }
     if let CliCommand::Remote { args } = &cli.command {
         return Some(crate::native_remote::run(cli, args));
     }
@@ -704,6 +707,57 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
         let human = human_output(&cli.command, &data);
         Ok(Rendered { human, data })
     })())
+}
+
+fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
+    use layrs_client_core::native_scm::{ProjectionAction, execute_projection};
+    let root = cli
+        .globals
+        .space
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(std::env::current_dir)
+        .map_err(error)?;
+    let action = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["status"] => ProjectionAction::Status,
+        ["fsck"] => ProjectionAction::Fsck,
+        ["history"] => ProjectionAction::History {
+            before: None,
+            limit: 20,
+        },
+        ["history", before] => ProjectionAction::History {
+            before: Some(
+                before
+                    .parse()
+                    .map_err(|_| CliError::usage("invalid capture history cursor"))?,
+            ),
+            limit: 20,
+        },
+        ["capture", generation] => ProjectionAction::Capture {
+            expected_generation: generation
+                .parse()
+                .map_err(|_| CliError::usage("invalid projection generation"))?,
+        },
+        ["resume-installation"] => ProjectionAction::ResumeInstallation,
+        ["resume-namespace"] => ProjectionAction::ResumeNamespace,
+        ["resume-refresh"] => ProjectionAction::ResumeRefresh,
+        ["resume-restore"] => ProjectionAction::ResumeRestore,
+        _ => {
+            return Err(CliError::usage(
+                "partial status | capture EXPECTED_GENERATION | resume-installation",
+            ));
+        }
+    };
+    let data = execute_projection(root, action).map_err(error)?;
+    Ok(Rendered {
+        human: serde_json::to_string_pretty(&data).map_err(error)?,
+        data,
+    })
 }
 fn error(e: impl std::fmt::Display) -> CliError {
     CliError::runtime(e.to_string())

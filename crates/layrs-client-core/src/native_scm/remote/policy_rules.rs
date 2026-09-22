@@ -1,6 +1,12 @@
 //! Closed v1/v2 documents become one additive Policy, never an arbitrary transaction.
 use super::*;
 pub(super) const SCHEMA: &str = "layrs.policy-root-preview.v2";
+pub(super) const REPLACE_SCHEMA: &str = "layrs.policy-root-preview.v3";
+#[path = "policy_read.rs"]
+mod read;
+#[path = "policy_replace.rs"]
+mod replacement;
+pub use read::{NativePolicyRulesEntry, NativePolicyRulesSnapshot};
 const MAX_RULES: usize = 64 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -8,6 +14,14 @@ pub struct NativeInlinePolicyRules {
     pub object_id: ObjectId,
     pub rules: NativePolicyRules,
     pub base_policy_set: PolicySet,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<NativePolicyReplacement>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativePolicyReplacement {
+    pub policy_id: PolicyId,
+    pub previous_product_object_id: ObjectId,
 }
 fn checked_rules(bytes: &[u8]) -> RemoteResult<NativePolicyRules> {
     if bytes.is_empty() || bytes.len() > MAX_RULES {
@@ -42,7 +56,8 @@ pub(super) fn validate_inline(
         || inline.base_policy_set.space_id != preview.space_id
         || inline.base_policy_set.policy_set_id != preview.expected_policy_set_id
         || inline.base_policy_set.computed_id()? != preview.expected_policy_set_id
-        || inline.base_policy_set.policy_versions.len() >= 32
+        || inline.base_policy_set.policy_versions.len() > 32
+        || (inline.replacement.is_none() && inline.base_policy_set.policy_versions.len() == 32)
     {
         return Err(invalid());
     }
@@ -69,22 +84,47 @@ pub(super) fn validate_inline(
     if record.space_id != preview.space_id
         || record.rules_object_id != inline.object_id
         || !depends_on_step_ids.is_empty()
-        || !depends_on_product_ids.is_empty()
+    {
+        return Err(invalid());
+    }
+    let mut expected = inline.base_policy_set.clone();
+    let mut dependencies = vec![inline.object_id.clone()];
+    if let Some(replacement) = &inline.replacement {
+        let previous = expected
+            .policy_versions
+            .iter()
+            .find(|p| p.policy_id == replacement.policy_id)
+            .ok_or_else(invalid)?;
+        if product_id != &replacement.policy_id
+            || previous.policy_product_object_id != replacement.previous_product_object_id
+            || previous.policy_version_id == record.version_id
+            || previous_product_object_id.as_ref() != Some(&replacement.previous_product_object_id)
+            || depends_on_product_ids
+                != &vec![ProductLogicalId::parse(replacement.policy_id.as_str())
+                    .map_err(|_| invalid())?]
+        {
+            return Err(invalid());
+        }
+        dependencies.push(replacement.previous_product_object_id.clone());
+        dependencies.sort();
+        dependencies.dedup();
+        expected
+            .policy_versions
+            .retain(|p| p.policy_id != replacement.policy_id);
+    } else if !depends_on_product_ids.is_empty()
         || previous_product_object_id.is_some()
-        || inline
-            .base_policy_set
+        || expected
             .policy_versions
             .iter()
             .any(|p| &p.policy_id == product_id)
     {
         return Err(invalid());
     }
-    let mut expected = inline.base_policy_set.clone();
     expected.policy_versions.push(PolicyVersionEntry {
         policy_id: product_id.clone(),
         policy_version_id: record.version_id.clone(),
         policy_product_object_id: product.object_id().clone(),
-        dependency_object_ids: vec![inline.object_id.clone()],
+        dependency_object_ids: dependencies,
     });
     expected
         .policy_versions
@@ -113,7 +153,8 @@ impl NativeRemote {
                 .inline_rules
                 .as_ref()
                 .ok_or(NativeRemoteError::PublicationPending)?;
-            if binding.pending.as_ref() != Some(&preview.request)
+            if inline.replacement.is_some()
+                || binding.pending.as_ref() != Some(&preview.request)
                 || serde_jcs::to_vec(&inline.rules)? != serde_jcs::to_vec(&rules)?
             {
                 return Err(NativeRemoteError::PublicationPending);
@@ -183,6 +224,7 @@ impl NativeRemote {
             object_id: evidence,
             rules,
             base_policy_set: base.current_policy_set.record,
+            replacement: None,
         });
         validate(&preview)?;
         Ok(preview)

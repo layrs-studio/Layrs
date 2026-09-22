@@ -82,6 +82,9 @@ pub enum CliCommand {
     Remote {
         args: Vec<String>,
     },
+    Partial {
+        args: Vec<String>,
+    },
     Help,
     Init {
         name: String,
@@ -421,6 +424,7 @@ where
             )?
         }
         "remote" => CliCommand::Remote { args },
+        "partial" => CliCommand::Partial { args },
         "init" => parse_init(args)?,
         "step" => parse_no_extra(args, CliCommand::Step)?,
         "doctor" => parse_no_extra(args, CliCommand::Doctor)?,

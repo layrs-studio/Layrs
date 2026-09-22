@@ -69,6 +69,7 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
     let rendered = match cli.command {
         CliCommand::Help => unreachable!("handled above"),
         CliCommand::Remote { .. } => unreachable!("native remote handled above"),
+        CliCommand::Partial { .. } => unreachable!("partial checkout handled above"),
         CliCommand::LocalIdentity { .. } => {
             return Err(CliError::runtime(
                 "This command requires a native Layrs checkout.",

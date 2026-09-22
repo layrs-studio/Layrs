@@ -2,7 +2,10 @@
 use super::*;
 #[path = "policy_rules.rs"]
 mod rules;
-pub use rules::NativeInlinePolicyRules;
+pub use rules::{
+    NativeInlinePolicyRules, NativePolicyReplacement, NativePolicyRulesEntry,
+    NativePolicyRulesSnapshot,
+};
 
 const SCHEMA: &str = "layrs.policy-root-preview.v1";
 const MAX_PREVIEW: u64 = 256 * 1024;
@@ -37,7 +40,13 @@ fn store_root(workspace: &NativeWorkspace) -> RemoteResult<String> {
 }
 fn validate(preview: &NativePolicyPreview) -> RemoteResult<()> {
     if preview.schema_version
-        != if preview.inline_rules.is_some() {
+        != if preview
+            .inline_rules
+            .as_ref()
+            .is_some_and(|r| r.replacement.is_some())
+        {
+            rules::REPLACE_SCHEMA
+        } else if preview.inline_rules.is_some() {
             rules::SCHEMA
         } else {
             SCHEMA

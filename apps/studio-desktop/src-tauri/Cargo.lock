@@ -1713,6 +1713,7 @@ dependencies = [
 name = "layrs-client-core"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "fs2",
  "layrs-core",
