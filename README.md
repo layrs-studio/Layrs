@@ -30,12 +30,23 @@ are the local-first client surfaces.
 
 ## Common Commands
 
-Start the server and Studio Web:
+Start the current server and Studio Web with Node.js 22+ and Docker Desktop
+running Linux containers (Docker Compose 2.24.4+ and Buildx required):
 
 ```powershell
-pnpm install
-pnpm run dev
+npm run dev
 ```
+
+Open the HTTPS URL printed by the command (normally `https://localhost:19443`).
+It also prints the path to the generated administrator credentials. The first
+build takes several minutes; dependencies compile inside Docker, so no local
+Rust or pnpm installation is needed for this command. The browser requires
+explicit acceptance of the local certificate.
+
+`npm run dev:info` shows the connection details; `npm run dev:down` stops the
+services while preserving projects. This runs built images, without hot reload;
+rerun `npm run dev` after source changes. See the [local server guide](docs/development/local-server.md)
+for credentials, certificates, Desktop connection and troubleshooting.
 
 Use the CLI locally:
 

@@ -38,6 +38,16 @@ sous-processus et cache OS exclus ; compilation MSI concurrente, contenu
 répété, aucune calibration de débit ni borne mémoire générale revendiquée.
 [Mesure et empreintes des logs](measurements/partial-sync-memory-2026-09-23.json).
 
+## Complément — lancement local en une commande
+
+`npm run dev` démarre maintenant le serveur V3, PostgreSQL et le Web en HTTPS
+local avec administrateur généré et données persistantes. `dev:info` affiche
+les chemins de connexion ; `dev:down` arrête sans effacer les projets.
+Sept tests et recette réelle arrêt/reprise PASS sur Windows/Docker Linux.
+[Guide](../../development/local-server.md), [journal](journal/DEV-LAUNCHER.md),
+[mesure](measurements/local-dev-launcher-2026-09-23.json).
+Les limites fonctionnelles des huit plans restent celles de `REMAINING.md`.
+
 ## Checkpoint historique — 22 septembre 2026
 
 Projection éditable livrée et qualifiée : serveur `82c0254`, opérations locales
