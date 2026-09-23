@@ -20,8 +20,27 @@ visuel sera appliqué à toutes les surfaces, pas uniquement à l'écran illustr
 Les images sont visibles dans la conversation ; aucune image générée n'est
 utilisée comme fond ou remplacement d'une interface interactive.
 
-En attente du choix utilisateur avant implémentation, suivant la phase ideate
-du skill Product Design. Aucun fichier produit ni service modifié dans ce lot.
+L'utilisateur préfère la première direction mais demande de l'accorder à son
+logo existant avant implémentation. Nouvelle maquette proposée ; validation de
+la révision encore attendue. Aucun fichier produit ni service modifié dans ce lot.
+
+### Révision fondée sur la marque
+
+- Source utilisateur : `C:/Users/ALEXA/Downloads/Group 1.svg`, inspectée et copiée
+  sans modification dans `docs/design/layrs-brand/icon.svg`.
+- Wordmark : `layrs` en Audiowide, selon la référence fournie. Réserver cette
+  police à la marque ; interface en sans-serif lisible, code en monospace.
+- Couleurs originales du SVG : corail `#F43F5E`, ambre `#F59E0B`. Remplacer
+  les accents menthe par ces couleurs sur une base graphite. Le vert reste
+  réservé aux succès et ajouts dans les comparaisons.
+- Conserver la structure de la première proposition. Titre sobre « Changements »
+  sans serif, une seule action principale « Créer une capture », progression et
+  états lisibles, choix sombre/clair/système. Animations à implémenter ensuite.
+- [Maquette révisée](../../../design/layrs-brand/atelier-revised.png), produite
+  par ImageGen avec la première proposition et le logo utilisateur comme références.
+  Brief : même organisation, vraie identité Audiowide/corail/ambre, écran de
+  changements graphite, comparaison et retours discrets. Le logo de cette image
+  reste un rendu généré ; l'interface finale devra utiliser le SVG original.
 
 ## Diagnostic établi
 
@@ -114,7 +133,7 @@ Commit par lot cohérent validé, mise à jour de ce journal à chaque livraison
 
 ## Reprise immédiate
 
-Demander la direction 1/2/3 ou les ajustements souhaités. Le nombre correspond
-à l'ordre des trois images affichées dans la conversation, pas à une génération
-ultérieure. Après choix, charger le workflow image-to-code, adapter au dépôt
+Recueillir le retour sur la maquette révisée de la première direction, désormais
+accordée au logo fourni. Ne pas redemander de choisir entre les trois anciennes
+directions. Après validation, charger le workflow image-to-code, adapter au dépôt
 existant sans créer un projet de démonstration à la place du produit, commencer A.
