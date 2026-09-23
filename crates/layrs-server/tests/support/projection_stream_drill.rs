@@ -12,7 +12,12 @@ pub(super) fn run(
     let file_path = root.join("public/allowed.txt");
     let mut file = std::fs::File::create(&file_path).unwrap();
     let block = [0x5au8; 64 * 1024];
-    for _ in 0..1600 {
+    let mib = match std::env::var("LAYRS_TEST_SCOPED_MIB").as_deref() {
+        Ok("1024") => 1024,
+        Ok("100") | Err(_) => 100,
+        _ => panic!("LAYRS_TEST_SCOPED_MIB must be100 or1024"),
+    };
+    for _ in 0..mib * 16 {
         file.write_all(&block).unwrap();
     }
     file.sync_all().unwrap();
@@ -27,7 +32,7 @@ pub(super) fn run(
         .replacement
         .as_ref()
         .unwrap();
-    assert_eq!(expected.bytes, 100 * 1024 * 1024);
+    assert_eq!(expected.bytes, mib * 1024 * 1024);
     std::fs::write(&file_path, b"edit after large capture").unwrap();
     lose_response.store(true, Ordering::SeqCst);
     assert!(
@@ -119,6 +124,6 @@ pub(super) fn run(
             .is_empty()
     );
     eprintln!(
-        "HTTPS Store3 streaming: 100MiB exact upload, lost finalize/reopen/replay, preserved later edits, candidate without View advance PASS"
+        "HTTPS Store3 streaming: {mib}MiB exact upload, lost finalize/reopen/replay, preserved later edits, candidate without View advance PASS"
     );
 }

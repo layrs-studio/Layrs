@@ -3,6 +3,7 @@ import {mkdir,readFile,writeFile,unlink,stat} from "node:fs/promises";
 import {join} from "node:path";
 import {request as httpsRequest} from "node:https";
 import {launchNativeTauriDesktop} from "./fixtures/nativeTauriDesktop";
+import {fixtureHttp} from "./fixtures/nativeSharedClients";
 
 test.use({trace:"off",screenshot:"off",video:"off"});
 test("Desktop migrates, reserves hidden paths and publishes real partial edits",async({},testInfo)=>{
@@ -53,6 +54,7 @@ test("Desktop migrates, reserves hidden paths and publishes real partial edits",
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("editable initial bytes\n");
     await expect(stat(join(destination,"docs/readme.txt"))).rejects.toThrow();
     expect((await stat(join(fixture.workspaceRoot,"docs/readme.txt"))).isFile()).toBe(true);
+    const originalPartial=await desktop.invoke<{projection:{snapshot:{baseStepId:string}}}>("native_projection",{root:destination,request:{action:"status"}});
     const files=page.getByRole("region",{name:"Fichiers du projet",exact:true});
     await expect(files.locator("li").filter({hasText:"docs/readme.txt"})).toContainText("contenu interdit");
     for(const path of ["docs/readme.txt","DOCS/README.TXT","docs","docs/readme.txt/child"]){
@@ -113,5 +115,57 @@ test("Desktop migrates, reserves hidden paths and publishes real partial edits",
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("unpublished bytes to preserve for undo\n");
     await desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}});
     await expect(stat(join(destination,"docs/readme.txt"))).rejects.toThrow();
+    // Candidate/review integration uses the actual restricted account and server.
+    await page.getByRole("button",{name:"Envoyer la capture pour revue",exact:true}).click();
+    await expect(page.getByRole("status").filter({hasText:"Candidat reçu par le serveur"})).toBeVisible();
+    const reviews=page.getByRole("region",{name:"Revues des fichiers autorisés",exact:true});
+    await expect(reviews.getByLabel("Candidat à proposer",{exact:true})).not.toHaveValue("");
+    await reviews.getByLabel("Titre de la revue",{exact:true}).fill("Desktop partial review");
+    await reviews.getByRole("button",{name:"Proposer ce candidat",exact:true}).click();
+    await expect(reviews.getByRole("heading",{name:"Desktop partial review",exact:true})).toBeVisible();
+    await reviews.getByLabel("Commentaire",{exact:true}).fill("Only authorized paths in this change.");
+    await reviews.getByRole("button",{name:"Commenter",exact:true}).click();
+    await expect(reviews.getByText("Only authorized paths in this change.",{exact:true})).toBeVisible();
+    await expect(reviews.getByRole("button",{name:"Intégrer le candidat approuvé",exact:true})).toBeDisabled();
+    const list=await fixtureHttp(fixture,"GET",`/v3/spaces/${fixture.spaceId}/scoped-reviews?limit=50`);
+    const reviewId=list.data.reviews.find((review:{title:string})=>review.title==="Desktop partial review").reviewId;
+    const login=await fixtureHttp(fixture,"POST","/v3/auth/login",{login:fixture.accounts.bob.login,password:fixture.accounts.bob.password});
+    expect(login.status).toBe(200);
+    const approval=await fixtureHttp(fixture,"POST",`/v3/spaces/${fixture.spaceId}/scoped-reviews/${reviewId}/actions`,{idempotencyKey:"desktop-scoped-bob-approval",action:"approve",body:"",anchorPath:null,replyTo:null},login.data.access_token);
+    expect(approval.status).toBe(200);
+    await reviews.getByRole("button",{name:"Actualiser cette revue",exact:true}).click();
+    await reviews.getByRole("button",{name:"Intégrer le candidat approuvé",exact:true}).click();
+    await expect(reviews.getByRole("status")).toContainText("Candidat intégré");
+    const merge=page.getByRole("region",{name:"Fusion de la projection",exact:true});
+    await merge.getByRole("button",{name:"Préparer la fusion partielle",exact:true}).click();
+    await expect(merge.getByRole("status")).toContainText("Brouillon enregistré");
+    await merge.getByRole("button",{name:"Recharger le brouillon de fusion",exact:true}).click();
+    await merge.getByRole("button",{name:"Appliquer la fusion résolue",exact:true}).click();
+    await expect(merge.getByRole("status")).toContainText("Fusion appliquée");
+    expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("unpublished bytes to preserve for undo\n");
+    await mkdir(join(destination,"docs/movable"));
+    const partial=<T,>(action:Record<string,unknown>)=>desktop.invoke<T>("native_remote",{root:destination,request:{origin:fixture.origin,caPem:fixture.caPem,action}});
+    const state=await desktop.invoke<{projection:{generation:number}}>("native_projection",{root:destination,request:{action:"status"}});
+    const creation=await partial({action:"previewProjectionNamespace",expectedGeneration:state.projection.generation,mutation:{kind:"create",path:"docs/movable/file.txt"}});
+    await partial({action:"applyProjectionNamespace",preview:creation});
+    await page.getByRole("button",{name:"Actualiser la projection locale",exact:true}).click();
+    const directory=page.getByRole("region",{name:"Déplacement de dossier",exact:true});
+    await directory.getByLabel("Dossier source",{exact:true}).fill("docs/movable");
+    await directory.getByLabel("Dossier destination",{exact:true}).fill("docs/moved");
+    await directory.getByRole("button",{name:"Préparer le déplacement du dossier",exact:true}).click();
+    await directory.getByRole("button",{name:"Appliquer le déplacement du dossier",exact:true}).click();
+    await expect(page.getByRole("status").filter({hasText:"Dossier déplacé"})).toBeVisible();
+    expect(await readFile(join(destination,"docs/moved/file.txt"),"utf8")).toBe("");
+    await expect(stat(join(destination,"docs/movable"))).rejects.toThrow();
+    await merge.getByText("Restaurer une version publiée",{exact:true}).click();
+    await merge.getByLabel("Identifiant de la version publiée",{exact:true}).fill(originalPartial.projection.snapshot.baseStepId);
+    await merge.getByLabel("Chemins historiques à restaurer, un par ligne",{exact:true}).fill("docs/allowed.txt");
+    await merge.getByRole("button",{name:"Préparer la restauration historique",exact:true}).click();
+    await expect(merge.getByRole("status")).toContainText("Aperçu historique enregistré");
+    await merge.getByRole("button",{name:"Appliquer la restauration historique",exact:true}).click();
+    await expect(merge.getByRole("status")).toContainText("Version historique restaurée");
+    expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("editable initial bytes\n");
+    expect(await readFile(join(destination,"docs/moved/file.txt"),"utf8")).toBe("");
+    await desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}});
   }finally{await desktop.dispose();}
 });

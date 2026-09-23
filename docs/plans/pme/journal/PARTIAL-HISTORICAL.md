@@ -21,8 +21,8 @@ Desktop : formulaire « Restaurer une version publiée » puis aperçu/applicati
 Validation HTTPS/PostgreSQL : recette complète1PASS,0ignoré,121,58s dans
 `D:/Layrs/tmp/historical-https-20260923.log`. Sélection interdite refusée,
 restauration de toutes les feuilles modifiables, base préservée, rejeu exact et
-publication. Clippy client/store/CLI et TypeScript PASS. Validation Desktop de
-sélection ciblée et conservation d'un déplacement parallèle en cours.
+publication. Clippy client/store/CLI et TypeScript PASS. Validation Desktop réelle
+53,3sPASS : sélection ciblée et conservation d'un déplacement parallèle.
 
 Limites : les chemins historiques inconnus de la projection courante ne sont
 pas créés automatiquement ; ils exigent une observation de destination actuelle.

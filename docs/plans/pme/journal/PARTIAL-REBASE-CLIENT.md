@@ -30,7 +30,7 @@ chaque conflit et application, puis publication de la nouvelle capture.
 - Trois tests client : textes compatibles/incompatibles, absence/fichier vide,
   modification/suppression, binaires et dépassement du budget.
 - 73 tests Store3 par l'implémenteur ; Clippy client/CLI/store sans avertissement.
-- TypeScript Desktop : PASS. Recette réelle Desktop et tests Linux en cours.
+- TypeScript Desktop : PASS. Recette réelle Desktop53,3sPASS et Linux74PASS.
 
 ## Limites restantes
 

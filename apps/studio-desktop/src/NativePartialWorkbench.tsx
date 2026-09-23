@@ -2,23 +2,30 @@ import {useEffect,useRef,useState} from "react";
 import {NativeProjectFiles,nativeProjectionReady,projectionStoreFiles,projectionCaptureMatches} from "@layrs/ui";
 import type {NativeProjectionStatus,NativeCapturedProjectionPatch,NativeNamespacePreviewRequest} from "@layrs/ui";
 import {nativeProjection,nativeRemote} from "./tauri";
+import {NativeScopedReviews} from "./NativeScopedReviews";
+import {NativePartialMerge} from "./NativePartialMerge";
 type NamespacePreview={mutation:{kind:"create"|"rename"|"move";path:string;source?:string};local:{projectionGeneration:number}};
 type RestorePreview={local:{before:Record<string,unknown>;after:Record<string,unknown>;operationId:string}};
+type DirectoryPreview={local:{source:string;destination:string;sourceFiles:Record<string,unknown>}};
 
 export function NativePartialWorkbench({root,onClose}:{root:string;onClose:()=>void}){
   const [data,setData]=useState<NativeProjectionStatus|null>(null),[patch,setPatch]=useState<NativeCapturedProjectionPatch|null>(null);
   const [preview,setPreview]=useState<NamespacePreview|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
   const [layer,setLayer]=useState(""),[ca,setCa]=useState("");
+  const [candidateId,setCandidateId]=useState(""),[directorySource,setDirectorySource]=useState(""),[directoryDestination,setDirectoryDestination]=useState(""),[directoryPreview,setDirectoryPreview]=useState<DirectoryPreview|null>(null);
   const [history,setHistory]=useState<NativeCapturedProjectionPatch[]>([]),[restorePreview,setRestorePreview]=useState<RestorePreview|null>(null),[restoreSequence,setRestoreSequence]=useState(""),[restorePaths,setRestorePaths]=useState(""),[lastRestore,setLastRestore]=useState("");
-  const generation=useRef(0),active=useRef(false);
+  const generation=useRef(0),active=useRef(false),queue=useRef<Promise<void>>(Promise.resolve());
+  useEffect(()=>{setCandidateId("");setDirectorySource("");setDirectoryDestination("");setDirectoryPreview(null);},[root]);
   async function perform(work:(revision:number)=>Promise<void>){
     if(active.current)return;const revision=generation.current;active.current=true;setBusy(true);setError("");setNotice("");
-    try{await work(revision);}catch(e){if(revision===generation.current){setData(null);setPreview(null);setRestorePreview(null);setError(String(e));}}
-    finally{if(revision===generation.current){active.current=false;setBusy(false);}}
+    const previous=queue.current;let release!:()=>void;queue.current=new Promise<void>(resolve=>{release=resolve;});
+    await previous;
+    try{if(revision===generation.current)await work(revision);}catch(e){if(revision===generation.current){setData(null);setPreview(null);setRestorePreview(null);setDirectoryPreview(null);setError(String(e));}}
+    finally{release();if(revision===generation.current){active.current=false;setBusy(false);}}
   }
   function acceptStatus(next:NativeProjectionStatus){projectionStoreFiles(next);setData(next);setPatch(next.latestCapture&&projectionCaptureMatches(next,next.latestCapture)?next.latestCapture:null);if(next.pendingPublication)setLayer(next.pendingPublication.layerId);}
   async function refresh(){await perform(async revision=>{const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});if(revision===generation.current){acceptStatus(next);setPreview(null);}});}
-  async function resume(action:"resumeInstallation"|"resumeNamespace"|"resumeRefresh"|"resumeRestore"){await perform(async revision=>{await nativeProjection(root,{action});const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});if(revision===generation.current){acceptStatus(next);setPreview(null);setRestorePreview(null);setNotice("Opération locale reprise et vérifiée.");}});}
+  async function resume(action:"resumeInstallation"|"resumeNamespace"|"resumeRefresh"|"resumeRestore"|"resumeRebase"){await perform(async revision=>{await nativeProjection(root,{action});const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});if(revision===generation.current){acceptStatus(next);setPreview(null);setRestorePreview(null);setNotice("Opération locale reprise et vérifiée.");}});}
   useEffect(()=>{generation.current++;active.current=false;setData(null);setPatch(null);setPreview(null);setRestorePreview(null);setHistory([]);setRestoreSequence("");setRestorePaths("");setLastRestore("");setLayer("");setCa("");setError("");void refresh();return()=>{generation.current++;};},[root]);
   let files=null;
   try{if(data)files=projectionStoreFiles(data);}catch{/* A malformed status remains non-writable. */}
@@ -63,26 +70,39 @@ export function NativePartialWorkbench({root,onClose}:{root:string;onClose:()=>v
     if(!projectionCaptureMatches(data,result))throw new Error("Capture incohérente avec la projection ouverte.");
     if(revision===generation.current){setPatch(result);setNotice("Modifications autorisées capturées localement. Aucune publication n’a été effectuée.");setPreview(null);}
   });}
-  async function publish(){if(!data||!patch||!ready||data.capabilities?.publish!==true||!layer.trim())return;await perform(async revision=>{
-    const result=await nativeRemote<{receipt:{receipt:{status:string;rejections?:{code:string}[]}};pendingLocalAcceptance:boolean}>(root,{origin:data.identity.origin,caPem:ca||null,action:{action:"publishProjection",patchId:patch.sequence,layerId:layer.trim()}});
+  async function publish(candidate=false){if(!data||!patch||!ready||data.capabilities?.publish!==true||!layer.trim())return;await perform(async revision=>{
+    const result=await nativeRemote<{receipt:{candidateId?:string;receipt:{status:string;rejections?:{code:string}[]}};pendingLocalAcceptance:boolean}>(root,{origin:data.identity.origin,caPem:ca||null,action:{action:candidate?"publishProjectionCandidate":"publishProjection",patchId:patch.sequence,layerId:layer.trim()}});
     const receipt=result.receipt?.receipt;
     if(receipt?.status!=="applied")throw new Error(`Publication refusée : ${receipt?.rejections?.map(r=>r.code).join(", ")||receipt?.status||"reçu absent"}. La capture locale est conservée.`);
     if(revision!==generation.current)return;
+    if(candidate&&result.receipt.candidateId)setCandidateId(result.receipt.candidateId);
     setNotice(result.pendingLocalAcceptance ? "Publication confirmée par le serveur ; l’acceptation locale reste en attente. Réessayez la même capture et la même cible pour terminer." : "Publication confirmée par le serveur.");
+    if(candidate)setNotice("Candidat reçu par le serveur. La branche reste à sa version actuelle ; proposez une revue pour demander son intégration.");
     try{const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});if(revision===generation.current){acceptStatus(next);setPreview(null);}}
     catch{if(revision===generation.current){setData(null);setNotice("Publication confirmée ; la relecture de l’état local est indisponible. Actualisez la projection avant de poursuivre.");}}
+  });}
+  async function prepareDirectory(){if(!data||!ready)return;await perform(async revision=>{
+    const result=await nativeRemote<DirectoryPreview>(root,{origin:data.identity.origin,caPem:ca||null,action:{action:"previewProjectionDirectoryMove",expectedGeneration:data.projection.generation,source:directorySource.trim(),destination:directoryDestination.trim()}});
+    const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});
+    if(revision===generation.current){acceptStatus(next);setDirectoryPreview(result);}
+  });}
+  async function applyDirectory(){if(!data||!ready||!directoryPreview)return;await perform(async revision=>{
+    const result=await nativeRemote<NativeCapturedProjectionPatch>(root,{origin:data.identity.origin,caPem:ca||null,action:{action:"applyProjectionDirectoryMove",preview:directoryPreview}});
+    const next=await nativeProjection<NativeProjectionStatus>(root,{action:"status"});
+    if(!projectionCaptureMatches(next,result))throw new Error("La capture du dossier ne correspond plus à la projection.");
+    if(revision===generation.current){acceptStatus(next);setDirectoryPreview(null);setPatch(result);setNotice("Dossier déplacé et capturé localement.");}
   });}
   return <main className="native-workbench"><header><div><p className="native-eyebrow">LAYRS · PROJECTION PARTIELLE</p><h1>Fichiers autorisés de votre projet</h1><code>{root}</code></div><button disabled={busy} onClick={onClose}>Changer de dossier</button></header>
     <p>Les noms interdits restent visibles avec un cadenas. Leur contenu n’est pas téléchargé. Une ancienne copie locale conservée ne constitue pas un droit d’accès au serveur.</p>
     <button disabled={busy} onClick={()=>void refresh()}>Actualiser la projection locale</button>
-    <details><summary>Reprendre une opération locale interrompue</summary><p>Choisissez l’opération qui était en cours au moment de la coupure. Le journal local doit la confirmer avant toute reprise.</p><button disabled={busy} onClick={()=>void resume("resumeInstallation")}>Reprendre le clonage local</button><button disabled={busy} onClick={()=>void resume("resumeNamespace")}>Reprendre une création ou un déplacement</button><button disabled={busy} onClick={()=>void resume("resumeRefresh")}>Reprendre la réception locale</button><button disabled={busy} onClick={()=>void resume("resumeRestore")}>Reprendre la restauration locale</button></details>
+    <details><summary>Reprendre une opération locale interrompue</summary><p>Choisissez l’opération qui était en cours au moment de la coupure. Le journal local doit la confirmer avant toute reprise.</p><button disabled={busy} onClick={()=>void resume("resumeInstallation")}>Reprendre le clonage local</button><button disabled={busy} onClick={()=>void resume("resumeNamespace")}>Reprendre une création ou un déplacement</button><button disabled={busy} onClick={()=>void resume("resumeRefresh")}>Reprendre la réception locale</button><button disabled={busy} onClick={()=>void resume("resumeRestore")}>Reprendre la restauration locale</button><button disabled={busy} onClick={()=>void resume("resumeRebase")}>Reprendre la fusion locale</button></details>
     {data&&<p>Projet <code>{data.identity.spaceId}</code> · Compte <code>{data.identity.principalId}</code> · Serveur {data.identity.origin}</p>}
     {data?.needsRepair&&<p role="alert">Une opération interrompue nécessite une reprise par le moteur. Les modifications sont bloquées.</p>}
     <NativeProjectFiles scope={`${root}:${data?.identity.principalId||""}`} snapshot={files} busy={busy} onPreviewMutation={data?.capabilities?.namespace===true?namespace:undefined}/>
     <section aria-label="Actions de la projection"><button disabled={busy||!ready||data?.capabilities?.capture!==true} onClick={()=>void capture()}>Capturer les modifications autorisées</button>
       {data?.capabilities?.capture!==true&&<p>La capture n’est pas disponible dans cet état du moteur.</p>}
       {patch&&<section aria-label="Capture partielle locale"><p>Capture {patch.sequence} · <code>{patch.digest}</code></p><ul>{patch.changes.slice(0,1000).map(change=><li key={change.path}><code>{change.path}</code> — {change.expected===null?"Ajout":change.replacement===null?"Suppression":"Modification"}</li>)}</ul>{!patch.changes.length&&<p>Aucune modification capturée.</p>}</section>}
-      {data?.capabilities?.publish===true&&<><label>Layer distant cible<input value={layer} disabled={busy||!!data.pendingPublication} onChange={e=>setLayer(e.target.value)} placeholder="layer:…"/></label><label>Autorité de certification privée PEM<textarea value={ca} disabled={busy} onChange={e=>setCa(e.target.value)}/></label><p>Après une réponse perdue, conservez cette capture et la même cible pour retrouver le reçu exact.</p><button disabled={busy||!ready||!patch||!layer.trim()} onClick={()=>void publish()}>Publier la capture partielle</button></>}
+      {data?.capabilities?.publish===true&&<><label>Layer distant cible<input value={layer} disabled={busy||!!data.pendingPublication} onChange={e=>setLayer(e.target.value)} placeholder="layer:…"/></label><label>Autorité de certification privée PEM<textarea value={ca} disabled={busy} onChange={e=>setCa(e.target.value)}/></label><p>Après une réponse perdue, conservez cette capture et la même cible pour retrouver le reçu exact.</p><button disabled={busy||!ready||!patch||!layer.trim()||data.pendingPublication?.intent==="candidate"} onClick={()=>void publish()}>Publier la capture partielle</button></>}
       {data?.capabilities?.publish!==true&&<p>La publication partielle n’est pas disponible dans cette connexion.</p>}
       {data?.pendingPublication&&<p role="status">Une publication est en attente : rejouez la capture {data.pendingPublication.sequence} sur sa cible enregistrée.</p>}
       {data?.capabilities.receive===true&&<button disabled={busy||!ready||!layer.trim()||!!data.pendingPublication} onClick={()=>void receive()}>Recevoir la projection distante</button>}
@@ -90,6 +110,9 @@ export function NativePartialWorkbench({root,onClose}:{root:string;onClose:()=>v
     {preview!==null&&<section aria-label="Aperçu de modification des chemins"><h2>{preview.mutation.kind==="create"?"Créer un fichier vide":preview.mutation.kind==="rename"?"Renommer le fichier":"Déplacer le fichier"}</h2>{preview.mutation.source&&<p>Source : <code>{preview.mutation.source}</code></p>}<p>Destination : <code>{preview.mutation.path}</code></p><p>Les droits et les fichiers locaux sont vérifiés à nouveau avant application.</p><button disabled={busy||!ready||data?.capabilities.namespace!==true} onClick={()=>void applyNamespace()}>Appliquer ce changement de chemin</button></section>}
     <details><summary>Historique et restauration locale</summary><button disabled={busy||!data} onClick={()=>void loadHistory()}>Charger les 50 dernières captures</button><ul>{history.map(item=><li key={item.sequence}><button disabled={busy} onClick={()=>{setRestoreSequence(String(item.sequence));setRestorePaths(item.changes.map(change=>change.path).join("\n"));setRestorePreview(null);}}>Capture {item.sequence} · {item.changes.length} chemin(s)</button></li>)}</ul><p>Choisissez les fichiers d’une capture locale à rétablir. Les droits actuels sont vérifiés ; les autres fichiers restent inchangés.</p><label>Numéro de capture à restaurer<input value={restoreSequence} disabled={busy} onChange={e=>{setRestoreSequence(e.target.value);setRestorePreview(null);}}/></label><label>Chemins à restaurer, un par ligne<textarea value={restorePaths} disabled={busy} onChange={e=>{setRestorePaths(e.target.value);setRestorePreview(null);}}/></label><button disabled={busy||!ready||data?.capabilities.restore!==true||!restoreSequence||!restorePaths.trim()} onClick={()=>void prepareRestore()}>Préparer la restauration locale</button>{lastRestore&&<button disabled={busy||!ready||data?.capabilities.restore!==true} onClick={()=>void prepareRestore(true)}>Préparer l’annulation de la dernière restauration</button>}</details>
     {restorePreview&&<section aria-label="Aperçu de restauration locale"><h2>Fichiers à restaurer</h2><ul>{Object.entries(restorePreview.local.after).map(([path,target])=><li key={path}><code>{path}</code> — {target===null?"Suppression locale":restorePreview.local.before[path]===null?"Création locale":"Remplacement local"}</li>)}</ul><p>Les octets remplacés sont conservés dans le journal pour permettre l’annulation.</p><button disabled={busy||!ready||data?.capabilities.restore!==true} onClick={()=>void applyRestore()}>Appliquer la restauration locale</button></section>}
+    {data&&<section aria-label="Déplacement de dossier"><h2>Déplacer un dossier</h2><label>Dossier source<input value={directorySource} disabled={busy} onChange={e=>{setDirectorySource(e.target.value);setDirectoryPreview(null);}}/></label><label>Dossier destination<input value={directoryDestination} disabled={busy} onChange={e=>{setDirectoryDestination(e.target.value);setDirectoryPreview(null);}}/></label><button disabled={busy||!ready||data.capabilities.namespace!==true||!directorySource.trim()||!directoryDestination.trim()} onClick={()=>void prepareDirectory()}>Préparer le déplacement du dossier</button>{directoryPreview&&<><p>{directoryPreview.local.source} → {directoryPreview.local.destination} · {Object.keys(directoryPreview.local.sourceFiles).length} fichier(s)</p><button disabled={busy||!ready} onClick={()=>void applyDirectory()}>Appliquer le déplacement du dossier</button></>}</section>}
+    {data&&<NativePartialMerge key={`${root}:merge`} root={root} origin={data.identity.origin} ca={ca} layer={layer} sequence={patch?.sequence??null} disabled={busy||!ready||!!data.pendingPublication} onApplied={refresh}/>}
+    {data&&<><button disabled={busy||!ready||!patch||!layer.trim()||data.capabilities.publish!==true||data.pendingPublication?.intent==="advance"} onClick={()=>void publish(true)}>Envoyer la capture pour revue</button><NativeScopedReviews key={`${root}:${data.identity.principalId}`} root={root} origin={data.identity.origin} ca={ca} disabled={busy||!ready} candidateId={candidateId}/></>}
     {busy&&<p role="status">Opération en cours…</p>}{notice&&<p role="status">{notice}</p>}{error&&<p role="alert">{error}</p>}
   </main>;
 }
