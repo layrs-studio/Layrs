@@ -7,6 +7,7 @@ impl PgTransactionStore {
         request: &SyncTransactionRequest,
         prepared: Prepared,
         next_sequence: u64,
+        scope: Option<&super::super::path_patch_scope::ScopedPatch>,
     ) -> V3StoreResult<PersistedReceipt> {
         let catalog = PgCatalogStore::new(self.repository.clone());
         catalog
@@ -313,6 +314,26 @@ impl PgTransactionStore {
         sqlx::query("INSERT INTO sync_transactions(transaction_id,space_id,client_id,idempotency_key,request_digest,principal_id,authorization_snapshot_id,authorization_epoch,resulting_authorization_epoch,receipt_canonical_jcs,receipt_digest,first_event_sequence,last_event_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$13,$9,$10,$11,$12)")
             .bind(transaction_id.as_str()).bind(request.space_id.as_str()).bind(request.client_id.as_str()).bind(request.idempotency_key.as_str()).bind(request.request_digest.as_str()).bind(principal.principal_id.as_str()).bind(snapshot.authorization_snapshot_id.as_str()).bind(i64_from_u64(snapshot.authorization_epoch)?).bind(std::str::from_utf8(&canonical_jcs).map_err(|e|V3StoreError::Backend(e.to_string()))?).bind(receipt.computed_storage_digest().map_err(json_error)?.as_str()).bind(receipt.first_event_sequence.0.map(|v|v as i64)).bind(receipt.last_event_sequence.0.map(|v|v as i64)).bind(i64_from_u64(receipt.resulting_authorization_epoch)?).execute(&mut **tx).await.map_err(pg_error)?;
         if receipt.status == ReceiptStatus::Applied {
+            if let Some(candidate) = scope.and_then(|scope| scope.candidate.as_ref()) {
+                let source = &candidate.source_request;
+                let step = request
+                    .steps
+                    .first()
+                    .ok_or(V3StoreError::IdentityMismatch)?;
+                if request.steps.len() != 1
+                    || request.view_mutation.is_some()
+                    || !receipt.accepted_step_ids.iter().all(|id| id == step.id())
+                {
+                    return Err(V3StoreError::IdentityMismatch);
+                }
+                let changed_paths: Vec<_> =
+                    source.changes.iter().map(|change| &change.path).collect();
+                sqlx::query("INSERT INTO layrs_collaboration.scoped_patch_candidates(space_id,candidate_id,candidate_step_id,candidate_root_tree_id,source_request_digest,capture_digest,author_principal_id,layer_id,base_step_id,base_root_tree_id,expected_view_id,expected_policy_set_id,expected_authorization_epoch,changed_paths_jcs,transaction_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+                    .bind(source.space_id.as_str()).bind(&candidate.candidate_id).bind(step.id().as_str()).bind(step.root_tree_id().as_str()).bind(source.request_digest.as_str()).bind(source.capture_digest.as_str()).bind(principal.principal_id.as_str()).bind(source.layer_id.as_str()).bind(source.base_step_id.as_str()).bind(source.base_root_tree_id.as_str()).bind(source.expected_repository_view_id.as_str()).bind(source.expected_policy_set_id.as_str()).bind(i64_from_u64(source.expected_authorization_epoch)?).bind(jcs(&changed_paths)?).bind(transaction_id.as_str())
+                    .execute(&mut **tx).await.map_err(pg_error)?;
+            }
+        }
+        if receipt.status == ReceiptStatus::Applied {
             super::super::transaction_products::install_layer_definitions(
                 tx,
                 &request.space_id,
@@ -320,9 +341,23 @@ impl PgTransactionStore {
                 &transaction_id,
             )
             .await?;
-            super::super::PgCollaborationStore::new(self.repository.clone())
-                .record_review_integrations(tx, principal, &receipt)
-                .await?;
+            if scope.and_then(|scope| scope.integration.as_ref()).is_none() {
+                super::super::PgCollaborationStore::new(self.repository.clone())
+                    .record_review_integrations(tx, principal, &receipt)
+                    .await?;
+            }
+            if let Some(binding) = scope.and_then(|scope| scope.integration.as_ref()) {
+                super::super::PgCollaborationStore::new(self.repository.clone())
+                    .record_scoped_integration(
+                        tx,
+                        principal,
+                        &prepared.authority,
+                        &binding.review_id,
+                        &binding.candidate_id,
+                        &receipt,
+                    )
+                    .await?;
+            }
         }
         if let Some(result) = receipt
             .view_result

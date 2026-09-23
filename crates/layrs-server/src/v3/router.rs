@@ -18,6 +18,11 @@ pub fn router(state: V3HttpState) -> Router {
             "/v3/spaces/:space_id/path-patches",
             post(endpoints::submit_path_patch),
         )
+        .route("/v3/spaces/:space_id/path-patches/scoped", post(endpoints::begin_scoped_patch))
+        .route("/v3/spaces/:space_id/path-patches/scoped/:session_id", get(endpoints::scoped_patch_progress))
+        .route("/v3/spaces/:space_id/path-patches/scoped/:session_id/files/:file_index/chunks/:ordinal", put(endpoints::upload_scoped_patch_chunk))
+        .route("/v3/spaces/:space_id/path-patches/scoped/:session_id/finalize", post(endpoints::finalize_scoped_patch))
+        .route("/v3/spaces/:space_id/scoped-reviews/:review_id/integrate", post(endpoints::integrate_scoped_review))
         .route(
             "/v3/spaces/:space_id/projection/access",
             post(endpoints::projection_access),

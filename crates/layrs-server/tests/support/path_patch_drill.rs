@@ -4,6 +4,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 mod publication;
 #[path = "projection_refresh_drill.rs"]
 mod refresh;
+#[path = "path_patch_scoped_drill.rs"]
+mod scoped;
 #[path = "path_patch_security_drill.rs"]
 mod security;
 
@@ -131,6 +133,7 @@ pub(super) fn run(
         "full reader must refuse format3"
     );
     let old = read.file_id(step, "public/allowed.txt");
+    scoped::run(reader, read, &base, step, &old);
     let migration_root = clone_root
         .parent()
         .unwrap()
@@ -306,6 +309,7 @@ pub(super) fn run(
         admin_http,
         lose_response,
     );
+    scoped::review_integration(reader, read, admin_http, &patch.request.layer_id);
     eprintln!(
         "HTTPS scoped file patches: edit/create, hidden preservation/refusal, supplied-bytes proof, idempotency and stale View PASS"
     );

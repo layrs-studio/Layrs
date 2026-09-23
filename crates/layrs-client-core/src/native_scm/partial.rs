@@ -114,8 +114,16 @@ pub fn execute_projection(
         ProjectionAction::Status => {
             let pending = store.pending_publication().map_err(|e| e.to_string())?;
             let pending_info = pending.as_ref().map(|record| {
-                let submission:layrs_sync::v3::PathPatchSubmission=serde_json::from_slice(&record.request_bytes).map_err(|e|e.to_string())?;
-                Ok::<_,String>(json!({"sequence":record.sequence,"layerId":submission.request.layer_id,"requestDigest":record.request_digest,"receiptRecorded":record.receipt_bytes.is_some()}))
+                let document: Value=serde_json::from_slice(&record.request_bytes).map_err(|e|e.to_string())?;
+                let (layer, intent) = if document.get("request").is_some() {
+                    let submission:layrs_sync::v3::PathPatchSubmission=serde_json::from_value(document).map_err(|e|e.to_string())?;
+                    (submission.request.layer_id, "advance")
+                } else {
+                    let request:layrs_sync::v3::ScopedPathPatchRequest=serde_json::from_value(document).map_err(|e|e.to_string())?;
+                    request.validate().map_err(|e|e.to_string())?;
+                    (request.layer_id, if request.intent==layrs_sync::v3::ScopedPathPatchIntent::Candidate {"candidate"} else {"advance"})
+                };
+                Ok::<_,String>(json!({"sequence":record.sequence,"layerId":layer,"intent":intent,"requestDigest":record.request_digest,"receiptRecorded":record.receipt_bytes.is_some()}))
             }).transpose()?;
             let latest = match &pending {
                 Some(record) => Some(

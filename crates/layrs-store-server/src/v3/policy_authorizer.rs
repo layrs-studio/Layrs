@@ -23,32 +23,13 @@ impl PgPolicyAuthorizer {
     pub fn new(pool: PgPool, cas: Arc<dyn CatalogedCas>) -> Self {
         Self { pool, cas }
     }
-}
 
-#[async_trait]
-impl PolicyAuthorizer for PgPolicyAuthorizer {
-    async fn authorize(&self, check: &AuthorizationCheck) -> V3StoreResult<AuthorizationDecision> {
-        let row=sqlx::query("SELECT s.authorization_epoch,s.current_policy_set_id,p.status AS principal_status,wm.state AS membership_state,s.lifecycle_state,d.status AS deployment_status FROM principals p JOIN spaces s ON s.space_id=$2 JOIN workspaces w ON w.workspace_id=s.workspace_id AND w.deployment_id=p.deployment_id JOIN deployments d ON d.deployment_id=p.deployment_id JOIN workspace_memberships wm ON wm.workspace_id=w.workspace_id AND wm.principal_id=p.principal_id WHERE p.principal_id=$1 AND p.actor_id=$3 AND p.deployment_id=$4 AND p.subject_digest=$5")
-            .bind(check.principal.principal_id.as_str()).bind(check.target.space_id().as_str()).bind(check.principal.actor_id.as_str()).bind(&check.principal.deployment_id).bind(&check.principal.subject_digest).fetch_optional(&self.pool).await.map_err(pg_error)?;
-        let Some(row) = row else {
-            return Ok(AuthorizationDecision::deny("membership_not_active"));
-        };
-        if row.get::<i64, _>("authorization_epoch")
-            != i64::try_from(check.authorization_epoch)
-                .map_err(|_| V3StoreError::InvalidCapability)?
-            || row.get::<String, _>("current_policy_set_id") != check.policy_set_id.as_str()
-        {
-            return Err(V3StoreError::AuthorizationEpochChanged);
-        }
-        if row.get::<String, _>("principal_status") != "active"
-            || row.get::<String, _>("membership_state") != "active"
-            || row.get::<String, _>("lifecycle_state") != "ready"
-            || row.get::<String, _>("deployment_status") != "ready"
-        {
-            return Ok(AuthorizationDecision::deny("identity_or_space_inactive"));
-        }
-        let space = check.target.space_id();
-        let descriptor = load_space_descriptor(&self.pool, space, &check.policy_set_id).await?;
+    async fn rules(
+        &self,
+        space: &layrs_core::scm::SpaceId,
+        policy_set_id: &layrs_core::scm::ObjectId,
+    ) -> V3StoreResult<Vec<NativePolicyRules>> {
+        let descriptor = load_space_descriptor(&self.pool, space, policy_set_id).await?;
         if descriptor.kind != ObjectKind::PolicySet {
             return Err(V3StoreError::IdentityMismatch);
         }
@@ -56,11 +37,11 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
         let set: PolicySet =
             serde_json::from_slice(&bytes).map_err(|_| V3StoreError::InvalidCapability)?;
         if set.space_id != *space
-            || set.policy_set_id != check.policy_set_id
+            || set.policy_set_id != *policy_set_id
             || set
                 .computed_id()
                 .map_err(|_| V3StoreError::IdentityMismatch)?
-                != check.policy_set_id
+                != *policy_set_id
             || set.policy_versions.len() > 32
         {
             return Err(V3StoreError::IdentityMismatch);
@@ -93,10 +74,37 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
                 return Err(V3StoreError::IdentityMismatch);
             }
             let bytes = read_canonical_object(self.cas.as_ref(), &descriptor, 1024 * 1024).await?;
-            let rules: NativePolicyRules =
-                serde_json::from_slice(&bytes).map_err(|_| V3StoreError::InvalidCapability)?;
-            content_rules.push(rules);
+            content_rules
+                .push(serde_json::from_slice(&bytes).map_err(|_| V3StoreError::InvalidCapability)?);
         }
+        Ok(content_rules)
+    }
+}
+
+#[async_trait]
+impl PolicyAuthorizer for PgPolicyAuthorizer {
+    async fn authorize(&self, check: &AuthorizationCheck) -> V3StoreResult<AuthorizationDecision> {
+        let row=sqlx::query("SELECT s.authorization_epoch,s.current_policy_set_id,p.status AS principal_status,wm.state AS membership_state,s.lifecycle_state,d.status AS deployment_status FROM principals p JOIN spaces s ON s.space_id=$2 JOIN workspaces w ON w.workspace_id=s.workspace_id AND w.deployment_id=p.deployment_id JOIN deployments d ON d.deployment_id=p.deployment_id JOIN workspace_memberships wm ON wm.workspace_id=w.workspace_id AND wm.principal_id=p.principal_id WHERE p.principal_id=$1 AND p.actor_id=$3 AND p.deployment_id=$4 AND p.subject_digest=$5")
+            .bind(check.principal.principal_id.as_str()).bind(check.target.space_id().as_str()).bind(check.principal.actor_id.as_str()).bind(&check.principal.deployment_id).bind(&check.principal.subject_digest).fetch_optional(&self.pool).await.map_err(pg_error)?;
+        let Some(row) = row else {
+            return Ok(AuthorizationDecision::deny("membership_not_active"));
+        };
+        if row.get::<i64, _>("authorization_epoch")
+            != i64::try_from(check.authorization_epoch)
+                .map_err(|_| V3StoreError::InvalidCapability)?
+            || row.get::<String, _>("current_policy_set_id") != check.policy_set_id.as_str()
+        {
+            return Err(V3StoreError::AuthorizationEpochChanged);
+        }
+        if row.get::<String, _>("principal_status") != "active"
+            || row.get::<String, _>("membership_state") != "active"
+            || row.get::<String, _>("lifecycle_state") != "ready"
+            || row.get::<String, _>("deployment_status") != "ready"
+        {
+            return Ok(AuthorizationDecision::deny("identity_or_space_inactive"));
+        }
+        let space = check.target.space_id();
+        let content_rules = self.rules(space, &check.policy_set_id).await?;
         let allowed = match action_grants(check, &content_rules)? {
             Some(RuleEffect::Deny) => {
                 return Ok(AuthorizationDecision::deny("explicit_policy_deny"));
@@ -116,7 +124,11 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
         }
         if restricted {
             let content_allowed = match check.action {
-                V3Action::ReadProjection | V3Action::ScopedPathWrite => true,
+                V3Action::ReadProjection
+                | V3Action::ScopedPathWrite
+                | V3Action::ScopedReviewRead
+                | V3Action::ScopedReviewWrite
+                | V3Action::ScopedReviewApprove => true,
                 V3Action::Bootstrap | V3Action::PlanFetch | V3Action::ReadEvents => true,
                 V3Action::FetchObject => match &check.target {
                     AuthorizationTarget::Space(_) => true, // Envelope check only; no bytes.
@@ -152,6 +164,64 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
         decision.content_restricted = restricted;
         Ok(decision)
     }
+
+    async fn read_visibility_fingerprint(
+        &self,
+        check: &AuthorizationCheck,
+    ) -> V3StoreResult<Option<String>> {
+        let decision = self.authorize(check).await?;
+        if !decision.allowed || !decision.content_restricted {
+            return Ok(None);
+        }
+        let rules = self
+            .rules(check.target.space_id(), &check.policy_set_id)
+            .await?;
+        Ok(read_visibility_fingerprint(
+            &rules,
+            &check.principal.principal_id,
+        ))
+    }
+}
+
+fn read_visibility_fingerprint(
+    rules: &[NativePolicyRules],
+    principal: &layrs_sync::v3::PrincipalId,
+) -> Option<String> {
+    let mut footprints = Vec::new();
+    for rule in rules {
+        match rule {
+            NativePolicyRules::V1(_) => {}
+            NativePolicyRules::V2(policy) => {
+                for entry in &policy.content_policies {
+                    if entry.principal_ids.contains(principal) {
+                        footprints.push(serde_json::json!({"kind":"v2", "default":entry.default, "rules":entry.rules}));
+                    }
+                }
+            }
+            NativePolicyRules::V3(policy) => {
+                for entry in &policy.path_policies {
+                    if entry.principal_ids.contains(principal) {
+                        footprints.push(serde_json::json!({"kind":"v3", "read":entry.read}));
+                    }
+                }
+            }
+        }
+    }
+    if footprints.is_empty() {
+        return None;
+    }
+    let mut canonical: Vec<Vec<u8>> = footprints
+        .iter()
+        .map(|footprint| serde_jcs::to_vec(footprint).ok())
+        .collect::<Option<_>>()?;
+    canonical.sort();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"layrs-scoped-review-read-footprint-v1\0");
+    for item in canonical {
+        hasher.update(&(item.len() as u64).to_be_bytes());
+        hasher.update(&item);
+    }
+    Some(format!("blake3:{}", hasher.finalize().to_hex()))
 }
 
 fn action_grants(

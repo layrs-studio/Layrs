@@ -628,8 +628,14 @@ pub use projection_namespace::{
     NativeProjectionNamespaceMutation, NativeProjectionNamespacePreview,
 };
 mod projection_clone;
+mod projection_directory;
 mod projection_migrate;
 mod projection_publish;
+mod projection_stream;
+pub use projection_directory::NativeProjectionDirectoryPreview;
+mod scoped_review;
+pub use projection_stream::ScopedProjectionPublicationOutcome;
+pub use scoped_review::ScopedReviewCommand;
 mod projection_receive;
 mod projection_restore;
 use graph::GraphObjects;

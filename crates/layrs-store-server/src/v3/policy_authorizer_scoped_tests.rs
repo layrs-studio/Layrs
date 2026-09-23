@@ -143,3 +143,51 @@ fn scoped_projection_and_write_require_all_general_read_grants() {
         );
     }
 }
+
+#[test]
+fn review_visibility_fingerprint_matches_only_same_complete_read_scope() {
+    let rules: NativePolicyRules = serde_json::from_value(json!({
+        "schemaVersion":"layrs.space-policy-rules.v3", "rules":[],
+        "pathPolicies":[
+            {"principalIds":["principal:alice","principal:bob"],
+             "read":{"default":"deny","rules":[{"effect":"allow","selector":{"kind":"subtree","path":"team"}}]},
+             "write":{"default":"deny","rules":[]}},
+            {"principalIds":["principal:carol"],
+             "read":{"default":"deny","rules":[{"effect":"allow","selector":{"kind":"subtree","path":"team/private"}}]},
+             "write":{"default":"deny","rules":[]}}
+        ]
+    })).unwrap();
+    let alice = PrincipalId::parse("principal:alice").unwrap();
+    let bob = PrincipalId::parse("principal:bob").unwrap();
+    let carol = PrincipalId::parse("principal:carol").unwrap();
+    let alice_scope = read_visibility_fingerprint(&[rules.clone()], &alice).unwrap();
+    assert_eq!(
+        Some(alice_scope.clone()),
+        read_visibility_fingerprint(&[rules.clone()], &bob)
+    );
+    assert_ne!(
+        Some(alice_scope),
+        read_visibility_fingerprint(&[rules], &carol)
+    );
+    assert!(read_visibility_fingerprint(&[], &alice).is_none());
+}
+
+#[test]
+fn scoped_review_actions_keep_separate_global_grants() {
+    for (action, grant) in [
+        (V3Action::ScopedReviewRead, "review.read"),
+        (V3Action::ScopedReviewWrite, "review.write"),
+        (V3Action::ScopedReviewApprove, "review.approve"),
+    ] {
+        assert_eq!(action.as_policy_action(), grant);
+        let rules: NativePolicyRules = serde_json::from_value(json!({
+            "schemaVersion":"layrs.space-policy-rules.v1",
+            "rules":[{"effect":"allow","principalIds":["principal:alice"],"actions":[grant]}]
+        }))
+        .unwrap();
+        assert_eq!(
+            action_grants(&check(action, None), &[rules]).unwrap(),
+            Some(RuleEffect::Allow)
+        );
+    }
+}

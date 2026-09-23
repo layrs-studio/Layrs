@@ -152,6 +152,111 @@ impl ProductionV3Facade {
 
 #[async_trait]
 impl V3Facade for ProductionV3Facade {
+    async fn integrate_scoped_review(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        review_id: &str,
+        request: ScopedReviewIntegrationRequest,
+    ) -> Result<SyncTransactionReceipt, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .integrate_scoped_review(&principal, space, review_id, &request.idempotency_key)
+        .await
+        .map_err(|error| match error {
+            store::TransactionServiceError::Store(error) => map_error(error),
+            store::TransactionServiceError::RequestDigestMismatch => V3ServiceError::Conflict {
+                code: "request_digest_mismatch",
+            },
+            store::TransactionServiceError::IdempotencyDigestMismatch => {
+                V3ServiceError::IdempotencyDigestMismatch
+            }
+            store::TransactionServiceError::Busy => V3ServiceError::Conflict {
+                code: "view_generation_conflict",
+            },
+        })
+    }
+    async fn begin_scoped_patch(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ScopedPathPatchRequest,
+    ) -> Result<ScopedPatchProgress, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .begin_scoped(&principal, &request)
+        .await
+        .map_err(map_error)
+    }
+    async fn scoped_patch_progress(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        session_id: &str,
+    ) -> Result<ScopedPatchProgress, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .scoped_progress(&principal, space, session_id)
+        .await
+        .map_err(map_error)
+    }
+    async fn upload_scoped_patch_chunk(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        session_id: &str,
+        file_index: usize,
+        ordinal: usize,
+        bytes: Vec<u8>,
+    ) -> Result<(), V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .upload_scoped_chunk(&principal, space, session_id, file_index, ordinal, bytes)
+        .await
+        .map_err(map_error)
+    }
+    async fn finalize_scoped_patch(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        session_id: &str,
+    ) -> Result<ScopedPathPatchReceipt, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        store::PgPathPatchService::new(
+            self.repository.clone(),
+            self.cursors.clone(),
+            self.transfer_base_url.clone(),
+        )
+        .finalize_scoped(&principal, space, session_id)
+        .await
+        .map_err(|error| match error {
+            store::TransactionServiceError::Store(error) => map_error(error),
+            store::TransactionServiceError::RequestDigestMismatch => V3ServiceError::Conflict {
+                code: "request_digest_mismatch",
+            },
+            store::TransactionServiceError::IdempotencyDigestMismatch => {
+                V3ServiceError::IdempotencyDigestMismatch
+            }
+            store::TransactionServiceError::Busy => V3ServiceError::Conflict {
+                code: "view_generation_conflict",
+            },
+        })
+    }
     async fn submit_path_patch(
         &self,
         principal: &AuthenticatedPrincipal,

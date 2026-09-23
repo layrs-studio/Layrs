@@ -65,6 +65,7 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
                     | "policy-preview-rules"
                     | "policy-replace"
                     | "partial-restore-preview"
+                    | "partial-directory-preview"
                     | "file"
             )
         })
@@ -153,6 +154,33 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
                 .map_err(|_| CliError::usage("invalid capture sequence"))?,
             layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
         },
+        ["candidate-partial", sequence, layer] => Action::PublishProjectionCandidate {
+            patch_id: sequence
+                .parse()
+                .map_err(|_| CliError::usage("invalid capture sequence"))?,
+            layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+        },
+        ["scoped-review", file] => serde_json::from_value(
+            serde_json::json!({"action":"scopedReview", "command":json_file(file)?}),
+        )
+        .map_err(error)?,
+        ["partial-directory-preview", generation, source, destination] => {
+            Action::PreviewProjectionDirectoryMove {
+                expected_generation: generation
+                    .parse()
+                    .map_err(|_| CliError::usage("invalid projection generation"))?,
+                source: layrs_core::scm::RepoPath::parse(*source).map_err(error)?,
+                destination: layrs_core::scm::RepoPath::parse(*destination).map_err(error)?,
+            }
+        }
+        ["partial-directory-apply", file] => {
+            let document = json_file(file)?;
+            let preview = document.get("data").unwrap_or(&document);
+            serde_json::from_value(
+                serde_json::json!({"action":"applyProjectionDirectoryMove","preview":preview}),
+            )
+            .map_err(error)?
+        }
         ["receive-partial", layer] => Action::ReceiveProjection {
             layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
         },
@@ -350,8 +378,14 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
     let file_read = matches!(&action, Action::ReadFile { .. });
     let observation = matches!(&action, Action::ObserveStep { .. });
     let publication = matches!(&action, Action::Publish { .. } | Action::PublishCandidates);
-    let partial_publication = matches!(&action, Action::PublishProjection { .. });
-    let restore_preview = matches!(&action, Action::PreviewProjectionRestore { .. });
+    let partial_publication = matches!(
+        &action,
+        Action::PublishProjection { .. } | Action::PublishProjectionCandidate { .. }
+    );
+    let restore_preview = matches!(
+        &action,
+        Action::PreviewProjectionRestore { .. } | Action::PreviewProjectionDirectoryMove { .. }
+    );
     let mut data = crate::native_interrupt::run_remote(
         &root,
         NativeRemoteRequest {

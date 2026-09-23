@@ -158,6 +158,126 @@ pub async fn submit_path_patch(
     Ok(Json(response).into_response())
 }
 
+pub async fn begin_scoped_patch(
+    State(state): State<V3HttpState>,
+    Path(space): Path<String>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body: layrs_sync::v3::ScopedPathPatchRequest =
+        limited_json(request, 4 * 1024 * 1024).await?;
+    if body.space_id != space_id {
+        return Err(V3HttpError::invalid_request("space_mismatch"));
+    }
+    body.validate()
+        .map_err(|_| V3HttpError::invalid_request("invalid_scoped_path_patch"))?;
+    let result = state.facade().begin_scoped_patch(&principal, body).await?;
+    Ok((StatusCode::CREATED, Json(result)).into_response())
+}
+
+pub async fn scoped_patch_progress(
+    State(state): State<V3HttpState>,
+    Path((space, session)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    Ok(Json(
+        state
+            .facade()
+            .scoped_patch_progress(&principal, &space_id, &session)
+            .await?,
+    )
+    .into_response())
+}
+
+pub async fn upload_scoped_patch_chunk(
+    State(state): State<V3HttpState>,
+    Path((space, session, file_index, ordinal)): Path<(String, String, usize, usize)>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    if request.headers().contains_key(CONTENT_RANGE) {
+        return Err(V3HttpError::invalid_request("content_range_forbidden"));
+    }
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let length = content_length(request.headers())?;
+    if length == 0 || length > layrs_sync::v3::SCOPED_CHUNK_BYTES {
+        return Err(V3HttpError::payload_too_large(
+            layrs_sync::v3::SCOPED_CHUNK_BYTES,
+        ));
+    }
+    let (body, progress) = limited_upload_stream(
+        request.into_body(),
+        layrs_sync::v3::SCOPED_CHUNK_BYTES,
+        length,
+    );
+    let bytes = body
+        .try_fold(
+            Vec::with_capacity(length as usize),
+            |mut bytes, chunk| async move {
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            },
+        )
+        .await?;
+    if !progress.is_complete() || progress.bytes_seen() != length {
+        return Err(V3ServiceError::LengthMismatch.into());
+    }
+    state
+        .facade()
+        .upload_scoped_patch_chunk(&principal, &space_id, &session, file_index, ordinal, bytes)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+pub async fn finalize_scoped_patch(
+    State(state): State<V3HttpState>,
+    Path((space, session)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let result = state
+        .facade()
+        .finalize_scoped_patch(&principal, &space_id, &session)
+        .await?;
+    if result.receipt.principal_id != principal.principal_id || result.receipt.space_id != space_id
+    {
+        return Err(V3ServiceError::Internal.into());
+    }
+    layrs_sync::v3::ValidateV3::validate_v3(&result.receipt)
+        .map_err(|_| V3ServiceError::Internal)?;
+    Ok(Json(result).into_response())
+}
+
+pub async fn integrate_scoped_review(
+    State(state): State<V3HttpState>,
+    Path((space, review_id)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body: layrs_sync::v3::ScopedReviewIntegrationRequest = limited_json(request, 1024).await?;
+    let receipt = state
+        .facade()
+        .integrate_scoped_review(&principal, &space_id, &review_id, body)
+        .await?;
+    if receipt.principal_id != principal.principal_id || receipt.space_id != space_id {
+        return Err(V3ServiceError::Internal.into());
+    }
+    layrs_sync::v3::ValidateV3::validate_v3(&receipt).map_err(|_| V3ServiceError::Internal)?;
+    Ok(Json(receipt).into_response())
+}
+
 pub async fn step_history(
     State(state): State<V3HttpState>,
     Path(space): Path<String>,

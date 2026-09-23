@@ -6,9 +6,13 @@ use layrs_core::scm::{LayerHeadSet, ObjectId, RepositoryView, Step, Tree, TreeEn
 use layrs_sync::v3::*;
 use std::collections::BTreeMap;
 
+mod candidate;
 mod content;
+mod integrate;
 mod prepare;
 mod replay;
+mod scoped;
+pub use candidate::{ScopedPatchCandidate, load_candidate};
 use path_patch_scope::ScopedPatch;
 
 pub struct PgPathPatchService {

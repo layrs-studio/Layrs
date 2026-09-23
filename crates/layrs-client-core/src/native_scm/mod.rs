@@ -51,7 +51,8 @@ mod workspace;
 pub use remote::{
     NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
     NativePolicyReplacement, NativePolicyRulesEntry, NativePolicyRulesSnapshot,
-    NativeProjectionNamespaceMutation, NativeProjectionNamespacePreview, NativeRemote,
+    NativeProjectionDirectoryPreview, NativeProjectionNamespaceMutation,
+    NativeProjectionNamespacePreview, ScopedProjectionPublicationOutcome, ScopedReviewCommand, NativeRemote,
     NativeRemoteError, NativeRemoteSession, ReceiveReport, RemoteProvisionedSpace,
 };
 

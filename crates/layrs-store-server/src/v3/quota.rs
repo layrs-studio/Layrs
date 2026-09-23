@@ -155,6 +155,10 @@ async fn usage(
             FROM object_plan_items i JOIN object_plans p ON p.plan_id=i.plan_id
             WHERE $1::TEXT IS NULL OR p.space_id=$1
             UNION ALL
+            SELECT object_id,canonical_byte_length,encoded_byte_length,object_kind,compression,false
+            FROM layrs_collaboration.scoped_patch_reserved_objects
+            WHERE $1::TEXT IS NULL OR space_id=$1
+            UNION ALL
             SELECT object_id,canonical_len,encoded_len,object_kind,compression,false
             FROM UNNEST($2::TEXT[],$3::BIGINT[],$4::BIGINT[],$5::TEXT[],$6::TEXT[])
                 AS incoming(object_id,canonical_len,encoded_len,object_kind,compression)

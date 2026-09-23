@@ -27,7 +27,7 @@ mod path_patch;
 mod path_patch_scope;
 mod path_patch_service;
 mod plan_store;
-pub use path_patch_service::PgPathPatchService;
+pub use path_patch_service::{PgPathPatchService, ScopedPatchCandidate, load_candidate};
 mod plans;
 mod policy_authorizer;
 pub use content_policy::*;

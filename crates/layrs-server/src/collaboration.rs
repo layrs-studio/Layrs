@@ -13,6 +13,7 @@ use std::sync::Arc;
 mod invitations;
 #[path = "collaboration/releases.rs"]
 mod releases;
+mod scoped_reviews;
 mod teams;
 
 #[derive(Clone)]
@@ -72,6 +73,22 @@ pub fn router(state: CollaborationHttpState) -> Router {
             post(releases::revoke),
         )
         .route("/v3/spaces/:space/reviews", get(list).post(propose))
+        .route(
+            "/v3/spaces/:space/scoped-reviews",
+            get(scoped_reviews::list).post(scoped_reviews::propose),
+        )
+        .route(
+            "/v3/spaces/:space/scoped-reviews/:review",
+            get(scoped_reviews::detail),
+        )
+        .route(
+            "/v3/spaces/:space/scoped-reviews/:review/actions",
+            post(scoped_reviews::action),
+        )
+        .route(
+            "/v3/spaces/:space/scoped-reviews/:review/integration-status",
+            get(scoped_reviews::status),
+        )
         .route("/v3/spaces/:space/reviews/:review", get(detail))
         .route("/v3/spaces/:space/reviews/:review/versions", post(version))
         .route("/v3/spaces/:space/reviews/:review/actions", post(action))

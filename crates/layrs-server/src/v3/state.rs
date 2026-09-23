@@ -121,6 +121,49 @@ pub trait V3Facade: Send + Sync {
     ) -> Result<layrs_sync::v3::PathPatchReceipt, V3ServiceError> {
         Err(V3ServiceError::Unavailable)
     }
+    async fn begin_scoped_patch(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: layrs_sync::v3::ScopedPathPatchRequest,
+    ) -> Result<layrs_sync::v3::ScopedPatchProgress, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn scoped_patch_progress(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _session_id: &str,
+    ) -> Result<layrs_sync::v3::ScopedPatchProgress, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn upload_scoped_patch_chunk(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _session_id: &str,
+        _file_index: usize,
+        _ordinal: usize,
+        _bytes: Vec<u8>,
+    ) -> Result<(), V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn finalize_scoped_patch(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _session_id: &str,
+    ) -> Result<layrs_sync::v3::ScopedPathPatchReceipt, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn integrate_scoped_review(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _review_id: &str,
+        _request: layrs_sync::v3::ScopedReviewIntegrationRequest,
+    ) -> Result<SyncTransactionReceipt, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
     async fn projection_page(
         &self,
         _principal: &AuthenticatedPrincipal,

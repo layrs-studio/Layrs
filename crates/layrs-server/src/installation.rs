@@ -62,6 +62,18 @@ const MIGRATIONS: &[(i64, &str)] = &[
         16,
         include_str!("../../layrs-store-server/migrations/0016_v3_client_observations.sql"),
     ),
+    (
+        17,
+        include_str!("../../layrs-store-server/migrations/0017_v3_scoped_patch_sessions.sql"),
+    ),
+    (
+        18,
+        include_str!("../../layrs-store-server/migrations/0018_v3_scoped_reviews.sql"),
+    ),
+    (
+        19,
+        include_str!("../../layrs-store-server/migrations/0019_v3_scoped_patch_catalog_namespace.sql"),
+    ),
 ];
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 

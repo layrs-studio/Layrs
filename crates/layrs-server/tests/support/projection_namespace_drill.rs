@@ -116,6 +116,65 @@ pub(super) fn run(
         .preview_projection_namespace(
             store,
             store.state().unwrap().generation,
+            &create("public/directory-source/file.txt"),
+        )
+        .unwrap();
+    let captured = reader.apply_projection_namespace(store, &preview).unwrap();
+    assert_eq!(
+        reader
+            .publish_projection(store, captured.sequence, layer)
+            .unwrap()
+            .receipt
+            .receipt
+            .status,
+        ReceiptStatus::Applied
+    );
+    let preview = reader
+        .preview_projection_directory_move(
+            store,
+            store.state().unwrap().generation,
+            &RepoPath::parse("public/directory-source").unwrap(),
+            &RepoPath::parse("public/directory-moved").unwrap(),
+        )
+        .unwrap();
+    std::fs::write(
+        root.join("public/directory-source/unknown.txt"),
+        b"external unobserved bytes",
+    )
+    .unwrap();
+    assert!(
+        reader
+            .apply_projection_directory_move(store, &preview)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(root.join("public/directory-source/unknown.txt")).unwrap(),
+        b"external unobserved bytes"
+    );
+    assert!(!root.join("public/directory-moved").exists());
+    std::fs::remove_file(root.join("public/directory-source/unknown.txt")).unwrap();
+    let captured = reader
+        .apply_projection_directory_move(store, &preview)
+        .unwrap();
+    assert_eq!(reader.apply_projection_directory_move(store, &preview).unwrap(), captured);
+    assert!(!root.join("public/directory-source").exists());
+    assert_eq!(
+        std::fs::read(root.join("public/directory-moved/file.txt")).unwrap(),
+        b""
+    );
+    let published = reader
+        .publish_projection(store, captured.sequence, layer)
+        .unwrap();
+    assert_eq!(published.receipt.receipt.status, ReceiptStatus::Applied);
+    assert!(!published.pending_local_acceptance);
+    eprintln!(
+        "HTTPS Store3 directory move: current per-leaf authority, unknown-file refusal, exact publication PASS"
+    );
+
+    let preview = reader
+        .preview_projection_namespace(
+            store,
+            store.state().unwrap().generation,
             &create("public/unpublished-source.txt"),
         )
         .unwrap();

@@ -21,6 +21,8 @@ pub use run_cancellation::CancelRunRequest;
 mod review_integrations;
 mod review_listing;
 mod reviews;
+mod scoped_reviews;
+pub use scoped_reviews::ScopedIntegrationTarget;
 pub use review_listing::ReviewListQuery;
 mod releases;
 mod types;

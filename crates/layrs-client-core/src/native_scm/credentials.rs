@@ -63,6 +63,13 @@ pub enum NativeRemoteAction {
         patch_id: u64,
         layer_id: LayerId,
     },
+    PublishProjectionCandidate {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    ScopedReview {
+        command: super::remote::ScopedReviewCommand,
+    },
     ReceiveProjection {
         layer_id: LayerId,
     },
@@ -76,6 +83,14 @@ pub enum NativeRemoteAction {
     },
     ApplyProjectionNamespace {
         preview: Box<super::NativeProjectionNamespacePreview>,
+    },
+    PreviewProjectionDirectoryMove {
+        expected_generation: u64,
+        source: layrs_core::scm::RepoPath,
+        destination: layrs_core::scm::RepoPath,
+    },
+    ApplyProjectionDirectoryMove {
+        preview: Box<super::remote::NativeProjectionDirectoryPreview>,
     },
     PreviewProjectionRestore {
         expected_generation: u64,
@@ -267,6 +282,30 @@ fn execute_remote_with_store(
             )
             .map_err(|_| "invalid projection publication response".into())
         }
+        NativeRemoteAction::PublishProjectionCandidate { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .publish_projection_candidate(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid candidate publication response".into())
+        }
+        NativeRemoteAction::ScopedReview { command } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            if remote.origin().trim_end_matches('/') != store.identity().origin {
+                return Err("projection origin mismatch".into());
+            }
+            let principal = remote.whoami().map_err(remote_error)?;
+            if principal["principal_id"].as_str() != Some(store.identity().principal_id.as_str()) {
+                return Err("projection review principal changed".into());
+            }
+            remote
+                .scoped_review(&store.identity().space_id, &command)
+                .map_err(remote_error)
+        }
         NativeRemoteAction::ReceiveProjection { layer_id } => {
             let store = layrs_store_local::projection::ProjectionStore::open(root)
                 .map_err(|e| format!("projection_store_error: {e}"))?;
@@ -311,6 +350,35 @@ fn execute_remote_with_store(
                     .map_err(remote_error)?,
             )
             .map_err(|_| "invalid namespace application response".into())
+        }
+        NativeRemoteAction::PreviewProjectionDirectoryMove {
+            expected_generation,
+            source,
+            destination,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_directory_move(
+                        &store,
+                        expected_generation,
+                        &source,
+                        &destination,
+                    )
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid directory preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionDirectoryMove { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_directory_move(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid directory application response".into())
         }
         NativeRemoteAction::PreviewProjectionRestore {
             expected_generation,

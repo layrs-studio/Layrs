@@ -337,7 +337,9 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
                     if response.status().is_server_error() {
                         eprintln!("Native test backend failure: {} {path}", response.status());
                     }
-                    if (path.ends_with("/transactions") || path.ends_with("/path-patches"))
+                    if (path.ends_with("/transactions")
+                        || path.ends_with("/path-patches")
+                        || (path.contains("/path-patches/scoped/") && path.ends_with("/finalize")))
                         && lose.swap(false, std::sync::atomic::Ordering::SeqCst)
                     {
                         return axum::response::Response::builder()

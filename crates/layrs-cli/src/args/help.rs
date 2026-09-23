@@ -24,6 +24,10 @@ Commands:
   layrs partial fsck | history [BEFORE_SEQUENCE]
   layrs partial resume-namespace | resume-refresh | resume-restore
   layrs remote publish-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
+  layrs remote candidate-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
+  layrs remote scoped-review COMMAND_JSON_FILE --endpoint HTTPS_URL
+  layrs remote partial-directory-preview GENERATION SOURCE DESTINATION --output FILE --endpoint HTTPS_URL
+  layrs remote partial-directory-apply FILE --endpoint HTTPS_URL
   layrs remote receive-partial LAYER_ID --endpoint HTTPS_URL
   layrs remote migrate-partial LAYER_ID EMPTY_DIRECTORY --endpoint HTTPS_URL
   layrs remote partial-restore-preview REQUEST_JSON [--output NEW_PREVIEW_FILE] --endpoint HTTPS_URL

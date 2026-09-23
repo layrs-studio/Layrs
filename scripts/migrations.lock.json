@@ -82,6 +82,21 @@
       "version": 16,
       "file": "0016_v3_client_observations.sql",
       "sha256": "fb519e5f0f718986365be8ba334c5ebb8908548f809a9bf2076fb2775fb8dbcc"
+    },
+    {
+      "version": 17,
+      "file": "0017_v3_scoped_patch_sessions.sql",
+      "sha256": "12ce385178431ecb004ba4e422f568f905291378d3b842937c3327752962dab1"
+    },
+    {
+      "version": 18,
+      "file": "0018_v3_scoped_reviews.sql",
+      "sha256": "99b86380b2fb92cc28ff2c682f48ecb28cf98b1faa1f5b2b693d4b908afa84d7"
+    },
+    {
+      "version": 19,
+      "file": "0019_v3_scoped_patch_catalog_namespace.sql",
+      "sha256": "da3b91c4205c7d16b3500006a665b0d38e42546eec15c62d5b9f79a894929a2c"
     }
   ]
 }

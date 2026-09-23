@@ -4,10 +4,21 @@ impl PgPathPatchService {
         &self,
         patch: &PathPatchRequest,
     ) -> V3StoreResult<(SyncTransactionRequest, ScopedPatch, Vec<Tree>)> {
+        self.prepare_request_with_intent(patch, None).await
+    }
+
+    pub(super) async fn prepare_request_with_intent(
+        &self,
+        patch: &PathPatchRequest,
+        source: Option<&ScopedPathPatchRequest>,
+    ) -> V3StoreResult<(SyncTransactionRequest, ScopedPatch, Vec<Tree>)> {
         let bytes: String = sqlx::query_scalar("SELECT s.canonical_record_jcs FROM steps s JOIN space_steps ss ON ss.step_id=s.step_id WHERE ss.space_id=$1 AND s.step_id=$2")
             .bind(patch.space_id.as_str()).bind(patch.base_step_id.as_str()).fetch_optional(self.repository.pool()).await.map_err(pg_error)?.ok_or(V3StoreError::NotFound)?;
         let step: Step = serde_json::from_str(&bytes).map_err(invalid)?;
         if step.id() != &patch.base_step_id {
+            return Err(V3StoreError::IdentityMismatch);
+        }
+        if source.is_some_and(|source| source.base_root_tree_id != *step.root_tree_id()) {
             return Err(V3StoreError::IdentityMismatch);
         }
         let bytes: String = sqlx::query_scalar("SELECT canonical_record_jcs FROM repository_views WHERE space_id=$1 AND repository_view_id=$2")
@@ -126,29 +137,42 @@ impl PgPathPatchService {
             observations: vec![],
             products: vec![],
             policy_root_mutation: None,
-            view_mutation: Some(RepositoryViewMutation {
-                mutation_id: MutationId::parse(format!(
-                    "mutation:path-patch-{}",
-                    &patch.request_digest.as_str()[7..]
-                ))
-                .map_err(invalid)?,
-                expected_current_view_id: patch.expected_repository_view_id.clone(),
-                expected_generation: patch.expected_generation,
-                proposed_view: ProposedRepositoryView::Inline { view },
-                layer_mutations: vec![LayerMutationIntent {
-                    layer_id: patch.layer_id.clone(),
-                    mode: LayerMutationMode::Advance,
-                    decision_product_object_id: None,
-                }],
-                expected_policy_version_object_ids: captured_policy_version_object_ids(&policy)
+            view_mutation: if source
+                .is_some_and(|source| source.intent == ScopedPathPatchIntent::Candidate)
+            {
+                None
+            } else {
+                Some(RepositoryViewMutation {
+                    mutation_id: MutationId::parse(format!(
+                        "mutation:path-patch-{}",
+                        &patch.request_digest.as_str()[7..]
+                    ))
                     .map_err(invalid)?,
-            }),
+                    expected_current_view_id: patch.expected_repository_view_id.clone(),
+                    expected_generation: patch.expected_generation,
+                    proposed_view: ProposedRepositoryView::Inline { view },
+                    layer_mutations: vec![LayerMutationIntent {
+                        layer_id: patch.layer_id.clone(),
+                        mode: LayerMutationMode::Advance,
+                        decision_product_object_id: None,
+                    }],
+                    expected_policy_version_object_ids: captured_policy_version_object_ids(&policy)
+                        .map_err(invalid)?,
+                })
+            },
         };
         request.request_digest = request.computed_request_digest().map_err(invalid)?;
         let scope = ScopedPatch {
             request: patch.clone(),
             root: step.root_tree_id().clone(),
             transaction_digest: request.request_digest.clone(),
+            candidate: source
+                .filter(|source| source.intent == ScopedPathPatchIntent::Candidate)
+                .map(|source| path_patch_scope::ScopedCandidateSource {
+                    source_request: source.clone(),
+                    candidate_id: format!("candidate:{}", &source.request_digest.as_str()[7..]),
+                }),
+            integration: None,
         };
         Ok((request, scope, patched.regenerated_trees))
     }

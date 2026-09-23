@@ -4,6 +4,8 @@ use layrs_store_local::projection::ProjectionStore;
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 #[path = "projection_namespace_drill.rs"]
 mod namespace;
+#[path = "projection_stream_drill.rs"]
+mod streaming;
 
 pub(super) fn run(
     workspace: &NativeWorkspace,
@@ -172,5 +174,6 @@ pub(super) fn run(
     eprintln!(
         "HTTPS format3 capture/publication: protected collision, immutable capture, lost response, reopen/replay, exact base acceptance and preserved later edits PASS"
     );
+    streaming::run(reader, read, layer, lose_response, &reopened);
     namespace::run(admin, workspace, reader, read, layer, principal, &reopened);
 }

@@ -7,6 +7,20 @@ pub(crate) struct ScopedPatch {
     pub(super) request: PathPatchRequest,
     pub(super) root: TreeId,
     pub(super) transaction_digest: ObjectId,
+    pub(super) candidate: Option<ScopedCandidateSource>,
+    pub(super) integration: Option<ScopedIntegrationBinding>,
+}
+
+pub(crate) struct ScopedCandidateSource {
+    pub source_request: ScopedPathPatchRequest,
+    pub candidate_id: String,
+}
+
+pub(crate) struct ScopedIntegrationBinding {
+    pub review_id: String,
+    pub candidate_id: String,
+    pub step_id: layrs_core::scm::StepId,
+    pub layer_id: layrs_core::scm::LayerId,
 }
 
 impl ScopedPatch {

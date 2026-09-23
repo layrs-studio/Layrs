@@ -160,14 +160,41 @@ impl PgTransactionStore {
             }
             if prepared.rejection.is_none() {
                 if let Some(planned) = &prepared.planned {
-                    prepared.rejection = super::collaboration::gates::enforce(
-                        self.repository.cas().as_ref(),
-                        &mut tx,
-                        &prepared.authority,
-                        &planned.layers,
-                        &gate_principals,
-                    )
-                    .await?;
+                    if let Some(binding) = scope.and_then(|scope| scope.integration.as_ref()) {
+                        if request.view_mutation.is_none() || planned.layers.len() != 1 {
+                            return Err(V3StoreError::InvalidCapability.into());
+                        }
+                        prepared.rejection = super::collaboration::gates::enforce_conflicts(
+                            &mut tx,
+                            &prepared.authority,
+                            &binding.layer_id,
+                            &binding.step_id,
+                        )
+                        .await?;
+                        if prepared.rejection.is_none() {
+                            prepared.rejection =
+                                super::PgCollaborationStore::new(self.repository.clone())
+                                    .enforce_scoped_candidate_gates(
+                                        &mut tx,
+                                        &prepared.authority,
+                                        &binding.review_id,
+                                        &binding.candidate_id,
+                                        &binding.step_id,
+                                        &binding.layer_id,
+                                        &gate_principals,
+                                    )
+                                    .await?;
+                        }
+                    } else {
+                        prepared.rejection = super::collaboration::gates::enforce(
+                            self.repository.cas().as_ref(),
+                            &mut tx,
+                            &prepared.authority,
+                            &planned.layers,
+                            &gate_principals,
+                        )
+                        .await?;
+                    }
                 }
             }
             if prepared.rejection.is_none() {
@@ -218,6 +245,7 @@ impl PgTransactionStore {
                     request,
                     prepared,
                     row.get::<i64, _>("next_event_sequence") as u64,
+                    scope,
                 )
                 .await?;
             tx.commit().await.map_err(pg_error)?;
@@ -308,6 +336,33 @@ impl PgTransactionStore {
             rejection: None,
             timestamp,
         };
+        // A scoped session remains terminalizable after its captured View or
+        // policy epoch moves. Persist the rejection before inspecting its
+        // content closure, which may never have been uploaded after the race.
+        if let Some(scope) = scope {
+            if scope.integration.is_none()
+                && (prepared.authority.repository_view_id
+                    != scope.request.expected_repository_view_id
+                    || prepared.authority.repository_view_generation
+                        != scope.request.expected_generation
+                    || prepared.authority.policy_set_id != scope.request.expected_policy_set_id
+                    || prepared.authority.authorization_epoch
+                        != scope.request.expected_authorization_epoch)
+            {
+                prepared.rejection = Some(reject(
+                    if prepared.authority.policy_set_id != scope.request.expected_policy_set_id
+                        || prepared.authority.authorization_epoch
+                            != scope.request.expected_authorization_epoch
+                    {
+                        RejectionCode::AuthorizationEpochChanged
+                    } else {
+                        RejectionCode::ViewGenerationConflict
+                    },
+                    "scoped patch captured authority differs from the current Space",
+                ));
+                return Ok(prepared);
+            }
+        }
         if !authorized {
             prepared.rejection = Some(reject(
                 RejectionCode::PermissionDenied,

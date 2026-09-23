@@ -18,6 +18,55 @@ pub(crate) async fn lock_reviewers(
     Ok(rows.into_iter().map(|r| r.get("principal_id")).collect())
 }
 
+/// Apply the protected Layer's whole-Step conflict rule to a trusted scoped
+/// candidate too. A patch may inherit an unresolved conflict outside its paths.
+pub(crate) async fn enforce_conflicts(
+    tx: &mut Transaction<'_, Postgres>,
+    authority: &SpaceAuthority,
+    layer: &layrs_core::scm::LayerId,
+    step: &layrs_core::scm::StepId,
+) -> V3StoreResult<Option<Rejection>> {
+    let raw: Option<String> = sqlx::query_scalar("SELECT canonical_document_jcs FROM layrs_collaboration.layer_protections WHERE space_id=$1 AND layer_id=$2")
+        .bind(authority.space_id.as_str()).bind(layer.as_str())
+        .fetch_optional(&mut **tx).await.map_err(pg_error)?;
+    let Some(raw) = raw else { return Ok(None) };
+    let protection: LayerProtection = serde_json::from_str(&raw).map_err(bad)?;
+    if !protection.reject_conflicts {
+        return Ok(None);
+    }
+    reject_conflicts_for_step(tx, step).await
+}
+
+async fn reject_conflicts_for_step(
+    tx: &mut Transaction<'_, Postgres>,
+    step: &layrs_core::scm::StepId,
+) -> V3StoreResult<Option<Rejection>> {
+    let reject = |message| {
+        Some(super::super::transaction_plan::reject(
+            RejectionCode::GateRejected,
+            message,
+        ))
+    };
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT canonical_record_jcs FROM steps WHERE step_id=$1")
+            .bind(step.as_str())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(pg_error)?;
+    let Some(raw) = raw else {
+        return Ok(reject("protected Step must be admitted before evaluation"));
+    };
+    let record: layrs_core::scm::Step = serde_json::from_str(&raw).map_err(bad)?;
+    let conflicts: bool = sqlx::query_scalar("WITH RECURSIVE nodes(id) AS (SELECT $1::text UNION SELECT e.target_object_id FROM canonical_object_edges e JOIN nodes n ON n.id=e.source_object_id WHERE e.edge_kind='tree_entry') SELECT EXISTS(SELECT 1 FROM nodes n JOIN canonical_objects o ON o.object_id=n.id WHERE o.object_kind='conflict')")
+        .bind(record.root_tree_id().as_str()).fetch_one(&mut **tx).await.map_err(pg_error)?;
+    Ok(conflicts.then(|| {
+        super::super::transaction_plan::reject(
+            RejectionCode::GateRejected,
+            "protected Step contains unresolved conflicts",
+        )
+    }))
+}
+
 pub(crate) async fn enforce(
     cas: &dyn CatalogedCas,
     tx: &mut Transaction<'_, Postgres>,
@@ -42,19 +91,8 @@ pub(crate) async fn enforce(
         }
         let step = &layer.resulting_heads[0];
         if protection.reject_conflicts {
-            let raw: Option<String> =
-                sqlx::query_scalar("SELECT canonical_record_jcs FROM steps WHERE step_id=$1")
-                    .bind(step.as_str())
-                    .fetch_optional(&mut **tx)
-                    .await
-                    .map_err(pg_error)?;
-            let Some(raw) = raw else {
-                return Ok(reject("protected Step must be admitted before evaluation"));
-            };
-            let record: layrs_core::scm::Step = serde_json::from_str(&raw).map_err(bad)?;
-            let conflicts:bool=sqlx::query_scalar("WITH RECURSIVE nodes(id) AS (SELECT $1::text UNION SELECT e.target_object_id FROM canonical_object_edges e JOIN nodes n ON n.id=e.source_object_id WHERE e.edge_kind='tree_entry') SELECT EXISTS(SELECT 1 FROM nodes n JOIN canonical_objects o ON o.object_id=n.id WHERE o.object_kind='conflict')").bind(record.root_tree_id().as_str()).fetch_one(&mut **tx).await.map_err(pg_error)?;
-            if conflicts {
-                return Ok(reject("protected Step contains unresolved conflicts"));
+            if let Some(rejection) = reject_conflicts_for_step(tx, step).await? {
+                return Ok(Some(rejection));
             }
         }
         if protection.minimum_approvals > 0 {

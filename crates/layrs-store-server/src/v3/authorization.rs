@@ -56,6 +56,9 @@ pub enum V3Action {
     ReadReviews,
     WriteReviews,
     ApproveReview,
+    ScopedReviewRead,
+    ScopedReviewWrite,
+    ScopedReviewApprove,
     RunProof,
     ReadReleases,
     PublishRelease,
@@ -79,6 +82,9 @@ impl V3Action {
             Self::ReadReviews => "review.read",
             Self::WriteReviews => "review.write",
             Self::ApproveReview => "review.approve",
+            Self::ScopedReviewRead => "review.read",
+            Self::ScopedReviewWrite => "review.write",
+            Self::ScopedReviewApprove => "review.approve",
             Self::RunProof => "proof.run",
             Self::ReadReleases => "release.read",
             Self::PublishRelease => "release.publish",
@@ -175,6 +181,12 @@ impl AuthorizationDecision {
 #[async_trait]
 pub trait PolicyAuthorizer: Send + Sync {
     async fn authorize(&self, check: &AuthorizationCheck) -> V3StoreResult<AuthorizationDecision>;
+
+    /// Equality means two restricted principals have the same complete read
+    /// permission footprint in this policy. None is deliberately non-shareable.
+    async fn read_visibility_fingerprint(
+        &self, _check: &AuthorizationCheck,
+    ) -> V3StoreResult<Option<String>> { Ok(None) }
 }
 
 /// Authentication/membership gate for a fresh self-hosted deployment. It is

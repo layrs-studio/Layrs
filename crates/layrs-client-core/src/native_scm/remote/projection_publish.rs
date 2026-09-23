@@ -30,7 +30,7 @@ fn publication_binding(
     ))
 }
 impl NativeRemote {
-    pub fn publish_projection(
+    pub(super) fn publish_projection_v1(
         &self,
         store: &ProjectionStore,
         sequence: u64,
@@ -135,17 +135,23 @@ impl NativeRemote {
         }
         // A committed receipt survives loss of bootstrap/read permission. Leave
         // acceptance pending rather than inventing a root or forgetting the commit.
-        let next =
-            match self.accepted_projection(store, &state.snapshot, &submission.request, &receipt) {
-                Ok(next) => next,
-                Err(_) => {
-                    return Ok(ProjectionPublicationOutcome {
-                        receipt,
-                        projection: state,
-                        pending_local_acceptance: true,
-                    })
-                }
-            };
+        let next = match self.accepted_projection(
+            store,
+            &state.snapshot,
+            &submission.request.layer_id,
+            &submission.request.base_step_id,
+            &submission.request.changes,
+            &receipt.receipt,
+        ) {
+            Ok(next) => next,
+            Err(_) => {
+                return Ok(ProjectionPublicationOutcome {
+                    receipt,
+                    projection: state,
+                    pending_local_acceptance: true,
+                })
+            }
+        };
         let projection = store
             .finish_publication(sequence, &serde_jcs::to_vec(&receipt)?, Some(&next))
             .map_err(local)?;
@@ -237,31 +243,40 @@ impl NativeRemote {
         Ok(PathPatchSubmission { request, files })
     }
 
-    fn accepted_projection(
+    pub(super) fn accepted_projection(
         &self,
         store: &ProjectionStore,
         old: &ProjectionSnapshot,
-        patch: &PathPatchRequest,
-        receipt: &PathPatchReceipt,
+        layer_id: &LayerId,
+        base_step_id: &StepId,
+        changes: &[PathPatchChange],
+        receipt: &SyncTransactionReceipt,
     ) -> RemoteResult<ProjectionSnapshot> {
         let result = receipt
-            .receipt
             .view_result
             .0
             .as_ref()
             .ok_or(NativeRemoteError::Invalid(
                 "partial publication has no View result",
             ))?;
-        if receipt.receipt.accepted_step_ids.len() != 1 || result.layer_results.len() != 1 {
+        if receipt.accepted_step_ids.len() > 1 || result.layer_results.len() != 1 {
             return Err(NativeRemoteError::Invalid(
                 "unexpected partial publication result",
             ));
         }
-        let step = &receipt.receipt.accepted_step_ids[0];
         let layer = &result.layer_results[0];
-        if layer.layer_id != patch.layer_id
-            || layer.previous_heads != [patch.base_step_id.clone()]
-            || layer.resulting_heads != [step.clone()]
+        if layer.resulting_heads.len() != 1 {
+            return Err(NativeRemoteError::Invalid(
+                "partial publication requires one resulting head",
+            ));
+        }
+        let step = &layer.resulting_heads[0];
+        if &layer.layer_id != layer_id
+            || layer.previous_heads != [base_step_id.clone()]
+            || receipt
+                .accepted_step_ids
+                .first()
+                .is_some_and(|accepted| accepted != step)
         {
             return Err(NativeRemoteError::Invalid(
                 "partial publication Layer mismatch",
@@ -275,7 +290,7 @@ impl NativeRemote {
         let mut next = old.clone();
         next.base_step_id = step.clone();
         next.base_root_tree_id = root;
-        for change in &patch.changes {
+        for change in changes {
             let entry = next
                 .entries
                 .iter_mut()
