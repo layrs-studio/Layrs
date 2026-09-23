@@ -5,11 +5,18 @@
 Reprise explicitement demandée : terminer les extensions, avec commits réguliers.
 Skill `orchestrate-change` mis à jour relu ; implémentations parallèles et revues
 indépendantes critiques. [Journal actif et répartition](journal/FINISH-20260923.md).
-Départ propre `35f28a8`. Capture chunkée, transport/candidats et collaboration
-restreinte sont en développement ; racine : dossiers/restauration et intégration.
+Départ propre `35f28a8`. Lots commités : capture/dossiers `b9c6f1f`, transport et
+revues `45fcdcc`, fusion régulière `578aae2`, dernier contrôle filesystem
+`78c5d36`, restauration historique `d925f47`. Recette HTTPS121,58s PASS ; Linux
+Store3 74PASS ; correctif rebase Windows11PASS. Desktop53,3sPASS et
+qualification1Gio284,71sPASS. UI commitée `e36ba61`. Clippy workspace/tous targets
+strict14,44sPASS, client natif47PASS, modèle UI12PASS, TypeScript UI/Web/Desktop
+PASS. Reconditionnement des archives et MSI à effectuer depuis les sources
+stabilisées. Détails et limites dans les journaux PARTIAL-REBASE et HISTORICAL.
 Ne pas confondre ces travaux avec les paquets qualified5 déjà livrés. Les
 qualifications exigeant un invité OS ou des humains restent identifiées ; les
 développements accessibles continuent sans attendre ces moyens externes.
+Utilisateur confirmé : seulement le poste actuel, Windows et Docker Linux.
 
 ## Checkpoint historique — 22 septembre 2026
 

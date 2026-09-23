@@ -95,7 +95,9 @@ fn move_paths_observed(
             ));
         }
         if let Some(recorded) = recorded {
-            if !recorded.contains_key(entry.path.as_str()) { continue; }
+            if !recorded.contains_key(entry.path.as_str()) {
+                continue;
+            }
         } else {
             let disk_path = store.checkout_root().join(entry.path.as_str());
             let metadata = match fs::symlink_metadata(&disk_path) {

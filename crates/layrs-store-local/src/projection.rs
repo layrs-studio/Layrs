@@ -22,15 +22,15 @@ pub use namespace::{
 mod maintenance;
 pub use maintenance::{ProjectionCheck, ProjectionHistoryPage};
 mod publication;
-mod restore;
-mod rebase_preview;
 mod rebase;
-pub use rebase::{RebasePreview, RebaseFaults, RebasePoint, NoRebaseFaults};
+mod rebase_preview;
+mod restore;
 pub use install::{InstallFaults, InstallPoint, NoInstallFaults};
 pub use publication::{
     CompletedPublication, NoPublicationFaults, PendingPublication, PublicationFaults,
     PublicationPoint,
 };
+pub use rebase::{NoRebaseFaults, RebaseFaults, RebasePoint, RebasePreview};
 pub use restore::{
     NoRestoreFaults, RestoreFaults, RestorePoint, RestorePreview, RestoreReceipt, RestoreSource,
 };

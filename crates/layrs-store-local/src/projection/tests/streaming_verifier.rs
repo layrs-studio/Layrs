@@ -8,8 +8,8 @@ fn conflicting_legacy_and_chunk_representations_fail_closed() {
     fs::write(fixture.0.join("a.txt"), b"captured").unwrap();
     let captured = store.capture_patch(1).unwrap();
     let file = captured.changes[0].replacement.as_ref().unwrap();
-    let db = rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3"))
-        .unwrap();
+    let db =
+        rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
     db.execute(
         "INSERT INTO projection_capture_files(file_id,bytes) VALUES(?1,?2)",
         rusqlite::params![file.file_id.as_str(), b"corrupt!".as_slice()],
@@ -30,11 +30,15 @@ fn chunk_reader_rejects_self_consistent_row_for_another_file() {
         .verify_captured_file(captured.sequence, &RepoPath::parse("a.txt").unwrap())
         .unwrap();
     let replacement = Chunk::new(b"corrupt!".to_vec()).unwrap();
-    let db = rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3"))
-        .unwrap();
+    let db =
+        rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
     db.execute(
         "UPDATE projection_capture_chunks SET chunk_id=?2,bytes=?3 WHERE file_id=?1 AND ordinal=0",
-        rusqlite::params![file.file_id.as_str(), replacement.id().as_str(), replacement.bytes()],
+        rusqlite::params![
+            file.file_id.as_str(),
+            replacement.id().as_str(),
+            replacement.bytes()
+        ],
     )
     .unwrap();
     drop(db);
@@ -81,8 +85,8 @@ fn verified_chunk_witness_survives_checkout_edits_and_rejects_oversized_rows() {
             .is_err()
     );
     assert!(output.is_empty());
-    let db = rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3"))
-        .unwrap();
+    let db =
+        rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
     db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE projection_capture_chunks SET bytes=zeroblob(2097152); PRAGMA ignore_check_constraints=OFF;")
         .unwrap();
     drop(db);
@@ -164,10 +168,15 @@ fn restore_rechecks_deleted_path_absence_before_commit() {
             },
         )
         .unwrap();
-    assert!(store
-        .apply_restore_with_faults(&preview, &RecreateAtCommit(fixture.0.clone()))
-        .is_err());
-    assert_eq!(fs::read(fixture.0.join("a.txt")).unwrap(), b"external new bytes");
+    assert!(
+        store
+            .apply_restore_with_faults(&preview, &RecreateAtCommit(fixture.0.clone()))
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(fixture.0.join("a.txt")).unwrap(),
+        b"external new bytes"
+    );
     assert!(ProjectionStore::resume_restore(&fixture.0).is_err());
 }
 
@@ -187,11 +196,28 @@ fn failed_schema_migration_rolls_back_all_ddl_and_retries() {
     db.execute_batch("PRAGMA ignore_check_constraints=ON; INSERT INTO projection_namespace_pending VALUES(1,zeroblob(8388609)); PRAGMA ignore_check_constraints=OFF;")
         .unwrap();
     assert!(database::migrate(&mut db).is_err());
-    assert_eq!(db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0)).unwrap(), 3);
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        3
+    );
     assert_eq!(db.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name='projection_capture_chunks' OR name LIKE '%_old'", [], |r| r.get::<_, u32>(0)).unwrap(), 0);
-    assert_eq!(db.query_row("SELECT length(payload) FROM projection_namespace_pending", [], |r| r.get::<_, u32>(0)).unwrap(), 8388609);
-    db.execute("DELETE FROM projection_namespace_pending", []).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT length(payload) FROM projection_namespace_pending",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        8388609
+    );
+    db.execute("DELETE FROM projection_namespace_pending", [])
+        .unwrap();
     database::migrate(&mut db).unwrap();
     database::migrate(&mut db).unwrap();
-    assert_eq!(db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0)).unwrap(), 5);
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        5
+    );
 }

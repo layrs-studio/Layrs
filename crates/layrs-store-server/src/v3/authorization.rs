@@ -185,8 +185,11 @@ pub trait PolicyAuthorizer: Send + Sync {
     /// Equality means two restricted principals have the same complete read
     /// permission footprint in this policy. None is deliberately non-shareable.
     async fn read_visibility_fingerprint(
-        &self, _check: &AuthorizationCheck,
-    ) -> V3StoreResult<Option<String>> { Ok(None) }
+        &self,
+        _check: &AuthorizationCheck,
+    ) -> V3StoreResult<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Authentication/membership gate for a fresh self-hosted deployment. It is

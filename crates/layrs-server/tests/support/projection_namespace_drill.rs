@@ -156,7 +156,12 @@ pub(super) fn run(
     let captured = reader
         .apply_projection_directory_move(store, &preview)
         .unwrap();
-    assert_eq!(reader.apply_projection_directory_move(store, &preview).unwrap(), captured);
+    assert_eq!(
+        reader
+            .apply_projection_directory_move(store, &preview)
+            .unwrap(),
+        captured
+    );
     assert!(!root.join("public/directory-source").exists());
     assert_eq!(
         std::fs::read(root.join("public/directory-moved/file.txt")).unwrap(),

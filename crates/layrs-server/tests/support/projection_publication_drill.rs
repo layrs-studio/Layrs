@@ -4,10 +4,10 @@ use layrs_store_local::projection::ProjectionStore;
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 #[path = "projection_namespace_drill.rs"]
 mod namespace;
-#[path = "projection_stream_drill.rs"]
-mod streaming;
 #[path = "projection_rebase_drill.rs"]
 mod rebase;
+#[path = "projection_stream_drill.rs"]
+mod streaming;
 
 pub(super) fn run(
     workspace: &NativeWorkspace,

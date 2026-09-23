@@ -36,12 +36,15 @@ pub(super) fn migrate(c: &mut Connection) -> Result<()> {
         .replace("CREATE TABLE projection_rebase_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;\n", "")
         .replace("CREATE TABLE projection_rebase_history(operation_id TEXT PRIMARY KEY,generation INTEGER NOT NULL UNIQUE REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;\n", "")
         .replace("CREATE TABLE projection_rebase_previews(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;\n", "");
-    let old_sql = if version == 3 { v4_sql
+    let old_sql = if version == 3 {
+        v4_sql
         .replace("PRAGMA user_version=4;", "PRAGMA user_version=3;")
         .replace(&format!("{CHUNK_TABLE}\n"), "")
         .replace("projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=65536))")
         .replace("projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536))")
-    } else { v4_sql };
+    } else {
+        v4_sql
+    };
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(&old_sql)?;
     if schema(c)? != schema(&reference)? {

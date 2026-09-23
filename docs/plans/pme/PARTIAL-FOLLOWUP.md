@@ -2,8 +2,22 @@
 
 Le périmètre livré et qualifié est décrit dans
 [PARTIAL-CHECKOUTS.md](../../../deploy/selfhost/PARTIAL-CHECKOUTS.md).
-Les points ci-dessous sont du développement restant, distinct de l'installation
-vierge, du pilote humain ou de la CI distante. Aucun n'est annoncé implémenté.
+Les sections détaillées plus bas sont le constat initial du22septembre.
+Mise à jour23septembre :
+
+| Lot | Livré dans les sources | Encore à faire |
+| --- | --- | --- |
+| Collaboration | Candidats sans avance, revues limitées aux chemins, approbation/preuve, intégration et rejouabilité HTTPS ; Desktop53,3sPASS | Qualification des nouveaux paquets |
+| Grandes publications | Captures et transport en blocs1Mio, plafonds1Gio/fichier et4Gio/capture, reprise100Mio et1Gio validée | Qualification4Gio et mesure mémoire dédiée |
+| Divergences | Fusion régulière base/local/distant, Lens borné, brouillon persistant, choix par fichier, revalidation et reprise | Plusieurs têtes/bases et conflits structurels ; persistance des choix de formulaire |
+| Namespace/historique | Dossiers ordinaires déplacés atomiquement ; restauration d'un Step publié sous droits actuels | Transformations dossier/fichier, liens et résolution structurelle ; création de chemins historiques inconnus |
+
+Commits et preuves : [REPRISE](REPRISE.md) et [journal courant](journal/FINISH-20260923.md).
+La recette HTTPS fusion/restauration complète passe121,58s ; les paquets
+qualified5 ne contiennent pas ces changements. Les qualifications externes
+restent distinctes du développement accessible.
+
+## Constat initial — 22 septembre, historique
 
 ## 1. Collaboration et Layers protégées
 

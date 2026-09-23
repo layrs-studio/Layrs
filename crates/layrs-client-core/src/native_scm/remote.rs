@@ -26,7 +26,10 @@ use std::{
 
 const MAX_OBJECT: u64 = 64 * 1024 * 1024;
 mod projection_rebase;
-pub use projection_rebase::{NativeProjectionRebasePreview, ProjectionMergeChoice, ProjectionMergeFile, ProjectionHistoricalSelection};
+pub use projection_rebase::{
+    NativeProjectionRebasePreview, ProjectionHistoricalSelection, ProjectionMergeChoice,
+    ProjectionMergeFile,
+};
 const MAX_TOTAL: usize = 256 * 1024 * 1024;
 const MAX_FILE_STREAM: u64 = 1024 * 1024 * 1024;
 const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;

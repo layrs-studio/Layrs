@@ -749,39 +749,6 @@ fn scoped_text_visible(
             && (same_writer || same_fingerprint(reader_fingerprint, writer_fingerprint))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_visibility_requires_captured_equivalent_read_scope() {
-        assert!(scoped_text_visible(
-            true,
-            true,
-            false,
-            Some("same"),
-            Some("same")
-        ));
-        assert!(!scoped_text_visible(
-            true,
-            true,
-            false,
-            Some("narrow"),
-            Some("broad")
-        ));
-        assert!(!scoped_text_visible(true, true, false, None, None));
-        assert!(scoped_text_visible(true, true, true, None, None));
-        assert!(!scoped_text_visible(
-            true,
-            false,
-            true,
-            Some("same"),
-            Some("same")
-        ));
-        assert!(scoped_text_visible(false, false, false, None, None));
-    }
-}
-
 fn action_from(row: &sqlx::postgres::PgRow, share_body: bool) -> V3StoreResult<ScopedReviewAction> {
     let action: ScopedReviewActionKind =
         serde_json::from_value(serde_json::Value::String(row.get("action_kind"))).map_err(bad)?;
@@ -970,4 +937,37 @@ async fn scoped_proof_passed(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_visibility_requires_captured_equivalent_read_scope() {
+        assert!(scoped_text_visible(
+            true,
+            true,
+            false,
+            Some("same"),
+            Some("same")
+        ));
+        assert!(!scoped_text_visible(
+            true,
+            true,
+            false,
+            Some("narrow"),
+            Some("broad")
+        ));
+        assert!(!scoped_text_visible(true, true, false, None, None));
+        assert!(scoped_text_visible(true, true, true, None, None));
+        assert!(!scoped_text_visible(
+            true,
+            false,
+            true,
+            Some("same"),
+            Some("same")
+        ));
+        assert!(scoped_text_visible(false, false, false, None, None));
+    }
 }

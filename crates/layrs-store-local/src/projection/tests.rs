@@ -6,8 +6,8 @@ mod directory_move_verifier;
 mod maintenance;
 mod namespace;
 mod publication;
-mod refresh;
 mod rebase;
+mod refresh;
 mod restore;
 mod streaming_verifier;
 use layrs_core::{
