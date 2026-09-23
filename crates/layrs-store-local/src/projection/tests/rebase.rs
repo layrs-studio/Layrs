@@ -44,6 +44,85 @@ fn provide(path: &str, out: &mut dyn io::Write) -> io::Result<()> {
     assert_eq!(path, "a.txt");
     out.write_all(b"resolved content")
 }
+#[test]
+fn rebase_refuses_late_equal_replacement_and_recreated_deletion() {
+    struct Edit {
+        root: std::path::PathBuf,
+        deletion: bool,
+    }
+    impl RebaseFaults for Edit {
+        fn check(&self, point: RebasePoint) -> io::Result<()> {
+            if point == RebasePoint::BeforeCommit {
+                if !self.deletion {
+                    fs::rename(
+                        self.root.join("a.txt"),
+                        self.root.join("retained-installed.txt"),
+                    )?;
+                }
+                fs::write(
+                    self.root.join("a.txt"),
+                    if self.deletion {
+                        b"external recreation".as_slice()
+                    } else {
+                        b"resolved content".as_slice()
+                    },
+                )?;
+            }
+            Ok(())
+        }
+    }
+    for deletion in [false, true] {
+        let (fixture, store, mut preview) = plan();
+        if deletion {
+            let mut resolutions = preview.resolutions.clone();
+            resolutions.insert(RepoPath::parse("a.txt").unwrap(), None);
+            preview = store
+                .preview_rebase(1, preview.capture_sequence, &preview.target, &resolutions)
+                .unwrap();
+        }
+        assert!(
+            store
+                .apply_rebase_with_faults(
+                    &preview,
+                    &mut provide,
+                    &Edit {
+                        root: fixture.0.clone(),
+                        deletion
+                    }
+                )
+                .is_err()
+        );
+        let expected = if deletion {
+            b"external recreation".as_slice()
+        } else {
+            b"resolved content".as_slice()
+        };
+        assert_eq!(fs::read(fixture.0.join("a.txt")).unwrap(), expected);
+        let c = rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3"))
+            .unwrap();
+        assert_eq!(
+            c.query_row("SELECT generation FROM projection_head", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM projection_rebase_pending", [], |r| {
+                r.get::<_, u64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM projection_rebase_history", [], |r| {
+                r.get::<_, u64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert!(ProjectionStore::resume_rebase(&fixture.0).is_err());
+    }
+}
 struct Stop(RebasePoint);
 impl RebaseFaults for Stop {
     fn check(&self, point: RebasePoint) -> io::Result<()> {

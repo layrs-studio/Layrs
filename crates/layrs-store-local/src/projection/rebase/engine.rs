@@ -345,6 +345,32 @@ fn finish(
         [],
     )?;
     faults.check(RebasePoint::BeforeCommit)?;
+    // The final callback models an editor racing the durable commit. Recheck
+    // installed identities as well as bytes; equal-content replacements still
+    // belong to that editor and must not be adopted by this operation.
+    for old in &journal.old {
+        verify_path(&directory, &old.name, old)?;
+    }
+    for new in &journal.new {
+        verify_path(&root, new.path.as_str(), new)?;
+    }
+    for (path, value) in &journal.preview.resolutions {
+        if value.is_none() {
+            install::files::destination_absent(&root, &store.root, path.as_str())?;
+        }
+    }
+    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
+        != journal.preview.after_checkout_digest
+    {
+        return Err(invalid("rebase checkout changed at commit boundary"));
+    }
+    root.verify_path_identity()?;
+    format::verify_boundaries(
+        &store.root,
+        &store.marker,
+        &access.metadata,
+        &access.database,
+    )?;
     tx.commit()?;
     faults.check(RebasePoint::AfterCommit)?;
     access.verify()?;

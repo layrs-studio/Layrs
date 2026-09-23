@@ -8,6 +8,13 @@ Schema 5 adds an atomic, exact migration from schemas 3 and 4. It preserves prio
 
 The resulting projection records the exact remote Step and root-tree IDs. Resolved checkout bytes may differ and are represented solely by the new base-relative local capture. `completed_rebase(operation_id)` validates immutable history and returns the capture without consulting the current checkout, allowing a client to resolve a lost response. `fsck` verifies the rebase chain, both projection generations, source/result captures, file witnesses and stored old bytes and the bounded durable client draft. Capture/file bounds remain 4 GiB total, 1 GiB per file, 1024 changes; file IO uses bounded streaming buffers.
 
-Focused checks: Store3 projection tests (73 passed), including fault recovery, no-overwrite collision, corrupt stage, stale checkout, protected path refusal, schema-3 rollback/retry and schema-4 migration. Further client integration must resolve conflicts before invoking this API and use the durable draft table for unresolved choices. This layer does not synthesize native SCM merge Steps or change remote authority.
+Focused checks: Store3 projection tests (73 passed), including fault recovery, no-overwrite collision, corrupt stage, stale checkout, protected path refusal, schema-3 rollback/retry and schema-4 migration. Linux full projection suite: 74 passed,20.58s. This layer does not synthesize native SCM merge Steps or change remote authority.
+
+Root self-review found a late filesystem race after the BeforeCommit callback.
+The final identity/hash/absence and metadata-boundary checks now run after that
+callback. Regression replaces an installed file with equal external bytes and
+recreates a deleted path: both refuse commit, preserve external bytes and retain
+the recovery journal. Windows rebase suite11PASS,3.55s. Independent re-review
+unavailable because the agent runtime refuses more threads; this is self-review.
 
 
