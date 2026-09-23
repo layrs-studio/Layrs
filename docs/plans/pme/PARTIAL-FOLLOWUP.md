@@ -9,7 +9,7 @@ Mise à jour23septembre :
 | --- | --- | --- |
 | Collaboration | Candidats sans avance, revues limitées aux chemins, approbation/preuve, intégration et rejouabilité HTTPS ; Desktop53,3sPASS ; paquets qualified6 validés | Relecture indépendante finale non disponible ; ne pas ouvrir les lectures complètes/raw logs aux comptes restreints |
 | Grandes publications | Captures et transport en blocs1Mio, plafonds1Gio/fichier et4Gio/capture, reprise100Mio et1Gio validée | Qualification4Gio et mesure mémoire dédiée |
-| Divergences | Fusion régulière base/local/distant, Lens borné, brouillon persistant, choix par fichier, revalidation et reprise | Plusieurs têtes/bases et conflits structurels ; persistance des choix de formulaire |
+| Divergences | Fusion régulière base/local/distant, Lens borné, brouillon et choix de formulaire persistants, revalidation et reprise | Plusieurs têtes/bases et conflits structurels |
 | Namespace/historique | Dossiers ordinaires déplacés atomiquement ; restauration d'un Step publié sous droits actuels | Transformations dossier/fichier, liens et résolution structurelle ; création de chemins historiques inconnus |
 
 Commits et preuves : [REPRISE](REPRISE.md) et [journal courant](journal/FINISH-20260923.md).

@@ -65,7 +65,9 @@ et intégration sur Layer protégée sont disponibles dans CLI/Desktop. Le test
 réel vérifie désormais le parcours accepté après approbation, en plus des refus.
 Fusion base/local/distant de fichiers ordinaires, brouillon persistant,
 déplacements de dossiers et restauration de chemins historiques connus sont
-livrés, avec revalidation des droits et reprise durable.
+livrés, avec revalidation des droits et reprise durable. Les choix du formulaire
+Desktop sont ensuite devenus persistants sur ce poste, liés à l'aperçu exact
+(5 tests Node et Desktop réel43,9sPASS).
 
 Extensions fonctionnelles encore ouvertes :
 
@@ -75,9 +77,6 @@ Extensions fonctionnelles encore ouvertes :
   partielle. Les déplacements de dossiers ordinaires sont livrés.
 - Restauration de chemins historiques inconnus de la projection actuelle :
   nécessite observation/autorisation actuelle et réservation avant création.
-- Persistance des choix de formulaire Desktop avant application : le brouillon
-  et ses variantes sont durables, mais les sélections du formulaire restent en
-  mémoire jusqu'à validation.
 
 Qualifications locales supplémentaires : lot complet4Gio et profil mémoire du
 transport partiel non mesurés. Le test1Gio utilise des octets répétés. Le plafond

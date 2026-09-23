@@ -22,6 +22,12 @@ limites fonctionnelles restantes sont listées dans [REMAINING](REMAINING.md) ;
 les huit plans ne sont pas déclarés intégralement clos.
 Utilisateur confirmé : seulement le poste actuel, Windows et Docker Linux.
 
+Complément Desktop validé après qualified6 : choix de résolution persistants
+sur ce poste, liés à l'aperçu complet, sans copie des contenus. 5 tests Node et
+recette Desktop étendue43,9sPASS (vrai conflit et page rechargée). Nouveau MSI
+à construire depuis le commit de ce complément ; Rust et archives natives
+qualified6 inchangés. [Journal](journal/PARTIAL-DESKTOP-EXTENSIONS.md).
+
 ## Checkpoint historique — 22 septembre 2026
 
 Projection éditable livrée et qualifiée : serveur `82c0254`, opérations locales

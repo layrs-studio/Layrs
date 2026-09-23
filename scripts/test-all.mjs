@@ -11,7 +11,7 @@ const steps = [
     command: "pnpm",
     args: ["run", "test:sdk"]
   },
-  ...["native-project-files", "native-remote-project-files", "native-policy-path-form", "native-projection-store"].map((name) => ({
+  ...["native-project-files", "native-remote-project-files", "native-policy-path-form", "native-projection-store", "partial-merge-choices"].map((name) => ({
     label: name,
     command: "node",
     args: [`scripts/test-${name}.mjs`]
