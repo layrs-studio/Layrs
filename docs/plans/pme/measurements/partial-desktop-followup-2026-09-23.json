@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "layrs.partial-desktop-followup.v1",
+  "date": "2026-09-23",
+  "commit": "7ecae36cb0684a56b1f4ab4d469cc20f4a9ecffc",
+  "change": "Persist conflict choices bound to the full preview and checkout/server context; never reuse across identities or changed variants.",
+  "checks": {
+    "choicesUnitTests": 5,
+    "typescriptDesktop": "passed",
+    "desktopReal": {
+      "passed": 1,
+      "seconds": 43.9,
+      "log": "D:/Layrs/tmp/partial-choice-ui-final-20260923.log",
+      "scenario": "Real conflict; choose local, reload WebView page, reopen projection and saved draft, recover choice, apply, verify bytes; then directory move and historical restore."
+    }
+  },
+  "desktop": {
+    "directory": "dist/desktop-windows-qualified7-20260923",
+    "manifestSha256": "a580688958392a859a1e5db24d93520a68f37a74cee5c70799b2b8d5e2015494",
+    "manifest": {
+      "schema": "layrs.desktop-distribution.v1",
+      "createdAt": "2026-09-23T14:36:27.395Z",
+      "commit": "7ecae36cb0684a56b1f4ab4d469cc20f4a9ecffc",
+      "dirty": false,
+      "treeSha256": "e48981853e029ed992fa2eacd8620fc7264773233f9a2c4ae672f4abccafea04",
+      "signature": "unsigned",
+      "installedByRecipe": false,
+      "artifacts": [
+        {
+          "path": "Layrs Studio_0.0.0_x64_en-US.msi",
+          "bytes": 12304384,
+          "sha256": "8df226f60eb7d47d4269c69ab4e63637df103c3743d96e0af2522fe8418729e4"
+        }
+      ]
+    }
+  },
+  "nativeArchives": {
+    "qualification": "qualified6",
+    "sourceCommit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+    "sourceTreeSha256": "cc55b95ec6bfd8ed3cbcf4289e5ad8b513f0a48de770a6d02a4d3736bac790fa",
+    "evidence": "partial-artifacts-2026-09-23.json",
+    "unchanged": true
+  },
+  "limitations": [
+    "Choices use persistent WebView storage on this host, not the portable Store3 database; clearing that storage removes choices but keeps native draft variants.",
+    "Storage errors retain choices in memory and show a warning; current native authorization and preview validation still govern application.",
+    "MSI unsigned and uninstalled; Tauri emitted its existing bundler-type warning, automatic updater not qualified.",
+    "Direct self-review and targeted tests for this UI-only addition; no independent agent review."
+  ]
+}

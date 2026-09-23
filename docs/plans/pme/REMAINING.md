@@ -78,8 +78,12 @@ Extensions fonctionnelles encore ouvertes :
 - Restauration de chemins historiques inconnus de la projection actuelle :
   nécessite observation/autorisation actuelle et réservation avant création.
 
-Qualifications locales supplémentaires : lot complet4Gio et profil mémoire du
-transport partiel non mesurés. Le test1Gio utilise des octets répétés. Le plafond
+Qualification locale supplémentaire : lot complet4Gio non mesuré. Une mesure
+du processus du scénario partiel1Gio passe270,5s : pic résident63,8Mio, mémoire
+privée échantillonnée27,1Mio ; PostgreSQL, sous-processus et cache OS exclus.
+Le test1Gio utilise des octets répétés ; ce résultat ne prouve pas une borne
+universelle ni un budget calibré. [Mesure](measurements/partial-sync-memory-2026-09-23.json).
+Le plafond
 4Gio porte sur le scan de capture, incluant les fichiers matérialisés inchangés.
 La relecture indépendante finale n'a pas pu être relancée après épuisement des
 threads d'agents ; relecture racine et régressions finales documentées séparément.
@@ -100,5 +104,6 @@ et signature de publication ne sont pas devenus des capacités livrées.
 
 [Journal T4](journal/T4.md), [intégration partielle](journal/PARTIAL-INTEGRATION.md),
 [journal T8](journal/T8.md), [manifestes qualified6](measurements/partial-artifacts-2026-09-23.json).
-Les archives qualified4/5 sont historiques. Les nouveaux paquets sont non signés ;
-MSI vérifié mais non installé. Aucun push ou déploiement n'a été effectué.
+Les archives natives courantes sont qualified6 ; [MSI qualified7](measurements/partial-desktop-followup-2026-09-23.json)
+pour le complément UI. Les archives qualified4/5 sont historiques. Les paquets
+sont non signés ; MSI vérifié mais non installé. Aucun push ni déploiement.

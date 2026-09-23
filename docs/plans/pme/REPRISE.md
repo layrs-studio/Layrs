@@ -24,9 +24,19 @@ Utilisateur confirmé : seulement le poste actuel, Windows et Docker Linux.
 
 Complément Desktop validé après qualified6 : choix de résolution persistants
 sur ce poste, liés à l'aperçu complet, sans copie des contenus. 5 tests Node et
-recette Desktop étendue43,9sPASS (vrai conflit et page rechargée). Nouveau MSI
-à construire depuis le commit de ce complément ; Rust et archives natives
-qualified6 inchangés. [Journal](journal/PARTIAL-DESKTOP-EXTENSIONS.md).
+recette Desktop étendue43,9sPASS (vrai conflit et page rechargée). Commit `7ecae36`,
+MSI qualified7 construit depuis cet arbre propre et empreinte vérifiée ; Rust
+et archives natives qualified6 inchangés. Le cache des choix appartient au
+WebView sur ce poste ; effacer ses données efface les choix, pas le brouillon
+natif. [Journal](journal/PARTIAL-DESKTOP-EXTENSIONS.md),
+[manifestes et limites](measurements/partial-desktop-followup-2026-09-23.json).
+
+Dernière mesure locale : scénario HTTPS partiel1Gio **1PASS,270,49s** (mesure
+processus270,519s), pic résident63,8Mio et privé échantillonné27,1Mio.
+4 316 observations, attente nominale50ms, cadence moyenne62,7ms. PostgreSQL,
+sous-processus et cache OS exclus ; compilation MSI concurrente, contenu
+répété, aucune calibration de débit ni borne mémoire générale revendiquée.
+[Mesure et empreintes des logs](measurements/partial-sync-memory-2026-09-23.json).
 
 ## Checkpoint historique — 22 septembre 2026
 

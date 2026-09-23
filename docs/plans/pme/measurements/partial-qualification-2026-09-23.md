@@ -6,6 +6,22 @@ ajoutés ensuite ne changent pas ces binaires. Détails, manifestes complets,
 empreintes et résultats de distribution dans
 [partial-artifacts-2026-09-23.json](partial-artifacts-2026-09-23.json).
 
+**Complément courant Desktop :** commit `7ecae36`, choix de conflits persistants
+sur ce poste, 5 tests Node et Desktop réel43,9sPASS (conflit, sélection, page
+rechargée, choix retrouvé et appliqué). MSI **qualified7** construit et vérifié,
+non signé/non installé. Les archives natives restent **qualified6**, leurs
+sources inchangées ont été revérifiées.
+[Manifeste et périmètre du complément](partial-desktop-followup-2026-09-23.json).
+Le reste du rapport conserve les preuves du lot `fbd8d6f`.
+
+**Mesure mémoire complémentaire :** scénario HTTPS partiel1Gio1PASS,270,49s ;
+pic résident63,8Mio, privé échantillonné27,1Mio, 4 316 observations. Processus
+clients+serveur intégré, PostgreSQL/cache OS/enfants exclus ; debug, octets
+répétés et compilation MSI concurrente. Attente nominale50ms, moyenne observée
+62,7ms ; pics privés entre observations possibles. Ce résultat ne calibre pas
+le débit et ne prouve pas une borne universelle.
+[Mesure, commande et empreintes des logs](partial-sync-memory-2026-09-23.json).
+
 ## Comportements vérifiés
 
 | Contrôle | Résultat | Portée |
@@ -66,13 +82,15 @@ réellement plein, CI distante, pilote de 3–5 personnes ou opérateur indépen
 n'est ajoutée par ce rapport.
 
 Le test 1 Gio utilise du contenu répété. Il ne mesure ni un lot de 4 Gio,
-ni le pic mémoire du transport partiel, ni un débit de production calibré.
+ni un débit de production calibré. La mesure mémoire complémentaire ci-dessus
+porte sur le processus du scénario entier, pas seulement une phase réseau.
 La fusion partielle est limitée aux fichiers ordinaires avec une seule tête
 distante ; transformations structurelles, liens et bases multiples restent
 ouverts. La restauration historique sélectionne les chemins connus et
 autorisés actuellement ; elle ne recrée pas un chemin historique inconnu.
-Les variantes du brouillon sont durables, les choix du formulaire Desktop
-ne le sont pas encore.
+Les variantes du brouillon sont durables. Les choix du formulaire étaient
+volatils dans qualified6 ; le complément Desktop qualified7 les conserve dans
+le stockage local du WebView, sans remplacer la revalidation native.
 
 Des revues critiques indépendantes ont trouvé des défauts corrigés dans les
 lots stockage/dossiers et transport/revues. La dernière relecture indépendante

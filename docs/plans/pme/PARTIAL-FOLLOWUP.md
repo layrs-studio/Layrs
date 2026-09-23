@@ -8,7 +8,7 @@ Mise à jour23septembre :
 | Lot | Livré dans les sources | Encore à faire |
 | --- | --- | --- |
 | Collaboration | Candidats sans avance, revues limitées aux chemins, approbation/preuve, intégration et rejouabilité HTTPS ; Desktop53,3sPASS ; paquets qualified6 validés | Relecture indépendante finale non disponible ; ne pas ouvrir les lectures complètes/raw logs aux comptes restreints |
-| Grandes publications | Captures et transport en blocs1Mio, plafonds1Gio/fichier et4Gio/capture, reprise100Mio et1Gio validée | Qualification4Gio et mesure mémoire dédiée |
+| Grandes publications | Captures et transport en blocs1Mio, plafonds1Gio/fichier et4Gio/capture, reprise100Mio et1Gio validée ; mesure1Gio : pic résident63,8Mio | Qualification4Gio ; budgets de performance non calibrés |
 | Divergences | Fusion régulière base/local/distant, Lens borné, brouillon et choix de formulaire persistants, revalidation et reprise | Plusieurs têtes/bases et conflits structurels |
 | Namespace/historique | Dossiers ordinaires déplacés atomiquement ; restauration d'un Step publié sous droits actuels | Transformations dossier/fichier, liens et résolution structurelle ; création de chemins historiques inconnus |
 
@@ -17,6 +17,11 @@ La recette HTTPS fusion/restauration complète passe121,58s, puis284,71s avec1Gi
 Les paquets qualified6 contiennent ces changements, construits depuis `fbd8d6f` ;
 smoke8 par OS et upgrade/rollback5→6 PASS. Les qualifications externes
 restent distinctes du développement accessible.
+
+Complément UI `7ecae36` : choix de conflit persistants, Desktop43,9sPASS et MSI
+qualified7 vérifié. Archives natives qualified6 inchangées. Mesure mémoire
+du scénario1Gio270,5sPASS, processus clients+serveur intégré seulement,
+contenu répété ; [périmètre exact](measurements/partial-sync-memory-2026-09-23.json).
 
 ## Constat initial — 22 septembre, historique
 

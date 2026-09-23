@@ -19,8 +19,11 @@ un sélecteur sans nom accessible exact ; libellé explicite ajouté, assertion 
 conflit natif avant sélection. Cache relu après rechargement complet du WebView.
 Le test Node est raccordé à `scripts/test-all.mjs`. Aucun Rust ni contrat natif
 modifié ; relecture directe de ce petit complément UI, distincte d'une revue
-indépendante. Les paquets qualified6 précèdent ce complément ; nouveau MSI
-nécessaire après commit, archives natives inchangées.
+indépendante. Commit `7ecae36`, MSI qualified7 construit depuis cet arbre propre,
+SHA256 vérifié ; archives natives qualified6 inchangées (empreinte des sources
+recalculée). [Manifeste](../measurements/partial-desktop-followup-2026-09-23.json).
+Les choix sont locaux au WebView, pas au Store transportable : effacer les
+données du WebView les supprime, en conservant les variantes du brouillon natif.
 
 ## Lot précédent qualifié
 
@@ -50,6 +53,9 @@ ajoutée par le complément décrit en tête de ce journal.
 
 Qualification transport sur la même source : HTTPS complet **1PASS,284,71s** avec
 `LAYRS_TEST_SCOPED_MIB=1024`, capture/envoi1Gio et rejeu après réponse perdue.
-Log `D:/Layrs/tmp/scoped-1gib-20260923.log`. Cela ne mesure pas le pic mémoire ni
-un lot complet4Gio. Windows actuel et Linux Docker seulement, conformément aux
-moyens confirmés par l'utilisateur.
+Log `D:/Layrs/tmp/scoped-1gib-20260923.log`. Un essai séparé a ensuite mesuré
+le processus du même parcours1Gio270,5sPASS : pic résident63,8Mio, privé
+échantillonné27,1Mio, PostgreSQL/cache OS/enfants exclus. Le lot complet4Gio
+reste non qualifié. [Mesure et limites](../measurements/partial-sync-memory-2026-09-23.json).
+Windows actuel et Linux Docker seulement, conformément aux moyens confirmés
+par l'utilisateur.

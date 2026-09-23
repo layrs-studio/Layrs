@@ -493,8 +493,12 @@
     "MSI built and hash-verified; unsigned and not installed.",
     "Archive rollback tests cover FORMAT2, not Store3 schema downgrade or PostgreSQL rollback.",
     "Partial merge supports regular files and one remote head; structural changes and multiple bases remain unsupported.",
-    "The 1GiB transfer uses repeated content; aggregate 4GiB and a dedicated memory profile were not measured.",
+    "The 1GiB transfer uses repeated content; aggregate 4GiB was not tested. A later Windows process-memory measurement is recorded separately in partial-sync-memory-2026-09-23.json.",
     "Final independent re-review was unavailable because the agent thread limit was exhausted; root self-review and regressions are not independent verification.",
     "No remote CI, virgin Windows guest, macOS/ARM, human pilot or independent operator qualification was performed."
-  ]
+  ],
+  "supplements": {
+    "desktop": "partial-desktop-followup-2026-09-23.json",
+    "memory": "partial-sync-memory-2026-09-23.json"
+  }
 }
