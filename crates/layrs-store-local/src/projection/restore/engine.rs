@@ -103,21 +103,16 @@ pub(super) fn apply(
         old_identity: BTreeMap::new(),
         new_identity: BTreeMap::new(),
     };
-    let mut old_bytes = BTreeMap::new();
     for (index, (path, old)) in expected.before.iter().enumerate() {
         if let Some(old) = old {
             let pin = root.open_relative_file(Path::new(path.as_str()))?;
             let identity = file::identity(pin.file())?;
-            old_bytes.insert(
-                old.file_id.clone(),
-                files::bytes(&root, path.as_str(), old, &identity)?,
-            );
+            files::verified(&root, path.as_str(), old, &identity)?;
             journal.old_identity.insert(path.clone(), identity);
         }
         if let Some(new) = &expected.after[path] {
-            let data = capture::storage::file_bytes(&access.connection, new)?;
             let mut staged = directory.create_file(format!("new-{index:04}").as_ref())?;
-            staged.file_mut().write_all(&data)?;
+            capture::storage::stream_file(&access.connection, new, staged.file_mut())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -147,14 +142,16 @@ pub(super) fn apply(
     let tx = access
         .connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    for (id, bytes) in old_bytes {
-        tx.execute(
-            "INSERT INTO projection_capture_files VALUES(?1,?2) ON CONFLICT(file_id) DO NOTHING",
-            params![id.as_str(), bytes],
-        )?;
+    for (path, old) in &expected.before {
+        if let Some(old) = old {
+            let pin = files::verified(&root, path.as_str(), old, &journal.old_identity[path])?;
+            capture::storage::persist_pinned_file(&tx, &pin, old)?;
+        }
     }
-    for old in expected.before.values().flatten() {
-        capture::storage::file_bytes(&tx, old)?;
+    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
+        != expected.checkout_digest
+    {
+        return Err(invalid("checkout changed during restore preservation"));
     }
     tx.execute(
         "INSERT INTO projection_restore_pending VALUES(1,?1)",
@@ -272,11 +269,13 @@ fn finish(
     if checkout_digest(&scan.files)? != expected.after_checkout_digest {
         return Err(invalid("checkout changed during restoration"));
     }
+    verify_installed(&root, &store.root, expected, journal)?;
     access.verify()?;
     let tx = access
         .connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let capture = capture::storage::persist_in_transaction(&tx, store, &state, scan)?;
+    verify_installed(&root, &store.root, expected, journal)?;
     tx.execute(
         "INSERT INTO projection_restore_history VALUES(?1,?2,?3)",
         params![expected.operation_id, capture.sequence, encode(journal)?],
@@ -286,6 +285,7 @@ fn finish(
         [],
     )?;
     faults.check(RestorePoint::BeforeCommit)?;
+    verify_installed(&root, &store.root, expected, journal)?;
     tx.commit()?;
     faults.check(RestorePoint::AfterCommit)?;
     access.verify()?;
@@ -293,6 +293,21 @@ fn finish(
         operation_id: expected.operation_id.clone(),
         capture,
     })
+}
+fn verify_installed(
+    root: &PinnedDirectory,
+    base: &Path,
+    expected: &RestorePreview,
+    journal: &Journal,
+) -> Result<()> {
+    for (path, new) in &expected.after {
+        if let Some(new) = new {
+            files::verified(root, path.as_str(), new, &journal.new_identity[path])?;
+        } else {
+            install::files::destination_absent(root, base, path.as_str())?;
+        }
+    }
+    Ok(())
 }
 pub(super) fn history(
     c: &Connection,
@@ -363,7 +378,7 @@ pub(super) fn history(
         .chain(journal.preview.after.values())
         .flatten()
     {
-        capture::storage::file_bytes(c, file)?;
+        capture::storage::file_manifest(c, file)?;
     }
     Ok(Some((journal, capture)))
 }

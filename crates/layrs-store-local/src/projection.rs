@@ -3,10 +3,13 @@
 //! network access or synthesize incomplete SCM Operations.
 mod capture;
 pub use capture::{
-    CaptureFaults, CapturePoint, CapturedChange, CapturedFile, CapturedPatch, CapturedTarget,
-    MAX_PATCH_BYTES, NoCaptureFaults,
+    CAPTURE_CHUNK_BYTES, CaptureFaults, CapturePoint, CapturedChange, CapturedFile, CapturedPatch,
+    CapturedTarget, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES, MAX_PATCH_BYTES, NoCaptureFaults,
+    VerifiedCapturedFile,
 };
 mod database;
+mod directory_move;
+pub use directory_move::DirectoryMovePreview;
 mod file;
 mod format;
 mod install;

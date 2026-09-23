@@ -7,13 +7,10 @@ use crate::secure_fs::PinnedDirectory;
 pub(super) use engine::verify_history;
 use layrs_core::{
     projection::EntryState,
-    scm::{FileId, RepoPath, canonical_json},
+    scm::{RepoPath, canonical_json},
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use std::{
-    collections::BTreeMap,
-    io::{Read, Write},
-};
+use std::{collections::BTreeMap, io::Read};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -148,10 +145,13 @@ fn validate_paths(
             ));
         }
         if let Some(file) = file {
+            if file.bytes > MAX_CAPTURE_FILE_BYTES {
+                return Err(invalid("restore file exceeds1GiB"));
+            }
             total = total
                 .checked_add(file.bytes)
-                .filter(|n| *n <= MAX_PATCH_BYTES as u64)
-                .ok_or_else(|| invalid("restore bytes exceed16MiB"))?;
+                .filter(|n| *n <= MAX_CAPTURE_BYTES)
+                .ok_or_else(|| invalid("restore bytes exceed4GiB"))?;
             if cfg!(windows) && file.executable {
                 return Err(invalid("Windows cannot restore executable mode"));
             }
@@ -213,7 +213,7 @@ fn preview(
         before.insert(path.clone(), old);
         resulting.insert(path.to_string(), target.clone());
         if let Some(file) = target {
-            capture::storage::file_bytes(c, file)?;
+            capture::storage::file_manifest(c, file)?;
         }
     }
     validate_paths(&state.snapshot, &before)?;
@@ -239,7 +239,7 @@ fn preview(
             }
         }
     }
-    if changed > 1024 || total > MAX_PATCH_BYTES as u64 {
+    if changed > 1024 || total > MAX_CAPTURE_BYTES {
         return Err(invalid("restore would exceed capture budget"));
     }
     let mut value = RestorePreview {

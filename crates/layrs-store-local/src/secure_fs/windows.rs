@@ -163,6 +163,16 @@ pub(super) fn open_directory_at(
     )
 }
 
+pub(super) fn open_directory_for_move(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_at(
+        parent,
+        name,
+        FILE_TRAVERSE | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
 pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     open_at(
         parent,

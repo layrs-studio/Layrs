@@ -15,18 +15,29 @@ pub(super) fn verified(
     identity: &str,
 ) -> Result<PinnedFile> {
     let pin = root.open_relative_file(Path::new(path))?;
-    if file.bytes > MAX_PATCH_BYTES as u64
+    if file.bytes > MAX_CAPTURE_FILE_BYTES
         || super::super::file::identity(pin.file())? != identity
         || pin.file().metadata()?.len() != file.bytes
     {
         return Err(invalid("restore file identity or size changed"));
     }
     let mut input = pin.file();
-    let mut data = Vec::new();
-    Read::by_ref(&mut input)
-        .take(file.bytes + 1)
-        .read_to_end(&mut data)?;
-    if data.len() as u64 != file.bytes || FileId::from_bytes(&data) != file.file_id {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"layrs-file-v1\0");
+    let mut buffer = [0u8; 64 * 1024];
+    let mut count = 0u64;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        count += read as u64;
+        if count > file.bytes {
+            return Err(invalid("restore file grew"));
+        }
+        hash.update(&buffer[..read]);
+    }
+    if count != file.bytes || format!("blake3:{}", hash.finalize()) != file.file_id.as_str() {
         return Err(invalid("restore file bytes changed"));
     }
     #[cfg(unix)]
@@ -38,22 +49,4 @@ pub(super) fn verified(
     }
     pin.verify_parent()?;
     Ok(pin)
-}
-pub(super) fn bytes(
-    root: &PinnedDirectory,
-    path: &str,
-    file: &CapturedFile,
-    identity: &str,
-) -> Result<Vec<u8>> {
-    let pin = verified(root, path, file, identity)?;
-    let mut result = Vec::new();
-    let mut input = pin.file();
-    // Verification consumed this handle; preserve from its beginning.
-    use std::io::{Seek, SeekFrom};
-    input.seek(SeekFrom::Start(0))?;
-    input.take(file.bytes + 1).read_to_end(&mut result)?;
-    if result.len() as u64 != file.bytes || FileId::from_bytes(&result) != file.file_id {
-        return Err(invalid("restore source changed during preservation"));
-    }
-    Ok(result)
 }

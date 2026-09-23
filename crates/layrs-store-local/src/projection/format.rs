@@ -183,6 +183,9 @@ pub(super) fn open(root: &Path) -> Result<ProjectionStore> {
     let root = std::path::absolute(root)?;
     let marker = read_marker(&root)?;
     let result = ProjectionStore { root, marker };
+    // Upgrade the exact legacy schema under the store's exclusive lock before
+    // any shared reader validates the new schema.
+    drop(access(&result, SessionMode::Exclusive)?);
     let current = result.state()?;
     validate_platform(&current.snapshot)?;
     Ok(result)
@@ -245,10 +248,13 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
     verify_directories(&store.root, &marker, &metadata)?;
     let database =
         super::file::DatabasePin::open(&store.root.join(".layrs/metadata").join(DATABASE))?;
-    let connection = database::connect(
+    let mut connection = database::connect(
         &store.root.join(".layrs/metadata").join(DATABASE),
         mode == SessionMode::Exclusive,
     )?;
+    if mode == SessionMode::Exclusive {
+        database::migrate(&mut connection)?;
+    }
     database::validate(&connection, &marker)?;
     let result = Access {
         connection,

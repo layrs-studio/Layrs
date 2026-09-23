@@ -1,10 +1,14 @@
 use super::*;
 mod capture;
+mod capture_streaming;
+mod directory_move;
+mod directory_move_verifier;
 mod maintenance;
 mod namespace;
 mod publication;
 mod refresh;
 mod restore;
+mod streaming_verifier;
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry},
     scm::{FileId, ObjectId, RepoPath, StepId, TreeEntryTarget, TreeId},

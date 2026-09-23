@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, params};
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const SQL: &str = r#"
-PRAGMA user_version=3;
+PRAGMA user_version=4;
 CREATE TABLE projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),identity BLOB NOT NULL) STRICT;
 CREATE TABLE projection_snapshots(generation INTEGER PRIMARY KEY CHECK(generation>=0),digest TEXT NOT NULL UNIQUE,parent_digest TEXT,payload BLOB NOT NULL CHECK(length(payload)<=67108864),FOREIGN KEY(parent_digest) REFERENCES projection_snapshots(digest) ON DELETE RESTRICT) STRICT;
 CREATE TABLE projection_head(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT) STRICT;
@@ -10,14 +10,48 @@ CREATE TABLE projection_install(singleton INTEGER PRIMARY KEY CHECK(singleton=1)
 CREATE TABLE projection_refresh_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
 CREATE TABLE projection_refresh_history(generation INTEGER PRIMARY KEY REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
 CREATE TABLE projection_capture_files(file_id TEXT PRIMARY KEY CHECK(length(file_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)<=16777216)) STRICT;
+CREATE TABLE projection_capture_chunks(file_id TEXT NOT NULL CHECK(length(file_id)=71),ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<1024),chunk_id TEXT NOT NULL CHECK(length(chunk_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=1048576),PRIMARY KEY(file_id,ordinal)) STRICT;
 CREATE TABLE projection_captures(sequence INTEGER PRIMARY KEY CHECK(sequence>0),digest TEXT NOT NULL UNIQUE CHECK(length(digest)=71),projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 CREATE TABLE projection_publication_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),sequence INTEGER NOT NULL UNIQUE REFERENCES projection_captures(sequence) ON DELETE RESTRICT,projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,projection_digest TEXT NOT NULL CHECK(length(projection_digest)=64),capture_digest TEXT NOT NULL CHECK(length(capture_digest)=71),request_digest TEXT NOT NULL CHECK(length(request_digest)=71),request_bytes BLOB NOT NULL CHECK(length(request_bytes)<=25165824),receipt_digest TEXT CHECK(length(receipt_digest)=71),receipt_bytes BLOB CHECK(length(receipt_bytes)<=25165824),CHECK((receipt_digest IS NULL)=(receipt_bytes IS NULL))) STRICT;
 CREATE TABLE projection_publications(sequence INTEGER PRIMARY KEY REFERENCES projection_captures(sequence) ON DELETE RESTRICT,request_digest TEXT NOT NULL CHECK(length(request_digest)=71),receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=71),receipt_bytes BLOB NOT NULL CHECK(length(receipt_bytes)<=25165824),next_snapshot BLOB CHECK(length(next_snapshot)<=67108864),projection_generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,projection_digest TEXT NOT NULL CHECK(length(projection_digest)=64),after_state BLOB NOT NULL CHECK(length(after_state)<=68157440)) STRICT;
-CREATE TABLE projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=65536)) STRICT;
-CREATE TABLE projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536)) STRICT;
+CREATE TABLE projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+CREATE TABLE projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 CREATE TABLE projection_restore_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 CREATE TABLE projection_restore_history(operation_id TEXT PRIMARY KEY,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 "#;
+const CHUNK_TABLE: &str = "CREATE TABLE projection_capture_chunks(file_id TEXT NOT NULL CHECK(length(file_id)=71),ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<1024),chunk_id TEXT NOT NULL CHECK(length(chunk_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=1048576),PRIMARY KEY(file_id,ordinal)) STRICT;";
+pub(super) fn migrate(c: &mut Connection) -> Result<()> {
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == 4 || schema(c)?.is_empty() {
+        return Ok(());
+    }
+    if version != 3 {
+        return Err(invalid("unsupported projection schema migration"));
+    }
+    let old_sql = SQL
+        .replace("PRAGMA user_version=4;", "PRAGMA user_version=3;")
+        .replace(&format!("{CHUNK_TABLE}\n"), "")
+        .replace("projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=65536))")
+        .replace("projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536))");
+    let reference = Connection::open_in_memory()?;
+    reference.execute_batch(&old_sql)?;
+    if schema(c)? != schema(&reference)? {
+        return Err(invalid("projection schema mismatch before migration"));
+    }
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(CHUNK_TABLE)?;
+    tx.execute_batch("ALTER TABLE projection_namespace_pending RENAME TO projection_namespace_pending_old;
+        CREATE TABLE projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+        INSERT INTO projection_namespace_pending SELECT * FROM projection_namespace_pending_old;
+        DROP TABLE projection_namespace_pending_old;
+        ALTER TABLE projection_namespace_operations RENAME TO projection_namespace_operations_old;
+        CREATE TABLE projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+        INSERT INTO projection_namespace_operations SELECT * FROM projection_namespace_operations_old;
+        DROP TABLE projection_namespace_operations_old;")?;
+    tx.execute_batch("PRAGMA user_version=4;")?;
+    tx.commit()?;
+    Ok(())
+}
 pub(super) fn connect(path: &Path, write: bool) -> Result<Connection> {
     let flags = if write {
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -46,7 +80,7 @@ fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
 pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(SQL)?;
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 3
+    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 4
         || schema(c)? != schema(&reference)?
     {
         return Err(invalid(
@@ -94,6 +128,7 @@ pub(super) fn initialize(
         return Err(invalid("bootstrap initial snapshot differs from FORMAT"));
     }
     if !schema(c)?.is_empty() {
+        migrate(c)?;
         validate(c, marker)?;
         let state = current(c)?;
         if state.generation != 0 || state.snapshot != *initial {

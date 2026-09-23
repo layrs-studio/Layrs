@@ -27,6 +27,11 @@ struct Journal {
     file: CapturedFile,
     identity: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaTag {
+    schema_version: String,
+}
 
 pub(super) fn apply(
     store: &ProjectionStore,
@@ -154,14 +159,21 @@ pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
         [],
         |r| r.get(0),
     )?;
-    if len > 64 * 1024 {
-        return Err(invalid("namespace journal exceeds64KiB"));
+    if len > 8 * 1024 * 1024 {
+        return Err(invalid("namespace journal exceeds8MiB"));
     }
     let bytes: Vec<u8> = access.connection.query_row(
         "SELECT payload FROM projection_namespace_pending WHERE singleton=1",
         [],
         |r| r.get(0),
     )?;
+    let tag: SchemaTag = serde_json::from_slice(&bytes).map_err(invalid)?;
+    if tag.schema_version == "layrs.projection-directory-move-journal.v1" {
+        return super::super::directory_move::resume_payload(store, &mut access, &bytes);
+    }
+    if len > 64 * 1024 {
+        return Err(invalid("namespace journal exceeds64KiB"));
+    }
     let journal: Journal = serde_json::from_slice(&bytes).map_err(invalid)?;
     if canonical_json(&journal).map_err(invalid)? != bytes {
         return Err(invalid("namespace journal is not canonical"));
@@ -358,14 +370,24 @@ pub(in crate::projection) fn verify_history(
         let key: String = row.get(0)?;
         let sequence: u64 = row.get(1)?;
         let length: u64 = row.get(2)?;
-        if length > 64 * 1024 {
-            return Err(invalid("namespace history document exceeds64KiB"));
+        if length > 8 * 1024 * 1024 {
+            return Err(invalid("namespace history document exceeds8MiB"));
         }
         let payload: Vec<u8> = c.query_row(
             "SELECT payload FROM projection_namespace_operations WHERE preview_digest=?1",
             [&key],
             |r| r.get(0),
         )?;
+        let tag: SchemaTag = serde_json::from_slice(&payload).map_err(invalid)?;
+        if tag.schema_version == "layrs.projection-directory-move-journal.v1" {
+            super::super::directory_move::verify_history_record(
+                c, store, &key, sequence, &payload,
+            )?;
+            continue;
+        }
+        if length > 64 * 1024 {
+            return Err(invalid("namespace history document exceeds64KiB"));
+        }
         let journal: Journal = serde_json::from_slice(&payload).map_err(invalid)?;
         if journal.schema_version != "layrs.projection-namespace.v1"
             || canonical_json(&journal).map_err(invalid)? != payload

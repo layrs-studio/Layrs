@@ -27,6 +27,71 @@ impl RestoreFaults for Stop {
     }
 }
 #[test]
+fn large_restore_and_inverse_stream_and_recover_original_bytes() {
+    use std::io::Write;
+    fn write_large(path: &Path, value: u8) {
+        let mut file = fs::File::create(path).unwrap();
+        let buffer = [value; 64 * 1024];
+        for _ in 0..(17 * 16) {
+            file.write_all(&buffer).unwrap();
+        }
+    }
+    fn verify_large(path: &Path, value: u8) {
+        use std::io::Read;
+        let mut file = fs::File::open(path).unwrap();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut size = 0;
+        loop {
+            let count = file.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            assert!(buffer[..count].iter().all(|b| *b == value));
+            size += count;
+        }
+        assert_eq!(size, 17 * 1024 * 1024);
+    }
+    for stop in [
+        RestorePoint::JournalDurable,
+        RestorePoint::PathQuarantined,
+        RestorePoint::BeforeCommit,
+    ] {
+        let (f, store) = ready(false);
+        let path = f.0.join("a.txt");
+        write_large(&path, 0x51);
+        let captured = store.capture_patch(1).unwrap();
+        write_large(&path, 0x92);
+        let preview = store
+            .preview_restore(
+                1,
+                &RestoreSource::Capture {
+                    sequence: captured.sequence,
+                    paths: vec![RepoPath::parse("a.txt").unwrap()],
+                },
+            )
+            .unwrap();
+        assert!(
+            store
+                .apply_restore_with_faults(&preview, &Stop(stop))
+                .is_err()
+        );
+        let receipt = ProjectionStore::resume_restore(&f.0).unwrap();
+        verify_large(&path, 0x51);
+        let reopened = ProjectionStore::open(&f.0).unwrap();
+        let inverse = reopened
+            .preview_restore(
+                1,
+                &RestoreSource::Inverse {
+                    operation_id: receipt.operation_id,
+                },
+            )
+            .unwrap();
+        reopened.apply_restore(&inverse).unwrap();
+        verify_large(&path, 0x92);
+        assert_eq!(reopened.fsck().unwrap().restore_operations, 2);
+    }
+}
+#[test]
 fn selected_restore_preserves_base_and_bytes_and_supports_exact_undo_redo() {
     let (f, store, captured, preview) = setup();
     let base = store.state().unwrap();

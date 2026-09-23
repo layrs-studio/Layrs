@@ -75,6 +75,10 @@ pub(super) fn open_directory_at(
     )
 }
 
+pub(super) fn open_directory_for_move(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_directory_at(parent, name, false, false)
+}
+
 pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     let name = c_name(name)?;
     open_at(
@@ -122,6 +126,12 @@ pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -
     }
     let old_name = c_name(&source.name)?;
     let new_name = c_name(name)?;
+    #[cfg(test)]
+    RENAME_TEST_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: both directory descriptors and NUL-terminated names are live.
     let result = unsafe {
@@ -163,6 +173,12 @@ pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -
             Err(error)
         }
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static RENAME_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 pub(super) fn hard_link_at(

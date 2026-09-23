@@ -5,6 +5,7 @@ use std::fs::{self, File, Metadata};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+mod directory_move;
 mod leaf;
 mod privacy;
 pub(crate) use leaf::PinnedLeaf;
@@ -44,27 +45,15 @@ pub(crate) struct PinnedFile {
 }
 
 impl PinnedDirectory {
-    #[cfg(windows)]
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(path)
-        };
-        let file = open_directory_path(&absolute)?;
-        let metadata = file.metadata()?;
-        validate_directory_metadata(&absolute, &metadata)?;
-        let pinned = Self {
-            identity: file_identity(&file)?,
-            file,
-            display_path: absolute,
-        };
+        let pinned = Self::open_components(path)?;
         pinned.verify_path_identity()?;
         Ok(pinned)
     }
 
-    #[cfg(not(windows))]
-    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+    // Used by both initial opening and revalidation: opening only the last
+    // component would follow an intermediate Windows junction before testing it.
+    fn open_components(path: &Path) -> io::Result<Self> {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -110,7 +99,6 @@ impl PinnedDirectory {
                 }
             }
         }
-        pinned.verify_path_identity()?;
         Ok(pinned)
     }
 
@@ -253,10 +241,8 @@ impl PinnedDirectory {
     }
 
     pub(crate) fn verify_path_identity(&self) -> io::Result<()> {
-        let reopened = open_directory_path(&self.display_path)?;
-        let metadata = reopened.metadata()?;
-        validate_directory_metadata(&self.display_path, &metadata)?;
-        if file_identity(&reopened)? != self.identity {
+        let reopened = Self::open_components(&self.display_path)?;
+        if reopened.identity != self.identity {
             return Err(identity_changed(&self.display_path));
         }
         Ok(())

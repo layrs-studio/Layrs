@@ -1,3 +1,4 @@
+use super::super::capture::MAX_CAPTURE_FILE_BYTES;
 use super::*;
 pub(super) fn ready(readonly: bool) -> (Fixture, ProjectionStore) {
     let fixture = Fixture::new();
@@ -126,7 +127,7 @@ fn concurrent_external_edit_and_corrupted_persistent_bytes_fail_closed() {
     let capture = store.capture_patch(1).unwrap();
     let db = rusqlite::Connection::open(f.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
     db.execute(
-        "UPDATE projection_capture_files SET bytes=?1",
+        "UPDATE projection_capture_chunks SET bytes=?1 WHERE ordinal=0",
         [b"corrupt".as_slice()],
     )
     .unwrap();
@@ -147,19 +148,19 @@ fn concurrent_external_edit_and_corrupted_persistent_bytes_fail_closed() {
     assert_eq!(fs::read(f.0.join("a.txt")).unwrap(), b"during capture");
 }
 #[test]
-fn changed_file_budget_rejects_without_partial_capture_or_file_mutation() {
+fn oversized_file_rejects_without_partial_capture_or_file_mutation() {
     let (f, store) = ready(false);
     let file = fs::OpenOptions::new()
         .write(true)
         .open(f.0.join("a.txt"))
         .unwrap();
-    file.set_len((MAX_PATCH_BYTES + 1) as u64).unwrap();
+    file.set_len(MAX_CAPTURE_FILE_BYTES + 1).unwrap();
     drop(file);
     assert!(store.capture_patch(1).is_err());
     assert!(store.latest_captured_patch().unwrap().is_none());
     assert_eq!(
         fs::metadata(f.0.join("a.txt")).unwrap().len(),
-        (MAX_PATCH_BYTES + 1) as u64
+        MAX_CAPTURE_FILE_BYTES + 1
     );
 }
 #[cfg(unix)]

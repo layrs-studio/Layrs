@@ -93,18 +93,43 @@ impl ProjectionStore {
             if len > MAX_PATCH_BYTES as u64 {
                 return Err(invalid("oversized captured file"));
             }
-            let bytes: Vec<u8> = c.query_row(
-                "SELECT bytes FROM projection_capture_files WHERE file_id=?1",
-                [&id],
-                |r| r.get(0),
+            capture::storage::file_manifest(
+                c,
+                &CapturedFile {
+                    file_id: FileId::parse(id).map_err(invalid)?,
+                    executable: false,
+                    bytes: len,
+                },
             )?;
-            if FileId::from_bytes(&bytes).as_str() != id || bytes.len() as u64 != len {
-                return Err(invalid("captured file corruption"));
-            }
             captured_files += 1;
             captured_bytes = captured_bytes
                 .checked_add(len)
                 .ok_or_else(|| invalid("capture size overflow"))?;
+        }
+        let mut statement = c.prepare(
+            "SELECT file_id,SUM(length(bytes)) FROM projection_capture_chunks GROUP BY file_id ORDER BY file_id",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let len: u64 = row.get(1)?;
+            let file = capture::CapturedFile {
+                file_id: FileId::parse(id).map_err(invalid)?,
+                executable: false,
+                bytes: len,
+            };
+            capture::storage::file_manifest(c, &file)?;
+            let legacy: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projection_capture_files WHERE file_id=?1)",
+                [file.file_id.as_str()],
+                |r| r.get(0),
+            )?;
+            if !legacy {
+                captured_files += 1;
+                captured_bytes = captured_bytes
+                    .checked_add(len)
+                    .ok_or_else(|| invalid("capture size overflow"))?;
+            }
         }
         let publication_pending = publication::storage::pending(c, self)?.is_some();
         let namespace_operations = namespace::verify_history(c, self)?;

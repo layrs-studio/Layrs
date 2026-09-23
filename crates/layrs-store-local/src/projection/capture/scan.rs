@@ -13,25 +13,20 @@ use std::{
 pub(in crate::projection) struct Scan {
     pub files: BTreeMap<String, Option<CapturedFile>>,
     pub changes: Vec<CapturedChange>,
-    pub bytes: BTreeMap<FileId, Vec<u8>>,
 }
-const MAX_FILE: u64 = 1024 * 1024 * 1024;
-const MAX_TOTAL: u64 = 4 * MAX_FILE;
 
 pub(in crate::projection) fn scan(
     store: &ProjectionStore,
     snapshot: &ProjectionSnapshot,
-    retain: bool,
+    _retain: bool,
 ) -> Result<Scan> {
     let root = PinnedDirectory::open(&store.root)?;
     let present = namespace(&root, &store.root, snapshot)?;
     let mut result = Scan {
         files: BTreeMap::new(),
         changes: Vec::new(),
-        bytes: BTreeMap::new(),
     };
     let mut total = 0u64;
-    let mut retained = 0usize;
     let reserved = snapshot.reserved_paths()?;
     for entry in &snapshot.entries {
         if matches!(entry.state, EntryState::Reserved | EntryState::Unavailable) {
@@ -55,12 +50,12 @@ pub(in crate::projection) fn scan(
             let pinned = parent.open_file(&name)?;
             let mut input = pinned.file();
             let meta = input.metadata()?;
-            if meta.len() > MAX_FILE {
+            if meta.len() > MAX_CAPTURE_FILE_BYTES {
                 return Err(invalid("partial capture file exceeds 1GiB"));
             }
             total = total
                 .checked_add(meta.len())
-                .filter(|n| *n <= MAX_TOTAL)
+                .filter(|n| *n <= MAX_CAPTURE_BYTES)
                 .ok_or_else(|| invalid("partial capture exceeds4GiB"))?;
             let executable = executable(&meta);
             let mut hash = blake3::Hasher::new();
@@ -87,29 +82,11 @@ pub(in crate::projection) fn scan(
                 executable,
                 bytes: count,
             };
-            if expected != Some((&descriptor.file_id, descriptor.executable)) {
-                if !entry.writable {
-                    return Err(invalid("read-only projection file was modified"));
-                }
-                retained = retained
-                    .checked_add(count as usize)
-                    .filter(|n| *n <= MAX_PATCH_BYTES)
-                    .ok_or_else(|| {
-                        invalid("modified partial files exceed16MiB submission budget")
-                    })?;
-                if retain {
-                    use std::io::{Seek, SeekFrom};
-                    input.seek(SeekFrom::Start(0))?;
-                    let mut bytes = Vec::with_capacity(count as usize);
-                    input.take(count + 1).read_to_end(&mut bytes)?;
-                    if bytes.len() as u64 != count
-                        || FileId::from_bytes(&bytes) != descriptor.file_id
-                    {
-                        return Err(invalid("file changed while preparing capture"));
-                    }
-                    result.bytes.insert(descriptor.file_id.clone(), bytes);
-                }
+            if expected != Some((&descriptor.file_id, descriptor.executable)) && !entry.writable {
+                return Err(invalid("read-only projection file was modified"));
             }
+            // Changed bytes are reopened through the pinned checkout and
+            // written to SQL in bounded chunks after both scans agree.
             pinned.verify_parent()?;
             parent.verify_path_identity()?;
             if !pinned.same_file(&parent.open_file(&name)?) {
@@ -215,7 +192,7 @@ fn namespace(
     root.verify_path_identity()?;
     Ok(seen)
 }
-fn executable(metadata: &fs::Metadata) -> bool {
+pub(in crate::projection) fn executable(metadata: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
