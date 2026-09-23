@@ -66,3 +66,25 @@ test('private directory removes pre-existing broad Windows read grants',()=>fixt
   assert.equal(readFileSync(file,'utf8'),'{}');
   // privateDirectory itself reads back every ACL and rejects any other allowed SID.
 }));
+test('Windows owner can secure state without permission to change ownership',{skip:process.platform!=='win32'},()=>fixture(parent=>{
+  const directory=join(parent,'private');mkdirSync(directory);writeFileSync(join(directory,'state.json'),'{}');
+  const prepare=`
+    $ErrorActionPreference = 'Stop'
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    foreach ($item in @((Get-Item -LiteralPath $env:LAYRS_ACL_FIXTURE), (Get-Item -LiteralPath (Join-Path $env:LAYRS_ACL_FIXTURE 'state.json')))) {
+      $acl = $item.GetAccessControl()
+      $deny = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'TakeOwnership', 'Deny')
+      $acl.AddAccessRule($deny)
+      $item.SetAccessControl($acl)
+      $ownerOnly = if ($item.PSIsContainer) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+      $ownerOnly.SetOwner($sid)
+      $refused = $false
+      try { $item.SetAccessControl($ownerOnly) } catch { $refused = $true }
+      if (-not $refused) { throw 'Fixture must refuse even an unchanged owner assignment' }
+    }
+  `;
+  const setup=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(prepare,'utf16le').toString('base64')],{env:{...process.env,LAYRS_ACL_FIXTURE:directory},encoding:'utf8',windowsHide:true});
+  assert.equal(setup.status,0,setup.stderr);
+  privateDirectory(directory);privateDirectory(directory);
+  assert.equal(readFileSync(join(directory,'state.json'),'utf8'),'{}');
+}));

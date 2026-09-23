@@ -38,6 +38,21 @@ L'ancien script utilisait encore le serveur historique et PostgreSQL/MinIO.
 
 ## Limites et reprise
 
+### Correctif des droits Windows après retour utilisateur
+
+Échec reproduit sur `native-dev-default` : son propriétaire était déjà le compte
+courant, avec des droits hérités de modification. Le script tentait néanmoins
+`SetOwner`, ce qui exige `WRITE_OWNER` et provoquait un refus Windows.
+Le lanceur conserve maintenant le propriétaire, vérifie qu'il correspond au
+compte courant sur tous les fichiers avant intervention, puis ne réécrit que
+la DACL privée. Un dossier appartenant à un autre compte est refusé.
+
+Huit tests Node PASS, dont un nouveau cas qui interdit explicitement la
+réattribution de propriété sur le dossier et son fichier, puis vérifie deux
+applications successives des protections. Le lancement complet de l'instance
+par défaut a réussi : `https://localhost:19443`. Elle reste démarrée pour
+l'utilisateur ; ses données et identifiants sont conservés.
+
 Ce mode fournit des images construites, sans rechargement à chaud. Un nouveau
 `npm run dev` reconstruit les sources. Le premier build nécessite Internet.
 Qualification sur le poste Windows et Docker Linux disponibles ; aucun résultat
