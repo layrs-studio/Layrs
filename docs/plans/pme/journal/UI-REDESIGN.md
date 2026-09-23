@@ -7,7 +7,9 @@ thème sombre par défaut configurable, interactions agréables, animations et
 retours d'état fréquents. Autorisation de remplacer la présentation existante.
 Les capacités et protections métier restent à conserver.
 
-État : inventaire du code et première exploration visuelle terminés.
+État : direction visuelle validée ; plan détaillé préparé le 24 septembre 2026.
+Voir [le plan de référence](../../../design/redesign/README.md), ses pages,
+principes d'interaction et lots d'exécution. Implémentation produit non commencée.
 Trois maquettes indépendantes présentées dans la conversation, dans cet ordre :
 
 1. `Atelier` : travail local et comparaison textuelle, charbon et menthe.
@@ -20,9 +22,10 @@ visuel sera appliqué à toutes les surfaces, pas uniquement à l'écran illustr
 Les images sont visibles dans la conversation ; aucune image générée n'est
 utilisée comme fond ou remplacement d'une interface interactive.
 
-L'utilisateur préfère la première direction mais demande de l'accorder à son
-logo existant avant implémentation. Nouvelle maquette proposée ; validation de
-la révision encore attendue. Aucun fichier produit ni service modifié dans ce lot.
+L'utilisateur a validé la première direction révisée pour son logo. Il demande
+maintenant un plan détaillé décrivant chaque page et la logique des regroupements,
+avec propositions pour une expérience moderne. Aucun fichier produit ni service
+modifié pendant cette phase de planification.
 
 ### Révision fondée sur la marque
 
@@ -133,7 +136,18 @@ Commit par lot cohérent validé, mise à jour de ce journal à chaque livraison
 
 ## Reprise immédiate
 
-Recueillir le retour sur la maquette révisée de la première direction, désormais
-accordée au logo fourni. Ne pas redemander de choisir entre les trois anciennes
-directions. Après validation, charger le workflow image-to-code, adapter au dépôt
-existant sans créer un projet de démonstration à la place du produit, commencer A.
+La direction est validée ; ne pas redemander un choix visuel. Le plan détaillé
+`docs/design/redesign` remplace les grandes étapes A–G ci-dessus pour l'exécution.
+La demande actuelle est le plan ; aucune implémentation anticipée. Quand le travail
+d'implémentation reprend, commencer les contrats L0 et fondations L1 avec leurs
+responsabilités séparées. Utiliser les vrais flux existants et le SVG utilisateur,
+sans remplacer le produit par une démonstration. Mettre à jour le tableau de suivi
+dans `03-delivery.md`, les validations et les commits à chaque étape.
+
+### Compléments vérifiés pour le plan détaillé
+
+Investigation indépendante des contrats : catalogue de projets accessibles absent
+du V3, capacités effectives non synthétisées, changement de mot de passe existant,
+notifications par projet, invitations globales, pont Git CLI sans action Tauri,
+aperçus distants à raccorder au transport protégé. Ces écarts sont explicitement
+planifiés ; aucun n'est présenté comme une simple retouche graphique.

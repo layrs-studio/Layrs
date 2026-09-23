@@ -1,5 +1,15 @@
 # Point de reprise — travail repris, commits autorisés
 
+## Tâche courante — refonte UI/UX, 24 septembre 2026
+
+La direction graphite/corail/ambre avec logo original et Audiowide est validée.
+Demande actuelle : plan détaillé de toutes les pages Web/Desktop et justification
+des regroupements, avec interactions modernes. [Plan de référence](../../design/redesign/README.md),
+[pages](../../design/redesign/01-pages.md), [suivi des lots](../../design/redesign/03-delivery.md).
+Implémentation produit non commencée ; contrats backend indispensables identifiés.
+Les anciennes qualifications ci-dessous restent historiques ; elles ne qualifient
+pas la refonte. Continuer à committer les étapes et à tenir le journal de reprise.
+
 ## Checkpoint courant — 23 septembre 2026
 
 Reprise explicitement demandée : terminer les extensions, avec commits réguliers.
