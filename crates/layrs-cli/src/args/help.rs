@@ -22,7 +22,10 @@ Commands:
   layrs remote clone-partial SPACE_ID STEP_ID EMPTY_DIRECTORY --endpoint HTTPS_URL
   layrs partial status | capture EXPECTED_GENERATION | resume-installation
   layrs partial fsck | history [BEFORE_SEQUENCE]
-  layrs partial resume-namespace | resume-refresh | resume-restore
+  layrs partial resume-namespace | resume-refresh | resume-restore | resume-rebase
+  layrs partial rebase-draft
+  layrs remote partial-rebase-preview CAPTURE LAYER --output PREVIEW.json
+  layrs remote partial-rebase-apply PREVIEW.json CHOICES.json
   layrs remote publish-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
   layrs remote candidate-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
   layrs remote scoped-review COMMAND_JSON_FILE --endpoint HTTPS_URL

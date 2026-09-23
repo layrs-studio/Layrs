@@ -52,8 +52,8 @@ pub use remote::{
     NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
     NativePolicyReplacement, NativePolicyRulesEntry, NativePolicyRulesSnapshot,
     NativeProjectionDirectoryPreview, NativeProjectionNamespaceMutation,
-    NativeProjectionNamespacePreview, ScopedProjectionPublicationOutcome, ScopedReviewCommand, NativeRemote,
-    NativeRemoteError, NativeRemoteSession, ReceiveReport, RemoteProvisionedSpace,
+    NativeProjectionNamespacePreview, NativeRemote, NativeRemoteError, NativeRemoteSession,
+    ReceiveReport, RemoteProvisionedSpace, ScopedProjectionPublicationOutcome, ScopedReviewCommand,
 };
 
 pub use commands::{execute_workspace, WorkspaceAction};

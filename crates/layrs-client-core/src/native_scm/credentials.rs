@@ -73,6 +73,17 @@ pub enum NativeRemoteAction {
     ReceiveProjection {
         layer_id: LayerId,
     },
+    PreviewProjectionRebase {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    ApplyProjectionRebase {
+        preview: Box<super::remote::NativeProjectionRebasePreview>,
+        choices: std::collections::BTreeMap<
+            layrs_core::scm::RepoPath,
+            super::remote::ProjectionMergeChoice,
+        >,
+    },
     MigrateProjection {
         destination: String,
         layer_id: LayerId,
@@ -305,6 +316,26 @@ fn execute_remote_with_store(
             remote
                 .scoped_review(&store.identity().space_id, &command)
                 .map_err(remote_error)
+        }
+        NativeRemoteAction::PreviewProjectionRebase { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_rebase(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial merge preview".into())
+        }
+        NativeRemoteAction::ApplyProjectionRebase { preview, choices } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_rebase(&store, &preview, &choices)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial merge result".into())
         }
         NativeRemoteAction::ReceiveProjection { layer_id } => {
             let store = layrs_store_local::projection::ProjectionStore::open(root)

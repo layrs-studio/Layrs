@@ -232,7 +232,7 @@ fn finish(
     faults: &dyn InstallFaults,
 ) -> Result<VersionedProjection> {
     let conflicts: bool = access.connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending)",
+        "SELECT EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)",
         [], |r| r.get(0))?;
     if conflicts {
         return Err(invalid("another operation blocks installation recovery"));

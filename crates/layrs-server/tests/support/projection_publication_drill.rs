@@ -6,6 +6,8 @@ use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 mod namespace;
 #[path = "projection_stream_drill.rs"]
 mod streaming;
+#[path = "projection_rebase_drill.rs"]
+mod rebase;
 
 pub(super) fn run(
     workspace: &NativeWorkspace,
@@ -175,5 +177,6 @@ pub(super) fn run(
         "HTTPS format3 capture/publication: protected collision, immutable capture, lost response, reopen/replay, exact base acceptance and preserved later edits PASS"
     );
     streaming::run(reader, read, layer, lose_response, &reopened);
+    rebase::run(reader, read, layer, &reopened);
     namespace::run(admin, workspace, reader, read, layer, principal, &reopened);
 }

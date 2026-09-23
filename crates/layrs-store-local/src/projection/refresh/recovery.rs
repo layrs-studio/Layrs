@@ -46,7 +46,7 @@ fn validate(access: &format::Access, journal: &Journal) -> Result<VersionedProje
     let current = database::current(&access.connection)?;
     validate_snapshot(&current, journal)?;
     let other: bool = access.connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending)", [], |r| r.get(0))?;
+        "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)", [], |r| r.get(0))?;
     if other {
         return Err(invalid("another local operation blocks refresh recovery"));
     }

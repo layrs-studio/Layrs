@@ -66,6 +66,7 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
                     | "policy-replace"
                     | "partial-restore-preview"
                     | "partial-directory-preview"
+                    | "partial-rebase-preview"
                     | "file"
             )
         })
@@ -164,6 +165,16 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
             serde_json::json!({"action":"scopedReview", "command":json_file(file)?}),
         )
         .map_err(error)?,
+        ["partial-rebase-preview", sequence, layer] => Action::PreviewProjectionRebase {
+            patch_id: sequence
+                .parse()
+                .map_err(|_| CliError::usage("invalid capture sequence"))?,
+            layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+        },
+        ["partial-rebase-apply", preview, choices] => Action::ApplyProjectionRebase {
+            preview: Box::new(serde_json::from_value(json_file(preview)?).map_err(error)?),
+            choices: serde_json::from_value(json_file(choices)?).map_err(error)?,
+        },
         ["partial-directory-preview", generation, source, destination] => {
             Action::PreviewProjectionDirectoryMove {
                 expected_generation: generation

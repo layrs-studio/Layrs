@@ -148,7 +148,7 @@ pub(super) fn apply(
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
     let mut access = format::access(store, SessionMode::Exclusive)?;
-    let conflicts:bool=access.connection.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending)",[],|r|r.get(0))?;
+    let conflicts:bool=access.connection.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)",[],|r|r.get(0))?;
     if conflicts {
         return Err(invalid(
             "incompatible simultaneous projection recovery journals",

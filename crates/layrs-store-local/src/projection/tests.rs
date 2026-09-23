@@ -7,6 +7,7 @@ mod maintenance;
 mod namespace;
 mod publication;
 mod refresh;
+mod rebase;
 mod restore;
 mod streaming_verifier;
 use layrs_core::{

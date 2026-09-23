@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, params};
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const SQL: &str = r#"
-PRAGMA user_version=4;
+PRAGMA user_version=5;
 CREATE TABLE projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),identity BLOB NOT NULL) STRICT;
 CREATE TABLE projection_snapshots(generation INTEGER PRIMARY KEY CHECK(generation>=0),digest TEXT NOT NULL UNIQUE,parent_digest TEXT,payload BLOB NOT NULL CHECK(length(payload)<=67108864),FOREIGN KEY(parent_digest) REFERENCES projection_snapshots(digest) ON DELETE RESTRICT) STRICT;
 CREATE TABLE projection_head(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL REFERENCES projection_snapshots(generation) ON DELETE RESTRICT) STRICT;
@@ -18,29 +18,39 @@ CREATE TABLE projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(si
 CREATE TABLE projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 CREATE TABLE projection_restore_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 CREATE TABLE projection_restore_history(operation_id TEXT PRIMARY KEY,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+CREATE TABLE projection_rebase_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
+CREATE TABLE projection_rebase_history(operation_id TEXT PRIMARY KEY,generation INTEGER NOT NULL UNIQUE REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
+CREATE TABLE projection_rebase_previews(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
 "#;
 const CHUNK_TABLE: &str = "CREATE TABLE projection_capture_chunks(file_id TEXT NOT NULL CHECK(length(file_id)=71),ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<1024),chunk_id TEXT NOT NULL CHECK(length(chunk_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=1048576),PRIMARY KEY(file_id,ordinal)) STRICT;";
 pub(super) fn migrate(c: &mut Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == 4 || schema(c)?.is_empty() {
+    if version == 5 || schema(c)?.is_empty() {
         return Ok(());
     }
-    if version != 3 {
+    if version != 3 && version != 4 {
         return Err(invalid("unsupported projection schema migration"));
     }
-    let old_sql = SQL
+    let v4_sql = SQL
+        .replace("PRAGMA user_version=5;", "PRAGMA user_version=4;")
+        .replace("CREATE TABLE projection_rebase_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;\n", "")
+        .replace("CREATE TABLE projection_rebase_history(operation_id TEXT PRIMARY KEY,generation INTEGER NOT NULL UNIQUE REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;\n", "")
+        .replace("CREATE TABLE projection_rebase_previews(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;\n", "");
+    let old_sql = if version == 3 { v4_sql
         .replace("PRAGMA user_version=4;", "PRAGMA user_version=3;")
         .replace(&format!("{CHUNK_TABLE}\n"), "")
         .replace("projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=65536))")
-        .replace("projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536))");
+        .replace("projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536))")
+    } else { v4_sql };
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(&old_sql)?;
     if schema(c)? != schema(&reference)? {
         return Err(invalid("projection schema mismatch before migration"));
     }
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute_batch(CHUNK_TABLE)?;
-    tx.execute_batch("ALTER TABLE projection_namespace_pending RENAME TO projection_namespace_pending_old;
+    if version == 3 {
+        tx.execute_batch(CHUNK_TABLE)?;
+        tx.execute_batch("ALTER TABLE projection_namespace_pending RENAME TO projection_namespace_pending_old;
         CREATE TABLE projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
         INSERT INTO projection_namespace_pending SELECT * FROM projection_namespace_pending_old;
         DROP TABLE projection_namespace_pending_old;
@@ -48,7 +58,11 @@ pub(super) fn migrate(c: &mut Connection) -> Result<()> {
         CREATE TABLE projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
         INSERT INTO projection_namespace_operations SELECT * FROM projection_namespace_operations_old;
         DROP TABLE projection_namespace_operations_old;")?;
-    tx.execute_batch("PRAGMA user_version=4;")?;
+    }
+    tx.execute_batch("CREATE TABLE projection_rebase_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
+        CREATE TABLE projection_rebase_history(operation_id TEXT PRIMARY KEY,generation INTEGER NOT NULL UNIQUE REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) STRICT;
+        CREATE TABLE projection_rebase_previews(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608)) STRICT;
+        PRAGMA user_version=5;")?;
     tx.commit()?;
     Ok(())
 }
@@ -80,7 +94,7 @@ fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
 pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(SQL)?;
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 4
+    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 5
         || schema(c)? != schema(&reference)?
     {
         return Err(invalid(
@@ -209,7 +223,7 @@ pub(super) fn current(c: &Connection) -> Result<VersionedProjection> {
 
 pub(super) fn require_idle(c: &Connection) -> Result<()> {
     let pending: bool =
-        c.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending)", [], |r| {
+        c.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)", [], |r| {
             r.get(0)
         })?;
     if pending {

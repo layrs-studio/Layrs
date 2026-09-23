@@ -29,6 +29,8 @@ pub enum ProjectionAction {
     ResumeNamespace,
     ResumeRefresh,
     ResumeRestore,
+    ResumeRebase,
+    RebaseDraft,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +97,11 @@ pub fn execute_projection(
                 .map(|state| json!({"projection":state}))
                 .map_err(|error| error.to_string()),
         ),
+        ProjectionAction::ResumeRebase => Some(
+            ProjectionStore::resume_rebase(&root)
+                .map(|capture| json!({"capture":capture}))
+                .map_err(|error| error.to_string()),
+        ),
         ProjectionAction::ResumeRestore => Some(
             ProjectionStore::resume_restore(&root)
                 .map(|receipt| json!({"restoration":receipt}))
@@ -111,6 +118,11 @@ pub fn execute_projection(
         .state()
         .map_err(|error| format!("projection_store_error: {error}"))?;
     match action {
+        ProjectionAction::RebaseDraft => store
+            .rebase_draft()
+            .map_err(|e| e.to_string())?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+            .unwrap_or(Ok(Value::Null)),
         ProjectionAction::Status => {
             let pending = store.pending_publication().map_err(|e| e.to_string())?;
             let pending_info = pending.as_ref().map(|record| {
@@ -191,6 +203,7 @@ pub fn execute_projection(
         ProjectionAction::ResumeInstallation
         | ProjectionAction::ResumeNamespace
         | ProjectionAction::ResumeRefresh
+        | ProjectionAction::ResumeRebase
         | ProjectionAction::ResumeRestore => unreachable!(),
     }
 }

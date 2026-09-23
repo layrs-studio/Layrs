@@ -747,6 +747,8 @@ fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
         ["resume-namespace"] => ProjectionAction::ResumeNamespace,
         ["resume-refresh"] => ProjectionAction::ResumeRefresh,
         ["resume-restore"] => ProjectionAction::ResumeRestore,
+        ["resume-rebase"] => ProjectionAction::ResumeRebase,
+        ["rebase-draft"] => ProjectionAction::RebaseDraft,
         _ => {
             return Err(CliError::usage(
                 "partial status | capture EXPECTED_GENERATION | resume-installation",

@@ -176,10 +176,11 @@ fn failed_schema_migration_rolls_back_all_ddl_and_retries() {
     let mut db = rusqlite::Connection::open_in_memory().unwrap();
     let old_sql = database::SQL
         .lines()
-        .filter(|line| !line.starts_with("CREATE TABLE projection_capture_chunks("))
+        .filter(|line| !line.starts_with("CREATE TABLE projection_capture_chunks(")
+            && !line.starts_with("CREATE TABLE projection_rebase_"))
         .collect::<Vec<_>>()
         .join("\n")
-        .replace("user_version=4", "user_version=3")
+        .replace("user_version=5", "user_version=3")
         .replace("projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=65536))")
         .replace("projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=8388608))", "projection_namespace_operations(preview_digest TEXT PRIMARY KEY CHECK(length(preview_digest)=71),capture_sequence INTEGER NOT NULL REFERENCES projection_captures(sequence) ON DELETE RESTRICT,payload BLOB NOT NULL CHECK(length(payload)<=65536))");
     db.execute_batch(&old_sql).unwrap();
@@ -192,5 +193,5 @@ fn failed_schema_migration_rolls_back_all_ddl_and_retries() {
     db.execute("DELETE FROM projection_namespace_pending", []).unwrap();
     database::migrate(&mut db).unwrap();
     database::migrate(&mut db).unwrap();
-    assert_eq!(db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0)).unwrap(), 4);
+    assert_eq!(db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0)).unwrap(), 5);
 }

@@ -14,6 +14,7 @@ pub struct ProjectionCheck {
     pub namespace_operations: u64,
     pub refresh_operations: u64,
     pub restore_operations: u64,
+    pub rebase_operations: u64,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,6 +136,8 @@ impl ProjectionStore {
         let namespace_operations = namespace::verify_history(c, self)?;
         let refresh_operations = refresh::verify_history(c)?;
         let restore_operations = restore::verify_history(c, self)?;
+        let rebase_operations = rebase::verify_history(c, self)?;
+        rebase_preview::verify(c, self)?;
         access.verify()?;
         Ok(ProjectionCheck {
             snapshots: count,
@@ -146,6 +149,7 @@ impl ProjectionStore {
             namespace_operations,
             refresh_operations,
             restore_operations,
+            rebase_operations,
         })
     }
     /// Descending immutable local captures; the exclusive cursor is a sequence.
