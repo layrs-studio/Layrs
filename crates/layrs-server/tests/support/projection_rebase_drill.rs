@@ -28,6 +28,7 @@ pub(super) fn run(
         .parent()
         .unwrap()
         .join("partial-rebase-peer");
+    let historical_step = store.state().unwrap().snapshot.base_step_id;
     std::fs::create_dir(&root).unwrap();
     let peer = reader
         .clone_projection_into(
@@ -132,7 +133,51 @@ pub(super) fn run(
             .status,
         ReceiptStatus::Applied
     );
+    let before_restore = store.state().unwrap();
+    let current_capture = store.capture_patch(before_restore.generation).unwrap();
+    let selection = layrs_client_core::native_scm::remote::ProjectionHistoricalSelection {
+        step_id: historical_step,
+        paths: vec![],
+    };
+    let mut denied = selection.clone();
+    denied.paths = vec![RepoPath::parse("private.txt").unwrap()];
+    assert!(
+        reader
+            .preview_projection_historical_restore(store, current_capture.sequence, layer, &denied)
+            .is_err()
+    );
+    let historical = reader
+        .preview_projection_historical_restore(store, current_capture.sequence, layer, &selection)
+        .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"local conflict\n");
+    let restored = reader
+        .apply_projection_rebase(store, &historical, &BTreeMap::new())
+        .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"a\nb\nc\n");
+    assert_eq!(
+        store.state().unwrap().snapshot.base_step_id,
+        before_restore.snapshot.base_step_id
+    );
+    assert_eq!(
+        reader
+            .apply_projection_rebase(store, &historical, &BTreeMap::new())
+            .unwrap(),
+        restored
+    );
+    assert!(!store.checkout_root().join("private.txt").exists());
+    assert_eq!(
+        reader
+            .publish_projection(store, restored.sequence, layer)
+            .unwrap()
+            .receipt
+            .receipt
+            .status,
+        ReceiptStatus::Applied
+    );
     store.fsck().unwrap();
+    eprintln!(
+        "HTTPS partial historical restore: complete writable leaves, forbidden selection refused, current remote base preserved and replay PASS"
+    );
     eprintln!(
         "HTTPS partial rebase: disjoint text merge, durable draft, exact replay, unresolved conflict, stale View and explicit resolution PASS"
     );

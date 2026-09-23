@@ -77,6 +77,11 @@ pub enum NativeRemoteAction {
         patch_id: u64,
         layer_id: LayerId,
     },
+    PreviewProjectionHistoricalRestore {
+        patch_id: u64,
+        layer_id: LayerId,
+        selection: super::remote::ProjectionHistoricalSelection,
+    },
     ApplyProjectionRebase {
         preview: Box<super::remote::NativeProjectionRebasePreview>,
         choices: std::collections::BTreeMap<
@@ -316,6 +321,20 @@ fn execute_remote_with_store(
             remote
                 .scoped_review(&store.identity().space_id, &command)
                 .map_err(remote_error)
+        }
+        NativeRemoteAction::PreviewProjectionHistoricalRestore {
+            patch_id,
+            layer_id,
+            selection,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_historical_restore(&store, patch_id, &layer_id, &selection)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial historical restoration preview".into())
         }
         NativeRemoteAction::PreviewProjectionRebase { patch_id, layer_id } => {
             let store = layrs_store_local::projection::ProjectionStore::open(root)

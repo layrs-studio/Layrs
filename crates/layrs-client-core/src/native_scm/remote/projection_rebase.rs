@@ -1,7 +1,9 @@
 //! Three-way reconciliation of authorized regular leaves. All network reads and
 //! merge work precede the local journal's exclusive lock.
+mod historical;
 mod merge;
 use super::*;
+pub use historical::ProjectionHistoricalSelection;
 use layrs_core::projection::{EntryState, ProjectionEntry, ProjectionSnapshot};
 use layrs_store_local::projection::{
     CapturedFile, CapturedPatch, ProjectionIdentity, ProjectionStore, RebasePreview,
@@ -36,6 +38,8 @@ pub struct NativeProjectionRebasePreview {
     pub schema_version: String,
     pub identity: ProjectionIdentity,
     pub layer_id: LayerId,
+    #[serde(default)]
+    pub historical: Option<ProjectionHistoricalSelection>,
     pub repository_view_id: RepositoryViewId,
     pub repository_view_generation: u64,
     pub files: Vec<ProjectionMergeFile>,
@@ -64,7 +68,16 @@ impl NativeRemote {
         sequence: u64,
         layer: &LayerId,
     ) -> RemoteResult<NativeProjectionRebasePreview> {
-        let prepared = self.prepare_projection_rebase(store, sequence, layer, None)?;
+        self.preview_projection_rebase_kind(store, sequence, layer, None)
+    }
+    fn preview_projection_rebase_kind(
+        &self,
+        store: &ProjectionStore,
+        sequence: u64,
+        layer: &LayerId,
+        historical: Option<&ProjectionHistoricalSelection>,
+    ) -> RemoteResult<NativeProjectionRebasePreview> {
+        let prepared = self.prepare_projection_rebase(store, sequence, layer, None, historical)?;
         store
             .save_rebase_draft(
                 prepared.preview.local.projection_generation,
@@ -119,6 +132,7 @@ impl NativeRemote {
             preview.local.capture_sequence,
             &preview.layer_id,
             Some(&preview.local.operation_id),
+            preview.historical.as_ref(),
         )?;
         if prepared.preview != *preview {
             return Err(NativeRemoteError::Invalid(
@@ -183,6 +197,7 @@ impl NativeRemote {
         sequence: u64,
         layer: &LayerId,
         operation: Option<&str>,
+        historical: Option<&ProjectionHistoricalSelection>,
     ) -> RemoteResult<Prepared> {
         self.rebase_identity(store)?;
         let before = store.state().map_err(local)?;
@@ -201,12 +216,16 @@ impl NativeRemote {
             .find(|l| l.record.id() == layer)
             .ok_or(NativeRemoteError::Invalid("partial merge Layer missing"))?
             .head_step_ids;
-        if heads.len() != 1 {
+        if historical.is_none() && heads.len() != 1 {
             return Err(NativeRemoteError::Invalid(
                 "partial merge requires one selected remote head",
             ));
         }
-        let step = &heads[0];
+        let step = if historical.is_some() {
+            &before.snapshot.base_step_id
+        } else {
+            &heads[0]
+        };
         let (root, entries) = self.collect_projection(&base, step)?;
         let mut target = ProjectionSnapshot {
             schema_version: before.snapshot.schema_version.clone(),
@@ -278,6 +297,9 @@ impl NativeRemote {
         }
         target.entries.sort_by(|a, b| a.path.cmp(&b.path));
         target.validate().map_err(local)?;
+        let historic_entries = historical
+            .map(|selection| self.historical_entries(&base, &target, selection))
+            .transpose()?;
         let binding = Binding {
             origin: self.origin().into(),
             space_id: base.space_id.clone(),
@@ -303,7 +325,21 @@ impl NativeRemote {
                 &mut graph,
                 &mut total,
             )?;
-            let remote = self.rebase_file(&binding, step, Some(next), &mut graph, &mut total)?;
+            let remote = if let (Some(selection), Some(entries)) = (historical, &historic_entries) {
+                if let Some(entry) = entries.get(&next.path) {
+                    self.rebase_file(
+                        &binding,
+                        &selection.step_id,
+                        Some(entry),
+                        &mut graph,
+                        &mut total,
+                    )?
+                } else {
+                    original.clone()
+                }
+            } else {
+                self.rebase_file(&binding, step, Some(next), &mut graph, &mut total)?
+            };
             let changed = capture.changes.iter().find(|c| c.path == next.path);
             let local_file = changed.map_or_else(|| original.clone(), |c| c.replacement.clone());
             if let Some(file) = changed.and_then(|c| c.replacement.as_ref()) {
@@ -313,14 +349,29 @@ impl NativeRemote {
                     .map_err(local)?;
                 spools.insert(file.file_id.clone(), spool);
             }
-            files.push(merge::reconcile(
-                &next.path,
-                original,
-                local_file,
-                remote,
-                &graph,
-                &mut spools,
-            )?);
+            if let Some(entries) = &historic_entries {
+                files.push(ProjectionMergeFile {
+                    path: next.path.clone(),
+                    base: original,
+                    local: local_file.clone(),
+                    remote: remote.clone(),
+                    conflict: false,
+                    automatic: if entries.contains_key(&next.path) {
+                        remote
+                    } else {
+                        local_file
+                    },
+                });
+            } else {
+                files.push(merge::reconcile(
+                    &next.path,
+                    original,
+                    local_file,
+                    remote,
+                    &graph,
+                    &mut spools,
+                )?);
+            }
         }
         let current = self.bootstrap(&base.space_id)?;
         if current.principal_id != base.principal_id
@@ -359,6 +410,7 @@ impl NativeRemote {
                 schema_version: "layrs.native-partial-rebase.v1".into(),
                 identity: store.identity().clone(),
                 layer_id: layer.clone(),
+                historical: historical.cloned(),
                 repository_view_id: base.current_repository_view.repository_view_id,
                 repository_view_generation: base.current_repository_view_generation,
                 files,

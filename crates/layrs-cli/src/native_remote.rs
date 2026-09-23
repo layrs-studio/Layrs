@@ -67,6 +67,7 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
                     | "partial-restore-preview"
                     | "partial-directory-preview"
                     | "partial-rebase-preview"
+                    | "partial-historical-preview"
                     | "file"
             )
         })
@@ -165,6 +166,18 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
             serde_json::json!({"action":"scopedReview", "command":json_file(file)?}),
         )
         .map_err(error)?,
+        ["partial-historical-preview", sequence, layer, step, paths] => {
+            Action::PreviewProjectionHistoricalRestore {
+                patch_id: sequence
+                    .parse()
+                    .map_err(|_| CliError::usage("invalid capture sequence"))?,
+                layer_id: layrs_core::scm::LayerId::parse(*layer).map_err(error)?,
+                selection: layrs_client_core::native_scm::remote::ProjectionHistoricalSelection {
+                    step_id: layrs_core::scm::StepId::parse(*step).map_err(error)?,
+                    paths: serde_json::from_value(json_file(paths)?).map_err(error)?,
+                },
+            }
+        }
         ["partial-rebase-preview", sequence, layer] => Action::PreviewProjectionRebase {
             patch_id: sequence
                 .parse()

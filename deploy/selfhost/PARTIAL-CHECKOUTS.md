@@ -73,6 +73,7 @@ layrs partial resume-installation
 layrs partial resume-namespace
 layrs partial resume-refresh
 layrs partial resume-restore
+layrs partial resume-rebase
 ```
 
 ## Restaurer, annuler et rétablir
@@ -101,6 +102,35 @@ publie rien automatiquement : capturer/publier reste un choix explicite.
 
 ## Réception, révocation et migration
 
+Pour conserver des modifications locales pendant une avance distante, capturer
+puis préparer une fusion. Les textes compatibles sont réunis automatiquement.
+Les conflits exigent un choix par chemin : `base`, `local`, `remote` ou `delete`.
+Le fichier de choix est `{}` quand aucun conflit ne subsiste.
+
+```text
+layrs remote partial-rebase-preview NUMERO_CAPTURE layer:IDENTIFIANT --output fusion.json --endpoint https://serveur.exemple
+layrs remote partial-rebase-apply fusion.json choix.json --endpoint https://serveur.exemple
+layrs partial rebase-draft
+```
+
+Desktop enregistre aussi le brouillon et permet de le recharger. Les fichiers
+restent inchangés pendant la préparation. L'application recontrôle la capture,
+les droits et la version distante ; un aperçu périmé doit être préparé à nouveau.
+Les modifications résolues deviennent une nouvelle capture à publier.
+
+La restauration d'une ancienne version publiée utilise le même journal sûr :
+
+```text
+layrs remote partial-historical-preview NUMERO_CAPTURE layer:IDENTIFIANT blake3:STEP chemins.json --output historique.json --endpoint https://serveur.exemple
+layrs remote partial-rebase-apply historique.json choix-vides.json --endpoint https://serveur.exemple
+```
+
+`chemins.json` contient une liste triée de chemins ; `[]` sélectionne tous les
+fichiers ordinaires actuellement modifiables et connus de la projection.
+`choix-vides.json` contient `{}`. Les droits actuels s'appliquent à l'ancienne
+version ; les contenus interdits restent inaccessibles. La restauration conserve
+la base distante actuelle et crée une modification locale à publier.
+
 La réception refuse d'écraser une édition locale divergente. Après réception
 d'une révocation, une ancienne copie propre est déplacée dans la zone privée
 `.layrs/projection-quarantine`, avec un journal de récupération. Cette conservation
@@ -122,10 +152,23 @@ Garder la source jusqu'à vérification du nouveau dossier et des sauvegardes.
 ## Périmètre
 
 Le transport de publication partielle accepte actuellement les fichiers ordinaires,
-au plus 1024 chemins et 16 Mio d'octets remplacés par capture. Les lectures et la
-réception utilisent le transfert vérifié en flux, borné à 1 Gio par fichier et
-4 Gio cumulés. Les liens et conflits structurels restent visibles et réservés,
+au plus 1024 chemins, 1 Gio par fichier et 4 Gio d'octets remplacés par capture.
+Les captures et transferts utilisent des blocs vérifiés de 1 Mio et permettent
+la reprise. Les liens et conflits structurels restent visibles et réservés,
 sans matérialisation simulée. Windows refuse le mode exécutable non représentable.
-Le déplacement de dossier et la transformation d'un dossier existant en fichier
-ne font pas partie du parcours local actuel. Les protections de Layer restent
-actives ; un refus de Gate ne doit pas être contourné par les patches partiels.
+Le déplacement d'un dossier exige que toutes ses feuilles soient connues et
+modifiables, sans fichier externe ni chemin protégé. Desktop propose son aperçu
+et son application ; CLI : `remote partial-directory-preview GENERATION SOURCE
+DESTINATION --output dossier.json`, puis `remote partial-directory-apply dossier.json`.
+La transformation dossier→fichier et les fusions à plusieurs bases restent exclues.
+
+Pour demander une revue, `remote candidate-partial NUMERO_CAPTURE layer:IDENTIFIANT`
+envoie un candidat sans déplacer la branche. Desktop permet de proposer la revue,
+commenter, approuver et intégrer le candidat après les contrôles. Les textes
+rédigés sous des droits plus larges peuvent être masqués. Les logs CI bruts ne
+sont pas exposés aux membres restreints. Les protections de Layer restent actives.
+La CLI `remote scoped-review COMMANDE.json` expose les mêmes actions.
+
+Le serveur doit avoir appliqué les migrations17–19. L'ouverture en écriture migre
+atomiquement le schéma SQLite3/4 vers5 ; les anciens lecteurs refusent ce schéma.
+Les formats de Store complet et partiel restent distincts.

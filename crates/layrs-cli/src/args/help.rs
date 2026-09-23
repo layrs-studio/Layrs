@@ -26,6 +26,7 @@ Commands:
   layrs partial rebase-draft
   layrs remote partial-rebase-preview CAPTURE LAYER --output PREVIEW.json
   layrs remote partial-rebase-apply PREVIEW.json CHOICES.json
+  layrs remote partial-historical-preview CAPTURE LAYER STEP PATHS.json --output PREVIEW.json
   layrs remote publish-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
   layrs remote candidate-partial CAPTURE_SEQUENCE LAYER_ID --endpoint HTTPS_URL
   layrs remote scoped-review COMMAND_JSON_FILE --endpoint HTTPS_URL
