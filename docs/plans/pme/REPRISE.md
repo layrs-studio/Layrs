@@ -11,11 +11,15 @@ revues `45fcdcc`, fusion régulière `578aae2`, dernier contrôle filesystem
 Store3 74PASS ; correctif rebase Windows11PASS. Desktop53,3sPASS et
 qualification1Gio284,71sPASS. UI commitée `e36ba61`. Clippy workspace/tous targets
 strict14,44sPASS, client natif47PASS, modèle UI12PASS, TypeScript UI/Web/Desktop
-PASS. Reconditionnement des archives et MSI à effectuer depuis les sources
-stabilisées. Détails et limites dans les journaux PARTIAL-REBASE et HISTORICAL.
-Ne pas confondre ces travaux avec les paquets qualified5 déjà livrés. Les
+PASS. Sources stabilisées et commitées `fbd8d6f`. Archives qualified6 Windows/
+Linux : 26 fichiers vérifiés par archive, 8 parcours smoke par OS et
+upgrade/rollback5→6 PASS. MSI construit et SHA256 vérifié, non installé/non signé.
+[Rapport final et manifestes](measurements/partial-qualification-2026-09-23.md).
+Détails et limites dans les journaux PARTIAL-REBASE et HISTORICAL.
+Les paquets qualified5 restent historiques. Les
 qualifications exigeant un invité OS ou des humains restent identifiées ; les
-développements accessibles continuent sans attendre ces moyens externes.
+limites fonctionnelles restantes sont listées dans [REMAINING](REMAINING.md) ;
+les huit plans ne sont pas déclarés intégralement clos.
 Utilisateur confirmé : seulement le poste actuel, Windows et Docker Linux.
 
 ## Checkpoint historique — 22 septembre 2026

@@ -1,0 +1,500 @@
+{
+  "schemaVersion": "layrs.partial-qualification.v1",
+  "date": "2026-09-23",
+  "productionCommit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+  "sourceTreeSha256": "cc55b95ec6bfd8ed3cbcf4289e5ad8b513f0a48de770a6d02a4d3736bac790fa",
+  "cargoLockSha256": "846cf776294fdcc412e8c81798029d01cdf4edc28d53a2af913e9d67bb96bb70",
+  "checks": {
+    "httpsPostgresql100MiB": {
+      "passed": 1,
+      "ignored": 0,
+      "seconds": 121.58
+    },
+    "httpsPostgresql1GiB": {
+      "passed": 1,
+      "ignored": 0,
+      "seconds": 284.71,
+      "log": "D:/Layrs/tmp/scoped-1gib-20260923.log"
+    },
+    "desktopReal": {
+      "passed": 1,
+      "seconds": 53.3,
+      "log": "D:/Layrs/tmp/partial-ui-pass-20260923.log"
+    },
+    "projectionWindows": {
+      "passed": 73
+    },
+    "projectionLinux": {
+      "passed": 74,
+      "seconds": 20.58
+    },
+    "finalRebaseWindows": {
+      "passed": 11,
+      "seconds": 3.55
+    },
+    "finalRebaseLinux": {
+      "passed": 11,
+      "seconds": 2.92
+    },
+    "nativeClient": {
+      "passed": 47,
+      "seconds": 6.29
+    },
+    "uiModel": {
+      "passed": 12
+    },
+    "typescript": [
+      "ui",
+      "studio-web",
+      "studio-desktop"
+    ],
+    "clippy": {
+      "scope": "workspace all-targets -D warnings",
+      "passed": true,
+      "seconds": 14.44
+    },
+    "rustfmt": {
+      "passed": true
+    },
+    "immutableMigrations": {
+      "passed": 19
+    }
+  },
+  "artifacts": {
+    "windows": {
+      "directory": "dist/native-windows-qualified6-20260923/layrs-fbd8d6f49858-x86_64-pc-windows-msvc-release",
+      "manifestSha256": "7be45ced684002afa657d614802e0bdddcb68a10cf8244c5011e8f8a9a338b10",
+      "archiveSha256": "cc1edd4b1393d4887eb50e34236d6d05fb9b38430ec3e1185ef9c5256b0ebef8",
+      "verifiedFiles": 26,
+      "manifest": {
+        "schema": "layrs.native-distribution.v1",
+        "createdAt": "2026-09-23T14:07:00.198Z",
+        "source": {
+          "commit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+          "dirty": false,
+          "treeSha256": "cc55b95ec6bfd8ed3cbcf4289e5ad8b513f0a48de770a6d02a4d3736bac790fa",
+          "cargoLockSha256": "846cf776294fdcc412e8c81798029d01cdf4edc28d53a2af913e9d67bb96bb70"
+        },
+        "target": "x86_64-pc-windows-msvc",
+        "profile": "release",
+        "rust": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-pc-windows-msvc\nrelease: 1.85.0\nLLVM version: 19.1.7",
+        "signature": "unsigned",
+        "protocol": "V3",
+        "localStore": "native-format-2",
+        "partialLocalStore": "native-format-3",
+        "semanticLensHost": "windows-job-object-wasmi",
+        "files": [
+          {
+            "path": "layrs.exe",
+            "bytes": 30003712,
+            "sha256": "76f18a94b56888ac7755295bc3282d53c7a953d5615bec94f48ff0f9de8f3cdd"
+          },
+          {
+            "path": "layrs-server.exe",
+            "bytes": 27473408,
+            "sha256": "5513e6de08d0d7dc06f15bae6df27f30fb12a0206b930c7fa1e6bb9faaa73f4f"
+          },
+          {
+            "path": "layrs-runner.exe",
+            "bytes": 10716672,
+            "sha256": "88622d62ae29fccec6b105e0623a5757f9aaa334c7eb931cba7270fc60ee71a9"
+          },
+          {
+            "path": "layrs-lens-worker.exe",
+            "bytes": 3980800,
+            "sha256": "706cee2ad74be4062ed9f4c6ca4b364e6cc44e8dd437ecdd9924e15463c143af"
+          },
+          {
+            "path": "LICENSE",
+            "bytes": 1088,
+            "sha256": "61cc8439b01895684f5ec5220bf5fb9b1f1e3ad2c8a9bd300ffcf05d3decfbfb"
+          },
+          {
+            "path": "README.md",
+            "bytes": 11406,
+            "sha256": "d397f82d84d9a539178ce7907d814b492eef661cb42aeee146b3dfddcb1e4e74"
+          },
+          {
+            "path": "UPGRADING.md",
+            "bytes": 4794,
+            "sha256": "5db7a0a0dee1121968f5789bee52b1e276cd6cbba2a5fb1cb42730b47b1944e7"
+          },
+          {
+            "path": "ARCHIVE-UPGRADE-TEST.md",
+            "bytes": 4510,
+            "sha256": "ca18790edba72c6d5933597ce999cba4143cb0530742ec1cbc9f817fe69fa956"
+          },
+          {
+            "path": "DISTRIBUTION.md",
+            "bytes": 7458,
+            "sha256": "24732b5a7036e01d4b74b046ed48ddc91ef001e25eb5ac1924ea48b6c6e8b88c"
+          },
+          {
+            "path": "BACKUPS.md",
+            "bytes": 6279,
+            "sha256": "a565595115ff6c906829999cabe402df73c84611af337841a41db2fce24df1b0"
+          },
+          {
+            "path": "RETENTION.md",
+            "bytes": 21224,
+            "sha256": "54faa7ae9c540df2d10c0f78767f8d747296cfe15ae0e721129f3ff0d6498fb5"
+          },
+          {
+            "path": "GC.md",
+            "bytes": 5330,
+            "sha256": "78cb24dda09ecc3686b7e1ad17e10642fe8380dbf17e1ac01b392e7805c3a68e"
+          },
+          {
+            "path": "LOCAL-COMPACTION.md",
+            "bytes": 5019,
+            "sha256": "296a1a71301039e939d7c0986391eda84981340d55131ed9280267e2ed0c1468"
+          },
+          {
+            "path": "POLICIES.md",
+            "bytes": 7080,
+            "sha256": "28af695ee3a60e7f7301189e7919d15545d68bc8b6bf2cf7fc9f8e0e58c43c3d"
+          },
+          {
+            "path": "PARTIAL-CHECKOUTS.md",
+            "bytes": 8462,
+            "sha256": "5f3313a5b85f83803900b10be441f62e62aea5753c0aad3638da1970c86697c9"
+          },
+          {
+            "path": "OBSERVATIONS.md",
+            "bytes": 2389,
+            "sha256": "4010b598f39596d8025d904015799e9279f91b1382af249304abf51eefdc26de"
+          },
+          {
+            "path": "STORAGE-BUDGET.md",
+            "bytes": 5050,
+            "sha256": "bf20abbb410e739be05a3a310a40f46ed3db386926cf5efdbf6e4d3ecb8620c4"
+          },
+          {
+            "path": "OBSERVABILITY.md",
+            "bytes": 4183,
+            "sha256": "0efeeb837bed7b487cbbe785d3609b58770e55e8f66ff80b486677d6ef82d1c0"
+          },
+          {
+            "path": "INVITATIONS.md",
+            "bytes": 2992,
+            "sha256": "173be6eea2bc1f38ecf9d540b38e79b1fa5338fca73afb1070813c8ca5aaf49f"
+          },
+          {
+            "path": "NATIVE-CI.md",
+            "bytes": 2679,
+            "sha256": "65e6e1dd364547b359201416c0356e30fafec8c5b91cf174e8f3e1639e99d44d"
+          },
+          {
+            "path": "NATIVE-CONFLICTS.md",
+            "bytes": 6057,
+            "sha256": "8e41be05e61292015bc06ec308f0e29e21f6ed46dae040efbce35193f07de303"
+          },
+          {
+            "path": "LOCAL-PILOT.md",
+            "bytes": 5037,
+            "sha256": "e4c9f70d51d13aff968491c6aec6ae3e803fe476824dbe7b860ce8e8204fe8c7"
+          },
+          {
+            "path": "migrations.lock.json",
+            "bytes": 3212,
+            "sha256": "e5f7e0136ae1470fb17c71c690431381d2619b346ddf549b710366b03944146f"
+          },
+          {
+            "path": "native-lenses-v1.wasm",
+            "bytes": 731255,
+            "sha256": "97e72b2e6bc6630b1021ca7469df784e8d60feaaab5210a15160d5480802cf7b"
+          },
+          {
+            "path": "layrs-with-lenses.ps1",
+            "bytes": 276,
+            "sha256": "60864e9a65f4938f63aadc94f3d6ac44d77bec47a4a439f915c48b77993fbc98"
+          },
+          {
+            "path": "verify-native-package.mjs",
+            "bytes": 1381,
+            "sha256": "285eeff2907f88ae3904df4e85a505ec8aa91446837db32a3a766594b40f38d7"
+          }
+        ]
+      }
+    },
+    "linux": {
+      "directory": "dist/native-linux-qualified6-20260923/candidate/layrs-fbd8d6f49858-x86_64-unknown-linux-gnu-release",
+      "manifestSha256": "37bfdc67213cf9fd40c226aa993d62505819b91786233a4b880af1b45ed227df",
+      "archiveSha256": "467d2933e2a30a980ea287597edce92c648d139070755ff4413d86ea476d8876",
+      "verifiedFiles": 26,
+      "manifest": {
+        "schema": "layrs.native-distribution.v1",
+        "createdAt": "2026-09-23T14:08:15.980Z",
+        "source": {
+          "commit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+          "dirty": false,
+          "treeSha256": "cc55b95ec6bfd8ed3cbcf4289e5ad8b513f0a48de770a6d02a4d3736bac790fa",
+          "cargoLockSha256": "846cf776294fdcc412e8c81798029d01cdf4edc28d53a2af913e9d67bb96bb70"
+        },
+        "target": "x86_64-unknown-linux-gnu",
+        "profile": "release",
+        "rust": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-unknown-linux-gnu\nrelease: 1.85.0\nLLVM version: 19.1.7",
+        "signature": "unsigned",
+        "protocol": "V3",
+        "localStore": "native-format-2",
+        "partialLocalStore": "native-format-3",
+        "semanticLensHost": "linux-seccomp-rlimit-wasmi",
+        "files": [
+          {
+            "path": "layrs",
+            "bytes": 33344256,
+            "sha256": "c3b86a6f03aa2a68e2cc02de02cc4623e704190a5635db92246cccade683f556"
+          },
+          {
+            "path": "layrs-server",
+            "bytes": 28842064,
+            "sha256": "3513d73c1c25932d042ff29e1dc34730ee36fa374e45e68787740a66eec673fd"
+          },
+          {
+            "path": "layrs-runner",
+            "bytes": 10806960,
+            "sha256": "d5cc5cc7966afa1e4ce3b9afc2049e38810c9362dd2a2409314e3a66c8cf2660"
+          },
+          {
+            "path": "layrs-lens-worker",
+            "bytes": 5223544,
+            "sha256": "a177dacd649c7c9835117150880e10e9ed3b773bed6c26e65d31a537f6cd07db"
+          },
+          {
+            "path": "LICENSE",
+            "bytes": 1088,
+            "sha256": "61cc8439b01895684f5ec5220bf5fb9b1f1e3ad2c8a9bd300ffcf05d3decfbfb"
+          },
+          {
+            "path": "README.md",
+            "bytes": 11406,
+            "sha256": "d397f82d84d9a539178ce7907d814b492eef661cb42aeee146b3dfddcb1e4e74"
+          },
+          {
+            "path": "UPGRADING.md",
+            "bytes": 4794,
+            "sha256": "5db7a0a0dee1121968f5789bee52b1e276cd6cbba2a5fb1cb42730b47b1944e7"
+          },
+          {
+            "path": "ARCHIVE-UPGRADE-TEST.md",
+            "bytes": 4510,
+            "sha256": "ca18790edba72c6d5933597ce999cba4143cb0530742ec1cbc9f817fe69fa956"
+          },
+          {
+            "path": "DISTRIBUTION.md",
+            "bytes": 7458,
+            "sha256": "24732b5a7036e01d4b74b046ed48ddc91ef001e25eb5ac1924ea48b6c6e8b88c"
+          },
+          {
+            "path": "BACKUPS.md",
+            "bytes": 6279,
+            "sha256": "a565595115ff6c906829999cabe402df73c84611af337841a41db2fce24df1b0"
+          },
+          {
+            "path": "RETENTION.md",
+            "bytes": 21224,
+            "sha256": "54faa7ae9c540df2d10c0f78767f8d747296cfe15ae0e721129f3ff0d6498fb5"
+          },
+          {
+            "path": "GC.md",
+            "bytes": 5330,
+            "sha256": "78cb24dda09ecc3686b7e1ad17e10642fe8380dbf17e1ac01b392e7805c3a68e"
+          },
+          {
+            "path": "LOCAL-COMPACTION.md",
+            "bytes": 5019,
+            "sha256": "296a1a71301039e939d7c0986391eda84981340d55131ed9280267e2ed0c1468"
+          },
+          {
+            "path": "POLICIES.md",
+            "bytes": 7080,
+            "sha256": "28af695ee3a60e7f7301189e7919d15545d68bc8b6bf2cf7fc9f8e0e58c43c3d"
+          },
+          {
+            "path": "PARTIAL-CHECKOUTS.md",
+            "bytes": 8462,
+            "sha256": "5f3313a5b85f83803900b10be441f62e62aea5753c0aad3638da1970c86697c9"
+          },
+          {
+            "path": "OBSERVATIONS.md",
+            "bytes": 2389,
+            "sha256": "4010b598f39596d8025d904015799e9279f91b1382af249304abf51eefdc26de"
+          },
+          {
+            "path": "STORAGE-BUDGET.md",
+            "bytes": 5050,
+            "sha256": "bf20abbb410e739be05a3a310a40f46ed3db386926cf5efdbf6e4d3ecb8620c4"
+          },
+          {
+            "path": "OBSERVABILITY.md",
+            "bytes": 4183,
+            "sha256": "0efeeb837bed7b487cbbe785d3609b58770e55e8f66ff80b486677d6ef82d1c0"
+          },
+          {
+            "path": "INVITATIONS.md",
+            "bytes": 2992,
+            "sha256": "173be6eea2bc1f38ecf9d540b38e79b1fa5338fca73afb1070813c8ca5aaf49f"
+          },
+          {
+            "path": "NATIVE-CI.md",
+            "bytes": 2679,
+            "sha256": "65e6e1dd364547b359201416c0356e30fafec8c5b91cf174e8f3e1639e99d44d"
+          },
+          {
+            "path": "NATIVE-CONFLICTS.md",
+            "bytes": 6057,
+            "sha256": "8e41be05e61292015bc06ec308f0e29e21f6ed46dae040efbce35193f07de303"
+          },
+          {
+            "path": "LOCAL-PILOT.md",
+            "bytes": 5037,
+            "sha256": "e4c9f70d51d13aff968491c6aec6ae3e803fe476824dbe7b860ce8e8204fe8c7"
+          },
+          {
+            "path": "migrations.lock.json",
+            "bytes": 3212,
+            "sha256": "e5f7e0136ae1470fb17c71c690431381d2619b346ddf549b710366b03944146f"
+          },
+          {
+            "path": "native-lenses-v1.wasm",
+            "bytes": 731255,
+            "sha256": "97e72b2e6bc6630b1021ca7469df784e8d60feaaab5210a15160d5480802cf7b"
+          },
+          {
+            "path": "layrs-with-lenses",
+            "bytes": 270,
+            "sha256": "4ac9d977d28a81a10b356d7c2b2d8951fdaa6342b8d2f8d824d3cff4ea375769"
+          },
+          {
+            "path": "verify-native-package.mjs",
+            "bytes": 1381,
+            "sha256": "285eeff2907f88ae3904df4e85a505ec8aa91446837db32a3a766594b40f38d7"
+          }
+        ]
+      }
+    },
+    "desktop": {
+      "directory": "dist/desktop-windows-qualified6-20260923",
+      "manifestSha256": "786c00de39b11712acef44f6c237b16c5b7fca25ea7f3305975a2acb7d501806",
+      "manifest": {
+        "schema": "layrs.desktop-distribution.v1",
+        "createdAt": "2026-09-23T14:11:32.662Z",
+        "commit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+        "dirty": false,
+        "treeSha256": "4656e371f97f4923e58e7d7bdfb6d050bdc0529688efaced4e1a67fb4ab16da4",
+        "signature": "unsigned",
+        "installedByRecipe": false,
+        "artifacts": [
+          {
+            "path": "Layrs Studio_0.0.0_x64_en-US.msi",
+            "bytes": 12300288,
+            "sha256": "b2f307dd3b8ebfe3b40c69cf0e37e8b53c0de611291d498b9ccbf1e4503dce91"
+          }
+        ]
+      }
+    }
+  },
+  "smoke": {
+    "windows": {
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "release",
+      "packageManifestSha256": "7be45ced684002afa657d614802e0bdddcb68a10cf8244c5011e8f8a9a338b10",
+      "passed": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    },
+    "linux": {
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "packageManifestSha256": "37bfdc67213cf9fd40c226aa993d62505819b91786233a4b880af1b45ed227df",
+      "passed": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    }
+  },
+  "upgrade": {
+    "windows": {
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-pc-windows-msvc",
+      "oldArchiveSha256": "e4d2e334f41419b7a9daa9ac185a5e4cf148925c4f0415d547cb6fd42504f065",
+      "newArchiveSha256": "cc1edd4b1393d4887eb50e34236d6d05fb9b38430ec3e1185ef9c5256b0ebef8",
+      "oldManifestSha256": "e3a84e457dd0a31af45f3853bd07d240883fc665dcaa57a91aa93ba5f342869f",
+      "newManifestSha256": "7be45ced684002afa657d614802e0bdddcb68a10cf8244c5011e8f8a9a338b10",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:641f44d4-d263-46a8-8848-7cf92eaf822b",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "D:\\Layrs\\tmp\\upgrade-windows-qualified5-to-6-20260923",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified"
+    },
+    "linux": {
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-unknown-linux-gnu",
+      "oldArchiveSha256": "7fede6d34ba2cd94e7f157dd3d9a902bb0c1499ec3368a7760c66abf0ff4f150",
+      "newArchiveSha256": "467d2933e2a30a980ea287597edce92c648d139070755ff4413d86ea476d8876",
+      "oldManifestSha256": "e0e7dc4930a18a12915913e70ccda0efb388f4495d9a67fe6284d2967a08f65d",
+      "newManifestSha256": "37bfdc67213cf9fd40c226aa993d62505819b91786233a4b880af1b45ed227df",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:1f931108-fdba-497d-8ecf-8eadb07b074a",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "/out/recipe",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified"
+    },
+    "linuxContainer": {
+      "schemaVersion": "layrs.validation.archive-upgrade-container.v1",
+      "image": "layrs-native-packaging:validation",
+      "imageId": "sha256:14ec4cc42d288d7e85fcf7659c48e1747005cbc82f5b84cf8a672bca4acd4e41",
+      "network": "none",
+      "freshContainer": true,
+      "readonlySourcesAndArchives": true,
+      "filesystem": "dedicated-native-linux-volume",
+      "retainedContainer": "layrs-upgrade-b521f614-bd2a-4abd-b265-2dd6921ba3f3",
+      "retainedVolume": "layrs-upgrade-b521f614-bd2a-4abd-b265-2dd6921ba3f3-data",
+      "fixture": "recipe/report.json",
+      "fixtureExported": true,
+      "recipeExitCode": 0,
+      "phase": "completed",
+      "exportedCopyIsNotARelocatedWorktree": true,
+      "executionError": null,
+      "termination": {
+        "stopped": true,
+        "stopAttempted": false,
+        "killAttempted": false
+      }
+    }
+  },
+  "limitations": [
+    "Only the current Windows host and Docker Linux are available.",
+    "MSI built and hash-verified; unsigned and not installed.",
+    "Archive rollback tests cover FORMAT2, not Store3 schema downgrade or PostgreSQL rollback.",
+    "Partial merge supports regular files and one remote head; structural changes and multiple bases remain unsupported.",
+    "The 1GiB transfer uses repeated content; aggregate 4GiB and a dedicated memory profile were not measured.",
+    "Final independent re-review was unavailable because the agent thread limit was exhausted; root self-review and regressions are not independent verification.",
+    "No remote CI, virgin Windows guest, macOS/ARM, human pilot or independent operator qualification was performed."
+  ]
+}

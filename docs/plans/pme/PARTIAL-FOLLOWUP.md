@@ -1,4 +1,4 @@
-# Suites fonctionnelles du Store3 — 22 septembre 2026
+# Suites fonctionnelles du Store3 — état au 23 septembre 2026
 
 Le périmètre livré et qualifié est décrit dans
 [PARTIAL-CHECKOUTS.md](../../../deploy/selfhost/PARTIAL-CHECKOUTS.md).
@@ -7,14 +7,15 @@ Mise à jour23septembre :
 
 | Lot | Livré dans les sources | Encore à faire |
 | --- | --- | --- |
-| Collaboration | Candidats sans avance, revues limitées aux chemins, approbation/preuve, intégration et rejouabilité HTTPS ; Desktop53,3sPASS | Qualification des nouveaux paquets |
+| Collaboration | Candidats sans avance, revues limitées aux chemins, approbation/preuve, intégration et rejouabilité HTTPS ; Desktop53,3sPASS ; paquets qualified6 validés | Relecture indépendante finale non disponible ; ne pas ouvrir les lectures complètes/raw logs aux comptes restreints |
 | Grandes publications | Captures et transport en blocs1Mio, plafonds1Gio/fichier et4Gio/capture, reprise100Mio et1Gio validée | Qualification4Gio et mesure mémoire dédiée |
 | Divergences | Fusion régulière base/local/distant, Lens borné, brouillon persistant, choix par fichier, revalidation et reprise | Plusieurs têtes/bases et conflits structurels ; persistance des choix de formulaire |
 | Namespace/historique | Dossiers ordinaires déplacés atomiquement ; restauration d'un Step publié sous droits actuels | Transformations dossier/fichier, liens et résolution structurelle ; création de chemins historiques inconnus |
 
 Commits et preuves : [REPRISE](REPRISE.md) et [journal courant](journal/FINISH-20260923.md).
-La recette HTTPS fusion/restauration complète passe121,58s ; les paquets
-qualified5 ne contiennent pas ces changements. Les qualifications externes
+La recette HTTPS fusion/restauration complète passe121,58s, puis284,71s avec1Gio.
+Les paquets qualified6 contiennent ces changements, construits depuis `fbd8d6f` ;
+smoke8 par OS et upgrade/rollback5→6 PASS. Les qualifications externes
 restent distinctes du développement accessible.
 
 ## Constat initial — 22 septembre, historique
@@ -78,5 +79,5 @@ Les lots 1 (contrat/admission), 2 (transport) et 4 (namespace) peuvent être
 préparés séparément. Leurs intégrations partagent les journaux Store3 et le
 service de patch : figer les interfaces avant modifications simultanées.
 Le lot3 dépend du candidat du lot1. Toute modification de production après
-`6436fb0` exige tests ciblés, nouvelle recette intégrée et nouveaux paquets ;
-les artefacts qualified5 restent liés à leur source exacte.
+`fbd8d6f` exige tests ciblés, nouvelle recette intégrée et nouveaux paquets ;
+les artefacts qualified6 restent liés à leur source exacte.
