@@ -1,6 +1,17 @@
 # Point de reprise — travail repris, commits autorisés
 
-## Checkpoint courant — 22 septembre 2026
+## Checkpoint courant — 23 septembre 2026
+
+Reprise explicitement demandée : terminer les extensions, avec commits réguliers.
+Skill `orchestrate-change` mis à jour relu ; implémentations parallèles et revues
+indépendantes critiques. [Journal actif et répartition](journal/FINISH-20260923.md).
+Départ propre `35f28a8`. Capture chunkée, transport/candidats et collaboration
+restreinte sont en développement ; racine : dossiers/restauration et intégration.
+Ne pas confondre ces travaux avec les paquets qualified5 déjà livrés. Les
+qualifications exigeant un invité OS ou des humains restent identifiées ; les
+développements accessibles continuent sans attendre ces moyens externes.
+
+## Checkpoint historique — 22 septembre 2026
 
 Projection éditable livrée et qualifiée : serveur `82c0254`, opérations locales
 `0638dc2`, client/CLI `deb5937`, UI `161d26a`, intégration `c75b3f3`, recette
