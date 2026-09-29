@@ -39,6 +39,8 @@ mod provision;
 mod quota;
 mod s3_cas;
 pub mod schema;
+mod sealed_cursor;
+pub use sealed_cursor::SEALED_CURSOR_MAX_CHARS;
 mod service_io;
 mod space_access;
 mod transaction_authorization;

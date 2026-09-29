@@ -25,6 +25,13 @@ mod scoped_reviews;
 pub use review_listing::ReviewListQuery;
 pub use scoped_reviews::ScopedIntegrationTarget;
 mod releases;
+mod space_capabilities;
+mod space_catalog;
+pub use space_capabilities::{SpaceCapabilities, SpaceCapabilityFlags};
+pub use space_catalog::{
+    SPACE_CATALOG_DEFAULT_LIMIT, SPACE_CATALOG_MAX_LIMIT, SpaceAccess, SpaceCatalogEntry,
+    SpaceCatalogPage, SpaceCatalogQuery, SpaceCatalogWorkspace,
+};
 mod types;
 mod webhooks;
 use super::*;

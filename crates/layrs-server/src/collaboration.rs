@@ -10,6 +10,7 @@ use axum::{
 use layrs_core::scm::SpaceId;
 use layrs_store_server::v3::*;
 use std::sync::Arc;
+mod catalog;
 mod invitations;
 #[path = "collaboration/releases.rs"]
 mod releases;
@@ -33,6 +34,8 @@ impl CollaborationHttpState {
 }
 pub fn router(state: CollaborationHttpState) -> Router {
     Router::new()
+        .route("/v3/spaces", get(catalog::spaces))
+        .route("/v3/spaces/:space/capabilities", get(catalog::capabilities))
         .route(
             "/v3/spaces/:space/policy-management",
             get(policy_management),
