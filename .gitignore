@@ -17,7 +17,7 @@
 .env.*
 !.env.example
 /.layrs-local/
-/.layrs/
+.layrs/
 /tmp/
 
 # Test artifacts

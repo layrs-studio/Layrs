@@ -26,7 +26,6 @@ the real Studio Desktop UI.
 | Renderer UI | `pnpm test:e2e:renderer` | Linux | zero retries; evidence retained |
 | Real Studio Web | `pnpm test:web:ci` | Linux | zero retries; isolated server/store |
 | Native Desktop | `pnpm test:desktop:ci` | Windows | zero retries; real Tauri/WebView2 |
-| Cross-surface E2E | `pnpm test:e2e:ci` | canonical Windows gate | real Desktop/server/Web only |
 
 The canonical Windows `pnpm test` runs every row, including all Playwright
 specs. Platform CI jobs may split the rows, but must not describe a partial

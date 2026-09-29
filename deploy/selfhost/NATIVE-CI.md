@@ -9,8 +9,6 @@ globale `ignoreHTTPSErrors` n'est utilisée.
 
 `node scripts/test-native-ui-ci.mjs desktop` exécute les scénarios SCM et équipe
 Tauri/WebView2. La fixture équipe est obligatoire en CI : son absence échoue.
-Le scénario historique `desktop-native.spec.ts`, destiné à l'ancien écran Local,
-reste conservé et distinct du gate des écrans natifs.
 
 Prérequis : dépendances JS verrouillées, Rust 1.85, Chromium pour Web, PostgreSQL
 jetable autorisant CREATE DATABASE/ROLE. Fournir `LAYRS_TEST_DATABASE_URL` avec

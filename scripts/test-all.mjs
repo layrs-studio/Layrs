@@ -7,9 +7,9 @@ const steps = [
     args: ["run", "check"]
   },
   {
-    label: "Client SDK unit tests",
+    label: "Lens package contract tests",
     command: "pnpm",
-    args: ["run", "test:sdk"]
+    args: ["run", "test:packages"]
   },
   ...["local-dev", "native-project-files", "native-remote-project-files", "native-policy-path-form", "native-projection-store", "partial-merge-choices"].map((name) => ({
     label: name,
@@ -40,11 +40,6 @@ const steps = [
     label: "Studio Web",
     command: "pnpm",
     args: ["run", "test:web:ci"]
-  },
-  {
-    label: "Desktop to Server to Web E2E",
-    command: "pnpm",
-    args: ["run", "test:e2e:ci"]
   }
 ];
 

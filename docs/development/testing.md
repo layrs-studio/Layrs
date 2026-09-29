@@ -124,10 +124,8 @@ database server tests.
 
 ```powershell
 pnpm test:desktop
-pnpm test:e2e
 pnpm test:desktop:ci
 pnpm test:web:ci
-pnpm test:e2e:ci
 pnpm test:e2e:renderer
 ```
 
@@ -146,9 +144,8 @@ traces, screenshots and videos are retained as CI artifacts for 14 days.
 - `Windows / Tauri native Desktop`: Desktop typecheck, Tauri shell tests,
   package build and real native Desktop UI tests.
 
-Actions are pinned by commit SHA. PostgreSQL and MinIO images are explicitly
-versioned in `docker-compose.yml`; developers can override them with
-`LAYRS_POSTGRES_IMAGE` and `LAYRS_MINIO_IMAGE`.
+Actions are pinned by commit SHA. The test PostgreSQL image is pinned in
+`scripts/test-postgres.mjs`; override it with `LAYRS_TEST_POSTGRES_IMAGE`.
 
 ## Testing Priorities
 

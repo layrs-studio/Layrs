@@ -56,8 +56,8 @@ jobs:
       - name: Static trust gates
         run: pnpm check
 
-      - name: Client SDK unit tests
-        run: pnpm test:sdk
+      - name: Lens package contract tests
+        run: pnpm test:packages
 
       - name: Build supervised native Lens worker
         run: cargo build --locked -p layrs-weave --bin layrs-lens-worker
@@ -144,6 +144,10 @@ jobs:
 
       - name: Install workspace
         run: pnpm install --frozen-lockfile
+
+      # Packaging audits the embedded WASM guest offline from the root workspace.
+      - name: Fetch Rust workspace dependencies
+        run: cargo fetch --locked
 
       - name: Desktop typecheck
         run: pnpm --filter @layrs/studio-desktop check

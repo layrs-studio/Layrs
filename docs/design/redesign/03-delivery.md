@@ -6,14 +6,15 @@ Les cases cochées indiquent des livrables réels, pas une intention.
 ## 1. État initial vérifié
 
 - Web actif : `apps/studio-web/src/NativeStudio.tsx` monté par `main.tsx`.
-- Desktop actif : `NativeWorkbench.tsx`, branche `NativePartialWorkbench.tsx`,
-  et ancien `DesktopApp` accessible par `#local`.
+- Desktop actif : `NativeWorkbench.tsx`, branche `NativePartialWorkbench.tsx`.
+  L'ancien `DesktopApp` (`#local`) et l'ancien `StudioApp` Web ont été retirés
+  lors du nettoyage du 29 septembre 2026, avec le moteur local legacy.
 - Surfaces communes : `packages/ui/src/native-*` ; styles partagés et styles
-  Desktop séparés. `NotificationProvider` existe déjà.
+  Desktop séparés. L'ancien `NotificationProvider` (inutilisé) a été retiré ; le
+  récupérer depuis l'historique git (`packages/ui/src/studio-components.tsx`) ou
+  le réécrire pour la refonte.
 - Contrats de commandes/transports, garde de génération, brouillons et exclusions
   concurrentes sont à préserver pendant extraction en vues.
-- Défaut de routage constaté dans le code : ancien shell disponible sur `#local`,
-  ses liens changent vers `#desktop-*` et font remonter le shell natif.
 - Image Lens existe pour PNG/JPEG/WebP avec données d'aperçu fournies ; le navigateur
   de fichiers distant natif ne raccorde pas encore ces données.
 
@@ -188,8 +189,7 @@ Tests des comportements, pas des classes CSS. Inspection visuelle distincte.
 Réutiliser `studio-web-native.spec.ts`, `desktop-native-scm.spec.ts`,
 `desktop-native-team.spec.ts`, `desktop-native-partial.spec.ts` et leurs fixtures
 HTTPS/Tauri. Adapter les sélecteurs accessibles au nouveau vocabulaire ; ne pas
-supprimer un scénario parce que son ancien bouton a disparu. Auditer les autres
-tests Desktop/legacy avant retrait des vues anciennes.
+supprimer un scénario parce que son ancien bouton a disparu.
 
 Inclure connexion/session expirée/mot de passe modifié, catalogue vide, création,
 capture automatique, comparaison, restauration, transferts, revue/version exacte,
