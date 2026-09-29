@@ -25,6 +25,13 @@ mod scoped_reviews;
 pub use review_listing::ReviewListQuery;
 pub use scoped_reviews::ScopedIntegrationTarget;
 mod releases;
+mod space_capabilities;
+mod space_catalog;
+pub use space_capabilities::{SpaceCapabilities, SpaceCapabilityFlags};
+pub use space_catalog::{
+    SPACE_CATALOG_DEFAULT_LIMIT, SPACE_CATALOG_MAX_LIMIT, SpaceAccess, SpaceCatalogEntry,
+    SpaceCatalogPage, SpaceCatalogQuery, SpaceCatalogWorkspace,
+};
 mod types;
 mod webhooks;
 use super::*;
@@ -61,14 +68,25 @@ impl PgCollaborationStore {
         super::policy_management::state(&self.repository, &mut tx, space, &authority.policy_set_id)
             .await
     }
+    /// Whole-Space collaboration guard: the action must be granted and the
+    /// principal must not be content-restricted (see `space_access::full_access`).
     async fn authority(
         &self,
         principal: &PrincipalContext,
         space: &SpaceId,
         action: V3Action,
     ) -> V3StoreResult<SpaceAuthority> {
+        let authority = self.current_authority(space).await?;
+        let decision = self.decide(principal, &authority, action).await?;
+        if !super::space_access::full_access(&decision) {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        Ok(authority)
+    }
+    /// Current authority tuple of a ready Space; no authorization is implied.
+    async fn current_authority(&self, space: &SpaceId) -> V3StoreResult<SpaceAuthority> {
         let row=sqlx::query("SELECT current_repository_view_id,current_repository_view_generation,current_policy_set_id,authorization_epoch,next_event_sequence FROM spaces WHERE space_id=$1 AND lifecycle_state='ready'").bind(space.as_str()).fetch_optional(self.repository.pool()).await.map_err(pg_error)?.ok_or(V3StoreError::NotFound)?;
-        let authority = SpaceAuthority {
+        Ok(SpaceAuthority {
             space_id: space.clone(),
             repository_view_id: parse(row.get::<String, _>("current_repository_view_id"))?,
             repository_view_generation: row.get::<i64, _>("current_repository_view_generation")
@@ -76,23 +94,25 @@ impl PgCollaborationStore {
             policy_set_id: parse(row.get::<String, _>("current_policy_set_id"))?,
             authorization_epoch: row.get::<i64, _>("authorization_epoch") as u64,
             watermark_sequence: row.get::<i64, _>("next_event_sequence") as u64 - 1,
-        };
-        let decision = self
-            .repository
+        })
+    }
+    /// The injected policy authorizer's Space-level decision for `action`.
+    async fn decide(
+        &self,
+        principal: &PrincipalContext,
+        authority: &SpaceAuthority,
+        action: V3Action,
+    ) -> V3StoreResult<AuthorizationDecision> {
+        self.repository
             .authorizer()
             .authorize(&AuthorizationCheck {
                 principal: principal.clone(),
                 action,
-                target: AuthorizationTarget::Space(space.clone()),
+                target: AuthorizationTarget::Space(authority.space_id.clone()),
                 policy_set_id: authority.policy_set_id.clone(),
                 authorization_epoch: authority.authorization_epoch,
             })
-            .await?;
-        if decision.content_restricted {
-            return Err(V3StoreError::InvalidCapability);
-        }
-        require_allowed(decision)?;
-        Ok(authority)
+            .await
     }
     async fn locked<'a>(
         &'a self,

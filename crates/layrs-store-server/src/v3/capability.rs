@@ -104,6 +104,12 @@ impl CapabilityCodec {
         })
     }
 
+    /// Independent key for another server-sealed token family. Distinct
+    /// contexts never share key material with capability signatures.
+    pub(crate) fn derived_key(&self, context: &'static str) -> [u8; 32] {
+        blake3::derive_key(context, &self.signing_key)
+    }
+
     pub fn new(signing_key: impl AsRef<[u8]>) -> V3StoreResult<Self> {
         let key = signing_key.as_ref();
         if key.len() < 32 {

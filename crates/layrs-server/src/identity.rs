@@ -314,9 +314,18 @@ async fn whoami(
         .map_err(|_| IdentityError::Unauthorized)?;
     let row = sqlx::query("SELECT principal_id,actor_id,display_name,principal_kind FROM principals WHERE principal_id=$1 AND status='active'")
         .bind(principal.as_str()).fetch_optional(&identity.pool).await.map_err(|_| IdentityError::Unavailable)?.ok_or(IdentityError::Unauthorized)?;
+    let kind: String = row.get("principal_kind");
+    // UI hint only: every administrative endpoint rechecks under its own lock.
+    let instance_administrator = is_instance_administrator(&kind);
     Ok(Json(
-        serde_json::json!({"principal_id":row.get::<String,_>("principal_id"),"actor_id":row.get::<String,_>("actor_id"),"display_name":row.get::<String,_>("display_name"),"kind":row.get::<String,_>("principal_kind")}),
+        serde_json::json!({"principal_id":row.get::<String,_>("principal_id"),"actor_id":row.get::<String,_>("actor_id"),"display_name":row.get::<String,_>("display_name"),"kind":kind,"instance_administrator":instance_administrator}),
     ))
+}
+
+/// The only instance-administration rule: `authenticated_in_tx(.., true)`
+/// (accounts, service accounts, telemetry, storage budget) and `whoami` share it.
+pub(crate) fn is_instance_administrator(principal_kind: &str) -> bool {
+    principal_kind == "bootstrap_admin"
 }
 
 #[async_trait]

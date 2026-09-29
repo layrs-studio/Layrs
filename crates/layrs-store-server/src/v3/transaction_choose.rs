@@ -22,7 +22,7 @@ pub(crate) async fn administrator(
     principal: &PrincipalContext,
     space: &SpaceId,
 ) -> V3StoreResult<bool> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active' AND m.role IN ('owner','administrator'))").bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_one(&mut **tx).await.map_err(pg_error)
+    super::space_access::workspace_administrator(&mut **tx, principal, space).await
 }
 
 pub(crate) async fn authorize(

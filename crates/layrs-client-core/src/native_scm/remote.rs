@@ -622,6 +622,7 @@ fn decode(kind: ObjectKind, bytes: &[u8]) -> RemoteResult<CanonicalObject> {
     Ok(object)
 }
 
+mod catalog;
 mod chunk_spool;
 mod file;
 mod graph;

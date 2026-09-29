@@ -7,6 +7,7 @@ if (!process.env.LAYRS_TEST_DATABASE_URL || process.env.LAYRS_TEST_DATABASE_ISOL
 const suites = [
   ['native_identity', 'native_bootstrap_sessions_revocation_and_recovery'],
   ['native_invitations', 'invitations_are_nominative_atomic_expiring_and_never_regrant_on_replay'],
+  ['native_catalog', 'catalog_lists_only_openable_spaces_and_capabilities_follow_handler_checks'],
   ['native_storage_budget', 'administrator_capacity_http_and_monitor_exit_codes'],
   ['native_retention', 'retention_observes_catalogue_missing_and_prepared_files_without_mutation'],
   ['native_sync_v3', 'real_service_provision_upload_advance_replay_concurrency_fetch_and_revoke'],

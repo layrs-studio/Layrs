@@ -9,8 +9,9 @@ impl PgCollaborationStore {
             .authority(principal, space, V3Action::AdministerPolicy)
             .await?;
         let mut tx = self.locked(principal, &authority).await?;
-        let admin:bool=sqlx::query_scalar("SELECT m.role IN ('owner','administrator') FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active'").bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
-        if !admin {
+        if !super::super::super::space_access::workspace_administrator(&mut *tx, principal, space)
+            .await?
+        {
             return Err(V3StoreError::InvalidCapability);
         }
         let rows=sqlx::query("SELECT p.principal_id,p.display_name FROM principals p JOIN workspace_memberships m USING(principal_id) JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND p.deployment_id=$2 AND p.status='active' AND m.state='active' AND p.principal_kind IN ('account','bootstrap_admin') ORDER BY p.principal_id LIMIT 257").bind(space.as_str()).bind(&principal.deployment_id).fetch_all(&mut *tx).await.map_err(pg_error)?;
