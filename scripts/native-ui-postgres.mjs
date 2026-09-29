@@ -1,6 +1,6 @@
 // CI-only local PostgreSQL lifecycle. Existing explicit test endpoints stay external.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -30,14 +30,20 @@ export async function testPostgres(directory) {
   const passwordFile = join(directory, 'postgres-password');
   writeFileSync(passwordFile, password, { flag: 'wx', mode: 0o600 });
   const data = join(directory, 'postgres');
+  const logFile = join(directory, 'postgres.log');
   mkdirSync(data);
   const run = (program, args) => {
     const result = spawnSync(join(bin, `${program}.exe`), args, { encoding: 'utf8', windowsHide: true, timeout: 120_000 });
-    if (result.status !== 0) throw new Error(`Disposable PostgreSQL ${program} failed (details withheld)`);
+    if (result.status !== 0) {
+      // Tool output never carries the password, but redact it defensively.
+      const serverLog = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+      const output = `${result.error?.message ?? ''}\n${result.stdout ?? ''}\n${result.stderr ?? ''}\n${serverLog}`.replaceAll(password, '<redacted>').trim().slice(-4000);
+      throw new Error(`Disposable PostgreSQL ${program} failed with ${result.status ?? result.signal}:\n${output}`);
+    }
   };
   const port = await freePort();
   run('initdb', ['-D', data, '-U', 'layrs_ci', '--auth-host=scram-sha-256', '--auth-local=trust', '--pwfile', passwordFile]);
-  run('pg_ctl', ['-D', data, '-l', join(directory, 'postgres.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start']);
+  run('pg_ctl', ['-D', data, '-l', logFile, '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start']);
   return {
     environment: { ...process.env, LAYRS_TEST_DATABASE_URL: `postgres://layrs_ci:${password}@127.0.0.1:${port}/postgres`, LAYRS_TEST_DATABASE_ISOLATED: '1' },
     close() { run('pg_ctl', ['-D', data, '-m', 'fast', '-w', 'stop']); },
