@@ -37,6 +37,8 @@ impl PinnedDirectory {
             parent: self.file.try_clone()?,
             parent_identity: self.identity,
             identity,
+            #[cfg(unix)]
+            name: name.to_os_string(),
         };
         if platform::rename_at(&entry, &destination.file, destination_name)? {
             return Ok(true);

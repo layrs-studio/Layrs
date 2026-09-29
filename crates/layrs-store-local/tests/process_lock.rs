@@ -108,16 +108,16 @@ fn verify_shared_shared_and_shared_exclusive(layout: &NativeStoreLayout) -> Fixt
 #[cfg(not(windows))]
 fn verify_shared_open_with_read_only_lock(layout: &NativeStoreLayout) -> FixtureResult {
     let lock_path = layout.lock_path();
-    let original_permissions = fs::metadata(&lock_path)?.permissions();
+    let original_permissions = fs::metadata(lock_path)?.permissions();
     let mut read_only = original_permissions.clone();
     read_only.set_readonly(true);
-    fs::set_permissions(&lock_path, read_only)?;
+    fs::set_permissions(lock_path, read_only)?;
 
     let probe_result = (|| -> FixtureResult<ExitStatus> {
         let mut child = spawn_child(PROBE_FSCK, layout.root(), None)?;
         Ok(child.wait()?)
     })();
-    fs::set_permissions(&lock_path, original_permissions)?;
+    fs::set_permissions(lock_path, original_permissions)?;
     let status = probe_result?;
     if !status.success() {
         return Err(io::Error::other(format!(

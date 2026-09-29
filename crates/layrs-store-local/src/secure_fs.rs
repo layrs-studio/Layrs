@@ -41,6 +41,9 @@ pub(crate) struct PinnedFile {
     parent: File,
     parent_identity: FileIdentity,
     identity: FileIdentity,
+    // Unix renames and unlinks relative to the pinned parent descriptor.
+    #[cfg(unix)]
+    name: std::ffi::OsString,
 }
 
 impl PinnedDirectory {
@@ -224,6 +227,8 @@ impl PinnedDirectory {
             file,
             parent: self.file.try_clone()?,
             parent_identity: self.identity,
+            #[cfg(unix)]
+            name: name.to_os_string(),
         })
     }
 
