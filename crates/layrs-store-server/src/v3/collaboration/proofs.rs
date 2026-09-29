@@ -369,14 +369,7 @@ impl PgCollaborationStore {
             digest(&request)?
         };
         let mut tx = self.locked(principal, &authority).await?;
-        let service: bool = sqlx::query_scalar(
-            "SELECT principal_kind='service' FROM principals WHERE principal_id=$1",
-        )
-        .bind(principal.principal_id.as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(pg_error)?;
-        if !service {
+        if !super::super::space_access::service_principal(&mut *tx, principal).await? {
             return Err(invalid("proof_requires_service_identity"));
         }
         if let Some(row) = sqlx::query(

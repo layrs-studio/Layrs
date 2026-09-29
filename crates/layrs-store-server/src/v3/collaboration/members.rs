@@ -170,8 +170,7 @@ impl PgCollaborationStore {
             return Err(V3StoreError::AuthorizationEpochChanged);
         }
         let workspace: String = row.get("workspace_id");
-        let administrator:bool=sqlx::query_scalar("SELECT role IN ('owner','administrator') FROM workspace_memberships WHERE workspace_id=$1 AND principal_id=$2 AND state='active'").bind(&workspace).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
-        if !administrator {
+        if !super::super::space_access::workspace_administrator(&mut *tx, principal, space).await? {
             return Err(V3StoreError::InvalidCapability);
         }
         super::super::policy_management::require_managed(

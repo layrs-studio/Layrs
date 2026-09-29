@@ -131,8 +131,7 @@ impl PgCollaborationStore {
         let evidence=self.evidence(&json!({"schemaVersion":"layrs.space-invitation.v1","invitationId":id,"spaceId":space,"inviterPrincipalId":principal.principal_id,"recipientPrincipalId":request.recipient_principal_id,"role":request.role,"expiresAt":expires,"policySetId":authority.policy_set_id,"authorizationEpoch":authority.authorization_epoch})).await?;
         let mut tx = self.locked(principal, &authority).await?;
         self.lock_invitation_principal(&mut tx, principal).await?;
-        let administrator:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active' AND m.role IN ('owner','administrator'))").bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
-        if !administrator {
+        if !super::super::space_access::workspace_administrator(&mut *tx, principal, space).await? {
             return Err(V3StoreError::InvalidCapability);
         }
         let old:Option<String>=sqlx::query_scalar("SELECT request_digest FROM layrs_collaboration.space_invitations WHERE invitation_id=$1").bind(&id).fetch_optional(&mut *tx).await.map_err(pg_error)?;

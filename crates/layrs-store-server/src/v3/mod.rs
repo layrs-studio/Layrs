@@ -40,6 +40,7 @@ mod quota;
 mod s3_cas;
 pub mod schema;
 mod service_io;
+mod space_access;
 mod transaction_authorization;
 mod transaction_choose;
 mod transaction_plan;

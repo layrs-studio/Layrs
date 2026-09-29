@@ -177,7 +177,7 @@ impl PgCollaborationStore {
             request.action,
             ReviewActionKind::Approve | ReviewActionKind::RequestChanges
         ) {
-            let human:bool=sqlx::query_scalar("SELECT principal_kind IN ('account','bootstrap_admin') FROM principals WHERE principal_id=$1").bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
+            let human = super::super::space_access::human_principal(&mut *tx, principal).await?;
             if !human
                 || row.get::<String, _>("lifecycle") != "open"
                 || row.get::<String, _>("policy_set_id") != authority.policy_set_id.as_str()
