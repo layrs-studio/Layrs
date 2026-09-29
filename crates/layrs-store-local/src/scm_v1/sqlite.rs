@@ -534,9 +534,42 @@ fn verify_persistent_wal(path: &Path) -> Result<()> {
 }
 
 fn refuse_uncheckpointed_wal(path: &Path) -> Result<()> {
+    if has_uncheckpointed_wal(path)? {
+        return Err(ScmSchemaError::UncheckpointedWal(sidecar_path(
+            path, "-wal",
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn has_uncheckpointed_wal(path: &Path) -> Result<bool> {
     let wal_path = sidecar_path(path, "-wal");
-    if wal_path.is_file() && fs::metadata(&wal_path)?.len() > 0 {
-        return Err(ScmSchemaError::UncheckpointedWal(wal_path));
+    Ok(wal_path.is_file() && fs::metadata(&wal_path)?.len() > 0)
+}
+
+/// Folds a WAL left by a writer that died before closing back into the
+/// database. SQLite replays committed frames and discards a torn tail, exactly
+/// as it would for the next writer. The caller must hold the Store's exclusive
+/// lock, so no live connection can own those frames.
+pub(crate) fn checkpoint_orphaned_wal(path: &Path, busy_timeout: Duration) -> Result<()> {
+    validate_embedded_checksum()?;
+    require_existing_file(path)?;
+    verify_persistent_wal(path)?;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    connection.busy_timeout(busy_timeout)?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    let busy: i64 =
+        connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+    drop(connection);
+    if busy != 0 || has_uncheckpointed_wal(path)? {
+        return Err(ScmSchemaError::UncheckpointedWal(sidecar_path(
+            path, "-wal",
+        )));
     }
     Ok(())
 }

@@ -340,6 +340,7 @@ pub fn init(
 pub fn open(root: impl AsRef<Path>) -> Result<NativeStoreOpen, NativeStoreError> {
     match inspect(root)? {
         NativeStoreInspection::NativeReady { layout, marker } => {
+            recover_orphaned_wal(&layout, marker.store_id())?;
             let store_lock = StoreLock::acquire_existing(layout.lock_path(), SessionMode::Shared)?;
             let (layout, marker) = ready_under_lock(&layout, marker.store_id())?;
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
@@ -382,6 +383,9 @@ pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, Na
             let store_lock =
                 StoreLock::acquire_existing(layout.lock_path(), SessionMode::Exclusive)?;
             let (layout, marker) = ready_under_lock(&layout, marker.store_id())?;
+            if sqlite::has_uncheckpointed_wal(layout.sqlite_path())? {
+                sqlite::checkpoint_orphaned_wal(layout.sqlite_path(), Duration::from_secs(5))?;
+            }
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
             drop(connection);
@@ -395,6 +399,29 @@ pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, Na
             inspection: Box::new(other),
         }),
     }
+}
+
+/// A writer killed after commit leaves its frames in the WAL, which the
+/// read-only open refuses. Fold them back under a short exclusive lock; if a
+/// live session holds the Store, leave the WAL to it.
+fn recover_orphaned_wal(
+    layout: &NativeStoreLayout,
+    store_id: &StoreId,
+) -> Result<(), NativeStoreError> {
+    if !sqlite::has_uncheckpointed_wal(layout.sqlite_path())? {
+        return Ok(());
+    }
+    let _store_lock = match StoreLock::acquire_existing(layout.lock_path(), SessionMode::Exclusive)
+    {
+        Ok(lock) => lock,
+        Err(StoreError::LockBusy(_)) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let (layout, _) = ready_under_lock(layout, store_id)?;
+    if sqlite::has_uncheckpointed_wal(layout.sqlite_path())? {
+        sqlite::checkpoint_orphaned_wal(layout.sqlite_path(), Duration::from_secs(5))?;
+    }
+    Ok(())
 }
 
 fn ready_under_lock(
