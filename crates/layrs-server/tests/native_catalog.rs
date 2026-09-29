@@ -1,5 +1,5 @@
 //! Real PostgreSQL/runtime-role/CAS coverage of the UI navigation contracts:
-//! authorized Space catalog and capability hints.
+//! authorized Space catalog, capability hints and `whoami` administration flag.
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -261,6 +261,29 @@ async fn catalog_lists_only_openable_spaces_and_capabilities_follow_handler_chec
         );
     }
     let (bob, carol, dave) = (&sessions[0], &sessions[1], &sessions[2]);
+
+    // whoami: display name, kind and the shared instance-administrator rule.
+    let me = ok(
+        &router,
+        "GET",
+        "/v3/auth/whoami",
+        &alice.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(me["display_name"], "Alice");
+    assert_eq!(me["kind"], "bootstrap_admin");
+    assert_eq!(me["instance_administrator"], true);
+    let me = ok(
+        &router,
+        "GET",
+        "/v3/auth/whoami",
+        &bob.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(me["kind"], "account");
+    assert_eq!(me["instance_administrator"], false);
 
     let provision = |context: PrincipalContext, workspace: &str, slug: &str, name: &str| {
         let repo = repo.clone();

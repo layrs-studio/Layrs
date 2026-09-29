@@ -55,7 +55,7 @@ pub(super) async fn authenticated_in_tx(
     identity.check_origin(headers)?;
     let row=sqlx::query("SELECT p.principal_id,p.authorization_generation,p.principal_kind FROM principals p JOIN layrs_identity.tokens t USING(principal_id) JOIN deployments d USING(deployment_id) WHERE t.token_digest=$1 AND p.deployment_id=$2 AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp() AND p.status='active' AND d.status='ready' AND t.authorization_generation=p.authorization_generation FOR SHARE OF p")
         .bind(token_digest(bearer(headers)?)).bind(&identity.deployment_id).fetch_optional(&mut **tx).await.map_err(db)?.ok_or(IdentityError::Unauthorized)?;
-    if administrator && row.get::<String, _>("principal_kind") != "bootstrap_admin" {
+    if administrator && !is_instance_administrator(&row.get::<String, _>("principal_kind")) {
         return Err(IdentityError::Unauthorized);
     }
     Ok((row.get("principal_id"), row.get("authorization_generation")))
