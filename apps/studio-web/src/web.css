@@ -1,0 +1,152 @@
+/* Web-only layouts. Shared primitives live in @layrs/ui. */
+.login {
+  display: grid;
+  min-height: 100vh;
+  min-height: 100dvh;
+  place-items: center;
+  padding: var(--space-5);
+  background:
+    radial-gradient(circle at 20% 0%, rgb(244 63 94 / 0.12), transparent 42%),
+    radial-gradient(circle at 90% 100%, rgb(245 158 11 / 0.1), transparent 40%),
+    var(--bg);
+}
+
+.login__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: min(420px, 100%);
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-2);
+}
+
+.login__heading h1 {
+  font-size: var(--text-2xl);
+}
+
+.login__instance {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+}
+
+.login__help {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.project-list,
+.layer-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-list__item + .project-list__item,
+.layer-list__item + .layer-list__item {
+  border-top: 1px solid var(--border);
+}
+
+.project-list__open {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-4) var(--space-5);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-list__open:hover {
+  background: var(--surface-hover);
+}
+
+.project-list__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.project-list__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.project-list__name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-list__path {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.layer-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  color: var(--text-muted);
+}
+
+.layer-list__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.layer-list__name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.open-by-reference {
+  max-width: 640px;
+}
+
+.account-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.account-identity__name {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.account-identity__meta {
+  color: var(--text-muted);
+}
+
+.layrs-topbar__actions .layrs-menu__trigger {
+  width: auto;
+  height: auto;
+  padding: 2px;
+  border-radius: 50%;
+}
+
+.login__card > .layrs-reason,
+.login__card > .layrs-reason > .layrs-button,
+.login__card > .layrs-button {
+  width: 100%;
+}

@@ -160,9 +160,9 @@ case « implémenté » en « vérifié » sans preuve du parcours réel.
 | Direction visuelle | Validée | Accord utilisateur | Maquette graphite, corail/ambre, logo original |
 | Plan pages/UX | Rédigé | Revue indépendante ; corrections intégrées | 24 fiches, liens vérifiés ; identité locale, provenance et limites Web explicitées |
 | L0 Contrats | Non commencé | Non exécutée | Catalogue et capacités V3 à spécifier |
-| L1 Fondations | Non commencé | Non exécutée | Police locale, tokens, shell, composants |
-| L2 Entrée/navigation | Non commencé | Non exécutée | Dépend de L0/L1 |
-| L3 Desktop | Non commencé | Non exécutée | Préserver complet/partiel |
+| L1 Fondations | Fait (`packages/ui` : tokens sombre/clair, polices locales OFL, thème précoce, routeur hash, shell, composants, diff) | Tests renderer + captures sombre/clair de Changements comparées à la maquette | Contraste clair mesuré à refaire par outil ; pas encore de test clavier automatisé du menu/palette |
+| L2 Entrée/navigation | Squelette routé Web + Desktop ; connexion, compte, apparence, projets Desktop | Renderer uniquement ; recettes natives Web/Desktop à adapter | Projets Web par nom dépend du catalogue L0 ; anciens panneaux intégrés dans les pages en attendant leur lot |
+| L3 Desktop | Changements (P05) refait ; Historique, Layers, Versions, Synchronisation, Réglages, Diagnostic routés | Renderer (capture) | Partiel encore via l’ancien atelier ; fusion, synchronisation et identité encore en panneaux hérités |
 | L4 Collaboration | Non commencé | Non exécutée | Composants partagés |
 | L5 Administration | Non commencé | Non exécutée | Revue sécurité requise |
 | L6 Git/finitions | Non commencé | Non exécutée | Bridge Tauri et recette complète |
@@ -221,6 +221,13 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
 - Web local reconstruit et version Desktop de recette identifiée ; journaux,
   commits et guide de test présents. Ne pas déclarer un MSI signé ou distribué
   parce qu'un build local s'est ouvert.
+
+### Limites métier constatées pendant l’implémentation
+
+- **Message de capture** (maquette P05) : le moteur n’en porte pas. Une Step est
+  adressée par son contenu et le résumé d’Operation reste local au poste. La page
+  Changements l’annonce et renvoie vers les repères/versions nommés. Ajouter un
+  message partagé demande un contrat (observation ou métadonnée publiée) à décider.
 
 ## 7. Suggestions différées, sans confusion de périmètre
 
