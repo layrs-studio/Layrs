@@ -28,6 +28,18 @@ pub enum NativeRemoteAction {
     StartLogin,
     PollLogin,
     Whoami,
+    /// One page of the Spaces this principal may open (`GET /v3/spaces`).
+    /// Independent of the local checkout; `root` is ignored.
+    ListSpaces {
+        #[serde(default)]
+        limit: Option<u16>,
+        #[serde(default)]
+        cursor: Option<String>,
+    },
+    /// UI capability hint for one Space (`GET /v3/spaces/:space/capabilities`).
+    SpaceCapabilities {
+        space: SpaceId,
+    },
     Logout,
     Provision {
         workspace: String,
@@ -231,6 +243,12 @@ fn execute_remote_with_store(
     .map_err(remote_error)?;
     match request.action {
         NativeRemoteAction::Whoami => remote.whoami().map_err(remote_error),
+        NativeRemoteAction::ListSpaces { limit, cursor } => remote
+            .list_spaces(limit, cursor.as_deref())
+            .map_err(remote_error),
+        NativeRemoteAction::SpaceCapabilities { space } => {
+            remote.space_capabilities(&space).map_err(remote_error)
+        }
         NativeRemoteAction::CancelTransfer { transfer_id } => Ok(
             json!({"transferId":transfer_id,"status":super::transfer_control::cancel(&transfer_id,remote.origin(),root,&token).map_err(remote_error)?}),
         ),
@@ -623,6 +641,60 @@ mod tests {
             json!({"action":"publishCancellable"})
         )
         .is_err());
+    }
+    #[test]
+    fn catalog_actions_decode_with_optional_page_and_exact_space() {
+        let first: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"listSpaces"})).unwrap();
+        assert!(matches!(
+            first,
+            NativeRemoteAction::ListSpaces {
+                limit: None,
+                cursor: None
+            }
+        ));
+        let next: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"listSpaces","limit":20,"cursor":"c2VhbGVk"}))
+                .unwrap();
+        assert!(matches!(
+            next,
+            NativeRemoteAction::ListSpaces {
+                limit: Some(20),
+                cursor: Some(_)
+            }
+        ));
+        let capabilities: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"spaceCapabilities","space":"space:fixture"}))
+                .unwrap();
+        assert!(matches!(
+            capabilities,
+            NativeRemoteAction::SpaceCapabilities { .. }
+        ));
+        for invalid in [
+            json!({"action":"listSpaces","offset":3}),
+            json!({"action":"spaceCapabilities"}),
+            json!({"action":"spaceCapabilities","space":"not-a-space"}),
+        ] {
+            assert!(serde_json::from_value::<NativeRemoteAction>(invalid).is_err());
+        }
+    }
+    #[test]
+    fn catalog_page_arguments_are_bounded_before_any_request() {
+        let remote = NativeRemote::new("https://example.invalid", "fixture-token").unwrap();
+        for (limit, cursor) in [
+            (Some(0), None),
+            (Some(101), None),
+            (None, Some("")),
+            (None, Some("has space")),
+            (None, Some("a&limit=1")),
+        ] {
+            assert!(matches!(
+                remote.list_spaces(limit, cursor),
+                Err(super::super::NativeRemoteError::Invalid(_))
+            ));
+        }
+        let too_long = "A".repeat(2049);
+        assert!(remote.list_spaces(None, Some(&too_long)).is_err());
     }
     #[test]
     fn credentials_are_scoped_to_the_exact_canonical_origin() {
