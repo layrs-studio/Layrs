@@ -26,6 +26,10 @@ export async function testPostgres(directory) {
     ? readdirSync(parent).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(version => join(parent, version, 'bin')) : [];
   const bin = candidates.find(path => existsSync(join(path, 'initdb.exe')) && existsSync(join(path, 'pg_ctl.exe')));
   if (!bin) throw new Error('PostgreSQL binaries missing: install the CI prerequisite or set PGBIN');
+  // PostgreSQL drops Administrators membership before touching its files, so
+  // grant the runner user itself inheritable access to the disposable tree.
+  const grant = spawnSync('icacls', [directory, '/grant', `${process.env.USERNAME}:(OI)(CI)F`], { encoding: 'utf8', windowsHide: true });
+  if (grant.status !== 0) throw new Error(`Could not grant PostgreSQL access to its disposable directory: ${grant.stderr || grant.stdout}`);
   const password = randomBytes(32).toString('hex');
   const passwordFile = join(directory, 'postgres-password');
   writeFileSync(passwordFile, password, { flag: 'wx', mode: 0o600 });
