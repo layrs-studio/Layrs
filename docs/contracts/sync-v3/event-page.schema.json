@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/event-page.schema.json",
+  "title": "Layrs Sync V3 Space event page",
+  "oneOf": [
+    { "$ref": "#/$defs/Request" },
+    { "$ref": "#/$defs/Response" }
+  ],
+  "$defs": {
+    "Actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "actorId", "deviceId"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["account", "device", "automation", "server"] },
+        "actorId": { "$ref": "common.schema.json#/$defs/ActorId" },
+        "deviceId": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/DeviceId" }, { "type": "null" }]
+        }
+      }
+    },
+    "EventBase": {
+      "type": "object",
+      "required": ["sequence", "eventId", "kind", "actor", "transactionId", "payload", "createdAt"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "eventId": { "$ref": "common.schema.json#/$defs/EventId" },
+        "kind": { "type": "string" },
+        "actor": { "$ref": "#/$defs/Actor" },
+        "transactionId": { "$ref": "common.schema.json#/$defs/TransactionId" },
+        "payload": { "type": "object" },
+        "createdAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "StepsAcceptedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/EventBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "steps.accepted" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["stepIds", "observationIds"],
+              "properties": {
+                "stepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" },
+                "observationIds": {
+                  "type": "array", "maxItems": 10000, "uniqueItems": true,
+                  "items": { "$ref": "common.schema.json#/$defs/ObservationId" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProductsAcceptedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/EventBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "products.accepted" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["products"],
+              "properties": {
+                "products": {
+                  "type": "array", "maxItems": 10000, "uniqueItems": true,
+                  "items": { "$ref": "common.schema.json#/$defs/ProductRoot" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "LayerDefinitionChangedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/EventBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "layer.definition_changed" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["layerId", "previousProductObjectId", "productObjectId"],
+              "properties": {
+                "layerId": { "$ref": "common.schema.json#/$defs/LayerId" },
+                "previousProductObjectId": {
+                  "oneOf": [{ "$ref": "common.schema.json#/$defs/ContentId" }, { "type": "null" }]
+                },
+                "productObjectId": { "$ref": "common.schema.json#/$defs/ContentId" }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "RepositoryViewChangedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/EventBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "repository_view.changed" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mutationId", "outcome", "oldRepositoryViewId", "proposedRepositoryViewId", "newRepositoryViewId", "oldGeneration", "newGeneration", "layerResults"],
+              "properties": {
+                "mutationId": { "$ref": "common.schema.json#/$defs/MutationId" },
+                "outcome": { "type": "string", "enum": ["advanced", "integrated", "chosen", "mixed"] },
+                "oldRepositoryViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" },
+                "proposedRepositoryViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" },
+                "newRepositoryViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" },
+                "oldGeneration": { "type": "integer", "minimum": 0 },
+                "newGeneration": { "type": "integer", "minimum": 1 },
+                "layerResults": {
+                  "type": "array", "minItems": 1, "maxItems": 1000, "uniqueItems": true,
+                  "items": { "$ref": "receipt.schema.json#/$defs/LayerMutationResult" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PolicyRootChangedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/EventBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "policy.root_changed" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mutationId", "oldPolicySetId", "newPolicySetId", "oldAuthorizationEpoch", "newAuthorizationEpoch"],
+              "properties": {
+                "mutationId": { "$ref": "common.schema.json#/$defs/MutationId" },
+                "oldPolicySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+                "newPolicySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+                "oldAuthorizationEpoch": { "type": "integer", "minimum": 1 },
+                "newAuthorizationEpoch": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Event": {
+      "oneOf": [
+        { "$ref": "#/$defs/StepsAcceptedEvent" },
+        { "$ref": "#/$defs/ProductsAcceptedEvent" },
+        { "$ref": "#/$defs/LayerDefinitionChangedEvent" },
+        { "$ref": "#/$defs/RepositoryViewChangedEvent" },
+        { "$ref": "#/$defs/PolicyRootChangedEvent" }
+      ]
+    },
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "spaceId", "clientId", "cursor", "maxEvents"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "spaceEventPageRequest" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "cursor": { "$ref": "common.schema.json#/$defs/Cursor" },
+        "maxEvents": { "type": "integer", "minimum": 1, "maximum": 1000 }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "principalId", "authorizationEpoch", "currentPolicySetId", "spaceId", "events", "scannedThroughSequence", "nextCursor", "hasMore"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "spaceEventPage" },
+        "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "currentPolicySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "events": {
+          "type": "array", "maxItems": 1000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Event" }
+        },
+        "scannedThroughSequence": { "type": "integer", "minimum": 0 },
+        "nextCursor": { "$ref": "common.schema.json#/$defs/Cursor" },
+        "hasMore": { "type": "boolean" }
+      }
+    }
+  }
+}

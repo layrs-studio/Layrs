@@ -1,10 +1,12 @@
 import { chromium, expect, type Browser, type Page, type TestInfo } from "@playwright/test";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
+type NativeDesktopProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 export interface NativeTauriDesktop {
   browser: Browser;
@@ -55,7 +57,7 @@ export async function launchNativeTauriDesktop(
 
   let browser: Browser | undefined;
   try {
-    await waitForCdp(debugPort, logs, 120_000);
+    await waitForCdp(debugPort, logs, 120_000, child);
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, {
       slowMo: visual ? visualSlowMoMs() : 0
     });
@@ -78,17 +80,17 @@ export async function launchNativeTauriDesktop(
         if (visual) {
           await delay(visualHoldMs());
         }
-        await attachLogs(testInfo, logs);
-        await browser?.close().catch(() => undefined);
+        await attachLogs(testInfo, logs).catch(() => undefined);
         stopProcessTree(child);
         await stopStaleE2eDesktopProcesses();
+        await Promise.race([browser?.close().catch(() => undefined), delay(2000)]);
       }
     };
   } catch (error) {
-    await attachLogs(testInfo, logs);
-    await browser?.close().catch(() => undefined);
+    await attachLogs(testInfo, logs).catch(() => undefined);
     stopProcessTree(child);
     await stopStaleE2eDesktopProcesses();
+    await Promise.race([browser?.close().catch(() => undefined), delay(2000)]);
     throw error;
   }
 }
@@ -127,7 +129,7 @@ function spawnTauriDev(
   logs: string[],
   options: NativeTauriDesktopOptions,
   visual: boolean
-): ChildProcessWithoutNullStreams {
+): NativeDesktopProcess {
   const isolatedAppEnv =
     process.platform === "win32"
       ? {
@@ -138,7 +140,7 @@ function spawnTauriDev(
           HOME: resolve(stateRoot, "Home"),
           XDG_CONFIG_HOME: resolve(stateRoot, "xdg-config")
         };
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...isolatedAppEnv,
     ...(options.selectedFolder ? { LAYRS_E2E_SELECTED_FOLDER: options.selectedFolder } : {}),
@@ -158,8 +160,8 @@ function spawnTauriDev(
   const child = spawn(
     process.platform === "win32" ? "cmd.exe" : "pnpm",
     process.platform === "win32"
-      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev", "--config", configPath]
-      : ["tauri", "dev", "--config", configPath],
+      ? ["/d", "/s", "/c", "node_modules\\.bin\\tauri.CMD", "dev", "--no-watch", "--config", configPath]
+      : ["tauri", "dev", "--no-watch", "--config", configPath],
     {
       cwd: desktopAppDir,
       env,
@@ -176,10 +178,11 @@ function spawnTauriDev(
   return child;
 }
 
-async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number) {
+async function waitForCdp(debugPort: number, logs: string[], timeoutMs: number, child: NativeDesktopProcess) {
   const deadline = Date.now() + timeoutMs;
   const url = `http://127.0.0.1:${debugPort}/json/version`;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Tauri exited before WebView started.\n${logs.slice(-80).join("")}`);
     try {
       const response = await fetch(url);
       if (response.ok) {
@@ -211,7 +214,8 @@ async function waitForTauriPage(
     await delay(250);
   }
 
-  throw new Error(`Timed out waiting for a Tauri WebView page at ${desktopUrl}.\n${logs.slice(-80).join("")}`);
+  const observed=browser.contexts().flatMap(context=>context.pages()).map(page=>page.url());
+  throw new Error(`Timed out waiting for a Tauri WebView page at ${desktopUrl}. Observed page URLs: ${JSON.stringify(observed)}.\n${logs.slice(-80).join("")}`);
 }
 
 async function writeE2eTauriConfig(stateRoot: string, desktopPort: number, instanceId: string): Promise<string> {
@@ -219,7 +223,7 @@ async function writeE2eTauriConfig(stateRoot: string, desktopPort: number, insta
   const title = `Layrs Studio E2E ${instanceId}`;
   const config = {
     build: {
-      beforeDevCommand: `pnpm exec vite --host 127.0.0.1 --port ${desktopPort} --strictPort`,
+      beforeDevCommand: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${desktopPort} --strictPort`,
       devUrl: `http://127.0.0.1:${desktopPort}`
     },
     app: {
@@ -261,7 +265,7 @@ async function freePort(): Promise<number> {
   });
 }
 
-function stopProcessTree(child: ChildProcessWithoutNullStreams) {
+function stopProcessTree(child: NativeDesktopProcess) {
   if (child.killed) {
     return;
   }
@@ -315,7 +319,7 @@ function pushLog(logs: string[], chunk: unknown) {
 }
 
 function delay(ms: number) {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+  return new Promise<void>((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function visualSlowMoMs() {

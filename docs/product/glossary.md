@@ -15,7 +15,7 @@ Group of Workspace members used for permissions and ownership.
 ## Space
 
 Repo-like project in Layrs. A Space contains Layers, artifacts, access policy
-registries, Steps and future Weaves.
+registries, Steps and Weaves.
 
 ## Local Space
 
@@ -56,18 +56,18 @@ material.
 
 ## Lens
 
-Adapter for a file/artifact type. A Lens owns preview, diff and future
-reconcile behavior. UI surfaces render Lens outputs.
+Adapter for a file/artifact type. A Lens owns preview, diff and reconcile
+behavior (reconcile currently covers text and code). UI surfaces render Lens outputs.
 
 ## View
 
-Readable projection of a Space, Layer, Step, artifact or future Weave.
+Readable projection of a Space, Layer, Step, artifact or Weave.
 
 ## Weave
 
-Future review and reconciliation flow between Layers. A Weave will connect
-intent, changed artifacts, Steps, Lens diffs, Proofs, Gates, comments and final
-decisions.
+Review and reconciliation flow between Layers. A Weave connects intent,
+changed artifacts, Steps, Lens diffs, comments and final decisions; Proofs and
+Gates are planned.
 
 ## Proof
 

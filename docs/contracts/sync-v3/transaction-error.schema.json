@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/transaction-error.schema.json",
+  "title": "Layrs Sync V3 pre-semantic transaction error",
+  "description": "Closed HTTP 409 response. It is never persisted as a receipt and never replaces an existing idempotency result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "type", "code", "httpStatus", "receiptCreated", "spaceId", "clientId", "idempotencyKey", "requestDigest", "expectedRequestDigest", "message"],
+  "properties": {
+    "protocol": { "const": "layrs.sync.v3" },
+    "type": { "const": "syncTransactionError" },
+    "code": { "enum": ["idempotency_digest_mismatch", "request_digest_mismatch"] },
+    "httpStatus": { "const": 409 },
+    "receiptCreated": { "const": false },
+    "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+    "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+    "idempotencyKey": { "$ref": "common.schema.json#/$defs/IdempotencyKey" },
+    "requestDigest": { "$ref": "common.schema.json#/$defs/ContentId" },
+    "expectedRequestDigest": { "$ref": "common.schema.json#/$defs/ContentId" },
+    "existingReceiptUnchanged": { "type": "boolean" },
+    "message": { "type": "string", "minLength": 1, "maxLength": 2048 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "code": { "const": "idempotency_digest_mismatch" } }, "required": ["code"] },
+      "then": {
+        "required": ["existingReceiptUnchanged"],
+        "properties": { "existingReceiptUnchanged": { "const": true } }
+      },
+      "else": { "not": { "required": ["existingReceiptUnchanged"] } }
+    }
+  ]
+}

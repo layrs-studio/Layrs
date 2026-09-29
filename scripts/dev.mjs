@@ -1,387 +1,77 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+// One-command V3 development instance. No legacy database or production state.
+import {existsSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
+import {dirname,join,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {bootstrapAdmin,composeArguments,dockerCommand,localDocker,localRequest} from './local-dev-runtime.mjs';
+import {assertSameEngine,choosePort,composeOverride,createState,ensureExactFile,lockState,parsePrivateJson,privateDirectory,readState,regularFile,secretFiles,stateDirectory,writeNewState} from './local-dev-state.mjs';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const localStateDir = resolve(rootDir, ".layrs-local");
-const devEnvPath = resolveDevEnvPath();
-const cargoBin = process.platform === "win32" ? "cargo.exe" : "cargo";
-const pnpmCommand = process.platform === "win32" ? "cmd.exe" : "pnpm";
-const pnpmArgsPrefix = process.platform === "win32" ? ["/d", "/s", "/c", "pnpm"] : [];
-
-const portPlans = {
-  postgres: [15432, 25432, 35432, 45432, 15433, 25433],
-  minioApi: [19000, 29000, 39000, 49000, 19100, 29100],
-  minioConsole: [19001, 29001, 39001, 49001, 19101, 29101],
-  server: [8787, 8877, 9877, 18787],
-  studio: [5173, 5175, 15173, 25173]
-};
-
-const requiredDevEnvKeys = [
-  "LAYRS_COMPOSE_PROJECT_NAME",
-  "LAYRS_POSTGRES_CONTAINER_NAME",
-  "LAYRS_MINIO_CONTAINER_NAME",
-  "LAYRS_POSTGRES_PORT",
-  "LAYRS_MINIO_API_PORT",
-  "LAYRS_MINIO_CONSOLE_PORT",
-  "LAYRS_DATABASE_URL",
-  "LAYRS_OBJECT_STORE_ENDPOINT",
-  "LAYRS_OBJECT_STORE_BUCKET",
-  "LAYRS_OBJECT_STORE_ACCESS_KEY",
-  "LAYRS_OBJECT_STORE_SECRET_KEY",
-  "LAYRS_SERVER_ADDR",
-  "LAYRS_SERVER_URL",
-  "LAYRS_STUDIO_WEB_URL",
-  "LAYRS_STUDIO_WEB_PORT"
-];
-
-function run(command, args) {
-  return new Promise((resolveCommand, rejectCommand) => {
-    const child = spawn(command, args, {
-      cwd: rootDir,
-      shell: false,
-      stdio: "inherit"
-    });
-
-    child.on("error", rejectCommand);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolveCommand();
-        return;
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const args=process.argv.slice(2);
+if(args.includes('--help')){
+  console.log('npm run dev [-- --no-build] : start persistent local HTTPS server + Web with Docker\nnpm run dev:down : stop without deleting data\nnpm run dev:info : show URL and credential/CA file paths\nOptional: LAYRS_DEV_INSTANCE (default), LAYRS_DEV_PORT (first start only).');
+}else{
+  let release;
+  try{
+    if(args.some(arg=>!['--no-build','--down','--info'].includes(arg))||args.filter(arg=>['--down','--info'].includes(arg)).length>1)throw new Error('Unknown dev arguments; use npm run dev -- --help');
+    const directory=stateDirectory(root,process.env.LAYRS_DEV_INSTANCE);
+    const stopping=args.includes('--down'),info=args.includes('--info');
+    if((stopping||info)&&!existsSync(directory)){console.log('No local V3 development instance has been created.');process.exit(0);}
+    privateDirectory(directory);release=lockState(directory);
+    let state=readState(directory);
+    if(!state&&(stopping||info))throw new Error('Local development manifest is missing; preserve the directory for recovery');
+    const engine=info?null:localDocker(process.env);
+    if(!state){
+      if(readdirSync(directory).some(name=>name!=='command.lock'))throw new Error('Incomplete local development state; preserve the directory and investigate before retrying');
+      state=createState(await choosePort(process.env.LAYRS_DEV_PORT),{engineId:engine.engineId,endpoint:engine.endpoint});writeNewState(directory,state);
+    }
+    if(engine)assertSameEngine(state,engine);
+    if(process.env.LAYRS_DEV_PORT!==undefined&&Number(process.env.LAYRS_DEV_PORT)!==state.port)throw new Error('LAYRS_DEV_PORT differs from the saved instance. Use its existing port or a new LAYRS_DEV_INSTANCE.');
+    const origin=`https://localhost:${state.port}`;
+    const docker=(command,options)=>dockerCommand(root,directory,process.env,state,engine?.prefix??[],command,options);
+    const compose=(...command)=>composeArguments(root,directory,state,...command);
+    if(!info){
+      const caddy=join(directory,'Caddyfile');
+      const configuration=readFileSync(join(root,'deploy/selfhost/Caddyfile'),'utf8').replace('{$LAYRS_HOST} {','https://localhost {\n    tls internal');
+      if(!configuration.includes('tls internal'))throw new Error('Local TLS template is missing its site marker');
+      for(const [name,value] of Object.entries(secretFiles(state)))ensureExactFile(join(directory,name),value+'\n',0o644);
+      ensureExactFile(join(directory,'compose.env'),'# Local dev: ambient .env files are intentionally not loaded.\n');
+      // Derived routing may change with source code; credentials and identity may not.
+      for(const [file,value] of [[caddy,configuration],[join(directory,'override.yml'),composeOverride(directory,state,caddy)]]){
+        if(existsSync(file))regularFile(file);writeFileSync(file,value,{mode:0o600});
       }
-
-      rejectCommand(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`));
-    });
-  });
-}
-
-function startLongProcess(name, command, args, env) {
-  try {
-    const child = spawn(command, args, {
-      cwd: rootDir,
-      shell: false,
-      stdio: "inherit",
-      env
-    });
-
-    child.on("error", (error) => {
-      console.error(`Layrs dev: failed to start ${name}: ${command} ${args.join(" ")}`);
-      console.error(`Layrs dev: ${error.message}`);
-      child.emit("layrs-start-error");
-    });
-
-    return child;
-  } catch (error) {
-    throw new Error(`failed to start ${name}: ${command} ${args.join(" ")}: ${error.message}`);
-  }
-}
-
-function canBind(port) {
-  return new Promise((resolvePort) => {
-    const server = createServer();
-
-    server.once("error", () => resolvePort(false));
-    server.once("listening", () => {
-      server.close(() => resolvePort(true));
-    });
-    server.listen(port, "127.0.0.1");
-  });
-}
-
-async function choosePort(name, envName, candidates) {
-  const envValue = process.env[envName];
-  if (envValue) {
-    const port = Number.parseInt(envValue, 10);
-    if (Number.isInteger(port) && port > 0 && port < 65536) {
-      if (await canBind(port)) {
-        return port;
+      ensureExactFile(join(directory,'login.json'),JSON.stringify({origin,login:state.login,password:state.secrets.admin_password},null,2)+'\n');
+    }
+    if(stopping){
+      console.log('Stopping only this local V3 instance; project data will be retained.');
+      await docker(compose('down'));console.log('Stopped. Run npm run dev to reopen the same instance.');
+    }else{
+      if(!info){
+        console.log(`Starting ${origin} (Docker build on first launch; this can take several minutes).`);
+        console.log(`Private build/runtime diagnostic: ${join(directory,'docker.log')}`);
+        const timer=setInterval(()=>console.log('Local dev startup is still running; Docker diagnostic is updated above.'),30000);
+        try{
+          await docker(compose('config','--quiet'));
+          if(existsSync(join(directory,'bootstrapped.json')))await docker(['volume','inspect',...['postgres','cas','caddy_data','caddy_config'].map(name=>`${state.project}_${name}`)]);
+          if(!args.includes('--no-build')){
+            for(const [image,file] of [['layrs-server','Dockerfile'],['layrs-studio','Web.Dockerfile']])
+              await docker(['buildx','build','--builder',engine.builder,'--load','-t',`${image}:${state.project}`,'-f',join(root,'deploy/selfhost',file),root]);
+          }
+          await docker(compose('up','-d','--no-build','--wait','--wait-timeout','180'));
+          const proxy=await docker(compose('ps','-q','proxy'),{capture:true});
+          if(!/^[0-9a-f]{12,64}$/.test(proxy))throw new Error('Cannot identify the local HTTPS proxy');
+          const ca=await docker(['exec',proxy,'cat','/data/caddy/pki/authorities/local/root.crt'],{capture:true});
+          if(!ca.includes('-----BEGIN CERTIFICATE-----'))throw new Error('Local HTTPS CA is unavailable');
+          const caPath=join(directory,'root.crt');if(existsSync(caPath))regularFile(caPath);
+          writeFileSync(caPath,ca+'\n',{mode:0o600});
+          const ready=await localRequest(origin,ca,'GET','/readyz');
+          if(ready.status!==200||parsePrivateJson(ready.text).ready!==true)throw new Error('Local server is not ready');
+          await bootstrapAdmin(directory,state,ca);
+        }finally{clearInterval(timer);}
       }
-
-      throw new Error(`${envName}=${envValue} is not available on 127.0.0.1`);
+      console.log(`\nLayrs Web + API: ${origin}\nLogin: ${state.login}\nLocal password file: ${join(directory,'login.json')}\nDesktop CA file: ${join(directory,'root.crt')}\n`);
+      console.log('The browser will flag this local certificate on first access. Inspect/trust this local CA explicitly; no system trust was changed.');
+      console.log('Services run in the background. Stop with npm run dev:down; data is preserved.');
     }
-
-    throw new Error(`${envName} must be a TCP port number`);
-  }
-
-  for (const port of candidates) {
-    if (await canBind(port)) {
-      return port;
-    }
-  }
-
-  throw new Error(`No available port found for ${name}. Tried: ${candidates.join(", ")}`);
+  }catch(error){console.error(`Layrs dev: ${error.message}`);process.exitCode=1;}
+  finally{release?.();}
 }
-
-function parseDevEnvFile(path) {
-  const values = {};
-  const content = readFileSync(path, "utf8");
-
-  for (const line of content.split(/\r?\n/)) {
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const separator = line.indexOf("=");
-    if (separator === -1) {
-      continue;
-    }
-
-    values[line.slice(0, separator)] = line.slice(separator + 1);
-  }
-
-  return values;
-}
-
-function hasExplicitPortOverrides() {
-  return [
-    "LAYRS_POSTGRES_PORT",
-    "LAYRS_MINIO_API_PORT",
-    "LAYRS_MINIO_CONSOLE_PORT",
-    "LAYRS_SERVER_PORT",
-    "LAYRS_STUDIO_WEB_PORT",
-    "LAYRS_COMPOSE_PROJECT_NAME",
-    "LAYRS_POSTGRES_CONTAINER_NAME",
-    "LAYRS_MINIO_CONTAINER_NAME"
-  ].some((key) => Boolean(process.env[key]));
-}
-
-function readExistingDevEnvironment() {
-  if (!existsSync(devEnvPath) || hasExplicitPortOverrides()) {
-    return undefined;
-  }
-
-  const values = parseDevEnvFile(devEnvPath);
-  if (process.env.LAYRS_DEV_EPHEMERAL !== "1" && isEphemeralDevEnvironment(values)) {
-    return undefined;
-  }
-
-  if (requiredDevEnvKeys.every((key) => Boolean(values[key]))) {
-    return values;
-  }
-
-  return undefined;
-}
-
-function portFromAddress(address) {
-  const port = Number.parseInt(String(address).split(":").pop() ?? "", 10);
-  return Number.isInteger(port) && port > 0 && port < 65536 ? port : undefined;
-}
-
-function prioritizedPorts(preferred, fallbacks) {
-  return [...new Set([preferred, ...fallbacks].filter(Boolean))];
-}
-
-async function createDevEnvironment() {
-  const existing = readExistingDevEnvironment();
-  if (existing) {
-    const serverPort = await choosePort(
-      "Layrs Server",
-      "LAYRS_SERVER_PORT",
-      prioritizedPorts(portFromAddress(existing.LAYRS_SERVER_ADDR), portPlans.server)
-    );
-    const studioPort = await choosePort(
-      "Studio Web",
-      "LAYRS_STUDIO_WEB_PORT",
-      prioritizedPorts(Number.parseInt(existing.LAYRS_STUDIO_WEB_PORT, 10), portPlans.studio)
-    );
-    const values = {
-      ...existing,
-      LAYRS_COMPOSE_PROJECT_NAME: process.env.LAYRS_COMPOSE_PROJECT_NAME ?? existing.LAYRS_COMPOSE_PROJECT_NAME ?? "layrs-dev",
-      LAYRS_POSTGRES_CONTAINER_NAME:
-        process.env.LAYRS_POSTGRES_CONTAINER_NAME ?? existing.LAYRS_POSTGRES_CONTAINER_NAME ?? "layrs-postgres",
-      LAYRS_MINIO_CONTAINER_NAME: process.env.LAYRS_MINIO_CONTAINER_NAME ?? existing.LAYRS_MINIO_CONTAINER_NAME ?? "layrs-minio",
-      LAYRS_SERVER_ADDR: `127.0.0.1:${serverPort}`,
-      LAYRS_SERVER_URL: `http://127.0.0.1:${serverPort}`,
-      LAYRS_STUDIO_WEB_URL: `http://127.0.0.1:${studioPort}`,
-      LAYRS_STUDIO_WEB_PORT: String(studioPort)
-    };
-
-    writeDevEnvironment(values);
-    return values;
-  }
-
-  const postgresPort = await choosePort("PostgreSQL", "LAYRS_POSTGRES_PORT", portPlans.postgres);
-  const minioApiPort = await choosePort("MinIO API", "LAYRS_MINIO_API_PORT", portPlans.minioApi);
-  const minioConsolePort = await choosePort(
-    "MinIO console",
-    "LAYRS_MINIO_CONSOLE_PORT",
-    portPlans.minioConsole
-  );
-  const serverPort = await choosePort("Layrs Server", "LAYRS_SERVER_PORT", portPlans.server);
-  const studioPort = await choosePort("Studio Web", "LAYRS_STUDIO_WEB_PORT", portPlans.studio);
-
-  const values = {
-    LAYRS_COMPOSE_PROJECT_NAME: process.env.LAYRS_COMPOSE_PROJECT_NAME ?? "layrs-dev",
-    LAYRS_POSTGRES_CONTAINER_NAME: process.env.LAYRS_POSTGRES_CONTAINER_NAME ?? "layrs-postgres",
-    LAYRS_MINIO_CONTAINER_NAME: process.env.LAYRS_MINIO_CONTAINER_NAME ?? "layrs-minio",
-    LAYRS_POSTGRES_PORT: String(postgresPort),
-    LAYRS_MINIO_API_PORT: String(minioApiPort),
-    LAYRS_MINIO_CONSOLE_PORT: String(minioConsolePort),
-    LAYRS_DATABASE_URL: `postgres://layrs:layrs@127.0.0.1:${postgresPort}/layrs`,
-    LAYRS_OBJECT_STORE_ENDPOINT: `http://127.0.0.1:${minioApiPort}`,
-    LAYRS_OBJECT_STORE_BUCKET: "layrs-dev",
-    LAYRS_OBJECT_STORE_ACCESS_KEY: "layrs",
-    LAYRS_OBJECT_STORE_SECRET_KEY: "layrs-local-secret",
-    LAYRS_SERVER_ADDR: `127.0.0.1:${serverPort}`,
-    LAYRS_SERVER_URL: `http://127.0.0.1:${serverPort}`,
-    LAYRS_STUDIO_WEB_URL: `http://127.0.0.1:${studioPort}`,
-    LAYRS_STUDIO_WEB_PORT: String(studioPort)
-  };
-
-  writeDevEnvironment(values);
-
-  return values;
-}
-
-function writeDevEnvironment(values) {
-  mkdirSync(localStateDir, { recursive: true });
-  writeFileSync(
-    devEnvPath,
-    `${Object.entries(values)
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n")}\n`,
-    "utf8"
-  );
-}
-
-function resolveDevEnvPath() {
-  if (process.env.LAYRS_DEV_ENV_PATH) {
-    return resolve(rootDir, process.env.LAYRS_DEV_ENV_PATH);
-  }
-
-  if (process.env.LAYRS_DEV_EPHEMERAL === "1") {
-    const suffix = safeEnvFileSegment(
-      process.env.LAYRS_COMPOSE_PROJECT_NAME ?? `layrs-ephemeral-${process.pid}`
-    );
-    return resolve(localStateDir, `${suffix}.env`);
-  }
-
-  return resolve(localStateDir, "dev.env");
-}
-
-function isEphemeralDevEnvironment(values) {
-  const project = values.LAYRS_COMPOSE_PROJECT_NAME ?? "";
-  return project.startsWith("layrs-e2e-") || project.startsWith("layrs-web-e2e-");
-}
-
-function safeEnvFileSegment(value) {
-  return value.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "layrs-ephemeral";
-}
-
-async function main() {
-  if (!existsSync(resolve(rootDir, "node_modules"))) {
-    console.warn("Layrs dev: node_modules is missing. Run `pnpm install` once before Studio can start.");
-  }
-
-  const devEnv = await createDevEnvironment();
-  const shouldCleanServicesOnExit = process.env.LAYRS_DEV_EPHEMERAL === "1";
-
-  if (process.env.LAYRS_DEV_RESET_SERVICES === "1") {
-    console.log("Layrs dev: resetting Docker services and volumes for this run...");
-    await run("docker", ["compose", "--env-file", devEnvPath, "down", "--volumes", "--remove-orphans"]);
-  }
-
-  console.log("Layrs dev: starting Docker services...");
-  await run("docker", ["compose", "--env-file", devEnvPath, "up", "-d", "--wait", "--remove-orphans"]);
-
-  console.log(`Layrs dev: starting Layrs Server at ${devEnv.LAYRS_SERVER_URL}`);
-  if (process.env.LAYRS_DEV_SKIP_STUDIO !== "1") {
-    console.log(`Layrs dev: starting Studio Web at ${devEnv.LAYRS_STUDIO_WEB_URL}`);
-  }
-  console.log(`Layrs dev: PostgreSQL on 127.0.0.1:${devEnv.LAYRS_POSTGRES_PORT}`);
-  console.log(`Layrs dev: MinIO API on ${devEnv.LAYRS_OBJECT_STORE_ENDPOINT}`);
-  console.log("Layrs dev: Docker services keep running until `pnpm run dev:down`.");
-
-  const serverPort = portFromAddress(devEnv.LAYRS_SERVER_ADDR);
-  const serverTargetDir = `target/dev-server-${serverPort ?? "default"}`;
-
-  let shuttingDown = false;
-  const children = [];
-  const cleanupServices = () => {
-    if (!shouldCleanServicesOnExit) {
-      return;
-    }
-
-    spawnSync("docker", ["compose", "--env-file", devEnvPath, "down", "--volumes", "--remove-orphans"], {
-      cwd: rootDir,
-      stdio: "inherit",
-      windowsHide: true
-    });
-  };
-
-  const shutdown = (exitCode = 0) => {
-    if (shuttingDown) {
-      return;
-    }
-
-    shuttingDown = true;
-    for (const child of children) {
-      child.kill();
-    }
-    cleanupServices();
-    process.exitCode = exitCode;
-  };
-
-  const server = startLongProcess(
-    "Layrs Server",
-    cargoBin,
-    ["run", "--target-dir", serverTargetDir, "-p", "layrs-server"],
-    {
-      ...process.env,
-      ...devEnv
-    }
-  );
-  children.push(server);
-
-  if (process.env.LAYRS_DEV_SKIP_STUDIO !== "1") {
-    try {
-      const studio = startLongProcess(
-        "Studio Web",
-        pnpmCommand,
-        [
-          ...pnpmArgsPrefix,
-          "--filter",
-          "@layrs/studio-web",
-          "dev",
-          "--",
-          "--port",
-          devEnv.LAYRS_STUDIO_WEB_PORT,
-          "--strictPort"
-        ],
-        {
-          ...process.env,
-          ...devEnv,
-          VITE_LAYRS_API_URL: devEnv.LAYRS_SERVER_URL,
-          VITE_LAYRS_SERVER_URL: devEnv.LAYRS_SERVER_URL
-        }
-      );
-      children.push(studio);
-    } catch (error) {
-      shutdown(1);
-      throw error;
-    }
-  }
-
-  process.on("SIGINT", () => shutdown(0));
-  process.on("SIGTERM", () => shutdown(0));
-
-  server.on("layrs-start-error", () => shutdown(1));
-
-  for (const child of children) {
-    child.on("exit", (code, signal) => {
-      if (shuttingDown) {
-        return;
-      }
-
-      const exitCode = code ?? (signal ? 1 : 0);
-      shutdown(exitCode);
-    });
-  }
-}
-
-main().catch((error) => {
-  console.error(`Layrs dev: ${error.message}`);
-  process.exit(1);
-});

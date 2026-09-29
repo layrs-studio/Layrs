@@ -1,15 +1,11 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { NotificationProvider } from "@layrs/ui";
 import "@layrs/ui/styles.css";
-import "@layrs/lenses/styles.css";
 import "./desktop.css";
-import { DesktopApp } from "./DesktopApp";
+import { NativeWorkbench } from "./NativeWorkbench";
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <NotificationProvider>
-      <DesktopApp />
-    </NotificationProvider>
+    <NativeWorkbench />
   </React.StrictMode>
 );

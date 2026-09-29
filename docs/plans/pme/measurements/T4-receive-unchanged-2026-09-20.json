@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "layrs.validation.unchanged-receive.v1",
+  "date": "2026-09-20",
+  "platform": "Windows Rust 1.85 debug, real HTTPS private CA and PostgreSQL",
+  "test": "native_clients_v3::two_native_clients_publish_clone_receive_divergence_and_local_operations",
+  "selector": "LAYRS_TEST_UNCHANGED_ONLY=1",
+  "passed": true,
+  "seconds": 28.22,
+  "unchangedNormalAndCancellable": {"authenticatedBootstrapsEach": 2, "fetchPlansEach": 0, "contentDownloadsEach": 0, "newOperationsEach": 0, "bindingBytesUnchanged": true},
+  "checks": ["CAS corruption rejected without repair", "cancellation before commit", "capture during second bootstrap is stale", "local squash retained", "Product-only remote admission with unchanged View", "mutable binding forgery cannot forge Operation witness", "epoch change fallback", "principal-only change fallback", "session revoked between two bootstraps yields 401 without local mutation"],
+  "persistentAuthorizationCache": false,
+  "largeVolumeTimingsInferred": false,
+  "packagesRebuilt": false
+}

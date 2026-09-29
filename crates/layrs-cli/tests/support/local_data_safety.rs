@@ -75,25 +75,6 @@ impl Drop for TestSpace {
     }
 }
 
-pub fn init_empty(label: &str) -> TestSpace {
-    let space = TestSpace::new(label);
-    let init = run_json(
-        &space,
-        [
-            "--json",
-            "--space",
-            &space.space_arg(),
-            "init",
-            label,
-            "--path",
-            &space.space_arg(),
-        ],
-    );
-    assert_eq!(init["pending_publish_count"].as_u64(), Some(0));
-    assert!(init["initial_step_id"].is_null());
-    space
-}
-
 pub fn run_ok<I, S>(space: &TestSpace, args: I) -> String
 where
     I: IntoIterator<Item = S>,
@@ -206,20 +187,6 @@ where
     read_json(&run_ok_with_stdin(space, args, stdin))
 }
 
-pub fn space_size_bytes(path: &Path) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path).expect("metadata").len();
-    }
-
-    fs::read_dir(path)
-        .unwrap_or_else(|error| panic!("read_dir {}: {error}", path.display()))
-        .map(|entry| {
-            let entry = entry.expect("directory entry");
-            space_size_bytes(&entry.path())
-        })
-        .sum()
-}
-
 pub fn assert_file(root: &Path, relative: &str, expected: &str) {
     let path = root.join(relative);
     let actual = fs::read_to_string(&path)
@@ -243,26 +210,6 @@ pub fn assert_file_bytes(root: &Path, relative: &str, expected: &[u8]) {
     );
 }
 
-pub fn json_steps(value: &Value) -> &[Value] {
-    value["steps"].as_array().expect("timeline steps")
-}
-
-pub fn assert_json_array_contains(value: &Value, expected: &str) {
-    let items = value.as_array().expect("JSON array");
-    assert!(
-        items.iter().any(|item| item.as_str() == Some(expected)),
-        "expected JSON array to contain {expected:?}, got {items:?}"
-    );
-}
-
-pub fn assert_json_array_not_contains(value: &Value, unexpected: &str) {
-    let items = value.as_array().expect("JSON array");
-    assert!(
-        items.iter().all(|item| item.as_str() != Some(unexpected)),
-        "expected JSON array to exclude {unexpected:?}, got {items:?}"
-    );
-}
-
 pub type WorkingTreeSnapshot = BTreeMap<String, Vec<u8>>;
 
 pub fn snapshot_working_tree(root: &Path) -> WorkingTreeSnapshot {
@@ -279,84 +226,6 @@ pub fn assert_working_tree_snapshot(root: &Path, expected: &WorkingTreeSnapshot)
         "working tree changed under {}",
         root.display()
     );
-}
-
-pub fn loose_chunk_count(root: &Path) -> usize {
-    let chunks = root.join(".layrs").join("objects").join("chunks");
-    if !chunks.exists() {
-        return 0;
-    }
-    fs::read_dir(&chunks)
-        .unwrap_or_else(|error| panic!("read chunks {}: {error}", chunks.display()))
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("chunk"))
-        .count()
-}
-
-pub fn timeline_step_by_origin<'a>(
-    timeline: &'a Value,
-    origin_layer_id: &str,
-    origin_step_id: &str,
-) -> &'a Value {
-    json_steps(timeline)
-        .iter()
-        .find(|step| {
-            step["origin_layer_id"].as_str() == Some(origin_layer_id)
-                && step["origin_step_id"].as_str() == Some(origin_step_id)
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "timeline missing origin {origin_layer_id}/{origin_step_id}: {:?}",
-                json_steps(timeline)
-            )
-        })
-}
-
-pub fn assert_timeline_has_origin(
-    timeline: &Value,
-    origin_layer_id: &str,
-    origin_step_id: &str,
-    step_kind: &str,
-) {
-    let step = timeline_step_by_origin(timeline, origin_layer_id, origin_step_id);
-    assert_eq!(step["step_kind"].as_str(), Some(step_kind), "{step:?}");
-}
-
-pub fn assert_timeline_origin_order(timeline: &Value, expected: &[(&str, &str, &str)]) {
-    let actual = json_steps(timeline)
-        .iter()
-        .rev()
-        .map(|step| {
-            (
-                step["origin_layer_id"].as_str().unwrap_or("<missing>"),
-                step["origin_step_id"].as_str().unwrap_or("<missing>"),
-                step["step_kind"].as_str().unwrap_or("<missing>"),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected, "timeline provenance order mismatch");
-}
-
-pub fn assert_latest_weave_conflict_files(root: &Path) {
-    let weave_dir = latest_weave_dir(root);
-    let conflicts_dir = weave_dir.join("conflicts");
-    let mut conflicts = fs::read_dir(&conflicts_dir)
-        .unwrap_or_else(|error| panic!("read conflicts {}: {error}", conflicts_dir.display()))
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .collect::<Vec<_>>();
-    conflicts.sort_by_key(|entry| entry.file_name());
-    let conflict = conflicts
-        .first()
-        .unwrap_or_else(|| panic!("no conflicts in {}", conflicts_dir.display()));
-    for name in ["base", "ours", "theirs"] {
-        assert!(
-            conflict.path().join(name).exists(),
-            "missing conflict file {} in {}",
-            name,
-            conflict.path().display()
-        );
-    }
 }
 
 pub fn deterministic_png_like_bytes() -> Vec<u8> {
@@ -391,69 +260,6 @@ fn snapshot_working_tree_inner(root: &Path, current: &Path, snapshot: &mut Worki
             snapshot.insert(relative, bytes);
         }
     }
-}
-
-fn latest_weave_dir(root: &Path) -> PathBuf {
-    let weaves = root.join(".layrs").join("weaves");
-    let mut dirs = fs::read_dir(&weaves)
-        .unwrap_or_else(|error| panic!("read weaves {}: {error}", weaves.display()))
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    dirs.sort();
-    dirs.pop()
-        .unwrap_or_else(|| panic!("no weave directories in {}", weaves.display()))
-}
-
-pub fn first_chunk_path(root: &Path, layer_id: &str, file_path: &str) -> PathBuf {
-    let layrs = root.join(".layrs");
-    let state_path = layrs
-        .join("layers")
-        .join(layer_id)
-        .join("working-state.json");
-    let state: Value = serde_json::from_str(
-        &fs::read_to_string(&state_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", state_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", state_path.display()));
-    let tree_id = state["rootTreeId"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing rootTreeId in {}", state_path.display()));
-    let tree_path = layrs
-        .join("objects")
-        .join("trees")
-        .join(format!("{}.json", object_file_stem(tree_id)));
-    let tree: Value = serde_json::from_str(
-        &fs::read_to_string(&tree_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", tree_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", tree_path.display()));
-    let files = tree["files"]
-        .as_array()
-        .unwrap_or_else(|| panic!("missing files array in tree object {}", tree_path.display()));
-    let file = files
-        .iter()
-        .find(|entry| entry["path"].as_str() == Some(file_path))
-        .unwrap_or_else(|| panic!("missing {file_path} in tree {}", tree_path.display()));
-    let object = file["object"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing object ref for {file_path}"));
-    let manifest_path = layrs.join(object);
-    let manifest: Value = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", manifest_path.display()));
-    let chunk_id = manifest["chunks"]
-        .as_array()
-        .and_then(|chunks| chunks.first())
-        .and_then(|chunk| chunk["chunkId"].as_str())
-        .unwrap_or_else(|| panic!("missing first chunk in {}", manifest_path.display()));
-    layrs
-        .join("objects")
-        .join("chunks")
-        .join(format!("{}.chunk", object_file_stem(chunk_id)))
 }
 
 pub fn deterministic_large_content(step: usize) -> String {
@@ -540,7 +346,6 @@ fn run_layrs_with_stdin(
     command.env("TEMP", space.root.join("tmp"));
     command.env("TMPDIR", space.root.join("tmp"));
     command.env("NO_COLOR", "1");
-
     if stdin.is_some() {
         command.stdin(Stdio::piped());
     }
@@ -578,8 +383,4 @@ fn unix_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX_EPOCH")
         .as_nanos()
-}
-
-fn object_file_stem(id: &str) -> &str {
-    id.strip_prefix("blake3:").unwrap_or(id)
 }

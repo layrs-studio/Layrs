@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "layrs.sync.receipt-digest-vectors.v1",
+  "vectors": [
+    {
+      "name": "applied-no-op-receipt",
+      "fixture": "receipt.json",
+      "domain": "layrs.sync.v3/receipt",
+      "canonicalByteLength": 1552,
+      "expectedDigest": "blake3:69e2aa49f6dc0e0398918f4f3f865e274d7d3ee0307714e2722f7f97b66eda1d"
+    }
+  ]
+}

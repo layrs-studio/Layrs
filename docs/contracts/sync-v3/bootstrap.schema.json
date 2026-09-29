@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/bootstrap.schema.json",
+  "title": "Layrs Sync V3 Space bootstrap",
+  "description": "A deterministic authorized Space projection at an event-log watermark.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "type", "principalId", "authorizationEpoch", "spaceId", "watermarkCursor", "watermarkSequence", "currentRepositoryViewGeneration", "currentRepositoryView", "currentPolicySetId", "currentPolicySet", "layers", "markers", "releases", "policyRoots", "graphRootStepIds", "productRoots"],
+  "properties": {
+    "protocol": { "const": "layrs.sync.v3" },
+    "type": { "const": "spaceBootstrap" },
+    "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+    "contentAccess": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "mode"],
+      "properties": {"schemaVersion": {"const": "layrs.content-access.v1"}, "mode": {"const": "restricted"}}
+    },
+    "authorizationEpoch": { "type": "integer", "minimum": 1 },
+    "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+    "watermarkCursor": { "$ref": "common.schema.json#/$defs/Cursor" },
+    "watermarkSequence": { "type": "integer", "minimum": 0 },
+    "currentRepositoryViewGeneration": { "type": "integer", "minimum": 0 },
+    "currentRepositoryView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repositoryViewId", "record"],
+      "properties": {
+        "repositoryViewId": { "$ref": "common.schema.json#/$defs/RepositoryViewId" },
+        "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/PublishedRepositoryView" }
+      }
+    },
+    "currentPolicySet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policySetId", "record"],
+      "properties": {
+        "policySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "record": { "$ref": "authorization.schema.json#/$defs/PolicySet" }
+      }
+    },
+    "currentPolicySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+    "layers": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/LayerProjection" }
+    },
+    "markers": {
+      "type": "array", "maxItems": 100000, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/MarkerProjection" }
+    },
+    "releases": {
+      "type": "array", "maxItems": 100000, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/ReleaseProjection" }
+    },
+    "policyRoots": {
+      "type": "array", "maxItems": 10000, "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/PolicyProductRoot" }
+    },
+    "graphRootStepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" },
+    "productRoots": {
+      "type": "array", "maxItems": 100000, "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/ProductRoot" }
+    }
+  },
+  "$defs": {
+    "LayerProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["productObjectId", "record", "headStepIds"],
+      "properties": {
+        "productObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Layer" },
+        "headStepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" }
+      }
+    },
+    "MarkerProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["productObjectId", "record"],
+      "properties": {
+        "productObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Marker" }
+      }
+    },
+    "ReleaseProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["productObjectId", "record"],
+      "properties": {
+        "productObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Release" }
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "fetchPlanResponse",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 1,
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "requestId": "request:fetch-1",
+  "planId": "plan:fetch-1",
+  "fileManifestSelections": [{
+    "fileId": "blake3:5555555555555555555555555555555555555555555555555555555555555555",
+    "fileManifestId": "blake3:7777777777777777777777777777777777777777777777777777777777777777",
+    "manifestDescriptor": {
+      "kind": "file_manifest",
+      "objectId": "blake3:7777777777777777777777777777777777777777777777777777777777777777",
+      "canonicalByteLen": 128,
+      "encodedByteLen": 96,
+      "compression": "zstd"
+    },
+    "chunkDescriptors": [{
+      "kind": "chunk",
+      "objectId": "blake3:8888888888888888888888888888888888888888888888888888888888888888",
+      "canonicalByteLen": 4,
+      "encodedByteLen": 4,
+      "compression": "identity"
+    }]
+  }],
+  "downloadCapabilities": [],
+  "deniedClaims": [],
+  "nextPageCursor": null,
+  "hasMore": false,
+  "expiresAt": "2026-07-19T12:05:00Z"
+}

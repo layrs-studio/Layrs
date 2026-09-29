@@ -1,0 +1,78 @@
+import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { seedNativeProof } from "./fixtures/nativeProofSeed";
+import {sharedNativeClients} from "./fixtures/nativeSharedClients";
+import {webReleaseGate,webRestrictedAccess} from "./fixtures/nativeWebAccess";
+
+test("Web uses the real native identity, project, review, proof and account services", async ({ page },testInfo) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(15_000);
+  if (!process.env.LAYRS_NATIVE_UI_FIXTURE) throw new Error("Native TLS fixture is mandatory");
+  const fixture = JSON.parse(await readFile(process.env.LAYRS_NATIVE_UI_FIXTURE, "utf8"));
+  // The Linux Web job has no native Desktop runtime. The explicit combined
+  // recipe additionally requires a built CLI and supported Tauri environment.
+  const shared=process.env.LAYRS_NATIVE_SHARED_CLIENTS==="1"?await sharedNativeClients(testInfo,fixture):null;
+  if(shared)console.log("[shared-native] Desktop and CLI: distinct Stores, exact references and bytes verified");
+  try{
+  const proof = await seedNativeProof(fixture);
+  await page.goto("/");
+  await page.getByLabel("Compte", { exact: true }).fill(fixture.accounts.alice.login);
+  await page.getByLabel("Mot de passe", { exact: true }).fill(fixture.accounts.alice.password);
+  await page.getByRole("button", { name: "Se connecter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Se déconnecter", exact: true })).toBeVisible();
+  await page.getByLabel("Identifiant du projet", { exact: true }).fill(fixture.spaceId);
+  await page.getByRole("button", { name: "Ouvrir le projet", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Layers et captures publiées" })).toBeVisible();
+  if(shared){
+    for(const markerName of [shared.markerName,shared.cliMarkerName]){
+      const named=page.locator("article").filter({has:page.locator("strong").filter({hasText:markerName})});
+      await expect(named.getByText(fixture.stepId,{exact:true})).toBeVisible();
+    }
+  }
+  const released=page.locator("article").filter({has:page.locator("strong").filter({hasText:"0.1.0-ui"})});
+  await expect(released.getByText(fixture.stepId,{exact:true})).toBeVisible();
+  const history = page.getByRole("region", { name: "Historique publié", exact: true });
+  await history.getByLabel("Capture publiée à explorer", { exact: true }).fill(fixture.stepId);
+  await history.getByLabel("Chemin exact publié, facultatif", { exact: true }).fill("docs/readme.txt");
+  await history.getByRole("button", { name: "Lire l’historique publié", exact: true }).click();
+  await expect(history.locator("ol > li")).toHaveCount(2);
+  await expect(history.locator("ol").getByText(fixture.firstStepId, { exact: true }).last()).toBeVisible();
+  await page.getByText("Fichiers distants et droits d’accès", { exact: true }).click();
+  await page.getByRole("button", { name: "Charger les captures du projet", exact: true }).click();
+  await page.getByRole("button", { name: "Afficher les chemins", exact: true }).click();
+  const files = page.getByRole("region", { name: "Chemins du projet distant", exact: true });
+  await expect(files.getByText("docs/readme.txt", { exact: true })).toBeVisible();
+  await expect(files.getByText("Lecture et écriture autorisées au serveur", { exact: false }).first()).toBeVisible();
+  await page.getByText("Revues et validations", { exact: true }).click();
+  await page.getByRole("button", { name: "Actualiser les revues", exact: true }).click();
+  await page.getByRole("button", { name: "Ouvrir la revue", exact: true }).first().click();
+  const review = page.getByRole("region", { name: "Revue ouverte", exact: true });
+  await expect(review).toBeVisible();
+  const comment = `Commentaire Web ${Date.now()}`;
+  await review.getByLabel("Commentaire", { exact: true }).fill(comment);
+  await review.getByRole("button", { name: "Commenter", exact: true }).click();
+  await expect(review.getByText(comment, { exact: true })).toBeVisible();
+  if(shared){
+    const cliReview=await shared.cli(["review",fixture.reviewId],true);
+    expect(cliReview.actions.some((action:any)=>action.body===comment)).toBe(true);
+    console.log("[shared-native] Web: exact references, history and comment reread by CLI verified");
+  }
+  await page.getByRole("button", { name: "Consulter les exécutions CI", exact: true }).click();
+  await page.locator("article").filter({ hasText: proof.proofObjectId })
+    .getByRole("button", { name: "Consulter la preuve et le journal", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Preuve et journal CI", exact: true }).getByText("UI proof fixture", { exact: true })).toBeVisible();
+  console.log("[shared-native] Web: exact seeded proof rendered");
+  await webReleaseGate(page,fixture);
+  await page.getByText("Équipe, protections et intégrations", { exact: true }).click();
+  await page.getByText("Comptes et automatisations", { exact: true }).click();
+  await page.getByRole("button", { name: "Charger les comptes", exact: true }).click();
+  await expect(page.getByText("Bob — relecteur test", { exact: true })).toBeVisible();
+  // Session credentials live only in React memory; reload requires a new login.
+  expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
+  if(shared)await webRestrictedAccess(page,fixture,shared.remote);
+  await page.getByRole("button", { name: "Se déconnecter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
+  }finally{await shared?.close();}
+});

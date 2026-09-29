@@ -12,8 +12,6 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@layrs/client-sdk": "workspace:*",
-    "@layrs/lenses": "workspace:*",
     "@layrs/ui": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

@@ -1,0 +1,12 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "spaceEventPage",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 1,
+  "currentPolicySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+  "spaceId": "space:demo",
+  "events": [],
+  "scannedThroughSequence": 0,
+  "nextCursor": "cursor-demo-0",
+  "hasMore": false
+}

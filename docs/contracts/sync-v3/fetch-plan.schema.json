@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/fetch-plan.schema.json",
+  "title": "Layrs Sync V3 fetch plan",
+  "description": "Paginated, resumable and root/path-authorized download planning, including FileId-to-manifest selection.",
+  "oneOf": [{ "$ref": "#/$defs/Request" }, { "$ref": "#/$defs/Response" }],
+  "$defs": {
+    "ObjectFetchClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "object", "root", "repoPath"],
+      "properties": {
+        "kind": { "const": "object" },
+        "object": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/ObjectReference" },
+            { "not": { "properties": { "kind": { "const": "authorization_snapshot" } }, "required": ["kind"] } }
+          ]
+        },
+        "root": { "$ref": "common.schema.json#/$defs/AuthorizationRoot" },
+        "repoPath": { "oneOf": [{ "$ref": "common.schema.json#/$defs/RepoPath" }, { "type": "null" }] }
+      },
+      "if": {
+        "properties": { "object": { "properties": { "kind": { "enum": ["chunk", "file_manifest", "conflict", "symlink", "tombstone"] } }, "required": ["kind"] } },
+        "required": ["object"]
+      },
+      "then": { "properties": { "repoPath": { "$ref": "common.schema.json#/$defs/RepoPath" } } }
+    },
+    "FileFetchClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "fileId", "preferredManifestIds", "root", "repoPath"],
+      "properties": {
+        "kind": { "const": "file" },
+        "fileId": { "$ref": "common.schema.json#/$defs/FileId" },
+        "preferredManifestIds": {
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/FileManifestId" }
+        },
+        "root": { "$ref": "common.schema.json#/$defs/AuthorizationRoot" },
+        "repoPath": { "$ref": "common.schema.json#/$defs/RepoPath" }
+      }
+    },
+    "AuthorizationSnapshotFetchClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "authorizationSnapshotId", "purpose"],
+      "properties": {
+        "kind": { "const": "authorizationSnapshot" },
+        "authorizationSnapshotId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "purpose": { "type": "string", "enum": ["audit", "administration"] }
+      }
+    },
+    "FetchClaim": {
+      "oneOf": [
+        { "$ref": "#/$defs/ObjectFetchClaim" },
+        { "$ref": "#/$defs/FileFetchClaim" },
+        { "$ref": "#/$defs/AuthorizationSnapshotFetchClaim" }
+      ]
+    },
+    "FileManifestSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileId", "fileManifestId", "manifestDescriptor", "chunkDescriptors"],
+      "properties": {
+        "fileId": { "$ref": "common.schema.json#/$defs/FileId" },
+        "fileManifestId": { "$ref": "common.schema.json#/$defs/FileManifestId" },
+        "manifestDescriptor": { "$ref": "common.schema.json#/$defs/ObjectDescriptor" },
+        "chunkDescriptors": {
+          "type": "array", "maxItems": 100000, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ObjectDescriptor" }
+        }
+      }
+    },
+    "DownloadCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principalId", "authorizationEpoch", "spaceId", "clientId", "requestId", "planId", "claim", "descriptor", "claimDigest", "method", "downloadUrl", "token", "expiresAt", "resumeToken", "acceptRanges"],
+      "properties": {
+        "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "planId": { "$ref": "common.schema.json#/$defs/PlanId" },
+        "claim": { "$ref": "#/$defs/FetchClaim" },
+        "descriptor": { "$ref": "common.schema.json#/$defs/ObjectDescriptor" },
+        "claimDigest": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "method": { "const": "GET" },
+        "downloadUrl": { "type": "string", "minLength": 1, "maxLength": 4096, "format": "uri", "pattern": "^https://[^/?#@]+/v3/transfers/downloads$" },
+        "token": { "type": "string", "minLength": 32, "maxLength": 4096 },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "resumeToken": { "type": "string", "minLength": 16, "maxLength": 4096 },
+        "acceptRanges": { "type": "boolean" }
+      }
+    },
+    "DeniedClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "code"],
+      "properties": {
+        "claim": { "$ref": "#/$defs/FetchClaim" },
+        "code": { "type": "string", "enum": ["not_reachable", "path_denied", "audit_denied", "not_available", "invalid_root", "invalid_path", "no_verified_manifest"] }
+      }
+    },
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "spaceId", "clientId", "requestId", "claims", "pageCursor", "maxObjects"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "fetchPlanRequest" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "claims": { "type": "array", "minItems": 1, "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "#/$defs/FetchClaim" } },
+        "pageCursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] },
+        "maxObjects": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "principalId", "authorizationEpoch", "spaceId", "clientId", "requestId", "planId", "fileManifestSelections", "downloadCapabilities", "deniedClaims", "nextPageCursor", "hasMore", "expiresAt"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "fetchPlanResponse" },
+        "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "planId": { "$ref": "common.schema.json#/$defs/PlanId" },
+        "fileManifestSelections": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "#/$defs/FileManifestSelection" } },
+        "downloadCapabilities": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "#/$defs/DownloadCapability" } },
+        "deniedClaims": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "#/$defs/DeniedClaim" } },
+        "nextPageCursor": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Cursor" }, { "type": "null" }] },
+        "hasMore": { "type": "boolean" },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    }
+  }
+}

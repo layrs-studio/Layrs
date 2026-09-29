@@ -1,0 +1,161 @@
+[
+  {
+    "contractVersion": "layrs.lens.v1",
+    "id": "layrs.code",
+    "name": "Code",
+    "version": "1.0.0",
+    "digest": "sha256:af6e5c8a7b0f8d6a69a33e6e72a87d9d7123e7d321c8736098ba13ba6bbd4280",
+    "analyzer": {
+      "supportedMediaTypes": [
+        "text/rust",
+        "text/typescript",
+        "text/javascript",
+        "text/css",
+        "text/html",
+        "application/json",
+        "application/toml",
+        "application/yaml",
+        "text/x-go",
+        "text/x-python"
+      ],
+      "fileExtensions": [
+        "rs",
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "mjs",
+        "cjs",
+        "json",
+        "css",
+        "html",
+        "htm",
+        "toml",
+        "yaml",
+        "yml",
+        "py",
+        "go",
+        "java",
+        "kt",
+        "kts",
+        "swift",
+        "c",
+        "h",
+        "cc",
+        "cpp",
+        "cxx",
+        "hpp",
+        "cs",
+        "php",
+        "rb",
+        "sh",
+        "bash",
+        "zsh",
+        "ps1",
+        "sql"
+      ],
+      "capabilities": ["view", "diff", "metadata", "preview", "references"]
+    },
+    "viewer": {
+      "viewerId": "layrs.viewer.code",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "CodeArtifactViewer",
+      "previewKinds": ["code"],
+      "diffKinds": ["textLines"],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        { "key": "language", "label": "Language", "valueType": "string" },
+        { "key": "line_count", "label": "Lines", "valueType": "number" },
+        { "key": "reference_count", "label": "References", "valueType": "number" }
+      ]
+    },
+    "resolutionMethods": []
+  },
+  {
+    "contractVersion": "layrs.lens.v1",
+    "id": "layrs.image",
+    "name": "Image",
+    "version": "1.0.0",
+    "digest": "sha256:ab93cd2814c118c66afc7db0aab5457d053ab39e09037637c71e96f85bf12b03",
+    "analyzer": {
+      "supportedMediaTypes": ["image/png", "image/jpeg", "image/webp"],
+      "fileExtensions": ["png", "jpg", "jpeg", "webp"],
+      "capabilities": ["view", "diff", "metadata", "preview", "proofRecipes"]
+    },
+    "viewer": {
+      "viewerId": "layrs.viewer.image",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "ImageArtifactViewer",
+      "previewKinds": ["image"],
+      "diffKinds": ["imageMetadata"],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        { "key": "format", "label": "Format", "valueType": "string" },
+        { "key": "width", "label": "Width", "valueType": "number" },
+        { "key": "height", "label": "Height", "valueType": "number" },
+        { "key": "pixel_count", "label": "Pixels", "valueType": "number" }
+      ]
+    },
+    "resolutionMethods": []
+  },
+  {
+    "contractVersion": "layrs.lens.v1",
+    "id": "layrs.text",
+    "name": "Text",
+    "version": "1.0.0",
+    "digest": "sha256:02eb0ff882af5ea16412bc4d8f86443d746f20f62488866e6ec385fc28e8a9cc",
+    "analyzer": {
+      "supportedMediaTypes": ["text/plain", "text/markdown"],
+      "fileExtensions": ["txt", "md", "markdown", "rst", "log"],
+      "capabilities": ["view", "diff", "reconcile", "metadata", "preview", "references"]
+    },
+    "viewer": {
+      "viewerId": "layrs.viewer.text",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "TextArtifactViewer",
+      "previewKinds": ["text"],
+      "diffKinds": ["textLines"],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        { "key": "line_count", "label": "Lines", "valueType": "number" },
+        { "key": "reference_count", "label": "References", "valueType": "number" },
+        { "key": "utf8_lossy", "label": "UTF-8 lossy", "valueType": "boolean" }
+      ]
+    },
+    "resolutionMethods": [
+      { "method": "existing", "scope": "block" },
+      { "method": "incoming", "scope": "block" },
+      { "method": "both", "scope": "block" },
+      { "method": "manual", "scope": "block" }
+    ]
+  },
+  {
+    "contractVersion": "layrs.lens.v1",
+    "id": "layrs.raw",
+    "name": "Raw",
+    "version": "1.0.0",
+    "digest": "sha256:447865d3586458fc74e7f6c984464b6dfcb4efc65e5a0e75a55e95cee62b7df9",
+    "analyzer": {
+      "supportedMediaTypes": ["application/octet-stream"],
+      "fileExtensions": [],
+      "capabilities": ["view", "diff", "reconcile", "metadata", "preview"]
+    },
+    "viewer": {
+      "viewerId": "layrs.viewer.raw",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "RawArtifactViewer",
+      "previewKinds": ["raw"],
+      "diffKinds": ["binary"],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        { "key": "byte_len", "label": "Size", "valueType": "number" },
+        { "key": "content_hash", "label": "Hash", "valueType": "string" },
+        { "key": "media_type", "label": "Type", "valueType": "string" }
+      ]
+    },
+    "resolutionMethods": [
+      { "method": "existing", "scope": "file" },
+      { "method": "incoming", "scope": "file" }
+    ]
+  }
+]

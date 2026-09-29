@@ -6,9 +6,15 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+ctrlc = "3.5.2"
 layrs-client-core = { path = "../layrs-client-core" }
-serde = { workspace = true }
+layrs-core = { path = "../layrs-core" }
+layrs-git-bridge = { path = "../layrs-git-bridge" }
+layrs-store-local = { path = "../layrs-store-local" }
 serde_json = "1"
+
+[dev-dependencies]
+layrs-lens-sdk = { path = "../layrs-lens-sdk" }
 
 [lib]
 path = "src/lib.rs"

@@ -1,0 +1,41 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "syncTransactionReceipt",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 1,
+  "resultingAuthorizationEpoch": 1,
+  "authorizationSnapshotId": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "currentPolicySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "idempotencyKey": "rejected-key-0001",
+  "requestDigest": "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "transactionId": "transaction:rejected-1",
+  "status": "rejected",
+  "acceptedStepIds": [],
+  "acceptedObservationIds": [],
+  "acceptedRepositoryViewIds": [],
+  "acceptedPolicySetIds": [],
+  "acceptedProducts": [],
+  "viewResult": null,
+  "policyRootResult": null,
+  "policyDecisions": [{
+    "operation": "repository.view.choose",
+    "targetKind": "layer",
+    "targetId": "layer:main",
+    "allowed": false,
+    "policyVersionObjectIds": [],
+    "requiredProofObjectIds": [],
+    "requiredGateEvaluationObjectIds": []
+  }],
+  "rejections": [{
+    "code": "permission_denied",
+    "message": "Discard authorization is required",
+    "targetId": "layer:main"
+  }],
+  "eventIds": [],
+  "firstEventSequence": null,
+  "lastEventSequence": null,
+  "eventCursor": null,
+  "storedAt": "2026-07-19T12:15:00Z"
+}

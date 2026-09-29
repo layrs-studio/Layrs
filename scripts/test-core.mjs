@@ -2,23 +2,17 @@ import { spawn } from "node:child_process";
 
 const steps = [
   {
-    label: "Rust workspace",
+    label: "Local client core",
     command: "cargo",
-    args: ["test", "--workspace", "--", "--test-threads=1"],
+    args: ["test", "-p", "layrs-client-core", "--", "--test-threads=1"],
     env: {
       RUST_TEST_THREADS: "1"
     }
   },
   {
-    label: "Studio Desktop Tauri shell",
+    label: "CLI black-box and unit tests",
     command: "cargo",
-    args: [
-      "test",
-      "--manifest-path",
-      "apps/studio-desktop/src-tauri/Cargo.toml",
-      "--",
-      "--test-threads=1"
-    ],
+    args: ["test", "-p", "layrs-cli", "--", "--test-threads=1"],
     env: {
       RUST_TEST_THREADS: "1"
     }

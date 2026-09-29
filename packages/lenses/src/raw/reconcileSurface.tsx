@@ -1,8 +1,8 @@
 import type { LensReconcileAction, LensReconcileRendererProps, ResolutionMethod } from "@layrs/lens-sdk";
+import { rawManifest } from "../manifests";
 import { LensSurfaceHeader } from "../shared/LensSurfaceHeader";
+import { surfaceResolutionMethods } from "../shared/resolutionMethods";
 import { joinClassNames } from "../shared/utils";
-
-const RAW_METHODS: ResolutionMethod[] = ["existing", "incoming"];
 
 export function RawLensReconcileSurface({
   busy = false,
@@ -16,7 +16,7 @@ export function RawLensReconcileSurface({
   const existingLabel = labels?.existing ?? "Existing";
   const incomingLabel = labels?.incoming ?? "Incoming";
   const isResolved = conflict.status === "resolved";
-  const actions = supportedMethods(conflict.supportedMethods, RAW_METHODS).map((method) =>
+  const actions = surfaceResolutionMethods(rawManifest, "file", conflict).map((method) =>
     rawAction(method, existingLabel, incomingLabel)
   );
   const canResolve = Boolean(onResolve) && !isResolved;
@@ -79,18 +79,6 @@ function rawAction(method: ResolutionMethod, existingLabel: string, incomingLabe
         resolution: "incoming"
       };
     default:
-      return {
-        method,
-        scope,
-        label: String(method),
-        resolution: String(method)
-      };
+      throw new Error(`Unsupported raw resolution method ${String(method)}`);
   }
-}
-
-function supportedMethods(methods: ResolutionMethod[] | undefined, defaults: ResolutionMethod[]) {
-  if (!methods || methods.length === 0) {
-    return defaults;
-  }
-  return defaults.filter((method) => methods.includes(method));
 }

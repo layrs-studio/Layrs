@@ -1,0 +1,160 @@
+{
+  "schemaVersion": "layrs.final-artifacts.v1",
+  "date": "2026-09-22",
+  "native": [
+    {
+      "directory": "dist/native-windows-qualified5-20260922",
+      "archive": "layrs-6436fb0f34e7-x86_64-pc-windows-msvc-release.tar.gz",
+      "bytes": 24752555,
+      "sha256": "e4d2e334f41419b7a9daa9ac185a5e4cf148925c4f0415d547cb6fd42504f065",
+      "manifestSha256": "e3a84e457dd0a31af45f3853bd07d240883fc665dcaa57a91aa93ba5f342869f",
+      "source": {
+        "commit": "6436fb0f34e7c9b883b5e69610bc876caadae592",
+        "dirty": false,
+        "treeSha256": "67a237bf62c75af82ac0d5c51d1dfd34ebefc4a020a342987d13d18a0a18961b",
+        "cargoLockSha256": "846cf776294fdcc412e8c81798029d01cdf4edc28d53a2af913e9d67bb96bb70"
+      },
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 26,
+      "partialLocalStore": "native-format-3"
+    },
+    {
+      "directory": "dist/native-linux-qualified5-20260922/candidate",
+      "archive": "layrs-6436fb0f34e7-x86_64-unknown-linux-gnu-release.tar.gz",
+      "bytes": 27535523,
+      "sha256": "7fede6d34ba2cd94e7f157dd3d9a902bb0c1499ec3368a7760c66abf0ff4f150",
+      "manifestSha256": "e0e7dc4930a18a12915913e70ccda0efb388f4495d9a67fe6284d2967a08f65d",
+      "source": {
+        "commit": "6436fb0f34e7c9b883b5e69610bc876caadae592",
+        "dirty": false,
+        "treeSha256": "67a237bf62c75af82ac0d5c51d1dfd34ebefc4a020a342987d13d18a0a18961b",
+        "cargoLockSha256": "846cf776294fdcc412e8c81798029d01cdf4edc28d53a2af913e9d67bb96bb70"
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 26,
+      "partialLocalStore": "native-format-3"
+    }
+  ],
+  "desktop": {
+    "directory": "dist/desktop-windows-qualified5-20260922",
+    "schema": "layrs.desktop-distribution.v1",
+    "createdAt": "2026-09-22T16:32:36.260Z",
+    "commit": "6436fb0f34e7c9b883b5e69610bc876caadae592",
+    "dirty": true,
+    "treeSha256": "983f9d4255a80b12eb4b60804d1ba7b8fc0878da2e549244f54bad46b5ec994c",
+    "signature": "unsigned",
+    "installedByRecipe": false,
+    "artifacts": [
+      {
+        "path": "Layrs Studio_0.0.0_x64_en-US.msi",
+        "bytes": 11857920,
+        "sha256": "227fa22f96842025838f66d7d4433c6d62fd0e2ddf3f7ecc2d4757313b8d9803"
+      }
+    ]
+  },
+  "smoke": {
+    "windows": {
+      "passed": true,
+      "checks": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ],
+      "log": "tmp/smoke-windows-qualified5-20260922.log"
+    },
+    "linux": {
+      "passed": true,
+      "checks": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ],
+      "log": "tmp/smoke-linux-qualified5-20260922.log"
+    }
+  },
+  "upgrades": [
+    {
+      "platform": "windows",
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-pc-windows-msvc",
+      "oldArchiveSha256": "8ed450d894146303196dbdd20ad2284e7261670b147a7d684cb795c733a66c98",
+      "newArchiveSha256": "e4d2e334f41419b7a9daa9ac185a5e4cf148925c4f0415d547cb6fd42504f065",
+      "oldManifestSha256": "5b8b73f38e424ddad629e64de9bac7692fe75ecad936edf229d7a0981f79596b",
+      "newManifestSha256": "e3a84e457dd0a31af45f3853bd07d240883fc665dcaa57a91aa93ba5f342869f",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:84e052f3-e7e4-4a83-8e76-5318a7f1f1f1",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "D:\\Layrs\\layrs\\tmp\\upgrade-windows-qualified4-to-5-20260922",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified"
+    },
+    {
+      "platform": "linux",
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-unknown-linux-gnu",
+      "oldArchiveSha256": "1994acab66149cce9482110228261007bbbecb6be648a18f00d96cee400e3cb3",
+      "newArchiveSha256": "7fede6d34ba2cd94e7f157dd3d9a902bb0c1499ec3368a7760c66abf0ff4f150",
+      "oldManifestSha256": "e9e6b2afea8fe098b58fb52b7ed79d7323cd58a392f0e5076d39b3c0a96fbd44",
+      "newManifestSha256": "e0e7dc4930a18a12915913e70ccda0efb388f4495d9a67fe6284d2967a08f65d",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:770b84a0-0c94-4e14-bf9b-07e59c499773",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "/out/recipe",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified",
+      "container": {
+        "schemaVersion": "layrs.validation.archive-upgrade-container.v1",
+        "image": "layrs-native-packaging:validation",
+        "imageId": "sha256:14ec4cc42d288d7e85fcf7659c48e1747005cbc82f5b84cf8a672bca4acd4e41",
+        "network": "none",
+        "freshContainer": true,
+        "readonlySourcesAndArchives": true,
+        "filesystem": "dedicated-native-linux-volume",
+        "retainedContainer": "layrs-upgrade-9b03ab81-7cc7-4a23-a964-6899a35f9cd2",
+        "retainedVolume": "layrs-upgrade-9b03ab81-7cc7-4a23-a964-6899a35f9cd2-data",
+        "fixture": "recipe/report.json",
+        "fixtureExported": true,
+        "recipeExitCode": 0,
+        "phase": "completed",
+        "exportedCopyIsNotARelocatedWorktree": true,
+        "executionError": null,
+        "termination": {
+          "stopped": true,
+          "stopAttempted": false,
+          "killAttempted": false
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Local unsigned candidates; no push, publication, MSI installation or production deployment.",
+    "Native archives share exact Rust sources and Cargo.lock. MSI dirty=true records concurrent documentation and browser tests; the packaging source digest stayed unchanged.",
+    "MSI bundler-type warning remains; automatic updater and machine-virgin installation are not qualified.",
+    "Archive upgrade tests cover format-2 compatibility and rollback. Side-by-side migration to format 3 is qualified separately by real TLS and Desktop tests.",
+    "Partial publication supports regular files up to 16 MiB and 1024 paths per capture; see packaged PARTIAL-CHECKOUTS.md."
+  ]
+}

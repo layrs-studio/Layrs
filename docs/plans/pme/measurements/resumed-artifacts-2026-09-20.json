@@ -1,0 +1,150 @@
+{
+  "schemaVersion": "layrs.final-artifacts.v1",
+  "date": "2026-09-20",
+  "native": [
+    {
+      "directory": "dist/native-windows-qualified4-20260920",
+      "archive": "layrs-5ab6994e61cd-x86_64-pc-windows-msvc-release.tar.gz",
+      "bytes": 23939903,
+      "sha256": "8ed450d894146303196dbdd20ad2284e7261670b147a7d684cb795c733a66c98",
+      "manifestSha256": "5b8b73f38e424ddad629e64de9bac7692fe75ecad936edf229d7a0981f79596b",
+      "source": {
+        "commit": "5ab6994e61cd49354b529234fc917037e1bcdb65",
+        "dirty": true,
+        "treeSha256": "da78b6ad4edda95c1ed6de2ce2a3d5fbe69caad809815128e80b87cbe345213a",
+        "cargoLockSha256": "cbd0b220fef9f206de9fc4a05ae38d4b55cab2d400258a7e875c1c9dbdec07d5"
+      },
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 25,
+      "smoke": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    },
+    {
+      "directory": "dist/native-linux-qualified4-20260920/candidate",
+      "archive": "layrs-5ab6994e61cd-x86_64-unknown-linux-gnu-release.tar.gz",
+      "bytes": 26595911,
+      "sha256": "1994acab66149cce9482110228261007bbbecb6be648a18f00d96cee400e3cb3",
+      "manifestSha256": "e9e6b2afea8fe098b58fb52b7ed79d7323cd58a392f0e5076d39b3c0a96fbd44",
+      "source": {
+        "commit": "5ab6994e61cd49354b529234fc917037e1bcdb65",
+        "dirty": true,
+        "treeSha256": "da78b6ad4edda95c1ed6de2ce2a3d5fbe69caad809815128e80b87cbe345213a",
+        "cargoLockSha256": "cbd0b220fef9f206de9fc4a05ae38d4b55cab2d400258a7e875c1c9dbdec07d5"
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 25,
+      "smoke": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    }
+  ],
+  "desktop": {
+    "directory": "dist/desktop-windows-qualified4-20260920",
+    "schema": "layrs.desktop-distribution.v1",
+    "createdAt": "2026-09-20T21:29:00.320Z",
+    "commit": "5ab6994e61cd49354b529234fc917037e1bcdb65",
+    "dirty": true,
+    "treeSha256": "3da48c45b2f40c209f27ef0827c5214e536212da56fbfdc68f525fdde5672186",
+    "signature": "unsigned",
+    "installedByRecipe": false,
+    "artifacts": [
+      {
+        "path": "Layrs Studio_0.0.0_x64_en-US.msi",
+        "bytes": 11231232,
+        "sha256": "47380ef62ce6d32ce09d6a2ab8e36f668152171331b46f8244de0053d5900555"
+      }
+    ]
+  },
+  "upgrades": [
+    {
+      "reportPath": "tmp/archive-upgrade-windows-qualified4/report.json",
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-pc-windows-msvc",
+      "oldArchiveSha256": "6d3956ccabec77ad67a8ff55fe5d619c562f2e0b37e53fca6bd063ca8b74302f",
+      "newArchiveSha256": "8ed450d894146303196dbdd20ad2284e7261670b147a7d684cb795c733a66c98",
+      "oldManifestSha256": "3199844ebdc13c01219f1acd88636ae3694b65c5c62b76372e2fe2d9e3e4634d",
+      "newManifestSha256": "5b8b73f38e424ddad629e64de9bac7692fe75ecad936edf229d7a0981f79596b",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:765923b0-0e64-4829-bd06-576f08b32bf5",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "D:\\Layrs\\layrs\\tmp\\archive-upgrade-windows-qualified4",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified"
+    },
+    {
+      "reportPath": "dist/upgrade-linux-qualified2-to4-final-20260920/recipe/report.json",
+      "schemaVersion": "layrs.validation.archive-upgrade.v1",
+      "passed": true,
+      "target": "x86_64-unknown-linux-gnu",
+      "oldArchiveSha256": "bd35d9f550250d08a714bc52df2584727ab61a15de4efe6104ce14d7b2c3d1a7",
+      "newArchiveSha256": "1994acab66149cce9482110228261007bbbecb6be648a18f00d96cee400e3cb3",
+      "oldManifestSha256": "9aa74630ec35ebc15f15f8ed48baa354719c73914e7238f6ba85a81ef6d273a9",
+      "newManifestSha256": "e9e6b2afea8fe098b58fb52b7ed79d7323cd58a392f0e5076d39b3c0a96fbd44",
+      "localStore": "native-format-2",
+      "checkoutRootIdentityPreserved": true,
+      "historicalOperationsRetained": 5,
+      "markerId": "marker:94f2347e-87b8-4cc9-8a2f-9c75ba60a36f",
+      "priorStep": "blake3:9c72a6ccf51e3138509d28c948ceb46f979ffc70adb9d11576cb6c5bbaced557",
+      "newStepPreservedInIncidentState": "blake3:bbf39045dd780359bb0555e99a8fc44bf548537397247531531586ff3855b597",
+      "rollbackDropsPostBackupWritesFromActiveProject": true,
+      "incident": "extracted CLI checksum corruption detected before execution",
+      "fixtureRetained": "/out/recipe",
+      "scope": "local CLI same-format compatibility; no PostgreSQL migration, MSI installation or cross-format support qualified",
+      "containerReportPath": "dist/upgrade-linux-qualified2-to4-final-20260920/container.json",
+      "container": {
+        "schemaVersion": "layrs.validation.archive-upgrade-container.v1",
+        "image": "layrs-native-packaging:validation",
+        "imageId": "sha256:14ec4cc42d288d7e85fcf7659c48e1747005cbc82f5b84cf8a672bca4acd4e41",
+        "network": "none",
+        "freshContainer": true,
+        "readonlySourcesAndArchives": true,
+        "filesystem": "dedicated-native-linux-volume",
+        "retainedContainer": "layrs-upgrade-d9841fa8-8451-4aac-8bd8-d4cfdcb0a71c",
+        "retainedVolume": "layrs-upgrade-d9841fa8-8451-4aac-8bd8-d4cfdcb0a71c-data",
+        "fixture": "recipe/report.json",
+        "fixtureExported": true,
+        "recipeExitCode": 0,
+        "phase": "completed",
+        "exportedCopyIsNotARelocatedWorktree": true,
+        "executionError": null,
+        "termination": {
+          "stopped": true,
+          "stopAttempted": false,
+          "killAttempted": false
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Local unsigned candidates; no push, publication, installation or production deployment.",
+    "Both native archives use exactly the same committed Rust sources and Cargo.lock; dirty=true records concurrent documentation/measurement files.",
+    "MSI built and checksum verified but not installed; Tauri bundler-type warning remains, and automatic updater is not qualified.",
+    "CLI upgrades validate native format 2 only; PostgreSQL migrations and cross-format conversions are separate.",
+    "Linux upgrade failed with EINVAL on Windows Docker bind storage, then passed on an isolated native Linux volume; do not claim Windows bind compatibility.",
+    "qualified2 and qualified3 are retained historical candidates; qualified4 is the current tested artifact set."
+  ]
+}

@@ -13,6 +13,24 @@ the real Studio Desktop UI.
 - `server-sync`: publish/receive test against Layrs Server, without relying on
   Studio Web for local correctness.
 
+## Trust Gate Matrix
+
+| Gate | Local command | CI proof | Failure policy |
+| --- | --- | --- | --- |
+| Migration immutability | `pnpm check:migrations` | Linux | changed, removed, or unreviewed migration fails |
+| Fresh PostgreSQL | `pnpm test:rust` | Linux service DB | missing or implicit DB fails |
+| Upgrade PostgreSQL | `pnpm test:migrations:upgrade` | Linux upgrade DB | baseline/current migration error fails |
+| Rust style/lints | `pnpm format:check`, `pnpm lint:rust` | Linux | warnings fail |
+| TypeScript/contracts | `pnpm check:typescript`, `pnpm test:sdk` | Linux | omitted workspace/test is not allowed |
+| Studio builds | `pnpm build:apps` | Linux | production bundle failure fails |
+| Renderer UI | `pnpm test:e2e:renderer` | Linux | zero retries; evidence retained |
+| Real Studio Web | `pnpm test:web:ci` | Linux | zero retries; isolated server/store |
+| Native Desktop | `pnpm test:desktop:ci` | Windows | zero retries; real Tauri/WebView2 |
+
+The canonical Windows `pnpm test` runs every row, including all Playwright
+specs. Platform CI jobs may split the rows, but must not describe a partial
+platform run as the canonical all-platform gate.
+
 ## Canonical Matrix
 
 | Feature | Required proof | Current coverage |

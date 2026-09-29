@@ -1,0 +1,23 @@
+{
+  "kind": "layer",
+  "productId": "layer:main",
+  "productObjectId": "blake3:e3ab1236ae9e53588eced914441294d10e6682a6128162caae37d1e1d8b4a06f",
+  "dependsOnStepIds": [],
+  "dependsOnProductIds": [],
+  "previousProductObjectId": null,
+  "record": {
+    "schemaVersion": "layrs.layer.v1",
+    "layerId": "layer:main",
+    "spaceId": "space:demo",
+    "name": "Main",
+    "kind": "base",
+    "status": "active",
+    "parentLayerIds": [],
+    "settings": {
+      "automaticCapture": true,
+      "automaticCaptureIdleMs": 2000
+    },
+    "createdAt": "2026-07-19T12:00:00Z",
+    "metadata": []
+  }
+}

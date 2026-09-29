@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "layrs.local-volume-measurement.v1",
+  "startedAt": "2026-09-20T11:13:13.817Z",
+  "platform": "win32",
+  "os": "10.0.26200",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "totalMemoryBytes": 68387852288,
+  "binarySha256": "35dacdcdba74b892aa34a06465ceb469563595084879e1a83dd606949ab0bd0e",
+  "fixtureRoot": "D:\\Layrs\\tmp\\layrs-volumes-b9a045e8-f82c-420d-88c6-51d140e277df",
+  "limitations": [
+    "Synthetic repeated content: 200 distinct payloads, 256 bytes each.",
+    "Concurrent compilation may affect timings; one run, warm OS caches.",
+    "Durations include CLI startup and full command; peak process memory and remote sync not measured.",
+    "Fixtures retained for inspection; all current Operations retained, no pruning."
+  ],
+  "cases": [
+    {
+      "files": 10000,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-b9a045e8-f82c-420d-88c6-51d140e277df\\files-10000",
+      "measurements": [
+        {
+          "command": "init Volume 10000",
+          "elapsedMs": 6737,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "status",
+          "elapsedMs": 8627,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 8715,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer create baseline",
+          "elapsedMs": 9576,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "diff --stat",
+          "elapsedMs": 11629,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 16339,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use baseline",
+          "elapsedMs": 39001,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use main",
+          "elapsedMs": 26170,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ],
+      "storage": {
+        "bytes": 1775067,
+        "files": 419
+      }
+    },
+    {
+      "files": 100000,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-b9a045e8-f82c-420d-88c6-51d140e277df\\files-100000",
+      "measurements": [
+        {
+          "command": "init Volume 100000",
+          "elapsedMs": 6764,
+          "exitCode": 1,
+          "expectedSuccess": true,
+          "matchedExpectation": false,
+          "truncated": false,
+          "error": {
+            "message": "checkout entry limit exceeded"
+          }
+        }
+      ]
+    },
+    {
+      "binaryBytes": 104857600,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-b9a045e8-f82c-420d-88c6-51d140e277df\\binary-104857600",
+      "measurements": [
+        {
+          "command": "init Binary limit",
+          "elapsedMs": 137,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 57,
+          "exitCode": 1,
+          "expectedSuccess": false,
+          "matchedExpectation": true,
+          "truncated": false,
+          "error": {
+            "message": "checkout byte limit exceeded"
+          }
+        }
+      ],
+      "operationUnchanged": true,
+      "fileBytesUnchanged": true
+    },
+    {
+      "binaryBytes": 1073741824,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-b9a045e8-f82c-420d-88c6-51d140e277df\\binary-1073741824",
+      "measurements": [
+        {
+          "command": "init Binary limit",
+          "elapsedMs": 121,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 57,
+          "exitCode": 1,
+          "expectedSuccess": false,
+          "matchedExpectation": true,
+          "truncated": false,
+          "error": {
+            "message": "checkout byte limit exceeded"
+          }
+        }
+      ],
+      "operationUnchanged": true,
+      "fileBytesUnchanged": true
+    }
+  ],
+  "completedAt": "2026-09-20T11:15:36.019Z"
+}

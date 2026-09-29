@@ -1,0 +1,21 @@
+{$LAYRS_HOST} {
+    header Strict-Transport-Security "max-age=31536000"
+    request_body {
+        max_size 64MB
+    }
+    @api path /v3/* /auth/device /auth/device/* /health /healthz /ready /readyz
+    handle @api {
+        reverse_proxy server:8787
+    }
+    handle {
+        root * /srv/layrs
+        header {
+            Content-Security-Policy "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            X-Content-Type-Options nosniff
+            Referrer-Policy same-origin
+            Cache-Control no-store
+        }
+        try_files {path} /index.html
+        file_server
+    }
+}

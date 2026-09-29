@@ -1,0 +1,43 @@
+{
+  "cases": [
+    {
+      "advanceElapsedMs": 1083,
+      "appliedAdvances": 1,
+      "clients": 2,
+      "lostResponseReplays": 1,
+      "perClientMs": [
+        1021,
+        1082
+      ],
+      "rejectedAdvances": 1,
+      "retainedHeads": 2
+    },
+    {
+      "advanceElapsedMs": 2280,
+      "appliedAdvances": 1,
+      "clients": 10,
+      "lostResponseReplays": 1,
+      "perClientMs": [
+        2043,
+        2157,
+        2221,
+        2279,
+        2115,
+        2259,
+        2133,
+        2197,
+        2174,
+        2240
+      ],
+      "rejectedAdvances": 9,
+      "retainedHeads": 10
+    }
+  ],
+  "limitations": [
+    "Tiny fixtures, debug binaries, one node, one authenticated account with independent client IDs.",
+    "Advance timing includes immutable uploads and one simulated lost-response retry; initial clones and explicit subsequent integrations excluded.",
+    "No production throughput, large-file, full-disk or cross-machine latency guarantee."
+  ],
+  "platform": "windows",
+  "schemaVersion": "layrs.concurrent-publications.v1"
+}

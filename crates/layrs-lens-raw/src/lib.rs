@@ -2,12 +2,16 @@ use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
     DiffKind, DiffModel, InspectorField, InspectorValueType, LensCapability,
     LensFileResolutionInput, LensManifest, LensReconcileContent, LensReconcileInput,
-    LensReconcileResult, LensResult, MetadataValue, PreviewKind, PreviewModel, ReconcileModel,
-    ReconcileStatus, ResolutionMethod, ResolutionMethods, ViewerContract, content_hash,
-    infer_media_type_from_path,
+    LensReconcileResult, LensResult, MetadataValue, PreviewKind, PreviewModel, ResolutionMethod,
+    ResolutionMethods, ViewerContract, content_hash,
 };
 
 pub const RAW_LENS_ID: &str = "layrs.raw";
+pub const RAW_LENS_VERSION: &str = "1.0.0";
+pub const RAW_LENS_DIGEST: &str =
+    "sha256:1cc07635972c4402981d6f7df708af8b7a001a850ebd3dea1fed7f4eb47453aa";
+const LEGACY_ANALYSIS_RECONCILE_SUMMARY: &str =
+    "Legacy analysis reconcile status is non-authoritative; use reconcile_raw";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RawLens;
@@ -29,7 +33,6 @@ pub fn manifest() -> LensManifest {
         vec![PreviewKind::Raw],
         vec![DiffKind::Binary],
     );
-    viewer.reconcile_statuses = reconcile_statuses_v1();
     viewer.inspector_fields = vec![
         InspectorField {
             key: "byte_len".to_string(),
@@ -51,7 +54,7 @@ pub fn manifest() -> LensManifest {
     let mut manifest = LensManifest::new(
         RAW_LENS_ID,
         "Raw",
-        "0.0.0",
+        RAW_LENS_VERSION,
         AnalyzerContract {
             supported_media_types: vec!["application/octet-stream".to_string()],
             file_extensions: Vec::new(),
@@ -64,7 +67,8 @@ pub fn manifest() -> LensManifest {
             ],
         },
         viewer,
-    );
+    )
+    .with_digest(RAW_LENS_DIGEST);
     manifest.resolution_methods = resolution_methods();
     manifest
 }
@@ -73,19 +77,8 @@ pub fn resolution_methods() -> ResolutionMethods {
     ResolutionMethods::file(raw_file_resolution_methods())
 }
 
-fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
-    vec![
-        ReconcileStatus::Unsupported,
-        ReconcileStatus::NeedsManualResolution,
-        ReconcileStatus::AutoResolvable,
-    ]
-}
-
 pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
-    let media_type = input
-        .media_type
-        .or_else(|| infer_media_type_from_path(input.path))
-        .unwrap_or("application/octet-stream");
+    let media_type = input.media_type.unwrap_or("application/octet-stream");
 
     let mut metadata = ArtifactMetadata::new(
         input.artifact_id,
@@ -117,11 +110,12 @@ pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
     );
 
     let mut output = AnalysisOutput::new(metadata);
+    // Legacy analysis output cannot express canonical three-way results; use reconcile_raw.
+    output.reconcile.summary = LEGACY_ANALYSIS_RECONCILE_SUMMARY.to_string();
     output.preview = Some(preview);
     output.diff = input
         .previous_bytes
         .map(|previous| diff_binary(previous, input.bytes));
-    output.reconcile = reconcile_for_raw_diff(output.diff.as_ref());
     output
 }
 
@@ -158,18 +152,6 @@ pub fn diff_binary(previous: &[u8], current: &[u8]) -> DiffModel {
     diff
 }
 
-pub fn reconcile_for_raw_diff(diff: Option<&DiffModel>) -> ReconcileModel {
-    match diff.and_then(|diff| diff.fields.get("changed")) {
-        Some(MetadataValue::Bool(false)) => {
-            ReconcileModel::auto_resolvable("No raw byte changes to reconcile")
-        }
-        Some(MetadataValue::Bool(true)) => {
-            ReconcileModel::unsupported("Raw byte reconciliation is not implemented in V1")
-        }
-        _ => ReconcileModel::unsupported("Reconciliation requires a previous raw artifact"),
-    }
-}
-
 pub fn reconcile_raw(input: LensReconcileInput<'_>) -> LensReconcileResult {
     if same_side(input.ours, input.theirs) {
         return LensReconcileResult::auto_resolved(
@@ -179,13 +161,13 @@ pub fn reconcile_raw(input: LensReconcileInput<'_>) -> LensReconcileResult {
     }
     if same_side(input.base, input.ours) {
         return LensReconcileResult::auto_resolved(
-            "Target side is unchanged; taking source",
+            "Existing side is unchanged; taking incoming",
             content_from_side(input.theirs),
         );
     }
     if same_side(input.base, input.theirs) {
         return LensReconcileResult::auto_resolved(
-            "Source side is unchanged; keeping target",
+            "Incoming side is unchanged; keeping existing",
             content_from_side(input.ours),
         );
     }
@@ -238,32 +220,40 @@ fn raw_file_resolution_methods() -> Vec<ResolutionMethod> {
 mod tests {
     use super::*;
     use layrs_lens_sdk::{
-        LensReconcileInput, LensReconcileResultStatus, LensReconcileSide, ReconcileStatus,
+        LENS_CONTRACT_VERSION, LensReconcileInput, LensReconcileResultStatus, LensReconcileSide,
+        ReconcileStatus,
     };
 
     #[test]
-    fn manifest_declares_core_lens_capabilities() {
+    fn manifest_matches_raw_golden_contract() {
         let manifest = manifest();
+        let pin = manifest.pin().expect("built-in Lens pin");
 
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::View)
+        assert_eq!(manifest.contract_version, LENS_CONTRACT_VERSION);
+        assert_eq!(manifest.id, RAW_LENS_ID);
+        assert_eq!(manifest.version, RAW_LENS_VERSION);
+        assert_eq!(manifest.digest.as_deref(), Some(RAW_LENS_DIGEST));
+        assert_eq!(pin.lens_id, RAW_LENS_ID);
+        assert_eq!(pin.version, RAW_LENS_VERSION);
+        assert_eq!(pin.digest, RAW_LENS_DIGEST);
+        assert_eq!(
+            manifest.analyzer.supported_media_types,
+            vec!["application/octet-stream"]
         );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Diff)
+        assert!(manifest.analyzer.file_extensions.is_empty());
+        assert_eq!(
+            manifest.analyzer.capabilities,
+            vec![
+                LensCapability::View,
+                LensCapability::Diff,
+                LensCapability::Reconcile,
+                LensCapability::Metadata,
+                LensCapability::Preview,
+            ]
         );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Reconcile)
-        );
+        assert_eq!(manifest.viewer.preview_kinds, vec![PreviewKind::Raw]);
         assert_eq!(manifest.viewer.diff_kinds, vec![DiffKind::Binary]);
+        assert!(manifest.viewer.reconcile_statuses.is_empty());
         assert_eq!(
             manifest.resolution_methods.file,
             vec![ResolutionMethod::Existing, ResolutionMethod::Incoming]
@@ -272,10 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_binary_is_auto_resolvable() {
+    fn preview_and_diff_remain_available_offline() {
         let output = analyze(AnalysisInput::new("artifact", b"same").with_previous_bytes(b"same"));
 
-        assert_eq!(output.reconcile.status, ReconcileStatus::AutoResolvable);
+        assert_eq!(output.preview.expect("preview").kind, PreviewKind::Raw);
+        assert_eq!(output.diff.expect("diff").kind, DiffKind::Binary);
+        assert_eq!(output.reconcile.status, ReconcileStatus::Unsupported);
+        assert_eq!(output.reconcile.summary, LEGACY_ANALYSIS_RECONCILE_SUMMARY);
     }
 
     #[test]
@@ -331,6 +324,15 @@ mod tests {
         assert!(
             resolve_raw_conflict(LensFileResolutionInput {
                 method: ResolutionMethod::Both,
+                base: LensReconcileSide::present(b"base", None),
+                existing: LensReconcileSide::present(b"existing", None),
+                incoming: LensReconcileSide::present(b"incoming", None),
+            })
+            .is_err()
+        );
+        assert!(
+            resolve_raw_conflict(LensFileResolutionInput {
+                method: ResolutionMethod::Manual,
                 base: LensReconcileSide::present(b"base", None),
                 existing: LensReconcileSide::present(b"existing", None),
                 incoming: LensReconcileSide::present(b"incoming", None),

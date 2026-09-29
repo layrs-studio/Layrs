@@ -3,6 +3,7 @@ export { LensPreviewHost, type LensPreviewHostProps } from "./host/LensPreviewHo
 export { LensReconcileSurface, type LensReconcileSurfaceProps } from "./host/LensReconcileSurface";
 export { RawLensFallback, type RawLensFallbackProps } from "./raw/fallback";
 export { TextLinesDiffViewer, type TextLinesDiffViewerProps } from "./shared/TextLinesDiffViewer";
+export { codeManifest, imageManifest, rawManifest, textManifest } from "./manifests";
 export { builtinLensRegistry, builtinLenses, createBuiltinLensRegistry, getLensManifest, listLenses, resolveLens } from "./registry";
 export { codeLens } from "./code/lens";
 export { imageLens } from "./image/lens";

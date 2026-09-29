@@ -6,10 +6,22 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+url = "2"
 blake3 = "1"
-layrs-lens-raw = { path = "../layrs-lens-raw" }
+base64 = "0.22"
+layrs-core = { path = "../layrs-core" }
+layrs-graph = { path = "../layrs-graph" }
+layrs-weave = { path = "../layrs-weave" }
+layrs-store = { path = "../layrs-store" }
+layrs-sync = { path = "../layrs-sync" }
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_jcs = "0.1"
+fs2 = "0.4"
 layrs-lens-sdk = { path = "../layrs-lens-sdk" }
-layrs-lens-text = { path = "../layrs-lens-text" }
+layrs-store-local = { path = "../layrs-store-local" }
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = "1"
+time = { version = "=0.3.36", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
