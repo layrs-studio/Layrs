@@ -114,7 +114,7 @@ export function NativeWorkbench() {
 
   if(partialRoot)return <NativePartialWorkbench root={partialRoot} onClose={()=>{setPartialRoot("");setOpenedRoot("");setData(null);setError("");}}/>;
   return <main className="native-workbench">
-    <header><div><p className="native-eyebrow">LAYRS · PROJET LOCAL</p><h1>{data?.state.space.name || "Votre projet, son histoire"}</h1></div><a href="#local">Espaces et compte</a></header>
+    <header><div><p className="native-eyebrow">LAYRS · PROJET LOCAL</p><h1>{data?.state.space.name || "Votre projet, son histoire"}</h1></div></header>
     <section className="native-open" aria-label="Ouvrir un projet">
       <label>Dossier<input value={root} onChange={e => setRoot(e.target.value)} disabled={busy} placeholder="Chemin du projet" /></label>
       <button disabled={busy} onClick={() => void selectFolder(root).then(p => { if (p) setRoot(p); }).catch(e => setError(String(e)))}>Parcourir…</button>

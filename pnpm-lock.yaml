@@ -17,12 +17,6 @@ importers:
 
   apps/studio-desktop:
     dependencies:
-      '@layrs/client-sdk':
-        specifier: workspace:*
-        version: link:../../packages/client-sdk
-      '@layrs/lenses':
-        specifier: workspace:*
-        version: link:../../packages/lenses
       '@layrs/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -54,15 +48,6 @@ importers:
 
   apps/studio-web:
     dependencies:
-      '@layrs/client-sdk':
-        specifier: workspace:*
-        version: link:../../packages/client-sdk
-      '@layrs/lens-sdk':
-        specifier: workspace:*
-        version: link:../../packages/lens-sdk
-      '@layrs/lenses':
-        specifier: workspace:*
-        version: link:../../packages/lenses
       '@layrs/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -89,16 +74,6 @@ importers:
         specifier: ^5.4.0
         version: 5.4.21
 
-  packages/client-sdk:
-    dependencies:
-      '@layrs/lens-sdk':
-        specifier: workspace:*
-        version: link:../lens-sdk
-    devDependencies:
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
   packages/lens-sdk:
     devDependencies:
       typescript:
@@ -123,9 +98,6 @@ importers:
 
   packages/ui:
     dependencies:
-      '@layrs/client-sdk':
-        specifier: workspace:*
-        version: link:../client-sdk
       react:
         specifier: ^18.3.1 || ^19.0.0
         version: 18.3.1

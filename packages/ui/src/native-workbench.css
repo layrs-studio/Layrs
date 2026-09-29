@@ -29,5 +29,4 @@
 .native-changes summary { cursor:pointer; overflow-wrap:anywhere; }
 .native-changes pre { overflow:auto; max-height:360px; font-size:12px; line-height:1.6; }
 .native-changes [data-op=insert] { color:#63b888; }.native-changes [data-op=delete] { color:#de8279; }
-.native-launcher { position:fixed; right:22px; bottom:20px; z-index:100; padding:10px 18px; background:#286dcc; color:white; border-radius:8px; text-decoration:none; }
 @media(max-width:900px) {.native-columns {grid-template-columns:1fr;}.native-columns>aside {border-left:0;padding-left:0;}.native-workbench {padding:18px;}}

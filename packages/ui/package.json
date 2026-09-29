@@ -16,9 +16,6 @@
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.json"
   },
-  "dependencies": {
-    "@layrs/client-sdk": "workspace:*"
-  },
   "peerDependencies": {
     "react": "^18.3.1 || ^19.0.0"
   },
