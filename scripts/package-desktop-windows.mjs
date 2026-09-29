@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { sourceTreeDigest } from "./package-source.mjs";
+import { digestFiles, sourceTreeChanges, sourceTreeFiles } from "./package-source.mjs";
 
 if (process.platform !== "win32" || process.arch !== "x64" || process.argv.length !== 4 || process.argv[2] !== "--output") throw new Error("Windows x64 only: node scripts/package-desktop-windows.mjs --output NEW_DIRECTORY");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,12 +21,14 @@ const config = join(output, "build-config.json");
 // Use the locked, installed workspace tooling; no global pnpm cache is required.
 writeFileSync(config, JSON.stringify({ build: { beforeBuildCommand: "node node_modules/vite/bin/vite.js build" }, bundle: { icon: ["icons/icon.ico"] } }));
 const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", join(app, "src-tauri/Cargo.toml")]));
-const sourceDigest = () => sourceTreeDigest(root, ["crates", "packages", "apps/studio-desktop", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "pnpm-lock.yaml"]);
-const beforeBuild = sourceDigest();
+const sourceFiles = () => sourceTreeFiles(root, ["crates", "packages", "apps/studio-desktop", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "pnpm-lock.yaml"]);
+const beforeFiles = sourceFiles();
+const beforeBuild = digestFiles(beforeFiles);
 run(process.execPath, ["scripts/check-packaged-wasm.mjs", "--offline"], root, false);
 const started = Date.now();
 run(process.execPath, [join(app, "node_modules/@tauri-apps/cli/tauri.js"), "build", "--bundles", "msi", "--config", config, "--ci", "--no-sign", "--", "--locked"], app, false);
-if (sourceDigest() !== beforeBuild) throw new Error("Sources changed during compilation; retry from a stable checkout in a new output directory");
+const changes = sourceTreeChanges(beforeFiles, sourceFiles());
+if (changes.length > 0) throw new Error(`Sources changed during compilation; retry from a stable checkout in a new output directory: ${changes.join(", ")}`);
 const bundle = join(metadata.target_directory, "release/bundle/msi");
 const paths = readdirSync(bundle).filter((name) => name.endsWith(".msi")).map((name) => join(bundle, name)).filter((path) => statSync(path).mtimeMs >= started - 2000);
 if (paths.length === 0) throw new Error("Tauri produced no fresh MSI; incomplete output must not be distributed");
