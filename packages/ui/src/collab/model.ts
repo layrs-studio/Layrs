@@ -303,6 +303,12 @@ const codeMessages: Record<string, { message: string; stale?: boolean; forbidden
     message: "Publication refusée par la protection du projet : les validations exigées pour cette capture ne sont pas réunies.",
   },
   invalid_cursor: { message: "La position de lecture a expiré. Rechargez la liste.", stale: true },
+  review_decision_not_current: {
+    message: "Cette version a été proposée avant un changement des droits ou de la protection du projet : aucune décision n’est possible sur elle. Proposez une nouvelle version.",
+    stale: true,
+  },
+  stale_review_version: { message: "Une version plus récente de la proposition existe. Actualisez la revue avant de reprendre.", stale: true },
+  idempotency_digest_mismatch: { message: "Un envoi précédent au contenu différent utilise déjà cette clé. Actualisez la revue avant de reprendre.", stale: true },
   limit_exceeded: { message: "Limite du serveur atteinte pour cette lecture." },
   custom_policy_root_active: { message: "Une politique d’accès personnalisée est active ; cette gestion n’est pas disponible." },
   backend_error: { message: "Le serveur est momentanément indisponible. Réessayez dans un instant." },

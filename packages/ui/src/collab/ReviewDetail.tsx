@@ -177,6 +177,12 @@ export function ReviewDetail({
           {superseded} décision{superseded > 1 ? "s" : ""} des versions précédentes ne compte{superseded > 1 ? "nt" : ""} plus. Relisez les changements et décidez à nouveau.
         </Banner>
       ) : null}
+      {!historical && detail.lifecycle === "open" && detail.decisionState?.stale && (
+        <Banner tone="info" title="Le projet a changé depuis cette proposition">
+          Une publication, un changement de droits ou de protection est intervenu après la version {current.version}. Ses décisions doivent être
+          renouvelées ; si le serveur les refuse, proposez une nouvelle version.
+        </Banner>
+      )}
 
       {refreshError ? <CollabError error={refreshError} title="Revue non actualisée" kept="L’action a été enregistrée ; l’affichage peut être en retard." onRetry={() => void tasks.run("detail", fetchDetail, setRefreshError)} /> : null}
 
