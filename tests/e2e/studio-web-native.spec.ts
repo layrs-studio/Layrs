@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { seedNativeProof } from "./fixtures/nativeProofSeed";
-import {sharedNativeClients} from "./fixtures/nativeSharedClients";
+import {fixtureHttp,sharedNativeClients} from "./fixtures/nativeSharedClients";
 import {webOpenProjectByName,webReleaseGate,webRestrictedAccess,webSignIn,webSignOut} from "./fixtures/nativeWebAccess";
 
 // Non-sensitive preferences the Web may keep; everything else (tokens, drafts
@@ -69,6 +69,27 @@ test("Web uses the real native identity, project, review, proof and account serv
   await review.getByRole("button", { name: "Commenter", exact: true }).click();
   await expect(review.getByRole("list", { name: "Fil de la revue" }).getByText(comment, { exact: true })).toBeVisible();
   await expect(review.getByLabel("Commentaire", { exact: true })).toHaveValue("");
+
+  // Lost answer: the server records the comment but the browser never gets the reply.
+  // The text stays in the composer and the retry reuses its key: exactly one comment.
+  const lost = `Retour perdu ${Date.now()}`;
+  let recorded = 0;
+  await page.route("**/reviews/*/actions", async (route) => {
+    // Same account and body, sent from Node straight to the TLS fixture; the browser only sees a reset.
+    const sent = await fixtureHttp(fixture, "POST", new URL(route.request().url()).pathname, JSON.parse(route.request().postData() ?? "{}"));
+    recorded = sent.status;
+    await route.abort("connectionreset");
+  }, { times: 1 });
+  await review.getByLabel("Commentaire", { exact: true }).fill(lost);
+  await review.getByRole("button", { name: "Commenter", exact: true }).click();
+  await expect(review.getByText("Envoi non confirmé", { exact: true })).toBeVisible();
+  await expect(review.getByLabel("Commentaire", { exact: true })).toHaveValue(lost);
+  expect(recorded).toBe(200);
+  await review.getByRole("button", { name: "Commenter", exact: true }).click();
+  await expect(review.getByRole("list", { name: "Fil de la revue" }).getByText(lost, { exact: true })).toHaveCount(1);
+  await expect(review.getByLabel("Commentaire", { exact: true })).toHaveValue("");
+  const reread = await fixtureHttp(fixture, "GET", `/v3/spaces/${fixture.spaceId}/reviews/${fixture.reviewId}`);
+  expect(reread.data.actions.filter((action: any) => action.body === lost).length).toBe(1);
   if(shared){
     const cliReview=await shared.cli(["review",fixture.reviewId],true);
     expect(cliReview.actions.some((action:any)=>action.body===comment)).toBe(true);
@@ -91,6 +112,50 @@ test("Web uses the real native identity, project, review, proof and account serv
   console.log("[shared-native] Web: exact seeded proof rendered");
   await run.getByRole("button", { name: "Retour à la revue", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Validations" })).toHaveAttribute("aria-selected", "true");
+
+  // A new proposal version makes decisions on the previous one visibly obsolete,
+  // and a link to the old version opens it read-only instead of the latest.
+  // The seeded protection changed the project after version 1: decisions on it are refused.
+  await page.getByRole("tab", { name: /Discussion/ }).click();
+  await expect(page.getByText("Le projet a changé depuis cette proposition", { exact: true })).toBeVisible();
+  const propose = async (version: number, capture: { label: string } | { reference: string }) => {
+    await page.getByRole("button", { name: "Nouvelle proposition", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Nouvelle proposition" });
+    await dialog.getByRole("button", { name: `Reprendre le titre et le Layer de la version ${version - 1}`, exact: true }).click();
+    if ("label" in capture) await dialog.getByLabel("Capture proposée", { exact: true }).selectOption({ label: capture.label });
+    else {
+      await dialog.getByLabel("Capture proposée", { exact: true }).selectOption({ label: "Autre capture publiée (référence technique)…" });
+      await dialog.getByLabel("Référence de la capture proposée", { exact: true }).fill(capture.reference);
+    }
+    await dialog.getByRole("button", { name: "Proposer cette nouvelle version", exact: true }).click();
+    await expect(page.getByLabel("Version affichée", { exact: true })).toHaveValue(String(version));
+  };
+  await propose(2, { reference: fixture.firstStepId });
+  await review.getByLabel("Commentaire", { exact: true }).fill("À revoir avant intégration.");
+  await review.getByRole("button", { name: "Demander des modifications", exact: true }).click();
+  await expect(review.getByText("Modifications demandées", { exact: true })).toBeVisible();
+  await propose(3, { label: "Version 0.1.0-ui" });
+  await expect(page.getByText("Nouvelle proposition : version 3", { exact: true })).toBeVisible();
+  await expect(review.getByText("Décision sur la version 2 · ne compte plus", { exact: true })).toBeVisible();
+  await page.getByLabel("Version affichée", { exact: true }).selectOption("2");
+  await expect(page.getByText("Version 2 affichée en lecture seule", { exact: true })).toBeVisible();
+  await expect(review.getByLabel("Commentaire", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Ouvrir la version actuelle", exact: true }).click();
+  await expect(page.getByLabel("Version affichée", { exact: true })).toHaveValue("3");
+
+  // A comment draft survives a reload (which asks to sign in again) for this account and exact version.
+  const kept = `Brouillon conservé ${Date.now()}`;
+  await review.getByLabel("Commentaire", { exact: true }).fill(kept);
+  await expect(review.getByText("Brouillon enregistré sur cet appareil.", { exact: true })).toBeVisible();
+  await page.reload();
+  await page.getByLabel("Identifiant", { exact: true }).fill(fixture.accounts.alice.login);
+  await page.getByLabel("Mot de passe", { exact: true }).fill(fixture.accounts.alice.password);
+  await page.getByRole("button", { name: "Se connecter", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Vérifier la modification du guide", exact: true })).toBeVisible();
+  await review.getByRole("button", { name: "Restaurer le brouillon", exact: true }).click();
+  await expect(review.getByLabel("Commentaire", { exact: true })).toHaveValue(kept);
+  await review.getByRole("button", { name: "Commenter", exact: true }).click();
+  await expect(review.getByRole("list", { name: "Fil de la revue" }).getByText(kept, { exact: true })).toBeVisible();
 
   // P14 — release publication refused by the Gate, journal unchanged.
   await webReleaseGate(page,fixture);
