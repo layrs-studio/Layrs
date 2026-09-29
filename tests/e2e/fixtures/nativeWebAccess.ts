@@ -1,4 +1,4 @@
-import {expect,type Page} from "@playwright/test";
+import {expect,type Page,type TestInfo} from "@playwright/test";
 import {randomUUID} from "node:crypto";
 import {fixtureHttp,type SharedFixture} from "./nativeSharedClients";
 
@@ -7,7 +7,8 @@ export async function webSignIn(page:Page,account:{login:string;password:string}
   await page.getByLabel("Identifiant",{exact:true}).fill(account.login);
   await page.getByLabel("Mot de passe",{exact:true}).fill(account.password);
   await page.getByRole("button",{name:"Se connecter",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Vos projets"})).toBeVisible();
+  // The page asked before signing in opens again; the account menu proves the session.
+  await expect(page.getByRole("button",{name:/^Compte de /})).toBeVisible();
 }
 
 export async function webSignOut(page:Page){
@@ -22,6 +23,7 @@ export async function webOpenProjectByName(page:Page,fixture:SharedFixture,token
   expect(catalog.status).toBe(200);
   const entry=catalog.data.spaces.find((space:any)=>space.spaceId===fixture.spaceId);
   expect(entry,"fixture project listed in the account catalog").toBeTruthy();
+  await page.getByRole("link",{name:"Tous les projets",exact:true}).click();
   await page.locator(".project-list").getByRole("button",{name:entry.name}).click();
   await expect(page.getByRole("heading",{name:"Fichiers",exact:true})).toBeVisible();
   return entry as {name:string;access:string};
@@ -115,4 +117,25 @@ export async function webRestrictedAccess(page:Page,fixture:SharedFixture,remote
     await expect(page.getByRole("region",{name:"Historique publié",exact:true})).toHaveCount(0);
     console.log("[shared-native] restricted account: metadata denied, stale views removed");
   }finally{await fixtureHttp(fixture,"POST","/v3/auth/logout",{},token);}
+}
+
+/**
+ * Restricted-account path without the CLI: a Tauri Desktop signs in by device
+ * approval only to apply the path policy through its native remote. Opt-in with
+ * LAYRS_NATIVE_WEB_RESTRICTED=1 on a machine able to run the Desktop runtime.
+ */
+export async function webRestrictedAccessWithDesktop(page:Page,fixture:SharedFixture,testInfo:TestInfo){
+  const {launchNativeTauriDesktop}=await import("./nativeTauriDesktop");
+  const desktop=await launchNativeTauriDesktop(testInfo,{visual:false});
+  const remote=<T=any>(action:Record<string,unknown>)=>desktop.invoke<T>("native_remote",{root:fixture.workspaceRoot,request:{origin:fixture.origin,caPem:fixture.caPem,action}});
+  let authorized=false;
+  try{
+    const login=await remote<{userCode:string}>({action:"startLogin"});
+    const approval=await fixtureHttp(fixture,"POST","/v3/auth/devices/approve",{userCode:login.userCode});
+    expect(approval.status).toBe(204);
+    await expect.poll(async()=>{authorized=(await remote<{status:string}>({action:"pollLogin"})).status==="authorized";return authorized;},{intervals:[5500],timeout:25_000}).toBe(true);
+    await webRestrictedAccess(page,fixture,remote);
+  }finally{
+    try{if(authorized)await remote({action:"logout"});}finally{await desktop.dispose();}
+  }
 }

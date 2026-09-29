@@ -2,14 +2,16 @@ import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { seedNativeProof } from "./fixtures/nativeProofSeed";
 import {fixtureHttp,sharedNativeClients} from "./fixtures/nativeSharedClients";
-import {webOpenProjectByName,webReleaseGate,webRestrictedAccess,webSignIn,webSignOut} from "./fixtures/nativeWebAccess";
+import {webOpenProjectByName,webReleaseGate,webRestrictedAccess,webRestrictedAccessWithDesktop,webSignIn,webSignOut} from "./fixtures/nativeWebAccess";
 
 // Non-sensitive preferences the Web may keep; everything else (tokens, drafts
 // left behind, project data) must be absent from browser storage.
 const allowedStorageKeys=["layrs.appearance.v1","layrs.shell.v1"];
 
 test("Web uses the real native identity, project, review, proof and account services", async ({ page },testInfo) => {
-  test.setTimeout(240_000);
+  // The restricted-account path needs a Desktop runtime: shared clients, or the explicit opt-in below.
+  const restrictedWithDesktop=process.env.LAYRS_NATIVE_WEB_RESTRICTED==="1";
+  test.setTimeout(restrictedWithDesktop?600_000:240_000);
   page.setDefaultTimeout(15_000);
   if (!process.env.LAYRS_NATIVE_UI_FIXTURE) throw new Error("Native TLS fixture is mandatory");
   const fixture = JSON.parse(await readFile(process.env.LAYRS_NATIVE_UI_FIXTURE, "utf8"));
@@ -183,6 +185,7 @@ test("Web uses the real native identity, project, review, proof and account serv
       expect(value.includes(secret), `storage ${key} holds session or project data`).toBe(false);
   }
   if(shared)await webRestrictedAccess(page,fixture,shared.remote);
+  else if(restrictedWithDesktop)await webRestrictedAccessWithDesktop(page,fixture,testInfo);
   await webSignOut(page);
   await page.reload();
   await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
