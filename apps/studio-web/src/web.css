@@ -150,3 +150,30 @@
 .login__card > .layrs-button {
   width: 100%;
 }
+
+.projects-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.projects-note {
+  color: var(--text-muted);
+}
+
+.projects-search__icon {
+  margin-right: var(--space-3);
+  color: var(--text-subtle);
+}
+
+.projects-advanced {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.projects-advanced summary {
+  padding: var(--space-3) var(--space-5);
+  color: var(--text-muted);
+  cursor: pointer;
+}

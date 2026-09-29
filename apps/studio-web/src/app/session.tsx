@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
  * was requested in, so late answers never leak into another account.
  */
 
-export type Principal = { principalId: string; displayName: string; kind: string };
+export type Principal = { principalId: string; displayName: string; kind: string; instanceAdministrator: boolean };
 
 export type ApiOptions = {
   anonymous?: boolean;
@@ -124,13 +124,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       secret.current = session.access_token;
       generationRef.current++;
       setGeneration(generationRef.current);
-      let identity: Principal = { principalId: session.principal_id, displayName: "", kind: "" };
+      let identity: Principal = { principalId: session.principal_id, displayName: "", kind: "", instanceAdministrator: false };
       try {
         const who = await api<Record<string, unknown>>("/v3/auth/whoami");
         identity = {
           principalId: String(who.principal_id ?? who.principalId ?? session.principal_id),
           displayName: String(who.display_name ?? who.displayName ?? ""),
           kind: String(who.kind ?? ""),
+          instanceAdministrator: who.instance_administrator === true,
         };
       } catch {
         // The profile is only for display; the session stays valid without it.

@@ -108,7 +108,7 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
   const [paletteOpen, setPaletteOpen] = useState(false);
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   useCommandPaletteShortcut(openPalette);
-  const admin = principal?.kind === "bootstrap_admin";
+  const admin = principal?.instanceAdministrator === true;
   const projects = knownProjects();
 
   const allCommands = useMemo<Command[]>(
