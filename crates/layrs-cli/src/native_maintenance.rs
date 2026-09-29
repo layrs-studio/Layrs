@@ -1,4 +1,4 @@
-use crate::{engine::CliError, render::Rendered};
+use crate::{error::CliError, render::Rendered};
 use layrs_store_local::scm_v1::compaction::{compact_metadata, resume_metadata_compaction};
 use std::path::Path;
 

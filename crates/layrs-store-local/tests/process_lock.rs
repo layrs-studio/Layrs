@@ -10,7 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
-use layrs_store_local::{LocalStore, LocalStoreConfig, SessionMode, StoreError, fsck_existing};
+use layrs_core::scm::StoreId;
+use layrs_store_local::StoreError;
+use layrs_store_local::scm_v1::{NativeStoreError, NativeStoreLayout, init, open, open_exclusive};
 
 const CHILD_MARKER: &str = "--layrs-lock-child";
 const HOLD_SHARED: &str = "hold-shared";
@@ -42,7 +44,7 @@ fn dispatch() -> FixtureResult {
                 hold_shared_lock(&root, &ready, &release)
             }
             PROBE_FSCK => {
-                fsck_existing(&LocalStoreConfig::new(root))?;
+                drop(open(&root)?);
                 Ok(())
             }
             _ => Err(io::Error::new(
@@ -58,10 +60,11 @@ fn dispatch() -> FixtureResult {
 
 fn verify_process_lock_matrix() -> FixtureResult {
     let root = unique_test_dir();
-    let store = LocalStore::init(LocalStoreConfig::new(&root))?;
-    verify_shared_shared_and_shared_exclusive(&store)?;
-    verify_shared_open_with_read_only_lock(&store)?;
+    let store = init(&root, StoreId::parse("store:process-lock")?)?;
+    let layout = store.layout().clone();
     drop(store);
+    verify_shared_shared_and_shared_exclusive(&layout)?;
+    verify_shared_open_with_read_only_lock(&layout)?;
     fs::remove_dir_all(&root)?;
 
     println!(
@@ -70,10 +73,10 @@ fn verify_process_lock_matrix() -> FixtureResult {
     Ok(())
 }
 
-fn verify_shared_shared_and_shared_exclusive(store: &LocalStore) -> FixtureResult {
-    let ready = store.layout().tmp_dir.join("child-shared-ready");
-    let release = store.layout().tmp_dir.join("child-shared-release");
-    let mut child = spawn_child(HOLD_SHARED, &store.layout().root, Some((&ready, &release)))?;
+fn verify_shared_shared_and_shared_exclusive(layout: &NativeStoreLayout) -> FixtureResult {
+    let ready = layout.root().join("child-shared-ready");
+    let release = layout.root().join("child-shared-release");
+    let mut child = spawn_child(HOLD_SHARED, layout.root(), Some((&ready, &release)))?;
     if !wait_for_path(&ready, Duration::from_secs(10)) {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -82,10 +85,13 @@ fn verify_shared_shared_and_shared_exclusive(store: &LocalStore) -> FixtureResul
         .into());
     }
 
-    let parent_shared = store.session(SessionMode::Shared)?;
+    let parent_shared = open(layout.root())?;
     drop(parent_shared);
-    let contention = store.session(SessionMode::Exclusive);
-    let exclusive_was_busy = matches!(contention, Err(StoreError::LockBusy(_)));
+    let contention = open_exclusive(layout.root());
+    let exclusive_was_busy = matches!(
+        contention,
+        Err(NativeStoreError::Lock(StoreError::LockBusy(_)))
+    );
     drop(contention);
 
     fs::write(&release, b"release")?;
@@ -100,15 +106,15 @@ fn verify_shared_shared_and_shared_exclusive(store: &LocalStore) -> FixtureResul
 }
 
 #[cfg(not(windows))]
-fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
-    let lock_path = store.layout().lock_path();
+fn verify_shared_open_with_read_only_lock(layout: &NativeStoreLayout) -> FixtureResult {
+    let lock_path = layout.lock_path();
     let original_permissions = fs::metadata(&lock_path)?.permissions();
     let mut read_only = original_permissions.clone();
     read_only.set_readonly(true);
     fs::set_permissions(&lock_path, read_only)?;
 
     let probe_result = (|| -> FixtureResult<ExitStatus> {
-        let mut child = spawn_child(PROBE_FSCK, &store.layout().root, None)?;
+        let mut child = spawn_child(PROBE_FSCK, layout.root(), None)?;
         Ok(child.wait()?)
     })();
     fs::set_permissions(&lock_path, original_permissions)?;
@@ -123,12 +129,12 @@ fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
 }
 
 #[cfg(windows)]
-fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
-    let lock_path = store.layout().lock_path();
+fn verify_shared_open_with_read_only_lock(layout: &NativeStoreLayout) -> FixtureResult {
+    let lock_path = layout.lock_path();
     let sid = current_user_sid()?;
     let grant = format!("*{sid}:(R)");
     let restricted = Command::new("icacls")
-        .arg(&lock_path)
+        .arg(lock_path)
         .args(["/inheritance:r", "/grant:r"])
         .arg(grant)
         .stdout(Stdio::null())
@@ -142,11 +148,11 @@ fn verify_shared_open_with_read_only_lock(store: &LocalStore) -> FixtureResult {
     }
 
     let probe_result = (|| -> FixtureResult<ExitStatus> {
-        let mut child = spawn_child(PROBE_FSCK, &store.layout().root, None)?;
+        let mut child = spawn_child(PROBE_FSCK, layout.root(), None)?;
         Ok(child.wait()?)
     })();
     let restored = Command::new("icacls")
-        .arg(&lock_path)
+        .arg(lock_path)
         .arg("/reset")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -199,7 +205,8 @@ fn spawn_child(
 }
 
 fn hold_shared_lock(root: &Path, ready: &Path, release: &Path) -> FixtureResult {
-    let lock_path = LocalStoreConfig::new(root).layout().lock_path();
+    let layout = NativeStoreLayout::new(root)?;
+    let lock_path = layout.lock_path();
     let file = OpenOptions::new().read(true).open(lock_path)?;
     FileExt::try_lock_shared(&file)?;
     fs::write(ready, b"ready")?;

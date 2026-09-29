@@ -8,7 +8,6 @@ use layrs_store_local::scm_v1::{
     FormatMarker, FormatState, NativeRecovery, NativeStoreInspection, NativeStoreLayout, init,
     inspect, open, open_audit, open_exclusive,
 };
-use layrs_store_local::{LocalStore, LocalStoreConfig};
 use rusqlite::Connection;
 
 #[test]
@@ -255,9 +254,14 @@ fn initializing_resume_never_replaces_a_partial_final_database() {
 }
 
 #[test]
-fn current_development_sqlite_is_refused_without_mutation() {
+fn legacy_development_sqlite_is_refused_without_mutation() {
     let root = unique_root("legacy-current");
-    LocalStore::init(LocalStoreConfig::new(&root)).unwrap();
+    let metadata = root.join("metadata");
+    fs::create_dir_all(&metadata).unwrap();
+    rusqlite::Connection::open(metadata.join("layrs.sqlite3"))
+        .unwrap()
+        .execute_batch("CREATE TABLE spaces (space_id TEXT PRIMARY KEY, name TEXT NOT NULL);")
+        .unwrap();
     let before = snapshot(&root);
 
     assert!(matches!(

@@ -1,5 +1,4 @@
-//! Native CLI safety. Historical linked Layers, clear-steps and compaction
-//! remain explicit old-engine contracts in legacy_local_data_safety.
+//! Native CLI data-safety contracts.
 mod support;
 use serde_json::Value;
 use std::{
@@ -228,8 +227,8 @@ fn layer_creation_neither_switches_nor_propagates_later_parent_steps() {
     s.pass();
 }
 #[test]
-fn unsupported_legacy_mutations_preserve_native_files_and_history() {
-    let s = empty("native-refuse-legacy");
+fn unsupported_layer_mutations_preserve_files_and_history() {
+    let s = empty("native-refuse-unsupported");
     fs::write(s.space.join("keep"), b"preserve\n").unwrap();
     step(&s);
     cli(&s, &["layer", "create", "topic"]);
@@ -241,7 +240,7 @@ fn unsupported_legacy_mutations_preserve_native_files_and_history() {
         vec!["--json", "layer", "disconnect", "topic", "--yes"],
         vec!["--json", "layer", "delete", "topic", "--yes"],
     ] {
-        assert!(run_err(&s, args).contains("not yet connected"));
+        assert!(run_err(&s, args).contains("unknown layer command"));
         assert_working_tree_snapshot(&s.space, &before);
         assert_eq!(cli(&s, &["timeline"]), timeline);
         assert_eq!(cli(&s, &["layers"]), layers);

@@ -17,11 +17,7 @@ layrs-sync = { path = "../layrs-sync" }
 reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_jcs = "0.1"
 fs2 = "0.4"
-layrs-lens-code = { path = "../layrs-lens-code" }
-layrs-lens-image = { path = "../layrs-lens-image" }
-layrs-lens-raw = { path = "../layrs-lens-raw" }
 layrs-lens-sdk = { path = "../layrs-lens-sdk" }
-layrs-lens-text = { path = "../layrs-lens-text" }
 layrs-store-local = { path = "../layrs-store-local" }
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 serde = { workspace = true }

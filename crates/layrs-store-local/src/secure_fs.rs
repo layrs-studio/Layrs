@@ -40,7 +40,6 @@ pub(crate) struct PinnedFile {
     file: File,
     parent: File,
     parent_identity: FileIdentity,
-    name: std::ffi::OsString,
     identity: FileIdentity,
 }
 
@@ -225,7 +224,6 @@ impl PinnedDirectory {
             file,
             parent: self.file.try_clone()?,
             parent_identity: self.identity,
-            name: name.to_os_string(),
         })
     }
 
@@ -323,25 +321,6 @@ impl PinnedFile {
 
     pub(crate) fn unlink(&self) -> io::Result<()> {
         platform::unlink_file(self)
-    }
-
-    pub(crate) fn remove_replacement(&self) -> io::Result<()> {
-        let replacement = match platform::open_file_at(&self.parent, &self.name) {
-            Ok(file) => PinnedFile {
-                identity: file_identity(&file)?,
-                file,
-                parent: self.parent.try_clone()?,
-                parent_identity: self.parent_identity,
-                name: self.name.clone(),
-            },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error),
-        };
-        if replacement.identity != self.identity {
-            replacement.unlink()?;
-            replacement.sync_parent()?;
-        }
-        Ok(())
     }
 
     pub(crate) fn sync_parent(&self) -> io::Result<()> {

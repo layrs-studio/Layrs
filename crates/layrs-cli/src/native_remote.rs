@@ -1,4 +1,4 @@
-use crate::{args::Cli, engine::CliError, render::Rendered};
+use crate::{args::Cli, error::CliError, render::Rendered};
 use layrs_client_core::native_scm::{
     NativeRemoteAction as Action, NativeRemoteRequest, execute_remote,
 };

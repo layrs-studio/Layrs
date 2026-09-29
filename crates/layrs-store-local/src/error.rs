@@ -40,15 +40,6 @@ pub enum StoreError {
     CorruptMetadata(String),
 }
 
-impl StoreError {
-    pub(crate) fn into_io_error(self) -> io::Error {
-        match self {
-            Self::Io(error) => error,
-            other => io::Error::other(other),
-        }
-    }
-}
-
 impl fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

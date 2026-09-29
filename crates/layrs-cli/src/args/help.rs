@@ -15,6 +15,7 @@ Commands:
   layrs revert STEP_OR_REFERENCE [--mainline PARENT] [--preview]
   layrs squash FIRST_STEP [--preview]
   layrs remote login | whoami | logout --endpoint HTTPS_URL [--ca FILE]
+    `layrs login`, `layrs whoami` and `layrs logout` are aliases.
   layrs remote provision WORKSPACE_SLUG SPACE_SLUG --endpoint HTTPS_URL
   layrs remote publish [--integrate] | receive --endpoint HTTPS_URL
   layrs remote publish-candidates --endpoint HTTPS_URL
@@ -82,21 +83,10 @@ Commands:
   layrs release create VERSION
   layrs diff [STEP_ID] [--stat] [--name-only] [--window START:LIMIT] [--wrap|--no-wrap]
   layrs timeline [--limit N]
-  layrs publish [--workspace WORKSPACE_ID]
-  layrs sync [--workspace WORKSPACE_ID]
-  layrs receive
   layrs status
-  layrs login [--endpoint URL]
-  layrs whoami
-  layrs logout
-  layrs spaces
   layrs layers
   layrs layer use NAME_OR_ID
   layrs layer create NAME
-  layrs layer delete NAME_OR_ID [--yes]
-  layrs layer disconnect NAME_OR_ID [--yes]
-  layrs layer clear-steps NAME_OR_ID [--yes]
-  layrs weave parent [--preview]
   layrs weave SOURCE --target TARGET [--preview]
   layrs weave status
   layrs weave conflicts
@@ -105,20 +95,15 @@ Commands:
   layrs resolve-block CONFLICT BLOCK --layer LAYER --term TERM [--preview]
   layrs resolve-block CONFLICT BLOCK --layer LAYER --file FILE --sources TERM,... [--preview]
     Apply a prior preview with --expected-operation OP --expected-step STEP.
-  layrs weave resolve PATH [--block N] --ours|--theirs|--base|--both-ours-first|--both-theirs-first|--manual-text FILE_OR_STDIN|--file FILE
   layrs weave continue
   layrs weave abort
   layrs conflict list
   layrs conflict status
-  layrs conflict resolve
-  layrs conflict resolve METHOD -f PATH --block BLOCK_ID
   layrs conflict continue
   layrs conflict abort
 
-Native checkouts use remote commands for HTTPS collaboration.
-Legacy-only commands (publish/sync/login/spaces/layer delete/disconnect/clear-steps,
-weave resolve/continue/abort and conflict aliases) refuse unsupported native actions.
-Use resolve-term/resolve-file and undo with immutable native conflict history.
+Remote commands handle HTTPS collaboration.
+Use resolve-term/resolve-file/resolve-block and undo with immutable conflict history.
 
 Global flags:
   --space PATH     Use a local Layrs space at PATH instead of discovering from cwd.

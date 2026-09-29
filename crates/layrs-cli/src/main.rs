@@ -1,7 +1,6 @@
 use layrs_cli::args::{Cli, CliCommand, parse_args, usage};
-use layrs_cli::engine::{CliError, ClientCoreEngine, DiffRequest, EngineContext, ExitCode};
+use layrs_cli::error::{CliError, ExitCode};
 use layrs_cli::render::{self, Rendered};
-use std::io::IsTerminal;
 
 fn main() {
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -56,151 +55,9 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
             data: serde_json::json!({ "usage": usage() }),
         });
     }
-
-    let json_output = cli.globals.json;
-    if let Some(result) = layrs_cli::native::try_run(&cli) {
-        return result;
-    }
-    let color = color_enabled(cli.globals.no_color, json_output);
-    let engine = ClientCoreEngine::new(EngineContext {
-        space: cli.globals.space,
-    });
-
-    let rendered = match cli.command {
-        CliCommand::Help => unreachable!("handled above"),
-        CliCommand::Remote { .. } => unreachable!("native remote handled above"),
-        CliCommand::Partial { .. } => unreachable!("partial checkout handled above"),
-        CliCommand::LocalIdentity { .. } => {
-            return Err(CliError::runtime(
-                "This command requires a native Layrs checkout.",
-            ));
-        }
-        CliCommand::Rewrite { .. } | CliCommand::ResolveTerm { .. } => {
-            return Err(CliError::runtime(
-                "This command requires a native Layrs checkout.",
-            ));
-        }
-        CliCommand::History { .. }
-        | CliCommand::OperationHistory { .. }
-        | CliCommand::ResolveFile { .. }
-        | CliCommand::ResolveBlock { .. }
-        | CliCommand::ConflictVariant { .. }
-        | CliCommand::Doctor
-        | CliCommand::Compact { resume: true } => {
-            return Err(CliError::runtime(
-                "This command requires a native Layrs checkout.",
-            ));
-        }
-        CliCommand::GitImport { .. }
-        | CliCommand::GitExport { .. }
-        | CliCommand::GitScanCache { .. }
-        | CliCommand::GitImportCache { .. } => {
-            return Err(CliError::runtime(
-                "Initialize or open a native Layrs project before importing or exporting Git.",
-            ));
-        }
-        CliCommand::MarkerShow { .. }
-        | CliCommand::Restore { .. }
-        | CliCommand::RestoreView { .. }
-        | CliCommand::Undo
-        | CliCommand::Redo { .. }
-        | CliCommand::Recover
-        | CliCommand::Markers
-        | CliCommand::MarkerCreate { .. }
-        | CliCommand::MarkerHide { .. }
-        | CliCommand::Releases
-        | CliCommand::ReleaseCreate { .. } => {
-            return Err(CliError::runtime(
-                "This command requires a native Layrs checkout.",
-            ));
-        }
-        CliCommand::Init { name, path } => {
-            render::init(engine.init_local_space(&name, path.as_deref())?)
-        }
-        CliCommand::Step => render::step(engine.save_local_step()?),
-        CliCommand::Compact { resume: false } => render::compact(engine.compact()?),
-        CliCommand::Diff {
-            step_id,
-            stat,
-            name_only,
-            window,
-            wrap,
-        } => render::diff(
-            engine.diff(DiffRequest {
-                step_id: step_id.as_deref(),
-                stat,
-                name_only,
-                window: window.as_ref(),
-                wrap,
-            })?,
-            color,
-        ),
-        CliCommand::Timeline { limit } => render::timeline(engine.timeline(limit)?),
-        CliCommand::Publish { workspace } => render::publish(engine.publish(workspace.as_deref())?),
-        CliCommand::Sync { workspace } => render::sync(engine.sync(workspace.as_deref())?),
-        CliCommand::Receive => render::receive(engine.receive()?),
-        CliCommand::Status => render::status(engine.status()?),
-        CliCommand::Login { endpoint } => render::login(engine.login(endpoint.as_deref())?),
-        CliCommand::Whoami => render::whoami(engine.whoami()?),
-        CliCommand::Logout => render::logout(engine.logout()?),
-        CliCommand::Spaces => render::spaces(engine.spaces()?),
-        CliCommand::Layers => render::layers(engine.layers()?),
-        CliCommand::LayerUse { name_or_id } => {
-            render::layer(engine.layer_use(&name_or_id)?, "Using")
-        }
-        CliCommand::LayerCreate { name } => render::layer(engine.layer_create(&name)?, "Created"),
-        CliCommand::LayerDelete { name_or_id, yes } => {
-            render::layer_deleted(engine.layer_delete(&name_or_id, yes)?)
-        }
-        CliCommand::LayerDisconnect { name_or_id, yes } => {
-            render::layer_action(engine.layer_disconnect(&name_or_id, yes)?)
-        }
-        CliCommand::LayerClearSteps { name_or_id, yes } => {
-            render::layer_action(engine.layer_clear_steps(&name_or_id, yes)?)
-        }
-        CliCommand::Weave {
-            source,
-            target,
-            preview,
-        } => render::weave(engine.weave(&source, &target, preview)?),
-        CliCommand::WeaveParent { preview } => render::weave(engine.weave_parent(preview)?),
-        CliCommand::WeaveStatus => render::weave_status(engine.weave_status()?),
-        CliCommand::WeaveConflicts => render::weave_conflicts(engine.weave_conflicts()?),
-        CliCommand::WeaveResolve {
-            path,
-            resolution,
-            file,
-        } => render::weave(engine.weave_resolve(&path, &resolution, file.as_deref())?),
-        CliCommand::WeaveContinue => render::weave(engine.weave_continue()?),
-        CliCommand::WeaveAbort => render::weave(engine.weave_abort()?),
-        CliCommand::ConflictList => render::conflict_list(engine.conflict_list()?),
-        CliCommand::ConflictStatus => render::conflict_status(engine.conflict_status()?),
-        CliCommand::ConflictResolve {
-            method: Some(method),
-            path: Some(path),
-            block,
-        } => render::weave(engine.conflict_resolve(method, &path, block.as_deref())?),
-        CliCommand::ConflictResolve { method: None, .. } => {
-            if json_output {
-                return Err(CliError::runtime(
-                    "layrs conflict resolve interactive mode does not support --json.",
-                ));
-            }
-            render::conflict_interactive(engine.conflict_resolve_interactive()?)
-        }
-        CliCommand::ConflictResolve { .. } => {
-            return Err(CliError::runtime(
-                "layrs conflict resolve METHOD requires -f PATH.",
-            ));
-        }
-        CliCommand::ConflictContinue => render::weave(engine.conflict_continue()?),
-        CliCommand::ConflictAbort => render::weave(engine.conflict_abort()?),
-    }
-    .map_err(CliError::runtime)?;
-
-    Ok(rendered)
-}
-
-fn color_enabled(no_color: bool, json: bool) -> bool {
-    !no_color && !json && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+    layrs_cli::native::try_run(&cli).unwrap_or_else(|| {
+        Err(CliError::runtime(
+            "No Layrs project found here. Run `layrs init NAME` to create one.",
+        ))
+    })
 }

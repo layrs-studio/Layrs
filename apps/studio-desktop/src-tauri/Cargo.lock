@@ -1718,11 +1718,7 @@ dependencies = [
  "fs2",
  "layrs-core",
  "layrs-graph",
- "layrs-lens-code",
- "layrs-lens-image",
- "layrs-lens-raw",
  "layrs-lens-sdk",
- "layrs-lens-text",
  "layrs-store",
  "layrs-store-local",
  "layrs-sync",
@@ -1752,18 +1748,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "layrs-gates"
-version = "0.0.0"
-dependencies = [
- "layrs-proof",
-]
-
-[[package]]
 name = "layrs-graph"
 version = "0.0.0"
 dependencies = [
  "layrs-core",
- "serde",
 ]
 
 [[package]]
@@ -1772,20 +1760,6 @@ version = "0.0.0"
 dependencies = [
  "layrs-lens-sdk",
  "layrs-lens-text",
-]
-
-[[package]]
-name = "layrs-lens-image"
-version = "0.0.0"
-dependencies = [
- "layrs-lens-sdk",
-]
-
-[[package]]
-name = "layrs-lens-raw"
-version = "0.0.0"
-dependencies = [
- "layrs-lens-sdk",
 ]
 
 [[package]]
@@ -1803,16 +1777,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "layrs-proof"
-version = "0.0.0"
-
-[[package]]
 name = "layrs-store"
 version = "0.0.0"
 dependencies = [
  "blake3",
  "layrs-core",
- "layrs-graph",
  "layrs-sync",
  "serde",
  "serde_json",
@@ -1878,7 +1847,6 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "layrs-core",
- "layrs-gates",
  "layrs-graph",
  "layrs-lens-code",
  "layrs-lens-sdk",

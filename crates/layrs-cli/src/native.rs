@@ -1,6 +1,6 @@
 use crate::{
     args::{Cli, CliCommand},
-    engine::CliError,
+    error::CliError,
     render::Rendered,
 };
 use layrs_client_core::native_scm::{CapturePlan, NativeWorkspace};
@@ -136,14 +136,7 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
             })
         })());
     }
-    if matches!(
-        cli.command,
-        CliCommand::Login { .. }
-            | CliCommand::Logout
-            | CliCommand::Whoami
-            | CliCommand::Spaces
-            | CliCommand::Help
-    ) {
+    if matches!(cli.command, CliCommand::Help) {
         return None;
     }
     let root = match cli
@@ -188,7 +181,7 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
             Ok(Rendered { human, data })
         })());
     }
-    // Existing legacy metadata still uses the legacy engine; no format conversion.
+    // Without a native Store marker there is no project to operate on.
     let native = root
         .ancestors()
         .find(|p| p.join(".layrs").exists())
@@ -196,8 +189,8 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     if !native {
         return None;
     }
-    // Route legacy stores to their original compactor. Native maintenance must
-    // still run before opening a Store fenced by an interrupted compaction.
+    // Maintenance must run before opening a Store fenced by an interrupted
+    // compaction.
     if let CliCommand::Compact { resume } = &cli.command {
         return Some(maintenance::compact(&root, *resume));
     }

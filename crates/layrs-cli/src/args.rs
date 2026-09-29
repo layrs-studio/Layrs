@@ -156,20 +156,7 @@ pub enum CliCommand {
     Timeline {
         limit: Option<u32>,
     },
-    Publish {
-        workspace: Option<String>,
-    },
-    Sync {
-        workspace: Option<String>,
-    },
-    Receive,
     Status,
-    Login {
-        endpoint: Option<String>,
-    },
-    Whoami,
-    Logout,
-    Spaces,
     Layers,
     LayerUse {
         name_or_id: String,
@@ -177,63 +164,19 @@ pub enum CliCommand {
     LayerCreate {
         name: String,
     },
-    LayerDelete {
-        name_or_id: String,
-        yes: bool,
-    },
-    LayerDisconnect {
-        name_or_id: String,
-        yes: bool,
-    },
-    LayerClearSteps {
-        name_or_id: String,
-        yes: bool,
-    },
     Weave {
         source: String,
         target: String,
         preview: bool,
     },
-    WeaveParent {
-        preview: bool,
-    },
     WeaveStatus,
     WeaveConflicts,
-    WeaveResolve {
-        path: String,
-        resolution: String,
-        file: Option<PathBuf>,
-    },
     WeaveContinue,
     WeaveAbort,
     ConflictList,
     ConflictStatus,
-    ConflictResolve {
-        method: Option<ConflictResolveMethod>,
-        path: Option<String>,
-        block: Option<String>,
-    },
     ConflictContinue,
     ConflictAbort,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictResolveMethod {
-    Existing,
-    Incoming,
-    Both,
-    Manual,
-}
-
-impl ConflictResolveMethod {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Existing => "existing",
-            Self::Incoming => "incoming",
-            Self::Both => "both",
-            Self::Manual => "manual",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -490,14 +433,11 @@ where
         },
         "diff" => parse_diff(args)?,
         "timeline" => parse_timeline(args)?,
-        "publish" => parse_publish(args)?,
-        "sync" => parse_sync(args)?,
-        "receive" => parse_no_extra(args, CliCommand::Receive)?,
         "status" => parse_no_extra(args, CliCommand::Status)?,
-        "login" => parse_login(args)?,
-        "whoami" => parse_no_extra(args, CliCommand::Whoami)?,
-        "logout" => parse_no_extra(args, CliCommand::Logout)?,
-        "spaces" => parse_no_extra(args, CliCommand::Spaces)?,
+        // Account commands are aliases of their `layrs remote` form.
+        "login" | "whoami" | "logout" => CliCommand::Remote {
+            args: std::iter::once(command_name.clone()).chain(args).collect(),
+        },
         "layers" => parse_no_extra(args, CliCommand::Layers)?,
         "layer" => parse_layer(args)?,
         "weave" => parse_weave(args)?,
@@ -518,7 +458,7 @@ pub use help::usage;
 fn parse_conflict(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     let Some(subcommand) = args.first().cloned() else {
         return Err(CliParseError::new(
-            "usage: layrs conflict list | status | resolve [METHOD -f PATH --block BLOCK_ID] | continue | abort",
+            "usage: layrs conflict list | status | continue | abort",
         ));
     };
     args.remove(0);
@@ -526,46 +466,10 @@ fn parse_conflict(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     match subcommand.as_str() {
         "list" => parse_no_extra(args, CliCommand::ConflictList),
         "status" => parse_no_extra(args, CliCommand::ConflictStatus),
-        "resolve" => parse_conflict_resolve(args),
         "continue" => parse_no_extra(args, CliCommand::ConflictContinue),
         "abort" => parse_no_extra(args, CliCommand::ConflictAbort),
         _ => Err(CliParseError::new(format!(
-            "unknown conflict command `{subcommand}`; expected list, status, resolve, continue, or abort"
-        ))),
-    }
-}
-
-fn parse_conflict_resolve(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
-    if args.is_empty() {
-        return Ok(CliCommand::ConflictResolve {
-            method: None,
-            path: None,
-            block: None,
-        });
-    }
-
-    let method = parse_conflict_resolve_method(&args.remove(0))?;
-    let path = take_string_option_any(&mut args, &["-f", "--file"])?
-        .ok_or_else(|| CliParseError::new("layrs conflict resolve METHOD requires -f PATH."))?;
-    let block = take_string_option(&mut args, "--block")?;
-    parse_no_extra(
-        args,
-        CliCommand::ConflictResolve {
-            method: Some(method),
-            path: Some(path),
-            block,
-        },
-    )
-}
-
-fn parse_conflict_resolve_method(value: &str) -> Result<ConflictResolveMethod, CliParseError> {
-    match value {
-        "existing" => Ok(ConflictResolveMethod::Existing),
-        "incoming" => Ok(ConflictResolveMethod::Incoming),
-        "both" => Ok(ConflictResolveMethod::Both),
-        "manual" => Ok(ConflictResolveMethod::Manual),
-        _ => Err(CliParseError::new(format!(
-            "unknown conflict resolve method `{value}`; expected existing, incoming, both, or manual"
+            "unknown conflict command `{subcommand}`; expected list, status, continue, or abort"
         ))),
     }
 }
@@ -573,7 +477,7 @@ fn parse_conflict_resolve_method(value: &str) -> Result<ConflictResolveMethod, C
 fn parse_weave(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     let Some(first) = args.first().cloned() else {
         return Err(CliParseError::new(
-            "usage: layrs weave parent [--preview] | SOURCE --target TARGET [--preview] | status | conflicts | resolve PATH [--block N] --ours|--theirs|--base|--both-ours-first|--both-theirs-first|--manual-text FILE_OR_STDIN|--file FILE | continue | abort",
+            "usage: layrs weave SOURCE --target TARGET [--preview] | status | conflicts | continue | abort",
         ));
     };
     args.remove(0);
@@ -583,11 +487,6 @@ fn parse_weave(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
         "conflicts" => parse_no_extra(args, CliCommand::WeaveConflicts),
         "continue" => parse_no_extra(args, CliCommand::WeaveContinue),
         "abort" => parse_no_extra(args, CliCommand::WeaveAbort),
-        "resolve" => parse_weave_resolve(args),
-        "parent" => {
-            let preview = take_bool_flag(&mut args, "--preview")?;
-            parse_no_extra(args, CliCommand::WeaveParent { preview })
-        }
         _ => {
             let preview = take_bool_flag(&mut args, "--preview")?;
             let target = take_string_option(&mut args, "--target")?
@@ -602,70 +501,6 @@ fn parse_weave(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
             )
         }
     }
-}
-
-fn parse_weave_resolve(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
-    let block = take_string_option(&mut args, "--block")?;
-    let file = take_path_option(&mut args, "--file")?;
-    let manual_text = take_path_option(&mut args, "--manual-text")?;
-    let ours = take_bool_flag(&mut args, "--ours")?;
-    let theirs = take_bool_flag(&mut args, "--theirs")?;
-    let base = take_bool_flag(&mut args, "--base")?;
-    let both_ours_first = take_bool_flag(&mut args, "--both-ours-first")?;
-    let both_theirs_first = take_bool_flag(&mut args, "--both-theirs-first")?;
-    let selected = [
-        ours,
-        theirs,
-        base,
-        both_ours_first,
-        both_theirs_first,
-        file.is_some(),
-        manual_text.is_some(),
-    ]
-    .into_iter()
-    .filter(|selected| *selected)
-    .count();
-    if selected != 1 {
-        return Err(CliParseError::new(
-            "layrs weave resolve needs exactly one of --ours, --theirs, --base, --both-ours-first, --both-theirs-first, --manual-text FILE, or --file FILE.",
-        ));
-    }
-    if block.is_some() && file.is_some() {
-        return Err(CliParseError::new(
-            "layrs weave resolve --block cannot be combined with --file.",
-        ));
-    }
-    if block.is_none() && manual_text.is_some() {
-        return Err(CliParseError::new(
-            "layrs weave resolve --manual-text requires --block.",
-        ));
-    }
-    let path = take_required_positional(args, "PATH", "weave resolve")?;
-    let choice = if ours {
-        "ours"
-    } else if theirs {
-        "theirs"
-    } else if base {
-        "base"
-    } else if both_ours_first {
-        "both_ours_then_theirs"
-    } else if both_theirs_first {
-        "both_theirs_then_ours"
-    } else if manual_text.is_some() {
-        "manual"
-    } else {
-        "file"
-    }
-    .to_string();
-    let replacement = file.or(manual_text);
-    let resolution = block
-        .map(|block| format!("block:{block}:{choice}"))
-        .unwrap_or(choice);
-    Ok(CliCommand::WeaveResolve {
-        path,
-        resolution,
-        file: replacement,
-    })
 }
 
 fn parse_init(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
@@ -699,25 +534,10 @@ fn parse_timeline(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     parse_no_extra(args, CliCommand::Timeline { limit })
 }
 
-fn parse_publish(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
-    let workspace = take_string_option(&mut args, "--workspace")?;
-    parse_no_extra(args, CliCommand::Publish { workspace })
-}
-
-fn parse_sync(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
-    let workspace = take_string_option(&mut args, "--workspace")?;
-    parse_no_extra(args, CliCommand::Sync { workspace })
-}
-
-fn parse_login(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
-    let endpoint = take_string_option(&mut args, "--endpoint")?;
-    parse_no_extra(args, CliCommand::Login { endpoint })
-}
-
 fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
     let Some(subcommand) = args.first().cloned() else {
         return Err(CliParseError::new(
-            "usage: layrs layer use NAME_OR_ID | create NAME | delete NAME_OR_ID [--yes] | disconnect NAME_OR_ID [--yes] | clear-steps NAME_OR_ID [--yes]",
+            "usage: layrs layer use NAME_OR_ID | create NAME",
         ));
     };
     args.remove(0);
@@ -731,23 +551,8 @@ fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
             let name = take_required_positional(args, "NAME", "layer create")?;
             Ok(CliCommand::LayerCreate { name })
         }
-        "delete" => {
-            let yes = take_bool_flag(&mut args, "--yes")?;
-            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer delete")?;
-            Ok(CliCommand::LayerDelete { name_or_id, yes })
-        }
-        "disconnect" => {
-            let yes = take_bool_flag(&mut args, "--yes")?;
-            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer disconnect")?;
-            Ok(CliCommand::LayerDisconnect { name_or_id, yes })
-        }
-        "clear-steps" => {
-            let yes = take_bool_flag(&mut args, "--yes")?;
-            let name_or_id = take_required_positional(args, "NAME_OR_ID", "layer clear-steps")?;
-            Ok(CliCommand::LayerClearSteps { name_or_id, yes })
-        }
         _ => Err(CliParseError::new(format!(
-            "unknown layer command `{subcommand}`; expected use, create, delete, disconnect, or clear-steps"
+            "unknown layer command `{subcommand}`; expected use or create"
         ))),
     }
 }
@@ -892,55 +697,6 @@ fn take_string_option(args: &mut Vec<String>, flag: &str) -> Result<Option<Strin
         } else if let Some(value) = args[index].strip_prefix(&format!("{flag}=")) {
             if found.is_some() {
                 return Err(CliParseError::new(format!("duplicate `{flag}` option")));
-            }
-            if value.is_empty() {
-                return Err(CliParseError::new(format!("missing value for `{flag}`")));
-            }
-            found = Some(value.to_string());
-            args.remove(index);
-        } else {
-            index += 1;
-        }
-    }
-
-    Ok(found)
-}
-
-fn take_string_option_any(
-    args: &mut Vec<String>,
-    flags: &[&str],
-) -> Result<Option<String>, CliParseError> {
-    let mut found = None;
-    let mut index = 0;
-
-    while index < args.len() {
-        let matched = flags.iter().copied().find(|flag| args[index] == *flag);
-        if let Some(flag) = matched {
-            if found.is_some() {
-                return Err(CliParseError::new(format!(
-                    "duplicate `{}` option",
-                    flags.join("|")
-                )));
-            }
-            if index + 1 >= args.len() {
-                return Err(CliParseError::new(format!("missing value for `{flag}`")));
-            }
-            let value = args.remove(index + 1);
-            if value.starts_with("--") {
-                return Err(CliParseError::new(format!("missing value for `{flag}`")));
-            }
-            args.remove(index);
-            found = Some(value);
-        } else if let Some((flag, value)) = flags.iter().find_map(|flag| {
-            args[index]
-                .strip_prefix(&format!("{flag}="))
-                .map(|value| (*flag, value))
-        }) {
-            if found.is_some() {
-                return Err(CliParseError::new(format!(
-                    "duplicate `{}` option",
-                    flags.join("|")
-                )));
             }
             if value.is_empty() {
                 return Err(CliParseError::new(format!("missing value for `{flag}`")));
