@@ -1077,14 +1077,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "layrs-api"
-version = "0.0.0"
-dependencies = [
- "layrs-sync",
- "serde_json",
-]
-
-[[package]]
 name = "layrs-cli"
 version = "0.0.0"
 dependencies = [
@@ -1094,7 +1086,6 @@ dependencies = [
  "layrs-git-bridge",
  "layrs-lens-sdk",
  "layrs-store-local",
- "serde",
  "serde_json",
 ]
 
@@ -1107,11 +1098,7 @@ dependencies = [
  "fs2",
  "layrs-core",
  "layrs-graph",
- "layrs-lens-code",
- "layrs-lens-image",
- "layrs-lens-raw",
  "layrs-lens-sdk",
- "layrs-lens-text",
  "layrs-store",
  "layrs-store-local",
  "layrs-sync",
@@ -1179,7 +1166,6 @@ name = "layrs-graph"
 version = "0.0.0"
 dependencies = [
  "layrs-core",
- "serde",
 ]
 
 [[package]]
@@ -1227,10 +1213,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "layrs-policy"
-version = "0.0.0"
-
-[[package]]
 name = "layrs-proof"
 version = "0.0.0"
 
@@ -1265,7 +1247,6 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
- "layrs-api",
  "layrs-client-core",
  "layrs-core",
  "layrs-lens-code",
@@ -1290,10 +1271,8 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
- "tower-http 0.5.2",
  "url",
  "uuid",
- "zstd",
 ]
 
 [[package]]
@@ -1306,7 +1285,6 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "layrs-core",
- "layrs-graph",
  "layrs-sync",
  "serde",
  "serde_json",
@@ -1380,7 +1358,6 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "layrs-core",
- "layrs-gates",
  "layrs-graph",
  "layrs-lens-code",
  "layrs-lens-sdk",
@@ -1927,7 +1904,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -2624,22 +2601,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags",
- "bytes",
- "http",
- "http-body",
- "http-body-util",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]
