@@ -16,7 +16,6 @@ futures-core = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hex = "0.4"
 fs2 = "0.4"
-layrs-api = { path = "../layrs-api" }
 layrs-core = { path = "../layrs-core" }
 layrs-lens-code = { path = "../layrs-lens-code" }
 layrs-lens-image = { path = "../layrs-lens-image" }
@@ -33,10 +32,8 @@ hmac = "0.12"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
-tower-http = { version = "0.5", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
-zstd = "0.13"
 
 [dev-dependencies]
 layrs-store = { path = "../layrs-store" }

@@ -177,7 +177,8 @@ pub fn built_in_lens_manifests() -> Vec<LensManifest> {
     canonical_built_in_lens_manifests().to_vec()
 }
 
-pub(crate) fn built_in_lens_manifest(lens_id: &str) -> Option<&'static LensManifest> {
+#[cfg(test)]
+fn built_in_lens_manifest(lens_id: &str) -> Option<&'static LensManifest> {
     canonical_built_in_lens_manifests()
         .iter()
         .find(|manifest| manifest.id == lens_id)
