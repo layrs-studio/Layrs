@@ -67,7 +67,7 @@ export function NativeRemotePanel({ root, localSpaceId, opened, busy, onBusy, on
     finally { activeTransfer.current=null;setTransferId(null);setCancelling(false);inFlight.current=false;onBusy(false); }
     if (refresh) onChanged(refresh);
   }
-  return <details className="native-remote"><summary>Serveur et synchronisation</summary>
+  return <details className="native-remote" open><summary>Serveur et synchronisation</summary>
     <div className="native-open">
       <label>Serveur HTTPS<input type="url" placeholder="https://layrs.monentreprise.fr" value={origin} disabled={busy} onChange={e => { setOrigin(e.target.value); setReply(null); setPrincipal(""); setSessionEpoch(value => value + 1); setSelectedReview(null); }} /></label>
       <button disabled={busy || !origin} onClick={() => void run({ action: "startLogin" })}>Se connecter</button>

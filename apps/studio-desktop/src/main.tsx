@@ -1,11 +1,11 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import "@layrs/ui/styles.css";
+import "@layrs/ui/layrs.css";
 import "./desktop.css";
-import { NativeWorkbench } from "./NativeWorkbench";
+import { DesktopApp } from "./app/DesktopApp";
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <NativeWorkbench />
+    <DesktopApp />
   </React.StrictMode>
 );
