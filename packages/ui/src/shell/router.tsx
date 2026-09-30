@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from "react";
 
 /*
  * Hash routing: `#/projects/abc/changes`. It works unchanged in Tauri, in the
@@ -23,16 +23,29 @@ let location = readLocation();
 let locationKey = globalThis.location?.hash ?? "";
 const listeners = new Set<() => void>();
 
-function refresh() {
+/** Pages with unsaved work register a message; leaving asks for confirmation. */
+const guards = new Set<{ message: string }>();
+
+function leaveAllowed() {
+  for (const guard of guards) if (!globalThis.confirm?.(guard.message)) return false;
+  return true;
+}
+
+function refresh(confirmed = false) {
   const hash = globalThis.location?.hash ?? "";
   if (hash === locationKey) return;
+  if (!confirmed && guards.size && !leaveAllowed()) {
+    // Back/forward or a typed address: return to the page being edited.
+    globalThis.history.pushState(globalThis.history.state, "", locationKey || "#/");
+    return;
+  }
   locationKey = hash;
   location = readLocation();
   listeners.forEach((listener) => listener());
 }
 
-globalThis.addEventListener?.("hashchange", refresh);
-globalThis.addEventListener?.("popstate", refresh);
+globalThis.addEventListener?.("hashchange", () => refresh());
+globalThis.addEventListener?.("popstate", () => refresh());
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
@@ -52,9 +65,32 @@ export function href(path: string, query?: Record<string, string | undefined>) {
 
 export function navigate(path: string, options: { replace?: boolean; query?: Record<string, string | undefined> } = {}) {
   const target = href(path, options.query);
+  if (target === locationKey) return;
+  if (guards.size && !leaveAllowed()) return;
   if (options.replace) globalThis.history.replaceState(globalThis.history.state, "", target);
   else globalThis.history.pushState(globalThis.history.state, "", target);
-  refresh();
+  refresh(true);
+}
+
+/**
+ * While `message` is set, leaving the page (in-app link, back/forward, reload
+ * or closing the tab) asks for confirmation instead of losing the work.
+ */
+export function useNavigationGuard(message: string | null) {
+  useEffect(() => {
+    if (!message) return;
+    const guard = { message };
+    const unload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    guards.add(guard);
+    globalThis.addEventListener?.("beforeunload", unload);
+    return () => {
+      guards.delete(guard);
+      globalThis.removeEventListener?.("beforeunload", unload);
+    };
+  }, [message]);
 }
 
 /**

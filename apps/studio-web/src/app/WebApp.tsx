@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { FileText, FolderTree, History, LogOut, MessageSquare, Palette, Settings, Shield, Tag, User, Users } from "lucide-react";
+import { FileLock, FileText, FolderTree, History, Inbox, LogOut, MessageSquare, Palette, Settings, Settings2, Shield, Tag, User, Users } from "lucide-react";
 import {
   AppShell,
   AppearanceSettings,
@@ -29,7 +29,11 @@ import {
 import { AccountPage } from "../pages/AccountPage";
 import { LoginPage } from "../pages/LoginPage";
 import { ProjectsPage, openProject } from "../pages/ProjectsPage";
-import { AdminPage, TeamPage } from "../pages/project-pages";
+import { AccessPage } from "../pages/AccessPage";
+import { AdminPage } from "../pages/AdminPage";
+import { InboxPage } from "../pages/InboxPage";
+import { ProjectSettingsPage } from "../pages/ProjectSettingsPage";
+import { TeamPage } from "../pages/TeamPage";
 import { FilesPage } from "../pages/FilesPage";
 import { HistoryPage } from "../pages/HistoryPage";
 import { ReviewDetailPage } from "../pages/ReviewDetailPage";
@@ -39,7 +43,7 @@ import { VersionsPage } from "../pages/VersionsPage";
 import { ProjectProvider, forgetKnownProjects, knownProjects, useProject } from "./project";
 import { SessionProvider, useSession } from "./session";
 
-type ProjectView = "files" | "history" | "reviews" | "versions" | "team";
+type ProjectView = "files" | "history" | "reviews" | "versions" | "team" | "access" | "settings";
 
 const projectPages: { view: ProjectView; label: string; icon: ReactNode }[] = [
   { view: "files", label: "Fichiers", icon: <FileText aria-hidden size={20} /> },
@@ -47,6 +51,8 @@ const projectPages: { view: ProjectView; label: string; icon: ReactNode }[] = [
   { view: "reviews", label: "Revues", icon: <MessageSquare aria-hidden size={20} /> },
   { view: "versions", label: "Versions", icon: <Tag aria-hidden size={20} /> },
   { view: "team", label: "Équipe et accès", icon: <Users aria-hidden size={20} /> },
+  { view: "access", label: "Accès aux fichiers", icon: <FileLock aria-hidden size={20} /> },
+  { view: "settings", label: "Réglages", icon: <Settings2 aria-hidden size={20} /> },
 ];
 
 export function WebApp() {
@@ -70,7 +76,7 @@ function Gate() {
 }
 
 function Routes() {
-  const { path } = useLocation();
+  const { path, query } = useLocation();
 
   useEffect(() => {
     if (path === "/") navigate("/projects", { replace: true });
@@ -88,7 +94,7 @@ function Routes() {
     const known = projectPages.some((page) => page.view === view) ? (view as ProjectView) : "files";
     return (
       <ProjectProvider key={project.project} spaceId={project.project}>
-        <ProjectFrame view={known} detail={detail.filter(Boolean)} />
+        <ProjectFrame view={known} detail={detail.filter(Boolean)} layer={query.get("layer") ?? undefined} />
       </ProjectProvider>
     );
   }
@@ -100,9 +106,12 @@ function Routes() {
   } else if (matchRoute("/settings/account", path)) {
     page = <AccountPage />;
     title = "Compte";
-  } else if (matchRoute("/admin", path)) {
-    page = <AdminPage />;
+  } else if (matchRoute("/admin", path) || matchRoute("/admin/:section", path)) {
+    page = <AdminPage section={matchRoute("/admin/:section", path)?.section} />;
     title = "Administration";
+  } else if (matchRoute("/inbox", path) || matchRoute("/inbox/:section", path)) {
+    page = <InboxPage section={matchRoute("/inbox/:section", path)?.section} />;
+    title = "Boîte de réception";
   } else page = <ProjectsPage />;
   return (
     <Frame crumbs={[{ label: "Projets", to: "/projects" }, ...(title ? [{ label: title }] : [])]}>
@@ -132,6 +141,7 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
       { id: "projects", group: "Pages", label: "Tous les projets", icon: <FolderTree aria-hidden size={16} />, run: () => navigate("/projects") },
       { id: "account", group: "Pages", label: "Compte", icon: <User aria-hidden size={16} />, run: () => navigate("/settings/account") },
       { id: "appearance", group: "Pages", label: "Apparence", icon: <Palette aria-hidden size={16} />, run: () => navigate("/settings/appearance") },
+      { id: "inbox", group: "Pages", label: "Boîte de réception", icon: <Inbox aria-hidden size={16} />, run: () => navigate("/inbox") },
       ...(admin ? [{ id: "admin", group: "Pages", label: "Administration de l’instance", icon: <Shield aria-hidden size={16} />, run: () => navigate("/admin") }] : []),
       { id: "theme-dark", group: "Actions", label: "Thème sombre", keywords: ["apparence"], run: () => setAppearance({ theme: "dark" }) },
       { id: "theme-light", group: "Actions", label: "Thème clair", keywords: ["apparence"], run: () => setAppearance({ theme: "light" }) },
@@ -159,6 +169,7 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
           <>
             <ul className="layrs-nav">
               {admin && <NavItem to="/admin" label="Administration" icon={<Shield aria-hidden size={20} />} />}
+              <NavItem to="/inbox" label="Boîte de réception" icon={<Inbox aria-hidden size={20} />} />
               <NavItem to="/settings/appearance" label="Paramètres" icon={<Settings aria-hidden size={20} />} />
             </ul>
             <ThemeSwitcher />
@@ -193,8 +204,8 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
   );
 }
 
-/** `detail` is the sub-route: a capture, a review, or a review's run. */
-function ProjectFrame({ view, detail }: { view: ProjectView; detail: string[] }) {
+/** `detail` is the sub-route: a capture, a review, a review's run, or a team/settings section. */
+function ProjectFrame({ view, detail, layer }: { view: ProjectView; detail: string[]; layer?: string }) {
   const project = useProject();
   const key = segment(project.spaceId);
   const current = projectPages.find((page) => page.view === view);
@@ -257,7 +268,9 @@ function ProjectFrame({ view, detail }: { view: ProjectView; detail: string[] })
         <ReviewDetailPage reviewId={detail[0]} />
       ),
       versions: <VersionsPage />,
-      team: <TeamPage />,
+      team: <TeamPage section={detail[0]} />,
+      access: <AccessPage />,
+      settings: <ProjectSettingsPage section={detail[0]} layer={layer} />,
     }[view];
 
   return (

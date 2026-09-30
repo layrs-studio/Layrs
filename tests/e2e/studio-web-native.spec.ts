@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { seedNativeProof } from "./fixtures/nativeProofSeed";
 import {fixtureHttp,sharedNativeClients} from "./fixtures/nativeSharedClients";
 import {webOpenProjectByName,webReleaseGate,webRestrictedAccess,webRestrictedAccessWithDesktop,webSignIn,webSignOut} from "./fixtures/nativeWebAccess";
+import {webTeamAndAccess} from "./fixtures/nativeWebTeam";
 
 // Non-sensitive preferences the Web may keep; everything else (tokens, drafts
 // left behind, project data) must be absent from browser storage.
@@ -167,12 +168,8 @@ test("Web uses the real native identity, project, review, proof and account serv
       await expect(page.getByRole("list",{name:"Repères publiés"}).getByRole("heading",{name:markerName,exact:true})).toBeVisible();
   }
 
-  // Team and accounts stay on the legacy administration surface for now.
-  await page.getByRole("link", { name: "Équipe et accès", exact: true }).click();
-  await page.getByText("Équipe, protections et intégrations", { exact: true }).click();
-  await page.getByText("Comptes et automatisations", { exact: true }).click();
-  await page.getByRole("button", { name: "Charger les comptes", exact: true }).click();
-  await expect(page.getByText("Bob — relecteur test", { exact: true })).toBeVisible();
+  // L5: instance accounts, team, invitations, protections, webhooks and file access.
+  await webTeamAndAccess(page,fixture);
 
   // Session credentials live only in React memory; storage keeps preferences only.
   const storage = await page.evaluate(() => {

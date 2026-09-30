@@ -25,6 +25,8 @@ type SessionApi = {
   forget: () => void;
   /** Incremented on every sign-in/sign-out; use as a React key to purge views. */
   generation: number;
+  /** Digest identifying this session among the account's tokens (`GET /v3/auth/tokens`). */
+  sessionTokenId: string | null;
 };
 
 const SessionContext = createContext<SessionApi | null>(null);
@@ -52,12 +54,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const generationRef = useRef(0);
   const [generation, setGeneration] = useState(0);
   const [principal, setPrincipal] = useState<Principal | null>(null);
+  const [sessionTokenId, setSessionTokenId] = useState<string | null>(null);
 
   const forget = useCallback(() => {
     secret.current = "";
     generationRef.current++;
     setGeneration(generationRef.current);
     setPrincipal(null);
+    setSessionTokenId(null);
   }, []);
 
   const api = useCallback<Api>(
@@ -136,6 +140,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       } catch {
         // The profile is only for display; the session stays valid without it.
       }
+      setSessionTokenId(await tokenDigest(session.access_token));
       setPrincipal(identity);
     },
     [api],
@@ -149,8 +154,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [api, forget]);
 
-  const value = useMemo(() => ({ principal, api, signIn, signOut, forget, generation }), [principal, api, signIn, signOut, forget, generation]);
+  const value = useMemo(
+    () => ({ principal, api, signIn, signOut, forget, generation, sessionTokenId }),
+    [principal, api, signIn, signOut, forget, generation, sessionTokenId],
+  );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
+
+/** Same digest as the server's token identifier: SHA-256, lowercase hex. The token itself never leaves memory. */
+async function tokenDigest(token: string) {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
 }
 
 /** Human message for an error thrown by `api`. */
