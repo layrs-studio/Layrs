@@ -200,7 +200,7 @@ function LimitedHealth() {
         </Card>
       </section>
       <Integrity
-        check={() => nativeProjection<Record<string, unknown>>(workspace.root, { action: "fsck" })}
+        check={() => projection.serial(() => nativeProjection<Record<string, unknown>>(workspace.root, { action: "fsck" }))}
         render={(report) => (
           <section aria-label="Résultat du diagnostic" className="health-report">
             <StatusDot tone="success">

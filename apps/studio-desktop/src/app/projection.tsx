@@ -44,6 +44,8 @@ type ProjectionApi = {
   clearPreviews: () => void;
   perform: (label: string, work: (revision: number) => Promise<void>) => Promise<void>;
   isCurrent: (revision: number) => boolean;
+  /** Runs one native call after the previous ones: the local store admits one opener per process. */
+  serial: <T>(work: () => Promise<T>) => Promise<T>;
   refresh: () => Promise<void>;
   resume: (kind: ResumeKind) => Promise<void>;
   capture: () => Promise<void>;
@@ -84,6 +86,12 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
   const [lastRestore, setLastRestore] = useState("");
   const generation = useRef(0);
   const active = useRef(false);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const serial = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
+    const run = queue.current.then(work, work);
+    queue.current = run.catch(() => undefined);
+    return run;
+  }, []);
   const { bindOrigin, transport, track } = remote;
 
   const clearPreviews = useCallback(() => {
@@ -101,7 +109,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
       setNotice(null);
       setError("");
       try {
-        if (revision === generation.current) await work(revision);
+        if (revision === generation.current) await serial(() => work(revision));
       } catch (cause) {
         if (revision === generation.current) {
           // The local state may have moved: require a fresh read before any write.
@@ -136,6 +144,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
     [bindOrigin],
   );
 
+  // Inside `perform` the queue is already held: read directly there.
   const status = useCallback(() => nativeProjection<NativeProjectionStatus>(root, { action: "status" }), [root]);
 
   // A read: allowed while another view works, guarded against late answers.
@@ -143,7 +152,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
     const revision = generation.current;
     setError("");
     try {
-      const next = await status();
+      const next = await serial(status);
       if (revision === generation.current) {
         accept(next);
         setNamespacePreview(null);
@@ -154,7 +163,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
         setError(String(cause));
       }
     }
-  }, [status, accept, setError]);
+  }, [serial, status, accept, setError]);
 
   useEffect(() => {
     generation.current++;
@@ -257,19 +266,19 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
         );
         if (revision !== generation.current) return;
         if (candidate && result.receipt.candidateId) setCandidateId(result.receipt.candidateId);
-        setNotice({
-          tone: result.pendingLocalAcceptance ? "warning" : "success",
-          text: candidate
-            ? "Candidat reçu par le serveur. Le Layer reste à sa version actuelle ; proposez une revue pour demander son intégration."
-            : result.pendingLocalAcceptance
-              ? "Publication confirmée par le serveur ; l’acceptation locale reste en attente. Réessayez la même capture et la même cible pour terminer."
-              : "Publication confirmée par le serveur.",
-        });
         try {
           const next = await status();
           if (revision === generation.current) {
             accept(next);
             setNamespacePreview(null);
+            setNotice({
+              tone: result.pendingLocalAcceptance ? "warning" : "success",
+              text: candidate
+                ? "Candidat reçu par le serveur. Le Layer reste à sa version actuelle ; proposez une revue pour demander son intégration."
+                : result.pendingLocalAcceptance
+                  ? "Publication confirmée par le serveur ; l’acceptation locale reste en attente. Réessayez la même capture et la même cible pour terminer."
+                  : "Publication confirmée par le serveur.",
+            });
           }
         } catch {
           if (revision === generation.current) {
@@ -439,6 +448,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
       clearPreviews,
       perform,
       isCurrent,
+      serial,
       refresh,
       resume,
       capture,
