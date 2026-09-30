@@ -22,6 +22,8 @@ const resources: Record<string, string> = {
   space_cas_objects: "Objets du projet",
   cas_volume_used: "Occupation du disque de stockage",
   database_bytes: "Base PostgreSQL",
+  postgres_database: "Base PostgreSQL",
+  cas_volume_unavailable: "Disque de stockage occupé ou indisponible",
 };
 const severity: Record<string, { label: string; tone: "success" | "warning" | "danger" }> = {
   normal: { label: "Normal", tone: "success" },

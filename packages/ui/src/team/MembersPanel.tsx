@@ -99,7 +99,7 @@ export function MembersPanel({
                       {summary.capabilities.length > 0 && ` · ${summary.capabilities.join(", ")}`}
                     </>
                   ) : (
-                    "Rôle non lu"
+                    loading ? "Lecture du rôle…" : "Rôle non lu"
                   )}
                 </p>
                 {(memberTeams.length > 0 || (summary?.sources.length ?? 0) > 0) && (

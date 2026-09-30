@@ -455,6 +455,10 @@
   padding: var(--space-4);
 }
 
+.team-stat .layrs-badge {
+  align-self: flex-start;
+}
+
 .team-stat__label {
   display: inline-flex;
   align-items: center;

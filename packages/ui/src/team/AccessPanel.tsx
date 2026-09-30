@@ -158,7 +158,9 @@ export function AccessPanel({
     : !canAdminister || canChange === false
       ? "Réservé aux administrateurs du projet."
       : !policies
-        ? "Les règles actuelles n’ont pas pu être lues."
+        ? directory.loading
+          ? "Lecture des règles d’accès…"
+          : "Les règles actuelles n’ont pas pu être lues."
         : undefined;
 
   useEffect(() => {
@@ -334,7 +336,7 @@ export function AccessPanel({
           <>
             <h2 className="team-section-title access-detail__path">{selected}</h2>
             <p className="team-muted">{subject === self_ ? "Vos droits" : `Droits de ${subjectName}`}</p>
-            <AccessFacts access={access(selected)} explained={current} />
+            <AccessFacts access={access(selected)} explained={current} loading={directory.loading} />
             <hr className="team-separator" />
             <h3 className="team-section-title">Modifier l’accès</h3>
             {changeBlocked ? (
@@ -396,8 +398,8 @@ export function AccessPanel({
   );
 }
 
-function AccessFacts({ access, explained }: { access: EntryAccess; explained: PathAccess | null }) {
-  if (!access) return <p className="team-muted">Droits non évalués : les règles n’ont pas pu être lues.</p>;
+function AccessFacts({ access, explained, loading }: { access: EntryAccess; explained: PathAccess | null; loading: boolean }) {
+  if (!access) return <p className="team-muted">{loading ? "Lecture des règles d’accès…" : "Droits non évalués : les règles n’ont pas pu être lues."}</p>;
   return (
     <dl className="access-facts">
       <dt>Résultat</dt>
