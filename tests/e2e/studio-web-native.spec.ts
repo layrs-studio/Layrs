@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { seedNativeProof } from "./fixtures/nativeProofSeed";
 import {sharedNativeClients} from "./fixtures/nativeSharedClients";
 import {webReleaseGate,webRestrictedAccess} from "./fixtures/nativeWebAccess";
+import {webTeamAndAccess} from "./fixtures/nativeWebTeam";
 
 test("Web uses the real native identity, project, review, proof and account services", async ({ page },testInfo) => {
   test.setTimeout(240_000);
@@ -63,10 +64,8 @@ test("Web uses the real native identity, project, review, proof and account serv
   await expect(page.getByRole("region", { name: "Preuve et journal CI", exact: true }).getByText("UI proof fixture", { exact: true })).toBeVisible();
   console.log("[shared-native] Web: exact seeded proof rendered");
   await webReleaseGate(page,fixture);
-  await page.getByText("Équipe, protections et intégrations", { exact: true }).click();
-  await page.getByText("Comptes et automatisations", { exact: true }).click();
-  await page.getByRole("button", { name: "Charger les comptes", exact: true }).click();
-  await expect(page.getByText("Bob — relecteur test", { exact: true })).toBeVisible();
+  // L5: instance accounts, team, invitations, protections, webhooks and file access.
+  await webTeamAndAccess(page,fixture);
   // Session credentials live only in React memory; reload requires a new login.
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
   if(shared)await webRestrictedAccess(page,fixture,shared.remote);
