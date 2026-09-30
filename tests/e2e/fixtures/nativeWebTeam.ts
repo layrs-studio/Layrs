@@ -1,6 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { randomBytes } from "node:crypto";
 import { fixtureHttp, type SharedFixture } from "./nativeSharedClients";
+import { webSignIn, webSignOut } from "./nativeWebAccess";
 
 /*
  * Team, access and administration steps of the real native Web recipe (lot
@@ -16,19 +17,6 @@ export async function openHash(page: Page, path: string) {
   await page.evaluate((hash) => {
     window.location.hash = hash;
   }, path);
-}
-
-export async function webSignIn(page: Page, account: Credentials) {
-  await page.getByLabel("Identifiant", { exact: true }).fill(account.login);
-  await page.getByLabel("Mot de passe", { exact: true }).fill(account.password);
-  await page.getByRole("button", { name: "Se connecter", exact: true }).click();
-  await expect(page.getByRole("button", { name: /^Compte de / })).toBeVisible();
-}
-
-export async function webSignOut(page: Page) {
-  await page.getByRole("button", { name: /^Compte de / }).click();
-  await page.getByRole("menuitem", { name: "Se déconnecter" }).click();
-  await expect(page.getByRole("button", { name: "Se connecter", exact: true })).toBeVisible();
 }
 
 async function readable(fixture: Fixture, account: Credentials, path: string) {
@@ -147,12 +135,22 @@ export async function webTeamAndAccess(page: Page, fixture: Fixture) {
   console.log("[team] protections with unsaved-changes guard, webhook with one-time secret");
   await openHash(page, `/projects/${project}/settings/protections`);
   const approvals = page.getByLabel("Approbations humaines requises", { exact: true });
-  await approvals.fill("0");
+  await expect(approvals).toBeVisible();
+  const next = (await approvals.inputValue()) === "0" ? "1" : "0";
+  await approvals.fill(next);
   page.once("dialog", (dialog) => void dialog.dismiss());
   await page.getByRole("navigation", { name: "Sections des réglages" }).getByRole("link", { name: /Webhooks/ }).click();
-  await expect(approvals).toHaveValue("0");
+  await expect(approvals).toHaveValue(next);
+  const ci = page.getByText("Recette actuelle conservée par référence", { exact: true });
+  const hadCI = await ci.isVisible();
+  if (hadCI) {
+    // The server keeps the recipe by reference: saving requires it again, or an explicit removal.
+    await expect(page.getByText("Collez la recette exacte actuelle", { exact: false })).toBeAttached();
+    await page.getByRole("checkbox", { name: "Exiger une preuve de validation pour la capture exacte" }).uncheck();
+  }
   await page.getByRole("button", { name: "Enregistrer la protection", exact: true }).click();
   const confirmProtection = page.getByRole("dialog", { name: "Enregistrer la protection" });
+  if (hadCI) await expect(confirmProtection).toContainText("La validation automatique actuelle est retirée.");
   await confirmProtection.getByRole("button", { name: "Enregistrer", exact: true }).click();
   await expect(confirmProtection).toBeHidden();
   await expect(page.getByText(/^Configurée le /)).toBeVisible();

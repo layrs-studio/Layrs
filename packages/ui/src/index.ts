@@ -45,3 +45,4 @@ export { formatBytes, formatDateTime, formatRelativeTime } from "./foundation/fo
 export { AppearanceSettings } from "./pages/AppearanceSettings";
 export type * from "./api/catalog-types";
 export * from "./team";
+export * from "./collab";

@@ -188,7 +188,7 @@ case « implémenté » en « vérifié » sans preuve du parcours réel.
 | L1 Fondations | Fait (`packages/ui` : tokens sombre/clair, polices locales OFL, thème précoce, routeur hash, shell, composants, diff) | Tests renderer + captures sombre/clair de Changements comparées à la maquette | Contraste clair mesuré à refaire par outil ; pas encore de test clavier automatisé du menu/palette |
 | L2 Entrée/navigation | Squelette routé Web + Desktop ; connexion, compte, apparence, projets Desktop | Renderer uniquement ; recettes natives Web/Desktop à adapter | Projets Web par nom dépend du catalogue L0 ; anciens panneaux intégrés dans les pages en attendant leur lot |
 | L3 Desktop | Changements (P05) refait ; Historique, Layers, Versions, Synchronisation, Réglages, Diagnostic routés | Renderer (capture) | Partiel encore via l’ancien atelier ; fusion, synchronisation et identité encore en panneaux hérités |
-| L4 Collaboration | Non commencé | Non exécutée | Composants partagés |
+| L4 Collaboration | Web fait : composants partagés sans transport imposé dans `packages/ui/src/collab` (Fichiers P06, Historique P07 et capture en lecture seule P08, comparaison, Revues P12 avec proposition, détail P13 onglets Discussion/Fichiers/Validations, validation et journal P13b, Versions et repères P14 avec publication/révocation) ; pages Web une par fichier (`apps/studio-web/src/pages/{Files,History,Reviews,ReviewDetail,Run,Versions}Page.tsx`), routes `/history/:capture`, `/reviews/:review?version=&tab=`, `/reviews/:review/runs/:run` ; indices de capacités L0 appliqués (action désactivée avec raison) | Recette native Web réelle (`node scripts/test-native-ui-ci.mjs web`, PostgreSQL jetable) : connexion, projet ouvert par son nom de catalogue, fichiers et droits, historique d’un chemin et comparaison, commentaire, retour perdu puis relance sans doublon (vérifié au serveur), versions 2 et 3 d’une proposition avec décision précédente affichée comme caduque et version 2 en lecture seule, brouillon restauré après rechargement, preuve et journal CI, refus de la Gate de publication sans événement ajouté, comptes (surface héritée), stockage sans jeton/mot de passe/donnée projet, déconnexion puis rechargement ; tests de modèle purs dans `pnpm test:e2e:renderer` ; captures Web sombre/clair 1440 et 800 px | Desktop garde `NativeHistorySurface`, `NativeReviewSurface`, `NativeReleaseSurface`, `NativeRemoteProjectFiles` (et `NativeCompareSurface`, `NativeReviewComments`) via `NativeReviewPanel`/`NativeRemotePanel` : suppression après adoption des composants `collab` par Desktop. Accès limité vérifié localement avec `LAYRS_NATIVE_WEB_RESTRICTED=1` (politique de chemins appliquée par un Desktop Tauri) : contenu verrouillé sans identifiant, historique expliqué (403 à l’API), capacité d’octets refusée, projet fermé après refus du bootstrap ; non exécuté par défaut en CI Linux |
 | L5 Administration | Fait côté Web : Équipe et accès (Membres/Invitations/Équipes), Accès aux fichiers, Réglages (Général, Protections, Automatisations, Webhooks, Avancé ; garde de sortie), Boîte de réception (Invitations/Activité), Administration (Comptes, Comptes de service, Stockage, État du serveur), sessions du Compte ; composants `packages/ui/src/team/` pilotés par transports ; transport de politique Web (`apps/studio-web/src/app/policy/`, BLAKE3/JCS vérifiés contre `layrs-sync`) ; capacités L0 et `instanceAdministrator` utilisés comme indices | Recette native Web réelle (`fixtures/nativeWebTeam.ts`) : comptes, compte de service et secret unique, stockage, état, rôles lus, équipe + historique, invitation par nom puis acceptation par le compte invité, droits propres, protection + garde, webhook + secret, exception de fichier appliquée puis vérifiée par le serveur, retour à la gestion par équipes ; `pnpm check` ; renderer ; captures sombre/clair 1440/800 | Desktop garde `NativeAdminSurface` (recette `desktop-native-team` inchangée) ; voir « Limites constatées pendant L5 » |
 | L6 Git/finitions | Non commencé | Non exécutée | Bridge Tauri et recette complète |
 
@@ -253,6 +253,29 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
   adressée par son contenu et le résumé d’Operation reste local au poste. La page
   Changements l’annonce et renvoie vers les repères/versions nommés. Ajouter un
   message partagé demande un contrat (observation ou métadonnée publiée) à décider.
+- **Intégrer une revue depuis le Web** (P13) : aucune route ; l’intégration est une
+  transaction publiée depuis Desktop sur le Layer cible. Le bouton « Intégrer » reste
+  visible, distinct d’« Approuver », désactivé avec cette raison.
+- **Décisions sur une version ancienne** : le serveur refuse approbation et demande de
+  modifications quand la version date d’avant un changement de droits ou de protection
+  (`review_decision_not_current`) ; la revue l’annonce et propose une nouvelle version.
+  Les décisions de l’auteur ne comptent pas sans auto-approbation, ce que le client ne
+  peut pas savoir (protection lisible par les administrateurs seulement).
+- **Noms des personnes** (P07/P12/P13) : pas d’annuaire lisible par un membre. Seul
+  « Vous » est nommé ; les autres restent « Autre compte », identifiant en détails.
+  Les participants d’une proposition se saisissent encore par référence (champ avancé).
+- **Aperçus de fichiers** (P06) : non raccordés ; type et droits seulement. Un contenu
+  interdit n’affiche ni taille, ni identifiant de contenu, ni aperçu.
+- **Validations** (P13) : l’API liste toutes les exécutions du projet par pages ; le
+  filtre « Capture proposée » porte sur les pages chargées et le dit.
+- **Accès limité** : l’historique complet est refusé par le serveur (403) ; la page
+  l’explique sans requête. Le scénario natif correspondant exige les clients partagés
+  (Desktop Tauri pour appliquer une politique de chemins) : clients partagés ou
+  option `LAYRS_NATIVE_WEB_RESTRICTED=1`.
+- **Capture P08 Web** : pas de route de détail ; lecture de l’historique ancré sur la
+  capture (une entrée). Restauration réservée à Desktop.
+- Après rechargement sur un lien profond, le fil d’Ariane montre la référence du
+  projet tant que le catalogue n’a pas été relu (mémoire de session L2).
 
 ### Limites constatées pendant L5
 

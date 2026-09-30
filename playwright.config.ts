@@ -43,7 +43,7 @@ export default defineConfig({
     },
     {
       name: "Studio Web renderer - Chromium",
-      testMatch: /studio-web-renderer\.spec\.ts/,
+      testMatch: /(studio-web-renderer|collab-model)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         baseURL: `http://127.0.0.1:${studioWebPort}`
