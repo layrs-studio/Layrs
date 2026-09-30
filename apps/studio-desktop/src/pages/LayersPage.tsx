@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { GitBranch, Plus } from "lucide-react";
-import { Badge, Button, Card, Dialog, PageHeader, TextField, useToast } from "@layrs/ui";
-import { NativeMergePanel } from "../NativeMergePanel";
+import { GitBranch, GitMerge, Plus } from "lucide-react";
+import { Badge, Banner, Button, Card, Dialog, Link, PageHeader, TextField, navigate, segment, useToast } from "@layrs/ui";
 import { useWorkspace } from "../app/workspace";
 
 export function LayersPage() {
@@ -11,6 +10,7 @@ export function LayersPage() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const locked = Boolean(busy) || Boolean(data?.needsRepair);
+  const key = segment(workspace.root);
 
   async function create() {
     const next = await workspace.run({ action: "createLayer", name: name.trim() }, "Création du Layer…");
@@ -32,6 +32,11 @@ export function LayersPage() {
           </Button>
         }
       />
+      {workspace.conflicted && (
+        <Banner tone="warning" title="Fusion en cours avec des conflits" actions={<Button size="sm" onClick={() => navigate(`/projects/${key}/merge`)}>Résoudre les conflits</Button>}>
+          Changer de Layer est impossible tant que les conflits ne sont pas résolus.
+        </Banner>
+      )}
       <Card>
         <ul className="layer-list">
           {data?.state.layers.map((layer) => {
@@ -45,33 +50,49 @@ export function LayersPage() {
                     {layer.settings.automaticCapture ? "Capture automatique activée" : "Capture automatique désactivée"}
                   </p>
                 </div>
-                {current ? (
-                  <Badge tone="accent">Layer courant</Badge>
-                ) : (
-                  <Button
-                    size="sm"
-                    disabledReason={locked ? "Opération en cours" : workspace.conflicted ? "Résolvez d’abord les conflits." : undefined}
-                    onClick={() => void workspace.run({ action: "switchLayer", layer: layer.layerId }, `Passage à ${layer.name}…`)}
-                  >
-                    Travailler sur ce Layer
-                  </Button>
-                )}
+                <div className="points__actions">
+                  {current ? (
+                    <>
+                      <Badge tone="accent">Layer courant</Badge>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<GitMerge aria-hidden size={14} />}
+                        onClick={() => navigate(`/projects/${key}/merge`, { query: { source: layer.name } })}
+                      >
+                        Réunir ses têtes…
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<GitMerge aria-hidden size={14} />}
+                        disabledReason={workspace.conflicted ? "Une fusion est déjà en cours." : undefined}
+                        onClick={() => navigate(`/projects/${key}/merge`, { query: { source: layer.name } })}
+                      >
+                        Fusionner dans {activeLayer?.name ?? "le Layer courant"}…
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabledReason={locked ? "Opération en cours" : workspace.conflicted ? "Résolvez d’abord les conflits." : undefined}
+                        onClick={() => void workspace.run({ action: "switchLayer", layer: layer.layerId }, `Passage à ${layer.name}…`)}
+                      >
+                        Travailler sur ce Layer
+                      </Button>
+                    </>
+                  )}
+                </div>
               </li>
             );
           })}
         </ul>
       </Card>
-      <section aria-label="Fusion et résolution" className="layrs-legacy">
-        <h2>Fusionner un autre Layer</h2>
-        <NativeMergePanel
-          key={`${workspace.root}:${activeLayer?.layerId}`}
-          root={workspace.root}
-          layer={activeLayer?.layerId ?? ""}
-          disabled={locked}
-          onBusy={(value) => workspace.setForeground(value ? "Fusion…" : null)}
-          onChanged={() => void workspace.refresh()}
-        />
-      </section>
+      <p className="layer-list__note">
+        Les protections d’un Layer publié (approbations, recette) se règlent depuis <Link to={`/projects/${key}/team`}>Équipe</Link>. Aucun renommage ni
+        suppression de Layer n’est proposé : le moteur ne les fournit pas encore.
+      </p>
       <Dialog
         open={creating}
         onClose={() => setCreating(false)}

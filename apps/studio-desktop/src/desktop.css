@@ -335,7 +335,6 @@ body,
 }
 
 /* ---------- Lists ---------- */
-.history-list,
 .layer-list,
 .points__list,
 .project-list,
@@ -345,7 +344,6 @@ body,
   list-style: none;
 }
 
-.history-list__item,
 .layer-list__item,
 .points__item {
   display: flex;
@@ -355,51 +353,27 @@ body,
   color: var(--text-muted);
 }
 
-.history-list__item + .history-list__item,
 .layer-list__item + .layer-list__item,
 .points__item + .points__item,
 .project-list__item + .project-list__item {
   border-top: 1px solid var(--border);
 }
 
-.history-list__text,
 .layer-list__text,
 .points__text {
   flex: 1;
   min-width: 0;
 }
 
-.history-list__title,
 .layer-list__name {
   color: var(--text);
   font-weight: 600;
 }
 
-.history-list__summary,
 .layer-list__meta,
 .points__notes {
   color: var(--text-muted);
   font-size: var(--text-sm);
-}
-
-.history-list time {
-  color: var(--text-subtle);
-  font-size: var(--text-xs);
-}
-
-.history-list__note {
-  padding: var(--space-3) var(--space-5);
-  border-top: 1px solid var(--border);
-  color: var(--text-subtle);
-  font-size: var(--text-sm);
-}
-
-.history-restore {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  max-width: 720px;
-  padding: var(--space-5);
 }
 
 .points {

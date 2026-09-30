@@ -167,7 +167,7 @@ export function ChangesPage() {
           tone="warning"
           title="Fusion en cours avec des conflits"
           actions={
-            <Button size="sm" onClick={() => navigate(`/projects/${projectKey}/layers`)}>
+            <Button size="sm" onClick={() => navigate(`/projects/${projectKey}/merge`)}>
               Résoudre les conflits
             </Button>
           }
