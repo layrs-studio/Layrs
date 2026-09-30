@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { FolderOpen, FolderTree, MoreHorizontal, Plus, Star } from "lucide-react";
 import { Badge, Button, Card, EmptyState, Menu, PageHeader, formatRelativeTime, navigate, segment, useToast } from "@layrs/ui";
 import { selectFolder } from "../tauri";
 import { forgetProject, readRecents, toggleFavorite, type RecentProject } from "../app/recents";
+import { RemoteProvider, useRemote } from "../app/remote";
+import { hostOf } from "../app/serverMemory";
+import { TeamCatalog } from "../sync/TeamCatalog";
 
-export function openProject(root: string) {
-  navigate(`/projects/${segment(root)}/changes`);
-}
+import { openProject } from "../app/Frame";
+
+export { openProject };
 
 export function ProjectsPage() {
   const toast = useToast();
@@ -73,12 +76,7 @@ export function ProjectsPage() {
       </section>
       <section aria-labelledby="team-projects" className="projects-section">
         <h2 id="team-projects">Dans l’équipe</h2>
-        <Card className="projects-team">
-          <p>
-            Récupérez un projet partagé sur le serveur de votre équipe dans un dossier vide de cet ordinateur.
-          </p>
-          <Button onClick={() => navigate("/projects/new", { query: { mode: "clone" } })}>Récupérer un projet de l’équipe</Button>
-        </Card>
+        <TeamProjects />
       </section>
     </div>
   );
@@ -128,5 +126,40 @@ function ProjectRow({ project, onChange }: { project: RecentProject; onChange: (
         ]}
       />
     </li>
+  );
+}
+
+/** Team projects of the last connected server, by name. A local recent is never an authorization. */
+function TeamProjects() {
+  const acquire = useCallback(() => false, []);
+  const release = useCallback(() => undefined, []);
+  const onChanged = useCallback(() => undefined, []);
+  return (
+    <RemoteProvider root="" acquire={acquire} release={release} onChanged={onChanged}>
+      <TeamProjectList />
+    </RemoteProvider>
+  );
+}
+
+function TeamProjectList() {
+  const remote = useRemote();
+  const connected = remote.session.state === "connected";
+  return (
+    <Card className="projects-team">
+      <div className="projects-team__head">
+        <p>
+          {connected
+            ? `Projets que votre compte peut ouvrir sur ${hostOf(remote.origin)}. Choisissez-en un pour le récupérer dans un dossier vide.`
+            : "Récupérez un projet partagé sur le serveur de votre équipe dans un dossier vide de cet ordinateur."}
+        </p>
+        <Button onClick={() => navigate("/projects/new", { query: { mode: "clone" } })}>Récupérer un projet de l’équipe</Button>
+      </div>
+      {connected && (
+        <TeamCatalog
+          actionLabel="Récupérer…"
+          onSelect={(entry) => navigate("/projects/new", { query: { mode: "clone", space: entry.spaceId } })}
+        />
+      )}
+    </Card>
   );
 }

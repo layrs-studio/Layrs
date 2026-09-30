@@ -1,37 +1,41 @@
-import {expect,test} from "@playwright/test";
+import {expect,test,type Page} from "@playwright/test";
 import {mkdir,readFile,writeFile,unlink,stat} from "node:fs/promises";
 import {join} from "node:path";
-import {request as httpsRequest} from "node:https";
 import {launchNativeTauriDesktop} from "./fixtures/nativeTauriDesktop";
 import {fixtureHttp} from "./fixtures/nativeSharedClients";
+import {connectDesktop} from "./fixtures/nativeDesktopConnect";
+
+const nav=(page:Page,label:string)=>page.getByRole("complementary",{name:"Navigation principale"}).getByRole("link",{name:label,exact:true});
+const status=(page:Page,text:string)=>page.getByRole("status").filter({hasText:text}).first();
+/** Publish or Receive from the persistent top-bar panel, then close it. */
+async function sync(page:Page,action:string,done:string){
+  await page.getByRole("button",{name:/^Synchronisation/}).click();
+  const panel=page.getByRole("dialog",{name:"Synchronisation"});
+  await panel.getByRole("button",{name:action,exact:true}).click();
+  await expect(status(page,done)).toBeVisible();
+  await panel.getByRole("button",{name:"Fermer la synchronisation"}).click();
+}
+async function captureAllowed(page:Page){
+  await nav(page,"Changements").click();
+  await page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true}).click();
+}
 
 test.use({trace:"off",screenshot:"off",video:"off"});
 test("Desktop migrates, reserves hidden paths and publishes real partial edits",async({},testInfo)=>{
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   if(!process.env.LAYRS_NATIVE_UI_FIXTURE&&process.env.LAYRS_NATIVE_UI_REQUIRED==="1")throw new Error("Disposable TLS fixture required");
   test.skip(!process.env.LAYRS_NATIVE_UI_FIXTURE,"Requires disposable TLS/PostgreSQL fixture");
   const fixture=JSON.parse(await readFile(process.env.LAYRS_NATIVE_UI_FIXTURE!,"utf8"));
   const desktop=await launchNativeTauriDesktop(testInfo,{visual:false});
   try{
     const page=desktop.page;page.setDefaultTimeout(20_000);
-    await page.goto(`${desktop.desktopUrl}/#project`);
-    await page.getByLabel("Dossier",{exact:true}).fill(fixture.workspaceRoot);
-    await page.getByRole("button",{name:"Ouvrir",exact:true}).click();
-    await page.getByLabel("Capture automatique",{exact:true}).uncheck();
-    await page.getByText("Serveur et synchronisation",{exact:true}).click();
-    const panel=page.locator("details.native-remote");
-    await panel.getByLabel("Serveur HTTPS",{exact:true}).fill(fixture.origin);
-    await panel.getByText("Certificat privé de l’entreprise",{exact:true}).click();
-    await panel.getByLabel("Autorité de certification PEM").fill(fixture.caPem);
-    await panel.getByRole("button",{name:"Se connecter",exact:true}).click();
-    const code=panel.locator("p").filter({hasText:"confirmez le code"}).locator("strong");
-    await expect(code).toBeVisible();
-    const userCode=await code.textContent();
-    await new Promise<void>((resolve,reject)=>{
-      const req=httpsRequest(new URL("/v3/auth/devices/approve",fixture.origin),{method:"POST",ca:fixture.caPem,headers:{Authorization:`Bearer ${fixture.adminAccessToken}`,"Content-Type":"application/json"}},response=>{response.resume();response.on("end",()=>response.statusCode===204?resolve():reject(new Error(`Approval HTTP ${response.statusCode}`)));});
-      req.on("error",()=>reject(new Error("TLS approval failed")));req.end(JSON.stringify({userCode}));
-    });
-    await expect.poll(async()=>{if(await panel.getByText(/Connexion autorisée/).count())return 1;await panel.getByRole("button",{name:"Vérifier la connexion",exact:true}).click();return panel.getByText(/Connexion autorisée/).count();},{intervals:[5500],timeout:20000}).toBe(1);
+    // The local store admits one opener per process: retry while the app itself reads it.
+    const retry=async<T,>(call:()=>Promise<T>):Promise<T>=>{for(let attempt=0;;attempt++){try{return await call();}catch(error){if(attempt>=40||!String(error).includes("process-local lock"))throw error;await new Promise(resolve=>setTimeout(resolve,250));}}};
+    await page.goto(`${desktop.desktopUrl}/#/projects/${encodeURIComponent(fixture.workspaceRoot)}/changes`);
+    await expect(page.getByRole("heading",{name:"Changements",exact:true})).toBeVisible();
+    const automatic=page.getByRole("switch",{name:"Capture automatique",exact:true});
+    if((await automatic.getAttribute("aria-checked"))==="true")await automatic.click();
+    await connectDesktop(page,fixture);
     const remote=<T,>(action:Record<string,unknown>)=>desktop.invoke<T>("native_remote",{root:fixture.workspaceRoot,request:{origin:fixture.origin,caPem:fixture.caPem,action}});
     // Fixture provisioning grants Bob membership after its last local receive.
     // Observe that current managed policy before creating a fresh publication.
@@ -45,79 +49,91 @@ test("Desktop migrates, reserves hidden paths and publishes real partial edits",
     const applied=await remote<{receipt:{status:string}}>({action:"applyPolicy",preview:policy.preview});
     expect(applied.receipt.status).toBe("applied");
 
+    // Migration: explicit, into another empty folder; the original is kept.
     const destination=join(fixture.root,"desktop-partial");await mkdir(destination);
-    await panel.getByText("Passer à une projection partielle",{exact:true}).click();
-    await panel.getByLabel("Dossier vide de destination",{exact:true}).fill(destination);
-    await panel.getByLabel("Layer publié à projeter",{exact:true}).fill(fixture.layerId);
-    await panel.getByRole("button",{name:"Créer la projection et conserver ce dossier",exact:true}).click();
-    await expect(page.getByRole("heading",{name:"Fichiers autorisés de votre projet",exact:true})).toBeVisible();
+    await nav(page,"Synchronisation").click();
+    await page.getByText("Passer en accès limité",{exact:true}).click();
+    await page.getByRole("button",{name:"Préparer l’accès limité…",exact:true}).click();
+    const migration=page.getByRole("dialog",{name:"Passer en accès limité"});
+    await migration.getByLabel("Dossier vide de destination",{exact:true}).fill(destination);
+    await migration.getByLabel("Layer publié à projeter",{exact:true}).selectOption(fixture.layerId);
+    await migration.getByRole("button",{name:"Créer l’accès limité et conserver ce dossier",exact:true}).click();
+    await expect(page.getByText("Accès limité · sur cet ordinateur",{exact:true})).toBeVisible();
+    await expect(page.getByRole("heading",{name:"Changements",exact:true})).toBeVisible();
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("editable initial bytes\n");
     await expect(stat(join(destination,"docs/readme.txt"))).rejects.toThrow();
     expect((await stat(join(fixture.workspaceRoot,"docs/readme.txt"))).isFile()).toBe(true);
-    const originalPartial=await desktop.invoke<{projection:{snapshot:{baseStepId:string}}}>("native_projection",{root:destination,request:{action:"status"}});
+    const originalPartial=await retry(()=>desktop.invoke<{projection:{snapshot:{baseStepId:string}}}>("native_projection",{root:destination,request:{action:"status"}}));
+    // Same shell: full-project pages are absent, the target Layer and connection are remembered.
+    await expect(nav(page,"Layers")).toHaveCount(0);
+    await expect(page.getByRole("button",{name:/^Synchronisation/})).toContainText("Connecté");
+
+    await nav(page,"Fichiers").click();
     const files=page.getByRole("region",{name:"Fichiers du projet",exact:true});
     await expect(files.locator("li").filter({hasText:"docs/readme.txt"})).toContainText("contenu interdit");
     for(const path of ["docs/readme.txt","DOCS/README.TXT","docs","docs/readme.txt/child"]){
       await files.getByLabel("Chemin de destination",{exact:true}).fill(path);
       await expect(files.getByRole("button",{name:"Préparer l’aperçu du changement",exact:true})).toBeDisabled();
     }
-    await page.getByLabel("Autorité de certification privée PEM",{exact:true}).fill(fixture.caPem);
-    await page.getByLabel("Layer distant cible",{exact:true}).fill(fixture.layerId);
     await files.getByLabel("Chemin de destination",{exact:true}).fill("docs/created.txt");
     await files.getByRole("button",{name:"Préparer l’aperçu du changement",exact:true}).click();
-    await page.getByRole("button",{name:"Appliquer ce changement de chemin",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Changement appliqué"})).toBeVisible();
+    await page.getByRole("region",{name:"Aperçu de modification des chemins"}).getByRole("button",{name:"Appliquer ce changement de chemin",exact:true}).click();
+    await expect(status(page,"Changement appliqué")).toBeVisible();
     expect(await readFile(join(destination,"docs/created.txt"),"utf8")).toBe("");
     await files.getByLabel("Action",{exact:true}).selectOption("rename");
     await files.getByLabel("Chemin source",{exact:true}).fill("docs/created.txt");
     await files.getByLabel("Chemin de destination",{exact:true}).fill("docs/renamed.txt");
     await files.getByRole("button",{name:"Préparer l’aperçu du changement",exact:true}).click();
-    await page.getByRole("button",{name:"Appliquer ce changement de chemin",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Changement appliqué"})).toBeVisible();
+    await page.getByRole("region",{name:"Aperçu de modification des chemins"}).getByRole("button",{name:"Appliquer ce changement de chemin",exact:true}).click();
+    await expect(status(page,"Changement appliqué")).toBeVisible();
     await expect(stat(join(destination,"docs/created.txt"))).rejects.toThrow();
     expect(await readFile(join(destination,"docs/renamed.txt"),"utf8")).toBe("");
-    await page.getByRole("button",{name:"Publier la capture partielle",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Publication confirmée par le serveur."})).toBeVisible();
+    await sync(page,"Publier la capture","Publication confirmée par le serveur.");
+
+    // An external write to a reserved name blocks the capture and keeps the bytes.
     await writeFile(join(destination,"docs/readme.txt"),"external protected collision");
-    await page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true}).click();
+    await captureAllowed(page);
     await expect(page.getByRole("alert")).toContainText("projection_capture_refused");
     expect(await readFile(join(destination,"docs/readme.txt"),"utf8")).toBe("external protected collision");
     await unlink(join(destination,"docs/readme.txt"));
-    await page.getByRole("button",{name:"Actualiser la projection locale",exact:true}).click();
-    await expect(page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true})).toBeEnabled();
+    await page.getByRole("button",{name:"Actualiser l’accès limité",exact:true}).first().click();
+    await expect(page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true})).not.toHaveAttribute("aria-disabled","true");
     await writeFile(join(destination,"docs/allowed.txt"),"editable published from Desktop\n");
-    await page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true}).click();
-    await expect(page.getByRole("region",{name:"Capture partielle locale",exact:true})).toContainText("docs/allowed.txt");
-    await page.getByRole("button",{name:"Publier la capture partielle",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Publication confirmée par le serveur."})).toBeVisible();
-    await page.getByRole("button",{name:"Recevoir la projection distante",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Projection reçue et vérifiée"})).toBeVisible();
-    const checked=await desktop.invoke<{namespaceOperations:number;completedPublications:number}>("native_projection",{root:destination,request:{action:"fsck"}});
+    await captureAllowed(page);
+    await expect(page.getByRole("region",{name:"Dernière capture locale",exact:true})).toContainText("docs/allowed.txt");
+    await sync(page,"Publier la capture","Publication confirmée par le serveur.");
+    await sync(page,"Recevoir","Réception vérifiée");
+    const checked=await retry(()=>desktop.invoke<{namespaceOperations:number;completedPublications:number}>("native_projection",{root:destination,request:{action:"fsck"}}));
     expect(checked.namespaceOperations).toBe(2);expect(checked.completedPublications).toBe(2);
     await expect(stat(join(destination,"docs/readme.txt"))).rejects.toThrow();
-    const history=await desktop.invoke<{captures:{sequence:number;changes:{path:string;replacement:unknown}[]}[]}>("native_projection",{root:destination,request:{action:"history",before:null,limit:50}});
+    const history=await retry(()=>desktop.invoke<{captures:{sequence:number;changes:{path:string;replacement:unknown}[]}[]}>("native_projection",{root:destination,request:{action:"history",before:null,limit:50}}));
     const previous=history.captures.find(capture=>capture.changes.some(change=>change.path==="docs/allowed.txt"&&change.replacement!==null));
     expect(previous).toBeTruthy();
+
+    // Local restore through a preview, then its inverse.
     await writeFile(join(destination,"docs/allowed.txt"),"unpublished bytes to preserve for undo\n");
-    await page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Modifications autorisées capturées localement"})).toBeVisible();
-    await page.getByText("Historique et restauration locale",{exact:true}).click();
-    await page.getByRole("button",{name:"Charger les 50 dernières captures",exact:true}).click();
-    await page.getByRole("button",{name:new RegExp(`^Capture ${previous!.sequence} ·`)}).click();
+    await captureAllowed(page);
+    await expect(status(page,"Modifications autorisées capturées localement")).toBeVisible();
+    await nav(page,"Historique").click();
+    await page.getByRole("button",{name:"Actualiser (50 dernières)",exact:true}).click();
+    await page.getByRole("list",{name:"Captures locales"}).getByRole("button",{name:new RegExp(`^Capture ${previous!.sequence} `)}).click();
     await page.getByRole("button",{name:"Préparer la restauration locale",exact:true}).click();
-    await expect(page.getByRole("region",{name:"Aperçu de restauration locale",exact:true})).toContainText("docs/allowed.txt");
-    await page.getByRole("button",{name:"Appliquer la restauration locale",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Fichiers restaurés localement"})).toBeVisible();
+    const restore=page.getByRole("region",{name:"Aperçu de restauration locale",exact:true});
+    await expect(restore).toContainText("docs/allowed.txt");
+    await restore.getByRole("button",{name:"Appliquer la restauration locale",exact:true}).click();
+    await expect(status(page,"Fichiers restaurés localement")).toBeVisible();
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("editable published from Desktop\n");
-    await page.getByRole("button",{name:"Préparer l’annulation de la dernière restauration",exact:true}).click();
-    await page.getByRole("button",{name:"Appliquer la restauration locale",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Fichiers restaurés localement"})).toBeVisible();
+    await page.getByRole("button",{name:"Annuler la dernière restauration…",exact:true}).click();
+    await restore.getByRole("button",{name:"Appliquer la restauration locale",exact:true}).click();
+    await expect(status(page,"Fichiers restaurés localement")).toBeVisible();
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("unpublished bytes to preserve for undo\n");
-    await desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}});
+    await retry(()=>desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}}));
     await expect(stat(join(destination,"docs/readme.txt"))).rejects.toThrow();
+
     // Candidate/review integration uses the actual restricted account and server.
+    await nav(page,"Équipe").click();
     await page.getByRole("button",{name:"Envoyer la capture pour revue",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Candidat reçu par le serveur"})).toBeVisible();
+    await expect(status(page,"Candidat reçu par le serveur")).toBeVisible();
     const reviews=page.getByRole("region",{name:"Revues des fichiers autorisés",exact:true});
     await expect(reviews.getByLabel("Candidat à proposer",{exact:true})).not.toHaveValue("");
     await reviews.getByLabel("Titre de la revue",{exact:true}).fill("Desktop partial review");
@@ -136,42 +152,47 @@ test("Desktop migrates, reserves hidden paths and publishes real partial edits",
     await reviews.getByRole("button",{name:"Actualiser cette revue",exact:true}).click();
     await reviews.getByRole("button",{name:"Intégrer le candidat approuvé",exact:true}).click();
     await expect(reviews.getByRole("status")).toContainText("Candidat intégré");
+
+    // Supported rebase with a persisted choice that survives a reload.
     await writeFile(join(destination,"docs/allowed.txt"),"local conflict after review\n");
-    await page.getByRole("button",{name:"Capturer les modifications autorisées",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Modifications autorisées capturées localement"})).toBeVisible();
-    const merge=page.getByRole("region",{name:"Fusion de la projection",exact:true});
-    await merge.getByRole("button",{name:"Préparer la fusion partielle",exact:true}).click();
+    await captureAllowed(page);
+    await expect(status(page,"Modifications autorisées capturées localement")).toBeVisible();
+    await page.getByRole("button",{name:"Fusionner avec la version publiée",exact:true}).click();
+    const merge=page.getByRole("region",{name:"Fusion de l’accès limité",exact:true});
+    await merge.getByRole("button",{name:"Préparer la fusion",exact:true}).click();
     await expect(merge.getByRole("status")).toContainText("Brouillon enregistré");
-    const draft=await desktop.invoke<{files:{path:string;conflict:boolean}[]}>("native_projection",{root:destination,request:{action:"rebaseDraft"}});
+    const draft=await retry(()=>desktop.invoke<{files:{path:string;conflict:boolean}[]}>("native_projection",{root:destination,request:{action:"rebaseDraft"}}));
     expect(draft.files.find(file=>file.path==="docs/allowed.txt")?.conflict).toBe(true);
     await expect(merge.getByRole("button",{name:"Appliquer la fusion résolue",exact:true})).toBeDisabled();
     await merge.getByLabel("Version à conserver pour docs/allowed.txt",{exact:true}).selectOption("local");
     await expect(merge.getByRole("status")).toContainText("Choix enregistré sur ce poste");
     await page.reload();
-    await page.getByLabel("Dossier",{exact:true}).fill(destination);
-    await page.getByRole("button",{name:"Ouvrir",exact:true}).click();
-    await expect(page.getByRole("heading",{name:"Fichiers autorisés de votre projet",exact:true})).toBeVisible();
-    await page.getByLabel("Autorité de certification privée PEM",{exact:true}).fill(fixture.caPem);
-    await page.getByLabel("Layer distant cible",{exact:true}).fill(fixture.layerId);
+    await expect(page.getByRole("heading",{name:"Fusion",exact:true})).toBeVisible();
     await merge.getByRole("button",{name:"Recharger le brouillon de fusion",exact:true}).click();
     await expect(merge.getByLabel("Version à conserver pour docs/allowed.txt",{exact:true})).toHaveValue("local");
     await merge.getByRole("button",{name:"Appliquer la fusion résolue",exact:true}).click();
     await expect(merge.getByRole("status")).toContainText("Fusion appliquée");
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("local conflict after review\n");
+
+    // Directory move through a preview.
     await mkdir(join(destination,"docs/movable"));
-    const partial=<T,>(action:Record<string,unknown>)=>desktop.invoke<T>("native_remote",{root:destination,request:{origin:fixture.origin,caPem:fixture.caPem,action}});
-    const state=await desktop.invoke<{projection:{generation:number}}>("native_projection",{root:destination,request:{action:"status"}});
+    const partial=<T,>(action:Record<string,unknown>)=>retry(()=>desktop.invoke<T>("native_remote",{root:destination,request:{origin:fixture.origin,caPem:fixture.caPem,action}}));
+    const state=await retry(()=>desktop.invoke<{projection:{generation:number}}>("native_projection",{root:destination,request:{action:"status"}}));
     const creation=await partial({action:"previewProjectionNamespace",expectedGeneration:state.projection.generation,mutation:{kind:"create",path:"docs/movable/file.txt"}});
     await partial({action:"applyProjectionNamespace",preview:creation});
-    await page.getByRole("button",{name:"Actualiser la projection locale",exact:true}).click();
+    await nav(page,"Fichiers").click();
+    await page.getByRole("button",{name:"Actualiser les fichiers",exact:true}).click();
     const directory=page.getByRole("region",{name:"Déplacement de dossier",exact:true});
     await directory.getByLabel("Dossier source",{exact:true}).fill("docs/movable");
     await directory.getByLabel("Dossier destination",{exact:true}).fill("docs/moved");
     await directory.getByRole("button",{name:"Préparer le déplacement du dossier",exact:true}).click();
     await directory.getByRole("button",{name:"Appliquer le déplacement du dossier",exact:true}).click();
-    await expect(page.getByRole("status").filter({hasText:"Dossier déplacé"})).toBeVisible();
+    await expect(status(page,"Dossier déplacé")).toBeVisible();
     expect(await readFile(join(destination,"docs/moved/file.txt"),"utf8")).toBe("");
     await expect(stat(join(destination,"docs/movable"))).rejects.toThrow();
+
+    // Restore a published version of the allowed files.
+    await page.goto(`${desktop.desktopUrl}/#/projects/${encodeURIComponent(destination)}/merge`);
     await merge.getByText("Restaurer une version publiée",{exact:true}).click();
     await merge.getByLabel("Identifiant de la version publiée",{exact:true}).fill(originalPartial.projection.snapshot.baseStepId);
     await merge.getByLabel("Chemins historiques à restaurer, un par ligne",{exact:true}).fill("docs/allowed.txt");
@@ -181,6 +202,6 @@ test("Desktop migrates, reserves hidden paths and publishes real partial edits",
     await expect(merge.getByRole("status")).toContainText("Version historique restaurée");
     expect(await readFile(join(destination,"docs/allowed.txt"),"utf8")).toBe("editable initial bytes\n");
     expect(await readFile(join(destination,"docs/moved/file.txt"),"utf8")).toBe("");
-    await desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}});
+    await retry(()=>desktop.invoke("native_projection",{root:destination,request:{action:"fsck"}}));
   }finally{await desktop.dispose();}
 });
