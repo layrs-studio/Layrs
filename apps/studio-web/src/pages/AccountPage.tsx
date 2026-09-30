@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { LogOut } from "lucide-react";
-import { Avatar, Banner, Button, Card, PageHeader, PasswordField, TechnicalId, useToast } from "@layrs/ui";
+import { Avatar, Banner, Button, Card, PageHeader, PasswordField, TechnicalId, TokensPanel, useToast } from "@layrs/ui";
+import { administrationTransport } from "../app/transports";
 import { ApiError, useSession } from "../app/session";
 
 const kindLabels: Record<string, string> = {
@@ -11,7 +12,8 @@ const kindLabels: Record<string, string> = {
 
 /** P20: who am I, where, and how to leave or change my password. */
 export function AccountPage() {
-  const { principal, api, signOut, forget } = useSession();
+  const { principal, api, signOut, forget, sessionTokenId } = useSession();
+  const identity = useMemo(() => administrationTransport(api, ""), [api]);
   const toast = useToast();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -77,6 +79,19 @@ export function AccountPage() {
           </Button>
         </div>
       </Card>
+      <section className="settings-section" aria-labelledby="sessions-title">
+        <h2 id="sessions-title">Sessions et appareils</h2>
+        <p className="settings-section__hint">Connexions actives de votre compte. Révoquer une session coupe immédiatement l’accès de l’appareil ou de l’outil concerné.</p>
+        <TokensPanel
+          scope={`${location.origin}:${principal.principalId}`}
+          administration={identity}
+          currentTokenId={sessionTokenId}
+          onCurrentRevoked={() => {
+            toast.show({ tone: "success", title: "Session fermée", description: "Reconnectez-vous pour continuer." });
+            forget();
+          }}
+        />
+      </section>
       <section className="settings-section" aria-labelledby="password-title">
         <h2 id="password-title">Changer le mot de passe</h2>
         <p className="settings-section__hint">Toutes vos sessions, y compris celle-ci et vos appareils connectés, seront fermées.</p>
