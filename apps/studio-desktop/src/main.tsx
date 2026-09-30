@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "@layrs/ui/layrs.css";
 import "./desktop.css";
+import "./sync.css";
 import "./work.css";
 import { DesktopApp } from "./app/DesktopApp";
 
