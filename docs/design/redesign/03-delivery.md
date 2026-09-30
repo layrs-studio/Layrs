@@ -115,6 +115,31 @@ le shell peut utiliser des fixtures dans ses tests, pas un faux catalogue en pro
 - Livrable : responsable autonome pour inviter et limiter un fichier ; membre
   normal capable de comprendre ses accès sans voir l'administration d'instance.
 
+#### Correspondance de l’ancienne surface d’administration (L5)
+
+Web n’utilise plus `NativeAdminSurface` ; Desktop l’embarque encore dans
+`NativeRemotePanel` (voir limites L5). Composants partagés : `packages/ui/src/team/`.
+
+| Ancien contrôle (`native-admin`, `-invitations`, `-teams`, `-policy-*`, `-storage`, `-metrics`) | Nouvelle page · action |
+| --- | --- |
+| Mes invitations reçues, accepter/refuser | Boîte de réception (`/inbox`) › Invitations |
+| Invitations envoyées, suivantes, révoquer | Équipe et accès (`/projects/:p/team/invitations`) › liste paginée, révocation confirmée |
+| Inviter un compte (`principal:…` saisi) | Invitations › Inviter une personne : choix par nom (comptes de l’instance pour l’administrateur d’instance, sinon membres de l’organisation) ; identifiant technique en repli « La personne n’est pas dans la liste » |
+| Équipes : charger, créer, modifier, archiver (motif), historique paginé | Équipe et accès › Équipes (dialogues, version attendue, clé d’idempotence conservée en cas de réessai) |
+| Accès au projet : rôle d’un `principal:…` (`grantMember`), retrait | Équipe et accès › Membres › Changer le rôle ; Accorder un accès direct (comptes et services) |
+| Gestion des accès (mode géré/personnalisé, références) | Réglages › Général (mode) et Avancé (références copiables) |
+| Changer la politique : par référence, retour aux équipes et rôles, règles JSON (ajout/remplacement), aperçu puis application | Réglages (`/projects/:p/settings/advanced`) › Avancé, aperçu lié au serveur puis confirmation |
+| Droits d’un membre sur un fichier ou dossier | Accès aux fichiers (`/projects/:p/access`) : personne, arbre, droits effectifs expliqués, aperçu avant/après, confirmation |
+| Protection des Layers (`layer:…` saisi, approbations, auto-approbation, conflits, recette CI, exécuteurs, âge de preuve) | Réglages › Protections (Layer par nom, garde « non enregistré ») ; vue d’ensemble dans Automatisations |
+| Webhooks : créer (secret), lister, livraisons, relancer, renouveler le secret, désactiver | Réglages › Webhooks |
+| Notifications du projet : actualiser, suite, marquer lues, ouvrir la revue exacte | Boîte de réception › Activité du projet (projet choisi par nom ; lecture enregistrée après réponse du serveur) |
+| Comptes : charger, révoquer, créer (mot de passe initial effacé après 60 s) | Administration (`/admin/accounts`) › Comptes |
+| Compte de service : créer avec jeton, renouveler le jeton | Administration › Comptes de service (+ révocation) |
+| Stockage de l’instance | Administration › Stockage |
+| Activité du serveur (métriques) | Administration › État du serveur |
+| Mes appareils et jetons : lister, révoquer | Compte (`/settings/account`) › Sessions et appareils (session courante identifiée) |
+| Révélation unique d’un secret (60 s, copie) | Dialogue `SecretReveal` : masqué par défaut, 60 s, jamais réaffiché |
+
 ### L6 — Pont Git, intégration et finition
 
 - P22 : adaptateur natif et assistant, traitement des chemins réservés et rapport.
@@ -164,7 +189,7 @@ case « implémenté » en « vérifié » sans preuve du parcours réel.
 | L2 Entrée/navigation | Squelette routé Web + Desktop ; connexion, compte, apparence, projets Desktop | Renderer uniquement ; recettes natives Web/Desktop à adapter | Projets Web par nom dépend du catalogue L0 ; anciens panneaux intégrés dans les pages en attendant leur lot |
 | L3 Desktop | Changements (P05) refait ; Historique, Layers, Versions, Synchronisation, Réglages, Diagnostic routés | Renderer (capture) | Partiel encore via l’ancien atelier ; fusion, synchronisation et identité encore en panneaux hérités |
 | L4 Collaboration | Non commencé | Non exécutée | Composants partagés |
-| L5 Administration | Non commencé | Non exécutée | Revue sécurité requise |
+| L5 Administration | Fait côté Web : Équipe et accès (Membres/Invitations/Équipes), Accès aux fichiers, Réglages (Général, Protections, Automatisations, Webhooks, Avancé ; garde de sortie), Boîte de réception (Invitations/Activité), Administration (Comptes, Comptes de service, Stockage, État du serveur), sessions du Compte ; composants `packages/ui/src/team/` pilotés par transports ; transport de politique Web (`apps/studio-web/src/app/policy/`, BLAKE3/JCS vérifiés contre `layrs-sync`) ; capacités L0 et `instanceAdministrator` utilisés comme indices | Recette native Web réelle (`fixtures/nativeWebTeam.ts`) : comptes, compte de service et secret unique, stockage, état, rôles lus, équipe + historique, invitation par nom puis acceptation par le compte invité, droits propres, protection + garde, webhook + secret, exception de fichier appliquée puis vérifiée par le serveur, retour à la gestion par équipes ; `pnpm check` ; renderer ; captures sombre/clair 1440/800 | Desktop garde `NativeAdminSurface` (recette `desktop-native-team` inchangée) ; voir « Limites constatées pendant L5 » |
 | L6 Git/finitions | Non commencé | Non exécutée | Bridge Tauri et recette complète |
 
 ## 6. Qualification significative
@@ -228,6 +253,32 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
   adressée par son contenu et le résumé d’Operation reste local au poste. La page
   Changements l’annonce et renvoie vers les repères/versions nommés. Ajouter un
   message partagé demande un contrat (observation ou métadonnée publiée) à décider.
+
+### Limites constatées pendant L5
+
+- **Règle de fichier = règles personnalisées.** Toute politique ajoutée hors
+  équipes/rôles (exception de fichier incluse) fait passer le projet en mode
+  personnalisé : rôles, équipes et invitations sont suspendus jusqu’au retour à
+  la politique gérée, qui retire ces règles. L’aperçu l’annonce ; combiner
+  équipes et exceptions de fichiers demande un contrat serveur.
+- **Transport de politique Web côté client.** Le serveur n’offre pas d’aperçu de
+  politique : le Web construit la transaction (identités BLAKE3/JCS vérifiées
+  contre `layrs-sync`) ; le serveur recalcule tout et reste seul juge. Sans
+  journal durable côté Web, une réponse perdue se reprend en réessayant le même
+  aperçu tant que la page reste ouverte.
+- **Droits d’autrui calculés.** Les droits d’une autre personne sont expliqués à
+  partir des règles lues ; seuls vos propres droits sont confirmés par la
+  projection du serveur. Les règles ne sont lisibles que par les administrateurs.
+- **Recette CI par référence.** Le serveur ne renvoie pas le contenu de la
+  recette : modifier une protection avec validation automatique exige de
+  recoller la recette exacte (annoncé dans le formulaire).
+- **Sélection de personnes.** Pas d’annuaire borné pour un administrateur de
+  projet : membres de l’organisation par nom, sinon identifiant technique en
+  repli. Une invitation reçue pour un projet encore inaccessible n’affiche pas
+  son nom. Un webhook désactivé ne se réactive pas.
+- **Desktop.** Le panneau distant Desktop utilise encore l’ancienne surface ;
+  les composants partagés acceptent un transport Tauri pour une adoption
+  ultérieure.
 
 ## 7. Suggestions différées, sans confusion de périmètre
 
