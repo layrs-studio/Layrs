@@ -29,7 +29,13 @@ import {
 import { AccountPage } from "../pages/AccountPage";
 import { LoginPage } from "../pages/LoginPage";
 import { ProjectsPage, openProject } from "../pages/ProjectsPage";
-import { AdminPage, FilesPage, HistoryPage, ReviewsPage, TeamPage, VersionsPage } from "../pages/project-pages";
+import { AdminPage, TeamPage } from "../pages/project-pages";
+import { FilesPage } from "../pages/FilesPage";
+import { HistoryPage } from "../pages/HistoryPage";
+import { ReviewDetailPage } from "../pages/ReviewDetailPage";
+import { ReviewsPage } from "../pages/ReviewsPage";
+import { RunPage } from "../pages/RunPage";
+import { VersionsPage } from "../pages/VersionsPage";
 import { ProjectProvider, forgetKnownProjects, knownProjects, useProject } from "./project";
 import { SessionProvider, useSession } from "./session";
 
@@ -64,7 +70,7 @@ function Gate() {
 }
 
 function Routes() {
-  const { path, query } = useLocation();
+  const { path } = useLocation();
 
   useEffect(() => {
     if (path === "/") navigate("/projects", { replace: true });
@@ -72,15 +78,17 @@ function Routes() {
 
   const project = matchRoute("/projects/:project/*", path);
   if (project) {
-    const [view = "files", detail] = project["*"].split("/");
+    const [view = "files", ...detail] = project["*"].split("/").map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return "";
+      }
+    });
     const known = projectPages.some((page) => page.view === view) ? (view as ProjectView) : "files";
-    const version = Number(query.get("version"));
     return (
       <ProjectProvider key={project.project} spaceId={project.project}>
-        <ProjectFrame
-          view={known}
-          review={known === "reviews" && detail ? { reviewId: decodeURIComponent(detail), version: Number.isFinite(version) && version > 0 ? version : 1 } : null}
-        />
+        <ProjectFrame view={known} detail={detail.filter(Boolean)} />
       </ProjectProvider>
     );
   }
@@ -185,10 +193,19 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
   );
 }
 
-function ProjectFrame({ view, review }: { view: ProjectView; review: { reviewId: string; version: number } | null }) {
+/** `detail` is the sub-route: a capture, a review, or a review's run. */
+function ProjectFrame({ view, detail }: { view: ProjectView; detail: string[] }) {
   const project = useProject();
   const key = segment(project.spaceId);
   const current = projectPages.find((page) => page.view === view);
+  const subPage =
+    view === "history" && detail[0]
+      ? "Capture"
+      : view === "reviews" && detail[0]
+        ? detail[1] === "runs" && detail[2]
+          ? "Validation"
+          : "Revue"
+        : null;
 
   const commands = useMemo<Command[]>(
     () =>
@@ -231,15 +248,25 @@ function ProjectFrame({ view, review }: { view: ProjectView; review: { reviewId:
   else
     content = {
       files: <FilesPage />,
-      history: <HistoryPage />,
-      reviews: <ReviewsPage selected={review} />,
+      history: <HistoryPage key={detail[0] ?? ""} capture={detail[0]} />,
+      reviews: !detail[0] ? (
+        <ReviewsPage />
+      ) : detail[1] === "runs" && detail[2] ? (
+        <RunPage reviewId={detail[0]} runId={detail[2]} />
+      ) : (
+        <ReviewDetailPage reviewId={detail[0]} />
+      ),
       versions: <VersionsPage />,
       team: <TeamPage />,
     }[view];
 
   return (
     <Frame
-      crumbs={[{ label: project.name, to: `/projects/${key}/files` }, { label: current?.label ?? "Fichiers" }]}
+      crumbs={[
+        { label: project.name, to: `/projects/${key}/files` },
+        { label: current?.label ?? "Fichiers", to: subPage ? `/projects/${key}/${view}` : undefined },
+        ...(subPage ? [{ label: subPage }] : []),
+      ]}
       projectNav={
         <NavSection title={project.name}>
           {projectPages.map((page) => (

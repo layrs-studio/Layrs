@@ -44,3 +44,4 @@ export type { DiffLine, DiffStats } from "./components/diff-model";
 export { formatBytes, formatDateTime, formatRelativeTime } from "./foundation/format";
 export { AppearanceSettings } from "./pages/AppearanceSettings";
 export type * from "./api/catalog-types";
+export * from "./collab";
