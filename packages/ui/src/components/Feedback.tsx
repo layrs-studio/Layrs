@@ -124,10 +124,10 @@ export function Kbd({ children }: { children: ReactNode }) {
 export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
   const initials =
     name
-      .split(/[\s._@-]+/)
+      .split(/[^\p{L}\p{N}]+/u)
       .filter(Boolean)
       .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
+      .map((part) => Array.from(part)[0].toUpperCase())
       .join("") || "?";
   return (
     <span className="layrs-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.4) }} aria-hidden>
