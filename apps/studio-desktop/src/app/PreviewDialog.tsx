@@ -1,5 +1,5 @@
 import { Banner, Button, Dialog, diffStats } from "@layrs/ui";
-import { NativeRewriteImpact } from "../NativeRewriteImpact";
+import { RewriteImpact } from "./RewriteImpact";
 import { useWorkspace } from "./workspace";
 
 const statusLabel: Record<string, string> = { added: "Créé", deleted: "Supprimé", modified: "Remplacé" };
@@ -68,9 +68,7 @@ export function PreviewDialog() {
             </ul>
           )}
           {rewrite && data && (
-            <div className="layrs-legacy">
-              <NativeRewriteImpact rewrite={rewrite} layers={data.state.layers} points={[...data.markers, ...data.releases]} />
-            </div>
+            <RewriteImpact rewrite={rewrite} layers={data.state.layers} points={[...data.markers, ...data.releases]} />
           )}
           {preview.data.layerHeads && (
             <p>

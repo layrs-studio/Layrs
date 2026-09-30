@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { nativeCheckoutKind, nativeWorkspace } from "../tauri";
-import type { RewriteSummary } from "../NativeRewriteImpact";
+import type { RewriteSummary } from "./RewriteImpact";
 import { rememberProject } from "./recents";
 
 export type WorkspaceRequest = { action: string; [key: string]: unknown };
@@ -82,6 +82,17 @@ type WorkspaceApi = {
   applyPreview: () => Promise<Snapshot | null>;
   /** Lets child panels hold the foreground lock (merge, remote, diagnostics). */
   setForeground: (label: string | null) => void;
+  /** Takes the foreground lock if free; `release` gives it back. */
+  acquire: (label: string) => boolean;
+  release: () => void;
+  /**
+   * Runs `work` under the foreground lock. Returns null when another operation
+   * holds it or when `work` failed (the error is then shown by the shell).
+   */
+  task: <T>(label: string, work: () => Promise<T>) => Promise<T | null>;
+  setError: (message: string) => void;
+  /** Merge drafts kept while the project stays open (per Layer, conflict and block). */
+  mergeDrafts: Map<string, unknown>;
   refresh: () => Promise<void>;
 };
 
@@ -105,6 +116,7 @@ export function WorkspaceProvider({ root, children }: { root: string; children: 
   const running = useRef(false);
   const foregroundRevision = useRef(0);
   const idle = useRef({ signature: "", since: 0 });
+  const mergeDrafts = useRef(new Map<string, unknown>());
 
   const setForeground = useCallback((label: string | null) => {
     foregroundRevision.current++;
@@ -136,6 +148,33 @@ export function WorkspaceProvider({ root, children }: { root: string; children: 
       }
     },
     [root, accept, setForeground],
+  );
+
+  const acquire = useCallback(
+    (label: string) => {
+      if (running.current) return false;
+      setForeground(label);
+      return true;
+    },
+    [setForeground],
+  );
+  const release = useCallback(() => setForeground(null), [setForeground]);
+
+  const task = useCallback(
+    async <T,>(label: string, work: () => Promise<T>): Promise<T | null> => {
+      if (running.current) return null;
+      setForeground(label);
+      setError("");
+      try {
+        return await work();
+      } catch (cause) {
+        setError(String(cause));
+        return null;
+      } finally {
+        setForeground(null);
+      }
+    },
+    [setForeground],
   );
 
   const refresh = useCallback(async () => {
@@ -269,9 +308,14 @@ export function WorkspaceProvider({ root, children }: { root: string; children: 
       closePreview: () => setPreview(null),
       applyPreview,
       setForeground,
+      acquire,
+      release,
+      task,
+      setError,
+      mergeDrafts: mergeDrafts.current,
       refresh,
     }),
-    [root, kind, data, busy, error, activeLayer, conflicted, automatic, autoActivity, run, preview, inspect, applyPreview, setForeground, refresh],
+    [root, kind, data, busy, error, activeLayer, conflicted, automatic, autoActivity, run, preview, inspect, applyPreview, setForeground, acquire, release, task, refresh],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

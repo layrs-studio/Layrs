@@ -45,7 +45,7 @@ function write(entries: RecentProject[]) {
 export function rememberProject(entry: Omit<RecentProject, "openedAt" | "favorite">) {
   const current = readRecents();
   const previous = current.find((item) => item.root === entry.root);
-  const next: RecentProject = { ...entry, name: entry.name || folderName(entry.root), openedAt: new Date().toISOString(), favorite: previous?.favorite };
+  const next: RecentProject = { ...entry, name: entry.name || previous?.name || folderName(entry.root), openedAt: new Date().toISOString(), favorite: previous?.favorite };
   write([next, ...current.filter((item) => item.root !== entry.root)].slice(0, LIMIT));
 }
 
