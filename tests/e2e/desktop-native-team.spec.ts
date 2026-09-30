@@ -1,10 +1,9 @@
 import { expect,test } from "@playwright/test";
-import { readFile,writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { request as httpsRequest } from "node:https";
-import { launchNativeTauriDesktop,makeNativeSpaceFolder } from "./fixtures/nativeTauriDesktop";
+import { readFile } from "node:fs/promises";
+import { launchNativeTauriDesktop } from "./fixtures/nativeTauriDesktop";
 import { seedNativeProof } from "./fixtures/nativeProofSeed";
 import { verifyNativeCloneCancellation } from "./fixtures/nativeTransferCancellation";
+import { connectDesktop } from "./fixtures/nativeDesktopConnect";
 
 test.use({trace:"off", screenshot:"off", video:"off"});
 test.describe("native team service",()=>{
@@ -18,38 +17,29 @@ test.describe("native team service",()=>{
     try {
       const page=desktop.page;
       page.setDefaultTimeout(20000);
-      await page.goto(`${desktop.desktopUrl}/#project`);
-      await page.getByLabel("Dossier",{exact:true}).fill(fixture.workspaceRoot);
-      await page.getByRole("button",{name:"Ouvrir",exact:true}).click();
-      await expect(page.getByRole("button",{name:"Capturer",exact:true})).toBeVisible();
-      await page.getByText("Serveur et synchronisation",{exact:true}).click();
-      const remote=page.locator("details.native-remote");
-      await remote.getByLabel("Serveur HTTPS",{exact:true}).fill(fixture.origin);
-      await remote.getByText("Certificat privé de l’entreprise",{exact:true}).click();
-      await remote.getByLabel("Autorité de certification PEM").fill(fixture.caPem);
-      await remote.getByRole("button",{name:"Se connecter",exact:true}).click();
-      const code=remote.locator("p").filter({hasText:"confirmez le code"}).locator("strong");
-      await expect(code).toBeVisible();
-      const userCode=await code.textContent();
-      await new Promise<void>((resolve,reject)=>{
-        const request=httpsRequest(new URL("/v3/auth/devices/approve",fixture.origin),{method:"POST",ca:fixture.caPem,headers:{Authorization:`Bearer ${fixture.adminAccessToken}`,"Content-Type":"application/json"}},response=>{response.resume();response.on("end",()=>response.statusCode===204?resolve():reject(new Error(`Approval HTTP ${response.statusCode}`)));});
-        request.on("error",()=>reject(new Error("TLS fixture approval failed")));request.end(JSON.stringify({userCode}));
-      });
-      await expect.poll(async()=>{if(await remote.getByText(/Connexion autorisée/).count())return 1;await remote.getByRole("button",{name:"Vérifier la connexion",exact:true}).click();return remote.getByText(/Connexion autorisée/).count();},{intervals:[5500],timeout:20000}).toBe(1);
-      await remote.getByText("Choisir les têtes distantes · administration",{exact:true}).click();
-      await remote.getByRole("button",{name:"Envoyer les captures candidates",exact:true}).click();
-      await expect(remote.getByRole("status").filter({hasText:"Captures candidates admises. Les têtes distantes restent inchangées"})).toBeVisible();
-      await remote.getByRole("textbox",{name:"Layer distant à modifier",exact:true}).fill(fixture.layerId);
-      await remote.getByRole("textbox",{name:"Motif du choix distant",exact:true}).fill("Retirer puis rétablir les têtes du projet jetable");
-      await remote.getByRole("button",{name:"Prévisualiser le choix distant",exact:true}).click();
-      const choose=remote.getByRole("region",{name:"Aperçu du choix distant",exact:true});
+      await page.goto(`${desktop.desktopUrl}/#/projects/${encodeURIComponent(fixture.workspaceRoot)}/changes`);
+      await expect(page.getByRole("button",{name:"Créer une capture",exact:true})).toBeVisible();
+      await connectDesktop(page,fixture);
+      const nav=(label:string)=>page.getByRole("complementary",{name:"Navigation principale"}).getByRole("link",{name:label,exact:true});
+      // Candidate captures and the explicit head choice live in Synchronisation › Avancé.
+      await nav("Synchronisation").click();
+      await page.getByText("Captures candidates et têtes publiées",{exact:true}).click();
+      await page.getByRole("button",{name:"Envoyer les captures candidates",exact:true}).click();
+      await expect(page.getByRole("status").filter({hasText:"Captures candidates admises. Les têtes distantes restent inchangées"}).first()).toBeVisible();
+      await page.getByRole("combobox",{name:"Layer distant à modifier",exact:true}).selectOption(fixture.layerId);
+      await page.getByRole("textbox",{name:"Motif du choix distant",exact:true}).fill("Retirer puis rétablir les têtes du projet jetable");
+      await page.getByRole("button",{name:"Prévisualiser le choix distant",exact:true}).click();
+      const choose=page.getByRole("region",{name:"Aperçu du choix distant",exact:true});
       await expect(choose.getByRole("heading",{name:"Têtes après application",exact:true})).toBeVisible();
       await expect(choose.getByText("Le Layer n’aura plus aucune tête publiée. Ses anciennes captures restent conservées.",{exact:true})).toBeVisible();
       await choose.getByRole("button",{name:"Appliquer ce choix sur le serveur",exact:true}).click();
-      await expect(remote.getByRole("alert").filter({hasText:"Décision refusée par les protections du Layer"})).toBeVisible();
+      await expect(page.getByRole("alert").filter({hasText:"Décision refusée par les protections du Layer"})).toBeVisible();
       await expect(choose).toBeVisible();
-      await remote.getByRole("textbox",{name:"Motif du choix distant",exact:true}).fill("Abandon de la décision refusée");
+      await page.getByRole("textbox",{name:"Motif du choix distant",exact:true}).fill("Abandon de la décision refusée");
       await expect(choose).toHaveCount(0);
+      // Shared review, release, history and administration surfaces are embedded in Équipe.
+      await nav("Équipe").click();
+      const remote=page.getByRole("region",{name:"Équipe",exact:true});
       await remote.getByText("Revues et validations",{exact:true}).click();
       await remote.getByRole("button",{name:"Actualiser les revues",exact:true}).click();
       await remote.getByRole("button",{name:"Ouvrir la revue",exact:true}).first().click();
@@ -66,15 +56,11 @@ test.describe("native team service",()=>{
       await review.getByRole("textbox",{name:"Chemin exact, facultatif",exact:true}).fill("docs/readme.txt");
       await expect(review.getByText("Brouillon enregistré sur cet appareil.",{exact:true})).toBeVisible();
       await page.reload();
-      await page.getByLabel("Dossier",{exact:true}).fill(fixture.workspaceRoot);
-      await page.getByRole("button",{name:"Ouvrir",exact:true}).click();
-      await expect(page.getByRole("button",{name:"Capturer",exact:true})).toBeVisible();
-      await page.getByText("Serveur et synchronisation",{exact:true}).click();
-      await remote.getByLabel("Serveur HTTPS",{exact:true}).fill(fixture.origin);
-      await remote.getByText("Certificat privé de l’entreprise",{exact:true}).click();
-      await remote.getByLabel("Autorité de certification PEM").fill(fixture.caPem);
-      await remote.getByRole("button",{name:"Vérifier la session",exact:true}).click();
-      await expect(remote.getByText("Opération terminée.",{exact:true})).toBeVisible();
+      // The server and its certificate are remembered; the session is checked again.
+      await nav("Synchronisation").click();
+      await page.getByRole("button",{name:"Vérifier la session",exact:true}).click();
+      await expect(page.getByRole("main").getByText("Connecté",{exact:true})).toBeVisible();
+      await nav("Équipe").click();
       await remote.getByText("Revues et validations",{exact:true}).click();
       await remote.getByRole("button",{name:"Actualiser les revues",exact:true}).click();
       await remote.getByRole("button",{name:"Ouvrir la revue",exact:true}).first().click();
@@ -287,8 +273,9 @@ test.describe("native team service",()=>{
       await review.getByRole("button",{name:"Ouvrir la version actuelle",exact:true}).click();
       await expect(review.getByRole("heading",{name:`${proposalTitle} v2 · version 2`,exact:true})).toBeVisible();
       await verifyNativeCloneCancellation(page,testInfo,fixture);
-      await remote.getByRole("button",{name:"Se déconnecter",exact:true}).click();
-      await expect(remote.getByText("Session révoquée.",{exact:true})).toBeVisible();
+      await nav("Synchronisation").click();
+      await page.getByRole("main").getByRole("button",{name:"Se déconnecter",exact:true}).click();
+      await expect(page.getByText("Session révoquée.",{exact:true}).first()).toBeVisible();
     }finally{await desktop.dispose();}
   });
 });

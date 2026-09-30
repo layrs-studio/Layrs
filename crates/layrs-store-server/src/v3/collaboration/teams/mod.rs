@@ -106,10 +106,7 @@ impl PgCollaborationStore {
         super::super::transaction_store::lock_identity(&mut tx, principal, space).await?;
         let current=sqlx::query("SELECT s.current_policy_set_id,s.authorization_epoch,m.role FROM spaces s JOIN workspace_memberships m ON m.workspace_id=s.workspace_id AND m.principal_id=$2 WHERE s.space_id=$1 FOR UPDATE OF s")
             .bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
-        if !matches!(
-            current.get::<String, _>("role").as_str(),
-            "owner" | "administrator"
-        ) {
+        if !super::super::space_access::administers_workspace(&current.get::<String, _>("role")) {
             return Err(V3StoreError::InvalidCapability);
         }
         if current.get::<String, _>("current_policy_set_id") != authority.policy_set_id.as_str()

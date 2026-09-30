@@ -9,8 +9,7 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./styles.css": "./src/styles.css",
-    "./native.css": "./src/native-workbench.css"
+    "./layrs.css": "./src/layrs.css"
   },
   "scripts": {
     "check": "tsc --noEmit",
@@ -22,5 +21,11 @@
   "devDependencies": {
     "@types/react": "^18.3.3",
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource/audiowide": "^5.3.0",
+    "lucide-react": "^1.48.0"
   }
 }

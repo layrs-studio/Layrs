@@ -38,30 +38,10 @@ impl PgCollaborationStore {
         space: &SpaceId,
         action: V3Action,
     ) -> V3StoreResult<SpaceAuthority> {
-        let row = sqlx::query("SELECT current_repository_view_id,current_repository_view_generation,current_policy_set_id,authorization_epoch,next_event_sequence FROM spaces WHERE space_id=$1 AND lifecycle_state='ready'")
-            .bind(space.as_str()).fetch_optional(self.repository.pool()).await.map_err(pg_error)?
-            .ok_or(V3StoreError::NotFound)?;
-        let authority = SpaceAuthority {
-            space_id: space.clone(),
-            repository_view_id: parse(row.get("current_repository_view_id"))?,
-            repository_view_generation: row.get::<i64, _>("current_repository_view_generation")
-                as u64,
-            policy_set_id: parse(row.get("current_policy_set_id"))?,
-            authorization_epoch: row.get::<i64, _>("authorization_epoch") as u64,
-            watermark_sequence: row.get::<i64, _>("next_event_sequence") as u64 - 1,
-        };
-        require_allowed(
-            self.repository
-                .authorizer()
-                .authorize(&AuthorizationCheck {
-                    principal: principal.clone(),
-                    action,
-                    target: AuthorizationTarget::Space(space.clone()),
-                    policy_set_id: authority.policy_set_id.clone(),
-                    authorization_epoch: authority.authorization_epoch,
-                })
-                .await?,
-        )?;
+        // Unlike `authority`, content-restricted principals pass: every scoped
+        // operation then checks the candidate's exact paths.
+        let authority = self.current_authority(space).await?;
+        require_allowed(self.decide(principal, &authority, action).await?)?;
         Ok(authority)
     }
 
@@ -133,17 +113,7 @@ impl PgCollaborationStore {
         authority: &SpaceAuthority,
         action: V3Action,
     ) -> V3StoreResult<bool> {
-        let decision = self
-            .repository
-            .authorizer()
-            .authorize(&AuthorizationCheck {
-                principal: principal.clone(),
-                action,
-                target: AuthorizationTarget::Space(authority.space_id.clone()),
-                policy_set_id: authority.policy_set_id.clone(),
-                authorization_epoch: authority.authorization_epoch,
-            })
-            .await?;
+        let decision = self.decide(principal, authority, action).await?;
         let restricted = decision.content_restricted;
         require_allowed(decision)?;
         Ok(restricted)
@@ -298,8 +268,7 @@ impl PgCollaborationStore {
             request.action,
             ScopedReviewActionKind::Approve | ScopedReviewActionKind::RequestChanges
         ) {
-            let human: bool = sqlx::query_scalar("SELECT principal_kind IN ('account','bootstrap_admin') FROM principals WHERE principal_id=$1")
-                .bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
+            let human = super::super::space_access::human_principal(&mut *tx, principal).await?;
             if !human {
                 return Err(V3StoreError::InvalidCapability);
             }

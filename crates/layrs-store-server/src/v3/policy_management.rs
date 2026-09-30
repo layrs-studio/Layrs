@@ -130,8 +130,19 @@ pub(crate) async fn require_managed(
     space: &SpaceId,
     current: &ObjectId,
 ) -> V3StoreResult<()> {
-    if state(repository, tx, space, current).await?.mode != "managed" {
+    if !managed(repository, tx, space, current).await? {
         return Err(V3StoreError::CustomPolicyRootActive);
     }
     Ok(())
+}
+
+/// Managed member, Team and invitation APIs are refused while a custom policy
+/// root is active; this is the predicate behind `require_managed`.
+pub(crate) async fn managed(
+    repository: &PgV3Repository,
+    tx: &mut Transaction<'_, Postgres>,
+    space: &SpaceId,
+    current: &ObjectId,
+) -> V3StoreResult<bool> {
+    Ok(state(repository, tx, space, current).await?.mode == "managed")
 }

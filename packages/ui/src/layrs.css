@@ -1,0 +1,33 @@
+/* Single stylesheet entry for Web and Desktop. */
+@import "./foundation/fonts.css";
+@import "./foundation/tokens.css";
+@import "./foundation/base.css";
+@import "./components/components.css";
+@import "./shell/shell.css";
+@import "./pages/pages.css";
+@import "./team/team.css";
+@import "./collab/collab.css";
+@import "./legacy.css";
+
+/*
+ * Transitional aliases: surfaces not yet rebuilt still read the former
+ * variables. Remove once no `native-*` stylesheet references them.
+ */
+:root {
+  --layrs-bg: var(--bg);
+  --layrs-bg-elevated: var(--surface-1);
+  --layrs-panel: var(--surface-1);
+  --layrs-panel-strong: var(--surface-3);
+  --layrs-panel-soft: var(--surface-2);
+  --layrs-ink: var(--text);
+  --layrs-muted: var(--text-muted);
+  --layrs-line: var(--border);
+  --layrs-line-strong: var(--border-strong);
+  --layrs-accent: var(--layrs-coral);
+  --layrs-accent-ink: var(--text-on-primary);
+  --layrs-accent-2: var(--layrs-amber);
+  --layrs-warning: var(--warning);
+  --layrs-danger: var(--danger);
+  --layrs-blue: var(--accent-text);
+  --layrs-shadow: var(--shadow-2);
+}
