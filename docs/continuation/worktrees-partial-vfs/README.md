@@ -10,13 +10,46 @@ documents et leurs copies de sources, sans changer le code du produit.
 Depuis la racine du dépôt, sur la nouvelle machine où ces dossiers sont absents :
 
 ```powershell
-tar -xzf docs/continuation/worktrees-partial-vfs/evidence.tar.gz
+tar -xkzf docs/continuation/worktrees-partial-vfs/evidence.tar.gz
 ```
 
 L'archive contient des fichiers ordinaires sous `.layrs-local/validation/`, avec
 leurs octets d'origine. Elle ne contient aucun lien symbolique ou chemin absolu.
-Ne pas extraire par-dessus un dossier de preuves déjà présent sans comparer les
-empreintes : les preuves historiques doivent rester immuables.
+L'option `-k` conserve les fichiers déjà présents ; leur présence peut produire
+un code de sortie non nul. Comparer alors les empreintes ci-dessous, sans retirer
+`-k` pour écraser une différence. Les preuves historiques restent immuables.
+
+Sous Windows sans prise en charge des chemins longs, utiliser un checkout court,
+par exemple `C:\src\Layrs` : certains chemins relatifs atteignent 201 caractères.
+
+## Vérifier les fichiers restaurés
+
+Depuis la même racine, cette commande PowerShell vérifie l'archive et chaque
+fichier restauré, sans les modifier :
+
+```powershell
+$packet = 'docs/continuation/worktrees-partial-vfs'
+$inventory = Get-Content -LiteralPath "$packet/inventory.json" -Raw | ConvertFrom-Json
+$archivePath = Join-Path $packet $inventory.archive
+if ((Get-Item -LiteralPath $archivePath).Length -ne $inventory.archiveBytes -or
+    (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ne $inventory.archiveSha256) {
+    throw 'Archive absente ou empreinte incorrecte'
+}
+$failures = @()
+foreach ($entry in $inventory.files) {
+    if (!(Test-Path -LiteralPath $entry.path -PathType Leaf)) {
+        $failures += $entry.path
+    } elseif ((Get-Item -LiteralPath $entry.path).Length -ne $entry.bytes -or
+              (Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash -ne $entry.sha256) {
+        $failures += $entry.path
+    }
+}
+if ($failures.Count) { throw ("Fichiers absents ou différents :`n" + ($failures -join "`n")) }
+"Vérification réussie : $($inventory.fileCount) fichiers"
+```
+
+`validation.json` consigne les contrôles du paquet lors de sa création. C'est une
+preuve historique ; la commande ci-dessus vérifie l'état de la nouvelle copie.
 
 `inventory.json` donne les chemins relatifs, tailles et SHA-256 des fichiers
 transportés. Les documents historiques conservent leurs chemins absolus d'origine

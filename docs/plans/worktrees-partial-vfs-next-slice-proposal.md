@@ -2,6 +2,10 @@
 
 Exported from the completed design task `layrs-stage1b-after-writer-r7-qualified-next-slice-design-readonly`. This is the original proposal, not an approved source grant. No implementation has begun. Absolute links below identify the original checkout; use their repository-relative suffix on another machine.
 
+Transfer clarification: references below to accepted owned-host assumptions concern
+the original Windows test host. Execution on another computer requires a fresh
+host disposition; the exported proposal does not transfer that acceptance.
+
 I recommend **a bound, read-only bootstrap catalog/descriptor handoff** as the next slice. Keep local range serving, native population and `ProviderPrepared` transitions outside that implementation.
 
 This extracts useful, already validated metadata from the accepted bootstrap endpoint without inventing readiness or changing R4 durable records. The subsequent population/preparation slice needs a separate registration-ticket and post-bootstrap state contract.
