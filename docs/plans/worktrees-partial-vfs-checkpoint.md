@@ -30,14 +30,18 @@ Local evidence packet:
 - Accepted `review-disposition-r1.json` SHA-256:
   `F5C83B5DFE4F33D07681D1A31FF31D92B674F55CD4F6984DC518705D00D24FBF`
 
-The ignored `.layrs-local` evidence, binaries and retained fixtures are not part
-of this Git checkpoint. Preserve them locally; do not clean or retry fixtures.
+The first checkpoint omitted the ignored `.layrs-local` evidence. The follow-up
+[portable continuation packet](../continuation/worktrees-partial-vfs/README.md)
+now carries the contracts, review records, logs and frozen source copies in an
+archive that restores their original relative paths. Binaries, build outputs and
+native fixtures remain local. Preserve them; do not clean or retry fixtures.
 
 ## Remaining work
 
-- The next read-only design proposal is a bound bootstrap catalog/descriptor
-  handoff from the retained published holder. It still needs independent design
-  review and source authorization; no implementation was started.
+- The [next read-only design proposal](worktrees-partial-vfs-next-slice-proposal.md)
+  is a bound bootstrap catalog/descriptor handoff from the retained published
+  holder. It still needs independent design review and source authorization;
+  no implementation was started.
 - Durable post-bootstrap registration, provider preparation/population, serving,
   capture, managed-member/companion integration and expansion remain separate
   obligations. CLI/Desktop activation needs its own host qualification.
