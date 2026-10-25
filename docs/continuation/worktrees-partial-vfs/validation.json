@@ -1,0 +1,14 @@
+{
+  "fileCount": 20268,
+  "archiveSha256": "ad8236dd7cffa34d07a3eccb63ea242d30e9325a580629b07a0571d393c42438",
+  "allFileHashesMatch": true,
+  "onlySafeRegularRelativePaths": true,
+  "nativeFixtureTreesExcluded": true,
+  "criticalFilesPresent": [
+    ".layrs-local/validation/l5-store-stage1b-consolidated-contract-r4.md",
+    ".layrs-local/validation/l5-store-stage1b-writer-design-r2-0d70444d1f904e1b86f0405f04248d17/replacement-r2.md",
+    ".layrs-local/validation/l5-store-stage1b-writer-r7-bdbc821b61a64108b8355ee9771f6df1/owned-runtime-dea358a7a7a049b588aa5d23291eeb11/review-disposition-r1.json"
+  ],
+  "systemTarFreshDirectoryExtraction": "PASS",
+  "sourceOrNativeTestsExecuted": false
+}

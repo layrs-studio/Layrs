@@ -10,3 +10,6 @@ crates/layrs-store-local/tests/fixtures/scm-v2.sql text eol=lf
 
 # Tauri CLI rewrites its manifest with LF; CRLF checkouts would change during packaging.
 apps/studio-desktop/src-tauri/Cargo.toml text eol=lf
+
+# Preserve the byte-exact portable validation archive across platforms.
+docs/continuation/worktrees-partial-vfs/evidence.tar.gz -text
