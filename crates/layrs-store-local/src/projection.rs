@@ -26,6 +26,7 @@ pub use provider::{
 #[cfg(windows)]
 pub use provider::{
     ProviderBootstrapSource, ProviderSourceDescriptor,
+    ProviderBootstrapCatalog, ProviderCatalogDescriptor,
     ProviderBootstrapAttempt,
     ProviderBootstrapWriterOperation,
     ProviderBootstrapWriteReportProvenance,

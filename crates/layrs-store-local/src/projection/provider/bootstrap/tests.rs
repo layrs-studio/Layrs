@@ -1,11 +1,12 @@
 //! SOURCE RECIPES ONLY until ROOT compiles/reviews/releases a serial queue.
 use super::super::process_profile::tests::child;
 use super::*;
+mod catalog;
 mod fixture;
 pub(super) mod hooks;
 pub(super) mod process;
 mod recipes;
-use fixture::{Fixture, failure, has};
+use fixture::{failure, has, Fixture};
 use std::path::PathBuf;
 
 fn attempt() -> ProviderBootstrapAttempt {

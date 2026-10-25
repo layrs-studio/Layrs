@@ -864,14 +864,26 @@ leurs changements. Pas de compilation globale ou formatage concurrent mutatif.
   provider, avec dépendances, périmètre et limites explicites. La proposition
   reçue vise la création jusqu'à control_published, avec reprise de publication
   et abandon strict sans dépendances acceptées ; le membre resterait initializing.
-  Avant les revues de conception, un addendum doit fixer les types publics de
+  À cette étape historique de conception, avant les revues, un addendum doit fixer les types publics de
   compte rendu des écritures, la conservation des gardes et le traitement des
   commits/fermetures incertains. Aucun writer ni nouvel essai n'est accordé.
-  Les sources restent gelées pendant cette préparation. Les preuves de récupération
+  Les sources restent gelées pendant cette préparation historique. Les preuves de récupération
   qualifient seulement les cas et hôtes de test décrits ; elles n'activent
   aucune récupération dans les hôtes produit.
   Aucun writer, abandon, publication ou appel de déclaration au démarrage
   CLI/Desktop n'est accordé.
+  **Mise à jour du 26 octobre 2026 :** le writer Stage1b est implémenté et
+  qualifié dans le périmètre Windows owned-test-host accepté pour R7 : création
+  jusqu'à `control_published`, membre de famille toujours `initializing`, reprise
+  limitée à la publication et abandon strict sans claims. Les 156 sélections R7
+  sont acceptées pour leurs assertions bornées ; les neuf tests purs conservent
+  leur provenance R5 et l'échec natif R6 reste un échec. Le
+  [checkpoint et sa disposition acceptée](worktrees-partial-vfs-checkpoint.md)
+  renvoient au paquet de preuve portable restauré sur ce poste. Cette qualification
+  n'accorde ni préparation/population provider, ni source de lecture, capture,
+  conversion, activation CLI/Desktop ou acceptation L5 complète. La reprise
+  actuelle livre le [catalogue de métadonnées borné](worktrees-partial-vfs-catalog-checkpoint.md)
+  proposé après R7 ; sa qualification est distincte des preuves historiques.
   Les observations A+B compilent, avec 44 tests de bibliothèque réussis. Le
   défaut de lettre de lecteur est reproduit nativement puis corrigé localement
   par comparaison `OsStr` exacte, sans changer le corps du test rouge/vert.

@@ -1,5 +1,23 @@
 # État courant de Layrs
 
+## Reprise du 26 octobre 2026
+
+La passation distante `10f93d7` est intégrée par `b54d18c`, après la fusion
+des travaux locaux `a4c3551`. Les **20 268 fichiers** du
+[paquet portable](continuation/worktrees-partial-vfs/README.md) sont restaurés
+dans `.layrs-local/validation` ; taille et SHA-256 de chaque fichier ont été
+vérifiés. Les preuves historiques n'ont pas été rejouées ni modifiées.
+
+La reprise porte sur le catalogue et les descripteurs de métadonnées empruntés
+au holder `ProviderControlPublished`. La revue de conception accepte ce
+périmètre, avec une seconde validation exigeant elle aussi `ControlPublished`.
+L'implémentation est terminée : **10 recettes natives**, **6 régressions du
+validateur** et **73 tests purs** passent ; la compilation de tout le workspace
+passe également. Le [checkpoint du catalogue](plans/worktrees-partial-vfs-catalog-checkpoint.md)
+consigne le contrat, les preuves, les échecs antérieurs conservés et la suite.
+Population native, lecture de contenu, capture et activation CLI/Desktop restent
+à réaliser.
+
 ## Intégration locale du 25 octobre 2026
 
 Les travaux locaux du début octobre sont réintégrés sur le checkpoint distant
@@ -17,7 +35,7 @@ destinations accepte aussi les locators validés des worktrees secondaires.
 
 Le [checkpoint du 25 octobre](plans/worktrees-partial-vfs-checkpoint.md)
 décrit le chantier Worktrees/VFS et les travaux encore ouverts. Les preuves R7
-hors Git de l'autre poste ne sont pas disponibles ici. Cette fusion ne clôt pas
+initialement absentes ont été restaurées le 26 octobre (voir ci-dessus). Cette fusion ne clôt pas
 ce chantier et ne vaut pas qualification de distribution.
 
 Vérifications de cette intégration : compilation du workspace Rust avec toutes

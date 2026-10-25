@@ -2,7 +2,7 @@
 use super::{
     database_io,
     records::{self, *},
-    recovery::error::{Result, invalid},
+    recovery::error::{invalid, Result},
 };
 use crate::projection::{database, retention, selection};
 use layrs_core::{
@@ -14,6 +14,13 @@ use rusqlite::Connection;
 pub(super) enum PrivateValidation {
     Uninitialized,
     Initialized(MountRecord),
+}
+pub(super) enum PrivateSourceValidation {
+    Uninitialized,
+    Initialized {
+        mount: MountRecord,
+        source: ProviderBootstrapSource,
+    },
 }
 
 pub(super) const EMPTY_TABLES: [&str; 31] = [
@@ -64,10 +71,23 @@ pub(super) fn private(
     allocation: &AllocationRecord,
     prepared: Option<&PreparedRecord>,
 ) -> Result<PrivateValidation> {
+    match private_with_source(c, allocation, prepared)? {
+        PrivateSourceValidation::Uninitialized => Ok(PrivateValidation::Uninitialized),
+        PrivateSourceValidation::Initialized { mount, .. } => {
+            Ok(PrivateValidation::Initialized(mount))
+        }
+    }
+}
+
+pub(super) fn private_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: Option<&PreparedRecord>,
+) -> Result<PrivateSourceValidation> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let observed = database_io::schema_inventory(c)?;
     if version == 0 && observed.is_empty() {
-        return Ok(PrivateValidation::Uninitialized);
+        return Ok(PrivateSourceValidation::Uninitialized);
     }
     if version != 8 {
         return Err(invalid("provider bootstrap requires exact private schema8"));
@@ -354,7 +374,7 @@ pub(super) fn private(
     if failures {
         return Err(invalid("provider private foreign-key corruption"));
     }
-    Ok(PrivateValidation::Initialized(mount))
+    Ok(PrivateSourceValidation::Initialized { mount, source })
 }
 
 #[cfg(test)]

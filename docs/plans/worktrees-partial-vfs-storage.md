@@ -204,10 +204,14 @@ qualify these changes. Windows power-loss remains unqualified;
 provider activation, managed member transitions/companions and expansion are later
 required stages, not completion claims for this foundation.
 
-Stage1b remains read-only design with **no production or dependency grant**. The
-corrected associated-static bootstrap discovery contract below received independent
-SPEC R2 review with no P0/P1/P2; this is contract review, not implementation
-qualification. Observed directory bytes/identity remain data only. Canonical
+Stage1b inspection, restricted recovery and the bootstrap writer are implemented.
+The [25 October checkpoint](worktrees-partial-vfs-checkpoint.md) records accepted
+R7 owned-host writer evidence through `control_published`, with the family member
+still `initializing`. On 26 October, the separately reviewed metadata-only catalog
+handoff was implemented and passed its [focused qualification](worktrees-partial-vfs-catalog-checkpoint.md). `ProjectionProviderStore`,
+range serving and later phase/activation-map APIs below remain **proposed**.
+The earlier SPEC R2 contract review was not runtime qualification.
+Observed directory bytes/identity remain data only. Canonical
 root/ancestor preflight pins remain held through publication, while expected-open
 or a separately qualified publisher alone may yield a retained control guard.
 A persistence error has unknown durability and requires rereading the external
@@ -395,9 +399,12 @@ Receipt lookup is deterministic and **SQL-free**:
 family/worktrees/<existing BLAKE3 Worktree key>/metadata/provider-control/
     allocation.json
     prepared.json
+    abandoned.json
 ```
 
-There is one bootstrap per fresh member; both receipts bind its exact transaction.
+There is one bootstrap per fresh member; the A/P/T receipts bind its exact
+transaction. Terminal T dominates; its exact retained binding must be revalidated,
+without restart adoption or silent rebinding.
 Do not scan arbitrary names or query a possibly hot registry to locate them.
 Allocation is canonical and bounded to128KiB, including intended FORMAT at most64KiB;
 prepared is bounded to64KiB. Allocation binds family incarnation/marker digest,
@@ -411,7 +418,8 @@ and sync roots; family storage need not be on that volume.
 
 `ProviderBootstrapBinding` contains the existing `RecoveryBinding`, transaction ID,
 allocation digest and allocation-file native identity, plus an optional prepared
-receipt binding (digest, native file identity and encoded `ControlDirectoryIdentity`).
+receipt binding (digest, native file identity and encoded `ControlDirectoryIdentity`),
+and the optional terminal receipt's exact digest and native identity.
 Prepared binds the allocation digest. Use camelCase/deny_unknown_fields, bounded
 identity strings and domain-separated `blake3:` plus64-lowercase-hex receipt digests;
 existing recovery digest domains and native identity encodings remain unchanged.
@@ -431,9 +439,12 @@ branch's missing proof. Absent/unreadable allocation, replaced native identities
 final-present control without a durable expected identity, or unavailable required
 root/stage proof yields `NeedsRepair`, without a usable member rollback capability.
 
-Only then probe catalog through `inspection_catalog(false)`/`catalog_once(false)` and
-private metadata through a readonly connection and the proposed structural/bootstrap
-validator. Independently bound private probing may classify private rollback while
+Discovery uses filesystem-bound `FamilyAccess` and the existing lifecycle, owner
+and catalog gates. Only then probe both databases through provider-specific
+readonly I/O and the full structural/bootstrap validators. Ordinary recovering
+openers are prohibited. Profile gating, typed original causes, strict recovery
+admission and immediate stop after observable close failure remain required.
+Independently bound private probing may classify private rollback while
 the family registry is unreadable; it cannot establish membership or expose phase.
 Report family/private typed rollback evidence independently. Overall
 `SqlValidationPending` exposes **no ticket, phase, activation map, transition receipt
@@ -591,15 +602,16 @@ a separately implemented and tested overlapped completion/cancel/drain contract.
 It is not claimed by the current synchronous API. Full L5 qualification must test
 ownership through cancellation and outstanding native I/O, not just token polling.
 
-After root grants schema 8 and the acyclic Windows Store-local→VFS dependency:
+Schema 8, the acyclic Windows Store-local→VFS dependency, retained control/root
+capabilities and restricted bootstrap publication are now implemented. Continue
+in this dependency order:
 
-1. Provider implements control-directory/preliminary layout proof and complete
-   root guard. Store adds explicit schema-8 upgrade, provider-private records and
-   ordinary-mutator gates, then provider-specific bound recovery. Recovery tests
-   must precede mount/read authority.
-2. Implement catalog/descriptors, exact phase/map activation and retained local
-   range reader; adapter connects the initially closed source gate. Qualify cold,
-   prepared, missing-protected-content, restart and two-member isolation cases.
+1. Expose bound catalog/descriptor DATA from the retained Published holder,
+   with full readonly validation and no content capability.
+2. Review the durable registration/preparation contract, then implement
+   source-free native population. Separately qualify an eligible local-only
+   read lease and exact Active mapping before connecting the adapter's source
+   gate. Qualify cold, prepared, missing-protected-content, restart and isolation.
 3. Extract common reconciliation and implement two-pass guarded capture with
    whole-operation quota, existing external stages and durable capture receipts.
    Qualify cancellation, failure boundaries and no scanner fallback.
@@ -607,9 +619,9 @@ After root grants schema 8 and the acyclic Windows Store-local→VFS dependency:
    deletions and ready-receipt publication. Qualify source changes before readiness,
    exact publication after readiness and complete-scope expansion.
 
-Decisive gates remaining: schema/dependency grant; actual provider control/root
-capabilities; adapter's closed source gate before population; exact recoverable
-bootstrap evidence at each crash boundary; inherited import-prefix/mapping schema;
+Decisive gates remaining: partial-Store integration of retained control/root
+capabilities; adapter's closed source gate before population; durable post-bootstrap
+registration/preparation contract; inherited import-prefix/mapping schema;
 and native-I/O ownership/cancellation qualification. They are dependencies and
 review targets, not implicit implementation approval. No new raw spool, native
 incomplete Store, ordinary provider scanner, or automatic format conversion is part

@@ -1,6 +1,6 @@
 # Read-only proposal following writer R7
 
-Exported from the completed design task `layrs-stage1b-after-writer-r7-qualified-next-slice-design-readonly`. This is the original proposal, not an approved source grant. No implementation has begun. Absolute links below identify the original checkout; use their repository-relative suffix on another machine.
+Exported from the completed design task `layrs-stage1b-after-writer-r7-qualified-next-slice-design-readonly`. This preserves the original proposal and its historical authorization boundary. The 26 October user-directed continuation reviewed and implemented the bounded metadata slice; see the [catalog checkpoint](worktrees-partial-vfs-catalog-checkpoint.md) for qualification and remaining work. Absolute links below identify the original checkout; use their repository-relative suffix on another machine.
 
 I recommend **a bound, read-only bootstrap catalog/descriptor handoff** as the next slice. Keep local range serving, native population and `ProviderPrepared` transitions outside that implementation.
 

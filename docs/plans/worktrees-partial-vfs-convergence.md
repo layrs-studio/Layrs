@@ -2,7 +2,11 @@
 
 Date: 2026-10-24. Programme: [Worktrees, partial availability and VFS](worktrees-partial-vfs.md).
 
-**Status: contract reviewed; schema foundation authorized, implementation pending qualification.** The programme direction is accepted: a
+**Status (26 October 2026): schema and bounded bootstrap publication implemented;
+partial-provider integration remains open.** See the
+[accepted writer checkpoint](worktrees-partial-vfs-checkpoint.md). The next bound
+metadata catalog slice is implemented with [focused qualification](worktrees-partial-vfs-catalog-checkpoint.md).
+The programme direction is accepted: a
 distinct format-4 `ProjectionVfsWorktree`, the existing availability/content
 engine, and no incomplete native SCM Store. New types, APIs, database extensions,
 state transitions and tests below are proposals, not descriptions of implemented
@@ -291,12 +295,12 @@ separate evidence from process-interruption recovery.
 ## Proposed persistence, roots and restart
 
 Reuse the format-4 private database and shared content family. No parallel VFS
-database or second content format is proposed. The inspected private schema is
-version 7; version 8 is a candidate for this extension after the backend R2 fixes
-and correction freeze, not an already reserved or implemented version.
+database or second content format is proposed. Private schema 8 is implemented
+for the bounded provider bootstrap. Post-bootstrap registration, population,
+activation and capture records below still require their own durable contract.
 
-Add bounded, versioned private records for catalog/descriptors and mount binding;
-registration/population/activation phases and the original-to-capture generation
+Existing bounded catalog/descriptors and bootstrap mount records are the foundation.
+Proposed extensions cover registration/population/activation and the original-to-capture generation
 mapping; capture transaction/staging/receipt; and export/conversion/selection-
 transition intents. Reuse existing projection generations, selection history,
 captures, claims, reservations and staging mechanisms rather than duplicating
@@ -472,12 +476,13 @@ satisfy managed recovery.
 
 | Stage | Dependency and owner boundary | Completion evidence |
 | --- | --- | --- |
-| 0. Finish backend R2 fixes, freeze L3 corrections and qualify complete-store Windows VFS | Existing L3 correction owner and VFS integrator retain their files; parent coordinates. Schema 8/provider-capture extension remains pending; no concurrent extension. | Frozen interface revision, relevant passing checks and outstanding limitations recorded by owners. |
-| 1. Versioned Store/evidence extension | Next sequential task after stage 0's relevant freeze; L3 owner controls core projection, private schema/migration, catalog/range APIs, capture persistence and retention/reconciliation. | Compatibility, deterministic evidence, lease, quota and crash tests; independent review. |
-| 2. Narrow provider support | VFS owner controls control-directory/root proof, checkpoint changes, source contract and missing-range diagnostics. | Native root/control identity and no-hydration checkpoint tests. |
-| 3. Partial adapter first delivery | New adapter owner controls new `projection_vfs_source` / `projection_vfs_worktree` modules and focused tests. Parent handles module registration and daemon/CLI/Desktop routing. | Fixed-selection mount, explicit preparation, capture/restart and recovery export tests. L5 remains open. |
-| 4. Managed recovery and explicit selection additions | Scheduled after the shared seams stabilize; parent assigns conversion and transition ownership without overlapping active edits. | Ordinary managed destination and preserved-work expansion tests, including interruption replay. |
-| 5. Platform and integrated qualification | Parent coordinates independent reviewers and test operator. Linux/FUSE is conditional after Windows qualification. | Dated matrix of passed/failed/skipped cases; no unsupported platform claims. |
+| 0. Existing foundation | Schema 8, retained VFS control/root capabilities, restricted recovery and bootstrap writer are implemented. Partial-Store integration of these capabilities remains open. | Accepted R7 writer evidence through control publication only; see checkpoint. |
+| 1. Bound metadata catalog | Store exposes validated catalog/descriptor DATA from the retained Published holder. | Exact source/binding checks, two readonly passes under existing gates, cold metadata and typed refusals. |
+| 2. Registration and source-free population | Review the durable post-bootstrap preparation contract before implementing native population. | Restart/identity/refusal evidence; no range-serving authority inferred. |
+| 3. Local reads and exact activation mapping | Store supplies retained local content leases; adapter connects the initially closed source gate only when eligible. | Prepared, missing-protected-content, cancellation and two-member isolation cases. |
+| 4. Guarded capture | Store and adapter owners implement reconciliation, capture persistence and retention. | Capture/restart, quota, cancellation and recovery export tests. L5 remains open. |
+| 5. Managed recovery and explicit selection additions | Parent assigns conversion and transition ownership after shared seams stabilize. | Ordinary managed destination and preserved-work expansion tests, including interruption replay. |
+| 6. Platform and integrated qualification | Parent coordinates independent review and testing. Linux/FUSE is conditional after Windows qualification. | Dated matrix of passed/failed/skipped cases; no unsupported platform claims. |
 
 Existing complete-VFS source/capture/worktree files stay with their integrator
 until freeze. Share proposed signatures first; do not independently refactor
@@ -495,6 +500,10 @@ does not complete or reassign their implementation:
 | P2 | Managed recovery separates authorized uncaptured work from unknown/modified-read-only/revoked work through verified companion preservation or a blocked state. | Parent schedules the conversion/adapter owner; no invented observations or readiness. |
 
 ## Concrete acceptance matrix — all proposed, not run here
+
+The accepted bootstrap writer evidence in the checkpoint is separate from this
+still-open integration matrix. It does not close registration, native population,
+activation, source serving or capture cases below.
 
 Use disposable roots and deterministic faults. Keep the existing catalogue,
 path, file/capture-byte and change-count bounds; exercise boundary rejection

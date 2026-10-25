@@ -4,6 +4,11 @@ This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.
 No new full-suite run was performed for the checkpoint commit.
 
+**26 October continuation:** the portable packet has been verified and restored
+on the second workstation. The [catalog checkpoint](worktrees-partial-vfs-catalog-checkpoint.md)
+records the following metadata-only slice and its separate local qualification.
+The evidence below retains its original writer R7 scope.
+
 ## Accepted bounded writer milestone
 
 The recorded writer R7 run passed all 156 ordered selections (137 owned-process
@@ -40,8 +45,8 @@ native fixtures remain local. Preserve them; do not clean or retry fixtures.
 
 - The [next read-only design proposal](worktrees-partial-vfs-next-slice-proposal.md)
   is a bound bootstrap catalog/descriptor handoff from the retained published
-  holder. It still needs independent design review and source authorization;
-  no implementation was started.
+  holder. This was pending at the 25 October checkpoint; its reviewed
+  implementation and qualification are recorded in the continuation above.
 - Durable post-bootstrap registration, provider preparation/population, serving,
   capture, managed-member/companion integration and expansion remain separate
   obligations. CLI/Desktop activation needs its own host qualification.

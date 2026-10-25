@@ -1,6 +1,7 @@
 //! Stage1b writer: control_published with family initializing, no readiness.
 mod abandon;
 mod allocation;
+mod catalog;
 mod outcome;
 mod publication;
 mod receipt_io;
@@ -25,6 +26,7 @@ use super::{
 use crate::projection::shared::provider_access::{FamilyAccess, Registration};
 use crate::projection::{PartialStoreFamily, ProjectionStoreError, Result};
 use layrs_core::scm::WorktreeId;
+pub use catalog::{ProviderBootstrapCatalog, ProviderCatalogDescriptor};
 pub use outcome::{
     ProviderControlCommitDisposition, ProviderControlPublicationOutcome, ProviderControlPublished,
     ProviderControlWithheld,

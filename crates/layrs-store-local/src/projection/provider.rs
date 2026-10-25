@@ -5,6 +5,7 @@ use super::*;
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
+    ProviderBootstrapCatalog, ProviderCatalogDescriptor,
     ProviderBootstrapAttempt,
     ProviderBootstrapWriterOperation,
     ProviderBootstrapWriteReportProvenance,
