@@ -6,9 +6,48 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+#[path = "native_selection.rs"]
+mod selection;
 
 pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
+    let PreparedRequest {
+        root,
+        origin,
+        ca_pem,
+        action,
+        choose_output,
+    } = prepare(cli, arguments)?;
+    execute(root, origin, ca_pem, action, choose_output)
+}
+
+struct PreparedRequest {
+    root: PathBuf,
+    origin: String,
+    ca_pem: Option<String>,
+    action: Action,
+    choose_output: Option<String>,
+}
+
+fn prepare(cli: &Cli, arguments: &[String]) -> Result<PreparedRequest, CliError> {
     let mut args = arguments.to_vec();
+    let offline = args.first().is_some_and(|action| {
+        matches!(
+            action.as_str(),
+            "partial-observe" | "partial-prepare" | "partial-resume-preparation"
+        )
+    });
+    let selection = selection::take(&mut args)?;
+    let expected_generation = option(&mut args, "--expected-generation")?;
+    if expected_generation.is_some()
+        && !offline
+        && args
+            .first()
+            .is_none_or(|action| !matches!(action.as_str(), "partial-select" | "partial-hydrate"))
+    {
+        return Err(CliError::usage(
+            "--expected-generation requires remote partial-select or partial-hydrate",
+        ));
+    }
     let origin = option(&mut args, "--endpoint")?
         .or_else(|| std::env::var("LAYRS_SERVER_ENDPOINT").ok())
         .ok_or_else(|| {
@@ -34,6 +73,17 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         .map(Ok)
         .unwrap_or_else(std::env::current_dir)
         .map_err(error)?;
+    if offline {
+        let (root, action) =
+            crate::native_offline::remote_action(&root, args, expected_generation)?;
+        return Ok(PreparedRequest {
+            root,
+            origin,
+            ca_pem,
+            action,
+            choose_output: None,
+        });
+    }
     let request_id = option(&mut args, "--request-id")?;
     let choose_output = option(&mut args, "--output")?;
     let history_path = option(&mut args, "--path")?;
@@ -378,11 +428,29 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         ["receive"] => Action::Receive,
         ["clone-partial", space, step, path] => {
             root = PathBuf::from(path);
-            Action::CloneProjection {
-                space: layrs_core::scm::SpaceId::parse(*space).map_err(error)?,
-                step: layrs_core::scm::StepId::parse(*step).map_err(error)?,
+            let space = layrs_core::scm::SpaceId::parse(*space).map_err(error)?;
+            let step = layrs_core::scm::StepId::parse(*step).map_err(error)?;
+            match selection {
+                Some(selection) => Action::CloneProjectionSelected {
+                    space,
+                    step,
+                    selection,
+                },
+                None => Action::CloneProjection { space, step },
             }
         }
+        ["partial-select" | "partial-hydrate"] => Action::ExpandProjectionSelection {
+            expected_generation: expected_generation
+                .as_deref()
+                .ok_or_else(|| {
+                    CliError::usage("provide --expected-generation N from partial status")
+                })?
+                .parse()
+                .map_err(|_| CliError::usage("invalid projection generation"))?,
+            selection: selection.ok_or_else(|| {
+                CliError::usage("provide at least one --include PATH or --include-tree SUBTREE")
+            })?,
+        },
         ["clone", space, path] => {
             root = PathBuf::from(path);
             Action::Clone {
@@ -396,6 +464,22 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
             ));
         }
     };
+    Ok(PreparedRequest {
+        root,
+        origin,
+        ca_pem,
+        action,
+        choose_output,
+    })
+}
+
+fn execute(
+    root: PathBuf,
+    origin: String,
+    ca_pem: Option<String>,
+    action: Action,
+    choose_output: Option<String>,
+) -> Result<Rendered, CliError> {
     let login = matches!(action, Action::StartLogin);
     let choose_apply = matches!(&action, Action::ApplyChoose { .. });
     let policy_apply = matches!(&action, Action::ApplyPolicy { .. });
@@ -419,15 +503,8 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
         },
     )
     .map_err(error)?;
-    if partial_publication && data["receipt"]["receipt"]["status"] != "applied" {
-        return Err(CliError::runtime(
-            "Partial publication refused; the durable receipt is retained. Receive current state and verify permissions before preparing another capture.",
-        ));
-    }
-    if partial_publication && data["pendingLocalAcceptance"] == true {
-        return Err(CliError::runtime(
-            "Partial publication committed remotely; local acceptance is pending. Retry the same capture sequence to finish it.",
-        ));
+    if partial_publication {
+        return present_partial_publication(data);
     }
     if publication && data["receipt"]["status"] != "applied" {
         return Err(CliError::runtime(
@@ -507,6 +584,44 @@ pub fn run(cli: &Cli, arguments: &[String]) -> Result<Rendered, CliError> {
     };
     Ok(Rendered { human, data })
 }
+
+fn present_partial_publication(data: serde_json::Value) -> Result<Rendered, CliError> {
+    let receipt = &data["receipt"]["receipt"];
+    let status = receipt["status"].as_str();
+    if data["historical"] == true {
+        if data["pendingLocalAcceptance"] != false
+            || !matches!(status, Some("applied" | "rejected"))
+        {
+            return Err(CliError::runtime(
+                "Historical publication response is not a completed terminal receipt.",
+            ));
+        }
+        // Replaying a terminal historical receipt is a successful local result,
+        // including a rejection. Preserve all original correlation and evidence.
+        let human = format!(
+            "Completed historical publication receipt: {}.\nOriginal client: {}; principal: {}; Space: {}.\nNo new publication was attempted.",
+            status.unwrap(),
+            receipt["clientId"].as_str().unwrap_or("unknown"),
+            receipt["principalId"].as_str().unwrap_or("unknown"),
+            receipt["spaceId"].as_str().unwrap_or("unknown"),
+        );
+        return Ok(Rendered { human, data });
+    }
+    if status != Some("applied") {
+        return Err(CliError::runtime(
+            "Partial publication refused; the durable receipt is retained. Receive current state and verify permissions before preparing another capture.",
+        ));
+    }
+    if data["pendingLocalAcceptance"] == true {
+        return Err(CliError::runtime(
+            "Partial publication committed remotely; local acceptance is pending. Retry the same capture sequence to finish it.",
+        ));
+    }
+    Ok(Rendered {
+        human: serde_json::to_string_pretty(&data).map_err(error)?,
+        data,
+    })
+}
 fn collaboration(value: serde_json::Value) -> Result<Action, CliError> {
     Ok(Action::Collaboration {
         command: serde_json::from_value(value).map_err(error)?,
@@ -547,3 +662,7 @@ fn option(args: &mut Vec<String>, name: &str) -> Result<Option<String>, CliError
 fn error(e: impl std::fmt::Display) -> CliError {
     CliError::runtime(e.to_string())
 }
+
+#[cfg(test)]
+#[path = "native_remote_tests.rs"]
+mod tests;

@@ -3,7 +3,9 @@
 use super::{NativeClientError, NativeWorkspace, Result, WorkspaceState};
 use layrs_core::scm::*;
 use layrs_store::scm::*;
-use layrs_store_local::scm_v1::{open, NativeScmReader};
+#[cfg(test)]
+use layrs_store_local::scm_v1::open;
+use layrs_store_local::scm_v1::NativeScmReader;
 use layrs_weave::graph_merge::{
     self, GraphMergeLimits, GraphMergePlan, InstallationBundle, MergeObjects, PlannedConflict,
 };
@@ -109,7 +111,7 @@ impl NativeWorkspace {
         let [parent] = heads else {
             return Err(NativeClientError::NeedsIntegration);
         };
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
         let bundle = graph_merge::resolve_conflict_blocks(&objects, parent, choices, limits)
@@ -156,7 +158,7 @@ impl NativeWorkspace {
         let [parent] = heads else {
             return Err(NativeClientError::NeedsIntegration);
         };
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
         let bundle =
@@ -188,7 +190,7 @@ impl NativeWorkspace {
             .find(|h| h.layer_id() == target_layer)
             .ok_or(NativeClientError::Missing("target Layer heads"))?
             .step_ids();
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(
             &reader,
@@ -253,7 +255,7 @@ impl NativeWorkspace {
             .find(|heads| heads.layer_id() == target_layer)
             .ok_or(NativeClientError::Missing("target Layer heads"))?
             .step_ids();
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(
             &reader,
@@ -294,7 +296,7 @@ impl NativeWorkspace {
         let [parent] = heads else {
             return Err(NativeClientError::NeedsIntegration);
         };
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
         let bundle = graph_merge::resolve_conflict_terms(&objects, parent, choices, limits)

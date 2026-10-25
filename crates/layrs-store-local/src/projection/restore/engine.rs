@@ -62,6 +62,7 @@ pub(super) fn apply(
         return Err(invalid("restore preview digest mismatch"));
     }
     let mut access = format::access(store, SessionMode::Exclusive)?;
+    validate_destination(store, expected)?;
     database::require_mutable(&access.connection)?;
     if let Some((journal, capture)) = history(&access.connection, store, &expected.operation_id)? {
         if journal.preview != *expected {
@@ -80,6 +81,19 @@ pub(super) fn apply(
     if actual != *expected {
         return Err(invalid("restore preview is stale"));
     }
+    retention::require_no_staging(&access.connection, store)?;
+    let changes = expected
+        .after
+        .iter()
+        .map(|(p, f)| (p.to_string(), f.clone()))
+        .collect();
+    retention::reserve_checkout(
+        &access.connection,
+        store,
+        &format!("restore:{}", expected.operation_id),
+        &state.snapshot,
+        &changes,
+    )?;
     let root = PinnedDirectory::open(&store.root)?;
     let parent = root
         .open_child(".layrs".as_ref())?
@@ -95,6 +109,19 @@ pub(super) fn apply(
             .as_nanos()
     );
     let directory = parent.ensure_private_child(directory_name.as_ref())?;
+    retention::track_directory(
+        &access.connection,
+        store,
+        &format!("restore:{}", expected.operation_id),
+        &format!(".layrs/projection-quarantine/{directory_name}"),
+        &directory,
+        expected
+            .after
+            .values()
+            .enumerate()
+            .filter_map(|(i, file)| file.as_ref().map(|_| format!("new-{i:04}")))
+            .collect(),
+    )?;
     let mut journal = Journal {
         schema_version: "layrs.projection-restore.v1".into(),
         preview: expected.clone(),
@@ -112,7 +139,7 @@ pub(super) fn apply(
         }
         if let Some(new) = &expected.after[path] {
             let mut staged = directory.create_file(format!("new-{index:04}").as_ref())?;
-            capture::storage::stream_file(&access.connection, new, staged.file_mut())?;
+            capture::storage::stream_file(&access.connection, store, new, staged.file_mut())?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -133,8 +160,9 @@ pub(super) fn apply(
     directory.sync()?;
     parent.sync()?;
     faults.check(RestorePoint::Staged)?;
-    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
-        != expected.checkout_digest
+    if checkout_digest(
+        &capture::scan::scan(store, &access.connection, &state.snapshot, false)?.files,
+    )? != expected.checkout_digest
     {
         return Err(invalid("checkout changed during restore staging"));
     }
@@ -145,10 +173,10 @@ pub(super) fn apply(
     for (path, old) in &expected.before {
         if let Some(old) = old {
             let pin = files::verified(&root, path.as_str(), old, &journal.old_identity[path])?;
-            capture::storage::persist_pinned_file(&tx, &pin, old)?;
+            capture::storage::persist_pinned_file(&tx, store, &pin, old)?;
         }
     }
-    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
+    if checkout_digest(&capture::scan::scan(store, &tx, &state.snapshot, false)?.files)?
         != expected.checkout_digest
     {
         return Err(invalid("checkout changed during restore preservation"));
@@ -157,12 +185,35 @@ pub(super) fn apply(
         "INSERT INTO projection_restore_pending VALUES(1,?1)",
         [encode(&journal)?],
     )?;
+    retention::accept_staging(&tx, store, &format!("restore:{}", expected.operation_id))?;
+    if let Some(lease) = &access.family {
+        let manifests = expected
+            .before
+            .values()
+            .chain(expected.after.values())
+            .flatten()
+            .map(|f| retention::manifest(&tx, store, f))
+            .collect::<Result<Vec<_>>>()?;
+        retention::accept_claim(
+            &tx,
+            store,
+            lease,
+            "restore",
+            &expected.operation_id,
+            &manifests,
+        )?;
+    }
     tx.commit()?;
     faults.check(RestorePoint::JournalDurable)?;
     finish(store, &mut access, &journal, faults)
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<RestoreReceipt> {
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    resume_with_access(store, format::recovery_access(store, None, false)?)
+}
+pub(in crate::projection) fn resume_with_access(
+    store: &ProjectionStore,
+    mut access: format::Access,
+) -> Result<RestoreReceipt> {
     let length: u64 = access.connection.query_row(
         "SELECT length(payload) FROM projection_restore_pending WHERE singleton=1",
         [],
@@ -191,6 +242,14 @@ fn finish(
     let state = database::current(&access.connection)?;
     let expected = &journal.preview;
     decode(&encode(journal)?)?;
+    // Only finish() may recover an old unbound journal: its payload came from
+    // this exclusively locked, FORMAT/inode-bound private database, and the
+    // quarantine plus every old/new inode is checked below. apply() rejects
+    // unbound caller artifacts before it can reach here. Preserve the original
+    // digest and historical payload; do not manufacture a new approval.
+    if expected.destination.is_some() {
+        validate_destination(store, expected)?;
+    }
     if state.generation != expected.projection_generation
         || state.digest != expected.projection_digest
         || targets(&access.connection, store, &expected.source)? != expected.after
@@ -265,7 +324,7 @@ fn finish(
         access.verify()?;
         faults.check(RestorePoint::PathInstalled)?;
     }
-    let scan = capture::scan::scan(store, &state.snapshot, true)?;
+    let scan = capture::scan::scan(store, &access.connection, &state.snapshot, true)?;
     if checkout_digest(&scan.files)? != expected.after_checkout_digest {
         return Err(invalid("checkout changed during restoration"));
     }
@@ -283,6 +342,14 @@ fn finish(
     tx.execute(
         "DELETE FROM projection_restore_pending WHERE singleton=1",
         [],
+    )?;
+    retention::transfer(
+        &tx,
+        store,
+        "restore",
+        &expected.operation_id,
+        "restore-history",
+        &expected.operation_id,
     )?;
     faults.check(RestorePoint::BeforeCommit)?;
     verify_installed(&root, &store.root, expected, journal)?;
@@ -334,6 +401,26 @@ pub(super) fn history(
     )?;
     let journal = decode(&bytes)?;
     let capture = capture::storage::load(c, store, sequence)?;
+    if let Some(bound) = &journal.preview.destination {
+        // Imported histories retain the source's exact reviewed destination.
+        // They are readable/invertible, but apply's destination check refuses
+        // to replay the source approval against this destination.
+        let marker = if capture.identity == *store.identity() {
+            store.marker.clone()
+        } else {
+            let import = conversion::provenance(c, store)?
+                .ok_or_else(|| invalid("restore history has no import provenance"))?;
+            serde_json::from_slice::<format::Marker>(&import.source_marker).map_err(invalid)?
+        };
+        if bound.identity != capture.identity
+            || bound.identity != marker.identity
+            || bound.checkout_identity != marker.checkout_identity()
+        {
+            return Err(invalid(
+                "restore history destination differs from capture provenance",
+            ));
+        }
+    }
     if journal.preview.operation_id != id
         || capture.projection_generation != journal.preview.projection_generation
         || capture.projection_digest != journal.preview.projection_digest
@@ -378,7 +465,7 @@ pub(super) fn history(
         .chain(journal.preview.after.values())
         .flatten()
     {
-        capture::storage::file_manifest(c, file)?;
+        capture::storage::file_manifest(c, store, file)?;
     }
     Ok(Some((journal, capture)))
 }

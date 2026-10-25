@@ -2,7 +2,7 @@ use super::*;
 use crate::Result;
 use layrs_client_core::native_scm::{MutationStamp, NativeWorkspace};
 use layrs_store::scm::*;
-use layrs_store_local::scm_v1::{NativeScmReader, NativeScmRepository, open};
+use layrs_store_local::scm_v1::NativeScmReader;
 
 #[path = "install_replay.rs"]
 mod replay;
@@ -70,24 +70,42 @@ impl ImportPlan {
     /// checkout state remains at its current snapshot. Stable import identity
     /// makes retries/restarts return AlreadyImported without duplicate refs.
     pub fn install(&self, workspace: &NativeWorkspace) -> Result<ImportOutcome> {
-        self.install_with(workspace, |batch| {
-            NativeScmRepository::new(workspace.store_root())
-                .apply_batch(batch)
-                .map_err(invalid)
+        self.install_expected(workspace, &ExpectedBridgeState::capture(workspace)?)
+    }
+
+    /// Uses the reviewed state to prepare every CAS expectation, never a fresh base.
+    pub fn install_expected(
+        &self,
+        workspace: &NativeWorkspace,
+        expected: &ExpectedBridgeState,
+    ) -> Result<ImportOutcome> {
+        self.install_expected_with(workspace, expected, |batch| {
+            expected.apply_batch(workspace, batch)
         })
     }
 
     // A single writer boundary also lets fault recipes exercise the exact
     // production batch, including its immutable transaction receipt.
+    #[cfg(test)]
     pub(crate) fn install_with(
         &self,
         workspace: &NativeWorkspace,
         apply: impl FnOnce(&WriteBatch) -> Result<ApplyBatchOutcome>,
     ) -> Result<ImportOutcome> {
-        let state = workspace.state().map_err(invalid)?;
+        self.install_expected_with(workspace, &ExpectedBridgeState::capture(workspace)?, apply)
+    }
+
+    pub(crate) fn install_expected_with(
+        &self,
+        workspace: &NativeWorkspace,
+        expected: &ExpectedBridgeState,
+        apply: impl FnOnce(&WriteBatch) -> Result<ApplyBatchOutcome>,
+    ) -> Result<ImportOutcome> {
+        expected.validate(workspace)?;
+        let state = expected.state();
         let operation_id = import_operation_id(&self.report.import_id, state.space.id())?;
         let scope = format!("{}:{}", state.space.id(), self.report.import_id);
-        let store = open(workspace.store_root()).map_err(invalid)?;
+        let store = workspace.open_store().map_err(invalid)?;
         let reader = NativeScmReader::new(&store).map_err(invalid)?;
         let mut outcome = ImportOutcome {
             import_id: self.report.import_id.clone(),
@@ -113,17 +131,16 @@ impl ImportPlan {
             outcome.already_imported = true;
             return Ok(outcome);
         }
-        let current = reader
-            .current_repository_view(state.space.id())
-            .map_err(invalid)?
-            .ok_or_else(|| invalid("missing native View"))?;
-        let op_heads = reader.operation_heads(state.space.id()).map_err(invalid)?;
-        if current.view_id() != Some(state.view.id()) || op_heads != [state.operation.id().clone()]
-        {
-            return Err(invalid(
-                "native workspace changed or has divergent operations; retry after integration",
-            ));
-        }
+        let current = &expected.repository_view;
+        let op_heads = &expected.operation_heads;
+        // The shared CAS frontier may contain several independent Worktrees.
+        // This import has only its own current Operation as a parent.
+        let mut next_heads: std::collections::BTreeSet<_> = op_heads
+            .iter()
+            .filter(|id| *id != state.operation.id())
+            .cloned()
+            .collect();
+        next_heads.insert(operation_id.clone());
         let stamp = MutationStamp::fresh().map_err(invalid)?;
         let mut records = vec![];
         let mut layer_heads = state.view.layer_heads().to_vec();
@@ -253,7 +270,7 @@ impl ImportPlan {
                     RepositoryViewCas::new(
                         state.space.id().clone(),
                         current.generation(),
-                        Some(state.view.id().clone()),
+                        current.view_id().cloned(),
                         view.id().clone(),
                     )
                     .map_err(invalid)?,
@@ -261,9 +278,9 @@ impl ImportPlan {
                 StoreMutation::OperationHeads(
                     OperationHeadsCas::new(
                         state.space.id().clone(),
-                        op_heads,
+                        op_heads.clone(),
                         operation_id.clone(),
-                        vec![operation_id.clone()],
+                        next_heads.into_iter().collect(),
                     )
                     .map_err(invalid)?,
                 ),

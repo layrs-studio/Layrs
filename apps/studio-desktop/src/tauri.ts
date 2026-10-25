@@ -35,6 +35,10 @@ export function nativeWorkspace<T>(root: string, request: NativeRequest): Promis
   return tauriInvoke<T>("native_workspace", { root, request });
 }
 
+export function nativeGitBridge<T>(root: string, request: NativeRequest): Promise<T> {
+  return tauriInvoke<T>("native_git_bridge", { root, request });
+}
+
 export function nativeCheckoutKind(root: string): Promise<"complete" | "projection" | "absent"> {
   return tauriInvoke("native_checkout_kind", { root });
 }

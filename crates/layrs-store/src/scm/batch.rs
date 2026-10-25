@@ -67,6 +67,8 @@ pub struct OperationHeadsCas {
     expected_head_ids: Vec<OperationId>,
     new_operation_id: OperationId,
     new_head_ids: Vec<OperationId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree_registration_source: Option<WorktreeId>,
 }
 
 impl OperationHeadsCas {
@@ -89,6 +91,7 @@ impl OperationHeadsCas {
             expected_head_ids,
             new_operation_id,
             new_head_ids,
+            worktree_registration_source: None,
         })
     }
 
@@ -106,6 +109,18 @@ impl OperationHeadsCas {
 
     pub fn new_operation_id(&self) -> &OperationId {
         &self.new_operation_id
+    }
+
+    /// Registration may fork a retained Operation of this durable source
+    /// Worktree. The backend must validate its own ancestry and the new Stale
+    /// Worktree record; this hint alone grants no publication authority.
+    pub fn with_worktree_registration_source(mut self, source: WorktreeId) -> Self {
+        self.worktree_registration_source = Some(source);
+        self
+    }
+
+    pub fn worktree_registration_source(&self) -> Option<&WorktreeId> {
+        self.worktree_registration_source.as_ref()
     }
 }
 
@@ -364,7 +379,7 @@ fn validate_operation_publications(
                 cas_view_id: view_cas.new_view_id().to_string(),
             });
         }
-        validate_operation_head_transition(cas, operation)?;
+        validate_operation_head_transition(cas, operation, entity_records, mutations)?;
     }
     for space_id in view_cas_by_space.keys() {
         if !heads_cas_by_space.contains_key(space_id) {
@@ -379,6 +394,8 @@ fn validate_operation_publications(
 fn validate_operation_head_transition(
     cas: &OperationHeadsCas,
     operation: &Operation,
+    records: &[EntityRecord],
+    mutations: &[StoreMutation],
 ) -> Result<()> {
     let invalid = |reason: &str| StoreError::InvalidOperationHeadsTransition {
         operation_id: operation.id().clone(),
@@ -390,6 +407,41 @@ fn validate_operation_head_transition(
 
     let expected: BTreeSet<_> = cas.expected_head_ids().iter().cloned().collect();
     let parents: BTreeSet<_> = operation.parent_operation_ids().iter().cloned().collect();
+    let worktree_changes = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            StoreMutation::WorktreeActiveOperation(change)
+                if change.new_operation_id() == operation.id() =>
+            {
+                Some(change)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if worktree_changes
+        .iter()
+        .any(|change| !parents.contains(change.expected_operation_id()))
+    {
+        return Err(invalid(
+            "every Worktree CAS must advance from a parent of the published Operation",
+        ));
+    }
+    if operation.kind() != OperationKind::IntegrateOperations
+        && !worktree_changes.is_empty()
+        && (parents.len() != 1 || worktree_changes.len() != 1)
+    {
+        return Err(invalid(
+            "normal Worktree publication must advance exactly one own parent binding",
+        ));
+    }
+    let registration = cas.worktree_registration_source().is_some();
+    if registration
+        && (operation.kind() != OperationKind::Restore || parents.len() != 1 || !worktree_changes.is_empty()
+            || records.iter().filter(|record| matches!(record, EntityRecord::Worktree(w)
+                if w.active_operation_id() == operation.id() && w.space_id() == operation.space_id())).count() != 1)
+    {
+        return Err(invalid("Worktree registration requires one parent and one new Worktree bound to the published Restore"));
+    }
     let derived: BTreeSet<_> = match operation.kind() {
         OperationKind::Initialize => {
             if !expected.is_empty() || !parents.is_empty() {
@@ -408,9 +460,14 @@ fn validate_operation_head_transition(
             BTreeSet::from([operation.id().clone()])
         }
         _ => {
-            if parents.is_empty() || !parents.is_subset(&expected) {
+            let bound_active = parents.len() == 1 && mutations.iter().any(|mutation| matches!(mutation,
+                StoreMutation::WorktreeActiveOperation(change)
+                if parents.contains(change.expected_operation_id()) && change.new_operation_id() == operation.id()));
+            if parents.is_empty()
+                || (!parents.is_subset(&expected) && !bound_active && !registration)
+            {
                 return Err(invalid(
-                    "non-initialize parents must be a non-empty subset of expected heads",
+                    "parents outside expected heads require a single explicitly bound Worktree parent",
                 ));
             }
             expected

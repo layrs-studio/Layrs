@@ -3,6 +3,7 @@
 mod engine;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
+pub(super) use engine::resume_with_access;
 pub(super) use engine::verify_history;
 use layrs_core::{
     projection::{EntryState, ProjectionEntry},
@@ -89,6 +90,7 @@ impl ProjectionStore {
         let mut access = format::access(self, SessionMode::Exclusive)?;
         database::require_mutable(&access.connection)?;
         let current = database::current(&access.connection)?;
+        selection::check_paths(&access.connection, paths)?;
         if current.generation != expected_generation || current.digest != expected_digest {
             return Err(invalid("absence observation projection changed"));
         }
@@ -167,7 +169,7 @@ impl ProjectionStore {
                 actual: state.generation,
             });
         }
-        let result = preview(self, &state, mutation)?;
+        let result = preview(self, &access.connection, &state, mutation)?;
         access.verify()?;
         Ok(result)
     }
@@ -234,13 +236,14 @@ fn validate_mutation(snapshot: &ProjectionSnapshot, mutation: &NamespaceMutation
 }
 fn preview(
     store: &ProjectionStore,
+    c: &rusqlite::Connection,
     state: &VersionedProjection,
     mutation: &NamespaceMutation,
 ) -> Result<NamespacePreview> {
     validate_mutation(&state.snapshot, mutation)?;
     let root = PinnedDirectory::open(&store.root)?;
     super::install::files::destination_absent(&root, &store.root, mutation.destination().as_str())?;
-    let scan = super::capture::scan::scan(store, &state.snapshot, false)?;
+    let scan = super::capture::scan::scan(store, c, &state.snapshot, false)?;
     let source_file = if let NamespaceMutation::Move { source, .. } = mutation {
         let file = scan
             .files

@@ -1,6 +1,8 @@
 use super::*;
 use rusqlite::{Connection, OpenFlags, params};
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
+// Keep the exact v5 fingerprint for non-destructive legacy validation. Current
+// databases append selection::SQL and set user_version=6 in one transaction.
 pub(super) const SQL: &str = r#"
 PRAGMA user_version=5;
 CREATE TABLE projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),identity BLOB NOT NULL) STRICT;
@@ -24,6 +26,38 @@ CREATE TABLE projection_rebase_previews(singleton INTEGER PRIMARY KEY CHECK(sing
 "#;
 const CHUNK_TABLE: &str = "CREATE TABLE projection_capture_chunks(file_id TEXT NOT NULL CHECK(length(file_id)=71),ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<1024),chunk_id TEXT NOT NULL CHECK(length(chunk_id)=71),bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=1048576),PRIMARY KEY(file_id,ordinal)) STRICT;";
 pub(super) fn migrate(c: &mut Connection) -> Result<()> {
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == 6 || schema(c)?.is_empty() {
+        return Ok(());
+    }
+    // Refuse unknown versions before any DDL. The preceding binary similarly
+    // refuses6 (it supports3..5), including an already-open mutation handle.
+    if !(3..=5).contains(&version) {
+        return Err(invalid("unsupported projection schema migration"));
+    }
+    migrate_legacy(c)?;
+    let reference = Connection::open_in_memory()?;
+    reference.execute_batch(SQL)?;
+    if schema(c)? != schema(&reference)? {
+        return Err(invalid(
+            "projection schema mismatch before selection migration",
+        ));
+    }
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(selection::SQL)?;
+    let initial: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_snapshots WHERE generation=0)",
+        [],
+        |r| r.get(0),
+    )?;
+    if initial {
+        selection::insert(&tx, 0, &layrs_core::projection::ProjectionSelection::All)?;
+    }
+    tx.execute_batch("PRAGMA user_version=6;")?;
+    tx.commit()?;
+    Ok(())
+}
+pub(super) fn migrate_legacy(c: &mut Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == 5 || schema(c)?.is_empty() {
         return Ok(());
@@ -83,9 +117,38 @@ pub(super) fn connect(path: &Path, write: bool) -> Result<Connection> {
     }
     Ok(c)
 }
-fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
+pub(super) fn readonly_rollback(error: &ProjectionStoreError) -> bool {
+    matches!(error, ProjectionStoreError::Database(rusqlite::Error::SqliteFailure(code,_)) if code.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK)
+}
+
+/// Caller holds the validated owner's exclusive lock (and, for GC, the family
+/// exclusive lifecycle). Only SQLite's typed hot-journal error permits one RW retry.
+pub(super) fn read_owner_with_recovery(
+    path: &Path,
+    marker: &format::Marker,
+    pin: &super::file::DatabasePin,
+) -> Result<Connection> {
+    let read = || -> Result<Connection> {
+        let c = connect(path, false)?;
+        validate(&c, marker)?;
+        pin.verify(path)?;
+        Ok(c)
+    };
+    match read() {
+        Err(error) if readonly_rollback(&error) => {
+            pin.verify(path)?;
+            let c = connect(path, true)?;
+            validate(&c, marker)?;
+            pin.verify(path)?;
+            drop(c);
+            read()
+        }
+        result => result,
+    }
+}
+pub(super) fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
     let (count,bytes):(u64,u64)=c.query_row("SELECT COUNT(*),COALESCE(SUM(length(sql)),0) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    if count > 32 || bytes > 64 * 1024 {
+    if count > 64 || bytes > 64 * 1024 {
         return Err(invalid("projection schema exceeds validation budget"));
     }
     let mut s = c.prepare(
@@ -94,12 +157,26 @@ fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
     Ok(s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?)
 }
-pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
+/// Check only the existing schema/version/bounds and exact stored FORMAT bytes.
+/// Success does not validate backend ownership, bootstrap/history, selection,
+/// foreign keys, or readiness; every caller still needs its complete validator.
+pub(super) fn validate_schema_identity(c: &Connection, marker: &format::Marker) -> Result<()> {
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let reference = Connection::open_in_memory()?;
     reference.execute_batch(SQL)?;
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 5
-        || schema(c)? != schema(&reference)?
-    {
+    reference.execute_batch(selection::SQL)?;
+    if marker.shared.is_some() {
+        reference.execute_batch(retention::SQL)?;
+    }
+    if marker.shared.is_some() && version == provider::PROJECTION_PROVIDER_SCHEMA_VERSION {
+        reference.execute_batch(provider::schema::SQL)?;
+    }
+    let supported = if marker.shared.is_some() {
+        matches!(version, 7 | 8)
+    } else {
+        version == 6
+    };
+    if !supported || schema(c)? != schema(&reference)? {
         return Err(invalid(
             "projection schema mismatch; explicit migration required",
         ));
@@ -119,6 +196,14 @@ pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
     if count != 1 || bytes != marker.bytes()? {
         return Err(invalid("projection identity differs from FORMAT"));
     }
+    Ok(())
+}
+
+pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
+    validate_schema_identity(c, marker)?;
+    // Stage1a never scans or interprets populated provider evidence, including
+    // inherited history. Reject it before unbounded FK/data traversal.
+    provider::require_ordinary(c)?;
     let initial: String = c.query_row(
         "SELECT digest FROM projection_snapshots WHERE generation=0",
         [],
@@ -127,6 +212,7 @@ pub(super) fn validate(c: &Connection, marker: &format::Marker) -> Result<()> {
     if initial != marker.initial_snapshot_digest {
         return Err(invalid("initial projection differs from FORMAT"));
     }
+    marker.validate_initial_selection(&selection::at(c, 0)?)?;
     let failures: u64 = c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
         r.get(0)
     })?;
@@ -139,13 +225,16 @@ pub(super) fn initialize(
     c: &mut Connection,
     marker: &format::Marker,
     initial: &ProjectionSnapshot,
+    selection: &layrs_core::projection::ProjectionSelection,
 ) -> Result<()> {
     let initial_bytes = initial.canonical_bytes()?;
     if digest(0, None, &initial_bytes) != marker.initial_snapshot_digest {
         return Err(invalid("bootstrap initial snapshot differs from FORMAT"));
     }
     if !schema(c)?.is_empty() {
-        migrate(c)?;
+        if marker.shared.is_none() {
+            migrate(c)?;
+        }
         validate(c, marker)?;
         let state = current(c)?;
         if state.generation != 0 || state.snapshot != *initial {
@@ -153,11 +242,20 @@ pub(super) fn initialize(
                 "bootstrap already has a different projection state",
             ));
         }
+        if selection::current(c)? != *selection {
+            return Err(invalid("bootstrap selection differs"));
+        }
         return Ok(());
     }
     c.execute_batch("PRAGMA journal_mode=DELETE;")?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute_batch(SQL)?;
+    tx.execute_batch(selection::SQL)?;
+    tx.execute_batch("PRAGMA user_version=6;")?;
+    if marker.shared.is_some() {
+        tx.execute_batch(retention::SQL)?;
+        tx.execute_batch("PRAGMA user_version=7;")?;
+    }
     tx.execute(
         "INSERT INTO projection_meta VALUES(1,?1)",
         [marker.bytes()?],
@@ -167,6 +265,7 @@ pub(super) fn initialize(
         params![digest(0, None, &initial_bytes), initial_bytes],
     )?;
     tx.execute("INSERT INTO projection_head VALUES(1,0)", [])?;
+    selection::insert(&tx, 0, selection)?;
     tx.commit()?;
     Ok(())
 }
@@ -217,6 +316,7 @@ pub(super) fn current(c: &Connection) -> Result<VersionedProjection> {
     if snapshot.canonical_bytes()? != bytes {
         return Err(invalid("projection snapshot is not canonical"));
     }
+    selection::validate(c, &snapshot)?;
     Ok(VersionedProjection {
         generation,
         digest: claimed,

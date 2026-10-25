@@ -3,7 +3,6 @@ use layrs_core::scm::StepId;
 pub use layrs_core::scm::{NativeDiffLine, NativeFileChange};
 use layrs_store::scm::ScmReader;
 use layrs_store_local::scm_v1::{
-    self,
     checkout::{
         CheckoutContent, CheckoutEntry, CheckoutLimits, CheckoutProjectionContent,
         CheckoutProjectionEntry, CheckoutReader,
@@ -67,7 +66,7 @@ impl NativeWorkspace {
     ) -> Result<Vec<NativeFileChange>> {
         let target_step = step;
         let after = self.read_step_projection(step)?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let step = reader
             .get_step(step)?

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use layrs_core::scm::{
     ActorId, Chunk, ChunkId, ConflictId, DeviceId, FileId, FileManifest, FileManifestId, Layer,
@@ -17,6 +17,7 @@ use layrs_store::scm::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use super::acquisition::{ORDINARY_WAIT, SHORT_WAIT, acquire};
 use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter};
 use super::sqlite::{
     canonical_receipt_json, rfc3339_to_epoch_millis, validate_canonical_receipt_json,
@@ -38,6 +39,10 @@ pub struct NativeScmRepository {
     faults: Arc<dyn RepositoryFaultInjector>,
     cas_faults: Arc<dyn CasFaultInjector>,
     materialization_permit: Option<(String, String)>,
+    expected_identity: Option<String>,
+    expected_metadata_identity: Option<String>,
+    expected_store_id: Option<StoreId>,
+    acquisition_budget: Duration,
 }
 
 struct NoCasFaults;
@@ -48,12 +53,33 @@ impl CasFaultInjector for NoCasFaults {
 }
 
 impl NativeScmRepository {
+    /// Filesystem-only optimistic guard, executed with the exclusive Store held
+    /// before CAS installation and immediately before COMMIT. It must not reopen
+    /// this Store or acquire another Store capability.
+    pub fn apply_batch_guarded(
+        &mut self,
+        batch: &WriteBatch,
+        guard: impl FnMut() -> Result<()>,
+    ) -> Result<ApplyBatchOutcome> {
+        self.apply_batch_with_chunks_guarded(
+            batch,
+            &[],
+            |_| unreachable!("no external chunks"),
+            guard,
+            SHORT_WAIT,
+        )
+    }
+
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
             faults: no_faults(),
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
+            expected_identity: None,
+            expected_metadata_identity: None,
+            expected_store_id: None,
+            acquisition_budget: ORDINARY_WAIT,
         }
     }
 
@@ -66,6 +92,10 @@ impl NativeScmRepository {
             faults,
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
+            expected_identity: None,
+            expected_metadata_identity: None,
+            expected_store_id: None,
+            acquisition_budget: ORDINARY_WAIT,
         }
     }
 
@@ -79,6 +109,10 @@ impl NativeScmRepository {
             faults,
             cas_faults,
             materialization_permit: None,
+            expected_identity: None,
+            expected_metadata_identity: None,
+            expected_store_id: None,
+            acquisition_budget: ORDINARY_WAIT,
         }
     }
 
@@ -91,6 +125,10 @@ impl NativeScmRepository {
             faults: no_faults(),
             cas_faults,
             materialization_permit: None,
+            expected_identity: None,
+            expected_metadata_identity: None,
+            expected_store_id: None,
+            acquisition_budget: ORDINARY_WAIT,
         }
     }
 
@@ -98,10 +136,40 @@ impl NativeScmRepository {
         &self.root
     }
 
+    pub fn with_store_identity(mut self, identity: impl Into<String>) -> Self {
+        self.expected_identity = Some(identity.into());
+        self
+    }
+    pub fn with_metadata_identity(mut self, identity: impl Into<String>) -> Self {
+        self.expected_metadata_identity = Some(identity.into());
+        self
+    }
+
+    pub fn with_store_id(mut self, store_id: StoreId) -> Self {
+        self.expected_store_id = Some(store_id);
+        self
+    }
+
+    fn validate_store_id(&self, store_id: &StoreId) -> Result<()> {
+        if self
+            .expected_store_id
+            .as_ref()
+            .is_some_and(|expected| expected != store_id)
+        {
+            return Err(native_backend("Store identity changed"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn for_materialization(root: &Path, recovery_id: &str, owner: &str) -> Self {
-        let mut repository = Self::new(root);
+        let mut repository = Self::new(root).with_short_acquisition();
         repository.materialization_permit = Some((recovery_id.into(), owner.into()));
         repository
+    }
+
+    pub(crate) fn with_short_acquisition(mut self) -> Self {
+        self.acquisition_budget = SHORT_WAIT;
+        self
     }
 
     fn hit(&self, point: RepositoryFaultPoint) -> Result<()> {
@@ -113,7 +181,20 @@ impl NativeScmRepository {
     }
 
     fn with_reader<T>(&self, f: impl FnOnce(&NativeScmReader<'_>) -> Result<T>) -> Result<T> {
-        let store = open(&self.root).map_err(native_backend)?;
+        let store = open_read_retry(&self.root)?;
+        let store = match &self.expected_identity {
+            Some(identity) => store
+                .with_filesystem_identity(identity)
+                .map_err(native_backend)?,
+            None => store,
+        };
+        let store = match &self.expected_metadata_identity {
+            Some(identity) => store
+                .with_metadata_identity(identity)
+                .map_err(native_backend)?,
+            None => store,
+        };
+        self.validate_store_id(store.store_id())?;
         let reader = NativeScmReader::new(&store)?;
         f(&reader)
     }
@@ -137,7 +218,24 @@ impl NativeScmRepository {
         &mut self,
         batch: &WriteBatch,
         chunks: &[(ChunkId, u64)],
+        read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+    ) -> Result<ApplyBatchOutcome> {
+        self.apply_batch_with_chunks_guarded(
+            batch,
+            chunks,
+            read_chunk,
+            || Ok(()),
+            self.acquisition_budget,
+        )
+    }
+
+    fn apply_batch_with_chunks_guarded(
+        &mut self,
+        batch: &WriteBatch,
+        chunks: &[(ChunkId, u64)],
         mut read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        mut guard: impl FnMut() -> Result<()>,
+        acquisition_budget: Duration,
     ) -> Result<ApplyBatchOutcome> {
         super::admission::preflight_batch_budgets(batch)?;
         streaming::preflight(batch, chunks)?;
@@ -156,7 +254,47 @@ impl NativeScmRepository {
             });
         }
 
-        let store = open_exclusive_retry(&self.root)?;
+        let store = acquire("repository acceptance", acquisition_budget, || {
+            open_exclusive(&self.root)
+        })
+        .map_err(native_backend)?;
+        let store = match &self.expected_identity {
+            Some(identity) => store
+                .with_filesystem_identity(identity)
+                .map_err(native_backend)?,
+            None => store,
+        };
+        let store = match &self.expected_metadata_identity {
+            Some(identity) => store
+                .with_metadata_identity(identity)
+                .map_err(native_backend)?,
+            None => store,
+        };
+        self.validate_store_id(store.store_id())?;
+        guard()?;
+        // Reject an already-stale new request before installing any bytes. The
+        // immutable reader uses this same exclusive capability, never another
+        // Store lock. Any existing receipt preserves the original CAS-before-
+        // replay path, including digest collisions and corrupt receipts.
+        store.verify_filesystem_identity().map_err(native_backend)?;
+        {
+            let connection =
+                super::sqlite::open_read_only(store.layout().sqlite_path(), SHORT_WAIT)
+                    .map_err(schema_backend)?;
+            super::sqlite::validate_store_identity(&connection, store.store_id())
+                .map_err(schema_backend)?;
+            let has_receipt: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_id=?1)",
+                    [batch.transaction_id().as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(sql_backend)?;
+            if !has_receipt {
+                precheck_mutations(&Mutex::new(connection), batch)?;
+            }
+        }
+        store.verify_filesystem_identity().map_err(native_backend)?;
         let cas = NativeCasWriter::with_fault_injector(&store, Arc::clone(&self.cas_faults))
             .map_err(cas_backend)?;
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
@@ -195,16 +333,23 @@ impl NativeScmRepository {
         self.hit(RepositoryFaultPoint::AfterBeginImmediate)?;
         let connection = Mutex::new(connection);
 
-        let result = self.apply_inside_transaction(
-            &connection,
-            &cas,
-            store.layout().root(),
-            batch,
-            &installed,
-            chunks.len(),
-        );
+        let result = self
+            .apply_inside_transaction(
+                &connection,
+                &cas,
+                store.layout().root(),
+                batch,
+                &installed,
+                chunks.len(),
+            )
+            .and_then(|outcome| {
+                store.verify_filesystem_identity().map_err(native_backend)?;
+                guard()?;
+                Ok(outcome)
+            });
         match result {
             Ok(outcome) => {
+                store.verify_filesystem_identity().map_err(native_backend)?;
                 let guard = connection.lock().map_err(|_| poisoned())?;
                 guard.execute_batch("COMMIT").map_err(sql_backend)?;
                 drop(guard);
@@ -872,19 +1017,15 @@ fn native_backend(e: impl std::fmt::Display) -> StoreError {
         message: e.to_string(),
     }
 }
-fn open_exclusive_retry(root: &Path) -> Result<super::NativeStoreExclusive> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match open_exclusive(root) {
-            Ok(store) => return Ok(store),
-            Err(super::NativeStoreError::Lock(
-                crate::StoreError::LockBusy(_) | crate::StoreError::ReentrantLock(_),
-            )) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => return Err(native_backend(error)),
-        }
-    }
+pub(super) fn open_read_retry(root: &Path) -> Result<super::NativeStoreOpen> {
+    acquire("short repository read", SHORT_WAIT, || open(root)).map_err(native_backend)
+}
+
+pub(super) fn open_exclusive_retry(root: &Path) -> Result<super::NativeStoreExclusive> {
+    acquire("short repository write", SHORT_WAIT, || {
+        open_exclusive(root)
+    })
+    .map_err(native_backend)
 }
 fn cas_backend(e: super::CasError) -> StoreError {
     let message = e.to_string();

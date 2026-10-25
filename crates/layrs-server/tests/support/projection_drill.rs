@@ -1,5 +1,7 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+#[path = "projection_selection_drill.rs"]
+mod selection;
 
 pub(super) fn verify(
     read: &Http<'_>,
@@ -51,6 +53,7 @@ pub(super) fn verify(
         allowed.target, private.target,
         "same FileId, different rights"
     );
+    selection::clone_and_expand(read, remote, step);
     let saved = saved.unwrap();
     let mut forged = saved.clone();
     let mut cursor: Value = serde_json::from_slice(
@@ -84,6 +87,14 @@ pub(super) fn verify(
             .is_success()
     );
     saved
+}
+
+pub(super) fn selected_publication(
+    remote: &NativeRemote,
+    read: &Http<'_>,
+    layer: &layrs_core::scm::LayerId,
+) {
+    selection::publication(remote, read, layer);
 }
 
 pub(super) fn stale(read: &Http<'_>, request: ProjectionPageRequest) {

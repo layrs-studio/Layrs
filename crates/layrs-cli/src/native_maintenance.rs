@@ -1,24 +1,28 @@
 use crate::{error::CliError, render::Rendered};
-use layrs_store_local::scm_v1::compaction::{compact_metadata, resume_metadata_compaction};
+use layrs_client_core::native_scm::NativeWorkspace;
 use std::path::Path;
 
-/// Discovery deliberately does not open the Store: a durable maintenance
-/// journal fences normal opens until this explicit resume command finishes.
+/// Discovery uses audit validation: a durable maintenance journal fences
+/// normal Store admission until this explicit resume command finishes.
 pub(super) fn compact(start: &Path, resume: bool) -> Result<Rendered, CliError> {
     let start = std::path::absolute(start).map_err(super::error)?;
-    let mut root = None;
+    let mut checkout = None;
     for ancestor in start.ancestors() {
-        let candidate = ancestor.join(".layrs");
-        if candidate.try_exists().map_err(super::error)? {
-            root = Some(candidate);
-            break;
+        match std::fs::symlink_metadata(ancestor.join(".layrs")) {
+            Ok(_) => {
+                checkout = Some(ancestor);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(super::error(error)),
         }
     }
-    let root = root.ok_or_else(|| CliError::runtime("No native .layrs checkout found."))?;
+    let checkout = checkout.ok_or_else(|| CliError::runtime("No native .layrs checkout found."))?;
+    let store = NativeWorkspace::audit_worktree_store(checkout).map_err(super::error)?;
     let report = if resume {
-        resume_metadata_compaction(root)
+        store.resume_metadata_compaction()
     } else {
-        compact_metadata(root)
+        store.compact_metadata()
     }
     .map_err(super::error)?;
     Ok(Rendered {

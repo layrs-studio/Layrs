@@ -23,9 +23,12 @@ import { HistoryPage } from "../pages/HistoryPage";
 import { LayersPage } from "../pages/LayersPage";
 import { LimitedChanges } from "../pages/limited/LimitedChanges";
 import { LimitedFiles } from "../pages/limited/LimitedFiles";
+import { LimitedWorktrees } from "../pages/limited/LimitedWorktrees";
 import { ProjectSettingsPage } from "../pages/ProjectSettingsPage";
 import { TeamPage } from "../pages/TeamPage";
 import { VersionsPage } from "../pages/VersionsPage";
+import { WorktreesPage } from "../pages/WorktreesPage";
+import { GitBridgePage } from "../pages/GitBridgePage";
 import { ConnectFlow } from "../sync/ConnectFlow";
 import { SyncButton } from "../sync/SyncPanel";
 import { SyncPage } from "../sync/SyncPage";
@@ -37,7 +40,7 @@ import { folderName, readRecents } from "./recents";
 import { RemoteProvider } from "./remote";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
 
-export type ProjectView = "changes" | "files" | "history" | "layers" | "versions" | "team" | "merge" | "sync" | "connect" | "settings" | "health";
+export type ProjectView = "changes" | "files" | "history" | "layers" | "worktrees" | "git" | "versions" | "team" | "merge" | "sync" | "connect" | "settings" | "health";
 
 type PageEntry = { view: ProjectView; label: string; icon: ReactNode; secondary?: boolean; complete?: boolean; limited?: boolean };
 
@@ -47,11 +50,13 @@ const projectPages: PageEntry[] = [
   { view: "files", label: "Fichiers", icon: <FileStack aria-hidden size={20} />, limited: true },
   { view: "history", label: "Historique", icon: <History aria-hidden size={20} /> },
   { view: "layers", label: "Layers", icon: <GitBranch aria-hidden size={20} />, complete: true },
+  { view: "worktrees", label: "Worktrees", icon: <FolderTree aria-hidden size={20} /> },
   { view: "versions", label: "Versions", icon: <Tag aria-hidden size={20} />, complete: true },
   { view: "team", label: "Équipe", icon: <Users aria-hidden size={20} /> },
   { view: "sync", label: "Synchronisation", icon: <RefreshCw aria-hidden size={20} />, secondary: true },
   { view: "settings", label: "Réglages du projet", icon: <Settings aria-hidden size={20} />, secondary: true },
   { view: "health", label: "Diagnostic", icon: <Stethoscope aria-hidden size={20} />, secondary: true },
+  { view: "git", label: "Pont Git", icon: <GitBranch aria-hidden size={20} />, secondary: true, complete: true },
 ];
 
 const contextual: Partial<Record<ProjectView, string>> = { merge: "Fusion", connect: "Connexion au serveur" };
@@ -82,7 +87,7 @@ function ProjectKind({ view, detail }: { view: ProjectView; detail: string }) {
   const { kind } = useWorkspace();
   if (kind === "projection")
     return (
-      <ProjectionProvider>
+      <ProjectionProvider mode={view === "worktrees" || view === "health" ? "inspection" : "ordinary"}>
         <ProjectFrame view={view} detail={detail} />
       </ProjectionProvider>
     );
@@ -142,13 +147,15 @@ function ProjectFrame({ view, detail }: { view: ProjectView; detail: string }) {
   );
 
   let content: ReactNode;
-  if (kind === null && !error) content = <div className="layrs-page"><Loading label="Ouverture du projet…" /></div>;
+  if (view === "health") content = <HealthPage />;
+  else if (kind === null && !error) content = <div className="layrs-page"><Loading label="Ouverture du projet…" /></div>;
   else if (kind === "absent") content = <NotAProject root={root} />;
   else if (!known) content = <Unavailable view={view} limited={limited} />;
   else if (view === "connect") content = <ConnectPage />;
   else if (view === "sync") content = <SyncPage />;
   else if (view === "settings") content = <ProjectSettingsPage />;
-  else if (view === "health") content = <HealthPage />;
+  else if (view === "worktrees" && (limited || data)) content = limited ? <LimitedWorktrees /> : <WorktreesPage />;
+  else if (view === "git") content = <GitBridgePage />;
   else if (view === "team") content = <TeamPage />;
   else if (view === "merge") content = <MergePage conflictId={detail ? decodeURIComponent(detail) : undefined} />;
   else if (limited) content = view === "files" ? <LimitedFiles /> : view === "history" ? <HistoryPage /> : <LimitedChanges />;
@@ -179,7 +186,7 @@ function ProjectFrame({ view, detail }: { view: ProjectView; detail: string }) {
       projectNav={projectNav}
       topbarExtra={
         <>
-          {limited ? <LimitedTarget /> : <LayerSelector />}
+          {limited ? <LimitedTarget /> : <><LayerSelector /><WorktreeContext /></>}
           {busy && (
             <span className="topbar-activity" role="status">
               <Spinner size={14} />
@@ -230,7 +237,7 @@ function LayerSelector() {
       <select
         aria-label="Layer"
         value={activeLayer?.layerId ?? ""}
-        disabled={Boolean(busy) || data.needsRepair || workspace.conflicted}
+        disabled={Boolean(busy) || data.needsRepair || workspace.conflicted || data.state.view.worktrees.some(item => item.worktreeId === data.state.worktree.worktreeId && ["stale", "needs_repair"].includes(item.status))}
         title={workspace.conflicted ? "Résolvez d’abord les conflits de la fusion en cours." : undefined}
         onChange={(event) => {
           const layer = data.state.layers.find((item) => item.layerId === event.target.value);
@@ -245,6 +252,15 @@ function LayerSelector() {
       </select>
     </label>
   );
+}
+
+function WorktreeContext() {
+  const { root, data } = useWorkspace();
+  if (!data) return null;
+  return <Link className="topbar-layer topbar-layer--link" to={`/projects/${segment(root)}/worktrees`} title={`${data.state.worktree.checkoutRoot} · ${data.state.worktree.worktreeId}`}>
+    <FolderTree aria-hidden size={14} />
+    <span>Worktree · {folderName(root)}</span>
+  </Link>;
 }
 
 function LimitedTarget() {
@@ -317,6 +333,7 @@ function NotAProject({ root }: { root: string }) {
         actions={
           <>
             <Button onClick={() => navigate("/projects")}>Choisir un autre dossier</Button>
+            <Button onClick={() => navigate(`/projects/${segment(root)}/health`)}>Diagnostic et reprise</Button>
             <Button variant="primary" onClick={() => navigate("/projects/new", { query: { root } })}>
               Commencer un projet
             </Button>

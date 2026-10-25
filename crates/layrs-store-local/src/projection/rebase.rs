@@ -1,5 +1,6 @@
 //! Resolved regular-file rebase onto an exact authorized remote projection.
 mod engine;
+pub(super) use engine::resume_with_access;
 mod history;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
@@ -169,9 +170,10 @@ fn preview(
     target: &ProjectionSnapshot,
     resolutions: &BTreeMap<RepoPath, Option<CapturedFile>>,
 ) -> Result<RebasePreview> {
-    validate_target(&current.snapshot, target)?;
+    selection::verify_target(c, target)?;
+    validate_target(&current.snapshot, target, &selection::current(c)?)?;
     validate_resolutions(target, resolutions)?;
-    let scan = capture::scan::scan(store, &current.snapshot, false)?;
+    let scan = capture::scan::scan(store, c, &current.snapshot, false)?;
     let captured = exact_current_capture(c, store, current, capture_sequence, &scan)?;
     let root = PinnedDirectory::open(&store.root)?;
     let mut before = BTreeMap::new();
@@ -215,7 +217,11 @@ fn preview(
     Ok(value)
 }
 
-fn validate_target(before: &ProjectionSnapshot, target: &ProjectionSnapshot) -> Result<()> {
+fn validate_target(
+    before: &ProjectionSnapshot,
+    target: &ProjectionSnapshot,
+    selection: &layrs_core::projection::ProjectionSelection,
+) -> Result<()> {
     before.validate()?;
     target.validate()?;
     let reserved = before.reserved_paths()?;
@@ -232,6 +238,10 @@ fn validate_target(before: &ProjectionSnapshot, target: &ProjectionSnapshot) -> 
     }
     let next: BTreeMap<_, _> = target.entries.iter().map(|e| (&e.path, e)).collect();
     for old in &before.entries {
+        // Structural changes outside local intent do not become local edits.
+        if !selection.includes(&old.path) {
+            continue;
+        }
         let new = next
             .get(&old.path)
             .ok_or_else(|| invalid("rebase target must retain old observed paths"))?;
@@ -259,6 +269,9 @@ fn validate_target(before: &ProjectionSnapshot, target: &ProjectionSnapshot) -> 
     }
     let old: BTreeMap<_, _> = before.entries.iter().map(|e| (&e.path, e)).collect();
     for entry in &target.entries {
+        if !selection.includes(&entry.path) {
+            continue;
+        }
         if entry.writable && regular(entry) {
             reserved.check_path(entry.path.as_str())?;
         }

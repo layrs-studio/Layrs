@@ -6,20 +6,26 @@ use layrs_store::scm::CanonicalObject;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
+mod expected_state;
 mod export;
 mod import;
 mod install;
 mod pack;
 mod process;
 mod scan_checkpoint;
+pub use expected_state::ExpectedBridgeState;
 pub use export::{
-    ExportMode, ExportReport, export_workspace, export_workspace_with_progress,
-    resume_export_workspace,
+    ExportMode, ExportReport, export_workspace, export_workspace_expected,
+    export_workspace_with_progress, resume_export_workspace, resume_export_workspace_expected,
+};
+pub use export::{
+    export_workspace_reviewed, resume_export_workspace_reviewed, review_export_destination,
 };
 pub use import::{
     scan_git, scan_git_selected, scan_git_selected_with_progress, scan_git_with_progress,
 };
 pub use install::ImportOutcome;
+pub use layrs_store_local::anchored_export::ExportDestination;
 pub use scan_checkpoint::{
     GitScanCheckpoint, prepare_git_scan_checkpoint, resume_git_scan_checkpoint,
 };

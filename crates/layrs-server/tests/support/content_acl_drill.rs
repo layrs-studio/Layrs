@@ -639,6 +639,14 @@ pub fn run(
         &admin,
         lose_response,
     );
+    let layer = bootstrap
+        .layers
+        .iter()
+        .find(|l| l.head_step_ids.contains(&step))
+        .unwrap()
+        .record
+        .id();
+    projection_drill::selected_publication(remote, &admin, layer);
     eprintln!(
         "HTTPS ACL v2: exact/subtree deny, alias FileId, foreign content/root and opaque refusal, Range revocation, writes replay, full clone/receive/cache preserve local files and Operations PASS"
     );

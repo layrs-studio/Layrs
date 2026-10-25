@@ -1,9 +1,15 @@
 //! A distinct format3 checkout. A complete native Workspace is never fabricated.
 use super::*;
 use layrs_core::projection::{
-    EntryState, PathSemantics, ProjectionEntry as LocalEntry, ProjectionSnapshot,
+    EntryState, PathSemantics, ProjectionEntry as LocalEntry, ProjectionSelection,
+    ProjectionSnapshot,
 };
 use layrs_store_local::projection::{ProjectionIdentity, ProjectionStore};
+#[path = "projection_selection.rs"]
+mod selection;
+#[cfg(test)]
+#[path = "projection_selection_tests.rs"]
+mod selection_tests;
 
 fn local(error: impl std::fmt::Display) -> NativeRemoteError {
     NativeRemoteError::Io(std::io::Error::other(error.to_string()))
@@ -19,6 +25,23 @@ impl NativeRemote {
         space: &SpaceId,
         step: &StepId,
     ) -> RemoteResult<ProjectionStore> {
+        self.clone_projection_selected_into(root, space, step, &ProjectionSelection::All)
+    }
+    /// Download only selected, authorized, supported leaves. Structural metadata
+    /// remains complete and bounded, preserving every exact remote identity.
+    pub fn clone_projection_selected_into(
+        &self,
+        root: &Path,
+        space: &SpaceId,
+        step: &StepId,
+        selection: &ProjectionSelection,
+    ) -> RemoteResult<ProjectionStore> {
+        let semantics = if cfg!(windows) {
+            PathSemantics::PortableWindows
+        } else {
+            PathSemantics::CaseSensitive
+        };
+        let selection = selection.normalized(semantics).map_err(local)?;
         let metadata = std::fs::symlink_metadata(root)?;
         if !metadata.is_dir()
             || metadata.file_type().is_symlink()
@@ -107,6 +130,7 @@ impl NativeRemote {
                 .collect(),
         };
         initial.validate().map_err(local)?;
+        selection.validate_snapshot(&initial).map_err(local)?;
         let binding = Binding {
             origin: self.origin().into(),
             space_id: space.clone(),
@@ -122,6 +146,9 @@ impl NativeRemote {
         let mut total_bytes = 0u64;
         let mut target = initial.clone();
         for entry in &mut target.entries {
+            if !selection.includes(&entry.path) {
+                continue;
+            }
             let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
                 continue;
             };
@@ -175,7 +202,8 @@ impl NativeRemote {
             origin: self.origin().trim_end_matches('/').into(),
             principal_id: base.principal_id.to_string(),
         };
-        let store = ProjectionStore::create(root, identity, initial).map_err(local)?;
+        let store =
+            ProjectionStore::create_selected(root, identity, initial, selection).map_err(local)?;
         let generation = store.state().map_err(local)?.generation;
         store
             .install_projection(generation, &target, &mut |path, output| {

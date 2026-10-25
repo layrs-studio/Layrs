@@ -2,7 +2,12 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 
 pub(super) fn resume(store: &ProjectionStore) -> Result<VersionedProjection> {
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    resume_with_access(store, format::recovery_access(store, None, false)?)
+}
+pub(in crate::projection) fn resume_with_access(
+    store: &ProjectionStore,
+    mut access: format::Access,
+) -> Result<VersionedProjection> {
     let length: Option<u64> = access
         .connection
         .query_row(
@@ -44,6 +49,7 @@ pub(super) fn resume(store: &ProjectionStore) -> Result<VersionedProjection> {
 
 fn validate(access: &format::Access, journal: &Journal) -> Result<VersionedProjection> {
     let current = database::current(&access.connection)?;
+    selection::verify_target(&access.connection, &journal.target)?;
     validate_snapshot(&current, journal)?;
     let other: bool = access.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)", [], |r| r.get(0))?;
@@ -158,6 +164,7 @@ pub(super) fn finish(
         }
     }
     for record in &journal.new {
+        install::files::reject_aliases(&store.root, &record.path, journal.target.path_semantics)?;
         if files::present(&directory_path.join(&record.name))? {
             files::read_verify(&directory, &record.name, record)?;
             files::destination(store, &record.path, &removed)?;
@@ -182,7 +189,12 @@ pub(super) fn finish(
     }
     for record in &journal.new {
         if files::present(&directory_path.join(&record.name))? {
-            install::files::destination_absent(&root, &store.root, &record.path)?;
+            install::files::destination_selected_absent(
+                &root,
+                &store.root,
+                &record.path,
+                journal.target.path_semantics,
+            )?;
             let source = files::read_verify(&directory, &record.name, record)?;
             let (parent, name) = root.components_to_parent(Path::new(&record.path))?;
             if source.rename_to(&parent, &name)? {
@@ -205,6 +217,7 @@ pub(super) fn finish(
         }
     }
     for record in &journal.new {
+        install::files::reject_aliases(&store.root, &record.path, journal.target.path_semantics)?;
         files::read_verify(&root, &record.path, record)?;
     }
     // A revoked/deleted leaf must not have reappeared while other files moved.
@@ -245,6 +258,26 @@ pub(super) fn finish(
         "DELETE FROM projection_refresh_pending WHERE singleton=1",
         [],
     )?;
+    retention::transfer(
+        &tx,
+        store,
+        "refresh",
+        &journal.directory,
+        "generation",
+        &digest,
+    )?;
+    // These were verified-clean outgoing remote bases, not local preimages.
+    // Keep them with their original generation so explicit retirement can release
+    // them without contaminating the new generation's base dependencies.
+    retention::transfer(
+        &tx,
+        store,
+        "refresh-old-base",
+        &journal.directory,
+        "generation",
+        &current.digest,
+    )?;
+    retention::finish_budget(&tx, store)?;
     tx.commit()?;
     faults.check(RefreshPoint::AfterCommit)?;
     access.verify()?;

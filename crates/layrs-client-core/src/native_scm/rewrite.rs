@@ -7,7 +7,6 @@ use layrs_store::scm::{CanonicalConflict, CanonicalObject};
 #[path = "rewrite_conflict.rs"]
 mod conflicted;
 use layrs_store_local::scm_v1::{
-    self,
     checkout::{CheckoutContent, CheckoutEntry},
     materialize::NoMaterializationFaults,
     NativeScmReader,
@@ -138,7 +137,7 @@ impl NativeWorkspace {
         let layer = active_layer(&state)?;
         let target = base_step(&state)?;
         let limits = GraphMergeLimits::default();
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let mut objects = merge::load_objects(
             &reader,
@@ -256,7 +255,7 @@ impl NativeWorkspace {
         let layer = active_layer(&state)?;
         let target = base_step(&state)?;
         let limits = GraphMergeLimits::default();
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = merge::load_objects(&reader, state.space.id(), vec![target.clone()], limits)?;
         let mut selected = vec![];

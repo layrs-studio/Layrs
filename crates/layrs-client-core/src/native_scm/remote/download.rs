@@ -7,10 +7,23 @@ const SEGMENT_BYTES: u64 = 1024 * 1024;
 const MAX_FAILURES: usize = 3;
 const OBJECT_DEADLINE: Duration = Duration::from_secs(120);
 
+#[path = "download_local.rs"]
+mod local;
+
 impl NativeRemote {
+    #[cfg(test)]
     pub(super) fn download_object(
         &self,
         cap: &DownloadCapability,
+        renew: impl FnMut(Duration) -> RemoteResult<DownloadCapability>,
+    ) -> RemoteResult<CanonicalObject> {
+        self.download_object_from_store(cap, None, renew)
+    }
+
+    pub(super) fn download_object_from_store(
+        &self,
+        cap: &DownloadCapability,
+        local_workspace: Option<&NativeWorkspace>,
         mut renew: impl FnMut(Duration) -> RemoteResult<DownloadCapability>,
     ) -> RemoteResult<CanonicalObject> {
         let mut cap = cap.clone();
@@ -19,10 +32,29 @@ impl NativeRemote {
         if total > MAX_OBJECT || cap.descriptor.canonical_byte_len > MAX_OBJECT {
             return Err(NativeRemoteError::Invalid("download exceeds limits"));
         }
-        let mut spool = temporary_file()?;
-        let mut resume = self.resume_download(&cap, &mut spool)?;
         let started = Instant::now();
-        let mut offset = resume.as_ref().map_or(0, |r| r.offset);
+        let mut spool = temporary_file()?;
+        // Canonical identity bytes can seed the existing ranged verifier. Local
+        // admission never substitutes for the fresh authorized response below.
+        let local = if cap.accept_ranges && cap.descriptor.compression == Compression::Identity {
+            local_workspace
+                .map(|workspace| local::read(workspace, &cap))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let mut resume = if local.is_some() {
+            None
+        } else {
+            self.resume_download(&cap, &mut spool)?
+        };
+        let mut offset = if let Some(bytes) = local {
+            spool.write_all(&bytes)?;
+            total
+        } else {
+            resume.as_ref().map_or(0, |r| r.offset)
+        };
         // Even a complete cached prefix needs a fresh authorized response.
         // Never treat local checkpoint data as an authorization capability.
         if offset == total && total != 0 {
@@ -228,6 +260,10 @@ fn validate_framing(
 #[cfg(test)]
 #[path = "download_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "download_reuse_tests.rs"]
+mod reuse_tests;
 
 #[cfg(test)]
 fn copy_segment(

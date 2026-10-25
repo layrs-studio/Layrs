@@ -114,7 +114,7 @@ impl NativeRemote {
         let graph = if unchanged {
             None
         } else {
-            Some(self.download_graph(&binding, &bootstrap)?)
+            Some(self.download_graph_from_store(&binding, &bootstrap, Some(workspace))?)
         };
         self.transfer_check()?;
         let _lock = remote_lock(workspace)?;

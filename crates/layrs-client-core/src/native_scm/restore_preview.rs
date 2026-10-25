@@ -103,7 +103,7 @@ impl NativeWorkspace {
                 )
             }
             Target::View(id) => {
-                let store = scm_v1::open(self.store_root())?;
+                let store = self.open_store()?;
                 let reader = NativeScmReader::new(&store)?;
                 let operation = reader
                     .get_operation(id)?

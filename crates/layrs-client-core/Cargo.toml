@@ -10,6 +10,7 @@ url = "2"
 blake3 = "1"
 base64 = "0.22"
 layrs-core = { path = "../layrs-core" }
+layrs-vfs = { path = "../layrs-vfs" }
 layrs-graph = { path = "../layrs-graph" }
 layrs-weave = { path = "../layrs-weave" }
 layrs-store = { path = "../layrs-store" }
@@ -25,3 +26,7 @@ serde_json = "1"
 time = { version = "=0.3.36", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
+
+[dev-dependencies]
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

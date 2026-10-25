@@ -419,7 +419,9 @@ impl NativeRemote {
             pending: None,
             last_receipt: None,
         };
-        self.download_graph(&binding, &bootstrap)?.entries(step)
+        let graph = self.download_graph(&binding, &bootstrap)?;
+        graph.validate_runner_namespace(step)?;
+        graph.entries(step)
     }
 }
 
@@ -636,6 +638,7 @@ pub use projection_namespace::{
 mod projection_clone;
 mod projection_directory;
 mod projection_migrate;
+mod projection_offline;
 mod projection_publish;
 mod projection_stream;
 pub use projection_directory::NativeProjectionDirectoryPreview;

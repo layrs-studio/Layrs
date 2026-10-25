@@ -5,8 +5,9 @@ export type NativeProjectionAnchor = {
 };
 export type NativeProjectFile = {
   path: string; kind: "file" | "directory" | "symlink" | "conflict" | "tombstone" | "absent";
-  contentState: "materialized" | "not_materialized" | "reserved" | "unavailable" | "absent";
+  contentState: "materialized" | "not_materialized" | "reserved" | "unavailable" | "absent" | "excluded";
   access: "read_write" | "read_only" | "denied" | "unknown";
+  selection?: "included" | "excluded";
   objectId?: string;
 };
 export type NativePathReservation = { path: string; reason: "content_denied" | "local_preserved" | "collision" | "unknown" };
@@ -49,7 +50,9 @@ export function nativeProjectionReady(snapshot: NativeProjectFilesSnapshot | nul
   const keys = new Set<string>();
   const prefixes = new Map<string,string>();
   for (const entry of snapshot.entries) {
-    if (!entry || !["file","directory","symlink","conflict","tombstone","absent"].includes(entry.kind) || !["materialized","not_materialized","reserved","absent"].includes(entry.contentState) || !["read_write","read_only","denied"].includes(entry.access)) return false;
+    if (!entry || !["file","directory","symlink","conflict","tombstone","absent"].includes(entry.kind) || !["materialized","not_materialized","reserved","absent","excluded"].includes(entry.contentState) || !["read_write","read_only","denied"].includes(entry.access)) return false;
+    if (entry.selection !== undefined && !["included", "excluded"].includes(entry.selection)) return false;
+    if (entry.selection === "excluded" && ["materialized", "absent"].includes(entry.contentState)) return false;
     if((entry.kind==="absent")!==(entry.contentState==="absent")||(entry.kind==="absent"&&entry.access!=="read_write"))return false;
     const key = nativePathKey(entry.path, snapshot.pathPlatform, snapshot.caseMode);
     if (!key || keys.has(key) || (entry.access === "denied" && entry.contentState === "materialized")) return false;
@@ -81,10 +84,11 @@ export function checkNativeNamespaceMutation(snapshot: NativeProjectFilesSnapsho
 export function nativeProjectFileLabel(entry: NativeProjectFile): string {
   if(entry.kind==="absent"&&entry.contentState==="absent"&&entry.access==="read_write")return "Absence observée · création à revalider avant application";
   if (entry.access === "denied" && entry.contentState === "materialized") return "État incohérent · actualisation nécessaire";
-  if (entry.access === "denied") return entry.contentState === "reserved" ? "🔒 Chemin réservé · contenu interdit" : "🔒 Contenu non accessible · non matérialisé";
+  if (entry.access === "denied") return (entry.contentState === "reserved" ? "🔒 Chemin réservé · contenu interdit" : "🔒 Contenu non accessible · non matérialisé") + (entry.selection === "excluded" ? " · hors sélection" : "");
   if (entry.contentState === "reserved") return "🔒 Chemin réservé";
   if (entry.access === "unknown" || entry.contentState === "unavailable") return "État incomplet · actualisation nécessaire";
-  if (entry.contentState === "not_materialized") return "Contenu non matérialisé";
+  if (entry.contentState === "excluded") return "Exclu de la sélection · non téléchargé";
+  if (entry.contentState === "not_materialized") return "Contenu indisponible ou non pris en charge · non matérialisé";
   if (entry.contentState !== "materialized" || !["read_write","read_only"].includes(entry.access)) return "État inconnu · actualisation nécessaire";
   return entry.access === "read_only" ? "Lecture seule" : "Matérialisé · modifiable";
 }

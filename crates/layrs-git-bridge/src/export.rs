@@ -4,17 +4,18 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use layrs_client_core::native_scm::NativeWorkspace;
 use layrs_graph::scm::StepDag;
 use layrs_store::scm::*;
-use layrs_store_local::scm_v1::{NativeScmReader, open};
+use layrs_store_local::scm_v1::NativeScmReader;
 use std::collections::BTreeSet;
 
 #[path = "export_selection.rs"]
 mod selection;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
 pub enum ExportMode {
     /// All visible Layers (every head) and Markers, preserving parent closure.
@@ -22,8 +23,17 @@ pub enum ExportMode {
     /// Exact exported branch/tag names, preserving every selected head's parents.
     /// Multi-head Layers use their explicit generated /head-<Step hash> names.
     SelectedHistory { references: Vec<String> },
-    /// One clean snapshot, explicitly without its native parent history.
+    /// One admitted same-Space Step by exact ID, explicitly without its parent
+    /// history. This explicit choice overrides the reviewed View's references;
+    /// an independent Worktree's Step is allowed, a foreign Space's Step is not.
     Snapshot { step_id: StepId, reference: String },
+}
+impl ExportMode {
+    /// Validate and bound an explicit selection before retaining a native review.
+    /// Git's own ref parser remains the authority for reference syntax.
+    pub fn validated(self, limits: GitBridgeLimits) -> Result<Self> {
+        selection::normalize(self, limits)
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,7 +63,57 @@ pub fn export_workspace_with_progress(
     limits: GitBridgeLimits,
     callback: &mut ProgressCallback<'_>,
 ) -> Result<ExportReport> {
-    export_impl(workspace, destination, mode, limits, callback, false)
+    export_workspace_expected(
+        workspace,
+        &ExpectedBridgeState::capture(workspace)?,
+        destination,
+        mode,
+        limits,
+        callback,
+    )
+}
+
+/// History follows the reviewed View; Snapshot uses its explicitly selected,
+/// admitted same-Space Step. Both bind the reviewed native state and content.
+pub fn export_workspace_expected(
+    workspace: &NativeWorkspace,
+    expected: &ExpectedBridgeState,
+    destination: impl AsRef<Path>,
+    mode: ExportMode,
+    limits: GitBridgeLimits,
+    callback: &mut ProgressCallback<'_>,
+) -> Result<ExportReport> {
+    let destination = review_export_destination(destination, limits)?;
+    export_workspace_reviewed(workspace, expected, &destination, mode, limits, callback)
+}
+pub fn review_export_destination(
+    destination: impl AsRef<Path>,
+    limits: GitBridgeLimits,
+) -> Result<ExportDestination> {
+    ExportDestination::capture(
+        destination,
+        limits.max_objects.saturating_mul(2).saturating_add(1024),
+        limits.max_total_bytes,
+    )
+    .map_err(invalid)
+}
+pub fn export_workspace_reviewed(
+    workspace: &NativeWorkspace,
+    expected: &ExpectedBridgeState,
+    destination: &ExportDestination,
+    mode: ExportMode,
+    limits: GitBridgeLimits,
+    callback: &mut ProgressCallback<'_>,
+) -> Result<ExportReport> {
+    export_impl(
+        workspace,
+        expected,
+        destination,
+        mode,
+        limits,
+        callback,
+        false,
+    )
 }
 /// Explicitly resumes only an incomplete export for the exact same native
 /// Operation/View/mode. Existing unexpected refs or reparse entries refuse.
@@ -64,43 +124,86 @@ pub fn resume_export_workspace(
     limits: GitBridgeLimits,
     callback: &mut ProgressCallback<'_>,
 ) -> Result<ExportReport> {
-    export_impl(workspace, destination, mode, limits, callback, true)
+    resume_export_workspace_expected(
+        workspace,
+        &ExpectedBridgeState::capture(workspace)?,
+        destination,
+        mode,
+        limits,
+        callback,
+    )
 }
+
+pub fn resume_export_workspace_expected(
+    workspace: &NativeWorkspace,
+    expected: &ExpectedBridgeState,
+    destination: impl AsRef<Path>,
+    mode: ExportMode,
+    limits: GitBridgeLimits,
+    callback: &mut ProgressCallback<'_>,
+) -> Result<ExportReport> {
+    let destination = review_export_destination(destination, limits)?;
+    resume_export_workspace_reviewed(workspace, expected, &destination, mode, limits, callback)
+}
+pub fn resume_export_workspace_reviewed(
+    workspace: &NativeWorkspace,
+    expected: &ExpectedBridgeState,
+    destination: &ExportDestination,
+    mode: ExportMode,
+    limits: GitBridgeLimits,
+    callback: &mut ProgressCallback<'_>,
+) -> Result<ExportReport> {
+    export_impl(
+        workspace,
+        expected,
+        destination,
+        mode,
+        limits,
+        callback,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn export_impl(
     workspace: &NativeWorkspace,
-    destination: impl AsRef<Path>,
+    expected: &ExpectedBridgeState,
+    reviewed_destination: &ExportDestination,
     mode: ExportMode,
     limits: GitBridgeLimits,
     callback: &mut ProgressCallback<'_>,
     resume: bool,
 ) -> Result<ExportReport> {
+    expected.validate(workspace)?;
+    reviewed_destination.verify_review().map_err(invalid)?;
     let started = std::time::Instant::now();
     progress(callback, started, BridgePhase::ExportPlan, 0, None, 0, 0, 0)?;
     let mode = selection::normalize(mode, limits)?;
-    let destination = std::path::absolute(destination)?;
+    let destination = reviewed_destination.path();
     if destination.try_exists()? && !resume {
         return Err(invalid("Git export destination must not exist"));
     }
-    let state = workspace.state().map_err(invalid)?;
+    let state = expected.state();
     let checkpoint = serde_json::json!({"schemaVersion":"layrs.git-export-checkpoint.v1","spaceId":state.space.id(),"operationId":state.operation.id(),"viewId":state.view.id(),"mode":&mode});
     let checkpoint_bytes = canonical_json(&checkpoint).map_err(invalid)?;
     if checkpoint_bytes.len() > 16_384 {
         return Err(BridgeError::Limit("export checkpoint bytes"));
     }
-    if resume {
-        validate_resume_directory(&destination, limits)?;
-        use std::io::Read;
-        let mut bytes = Vec::new();
-        std::fs::File::open(destination.join("layrs-export.incomplete"))?
-            .take(16385)
-            .read_to_end(&mut bytes)?;
+    let initialize = if resume {
+        let checkpoint_only = validate_resume_directory(&destination, limits)?;
+        let bytes = reviewed_destination
+            .read_incomplete_checkpoint()
+            .map_err(invalid)?;
         if bytes.len() > 16384 || bytes != checkpoint_bytes {
             return Err(invalid(
                 "export checkpoint does not match exact native snapshot/mode",
             ));
         }
-    }
-    let store = open(workspace.store_root()).map_err(invalid)?;
+        checkpoint_only
+    } else {
+        true
+    };
+    let store = workspace.open_store().map_err(invalid)?;
     let reader = NativeScmReader::new(&store).map_err(invalid)?;
     let mut provenance: BTreeMap<StepId, Vec<GitCommitMapping>> = BTreeMap::new();
     let mut reports = BTreeMap::new();
@@ -295,25 +398,33 @@ fn export_impl(
     };
     // No source repository is mutated. A failed new export keeps its explicit
     // incomplete marker so it cannot be mistaken for a validated destination.
+    // A callback or another process may have changed references during planning.
+    // Refuse before any destination write; all loaded content is still pinned to
+    // the reviewed graph even if a later concurrent source mutation occurs.
+    expected.validate(workspace)?;
+    let lease = reviewed_destination.begin(resume).map_err(invalid)?;
     if !resume {
-        std::fs::create_dir(&destination)?;
+        lease
+            .write_file("layrs-export.incomplete", &checkpoint_bytes, false)
+            .map_err(invalid)?;
     }
-    let incomplete = destination.join("layrs-export.incomplete");
-    if !resume {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&incomplete)?;
-        file.write_all(&checkpoint_bytes)?;
-        file.sync_all()?;
+    let git = process::Git::for_export(std::sync::Arc::clone(&lease), expected, limits)?;
+    // A crash before init leaves only the exact checkpoint. Once Git files
+    // exist, never reinitialize them: a damaged HEAD must fail closed.
+    if initialize {
+        git.run(
+            &["init", "--bare", "--template=", "--object-format=sha1", "."],
+            None,
+            4096,
+        )?;
     }
-    let git = process::Git::new(&destination, limits)?;
-    git.run(
-        &["init", "--bare", "--template=", "--object-format=sha1", "."],
-        None,
-        4096,
-    )?;
+    if utf8(&git.run(&["rev-parse", "--is-bare-repository"], None, 16)?)?.trim() != "true"
+        || utf8(&git.run(&["rev-parse", "--show-object-format"], None, 16)?)?.trim() != "sha1"
+    {
+        return Err(invalid(
+            "export destination must be the exact bare SHA1 repository",
+        ));
+    }
     let mut existing = BTreeMap::new();
     let output = git.run(
         &["for-each-ref", "--format=%(refname) %(objectname)"],
@@ -512,6 +623,7 @@ fn export_impl(
     // Git validates and installs one complete self-contained pack. No object
     // database files are written directly by this bridge, including on resume.
     let packed = writer.pack.finish()?;
+    expected.validate(workspace)?;
     let checksum = pack::hex_bytes(&packed[packed.len() - 20..]);
     let indexed = git.run_owned(&["index-pack", "--stdin", "--strict"], Some(packed), 128)?;
     if utf8(&indexed)?.trim() != format!("pack\t{checksum}") {
@@ -543,11 +655,17 @@ fn export_impl(
         None,
         limits.max_total_bytes,
     )?;
-    std::fs::write(
-        destination.join("layrs-export-report.json"),
-        canonical_json(&result).map_err(invalid)?,
-    )?;
-    std::fs::remove_file(incomplete)?;
+    expected.accept_guard().map_err(invalid)?;
+    lease
+        .write_file(
+            "layrs-export-report.json",
+            &canonical_json(&result).map_err(invalid)?,
+            true,
+        )
+        .map_err(invalid)?;
+    lease
+        .remove_file("layrs-export.incomplete")
+        .map_err(invalid)?;
     // Completion is a notification, not a cancellable pre-commit boundary.
     let _ = progress(
         callback,
@@ -579,7 +697,7 @@ fn decode_provenance(encoded: &str, limits: GitBridgeLimits) -> Result<Vec<u8>> 
     Ok(bytes)
 }
 
-fn validate_resume_directory(root: &Path, limits: GitBridgeLimits) -> Result<()> {
+fn validate_resume_directory(root: &Path, limits: GitBridgeLimits) -> Result<bool> {
     let mut pending = vec![root.to_owned()];
     let mut visited = 0usize;
     while let Some(path) = pending.pop() {
@@ -629,7 +747,9 @@ fn validate_resume_directory(root: &Path, limits: GitBridgeLimits) -> Result<()>
             return Err(invalid("export resume rejects special entries"));
         }
     }
-    Ok(())
+    // The caller separately requires the exact regular checkpoint file; two
+    // visited entries therefore mean the root and that checkpoint alone.
+    Ok(visited == 2)
 }
 
 fn escape_ref(name: &str) -> String {

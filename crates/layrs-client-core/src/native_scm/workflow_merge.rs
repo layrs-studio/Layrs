@@ -1,7 +1,7 @@
 use super::{NativeClientError, NativeMergePreview, NativeWorkspace, Result};
 use layrs_core::scm::*;
 use layrs_store::scm::{ScmReader, StoreObjectId};
-use layrs_store_local::scm_v1::{self, NativeScmReader};
+use layrs_store_local::scm_v1::NativeScmReader;
 use layrs_weave::{
     graph_merge::GraphMergeLimits,
     reconciliation::{FailureAction, FileMergeLimits, FileMergePolicy},
@@ -53,7 +53,7 @@ impl NativeWorkspace {
             .iter()
             .find(|h| h.layer_id() == layer)
             .ok_or(NativeClientError::Missing("Layer"))?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = super::merge::load_objects(
             &reader,
@@ -213,7 +213,7 @@ impl NativeWorkspace {
             .iter()
             .find(|h| h.layer_id() == layer)
             .ok_or(NativeClientError::Missing("Layer heads"))?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let admitted = |id: &StoreObjectId| -> Result<()> {
             if !reader.object_admitted_to_space(id, state.space.id())? {

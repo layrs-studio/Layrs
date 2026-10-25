@@ -8,6 +8,8 @@ import { ConnectFlow } from "../sync/ConnectFlow";
 import { NoticeView, ServerSummary, TransferView } from "../sync/parts";
 import { TeamCatalog } from "../sync/TeamCatalog";
 import { openProject } from "./ProjectsPage";
+import { SelectionFields } from "../app/SelectionFields";
+import { cloneSelectedRequest, selectionFromRules, type SelectionRule } from "../app/selection";
 
 type Mode = "initialize" | "clone";
 
@@ -139,9 +141,19 @@ function CloneWizard({ root, folderField }: { root: string; folderField: JSX.Ele
   const [reference, setReference] = useState("");
   const [step, setStep] = useState("");
   const [limited, setLimited] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<"all" | "selected">("all");
+  const [rules, setRules] = useState<SelectionRule[]>([]);
   const connected = remote.session.state === "connected";
   const space = reference.trim() || project?.spaceId || "";
-  const projection = limited || project?.access === "limited";
+  const projection = limited || project?.access === "limited" || selectionMode === "selected";
+  let selectedRequest: ReturnType<typeof cloneSelectedRequest> | undefined;
+  let selectionError: string | undefined;
+  if (selectionMode === "selected") {
+    try {
+      const selection = selectionFromRules(rules, navigator.platform.startsWith("Win") ? "portable_windows" : "case_sensitive");
+      selectedRequest = cloneSelectedRequest(space, step, selection);
+    } catch (cause) { selectionError = cause instanceof Error ? cause.message : String(cause); }
+  }
   const reason = !connected
     ? "Connectez-vous d’abord au serveur."
     : !space
@@ -152,14 +164,15 @@ function CloneWizard({ root, folderField }: { root: string; folderField: JSX.Ele
           ? "Un transfert est déjà en cours."
           : projection && !/^blake3:[a-f0-9]{64}$/.test(step.trim())
             ? "Indiquez la capture publiée à récupérer."
-            : undefined;
+            : selectionError;
 
   function start() {
+    if (reason) return;
     if (projection) {
       rememberProject({ root, name: project?.name ?? "", kind: "projection" });
       void remote.operate(
         { kind: "clone", label: `Récupération des fichiers autorisés de ${project?.name ?? "ce projet"}`, busy: "Récupération…", context: "clone" },
-        { action: "cloneProjection", space, step: step.trim() },
+        selectedRequest ?? { action: "cloneProjection", space, step: step.trim() },
       );
     } else {
       void remote.operate(
@@ -218,6 +231,11 @@ function CloneWizard({ root, folderField }: { root: string; folderField: JSX.Ele
         <h2 id="clone-folder">3. Dossier de cet ordinateur</h2>
         <Card className="new-project__card">
           {folderField}
+          <SegmentedControl<"all" | "selected"> label="Fichiers à récupérer" value={selectionMode} onChange={setSelectionMode} options={[
+            { value: "all", label: "Tous les fichiers autorisés" },
+            { value: "selected", label: "Choisir des chemins" },
+          ]} />
+          {selectionMode === "selected" && <SelectionFields rules={rules} onChange={setRules} disabled={Boolean(remote.transfer)} error={selectionError} />}
           {project?.access !== "limited" && (
             <details className="merge__advanced" open={limited || undefined}>
               <summary>Récupérer seulement les fichiers autorisés (avancé)</summary>
@@ -231,9 +249,9 @@ function CloneWizard({ root, folderField }: { root: string; folderField: JSX.Ele
           )}
           {projection && (
             <>
-              <Banner tone="info" title="Accès limité">
-                Seuls les fichiers autorisés sont téléchargés ; les chemins interdits restent visibles et réservés. Le serveur ne fournit pas encore la
-                capture publiée à ce type d’accès : indiquez celle que vous a transmise votre équipe.
+              <Banner tone="info" title={selectionMode === "selected" ? "Sélection partielle" : "Accès limité"}>
+                Seuls les fichiers sélectionnés et autorisés sont téléchargés ; les chemins interdits restent réservés. Les chemins exclus par votre choix
+                restent identifiés et peuvent être ajoutés ensuite. Indiquez l’identifiant exact de la capture publiée à récupérer.
               </Banner>
               <TextField label="Capture publiée à récupérer" value={step} placeholder="blake3:…" onChange={(event) => setStep(event.target.value)} />
             </>

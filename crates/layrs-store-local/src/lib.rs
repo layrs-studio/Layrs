@@ -3,6 +3,7 @@
 //! This crate owns the on-disk `.layrs` Store: the native SCM format in
 //! [`scm_v1`], checkout projections and the bounded download cache.
 
+pub mod anchored_export;
 pub mod download_cache;
 mod error;
 mod layout;

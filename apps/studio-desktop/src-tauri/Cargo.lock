@@ -1722,6 +1722,7 @@ dependencies = [
  "layrs-store",
  "layrs-store-local",
  "layrs-sync",
+ "layrs-vfs",
  "layrs-weave",
  "reqwest",
  "rusqlite",
@@ -1745,6 +1746,24 @@ dependencies = [
  "serde_json",
  "time",
  "unicode-normalization",
+]
+
+[[package]]
+name = "layrs-git-bridge"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "flate2",
+ "layrs-client-core",
+ "layrs-core",
+ "layrs-graph",
+ "layrs-store",
+ "layrs-store-local",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
 ]
 
 [[package]]
@@ -1797,6 +1816,7 @@ dependencies = [
  "layrs-graph",
  "layrs-store",
  "layrs-sync",
+ "layrs-vfs",
  "layrs-weave",
  "rusqlite",
  "serde",
@@ -1813,6 +1833,7 @@ dependencies = [
  "blake3",
  "idna_adapter",
  "layrs-client-core",
+ "layrs-git-bridge",
  "plist",
  "serde",
  "serde_json",
@@ -1839,6 +1860,14 @@ dependencies = [
  "serde_json",
  "time",
  "url",
+]
+
+[[package]]
+name = "layrs-vfs"
+version = "0.0.0"
+dependencies = [
+ "layrs-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3306,6 +3335,17 @@ checksum = "d98238b800e0d1576d8b6e3de32827c2d74bee68bb97748dcf5071fb53965432"
 dependencies = [
  "nodrop",
  "stable_deref_trait",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
 ]
 
 [[package]]

@@ -47,6 +47,13 @@ pub(crate) struct PinnedFile {
 }
 
 impl PinnedDirectory {
+    #[cfg(any(unix, test))]
+    pub(crate) fn duplicate_handle(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+    pub(crate) fn same_volume(&self, other: &Self) -> bool {
+        self.identity.volume == other.identity.volume
+    }
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let pinned = Self::open_components(path)?;
         pinned.verify_path_identity()?;
@@ -144,6 +151,25 @@ impl PinnedDirectory {
             display_path,
         };
         child.sync()?;
+        Ok(child)
+    }
+
+    /// Create a new directory relative to this pinned parent; never adopt a
+    /// colliding entry, even when it is already a regular directory.
+    pub(crate) fn create_new_child(&self, name: &OsStr) -> io::Result<Self> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        let file = platform::create_new_directory_at(&self.file, name)?;
+        let display_path = self.display_path.join(name);
+        validate_directory_metadata(&display_path, &file.metadata()?)?;
+        let child = Self {
+            identity: file_identity(&file)?,
+            file,
+            display_path,
+        };
+        child.sync()?;
+        self.sync()?;
+        child.verify_path_identity()?;
         Ok(child)
     }
 
@@ -462,6 +488,86 @@ fn sync_directory_handle(file: &File) -> io::Result<()> {
 #[cfg(unix)]
 #[path = "secure_fs/unix.rs"]
 mod platform;
+
+#[cfg(test)]
+mod directory_capability_tests {
+    use super::*;
+
+    #[test]
+    fn exclusive_child_creation_preserves_collisions_and_readonly_open_does_not_create() {
+        let path = std::env::temp_dir().join(format!(
+            "layrs-directory-capability-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        {
+            let parent = PinnedDirectory::open(&path).unwrap();
+            assert_eq!(
+                parent
+                    .open_private_child("absent".as_ref())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+            assert!(!path.join("absent").exists());
+            assert_eq!(
+                parent
+                    .open_private_child_for_write("absent".as_ref())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+            assert!(!path.join("absent").exists());
+            let private = parent.ensure_private_child("private".as_ref()).unwrap();
+            fs::write(path.join("private/valuable"), b"private bytes").unwrap();
+            let reopened = parent.open_private_child("private".as_ref()).unwrap();
+            assert_eq!(private.identity_token(), reopened.identity_token());
+            let writable = parent
+                .open_private_child_for_write("private".as_ref())
+                .unwrap();
+            assert_eq!(private.identity_token(), writable.identity_token());
+            let record = writable.create_file("new-record".as_ref()).unwrap();
+            record.file().sync_all().unwrap();
+            writable.sync().unwrap();
+            assert_eq!(
+                fs::read(path.join("private/valuable")).unwrap(),
+                b"private bytes"
+            );
+            let child = parent.create_new_child("new".as_ref()).unwrap();
+            let identity = child.identity_token();
+            fs::write(path.join("new/valuable"), b"external bytes").unwrap();
+            assert_eq!(
+                parent.create_new_child("new".as_ref()).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(
+                parent
+                    .open_child_for_traversal("new".as_ref())
+                    .unwrap()
+                    .identity_token(),
+                identity
+            );
+            assert_eq!(
+                fs::read(path.join("new/valuable")).unwrap(),
+                b"external bytes"
+            );
+            assert!(
+                parent
+                    .duplicate_handle()
+                    .unwrap()
+                    .metadata()
+                    .unwrap()
+                    .is_dir()
+            );
+        }
+        assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+        fs::remove_dir_all(path).unwrap();
+    }
+}
 
 #[cfg(windows)]
 #[path = "secure_fs/windows.rs"]

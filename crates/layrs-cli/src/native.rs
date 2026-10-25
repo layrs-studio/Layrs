@@ -12,6 +12,8 @@ mod blocks;
 mod maintenance;
 #[path = "native_preview.rs"]
 mod preview_output;
+#[path = "native_worktree.rs"]
+mod worktree;
 
 // Progress goes to stderr, preserving the machine-readable stdout envelope.
 fn bridge_progress() -> impl FnMut(&layrs_git_bridge::BridgeProgress) -> bool {
@@ -51,6 +53,12 @@ fn bridge_selection(references: &[String]) -> layrs_git_bridge::ImportSelection 
 }
 
 pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
+    if let CliCommand::Offline(command) = &cli.command {
+        return Some(crate::native_offline::run(cli, command));
+    }
+    if let CliCommand::Vfs(command) = &cli.command {
+        return Some(crate::native_vfs::run(cli, command));
+    }
     if let CliCommand::Partial { args } = &cli.command {
         return Some(partial_command(cli, args));
     }
@@ -151,6 +159,7 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     };
     if let CliCommand::Init { name, path } = &cli.command {
         return Some((|| {
+            crate::native_vfs::refuse_ordinary_workspace(path.as_ref().unwrap_or(&root))?;
             let workspace =
                 NativeWorkspace::initialize(path.as_ref().unwrap_or(&root), name).map_err(error)?;
             let state = workspace.state().map_err(error)?;
@@ -163,6 +172,9 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
                 data: json!({"spaceId":state.space.id(),"worktreeId":state.worktree.id(),"path":state.worktree.checkout_root(),"state":state}),
             })
         })());
+    }
+    if let Err(error) = crate::native_vfs::refuse_ordinary_workspace(&root) {
+        return Some(Err(error));
     }
     if matches!(cli.command, CliCommand::Doctor) {
         return Some((|| {
@@ -181,21 +193,24 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
             Ok(Rendered { human, data })
         })());
     }
-    // Without a native Store marker there is no project to operate on.
-    let native = root
-        .ancestors()
-        .find(|p| p.join(".layrs").exists())
-        .is_some_and(|p| p.join(".layrs/FORMAT").exists());
-    if !native {
-        return None;
+    if let CliCommand::Worktree(command) = &cli.command {
+        return Some(worktree::run(&root, command));
     }
     // Maintenance must run before opening a Store fenced by an interrupted
     // compaction.
     if let CliCommand::Compact { resume } = &cli.command {
         return Some(maintenance::compact(&root, *resume));
     }
+    // Shared discovery validates both a primary Store and a secondary file
+    // locator, including its registered root and filesystem identity.
+    let workspace = match NativeWorkspace::discover(&root) {
+        Ok(workspace) => workspace,
+        Err(layrs_client_core::native_scm::NativeClientError::Missing(
+            "checkout .layrs directory",
+        )) => return None,
+        Err(e) => return Some(Err(error(e))),
+    };
     Some((|| {
-        let workspace = NativeWorkspace::discover(&root).map_err(error)?;
         if let CliCommand::Diff {
             step_id,
             stat,
@@ -704,6 +719,7 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
 
 fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
     use layrs_client_core::native_scm::{ProjectionAction, execute_projection};
+    use layrs_store_local::projection::ProjectionStore;
     let root = cli
         .globals
         .space
@@ -711,6 +727,13 @@ fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
         .map(Ok)
         .unwrap_or_else(std::env::current_dir)
         .map_err(error)?;
+    // Only explicit recovery commands inspect this binding. No normal opener
+    // may migrate or recover the checkout before the shared action receives it.
+    let recovery_binding = || {
+        ProjectionStore::inspect_recovery(&root)
+            .map(|inspection| inspection.binding)
+            .map_err(error)
+    };
     let action = match args
         .iter()
         .map(String::as_str)
@@ -736,11 +759,21 @@ fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
                 .parse()
                 .map_err(|_| CliError::usage("invalid projection generation"))?,
         },
-        ["resume-installation"] => ProjectionAction::ResumeInstallation,
-        ["resume-namespace"] => ProjectionAction::ResumeNamespace,
-        ["resume-refresh"] => ProjectionAction::ResumeRefresh,
-        ["resume-restore"] => ProjectionAction::ResumeRestore,
-        ["resume-rebase"] => ProjectionAction::ResumeRebase,
+        ["resume-installation"] => ProjectionAction::ResumeInstallation {
+            expected: recovery_binding()?,
+        },
+        ["resume-namespace"] => ProjectionAction::ResumeNamespace {
+            expected: recovery_binding()?,
+        },
+        ["resume-refresh"] => ProjectionAction::ResumeRefresh {
+            expected: recovery_binding()?,
+        },
+        ["resume-restore"] => ProjectionAction::ResumeRestore {
+            expected: recovery_binding()?,
+        },
+        ["resume-rebase"] => ProjectionAction::ResumeRebase {
+            expected: recovery_binding()?,
+        },
         ["rebase-draft"] => ProjectionAction::RebaseDraft,
         _ => {
             return Err(CliError::usage(

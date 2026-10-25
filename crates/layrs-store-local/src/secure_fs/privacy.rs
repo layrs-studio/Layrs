@@ -108,6 +108,80 @@ fn create_spool(_: &Path) -> io::Result<File> {
 }
 
 impl PinnedDirectory {
+    /// Exclusively create a directory with a protected current-owner-only DACL.
+    /// A failure after creation retains the object; this helper never cleans up
+    /// uncertain state or opens/adopts a colliding entry.
+    /// Native errors are preserved. Win32 error 5 alone must not be used to infer
+    /// a collision, its underlying cause, or whether retry is appropriate.
+    #[cfg(windows)]
+    pub(crate) fn create_new_private_child(&self, name: &OsStr) -> io::Result<Self> {
+        validate_new_private_name(name)?;
+        self.verify_path_identity()?;
+        let descriptor = windows::private_descriptor()?;
+        let file = platform::create_new_private_directory_at(&self.file, name, descriptor.0)?;
+        let display_path = self.display_path.join(name);
+        validate_directory_metadata(&display_path, &file.metadata()?)?;
+        windows::verify_protected_private(&file)?;
+        let child = Self {
+            identity: file_identity(&file)?,
+            file,
+            display_path,
+        };
+        child.sync()?;
+        self.sync()?;
+        self.verify_path_identity()?;
+        child.verify_path_identity()?;
+        Ok(child)
+    }
+
+    /// Exclusively create an empty file with a protected current-owner-only DACL.
+    /// The caller owns subsequent writes and must sync and close every file handle
+    /// (including duplicates) before handing FORMAT to the provider publisher.
+    /// Failure never removes or re-ACLs an existing or newly created object.
+    /// As with directory allocation, Win32 error 5 does not classify the cause
+    /// and grants no authority to adopt, clean up, or retry a colliding entry.
+    #[cfg(windows)]
+    pub(crate) fn create_new_private_file(&self, name: &OsStr) -> io::Result<PinnedFile> {
+        validate_new_private_name(name)?;
+        self.verify_path_identity()?;
+        let descriptor = windows::private_descriptor()?;
+        let file = platform::create_new_private_file_at(&self.file, name, descriptor.0)?;
+        windows::verify_protected_private(&file)?;
+        let created = self.wrap_file(name, file)?;
+        created.file().sync_all()?;
+        self.sync()?;
+        self.verify_path_identity()?;
+        let observed = self.open_file(name)?;
+        if !created.same_file(&observed) {
+            return Err(identity_changed(&self.display_path.join(name)));
+        }
+        created.verify_parent()?;
+        Ok(created)
+    }
+
+    pub(crate) fn open_private_child(&self, name: &OsStr) -> io::Result<Self> {
+        self.open_existing_private_child(name, false)
+    }
+    /// Reopen an existing private directory for journal mutation, without
+    /// creating a missing directory or changing its owner/permissions.
+    pub(crate) fn open_private_child_for_write(&self, name: &OsStr) -> io::Result<Self> {
+        self.open_existing_private_child(name, true)
+    }
+    fn open_existing_private_child(&self, name: &OsStr, writable: bool) -> io::Result<Self> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        let file = platform::open_existing_private_directory_at(&self.file, name, writable)?;
+        let display_path = self.display_path.join(name);
+        validate_directory_metadata(&display_path, &file.metadata()?)?;
+        let child = Self {
+            identity: file_identity(&file)?,
+            file,
+            display_path,
+        };
+        verify_owner_only(&child.file)?;
+        child.verify_path_identity()?;
+        Ok(child)
+    }
     pub(crate) fn ensure_private_child(&self, name: &OsStr) -> io::Result<Self> {
         validate_name(name)?;
         #[cfg(unix)]
@@ -139,6 +213,64 @@ impl PinnedDirectory {
             Ok(result)
         }
     }
+}
+
+#[cfg(windows)]
+fn validate_new_private_name(name: &OsStr) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    validate_name(name)?;
+    // Components can normalize trailing separators, so also check the raw name.
+    // ':' can target an alternate stream; neither separators nor NUL belong in
+    // an exclusively allocated single leaf.
+    if name.encode_wide().any(|unit| {
+        unit == 0 || unit == u16::from(b':') || unit == u16::from(b'/') || unit == u16::from(b'\\')
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private allocation requires a raw leaf name without separators, streams or NUL",
+        ));
+    }
+    let text = name.to_string_lossy();
+    let stem = text
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered_device = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2"
+                    | "3"
+                    | "4"
+                    | "5"
+                    | "6"
+                    | "7"
+                    | "8"
+                    | "9"
+                    | "\u{b9}"
+                    | "\u{b2}"
+                    | "\u{b3}"
+            )
+        });
+    // These spellings can alias another leaf or a DOS device when a later
+    // consumer uses Win32 path resolution instead of this relative NT handle.
+    if text.ends_with(['.', ' '])
+        || matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+        )
+        || numbered_device
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private allocation requires a canonical leaf name without DOS device aliases",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -303,7 +435,105 @@ mod windows {
         }
         Ok(())
     }
+
+    /// The stricter allocation contract is deliberately separate from the legacy
+    /// verifier used by transfer directories and temporary spools.
+    pub(super) fn verify_protected_private(file: &File) -> io::Result<()> {
+        let user = user()?;
+        let user_sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        let mut owner = ptr::null_mut();
+        let mut acl = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: file retains READ_CONTROL; output slots live through the call.
+        let error = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                &mut acl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        let _allocation = Allocation(descriptor);
+        let mut control = 0u16;
+        let mut revision = 0;
+        // SAFETY: GetSecurityInfo supplied this live security descriptor.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let rejected = || {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "private allocation requires a protected current-owner-only DACL",
+            )
+        };
+        if owner.is_null()
+            || acl.is_null()
+            || control & SE_DACL_PROTECTED == 0
+            || unsafe { IsValidSid(owner) } == 0
+            || unsafe { EqualSid(owner, user_sid) } == 0
+            || unsafe { IsValidAcl(acl) } == 0
+            || unsafe { (*acl).AceCount } != 1
+        {
+            return Err(rejected());
+        }
+        let mut ace = ptr::null_mut();
+        // SAFETY: acl has one ACE and remains owned by the descriptor allocation.
+        if unsafe { GetAce(acl, 0, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let acl_bytes = usize::from(unsafe { (*acl).AclSize });
+        let ace_offset = (ace as usize)
+            .checked_sub(acl as usize)
+            .ok_or_else(rejected)?;
+        let remaining = acl_bytes.checked_sub(ace_offset).ok_or_else(rejected)?;
+        if ace_offset < std::mem::size_of::<ACL>() || remaining < std::mem::size_of::<ACE_HEADER>()
+        {
+            return Err(rejected());
+        }
+        let header = unsafe { ace.cast::<ACE_HEADER>().read_unaligned() };
+        let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        if header.AceType != 0
+            || u32::from(header.AceFlags) & (INHERIT_ONLY_ACE | INHERITED_ACE) != 0
+            || usize::from(header.AceSize) < sid_offset + 8
+            || usize::from(header.AceSize) > remaining
+        {
+            return Err(rejected());
+        }
+        // SAFETY: the ACE bound above contains the mask and the eight-byte SID
+        // header. Check the encoded subauthority count before SID API reads.
+        let mask = unsafe {
+            ace.cast::<u8>()
+                .add(std::mem::offset_of!(ACCESS_ALLOWED_ACE, Mask))
+                .cast::<u32>()
+                .read_unaligned()
+        };
+        let sid = unsafe { ace.cast::<u8>().add(sid_offset) };
+        let sid_bytes = 8 + 4 * usize::from(unsafe { *sid.add(1) });
+        if sid_bytes > usize::from(header.AceSize) - sid_offset
+            || mask != 0x001f_01ff
+            || unsafe { IsValidSid(sid.cast()) } == 0
+            || unsafe { EqualSid(sid.cast(), user_sid) } == 0
+        {
+            return Err(rejected());
+        }
+        Ok(())
+    }
 }
+
+#[cfg(all(test, windows))]
+#[path = "privacy_creation_tests.rs"]
+mod creation_tests;
+
+#[cfg(all(test, windows))]
+#[path = "provider_control_interop_tests.rs"]
+mod provider_control_interop_tests;
 
 #[cfg(test)]
 mod spool_tests {

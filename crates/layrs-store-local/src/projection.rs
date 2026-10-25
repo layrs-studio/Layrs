@@ -10,11 +10,56 @@ pub use capture::{
 mod database;
 mod directory_move;
 pub use directory_move::DirectoryMovePreview;
+mod conversion;
 mod file;
 mod format;
 mod install;
+mod offline;
+mod provider;
+pub use provider::{
+    NoProviderSchemaUpgradeFaults, PROJECTION_PROVIDER_SCHEMA_VERSION,
+    PROVIDER_CATALOG_AGGREGATE_MAX_BYTES, PROVIDER_CATALOG_MAX_BYTES,
+    PROVIDER_CATALOG_MAX_DESCRIPTORS, PROVIDER_COMPANION_AGGREGATE_MAX_BYTES,
+    PROVIDER_COMPANION_MAX_DELETIONS, PROVIDER_COMPANION_MAX_FILES, PROVIDER_DESCRIPTOR_MAX_BYTES,
+    ProviderSchemaUpgradeFaults, ProviderSchemaUpgradePoint,
+};
+#[cfg(windows)]
+pub use provider::{
+    ProviderBootstrapSource, ProviderSourceDescriptor,
+    ProviderBootstrapAttempt,
+    ProviderBootstrapWriterOperation,
+    ProviderBootstrapWriteReportProvenance,
+    ProviderBootstrapReceipt,
+    ProviderBootstrapCreate,
+    ProviderBootstrapSqlWrite,
+    ProviderBootstrapWriteStep,
+    ProviderBootstrapWriteState,
+    ProviderBootstrapWriteEffect,
+    ProviderBootstrapWriteReport,
+    ProviderControlPublicationOutcome,
+    ProviderControlCommitDisposition,
+    ProviderControlPublished,
+    ProviderControlWithheld,
+    PROVIDER_SQLITE_SOURCE_ID, ProviderBootstrapBinding, ProviderBootstrapCause,
+    ProviderBootstrapFailure, ProviderBootstrapFailureKind, ProviderBootstrapInspection,
+    ProviderBootstrapPhase, ProviderBootstrapRecovery, ProviderBootstrapState,
+    ProviderControlLocation, ProviderDatabaseInspection, ProviderDatabaseScope,
+    ProviderDatabaseStatus, ProviderFormatState, ProviderJournalRefusal,
+    ProviderPreparedBinding, ProviderReceiptReference, ProviderRecoveryEffect,
+    ProviderRecoveryEffectState, ProviderRollbackTrigger, ProviderSqliteBuildProfile,
+    ProviderSqliteProcessDeclaration,
+    ProviderSqliteProfileError, declare_provider_sqlite_process_profile,
+};
 mod refresh;
+mod retention;
+mod selection;
+mod shared;
+pub use conversion::{ConversionFaults, ConversionPoint, ConversionReceipt, NoConversionFaults};
+pub use offline::{
+    NoPreparationFaults, OfflinePreparation, PreparationFaults, PreparationPoint, VersionDifference,
+};
 pub use refresh::{NoRefreshFaults, RefreshFaults, RefreshPoint};
+pub use shared::{PartialStoreFamily, PartialStoreIdentity, SharedQuota, SharedUsage};
 mod namespace;
 pub use namespace::{
     NamespaceFaults, NamespaceMutation, NamespacePoint, NamespacePreview, NoNamespaceFaults,
@@ -32,13 +77,17 @@ pub use publication::{
 };
 pub use rebase::{NoRebaseFaults, RebaseFaults, RebasePoint, RebasePreview};
 pub use restore::{
-    NoRestoreFaults, RestoreFaults, RestorePoint, RestorePreview, RestoreReceipt, RestoreSource,
+    NoRestoreFaults, RestoreDestination, RestoreFaults, RestorePoint, RestorePreview,
+    RestoreReceipt, RestoreSource,
 };
 #[cfg(test)]
 mod tests;
 
 use crate::lock::SessionMode;
-pub use format::{CreationFaults, CreationPoint, NoCreationFaults};
+pub use format::{
+    CreationFaults, CreationPoint, NoCreationFaults, ProjectionInspection, ProjectionRecovery,
+    ProjectionRecoveryReason, RecoveryBinding,
+};
 use layrs_core::{
     projection::ProjectionSnapshot,
     scm::{SpaceId, StoreId, WorktreeId},
@@ -56,6 +105,8 @@ pub enum ProjectionStoreError {
     Database(rusqlite::Error),
     Invalid(String),
     Stale { expected: u64, actual: u64 },
+    #[cfg(windows)]
+    ProviderBootstrap(Box<ProviderBootstrapFailure>),
 }
 impl fmt::Display for ProjectionStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -67,10 +118,20 @@ impl fmt::Display for ProjectionStoreError {
                 f,
                 "projection generation changed: expected {expected}, actual {actual}"
             ),
+            #[cfg(windows)]
+            Self::ProviderBootstrap(e) => e.fmt(f),
         }
     }
 }
-impl std::error::Error for ProjectionStoreError {}
+impl std::error::Error for ProjectionStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            #[cfg(windows)]
+            Self::ProviderBootstrap(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
 impl From<io::Error> for ProjectionStoreError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
@@ -168,6 +229,12 @@ impl ProjectionStore {
     }
     pub fn open(checkout_root: impl AsRef<Path>) -> Result<Self> {
         format::open(checkout_root.as_ref())
+    }
+    /// Read-only identity/schema inspection that permits pending operations.
+    /// Does not migrate, replay journals, settle retention, or recover SQLite.
+    /// Unsupported legacy schemas and unready conversions remain explicit errors.
+    pub fn open_for_recovery(checkout_root: impl AsRef<Path>) -> Result<Self> {
+        format::open_for_recovery(checkout_root.as_ref())
     }
     pub fn identity(&self) -> &ProjectionIdentity {
         &self.marker.identity

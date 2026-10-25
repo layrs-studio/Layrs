@@ -50,6 +50,32 @@ pub(super) fn apply(
     if actual != *expected {
         return Err(invalid("rebase preview is stale"));
     }
+    let changes = expected
+        .resolutions
+        .iter()
+        .map(|(p, f)| (p.to_string(), f.clone()))
+        .collect();
+    retention::reserve_checkout_against(
+        &access.connection,
+        store,
+        &format!("rebase:{}", expected.operation_id),
+        &state.snapshot,
+        &expected.target,
+        &changes,
+    )?;
+    let mut base_manifests = Vec::new();
+    if let Some(lease) = &access.family {
+        for entry in &expected.target.entries {
+            if entry.state != EntryState::Materialized {
+                continue;
+            }
+            if let Some(TreeEntryTarget::File { file_id }) = &entry.target {
+                let manifest = retention::lookup(&access.connection,store,lease,file_id)?.ok_or_else(|| invalid(format!("offline_missing_rebase_base: {} {file_id}; prepare incoming base bytes separately from resolved checkout bytes",entry.path)))?;
+                lease.verify_manifest(&manifest)?;
+                base_manifests.push(manifest);
+            }
+        }
+    }
     let root = PinnedDirectory::open(&store.root)?;
     let directory_name = format!(
         "rebase-{}-{}-{}",
@@ -131,7 +157,7 @@ pub(super) fn apply(
     directory.sync()?;
     parent.sync()?;
     faults.check(RebasePoint::Staged)?;
-    let scan = capture::scan::scan(store, &state.snapshot, false)?;
+    let scan = capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
     if checkout_digest(&scan.files)? != expected.checkout_digest
         || scan.changes
             != capture::storage::load(&access.connection, store, expected.capture_sequence)?.changes
@@ -140,16 +166,57 @@ pub(super) fn apply(
     }
     journal.ready = true;
     access.verify()?;
-    access.connection.execute(
+    let tx = access
+        .connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(lease) = &access.family {
+        retention::accept_claim(
+            &tx,
+            store,
+            lease,
+            "rebase",
+            &expected.operation_id,
+            &base_manifests,
+        )?;
+        for old in &journal.old {
+            let pin = root.open_relative_file(Path::new(old.path.as_str()))?;
+            retention::retain_pinned(
+                &tx,
+                store,
+                &pin,
+                &old.file,
+                "rebase",
+                &expected.operation_id,
+            )?;
+        }
+        for new in &journal.new {
+            let pin = directory.open_file(new.name.as_ref())?;
+            retention::retain_pinned(
+                &tx,
+                store,
+                &pin,
+                &new.file,
+                "rebase",
+                &expected.operation_id,
+            )?;
+        }
+    }
+    tx.execute(
         "UPDATE projection_rebase_pending SET payload=?1 WHERE singleton=1",
         [encode(&journal)?],
     )?;
+    tx.commit()?;
     faults.check(RebasePoint::JournalDurable)?;
     finish(store, &mut access, &journal, faults)
 }
 
 pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    resume_with_access(store, format::recovery_access(store, None, false)?)
+}
+pub(in crate::projection) fn resume_with_access(
+    store: &ProjectionStore,
+    mut access: format::Access,
+) -> Result<CapturedPatch> {
     let conflicts: bool = access.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending)", [], |r| r.get(0))?;
     if conflicts {
@@ -178,7 +245,7 @@ pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
     let current = database::current(&access.connection)?;
     validate_journal(&access.connection, store, &current, &journal)?;
     if !journal.ready {
-        let scan = capture::scan::scan(store, &current.snapshot, false)?;
+        let scan = capture::scan::scan(store, &access.connection, &current.snapshot, false)?;
         if checkout_digest(&scan.files)? != journal.preview.checkout_digest {
             return Err(invalid("incomplete rebase staging changed checkout"));
         }
@@ -281,11 +348,11 @@ fn finish(
             return Err(invalid("rebase deleted path reappeared"));
         }
     }
-    let first = capture::scan::scan(store, &journal.preview.target, false)?;
+    let first = capture::scan::scan(store, &access.connection, &journal.preview.target, false)?;
     if checkout_digest(&first.files)? != journal.preview.after_checkout_digest {
         return Err(invalid("rebase resulting checkout differs from preview"));
     }
-    let second = capture::scan::scan(store, &journal.preview.target, true)?;
+    let second = capture::scan::scan(store, &access.connection, &journal.preview.target, true)?;
     if first.files != second.files
         || checkout_digest(&second.files)? != journal.preview.after_checkout_digest
     {
@@ -309,7 +376,7 @@ fn finish(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for old in &journal.old {
         let pin = verify_path(&directory, &old.name, old)?;
-        capture::storage::persist_pinned_file(&tx, &pin, &old.file)?;
+        capture::storage::persist_pinned_file(&tx, store, &pin, &old.file)?;
     }
     tx.execute(
         "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
@@ -326,7 +393,7 @@ fn finish(
     for new in &journal.new {
         verify_path(&root, new.path.as_str(), new)?;
     }
-    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
+    if checkout_digest(&capture::scan::scan(store, &tx, &state.snapshot, false)?.files)?
         != journal.preview.after_checkout_digest
     {
         return Err(invalid("rebase checkout changed before commit"));
@@ -344,6 +411,14 @@ fn finish(
         "DELETE FROM projection_rebase_pending WHERE singleton=1",
         [],
     )?;
+    retention::transfer(
+        &tx,
+        store,
+        "rebase",
+        &journal.preview.operation_id,
+        "rebase-history",
+        &digest,
+    )?;
     faults.check(RebasePoint::BeforeCommit)?;
     // The final callback models an editor racing the durable commit. Recheck
     // installed identities as well as bytes; equal-content replacements still
@@ -359,7 +434,7 @@ fn finish(
             install::files::destination_absent(&root, &store.root, path.as_str())?;
         }
     }
-    if checkout_digest(&capture::scan::scan(store, &state.snapshot, false)?.files)?
+    if checkout_digest(&capture::scan::scan(store, &tx, &state.snapshot, false)?.files)?
         != journal.preview.after_checkout_digest
     {
         return Err(invalid("rebase checkout changed at commit boundary"));
@@ -395,7 +470,8 @@ fn validate_journal(
     {
         return Err(invalid("rebase journal identity mismatch"));
     }
-    validate_target(&current.snapshot, &expected.target)?;
+    validate_target(&current.snapshot, &expected.target, &selection::current(c)?)?;
+    selection::verify_target(c, &expected.target)?;
     validate_resolutions(&expected.target, &expected.resolutions)?;
     if expected.before.keys().ne(expected.resolutions.keys()) {
         return Err(invalid("rebase before/resolution paths differ"));

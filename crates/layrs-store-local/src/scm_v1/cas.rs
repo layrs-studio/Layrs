@@ -253,6 +253,7 @@ impl CasScrubReport {
 #[derive(Clone)]
 pub struct NativeCas {
     root: PathBuf,
+    root_identity: String,
     objects_dir: PathBuf,
     staging_dir: PathBuf,
     staging_lease_path: PathBuf,
@@ -366,7 +367,14 @@ impl NativeCas {
         store: &NativeStoreOpen,
         faults: Arc<dyn CasFaultInjector>,
     ) -> CasResult<Self> {
-        Self::open_layout(store.layout(), faults)
+        store
+            .verify_filesystem_identity()
+            .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
+        let cas = Self::open_layout(store.layout(), faults)?;
+        store
+            .verify_filesystem_identity()
+            .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
+        Ok(cas)
     }
 
     fn open_layout(
@@ -374,6 +382,9 @@ impl NativeCas {
         faults: Arc<dyn CasFaultInjector>,
     ) -> CasResult<Self> {
         let root = layout.root().to_path_buf();
+        let root_identity = PinnedDirectory::open(&root)
+            .map_err(|error| io_error("pin CAS root", &root, error))?
+            .identity_token();
         let objects_dir = layout.objects_dir().to_path_buf();
         let staging_dir = layout.staging_dir().to_path_buf();
         let staging_lease_path = layout.staging_lease_path().to_path_buf();
@@ -397,6 +408,7 @@ impl NativeCas {
             objects_dir,
             staging_dir,
             staging_lease_path,
+            root_identity,
             faults,
         })
     }
@@ -711,8 +723,16 @@ impl NativeCas {
     }
 
     fn pinned_root(&self) -> CasResult<PinnedDirectory> {
-        PinnedDirectory::open(&self.root)
-            .map_err(|error| io_error("pin CAS root", &self.root, error))
+        let directory = PinnedDirectory::open(&self.root)
+            .map_err(|error| io_error("pin CAS root", &self.root, error))?;
+        if directory.identity_token() != self.root_identity {
+            return Err(io_error(
+                "verify CAS root",
+                &self.root,
+                io::Error::other("Store filesystem identity changed"),
+            ));
+        }
+        Ok(directory)
     }
 
     fn pinned_objects(&self) -> CasResult<PinnedDirectory> {
@@ -840,8 +860,15 @@ impl<'store> NativeCasWriter<'store> {
         store: &'store NativeStoreExclusive,
         faults: Arc<dyn CasFaultInjector>,
     ) -> CasResult<Self> {
+        store
+            .verify_filesystem_identity()
+            .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
+        let cas = NativeCas::open_layout(store.layout(), faults)?;
+        store
+            .verify_filesystem_identity()
+            .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         Ok(Self {
-            cas: NativeCas::open_layout(store.layout(), faults)?,
+            cas,
             _exclusive: store,
         })
     }

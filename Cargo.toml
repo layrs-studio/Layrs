@@ -19,6 +19,7 @@ members = [
   "crates/layrs-git-bridge",
   "crates/layrs-cli",
   "crates/layrs-daemon",
+  "crates/layrs-vfs",
   "crates/layrs-sync",
   "crates/layrs-store-server",
   "crates/layrs-server",

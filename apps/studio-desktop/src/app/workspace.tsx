@@ -32,13 +32,21 @@ export type LayerRecord = {
   settings: { automaticCapture: boolean; automaticCaptureIdleMs: number };
 };
 
+export type WorktreeViewState = {
+  worktreeId: string;
+  activeLayerId: string | null;
+  baseStepId?: string | null;
+  materializedTreeId?: string | null;
+  status: string;
+};
+
 export type Snapshot = {
   state: {
     space: { name: string; spaceId: string };
     worktree: { worktreeId: string; checkoutRoot: string };
     operation: Operation;
     layers: LayerRecord[];
-    view: { worktrees: { worktreeId: string; activeLayerId: string | null; status: string }[] };
+    view: { worktrees: WorktreeViewState[] };
   };
   needsRepair: boolean;
   changes: FileChange[] | null;
@@ -254,7 +262,7 @@ export function WorkspaceProvider({ root, children }: { root: string; children: 
         const settings = next.state.layers.find((l) => l.layerId === own?.activeLayerId)?.settings;
         if (signature !== idle.current.signature) idle.current = { signature, since: now };
         else if (
-          own?.status !== "conflicted" &&
+          own?.status === "ready" &&
           automatic &&
           settings?.automaticCapture &&
           next.changes?.length &&

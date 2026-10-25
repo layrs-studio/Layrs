@@ -136,9 +136,7 @@ impl NativeClient {
     ) -> Result<CapturePlan> {
         let base = self.capture_base(worktree_id)?;
         let workspace = super::NativeWorkspace {
-            client: NativeClient {
-                root: self.root.clone(),
-            },
+            client: self.clone(),
             worktree_id: worktree_id.clone(),
         };
         let (_, snapshot) = workspace.capture_projection_streaming(&workspace.state()?, limits)?;

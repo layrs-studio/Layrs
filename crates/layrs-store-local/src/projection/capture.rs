@@ -92,9 +92,9 @@ impl ProjectionStore {
                 actual: state.generation,
             });
         }
-        let first = scan::scan(self, &state.snapshot, false)?;
+        let first = scan::scan(self, &access.connection, &state.snapshot, false)?;
         faults.check(CapturePoint::FirstScan)?;
-        let captured = scan::scan(self, &state.snapshot, true)?;
+        let captured = scan::scan(self, &access.connection, &state.snapshot, true)?;
         if first.files != captured.files {
             return Err(invalid("checkout changed during partial capture; retry"));
         }
@@ -141,7 +141,7 @@ impl ProjectionStore {
             .find(|c| &c.path == path)
             .and_then(|c| c.replacement.as_ref())
             .ok_or_else(|| invalid("capture has no replacement file at this path"))?;
-        storage::stream_file(&access.connection, file, out)?;
+        storage::stream_file(&access.connection, self, file, out)?;
         access.verify()?;
         Ok(())
     }
@@ -157,7 +157,7 @@ impl ProjectionStore {
         database::require_idle(&access.connection)?;
         let patch = storage::load_metadata(&access.connection, self, sequence)?;
         let file = replacement(&patch, path)?;
-        let manifest = storage::file_manifest(&access.connection, file)?;
+        let manifest = storage::file_manifest(&access.connection, self, file)?;
         access.verify()?;
         Ok(VerifiedCapturedFile {
             sequence,
@@ -197,7 +197,7 @@ impl ProjectionStore {
             .chunks()
             .get(ordinal)
             .ok_or_else(|| invalid("capture chunk ordinal out of range"))?;
-        storage::read_chunk(&access.connection, file, ordinal, chunk, out)?;
+        storage::read_chunk(&access.connection, self, file, ordinal, chunk, out)?;
         access.verify()?;
         Ok(())
     }

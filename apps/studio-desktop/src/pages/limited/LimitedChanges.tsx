@@ -40,6 +40,7 @@ export function LimitedChanges() {
           }
         />
       </div>
+      {data?.latestCaptureImported === true && <Banner tone="info" title="Historique importé conservé">Créez une nouvelle capture locale dans cette copie avant de publier ou de proposer un candidat.</Banner>}
       {data?.needsRepair && (
         <Banner tone="danger" title="Une opération interrompue doit être reprise." actions={<Button size="sm" onClick={() => navigate(`/projects/${key}/health`)}>Ouvrir le diagnostic</Button>}>
           Les modifications sont bloquées jusqu’à la reprise confirmée par le journal local.

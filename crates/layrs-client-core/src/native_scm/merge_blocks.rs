@@ -75,7 +75,7 @@ impl NativeWorkspace {
             .find(|h| h.layer_id() == layer)
             .ok_or(NativeClientError::Missing("Layer heads"))?
             .step_ids();
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let objects = load_objects(
             &reader,

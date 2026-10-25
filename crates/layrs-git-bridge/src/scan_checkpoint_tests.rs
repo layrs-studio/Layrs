@@ -41,6 +41,117 @@ fn fixture(temp: &Temp, format: &str) -> (PathBuf, process::Git) {
 }
 
 #[test]
+fn checkpoint_parent_replacement_during_acquisition_cannot_redirect_publication() {
+    let temp = Temp::new();
+    let (source, _) = fixture(&temp, "sha1");
+    let parent = temp.directory("checkpoint-parent");
+    let moved = temp.0.join("original-checkpoint-parent");
+    let mut attempted = false;
+    let mut replaced = false;
+    let outcome = prepare_git_scan_checkpoint(
+        &source,
+        parent.join("scan"),
+        &ImportSelection::AllLocalReferences,
+        GitBridgeLimits::default(),
+        &mut |_| {
+            if !attempted {
+                attempted = true;
+                match std::fs::rename(&parent, &moved) {
+                    Ok(()) => {
+                        replaced = true;
+                        std::fs::create_dir(&parent).unwrap();
+                    }
+                    Err(error) => {
+                        assert!(cfg!(windows));
+                        assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+                    }
+                }
+            }
+            true
+        },
+    );
+    assert!(attempted);
+    if replaced {
+        assert!(outcome.is_err());
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 0);
+    } else {
+        let checkpoint = outcome.unwrap();
+        resume_git_scan_checkpoint(
+            &checkpoint.path,
+            &checkpoint.digest,
+            GitBridgeLimits::default(),
+            &mut |_| true,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn checkpoint_publication_race_preserves_existing_destination() {
+    let temp = Temp::new();
+    let (source, _) = fixture(&temp, "sha1");
+    let destination = temp.0.join("raced.scan");
+    let mut written = false;
+    assert!(
+        prepare_git_scan_checkpoint(
+            &source,
+            &destination,
+            &ImportSelection::AllLocalReferences,
+            GitBridgeLimits::default(),
+            &mut |_| {
+                if !written {
+                    std::fs::write(&destination, b"user collision").unwrap();
+                    written = true;
+                }
+                true
+            }
+        )
+        .is_err()
+    );
+    assert!(written);
+    assert_eq!(std::fs::read(destination).unwrap(), b"user collision");
+}
+
+#[test]
+fn checkpoint_larger_than_serialization_buffer_preserves_exact_plan_and_trailer() {
+    let temp = Temp::new();
+    let (source, git) = fixture(&temp, "sha1");
+    let bytes: Vec<u8> = (0..1024 * 1024 + 37).map(|i| (i % 251) as u8).collect();
+    let tree_id = tree(
+        &git,
+        &[
+            (b"large.bin", &bytes, "100644"),
+            (b"tail.txt", b"after buffer boundary\n", "100644"),
+        ],
+    );
+    let commit_id = commit(&git, &tree_id, &[], "buffer boundary");
+    reference(&git, "refs/heads/large", &commit_id);
+    let direct = scan_git(&source, GitBridgeLimits::default()).unwrap();
+    let checkpoint = prepare_git_scan_checkpoint(
+        &source,
+        temp.0.join("buffered.scan"),
+        &ImportSelection::AllLocalReferences,
+        GitBridgeLimits::default(),
+        &mut |_| true,
+    )
+    .unwrap();
+    assert!(std::fs::metadata(&checkpoint.path).unwrap().len() > 1024 * 1024);
+    let resumed = resume_git_scan_checkpoint(
+        &checkpoint.path,
+        &checkpoint.digest,
+        GitBridgeLimits::default(),
+        &mut |_| true,
+    )
+    .unwrap();
+    assert_eq!(direct.canonical_objects(), resumed.canonical_objects());
+    assert_eq!(
+        canonical_json(direct.report()).unwrap(),
+        canonical_json(resumed.report()).unwrap()
+    );
+}
+
+#[test]
 fn frozen_scan_resumes_without_source_or_git_and_keeps_exact_plan_and_import_identity() {
     for format in ["sha1", "sha256"] {
         let temp = Temp::new();

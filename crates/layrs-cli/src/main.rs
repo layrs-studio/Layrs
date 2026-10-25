@@ -19,6 +19,9 @@ fn main() {
         }
     };
 
+    if let Some(exit_code) = layrs_cli::native_vfs::run_foreground(&cli) {
+        std::process::exit(exit_code.as_i32());
+    }
     let json = cli.globals.json;
     let diagnosis = matches!(cli.command, CliCommand::Doctor);
     match run(cli) {

@@ -9,6 +9,45 @@ use std::{
 };
 
 struct Fixture(PathBuf);
+impl Fixture {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-cli-secondary-maintenance-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        Self(root)
+    }
+    fn directory(&self, name: &str) -> PathBuf {
+        let root = self.0.join(name);
+        fs::create_dir(&root).unwrap();
+        root
+    }
+    fn workspaces(&self) -> (NativeWorkspace, NativeWorkspace) {
+        let primary_root = self.directory("primary");
+        fs::write(primary_root.join("file"), b"base").unwrap();
+        let primary = NativeWorkspace::initialize(&primary_root, "Maintenance").unwrap();
+        let state = primary.state().unwrap();
+        let own = state
+            .view
+            .worktrees()
+            .iter()
+            .find(|entry| entry.worktree_id() == primary.worktree_id())
+            .unwrap();
+        let secondary = primary
+            .create_worktree(
+                self.directory("secondary"),
+                own.active_layer_id().unwrap(),
+                own.base_step_id().unwrap(),
+            )
+            .unwrap();
+        (primary, secondary)
+    }
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         if !std::thread::panicking() && self.0.parent() == Some(std::env::temp_dir().as_path()) {
@@ -42,6 +81,95 @@ impl CompactionFaults for Interrupt {
         }
         Ok(())
     }
+}
+
+struct InterruptAt(CompactionFaultPoint);
+impl CompactionFaults for InterruptAt {
+    fn check(&self, point: CompactionFaultPoint) -> CompactionResult<()> {
+        if point == self.0 {
+            Err("simulated interruption".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn secondary_compaction_and_resume_preserve_both_private_views_and_pending_edits() {
+    let fixture = Fixture::new();
+    let (primary, secondary) = fixture.workspaces();
+    let primary_root = primary.checkout_root().unwrap();
+    let secondary_root = secondary.checkout_root().unwrap();
+    let nested = secondary_root.join("nested");
+    fs::create_dir(&nested).unwrap();
+    secondary.create_layer("private").unwrap();
+    let before_primary = serde_json::to_value(primary.state().unwrap()).unwrap();
+    let before_secondary = serde_json::to_value(secondary.state().unwrap()).unwrap();
+    let locator = fs::read(secondary_root.join(".layrs")).unwrap();
+    fs::write(primary_root.join("file"), b"primary edits").unwrap();
+    fs::write(secondary_root.join("file"), b"secondary edits").unwrap();
+    let compacted = run(&nested, &["compact"], true);
+    assert_eq!(compacted["historyDeleted"], false);
+    assert_eq!(compacted["storeId"], before_primary["worktree"]["storeId"]);
+    for point in [
+        CompactionFaultPoint::JournalDurable,
+        CompactionFaultPoint::DatabasePublished,
+    ] {
+        assert!(compact_metadata_with_faults(primary.store_root(), &InterruptAt(point)).is_err());
+        run(&secondary_root, &["status"], false);
+        let resumed = run(&nested, &["compact", "--resume"], true);
+        assert_eq!(resumed["storeId"], before_primary["worktree"]["storeId"]);
+        assert_eq!(
+            serde_json::to_value(primary.state().unwrap()).unwrap(),
+            before_primary
+        );
+        assert_eq!(
+            serde_json::to_value(secondary.state().unwrap()).unwrap(),
+            before_secondary
+        );
+    }
+    assert_eq!(
+        fs::read(primary_root.join("file")).unwrap(),
+        b"primary edits"
+    );
+    assert_eq!(
+        fs::read(secondary_root.join("file")).unwrap(),
+        b"secondary edits"
+    );
+    assert_eq!(fs::read(secondary_root.join(".layrs")).unwrap(), locator);
+    run(&secondary_root, &["doctor"], true);
+    run(&secondary_root, &["compact", "--resume"], false);
+}
+
+#[test]
+fn secondary_maintenance_refuses_unknown_locators_without_touching_the_store() {
+    let fixture = Fixture::new();
+    let (primary, secondary) = fixture.workspaces();
+    let secondary_root = secondary.checkout_root().unwrap();
+    let copied = fixture.directory("copied");
+    let unknown = fixture.directory("unknown");
+    let original = fs::read(secondary_root.join(".layrs")).unwrap();
+    fs::write(copied.join(".layrs"), &original).unwrap();
+    fs::write(unknown.join(".layrs"), b"not a supported locator").unwrap();
+    let metadata_path = primary.store_root().join("metadata/layrs.sqlite3");
+    let before = fs::read(&metadata_path).unwrap();
+    for root in [&copied, &unknown] {
+        for args in [
+            &["compact"][..],
+            &["compact", "--resume"][..],
+            &["recover"][..],
+        ] {
+            run(root, args, false);
+            assert_eq!(fs::read(&metadata_path).unwrap(), before);
+        }
+        assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+    assert_eq!(fs::read(secondary_root.join(".layrs")).unwrap(), original);
+    assert_eq!(fs::read(secondary_root.join("file")).unwrap(), b"base");
+    assert_eq!(
+        fs::read(primary.checkout_root().unwrap().join("file")).unwrap(),
+        b"base"
+    );
 }
 
 #[test]

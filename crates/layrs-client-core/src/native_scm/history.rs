@@ -6,7 +6,7 @@ use layrs_core::scm::{
     TreeEntryTarget, TreeId,
 };
 use layrs_store::scm::{ScmReader, StoreObjectId};
-use layrs_store_local::scm_v1::{self, NativeScmReader, ObservationSnapshot};
+use layrs_store_local::scm_v1::{NativeScmReader, ObservationSnapshot};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -99,7 +99,7 @@ impl NativeWorkspace {
         };
         let offset = cursor.map_or(0, |c| c.offset);
         let state = self.state()?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let projection = reader
             .observation_projection(state.space.id(), cursor.map(|c| &c.observation_snapshot))?;
@@ -226,7 +226,7 @@ impl NativeWorkspace {
         let state = self.state()?;
         let anchor = cursor.map_or_else(|| state.operation.id().clone(), |c| c.anchor.clone());
         let offset = cursor.map_or(0, |c| c.offset);
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let mut pending = vec![anchor.clone()];
         let mut visited = BTreeSet::new();

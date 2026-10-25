@@ -9,8 +9,20 @@ use layrs_store::scm::{
     ScmReader, ScmRepository, SpaceObjectAdmission, StoreMutation, TransactionId,
     WorktreeActiveOperationCas, WriteBatch,
 };
-use layrs_store_local::scm_v1::{open, NativeScmReader, NativeScmRepository};
+use layrs_store_local::scm_v1::{NativeScmReader, NativeScmRepository};
 use std::path::{Path, PathBuf};
+
+/// Wait only for transient Store lock contention. A failed open releases its
+/// capabilities before sleeping; corruption, identity and recovery errors escape.
+pub(super) fn open_store_for_read(
+    root: &Path,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen> {
+    Ok(layrs_store_local::scm_v1::open_for_read_with_retry(root)?)
+}
+
+#[cfg(test)]
+#[path = "registration_read_tests.rs"]
+mod registration_read_tests;
 
 /// Generated once by the caller and retained with a prepared batch for retries.
 /// Time and observations never participate in Step identity.
@@ -53,6 +65,13 @@ pub struct CaptureBase {
     view_id: layrs_core::scm::RepositoryViewId,
     generation: u64,
     heads: Vec<OperationId>,
+}
+
+impl CaptureBase {
+    #[cfg(windows)]
+    pub(super) fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
 }
 
 /// Initializes metadata in an already-created, fresh native Store. The Worktree
@@ -138,19 +157,77 @@ pub fn prepare_initialize(
 
 /// Path-owned facade: reads are pinned under one shared Store capability;
 /// preparation releases it before the caller performs acceptance.
+#[derive(Clone)]
 pub struct NativeClient {
     pub(super) root: PathBuf,
+    pub(super) store_identity: String,
+    pub(super) metadata_identity: String,
+    store_id: layrs_core::scm::StoreId,
 }
 impl NativeClient {
+    pub fn store_identity(&self) -> &str {
+        &self.store_identity
+    }
+    pub fn metadata_identity(&self) -> &str {
+        &self.metadata_identity
+    }
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let store = open(root.as_ref())?;
+        let directory =
+            layrs_store_local::scm_v1::checkout::CheckoutReader::open(root.as_ref(), None)?;
+        let metadata = layrs_store_local::scm_v1::checkout::CheckoutReader::open(
+            root.as_ref().join("metadata"),
+            None,
+        )?;
+        let store = open_store_for_read(root.as_ref())?;
+        let store = store
+            .with_filesystem_identity(&directory.identity())?
+            .with_metadata_identity(&metadata.identity())?;
         Ok(Self {
             root: store.layout().root().to_path_buf(),
+            store_identity: directory.identity(),
+            metadata_identity: metadata.identity(),
+            store_id: store.store_id().clone(),
         })
     }
 
+    /// Check the original binding on the acquired shared capability. Acquisition
+    /// may wait up to sixty seconds for an ordinary reader.
+    pub fn open_store(&self) -> Result<layrs_store_local::scm_v1::NativeStoreOpen> {
+        self.bind_open_store(open_store_for_read(&self.root)?)
+    }
+
+    /// Registration holds the namespace gate and keeps a five-second read wait.
+    /// Its acquired capability receives exactly the ordinary reader's checks.
+    pub(super) fn open_store_for_registration(
+        &self,
+    ) -> Result<layrs_store_local::scm_v1::NativeStoreOpen> {
+        self.bind_open_store(layrs_store_local::scm_v1::open_for_registration_with_retry(
+            &self.root,
+        )?)
+    }
+
+    fn bind_open_store(
+        &self,
+        store: layrs_store_local::scm_v1::NativeStoreOpen,
+    ) -> Result<layrs_store_local::scm_v1::NativeStoreOpen> {
+        let store = store
+            .with_filesystem_identity(&self.store_identity)?
+            .with_metadata_identity(&self.metadata_identity)?;
+        if store.store_id() != &self.store_id {
+            return Err(NativeClientError::InvalidState("Store identity changed"));
+        }
+        Ok(store)
+    }
+
+    pub(super) fn repository(&self) -> NativeScmRepository {
+        NativeScmRepository::new(&self.root)
+            .with_store_identity(self.store_identity.clone())
+            .with_metadata_identity(self.metadata_identity.clone())
+            .with_store_id(self.store_id.clone())
+    }
+
     pub fn accept(&self, change: &PreparedMutation) -> Result<ApplyBatchOutcome> {
-        let mut repository = NativeScmRepository::new(&self.root);
+        let mut repository = self.repository();
         Ok(match &change.chunks {
             Some(chunks) => {
                 repository.apply_batch_with_chunks(change.batch(), &chunks.descriptors(), |id| {
@@ -162,7 +239,7 @@ impl NativeClient {
     }
 
     pub fn capture_base(&self, worktree_id: &WorktreeId) -> Result<CaptureBase> {
-        let store = open(&self.root)?;
+        let store = self.open_store()?;
         if layrs_store_local::scm_v1::materialize::recovery_pending(&store, worktree_id)? {
             return Err(NativeClientError::NeedsRepair);
         }
@@ -203,7 +280,7 @@ impl NativeClient {
         reason: CaptureReason,
     ) -> Result<CapturePlan> {
         let worktree_id = &expected.worktree_id;
-        let store = open(&self.root)?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let worktree = reader
             .get_worktree(worktree_id)?
@@ -226,11 +303,6 @@ impl NativeClient {
         {
             return Err(NativeClientError::StaleCapture);
         }
-        // This first slice refuses integration rather than silently choosing a
-        // global head. The prepared bytes are never written into the checkout.
-        if heads != [active.id().clone()] || current.view_id() != Some(view.id()) {
-            return Err(NativeClientError::NeedsIntegration);
-        }
         let state = view
             .worktrees()
             .iter()
@@ -247,14 +319,10 @@ impl NativeClient {
         let base_id = state
             .base_step_id()
             .ok_or(NativeClientError::Missing("base Step"))?;
-        let layer_heads = view
-            .layer_heads()
+        view.layer_heads()
             .iter()
             .find(|h| h.layer_id() == layer_id)
             .ok_or(NativeClientError::Missing("Layer heads"))?;
-        if !layer_heads.step_ids().contains(base_id) {
-            return Err(NativeClientError::NeedsIntegration);
-        }
         let base = reader
             .get_step(base_id)?
             .ok_or(NativeClientError::Missing("base Step"))?;
@@ -269,16 +337,14 @@ impl NativeClient {
             .iter()
             .map(|h| {
                 if h.layer_id() == layer_id {
-                    // Capture descends only from the materialized base. Other
-                    // concurrent heads remain visible until an explicit Weave.
-                    let mut preserved = layer_heads
-                        .step_ids()
-                        .iter()
-                        .filter(|id| *id != base_id)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    preserved.push(step.id().clone());
-                    LayerHeadSet::new(layer_id.clone(), preserved)
+                    super::worktree_operations::capture_layer_heads(
+                        &reader,
+                        &view,
+                        &heads,
+                        layer_id,
+                        base_id,
+                        step.id(),
+                    )
                 } else {
                     Ok(h.clone())
                 }
@@ -335,14 +401,14 @@ impl NativeClient {
                 StoreMutation::RepositoryView(RepositoryViewCas::new(
                     worktree.space_id().clone(),
                     current.generation(),
-                    Some(view.id().clone()),
+                    current.view_id().cloned(),
                     next.id().clone(),
                 )?),
                 StoreMutation::OperationHeads(OperationHeadsCas::new(
                     worktree.space_id().clone(),
-                    heads,
+                    heads.clone(),
                     operation.id().clone(),
-                    vec![operation.id().clone()],
+                    super::worktree_operations::advance_heads(&heads, active.id(), operation.id()),
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     worktree_id.clone(),

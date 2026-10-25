@@ -1,5 +1,6 @@
 //! Recoverable checkout writes. Originals are moved without replacement into a
 //! durable backup; failures leave the journal pending and block further captures.
+use super::repository::{open_exclusive_retry as open_exclusive, open_read_retry as open};
 use super::{
     checkout::{
         CheckoutContent, CheckoutEntry, CheckoutLimits, CheckoutProjectionContent,
@@ -59,6 +60,50 @@ pub fn apply_checkout(
     batch: &WriteBatch,
     faults: &dyn MaterializationFaults,
 ) -> io::Result<ApplyBatchOutcome> {
+    let identity = PinnedDirectory::open(store_root)?.identity_token();
+    apply_checkout_bound(
+        store_root,
+        &identity,
+        worktree_id,
+        before,
+        after,
+        batch,
+        faults,
+    )
+}
+
+pub fn apply_checkout_bound(
+    store_root: &Path,
+    store_identity: &str,
+    worktree_id: &WorktreeId,
+    before: &[CheckoutEntry],
+    after: &[CheckoutEntry],
+    batch: &WriteBatch,
+    faults: &dyn MaterializationFaults,
+) -> io::Result<ApplyBatchOutcome> {
+    let metadata_identity = PinnedDirectory::open(&store_root.join("metadata"))?.identity_token();
+    apply_checkout_bound_metadata(
+        store_root,
+        store_identity,
+        &metadata_identity,
+        worktree_id,
+        before,
+        after,
+        batch,
+        faults,
+    )
+}
+
+pub fn apply_checkout_bound_metadata(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree_id: &WorktreeId,
+    before: &[CheckoutEntry],
+    after: &[CheckoutEntry],
+    batch: &WriteBatch,
+    faults: &dyn MaterializationFaults,
+) -> io::Result<ApplyBatchOutcome> {
     // Keep the original in-memory API's existing limits and exact projection.
     super::checkout::entries_tree_id(before)?;
     super::checkout::entries_tree_id(after)?;
@@ -83,8 +128,10 @@ pub fn apply_checkout(
             message: "unexpected external chunk".into(),
         })
     };
-    apply_checkout_with_sources(
+    apply_checkout_with_sources_bound_metadata(
         store_root,
+        store_identity,
+        metadata_identity,
         worktree_id,
         &before_projection,
         &after_projection,
@@ -108,7 +155,58 @@ pub fn apply_checkout_with_sources(
     faults: &dyn MaterializationFaults,
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<ApplyBatchOutcome> {
-    let _checkout_lock = lock_checkout(store_root, worktree_id)?;
+    let identity = PinnedDirectory::open(store_root)?.identity_token();
+    apply_checkout_with_sources_bound(
+        store_root,
+        &identity,
+        worktree_id,
+        before,
+        after,
+        batch,
+        faults,
+        sources,
+    )
+}
+
+/// Bind every journal, lease and publication capability to the caller's Store.
+pub fn apply_checkout_with_sources_bound(
+    store_root: &Path,
+    store_identity: &str,
+    worktree_id: &WorktreeId,
+    before: &[CheckoutProjectionEntry],
+    after: &[CheckoutProjectionEntry],
+    batch: &WriteBatch,
+    faults: &dyn MaterializationFaults,
+    sources: &mut CheckoutSources<'_>,
+) -> io::Result<ApplyBatchOutcome> {
+    let metadata_identity = PinnedDirectory::open(&store_root.join("metadata"))?.identity_token();
+    apply_checkout_with_sources_bound_metadata(
+        store_root,
+        store_identity,
+        &metadata_identity,
+        worktree_id,
+        before,
+        after,
+        batch,
+        faults,
+        sources,
+    )
+}
+
+pub fn apply_checkout_with_sources_bound_metadata(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree_id: &WorktreeId,
+    before: &[CheckoutProjectionEntry],
+    after: &[CheckoutProjectionEntry],
+    batch: &WriteBatch,
+    faults: &dyn MaterializationFaults,
+    sources: &mut CheckoutSources<'_>,
+) -> io::Result<ApplyBatchOutcome> {
+    let store_directory = pin_store(store_root, store_identity)?;
+    let metadata_directory = pin_store(&store_root.join("metadata"), metadata_identity)?;
+    let _checkout_lock = lock_checkout(store_root, store_identity, metadata_identity, worktree_id)?;
     super::checkout::projection_tree_id(before)?;
     let projection = super::checkout::projection_tree_id(after)?;
     super::repository::streaming_preflight(batch, sources.chunks).map_err(error)?;
@@ -137,12 +235,9 @@ pub fn apply_checkout_with_sources(
     paths.sort();
     paths.dedup();
     paths.retain(|p| prior.get(p) != next.get(p));
-    if paths.is_empty() {
-        return NativeScmRepository::new(store_root)
-            .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
-            .map_err(error);
-    }
     let worktree = NativeScmRepository::new(store_root)
+        .with_store_identity(store_identity)
+        .with_metadata_identity(metadata_identity)
         .get_worktree(worktree_id)
         .map_err(error)?
         .ok_or_else(|| error("missing Worktree"))?;
@@ -157,6 +252,14 @@ pub fn apply_checkout_with_sources(
         != before
     {
         return Err(error("checkout changed after capture"));
+    }
+    if paths.is_empty() {
+        return NativeScmRepository::new(store_root)
+            .with_short_acquisition()
+            .with_store_identity(store_identity)
+            .with_metadata_identity(metadata_identity)
+            .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
+            .map_err(io::Error::other);
     }
     for path in &paths {
         let parsed = layrs_core::scm::RepoPath::parse(*path).map_err(error)?;
@@ -204,7 +307,10 @@ pub fn apply_checkout_with_sources(
         }
     }
     let (checkout_root, identity, active, target, recovery_id, owner, backup_root) = {
-        let mut store = open_exclusive(store_root).map_err(error)?;
+        let mut store = open_exclusive(store_root)
+            .map_err(error)?
+            .with_filesystem_identity(store_identity)?
+            .with_metadata_identity(metadata_identity)?;
         let connection = store.begin_write_connection().map_err(error)?;
         connection.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
         let connection = std::sync::Mutex::new(connection);
@@ -227,7 +333,9 @@ pub fn apply_checkout_with_sources(
         if worktree.active_operation_id() != change.expected_operation_id() {
             return Err(error("stale materialization base"));
         }
-        super::repository::precheck_mutations(&connection, batch).map_err(error)?;
+        // Preserve the typed CAS failure if another Worktree advanced the heads.
+        // A stale prepared batch is never retried or admitted against new heads.
+        super::repository::precheck_mutations(&connection, batch).map_err(io::Error::other)?;
         let descriptors: BTreeMap<_, _> = sources.chunks.iter().cloned().collect();
         let source = std::cell::RefCell::new(&mut sources.read_chunk);
         let resolve = |id: &layrs_core::scm::ChunkId| {
@@ -323,7 +431,9 @@ pub fn apply_checkout_with_sources(
     if checkout.identity_token() != identity {
         return Err(error("checkout identity changed"));
     }
-    let store_dir = PinnedDirectory::open(store_root)?;
+    store_directory.verify_path_identity()?;
+    metadata_directory.verify_path_identity()?;
+    let store_dir = &store_directory;
     let backups = store_dir
         .ensure_child("metadata".as_ref())?
         .ensure_child("repair-backups".as_ref())?;
@@ -359,7 +469,10 @@ pub fn apply_checkout_with_sources(
     }
     backup.sync()?;
     let leases = {
-        let mut store = open_exclusive(store_root).map_err(error)?;
+        let mut store = open_exclusive(store_root)
+            .map_err(error)?
+            .with_filesystem_identity(store_identity)?
+            .with_metadata_identity(metadata_identity)?;
         let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
         journal
             .prepare(
@@ -374,7 +487,15 @@ pub fn apply_checkout_with_sources(
             .map_err(error)?
             .leases
     };
-    let mut lease = LeaseKeeper::new(store_root, &recovery_id, &owner, leases, faults)?;
+    let mut lease = LeaseKeeper::new(
+        store_root,
+        &store_directory,
+        &metadata_directory,
+        &recovery_id,
+        &owner,
+        leases,
+        faults,
+    )?;
     // Phase one moves every changed original out of the way before any new
     // directory/file is created. A prefix may change from file to directory.
     for (index, path) in paths.iter().enumerate() {
@@ -448,8 +569,10 @@ pub fn apply_checkout_with_sources(
     lease.force()?;
     let outcome =
         NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
+            .with_store_identity(store_identity)
+            .with_metadata_identity(metadata_identity)
             .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
-            .map_err(error)?;
+            .map_err(io::Error::other)?;
     faults.check(MaterializationPoint::AfterMetadata)?;
     lease.force()?;
     let results = paths
@@ -464,7 +587,10 @@ pub fn apply_checkout_with_sources(
         })
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(error)?;
-    let mut store = open_exclusive(store_root).map_err(error)?;
+    let mut store = open_exclusive(store_root)
+        .map_err(error)?
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
     NativeRecovery::new(&mut store)
         .map_err(error)?
         .complete(
@@ -624,8 +750,24 @@ fn set_executable(file: &fs::File, executable: bool) -> io::Result<()> {
     }
 }
 
-fn lock_checkout(store_root: &Path, worktree: &WorktreeId) -> io::Result<PinnedFile> {
-    let store = open(store_root).map_err(error)?;
+fn pin_store(root: &Path, expected: &str) -> io::Result<PinnedDirectory> {
+    let directory = PinnedDirectory::open(root)?;
+    if directory.identity_token() != expected {
+        return Err(error("Store filesystem identity changed"));
+    }
+    Ok(directory)
+}
+
+fn lock_checkout(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree: &WorktreeId,
+) -> io::Result<PinnedFile> {
+    let store = open(store_root)
+        .map_err(error)?
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
     let metadata = PinnedDirectory::open(store.layout().metadata_dir())?;
     let name = format!(
         "checkout-{}.lock",
@@ -658,12 +800,46 @@ pub fn recover_checkout_with_faults(
     worktree_id: &WorktreeId,
     faults: &dyn MaterializationFaults,
 ) -> io::Result<usize> {
-    let _checkout_lock = lock_checkout(store_root, worktree_id)?;
+    let identity = PinnedDirectory::open(store_root)?.identity_token();
+    recover_checkout_bound(store_root, &identity, worktree_id, faults)
+}
+
+pub fn recover_checkout_bound(
+    store_root: &Path,
+    store_identity: &str,
+    worktree_id: &WorktreeId,
+    faults: &dyn MaterializationFaults,
+) -> io::Result<usize> {
+    let metadata_identity = PinnedDirectory::open(&store_root.join("metadata"))?.identity_token();
+    recover_checkout_bound_metadata(
+        store_root,
+        store_identity,
+        &metadata_identity,
+        worktree_id,
+        faults,
+    )
+}
+
+pub fn recover_checkout_bound_metadata(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree_id: &WorktreeId,
+    faults: &dyn MaterializationFaults,
+) -> io::Result<usize> {
+    let store_directory = pin_store(store_root, store_identity)?;
+    let metadata_directory = pin_store(&store_root.join("metadata"), metadata_identity)?;
+    let _checkout_lock = lock_checkout(store_root, store_identity, metadata_identity, worktree_id)?;
     let worktree = NativeScmRepository::new(store_root)
+        .with_store_identity(store_identity)
+        .with_metadata_identity(metadata_identity)
         .get_worktree(worktree_id)
         .map_err(error)?
         .ok_or_else(|| error("missing Worktree"))?;
-    let mut store = open_exclusive(store_root).map_err(error)?;
+    let mut store = open_exclusive(store_root)
+        .map_err(error)?
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
     let pending = NativeRecovery::new(&mut store)
         .map_err(error)?
         .list_pending()
@@ -700,7 +876,10 @@ pub fn recover_checkout_with_faults(
             .clone()
             .unwrap_or_else(|| format!("recovery-owner:{}", record.id));
         let leases = {
-            let mut store = open_exclusive(store_root).map_err(error)?;
+            let mut store = open_exclusive(store_root)
+                .map_err(error)?
+                .with_filesystem_identity(store_identity)?
+                .with_metadata_identity(metadata_identity)?;
             let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
             if record.state == RecoveryState::Pending {
                 let evidence = record
@@ -734,7 +913,15 @@ pub fn recover_checkout_with_faults(
                 )
                 .map_err(error)?
         };
-        let mut lease = LeaseKeeper::new(store_root, &record.id, &owner, leases, faults)?;
+        let mut lease = LeaseKeeper::new(
+            store_root,
+            &store_directory,
+            &metadata_directory,
+            &record.id,
+            &owner,
+            leases,
+            faults,
+        )?;
         if !untouched {
             let digest = record.payload["batchDigest"]
                 .as_str()
@@ -745,7 +932,9 @@ pub fn recover_checkout_with_faults(
             {
                 return Err(error("invalid recovery digest"));
             }
-            let backups = PinnedDirectory::open(store_root)?
+            store_directory.verify_path_identity()?;
+            metadata_directory.verify_path_identity()?;
+            let backups = store_directory
                 .open_child_for_traversal("metadata".as_ref())?
                 .open_child_for_traversal("repair-backups".as_ref())?;
             let backup_name = match record.payload.get("attempt") {
@@ -886,7 +1075,10 @@ pub fn recover_checkout_with_faults(
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(error)?;
         lease.force()?;
-        let mut store = open_exclusive(store_root).map_err(error)?;
+        let mut store = open_exclusive(store_root)
+            .map_err(error)?
+            .with_filesystem_identity(store_identity)?
+            .with_metadata_identity(metadata_identity)?;
         NativeRecovery::new(&mut store)
             .map_err(error)?
             .complete(

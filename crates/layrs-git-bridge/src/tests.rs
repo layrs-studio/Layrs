@@ -5,12 +5,16 @@ use std::path::PathBuf;
 struct Temp(PathBuf);
 #[path = "case_matrix_tests.rs"]
 mod case_matrix;
+#[path = "expected_state_tests.rs"]
+mod expected_state;
 #[path = "export_selection_tests.rs"]
 mod export_selection;
 #[path = "import_recovery_tests.rs"]
 mod import_recovery;
 #[path = "pack_export_tests.rs"]
 mod pack_exports;
+#[path = "review_boundary_tests.rs"]
+mod review_boundary;
 #[path = "scan_checkpoint_tests.rs"]
 mod scan_checkpoint;
 impl Temp {

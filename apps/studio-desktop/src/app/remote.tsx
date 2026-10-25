@@ -411,7 +411,7 @@ export function RemoteProvider({
                 ? "Réception terminée. Plusieurs têtes sont conservées ; une intégration reste nécessaire."
                 : action.action === "receive"
                   ? "Réception terminée et vérifiée."
-                  : action.action === "clone" || action.action === "cloneProjection"
+                  : action.action === "clone" || action.action === "cloneProjection" || action.action === "cloneProjectionSelected"
                     ? "Projet récupéré et vérifié."
                     : action.action === "provision"
                       ? "Projet créé sur le serveur."
@@ -426,7 +426,7 @@ export function RemoteProvider({
               : undefined;
         record({ ...entry, endedAt: new Date().toISOString(), outcome: "success", message: title, steps: [...(current.current?.steps ?? entry.steps), "Terminé"] });
         setNotice({ tone: reply.received?.divergent ? "warning" : "success", title, body });
-        if (["clone", "cloneProjection", "receive", "publish", "provision"].includes(action.action))
+        if (["clone", "cloneProjection", "cloneProjectionSelected", "receive", "publish", "provision"].includes(action.action))
           changed = reply.state?.worktree.checkoutRoot || target.root;
         if (action.action === "migrateProjection") changed = String(action.destination);
         result = reply;

@@ -4,7 +4,7 @@ use super::{
 };
 use layrs_core::scm::*;
 use layrs_store::scm::*;
-use layrs_store_local::scm_v1::{open, NativeScmReader};
+use layrs_store_local::scm_v1::NativeScmReader;
 
 impl NativeClient {
     /// Metadata-only mutation. Worktree materialization claims cannot change here.
@@ -22,7 +22,7 @@ impl NativeClient {
                 "metadata change cannot materialize a Worktree",
             ));
         }
-        let store = open(&self.root)?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let active = reader
             .worktree_active_operation(source.worktree.id())?
@@ -31,11 +31,8 @@ impl NativeClient {
             .current_repository_view(source.space.id())?
             .ok_or(NativeClientError::Missing("current View"))?;
         let heads = reader.operation_heads(source.space.id())?;
-        if active != *source.operation.id() || current.view_id() != Some(source.view.id()) {
+        if active != *source.operation.id() {
             return Err(NativeClientError::StaleCapture);
-        }
-        if heads != [active.clone()] {
-            return Err(NativeClientError::NeedsIntegration);
         }
         let operation = prepare::operation(
             &stamp,
@@ -71,9 +68,9 @@ impl NativeClient {
                 )?),
                 StoreMutation::OperationHeads(OperationHeadsCas::new(
                     source.space.id().clone(),
-                    heads,
+                    heads.clone(),
                     operation.id().clone(),
-                    vec![operation.id().clone()],
+                    super::worktree_operations::advance_heads(&heads, &active, operation.id()),
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     source.worktree.id().clone(),
@@ -146,7 +143,7 @@ impl NativeWorkspace {
 
     pub fn markers(&self) -> Result<Vec<Marker>> {
         let state = self.state()?;
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         state
             .view
@@ -162,7 +159,7 @@ impl NativeWorkspace {
 
     pub fn releases(&self) -> Result<Vec<Release>> {
         let state = self.state()?;
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         state
             .view
@@ -253,7 +250,7 @@ impl NativeWorkspace {
     /// Layer, restoring an old View, or capturing the current worktree.
     pub fn show_marker(&self, id: &MarkerId) -> Result<Marker> {
         let source = self.state()?;
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let marker = reader
             .get_marker(id)?

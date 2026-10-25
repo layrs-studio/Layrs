@@ -20,6 +20,19 @@ pub(super) fn persist(
     scan: scan::Scan,
     faults: &dyn CaptureFaults,
 ) -> Result<CapturedPatch> {
+    let files = scan
+        .changes
+        .iter()
+        .filter_map(|v| v.replacement.clone())
+        .collect::<Vec<_>>();
+    retention::reserve(
+        c,
+        store,
+        &format!("capture:{}", state.digest),
+        &shared::digest(&scan.files)?,
+        &files,
+        0,
+    )?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let patch = persist_in_transaction(&tx, store, state, scan)?;
     faults.check(CapturePoint::BeforeCommit)?;
@@ -39,7 +52,11 @@ pub(in crate::projection) fn persist_in_transaction(
         })?;
     let parent = previous.map(|n| load(c, store, n)).transpose()?;
     if let Some(previous) = &parent {
-        if previous.projection_digest == state.digest && previous.changes == scan.changes {
+        if previous.identity == *store.identity()
+            && previous.projection_digest == state.digest
+            && previous.changes == scan.changes
+        {
+            retention::finish_budget(c, store)?;
             return Ok(previous.clone());
         }
     }
@@ -68,12 +85,13 @@ pub(in crate::projection) fn persist_in_transaction(
             persist_file(c, store, &change.path, file)?;
         }
     }
-    if scan::scan(store, &state.snapshot, false)?.files != scan.files {
+    if scan::scan(store, c, &state.snapshot, false)?.files != scan.files {
         return Err(invalid("checkout changed while storing partial capture"));
     }
     c.execute("INSERT INTO projection_captures(sequence,digest,projection_generation,payload) VALUES(?1,?2,?3,?4)",params![sequence,patch.digest,state.generation,payload])?;
     // Includes hashes of existing deduplicated blobs: corruption never becomes a successful capture.
     validate(c, store, &patch)?;
+    retention::finish_budget(c, store)?;
     Ok(patch)
 }
 pub(in crate::projection) fn load(
@@ -130,13 +148,13 @@ fn validate_with_bytes(
     verify_bytes: bool,
 ) -> Result<()> {
     if patch.schema_version != "layrs.projection-capture.v1"
-        || patch.identity != *store.identity()
         || patch.sequence == 0
         || patch.digest != patch.computed_digest()?
         || patch.changes.len() > 1024
     {
         return Err(invalid("capture digest, identity or schema mismatch"));
     }
+    conversion::validate_capture_identity(c, store, patch)?;
     let prior: Option<String> = if patch.sequence == 1 {
         None
     } else {
@@ -171,6 +189,9 @@ fn validate_with_bytes(
     if snapshot.canonical_bytes()? != bytes {
         return Err(invalid("capture base projection is not canonical"));
     }
+    // Capture replay is checked against the selection at its immutable base,
+    // never against a later expansion or the current live checkout.
+    selection::at(c, patch.projection_generation)?.validate_snapshot(&snapshot)?;
     let reserved = snapshot.reserved_paths()?;
     let mut previous = None;
     let mut total = 0u64;
@@ -213,7 +234,7 @@ fn validate_with_bytes(
                 return Err(invalid("capture file exceeds1GiB"));
             }
             if verify_bytes {
-                file_manifest(c, file)?;
+                file_manifest(c, store, file)?;
             }
         }
     }
@@ -228,7 +249,7 @@ fn persist_file(
     let root = PinnedDirectory::open(&store.root)?;
     let (parent, name) = root.existing_parent(Path::new(path.as_str()))?;
     let pinned = parent.open_file(&name)?;
-    persist_pinned_file(c, &pinned, file)?;
+    persist_pinned_file(c, store, &pinned, file)?;
     parent.verify_path_identity()?;
     if !pinned.same_file(&parent.open_file(&name)?) {
         return Err(invalid("capture file replaced while storing"));
@@ -238,9 +259,20 @@ fn persist_file(
 }
 pub(in crate::projection) fn persist_pinned_file(
     c: &Connection,
+    store: &ProjectionStore,
     pinned: &PinnedFile,
     file: &CapturedFile,
 ) -> Result<()> {
+    if store.marker.shared.is_some() {
+        return retention::retain_pinned(
+            c,
+            store,
+            pinned,
+            file,
+            "captured-content",
+            file.file_id.as_str(),
+        );
+    }
     let mut input = pinned.file();
     input.seek(SeekFrom::Start(0))?;
     let meta = input.metadata()?;
@@ -295,7 +327,7 @@ pub(in crate::projection) fn persist_pinned_file(
         return Err(invalid("capture file changed while storing"));
     }
     pinned.verify_parent()?;
-    file_manifest(c, file)?;
+    file_manifest(c, store, file)?;
     Ok(())
 }
 fn for_each_chunk(
@@ -380,8 +412,12 @@ fn for_each_chunk(
 }
 pub(in crate::projection) fn file_manifest(
     c: &Connection,
+    store: &ProjectionStore,
     file: &CapturedFile,
 ) -> Result<layrs_core::scm::FileManifest> {
+    if store.marker.shared.is_some() {
+        return retention::manifest(c, store, file);
+    }
     if file.bytes > MAX_CAPTURE_FILE_BYTES {
         return Err(invalid("capture file exceeds1GiB"));
     }
@@ -418,10 +454,14 @@ pub(in crate::projection) fn file_manifest(
 }
 pub(in crate::projection) fn stream_file(
     c: &Connection,
+    store: &ProjectionStore,
     file: &CapturedFile,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let manifest = file_manifest(c, file)?;
+    let manifest = file_manifest(c, store, file)?;
+    if let Some(lease) = shared::for_store(store)? {
+        return lease.stream(&manifest, out);
+    }
     let mut verifier = manifest.verifier();
     for_each_chunk(c, file, |_, bytes| {
         verifier.push(bytes).map_err(invalid)?;
@@ -433,11 +473,19 @@ pub(in crate::projection) fn stream_file(
 }
 pub(in crate::projection) fn read_chunk(
     c: &Connection,
+    store: &ProjectionStore,
     file: &CapturedFile,
     ordinal: usize,
     expected_chunk: &FileChunk,
     out: &mut dyn Write,
 ) -> Result<()> {
+    if let Some(lease) = shared::for_store(store)? {
+        let manifest = retention::manifest(c, store, file)?;
+        if manifest.chunks().get(ordinal) != Some(expected_chunk) {
+            return Err(invalid("shared capture representation changed"));
+        }
+        return lease.stream_chunk(&manifest, ordinal, out);
+    }
     if file.bytes > MAX_CAPTURE_FILE_BYTES {
         return Err(invalid("capture file exceeds1GiB"));
     }
@@ -465,7 +513,7 @@ pub(in crate::projection) fn read_chunk(
             return Err(invalid("legacy capture length mismatch"));
         }
         // Legacy blobs did not persist per-chunk digests, so verify the file.
-        file_manifest(c, file)?;
+        file_manifest(c, store, file)?;
         (
             None,
             c.query_row(

@@ -79,6 +79,20 @@ pub(super) fn open_directory_for_move(parent: &File, name: &OsStr) -> io::Result
     open_directory_at(parent, name, false, false)
 }
 
+pub(super) fn create_new_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    let name = c_name(name)?;
+    // SAFETY: live parent descriptor and NUL-terminated single component.
+    if unsafe { mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    open_at(
+        parent.as_raw_fd(),
+        &name,
+        O_RDONLY | DIRECTORY_OPEN_FLAGS,
+        0,
+    )
+}
+
 pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     let name = c_name(name)?;
     open_at(
@@ -87,6 +101,14 @@ pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
         O_RDWR | O_CREAT | O_EXCL | no_follow_close_exec(),
         0o600,
     )
+}
+
+pub(super) fn open_existing_private_directory_at(
+    parent: &File,
+    name: &OsStr,
+    writable: bool,
+) -> io::Result<File> {
+    open_directory_at(parent, name, false, writable)
 }
 
 pub(super) fn open_private_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {

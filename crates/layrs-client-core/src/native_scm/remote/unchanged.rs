@@ -115,7 +115,7 @@ impl NativeRemote {
                 return Ok(false);
             }
         }
-        let store = scm_v1::open(workspace.store_root())?;
+        let store = workspace.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         if reader.operation_heads(source.space.id())? != [source.operation.id().clone()] {
             return Ok(false);

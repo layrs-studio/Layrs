@@ -127,7 +127,13 @@ pub trait ScmRepository: ScmReader {
     /// `OperationDag::insert_integration` for `IntegrateOperations`, and verify
     /// that the candidate's complete Space head set exactly equals the CAS
     /// `new_head_ids`. Historical Operation imports without a heads CAS are
-    /// stored without changing current heads. A replay of the
+    /// stored without changing current heads.
+    /// A single retained non-head parent is allowed only for a CAS-bound
+    /// durable Worktree's current Operation, or for an explicitly bound new
+    /// Worktree registration from the durable source Worktree's own ancestry.
+    /// Backend validation must reject same-batch, passive-only, foreign-Space
+    /// and unbound parent claims and preserve every unrelated frontier head.
+    /// A replay of the
     /// same transaction ID and request digest returns `AlreadyApplied`; reuse
     /// of the transaction ID with another digest returns
     /// `transaction_replay_mismatch` and applies nothing.

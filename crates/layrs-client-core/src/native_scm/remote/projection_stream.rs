@@ -1,6 +1,7 @@
 //! Resumable metadata-only Store3 publications; each upload carries at most 1MiB.
+use super::projection_publish::completed_projection_publication;
 use super::*;
-use layrs_store_local::projection::{ProjectionStore, VersionedProjection};
+use layrs_store_local::projection::{ProjectionIdentity, ProjectionStore, VersionedProjection};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -8,12 +9,13 @@ pub struct ScopedProjectionPublicationOutcome {
     pub receipt: ScopedPathPatchReceipt,
     pub projection: VersionedProjection,
     pub pending_local_acceptance: bool,
+    pub historical: bool,
 }
 fn local(error: impl std::fmt::Display) -> NativeRemoteError {
     NativeRemoteError::Io(std::io::Error::other(error.to_string()))
 }
 fn binding(
-    store: &ProjectionStore,
+    identity: &ProjectionIdentity,
     digest: &str,
     layer: &LayerId,
     intent: ScopedPathPatchIntent,
@@ -26,8 +28,7 @@ fn binding(
     Ok((
         ClientId::parse(format!(
             "client:{}",
-            store
-                .identity()
+            identity
                 .worktree_id
                 .as_str()
                 .trim_start_matches("worktree:")
@@ -44,7 +45,7 @@ impl NativeRemote {
         layer: &LayerId,
     ) -> RemoteResult<ProjectionPublicationOutcome> {
         // Old durable requests/receipts keep their exact protocol and digest.
-        let legacy = if let Some(done) = store.completed_publication(sequence).map_err(local)? {
+        let legacy = if let Some((_, done)) = completed_projection_publication(store, sequence)? {
             serde_json::from_slice::<serde_json::Value>(&done.receipt_bytes)?
                 .get("intent")
                 .is_none()
@@ -67,6 +68,7 @@ impl NativeRemote {
             },
             projection: result.projection,
             pending_local_acceptance: result.pending_local_acceptance,
+            historical: result.historical,
         })
     }
     pub fn publish_projection_candidate(
@@ -87,12 +89,21 @@ impl NativeRemote {
         if self.origin().trim_end_matches('/') != store.identity().origin {
             return Err(NativeRemoteError::Invalid("projection origin mismatch"));
         }
+        let completed = completed_projection_publication(store, sequence)?;
         let capture = store.captured_patch(sequence).map_err(local)?;
-        let (client, key) = binding(store, &capture.digest, layer, intent)?;
-        if let Some(done) = store.completed_publication(sequence).map_err(local)? {
+        let identity = completed
+            .as_ref()
+            .map_or(store.identity(), |(identity, _)| identity);
+        if capture.identity != *identity {
+            return Err(NativeRemoteError::Invalid(
+                "publication capture identity mismatch",
+            ));
+        }
+        let (client, key) = binding(identity, &capture.digest, layer, intent)?;
+        if let Some((identity, done)) = completed {
             let receipt: ScopedPathPatchReceipt = serde_json::from_slice(&done.receipt_bytes)?;
             validate_receipt(
-                store,
+                &identity,
                 &receipt,
                 &client,
                 &key,
@@ -104,6 +115,7 @@ impl NativeRemote {
                 receipt,
                 projection: done.projection,
                 pending_local_acceptance: false,
+                historical: identity != *store.identity(),
             });
         }
         let state = store.state().map_err(local)?;
@@ -146,7 +158,7 @@ impl NativeRemote {
                 }
                 let receipt = self.submit_scoped_projection(store, sequence, &request)?;
                 validate_receipt(
-                    store,
+                    store.identity(),
                     &receipt,
                     &client,
                     &key,
@@ -164,7 +176,7 @@ impl NativeRemote {
             }
         };
         validate_receipt(
-            store,
+            store.identity(),
             &receipt,
             &client,
             &key,
@@ -194,7 +206,8 @@ impl NativeRemote {
                         receipt,
                         projection: state,
                         pending_local_acceptance: true,
-                    })
+                        historical: false,
+                    });
                 }
             }
         };
@@ -205,6 +218,7 @@ impl NativeRemote {
             receipt,
             projection,
             pending_local_acceptance: false,
+            historical: false,
         })
     }
     fn prepare_scoped_projection(
@@ -214,6 +228,7 @@ impl NativeRemote {
         layer: &LayerId,
         intent: ScopedPathPatchIntent,
     ) -> RemoteResult<ScopedPathPatchRequest> {
+        store.require_publishable_capture(sequence).map_err(local)?;
         let state = store.state().map_err(local)?;
         let capture = store.captured_patch(sequence).map_err(local)?;
         if capture.projection_generation != state.generation
@@ -267,7 +282,8 @@ impl NativeRemote {
                 replacement: Nullable(replacement),
             });
         }
-        let (client_id, idempotency_key) = binding(store, &capture.digest, layer, intent)?;
+        let (client_id, idempotency_key) =
+            binding(store.identity(), &capture.digest, layer, intent)?;
         let mut request = ScopedPathPatchRequest {
             schema_version: ScopedPathPatchSchema::V2,
             intent,
@@ -352,7 +368,7 @@ impl NativeRemote {
     }
 }
 fn validate_receipt(
-    store: &ProjectionStore,
+    identity: &ProjectionIdentity,
     receipt: &ScopedPathPatchReceipt,
     client: &ClientId,
     key: &IdempotencyKey,
@@ -362,8 +378,8 @@ fn validate_receipt(
 ) -> RemoteResult<()> {
     receipt.receipt.validate_v3().map_err(local)?;
     if receipt.intent != intent
-        || receipt.receipt.principal_id.as_str() != store.identity().principal_id
-        || receipt.receipt.space_id != store.identity().space_id
+        || receipt.receipt.principal_id.as_str() != identity.principal_id
+        || receipt.receipt.space_id != identity.space_id
         || &receipt.receipt.client_id != client
         || &receipt.client_id != client
         || &receipt.idempotency_key != key

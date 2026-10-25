@@ -28,6 +28,7 @@ impl ProjectionStore {
         let access = format::access(self, SessionMode::Shared)?;
         database::require_idle(&access.connection)?;
         let c = &access.connection;
+        retention::fsck(c, self)?;
         let integrity: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         if integrity != "ok" {
             return Err(invalid("projection SQLite integrity failure"));
@@ -50,6 +51,7 @@ impl ProjectionStore {
             ));
         }
         let mut previous = None;
+        let mut previous_selection = None;
         for generation in 0..count {
             let len: u64 = c.query_row(
                 "SELECT length(payload) FROM projection_snapshots WHERE generation=?1",
@@ -65,6 +67,15 @@ impl ProjectionStore {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
             let snapshot: ProjectionSnapshot = serde_json::from_slice(&bytes).map_err(invalid)?;
+            let selection = selection::at(c, generation)?;
+            selection.validate_snapshot(&snapshot)?;
+            if previous_selection
+                .as_ref()
+                .is_some_and(|old| !selection.is_expansion_of(old))
+            {
+                return Err(invalid("historical selection shrank"));
+            }
+            previous_selection = Some(selection);
             if parent != previous
                 || database::digest(generation, parent.as_deref(), &bytes) != claimed
                 || snapshot.canonical_bytes()? != bytes
@@ -76,8 +87,19 @@ impl ProjectionStore {
         let captures: u64 =
             c.query_row("SELECT COUNT(*) FROM projection_captures", [], |r| r.get(0))?;
         let mut completed_publications = 0;
+        let mut shared_captured = std::collections::BTreeMap::new();
         for sequence in 1..=captures {
-            capture::storage::load(c, self, sequence)?;
+            let patch = capture::storage::load(c, self, sequence)?;
+            if self.is_shared() {
+                for file in patch.changes.into_iter().filter_map(|v| v.replacement) {
+                    if shared_captured
+                        .insert(file.file_id, file.bytes)
+                        .is_some_and(|bytes| bytes != file.bytes)
+                    {
+                        return Err(invalid("shared capture length mismatch"));
+                    }
+                }
+            }
             if publication::storage::completed_record(c, self, sequence)?.is_some() {
                 completed_publications += 1;
             }
@@ -96,6 +118,7 @@ impl ProjectionStore {
             }
             capture::storage::file_manifest(
                 c,
+                self,
                 &CapturedFile {
                     file_id: FileId::parse(id).map_err(invalid)?,
                     executable: false,
@@ -119,7 +142,7 @@ impl ProjectionStore {
                 executable: false,
                 bytes: len,
             };
-            capture::storage::file_manifest(c, &file)?;
+            capture::storage::file_manifest(c, self, &file)?;
             let legacy: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM projection_capture_files WHERE file_id=?1)",
                 [file.file_id.as_str()],
@@ -131,6 +154,13 @@ impl ProjectionStore {
                     .checked_add(len)
                     .ok_or_else(|| invalid("capture size overflow"))?;
             }
+        }
+        if self.is_shared() {
+            captured_files = shared_captured.len() as u64;
+            captured_bytes = shared_captured.values().try_fold(0u64, |n, bytes| {
+                n.checked_add(*bytes)
+                    .ok_or_else(|| invalid("shared capture size overflow"))
+            })?;
         }
         let publication_pending = publication::storage::pending(c, self)?.is_some();
         let namespace_operations = namespace::verify_history(c, self)?;

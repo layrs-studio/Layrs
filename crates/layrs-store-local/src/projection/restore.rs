@@ -1,6 +1,7 @@
 //! Explicit local restoration of selected captured leaves. Remote bases and
 //! permissions never roll back; every overwritten byte remains recoverable.
 mod engine;
+pub(super) use engine::resume_with_access;
 mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
@@ -20,13 +21,33 @@ use std::{collections::BTreeMap, io::Read};
     deny_unknown_fields
 )]
 pub enum RestoreSource {
-    Capture { sequence: u64, paths: Vec<RepoPath> },
-    Inverse { operation_id: String },
+    Version {
+        version: layrs_core::projection::ProjectionVersion,
+        paths: Vec<RepoPath>,
+    },
+    Capture {
+        sequence: u64,
+        paths: Vec<RepoPath>,
+    },
+    Inverse {
+        operation_id: String,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreDestination {
+    pub identity: ProjectionIdentity,
+    /// Native checkout-directory identity, not a path or content digest.
+    pub checkout_identity: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestorePreview {
     pub operation_id: String,
+    /// Absent only when reading historical, unbound receipts. Such previews
+    /// cannot authorize an apply or a pending-journal replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<RestoreDestination>,
     pub source: RestoreSource,
     pub projection_generation: u64,
     pub projection_digest: String,
@@ -113,6 +134,18 @@ fn preview_digest(preview: &RestorePreview) -> Result<String> {
     copy.digest.clear();
     digest(b"layrs-projection-restore-preview-v1\0", &copy)
 }
+fn destination(store: &ProjectionStore) -> RestoreDestination {
+    RestoreDestination {
+        identity: store.identity().clone(),
+        checkout_identity: store.marker.checkout_identity().to_owned(),
+    }
+}
+fn validate_destination(store: &ProjectionStore, preview: &RestorePreview) -> Result<()> {
+    if preview.destination.as_ref() != Some(&destination(store)) {
+        return Err(invalid("restore preview destination differs or is unbound"));
+    }
+    Ok(())
+}
 fn checkout_digest(files: &BTreeMap<String, Option<CapturedFile>>) -> Result<String> {
     digest(b"layrs-projection-restore-checkout-v1\0", files)
 }
@@ -165,6 +198,9 @@ fn targets(
     source: &RestoreSource,
 ) -> Result<BTreeMap<RepoPath, Option<CapturedFile>>> {
     match source {
+        RestoreSource::Version { version, paths } => {
+            offline::restore_targets(c, store, version, paths)
+        }
         RestoreSource::Capture { sequence, paths } => {
             if paths.is_empty() || paths.len() > 1024 {
                 return Err(invalid("restore requires1..1024 paths"));
@@ -201,7 +237,7 @@ fn preview(
 ) -> Result<RestorePreview> {
     let after = targets(c, store, source)?;
     validate_paths(&state.snapshot, &after)?;
-    let scan = capture::scan::scan(store, &state.snapshot, false)?;
+    let scan = capture::scan::scan(store, c, &state.snapshot, false)?;
     let mut resulting = scan.files.clone();
     let mut before = BTreeMap::new();
     for (path, target) in &after {
@@ -213,7 +249,7 @@ fn preview(
         before.insert(path.clone(), old);
         resulting.insert(path.to_string(), target.clone());
         if let Some(file) = target {
-            capture::storage::file_manifest(c, file)?;
+            capture::storage::file_manifest(c, store, file)?;
         }
     }
     validate_paths(&state.snapshot, &before)?;
@@ -243,6 +279,7 @@ fn preview(
         return Err(invalid("restore would exceed capture budget"));
     }
     let mut value = RestorePreview {
+        destination: Some(destination(store)),
         operation_id: format!(
             "{}-{}",
             std::time::SystemTime::now()

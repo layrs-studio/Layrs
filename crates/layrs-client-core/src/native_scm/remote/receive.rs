@@ -62,7 +62,7 @@ impl NativeRemote {
             }
             bootstrap = refreshed;
         }
-        let graph = self.download_graph(&binding, &bootstrap)?;
+        let graph = self.download_graph_from_store(&binding, &bootstrap, Some(workspace))?;
         let report = self.accept_remote(
             workspace,
             &source,
@@ -130,7 +130,7 @@ impl NativeRemote {
             Metadata::empty(),
         )?;
         let worktree = Worktree::new(
-            WorktreeId::parse(format!("worktree:{suffix}"))?,
+            WorktreeId::parse(format!("worktree:{}", uuid::Uuid::new_v4()))?,
             store_id.clone(),
             space.clone(),
             stamp.operation_id.clone(),
@@ -174,6 +174,14 @@ impl NativeRemote {
         binding: &Binding,
         bootstrap: &SpaceBootstrap,
     ) -> RemoteResult<GraphObjects> {
+        self.download_graph_from_store(binding, bootstrap, None)
+    }
+    pub(super) fn download_graph_from_store(
+        &self,
+        binding: &Binding,
+        bootstrap: &SpaceBootstrap,
+        local_workspace: Option<&NativeWorkspace>,
+    ) -> RemoteResult<GraphObjects> {
         require_complete_access(bootstrap)?;
         let mut graph = GraphObjects::default();
         let mut pending: Vec<_> = bootstrap
@@ -195,9 +203,9 @@ impl NativeRemote {
             .iter()
             .filter(|p| matches!(p, ProductRoot::Weave { .. }))
         {
-            self.fetch_visit(
+            self.fetch_visit_from_store(
                 binding,
-                FetchClaim::Object {
+                &[FetchClaim::Object {
                     object: ObjectReference {
                         kind: ObjectKind::Product,
                         object_id: product.object_id().clone(),
@@ -206,7 +214,8 @@ impl NativeRemote {
                         product: product.clone(),
                     },
                     repo_path: Nullable::null(),
-                },
+                }],
+                local_workspace,
                 |object| {
                     if let CanonicalObject::Product(value) = &object {
                         pending.extend(
@@ -237,15 +246,9 @@ impl NativeRemote {
                 },
                 repo_path: Nullable::null(),
             };
-            let objects = self.fetch(binding, claim)?;
-            if objects.len() != 1 {
-                return Err(NativeRemoteError::Invalid(
-                    "Step fetch cardinality mismatch",
-                ));
-            }
-            for object in objects {
-                graph.insert(object)?;
-            }
+            self.fetch_visit_from_store(binding, &[claim], local_workspace, |object| {
+                graph.insert(object)
+            })?;
             let step = graph
                 .steps
                 .get(&id)
@@ -257,7 +260,7 @@ impl NativeRemote {
                     .cloned()
                     .map(|p| (p, root.clone())),
             );
-            self.download_tree(binding, &step, &mut graph)?;
+            self.download_tree(binding, &step, &mut graph, local_workspace)?;
         }
         graph.dag()?;
         // FileId is a reconstruction identity, not the manifest hash.
@@ -270,6 +273,7 @@ impl NativeRemote {
         binding: &Binding,
         step: &Step,
         graph: &mut GraphObjects,
+        local_workspace: Option<&NativeWorkspace>,
     ) -> RemoteResult<()> {
         let root = AuthorizationRoot::Step {
             step_id: step.id().clone(),
@@ -284,24 +288,24 @@ impl NativeRemote {
                 continue;
             }
             let key = StoreObjectId::Tree(id.clone());
-            if !graph.objects.contains_key(&key) {
-                self.fetch_visit(
-                    binding,
-                    FetchClaim::Object {
-                        object: ObjectReference {
-                            kind: ObjectKind::Tree,
-                            object_id: ObjectId::parse(id.as_str())?,
-                        },
-                        root: root.clone(),
-                        repo_path: Nullable::null(),
+            self.fetch_visit_from_store(
+                binding,
+                &[FetchClaim::Object {
+                    object: ObjectReference {
+                        kind: ObjectKind::Tree,
+                        object_id: ObjectId::parse(id.as_str())?,
                     },
-                    |object| graph.insert(object),
-                )?;
-            }
+                    root: root.clone(),
+                    repo_path: Nullable::null(),
+                }],
+                local_workspace,
+                |object| graph.insert(object),
+            )?;
             let Some(CanonicalObject::Tree(tree)) = graph.objects.get(&key) else {
                 return Err(NativeRemoteError::Invalid("missing fetched Tree"));
             };
             let tree = tree.clone();
+            let mut claims = Vec::new();
             for entry in tree.entries() {
                 let path = if prefix.is_empty() {
                     entry.name().as_str().to_owned()
@@ -313,17 +317,12 @@ impl NativeRemote {
                         pending.push((path, tree_id.clone(), depth + 1));
                         continue;
                     }
-                    TreeEntryTarget::File { file_id } => {
-                        if graph.has_manifest(file_id) {
-                            continue;
-                        }
-                        FetchClaim::File {
-                            file_id: file_id.clone(),
-                            preferred_manifest_ids: vec![],
-                            root: root.clone(),
-                            repo_path: RepoPath::parse(path)?,
-                        }
-                    }
+                    TreeEntryTarget::File { file_id } => FetchClaim::File {
+                        file_id: file_id.clone(),
+                        preferred_manifest_ids: vec![],
+                        root: root.clone(),
+                        repo_path: RepoPath::parse(path)?,
+                    },
                     TreeEntryTarget::Symlink { symlink_id } => FetchClaim::Object {
                         object: ObjectReference {
                             kind: ObjectKind::Symlink,
@@ -349,12 +348,22 @@ impl NativeRemote {
                             depth,
                             graph,
                             &mut pending,
+                            local_workspace,
                         )?;
                         continue;
                     }
                 };
-                self.fetch_visit(binding, claim, |object| graph.insert(object))?;
+                claims.push(claim);
+                if claims.len() == download_refresh::CLAIM_BATCH {
+                    self.fetch_visit_from_store(binding, &claims, local_workspace, |object| {
+                        graph.insert(object)
+                    })?;
+                    claims.clear();
+                }
             }
+            self.fetch_visit_from_store(binding, &claims, local_workspace, |object| {
+                graph.insert(object)
+            })?;
         }
         Ok(())
     }
@@ -368,17 +377,19 @@ impl NativeRemote {
         depth: usize,
         graph: &mut GraphObjects,
         pending: &mut Vec<(String, TreeId, usize)>,
+        local_workspace: Option<&NativeWorkspace>,
     ) -> RemoteResult<()> {
-        self.fetch_visit(
+        self.fetch_visit_from_store(
             binding,
-            FetchClaim::Object {
+            &[FetchClaim::Object {
                 object: ObjectReference {
                     kind: ObjectKind::Conflict,
                     object_id: ObjectId::parse(id.as_str())?,
                 },
                 root: root.clone(),
                 repo_path: Nullable::some(RepoPath::parse(path)?),
-            },
+            }],
+            local_workspace,
             |object| graph.insert(object),
         )?;
         let Some(CanonicalObject::Conflict(conflict)) =
@@ -417,7 +428,9 @@ impl NativeRemote {
                 },
                 _ => return Err(NativeRemoteError::Invalid("unsupported Conflict term")),
             };
-            self.fetch_visit(binding, claim, |object| graph.insert(object))?;
+            self.fetch_visit_from_store(binding, &[claim], local_workspace, |object| {
+                graph.insert(object)
+            })?;
         }
         if !parsed
             .payload_file_ids()
@@ -567,18 +580,16 @@ impl NativeRemote {
             releases.into_iter().collect(),
             states,
         )?;
-        let store = scm_v1::open(workspace.store_root())?;
+        let store = workspace.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let current = reader
             .current_repository_view(source.space.id())?
             .ok_or(NativeRemoteError::Invalid("missing current View"))?;
         let operations = reader.operation_heads(source.space.id())?;
-        if current.view_id() != Some(source.view.id())
-            || reader
-                .worktree_active_operation(workspace.worktree_id())?
-                .as_ref()
-                != Some(source.operation.id())
-            || operations != [source.operation.id().clone()]
+        if reader
+            .worktree_active_operation(workspace.worktree_id())?
+            .as_ref()
+            != Some(source.operation.id())
         {
             return Err(NativeRemoteError::Local(NativeClientError::StaleCapture));
         }
@@ -609,7 +620,7 @@ impl NativeRemote {
         let operation = Operation::new(
             stamp.operation_id.clone(),
             source.space.id().clone(),
-            operations.clone(),
+            vec![source.operation.id().clone()],
             view.id().clone(),
             OperationKind::ReceiveRemoteState,
             "Receive native remote state",
@@ -654,6 +665,8 @@ impl NativeRemote {
             }
         }
         let external_chunks = graph.chunk_descriptors();
+        let next_operations =
+            worktree_operations::advance_heads(&operations, source.operation.id(), operation.id());
         let mut objects: Vec<_> = graph.objects.values().cloned().collect();
         objects.push(CanonicalObject::RepositoryView(view.clone()));
         let mut admissions = prepare::admissions(source.space.id(), &objects);
@@ -679,7 +692,7 @@ impl NativeRemote {
                     source.space.id().clone(),
                     operations,
                     operation.id().clone(),
-                    vec![operation.id().clone()],
+                    next_operations,
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     workspace.worktree_id().clone(),
@@ -720,8 +733,10 @@ impl NativeRemote {
                 read_chunk: &mut read_chunk,
                 write_file: &mut write_file,
             };
-            scm_v1::materialize::apply_checkout_with_sources(
+            scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
                 workspace.store_root(),
+                workspace.store_identity(),
+                workspace.metadata_identity(),
                 workspace.worktree_id(),
                 &before,
                 &after,
@@ -730,11 +745,10 @@ impl NativeRemote {
                 &mut sources,
             )?;
         } else {
-            scm_v1::NativeScmRepository::new(workspace.store_root()).apply_batch_with_chunks(
-                &batch,
-                &external_chunks,
-                |id| graph.read_chunk(id),
-            )?;
+            scm_v1::NativeScmRepository::new(workspace.store_root())
+                .with_store_identity(workspace.store_identity())
+                .with_metadata_identity(workspace.metadata_identity())
+                .apply_batch_with_chunks(&batch, &external_chunks, |id| graph.read_chunk(id))?;
         }
         Ok(ReceiveReport {
             operation_id: operation.id().clone(),

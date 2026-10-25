@@ -135,6 +135,7 @@ pub(super) fn prepare(
     }
     let removed = remove.iter().map(String::as_str).collect();
     for path in &install {
+        install::files::reject_aliases(&store.root, path, target.path_semantics)?;
         files::destination(store, path, &removed)?;
     }
     root.verify_path_identity()?;

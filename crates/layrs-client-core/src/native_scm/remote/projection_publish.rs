@@ -1,8 +1,10 @@
 //! Exact, durable publications from a format3 capture. No complete local Step.
 use super::*;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use layrs_core::projection::{EntryState, ProjectionSnapshot};
-use layrs_store_local::projection::{ProjectionStore, VersionedProjection};
+use layrs_store_local::projection::{
+    CompletedPublication, ProjectionIdentity, ProjectionStore, VersionedProjection,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,9 +12,25 @@ pub struct ProjectionPublicationOutcome {
     pub receipt: PathPatchReceipt,
     pub projection: VersionedProjection,
     pub pending_local_acceptance: bool,
+    pub historical: bool,
 }
 fn local(e: impl std::fmt::Display) -> NativeRemoteError {
     NativeRemoteError::Io(std::io::Error::other(e.to_string()))
+}
+/// Imported receipts retain the original Worktree correlation. An imported
+/// capture without a completed receipt is never submitted from its destination.
+pub(super) fn completed_projection_publication(
+    store: &ProjectionStore,
+    sequence: u64,
+) -> RemoteResult<Option<(ProjectionIdentity, CompletedPublication)>> {
+    if let Some(completed) = store.imported_publication(sequence).map_err(local)? {
+        return Ok(Some(completed));
+    }
+    store.require_publishable_capture(sequence).map_err(local)?;
+    Ok(store
+        .completed_publication(sequence)
+        .map_err(local)?
+        .map(|completed| (store.identity().clone(), completed)))
 }
 fn publication_binding(
     worktree: &WorktreeId,
@@ -39,14 +57,14 @@ impl NativeRemote {
         if self.origin().trim_end_matches('/') != store.identity().origin {
             return Err(NativeRemoteError::Invalid("projection origin mismatch"));
         }
-        if let Some(completed) = store.completed_publication(sequence).map_err(local)? {
+        if let Some((identity, completed)) = completed_projection_publication(store, sequence)? {
             let receipt: PathPatchReceipt = serde_json::from_slice(&completed.receipt_bytes)?;
             receipt.receipt.validate_v3().map_err(local)?;
             let capture = store.captured_patch(sequence).map_err(local)?;
-            let (client, key) =
-                publication_binding(&store.identity().worktree_id, &capture.digest, layer)?;
-            if receipt.receipt.principal_id.as_str() != store.identity().principal_id
-                || receipt.receipt.space_id != store.identity().space_id
+            let (client, key) = publication_binding(&identity.worktree_id, &capture.digest, layer)?;
+            if capture.identity != identity
+                || receipt.receipt.principal_id.as_str() != identity.principal_id
+                || receipt.receipt.space_id != identity.space_id
                 || receipt.receipt.client_id != client
                 || receipt.receipt.idempotency_key != key
                 || receipt
@@ -64,6 +82,7 @@ impl NativeRemote {
                 receipt,
                 projection: completed.projection,
                 pending_local_acceptance: false,
+                historical: identity != *store.identity(),
             });
         }
         let state = store.state().map_err(local)?;
@@ -131,6 +150,7 @@ impl NativeRemote {
                 receipt,
                 projection,
                 pending_local_acceptance: false,
+                historical: false,
             });
         }
         // A committed receipt survives loss of bootstrap/read permission. Leave
@@ -149,7 +169,8 @@ impl NativeRemote {
                     receipt,
                     projection: state,
                     pending_local_acceptance: true,
-                })
+                    historical: false,
+                });
             }
         };
         let projection = store
@@ -159,6 +180,7 @@ impl NativeRemote {
             receipt,
             projection,
             pending_local_acceptance: false,
+            historical: false,
         })
     }
 
@@ -168,6 +190,7 @@ impl NativeRemote {
         sequence: u64,
         layer: &LayerId,
     ) -> RemoteResult<PathPatchSubmission> {
+        store.require_publishable_capture(sequence).map_err(local)?;
         let state = store.state().map_err(local)?;
         let capture = store.captured_patch(sequence).map_err(local)?;
         if capture.projection_generation != state.generation
@@ -374,7 +397,7 @@ impl NativeRemote {
                 _ => {
                     return Err(NativeRemoteError::Invalid(
                         "projection cursor did not advance",
-                    ))
+                    ));
                 }
             }
         }

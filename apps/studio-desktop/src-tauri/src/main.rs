@@ -1,4 +1,5 @@
 mod folder_dialog;
+mod git_bridge;
 mod native;
 
 use tauri::{Manager, PhysicalSize, Size};
@@ -25,6 +26,7 @@ fn apply_e2e_window_settings(app: &tauri::App) -> Result<(), tauri::Error> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(git_bridge::GitBridgeState::default())
         .setup(|app| {
             apply_e2e_window_settings(app)?;
             Ok(())
@@ -34,6 +36,7 @@ fn main() {
             native::native_remote,
             native::native_checkout_kind,
             native::native_projection,
+            git_bridge::native_git_bridge,
             select_folder
         ])
         .run(tauri::generate_context!())

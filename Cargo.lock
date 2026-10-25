@@ -1080,12 +1080,14 @@ dependencies = [
 name = "layrs-cli"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "ctrlc",
  "layrs-client-core",
  "layrs-core",
  "layrs-git-bridge",
  "layrs-lens-sdk",
  "layrs-store-local",
+ "rusqlite",
  "serde_json",
 ]
 
@@ -1102,9 +1104,12 @@ dependencies = [
  "layrs-store",
  "layrs-store-local",
  "layrs-sync",
+ "layrs-vfs",
  "layrs-weave",
+ "rcgen",
  "reqwest",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -1300,6 +1305,7 @@ dependencies = [
  "layrs-graph",
  "layrs-store",
  "layrs-sync",
+ "layrs-vfs",
  "layrs-weave",
  "rusqlite",
  "serde",
@@ -1350,6 +1356,14 @@ dependencies = [
  "serde_json",
  "time",
  "url",
+]
+
+[[package]]
+name = "layrs-vfs"
+version = "0.0.0"
+dependencies = [
+ "layrs-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

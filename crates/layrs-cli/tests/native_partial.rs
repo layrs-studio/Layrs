@@ -1,7 +1,9 @@
 //! Black-box format3 CLI routing and recovery. Remote parsing deliberately uses
 //! an invalid HTTP origin: these cases make no network or credential-store calls.
 use layrs_core::{
-    projection::{EntryState, PathSemantics, ProjectionEntry, ProjectionSnapshot},
+    projection::{
+        EntryState, PathSemantics, ProjectionEntry, ProjectionSelection, ProjectionSnapshot,
+    },
     scm::{
         FileId, ObjectId, RepoPath, SpaceId, StepId, StoreId, TreeEntryTarget, TreeId, WorktreeId,
     },
@@ -13,9 +15,12 @@ use serde_json::{Value, json};
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitStatus},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[path = "partial/recovery_binding.rs"]
+mod recovery_binding;
 
 struct Fixture {
     outer: PathBuf,
@@ -23,6 +28,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> (Self, ProjectionStore) {
+        Self::with_selection(ProjectionSelection::All)
+    }
+    fn with_selection(selection: ProjectionSelection) -> (Self, ProjectionStore) {
         static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let outer = std::env::temp_dir().join(format!(
             "layrs-cli-partial-{}-{}-{}",
@@ -69,7 +77,7 @@ impl Fixture {
         };
         let mut installed = initial.clone();
         installed.entries[0].state = EntryState::Materialized;
-        let store = ProjectionStore::create(&root, identity, initial).unwrap();
+        let store = ProjectionStore::create_selected(&root, identity, initial, selection).unwrap();
         store
             .install_projection(0, &installed, &mut |path, out| {
                 assert_eq!(path, "allowed.txt");
@@ -79,6 +87,9 @@ impl Fixture {
         (Self { outer, root }, store)
     }
     fn run(&self, args: &[&str], success: bool) -> Value {
+        self.run_with_status(args, success).0
+    }
+    fn run_with_status(&self, args: &[&str], success: bool) -> (Value, ExitStatus) {
         let output = Command::new(env!("CARGO_BIN_EXE_layrs"))
             .current_dir(&self.root)
             .arg("--json")
@@ -95,7 +106,7 @@ impl Fixture {
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["ok"], success);
-        result
+        (result, output.status)
     }
     fn document(&self, name: &str, value: &Value) -> PathBuf {
         let path = self.outer.join(name);
@@ -116,10 +127,129 @@ fn text(path: &Path) -> &str {
 }
 
 #[test]
+fn partial_status_reports_persisted_selection_without_materializing_unselected_content() {
+    let selection = ProjectionSelection::selected(
+        vec![RepoPath::parse("allowed.txt").unwrap()],
+        vec![],
+        PathSemantics::PortableWindows,
+    )
+    .unwrap();
+    let (f, store) = Fixture::with_selection(selection.clone());
+    let status = f.run(&["partial", "status"], true);
+    assert_eq!(
+        status["data"]["selection"],
+        serde_json::to_value(&selection).unwrap()
+    );
+    assert_eq!(store.selection().unwrap(), selection);
+    assert!(!f.root.join("private.txt").exists());
+    assert_eq!(store.state().unwrap().generation, 1);
+}
+
+#[test]
+fn selection_cli_rejects_bad_flags_before_auth_and_preserves_https_enforcement() {
+    let (f, store) = Fixture::new();
+    let step = store.state().unwrap().snapshot.base_step_id.to_string();
+    let target = f.outer.join("selected-clone");
+    fs::create_dir(&target).unwrap();
+    let https_error = "invalid_native_remote_state: remote requires a HTTPS origin without credentials, path or query";
+    for action in ["partial-select", "partial-hydrate"] {
+        let (error, status) = f.run_with_status(
+            &[
+                "remote",
+                action,
+                "--expected-generation",
+                "1",
+                "--include",
+                "allowed.txt",
+                "--endpoint",
+                "http://example.test",
+            ],
+            false,
+        );
+        assert_eq!(status.code(), Some(1), "{action}: {error}");
+        assert_eq!(error["error"]["message"], https_error);
+    }
+    let (clone, status) = f.run_with_status(
+        &[
+            "remote",
+            "clone-partial",
+            "space:cli-partial",
+            &step,
+            text(&target),
+            "--include",
+            "allowed.txt",
+            "--include-tree",
+            "docs",
+            "--endpoint",
+            "http://example.test",
+        ],
+        false,
+    );
+    assert_eq!(status.code(), Some(1), "{clone}");
+    assert_eq!(clone["error"]["message"], https_error);
+    for (suffix, diagnostic) in [
+        (
+            vec!["--include", "allowed.txt", "--include", "allowed.txt"],
+            "duplicate --include path `allowed.txt`",
+        ),
+        (
+            vec!["--include-tree", "docs", "--include-tree", "docs"],
+            "duplicate --include-tree path `docs`",
+        ),
+        (
+            vec!["--include", "../private"],
+            "invalid repository path: empty, dot and dot-dot components are forbidden",
+        ),
+        (
+            vec!["--include"],
+            "--include needs a repository-relative path",
+        ),
+        (
+            vec!["--include", "allowed.txt", "--unknown"],
+            "usage: layrs remote ",
+        ),
+        (
+            vec!["--include", "allowed.txt", "--path", "history-only"],
+            "--path/--actor/--since/--until are only supported by remote history",
+        ),
+        (
+            vec!["--include", "allowed.txt", "--expected-generation", "2"],
+            "duplicate --expected-generation",
+        ),
+    ] {
+        let mut args = vec![
+            "remote",
+            "partial-select",
+            "--endpoint",
+            "http://example.test",
+            "--expected-generation",
+            "1",
+        ];
+        args.extend(suffix);
+        let (error, status) = f.run_with_status(&args, false);
+        // Usage text can include the HTTPS_URL placeholder. The exit code and
+        // parser diagnostic distinguish rejection from reaching remote execution.
+        assert_eq!(status.code(), Some(2), "{args:?}: {error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with(diagnostic),
+            "wrong parser refusal for {args:?}: {error}"
+        );
+        assert_ne!(error["error"]["message"], https_error);
+    }
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+    assert_eq!(store.state().unwrap().generation, 1);
+    assert_eq!(fs::read(f.root.join("allowed.txt")).unwrap(), b"base");
+}
+
+#[test]
 fn partial_cli_status_capture_history_and_fsck_preserve_remote_base() {
     let (f, store) = Fixture::new();
     let initial = store.state().unwrap();
     let status = f.run(&["partial", "status"], true);
+    assert_eq!(status["data"]["selection"], json!({"kind":"all"}));
     assert_eq!(status["data"]["projection"]["generation"], 1);
     assert_eq!(
         status["data"]["projection"]["snapshot"]["entries"][1]["state"],

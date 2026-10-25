@@ -3,6 +3,7 @@
 use super::Result;
 use super::*;
 use layrs_store::scm::*;
+use layrs_store_local::scm_v1;
 impl NativeWorkspace {
     pub(super) fn apply_conflicted_rewrite(&self, plan: &NativeRewritePlan) -> Result<StepId> {
         let source = &plan.state;
@@ -18,13 +19,17 @@ impl NativeWorkspace {
         {
             return Err(NativeClientError::StaleCapture);
         }
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let current = reader
             .current_repository_view(source.space.id())?
             .ok_or(NativeClientError::Missing("current View"))?;
         let heads = reader.operation_heads(source.space.id())?;
-        if current.view_id() != Some(source.view.id()) || heads != [source.operation.id().clone()] {
+        if reader
+            .worktree_active_operation(self.worktree_id())?
+            .as_ref()
+            != Some(source.operation.id())
+        {
             return Err(NativeClientError::StaleCapture);
         }
         let result = &plan.summary.proposed_step;
@@ -73,7 +78,7 @@ impl NativeWorkspace {
         let operation = Operation::new(
             stamp.operation_id.clone(),
             source.space.id().clone(),
-            heads.clone(),
+            vec![source.operation.id().clone()],
             view.id().clone(),
             kind,
             &plan.description,
@@ -100,9 +105,13 @@ impl NativeWorkspace {
                 )?),
                 StoreMutation::OperationHeads(OperationHeadsCas::new(
                     source.space.id().clone(),
-                    heads,
+                    heads.clone(),
                     stamp.operation_id.clone(),
-                    vec![stamp.operation_id.clone()],
+                    super::super::worktree_operations::advance_heads(
+                        &heads,
+                        source.operation.id(),
+                        &stamp.operation_id,
+                    ),
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     self.worktree_id().clone(),
@@ -114,8 +123,10 @@ impl NativeWorkspace {
         drop(reader);
         drop(store);
         let before = self.read_step_files(&base_step(source)?)?;
-        scm_v1::materialize::apply_checkout(
+        scm_v1::materialize::apply_checkout_bound_metadata(
             self.store_root(),
+            self.store_identity(),
+            self.metadata_identity(),
             self.worktree_id(),
             &before,
             &before,

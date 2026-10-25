@@ -12,9 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 impl NativeWorkspace {
     pub fn recover(&self) -> Result<usize> {
-        Ok(scm_v1::materialize::recover_checkout(
+        Ok(scm_v1::materialize::recover_checkout_bound_metadata(
             self.store_root(),
+            self.store_identity(),
+            self.metadata_identity(),
             self.worktree_id(),
+            &NoMaterializationFaults,
         )?)
     }
 
@@ -89,7 +92,7 @@ impl NativeWorkspace {
         target: &OperationId,
         kind: OperationKind,
     ) -> Result<OperationId> {
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let operation = reader
             .get_operation(target)?
@@ -247,7 +250,7 @@ impl NativeWorkspace {
 
     pub fn read_step_files(&self, step: &StepId) -> Result<Vec<CheckoutEntry>> {
         let state = self.state()?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
             return Err(NativeClientError::Missing("Step admitted to this Space"));
@@ -374,27 +377,23 @@ impl NativeWorkspace {
             reference_view.release_ids().to_vec(),
             states,
         )?;
-        let store = scm_v1::open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let current = reader
             .current_repository_view(source.space.id())?
             .ok_or(NativeClientError::Missing("current View"))?;
         let heads = reader.operation_heads(source.space.id())?;
-        if current.view_id() != Some(source.view.id())
-            || reader
-                .worktree_active_operation(self.worktree_id())?
-                .as_ref()
-                != Some(source.operation.id())
+        if reader
+            .worktree_active_operation(self.worktree_id())?
+            .as_ref()
+            != Some(source.operation.id())
         {
             return Err(NativeClientError::StaleCapture);
-        }
-        if heads != [source.operation.id().clone()] {
-            return Err(NativeClientError::NeedsIntegration);
         }
         let operation = Operation::new(
             stamp.operation_id.clone(),
             source.space.id().clone(),
-            heads.clone(),
+            vec![source.operation.id().clone()],
             next.id().clone(),
             kind,
             summary,
@@ -424,9 +423,13 @@ impl NativeWorkspace {
                 )?),
                 StoreMutation::OperationHeads(OperationHeadsCas::new(
                     source.space.id().clone(),
-                    heads,
+                    heads.clone(),
                     operation.id().clone(),
-                    vec![operation.id().clone()],
+                    super::worktree_operations::advance_heads(
+                        &heads,
+                        source.operation.id(),
+                        operation.id(),
+                    ),
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     self.worktree_id().clone(),
@@ -441,7 +444,7 @@ impl NativeWorkspace {
         let mut write_file = |path: &str, output: &mut dyn std::io::Write| {
             // Staging holds the checkout lease but no exclusive Store handle.
             // Never retain this shared capability across journal/commit phases.
-            let content_store = scm_v1::open(self.store_root()).map_err(std::io::Error::other)?;
+            let content_store = self.open_store().map_err(std::io::Error::other)?;
             let content_reader =
                 NativeScmReader::new(&content_store).map_err(std::io::Error::other)?;
             let entry = files
@@ -459,8 +462,10 @@ impl NativeWorkspace {
                 message: "unexpected restore chunk source".into(),
             })
         };
-        scm_v1::materialize::apply_checkout_with_sources(
+        scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
             self.store_root(),
+            self.store_identity(),
+            self.metadata_identity(),
             self.worktree_id(),
             &before,
             &after,

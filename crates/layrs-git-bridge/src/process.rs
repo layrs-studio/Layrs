@@ -30,6 +30,9 @@ pub(crate) struct Git {
     processes: std::cell::Cell<usize>,
     cache: std::cell::RefCell<BTreeMap<String, (String, Vec<u8>)>>,
     cache_only: bool,
+    export: Option<std::sync::Arc<layrs_store_local::anchored_export::ExportLease>>,
+    export_source: Option<ExpectedBridgeState>,
+    import_source: Option<layrs_store_local::anchored_export::GitImportSource>,
 }
 impl Git {
     #[cfg(test)]
@@ -51,6 +54,9 @@ impl Git {
             processes: std::cell::Cell::new(0),
             cache: Default::default(),
             cache_only: false,
+            export: None,
+            export_source: None,
+            import_source: None,
             deadline: Instant::now()
                 .checked_add(Duration::from_millis(limits.max_duration_ms))
                 .ok_or(BridgeError::Limit("duration"))?,
@@ -58,6 +64,37 @@ impl Git {
     }
     pub fn processes(&self) -> usize {
         self.processes.get()
+    }
+    pub fn for_import(root: &Path, limits: GitBridgeLimits) -> Result<Self> {
+        let mut git = Self::new(root, limits)?;
+        git.import_source =
+            Some(layrs_store_local::anchored_export::GitImportSource::capture(root)?);
+        git.root = Path::new(".").to_path_buf();
+        Ok(git)
+    }
+    pub fn import_common_path(&self) -> Result<&Path> {
+        self.import_source
+            .as_ref()
+            .map(|source| source.common_path())
+            .ok_or_else(|| invalid("Git source binding missing"))
+    }
+    pub fn verify_import_source(&self) -> Result<()> {
+        if let Some(source) = &self.import_source {
+            source.verify()?;
+        }
+        Ok(())
+    }
+    pub fn for_export(
+        lease: std::sync::Arc<layrs_store_local::anchored_export::ExportLease>,
+        expected: &ExpectedBridgeState,
+        limits: GitBridgeLimits,
+    ) -> Result<Self> {
+        let mut git = Self::new(Path::new("."), limits)?;
+        // prepare_command sets the actual cwd through an anchored capability.
+        git.root = Path::new(".").to_path_buf();
+        git.export = Some(lease);
+        git.export_source = Some(expected.clone());
+        Ok(git)
     }
     pub(crate) fn cached(
         objects: BTreeMap<String, (String, Vec<u8>)>,
@@ -68,8 +105,8 @@ impl Git {
         git.cache_only = true;
         Ok(git)
     }
-    pub(crate) fn into_cache(self) -> BTreeMap<String, (String, Vec<u8>)> {
-        self.cache.into_inner()
+    pub(crate) fn take_cache(&self) -> BTreeMap<String, (String, Vec<u8>)> {
+        self.cache.take()
     }
     pub fn run(&self, args: &[&str], input: Option<&[u8]>, cap: usize) -> Result<Vec<u8>> {
         self.run_owned(args, input.map(<[u8]>::to_vec), cap)
@@ -113,7 +150,13 @@ impl Git {
                 "tag.gpgsign=false",
                 "-C",
             ])
-            .arg(&self.root)
+            .arg(&self.root);
+        if self.export.is_some() || self.import_source.is_some() {
+            // Never discover a repository above the anchored directory. In
+            // particular, a damaged resume HEAD must not select its parent.
+            command.arg("--git-dir=.");
+        }
+        command
             .args(args)
             .stdin(if input.is_some() {
                 Stdio::piped()
@@ -127,6 +170,19 @@ impl Git {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
         }
+        if let Some(source) = &self.export_source {
+            source.accept_guard().map_err(invalid)?;
+        }
+        let _export_guard = self
+            .export
+            .as_ref()
+            .map(|export| export.prepare_command(&mut command))
+            .transpose()?;
+        let _import_guard = self
+            .import_source
+            .as_ref()
+            .map(|source| source.prepare_command(&mut command))
+            .transpose()?;
         let mut child = ChildGuard(command.spawn()?);
         self.processes.set(self.processes.get() + 1);
         let stdin = input.map(|input| {
@@ -197,6 +253,13 @@ impl Git {
         if let Some(thread) = stdin {
             let _ = thread.join();
         }
+        if let Some(export) = &self.export {
+            export.verify()?;
+        }
+        if let Some(source) = &self.export_source {
+            source.accept_guard().map_err(invalid)?;
+        }
+        self.verify_import_source()?;
         if let Some(limit) = limit {
             return Err(BridgeError::Limit(limit));
         }

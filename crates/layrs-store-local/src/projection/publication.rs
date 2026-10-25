@@ -46,6 +46,11 @@ impl PublicationFaults for NoPublicationFaults {
 impl ProjectionStore {
     pub fn completed_publication(&self, sequence: u64) -> Result<Option<CompletedPublication>> {
         let access = format::access(self, SessionMode::Shared)?;
+        if conversion::imported(&access.connection, self, sequence)? {
+            return Err(invalid(
+                "imported publication is historical; use imported_publication",
+            ));
+        }
         database::require_idle(&access.connection)?;
         let result = storage::completed_record(&access.connection, self, sequence)?
             .map(|(record, _)| record);
@@ -74,6 +79,11 @@ impl ProjectionStore {
     ) -> Result<PendingPublication> {
         let request_digest = storage::json_digest(b"layrs-projection-request-v1\0", request_bytes)?;
         let mut access = format::access(self, SessionMode::Exclusive)?;
+        if conversion::imported(&access.connection, self, sequence)? {
+            return Err(invalid(
+                "imported_capture_not_publishable: create a destination capture first",
+            ));
+        }
         database::require_idle(&access.connection)?;
         let current = database::current(&access.connection)?;
         let patch = super::capture::storage::load(&access.connection, self, sequence)?;
@@ -215,6 +225,7 @@ impl ProjectionStore {
         }
         let patch = super::capture::storage::load(&access.connection, self, sequence)?;
         if let Some(next) = next {
+            selection::verify_target(&access.connection, next)?;
             validate_applied(&current.snapshot, next, &patch)?;
         }
         let after = if let Some(next) = next {

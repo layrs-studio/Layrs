@@ -7,6 +7,8 @@ export { NativeReleaseSurface } from "./native-release";
 export { NativeHistorySurface } from "./native-history";
 export { NativeProjectFiles } from "./native-project-files";
 export { projectionStoreFiles, projectionCaptureMatches } from "./native-projection-store-model";
+export { validateProjectionSelection, selectedProjectionPaths, projectionSelectionIncludes } from "./native-projection-selection";
+export type { NativeProjectionSelection, ProjectionPathSemantics } from "./native-projection-selection";
 export type {NativeProjectionIdentity,NativeStoreProjection,NativeProjectionStatus,NativeCapturedProjectionPatch} from "./native-projection-store-model";
 export { NativeRemoteProjectFiles } from "./native-remote-project-files";
 export type { NativeProjectionContext, NativeProjectionPage, NativeProjectionPageRequest, NativeProjectionPageEntry, NativeProjectionTarget } from "./native-remote-project-files-model";

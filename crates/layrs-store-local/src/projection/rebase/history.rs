@@ -101,7 +101,9 @@ fn record(
     if old_snapshot.canonical_bytes()? != old.1 {
         return Err(invalid("rebase old projection noncanonical"));
     }
-    validate_target(&old_snapshot, &p.target)?;
+    let selection = selection::at(c, p.projection_generation)?;
+    selection.validate_snapshot(&p.target)?;
+    validate_target(&old_snapshot, &p.target, &selection)?;
     validate_resolutions(&p.target, &p.resolutions)?;
     if p.before.keys().ne(p.resolutions.keys()) {
         return Err(invalid("rebase history paths differ"));
@@ -170,7 +172,7 @@ fn record(
         {
             return Err(invalid("rebase old witness differs"));
         }
-        capture::storage::file_manifest(c, file)?;
+        capture::storage::file_manifest(c, store, file)?;
     }
     for (index, (record, (path, file))) in journal.new.iter().zip(expected_new).enumerate() {
         if record.path != *path

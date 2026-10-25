@@ -327,6 +327,8 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 ));
             }
 
+            self.validate_worktree_parent(operation, cas)?;
+
             let mut candidate = self.durable_operation_dag.clone();
             let insertion =
                 if operation.kind() == layrs_core::scm::OperationKind::IntegrateOperations {
@@ -867,4 +869,5 @@ impl CompositeAdmissionResolver<'_> {
 
 mod closure;
 mod resolver;
+mod worktree_parents;
 use closure::*;

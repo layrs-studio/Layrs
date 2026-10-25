@@ -1,6 +1,150 @@
 use super::*;
 
 #[test]
+fn guarded_accept_checks_before_cas_and_before_commit_with_rollback_and_replay() {
+    let root = unique_root("guarded");
+    let batch = initialize(&root, "guarded");
+    let operation = OperationId::parse("operation:guarded").unwrap();
+    let mut repository = NativeScmRepository::new(&root);
+    let failure = || layrs_store::scm::StoreError::Backend {
+        message: "filesystem guard refused".into(),
+    };
+    assert!(
+        repository
+            .apply_batch_guarded(&batch, || Err(failure()))
+            .is_err()
+    );
+    let store = open(&root).unwrap();
+    let object = batch.canonical_objects()[0].object_id();
+    assert!(
+        !NativeCas::open(&store)
+            .unwrap()
+            .object_path(&object)
+            .unwrap()
+            .exists()
+    );
+    drop(store);
+    let mut checks = 0;
+    assert!(
+        repository
+            .apply_batch_guarded(&batch, || {
+                checks += 1;
+                if checks == 2 { Err(failure()) } else { Ok(()) }
+            })
+            .is_err()
+    );
+    assert_eq!(checks, 2);
+    assert!(repository.get_operation(&operation).unwrap().is_none());
+    let connection = Connection::open(root.join("metadata/layrs.sqlite3")).unwrap();
+    assert_eq!(
+        connection
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM applied_transactions", [], |row| row
+                .get(0))
+            .unwrap(),
+        0
+    );
+    drop(connection);
+    assert!(matches!(
+        repository.apply_batch_guarded(&batch, || Ok(())).unwrap(),
+        ApplyBatchOutcome::Applied { .. }
+    ));
+    let mut replay_checks = 0;
+    assert!(matches!(
+        repository
+            .apply_batch_guarded(&batch, || {
+                replay_checks += 1;
+                Ok(())
+            })
+            .unwrap(),
+        ApplyBatchOutcome::AlreadyApplied { .. }
+    ));
+    assert_eq!(replay_checks, 2);
+    assert!(repository.get_operation(&operation).unwrap().is_some());
+    assert_clean_db(&root);
+    cleanup(&root);
+}
+
+#[test]
+fn existing_receipt_preserves_cas_before_replay_collision_and_corruption_checks() {
+    struct CountAfterCas(AtomicU64);
+    impl RepositoryFaultInjector for CountAfterCas {
+        fn check(&self, point: RepositoryFaultPoint) -> Result<(), String> {
+            if point == RepositoryFaultPoint::AfterAllCas {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+    let root = unique_root("receipt-before-preflight");
+    let original = initialize(&root, "receipt-before-preflight");
+    NativeScmRepository::new(&root)
+        .apply_batch(&original)
+        .unwrap();
+    let checks = Arc::new(CountAfterCas(AtomicU64::new(0)));
+    let mut repository = NativeScmRepository::with_fault_injector(&root, checks.clone());
+    // These original CAS expectations are now stale. An existing receipt must
+    // bypass the advisory precheck and still reach the original replay checks.
+    assert!(matches!(
+        repository.apply_batch(&original).unwrap(),
+        ApplyBatchOutcome::AlreadyApplied { .. }
+    ));
+    assert_eq!(checks.0.load(Ordering::SeqCst), 1);
+    let tree = Tree::new(vec![]).unwrap();
+    let mut objects = original.canonical_objects().to_vec();
+    objects.push(CanonicalObject::Tree(tree.clone()));
+    let collision = WriteBatch::new(
+        original.transaction_id().clone(),
+        objects,
+        original.entity_records().to_vec(),
+        original.admissions().to_vec(),
+        original.mutations().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(
+        repository.apply_batch(&collision).unwrap_err().code(),
+        "transaction_replay_mismatch"
+    );
+    assert_eq!(checks.0.load(Ordering::SeqCst), 2);
+    let store = open(&root).unwrap();
+    assert_eq!(
+        NativeCas::open(&store)
+            .unwrap()
+            .read(&StoreObjectId::Tree(tree.id().clone()))
+            .unwrap(),
+        CanonicalObject::Tree(tree.clone())
+    );
+    drop(store);
+    assert!(
+        repository.get_tree(tree.id()).unwrap().is_none(),
+        "collision must not index its CAS orphan"
+    );
+    let connection = Connection::open(root.join("metadata/layrs.sqlite3")).unwrap();
+    assert_eq!(
+        connection
+            .query_row::<u64, _, _>("SELECT count(*) FROM applied_transactions", [], |row| row
+                .get(0))
+            .unwrap(),
+        1
+    );
+    connection
+        .execute(
+            "UPDATE applied_transactions SET receipt_json='{}' WHERE transaction_id=?1",
+            [original.transaction_id().as_str()],
+        )
+        .unwrap();
+    connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        repository.apply_batch(&original).unwrap_err().code(),
+        "corruption"
+    );
+    assert_eq!(checks.0.load(Ordering::SeqCst), 3);
+    cleanup(&root);
+}
+
+#[test]
 fn complete_initialize_is_atomic_readable_and_strictly_replayable() {
     let root = unique_root("apply");
     let batch = initialize(&root, "a");

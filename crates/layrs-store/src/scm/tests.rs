@@ -1,4 +1,6 @@
 use super::*;
+#[path = "worktree_batch_tests.rs"]
+mod worktree_batches;
 use layrs_core::scm::{
     Chunk, ConflictId, FileId, FileManifestId, Metadata, Operation, OperationId, OperationKind,
     RepositoryViewId, Space, SpaceId, Timestamp,

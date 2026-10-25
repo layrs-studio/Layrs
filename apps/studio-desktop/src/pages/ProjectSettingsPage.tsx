@@ -5,6 +5,7 @@ import { useRemote } from "../app/remote";
 import { forgetOrigin, hostOf } from "../app/serverMemory";
 import { useWorkspace } from "../app/workspace";
 import { nativeWorkspace } from "../tauri";
+import { SharedStorageSettings } from "./limited/SharedStorageSettings";
 
 /** P17 on Desktop: this folder, local capture, identity of future captures, server and advanced tools. */
 export function ProjectSettingsPage() {
@@ -14,6 +15,7 @@ export function ProjectSettingsPage() {
     <div className="layrs-page layrs-page--narrow">
       <PageHeader title="Réglages du projet" description="Préférences de ce dossier sur cet ordinateur. Elles ne modifient pas les règles de l’équipe." />
       {projection ? <LimitedGeneral /> : <General />}
+      {projection && <SharedStorageSettings />}
       {!projection && <LocalCapture />}
       {!projection && <IdentitySettings />}
       <ServerSettings />
@@ -59,7 +61,7 @@ function LimitedGeneral() {
             <code>{workspace.root}</code>
           </dd>
           <dt>Type</dt>
-          <dd>Accès limité : seuls les fichiers autorisés sont présents</dd>
+          <dd>Accès limité : fichiers sélectionnés, autorisés et disponibles sur cet ordinateur</dd>
           <dt>Serveur</dt>
           <dd>{data ? hostOf(data.identity.origin) : "—"}</dd>
           <dt>Compte</dt>

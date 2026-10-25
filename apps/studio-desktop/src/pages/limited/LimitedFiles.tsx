@@ -3,6 +3,8 @@ import { FolderInput } from "lucide-react";
 import { Banner, Button, Card, NativeProjectFiles, PageHeader, TextField } from "@layrs/ui";
 import { useProjection } from "../../app/projection";
 import { useWorkspace } from "../../app/workspace";
+import { ProjectionSelection } from "./ProjectionSelection";
+import { OfflineFiles } from "./OfflineFiles";
 
 const mutationTitles = { create: "Créer un fichier vide", rename: "Renommer le fichier", move: "Déplacer le fichier" } as const;
 
@@ -22,8 +24,10 @@ export function LimitedFiles() {
     <div className="layrs-page">
       <PageHeader
         title="Fichiers"
-        description="Fichiers de cet accès limité. Les noms et chemins restent visibles ; un cadenas signale un contenu interdit ou un chemin réservé."
+        description="Les chemins exclus par votre choix, les contenus indisponibles et les chemins réservés par les droits restent visibles séparément."
       />
+      <ProjectionSelection />
+      <OfflineFiles />
       {/* Shared file list, redesigned with the collaboration components. */}
       <div className="layrs-legacy">
         <NativeProjectFiles

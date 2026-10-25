@@ -60,6 +60,17 @@ pub(crate) fn acquire(
     limits: GitBridgeLimits,
     callback: &mut ProgressCallback<'_>,
 ) -> Result<AcquiredScan> {
+    let git = process::Git::for_import(source, limits)?;
+    acquire_with(&git, selection, limits, callback)
+}
+
+/// The caller retains this exact binding through checkpoint publication.
+pub(crate) fn acquire_with(
+    git: &process::Git,
+    selection: &ImportSelection,
+    limits: GitBridgeLimits,
+    callback: &mut ProgressCallback<'_>,
+) -> Result<AcquiredScan> {
     let requested = match selection {
         ImportSelection::AllLocalReferences => None,
         ImportSelection::References(names) => {
@@ -99,7 +110,6 @@ pub(crate) fn acquire(
         0,
         0,
     )?;
-    let git = process::Git::new(source, limits)?;
     if utf8(&git.run(&["rev-parse", "--is-shallow-repository"], None, 16)?)?.trim() != "false" {
         return Err(BridgeError::Unsupported("shallow Git repository".into()));
     }
@@ -242,7 +252,7 @@ pub(crate) fn acquire(
             tag_bytes,
             warnings,
         },
-        objects: git.into_cache(),
+        objects: git.take_cache(),
         processes,
         started,
     })

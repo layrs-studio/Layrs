@@ -107,6 +107,57 @@ impl GraphObjects {
         }
         Ok(())
     }
+    /// Runner inputs contain leaves only, so every named directory must have a
+    /// representable descendant. The already verified closure supplies metadata;
+    /// this check neither reads file content nor grants any additional authority.
+    pub(super) fn validate_runner_namespace(&self, step: &StepId) -> RemoteResult<()> {
+        let step = self
+            .steps
+            .get(step)
+            .ok_or(NativeRemoteError::Invalid("missing target Step"))?;
+        let mut pending = vec![(step.root_tree_id(), 0usize)];
+        let mut logical_entries = 0usize;
+        while let Some((id, depth)) = pending.pop() {
+            if depth > 128 {
+                return Err(NativeRemoteError::Invalid("checkout exceeds limits"));
+            }
+            let Some(CanonicalObject::Tree(tree)) =
+                self.objects.get(&StoreObjectId::Tree(id.clone()))
+            else {
+                return Err(NativeRemoteError::Invalid("missing Tree"));
+            };
+            // Count every placement, including aliases and Tombstones. Object-ID
+            // deduplication would hide potentially unbounded namespace expansion.
+            logical_entries = logical_entries
+                .checked_add(tree.entries().len())
+                .filter(|n| *n <= MAX_OBJECTS)
+                .ok_or(NativeRemoteError::Invalid("checkout exceeds limits"))?;
+            let mut has_live_entry = false;
+            for entry in tree.entries() {
+                match entry.target() {
+                    TreeEntryTarget::Tree { tree_id } => {
+                        pending.push((tree_id, depth + 1));
+                    }
+                    TreeEntryTarget::File { .. } | TreeEntryTarget::Symlink { .. } => (),
+                    TreeEntryTarget::Tombstone { .. } => continue,
+                    TreeEntryTarget::Conflict { .. } => {
+                        return Err(NativeRemoteError::Invalid(
+                            "unresolved conflict cannot be materialized",
+                        ));
+                    }
+                }
+                has_live_entry = true;
+            }
+            // A Tree containing only subtrees is checked through its descendants;
+            // any finite empty branch eventually reaches this refusal.
+            if depth != 0 && !has_live_entry {
+                return Err(NativeRemoteError::Invalid(
+                    "runner inputs cannot represent empty directories",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(super) fn entries(&self, step: &StepId) -> RemoteResult<Vec<CheckoutEntry>> {
         let projection = self.projection(step)?;
         let total = projection
@@ -248,6 +299,7 @@ impl GraphObjects {
         self.objects.insert(object.object_id(), object);
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn has_manifest(&self, id: &FileId) -> bool {
         self.manifests.contains_key(id)
     }
@@ -284,7 +336,7 @@ impl GraphObjects {
         StepDag::from_steps(self.steps.values()).map_err(graph_error)
     }
     pub(super) fn local(workspace: &NativeWorkspace, state: &WorkspaceState) -> RemoteResult<Self> {
-        let store = scm_v1::open(workspace.store_root())?;
+        let store = workspace.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let mut result = Self::default();
         let mut verified_files = BTreeSet::new();
@@ -477,3 +529,7 @@ impl GraphObjects {
         Ok(file.verified_manifest_ids()[0].clone())
     }
 }
+
+#[cfg(test)]
+#[path = "graph_runner_tests.rs"]
+mod runner_tests;

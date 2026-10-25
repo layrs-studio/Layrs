@@ -48,11 +48,91 @@ pub(super) fn apply(
         return Ok(capture);
     }
     let state = database::current(&access.connection)?;
-    let mut actual = preview(store, &state, &expected.mutation)?;
+    let mut actual = preview(store, &access.connection, &state, &expected.mutation)?;
     actual.operation_id = expected.operation_id.clone();
     actual.digest = actual.computed_digest()?;
     if &actual != expected {
         return Err(invalid("namespace preview is stale"));
+    }
+    retention::require_no_staging(&access.connection, store)?;
+    // Deterministic capture limits must fail before accepting a durable budget.
+    let scan =
+        super::super::capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
+    match (&expected.mutation, create_bytes) {
+        (NamespaceMutation::Create { .. }, Some(bytes)) => {
+            let total: u64 = scan
+                .changes
+                .iter()
+                .filter_map(|c| c.replacement.as_ref())
+                .map(|f| f.bytes)
+                .sum();
+            if bytes.len() > MAX_PATCH_BYTES
+                || total + bytes.len() as u64 > MAX_PATCH_BYTES as u64
+                || scan.changes.len() >= 1024
+            {
+                return Err(invalid("creation would exceed capture budget"));
+            }
+        }
+        (NamespaceMutation::Move { source, .. }, None) => {
+            let file = expected
+                .source_file
+                .as_ref()
+                .ok_or_else(|| invalid("missing move source descriptor"))?;
+            let remaining = scan
+                .changes
+                .iter()
+                .filter(|c| &c.path != source)
+                .collect::<Vec<_>>();
+            let total: u64 = remaining
+                .iter()
+                .filter_map(|c| c.replacement.as_ref())
+                .map(|f| f.bytes)
+                .sum();
+            let remote = state
+                .snapshot
+                .entries
+                .iter()
+                .any(|e| &e.path == source && e.target.is_some());
+            if total + file.bytes > MAX_PATCH_BYTES as u64
+                || remaining.len() + 1 + usize::from(remote) > 1024
+            {
+                return Err(invalid("move would exceed capture budget"));
+            }
+        }
+        _ => return Err(invalid("namespace mutation content mismatch")),
+    }
+    if store.marker.shared.is_some() {
+        let mut changes = std::collections::BTreeMap::new();
+        match (&expected.mutation, create_bytes) {
+            (NamespaceMutation::Create { destination }, Some(bytes)) => {
+                changes.insert(
+                    destination.to_string(),
+                    Some(CapturedFile {
+                        file_id: FileId::from_bytes(bytes),
+                        executable: false,
+                        bytes: bytes.len() as u64,
+                    }),
+                );
+            }
+            (
+                NamespaceMutation::Move {
+                    source,
+                    destination,
+                },
+                None,
+            ) => {
+                changes.insert(source.to_string(), None);
+                changes.insert(destination.to_string(), expected.source_file.clone());
+            }
+            _ => return Err(invalid("namespace mutation content mismatch")),
+        }
+        retention::reserve_checkout(
+            &access.connection,
+            store,
+            &format!("namespace:{}", expected.operation_id),
+            &state.snapshot,
+            &changes,
+        )?;
     }
     let root = PinnedDirectory::open(&store.root)?;
     let (source_path, file) = match (&expected.mutation, create_bytes) {
@@ -60,7 +140,12 @@ pub(super) fn apply(
             if bytes.len() > MAX_PATCH_BYTES {
                 return Err(invalid("create exceeds16MiB"));
             }
-            let scan = super::super::capture::scan::scan(store, &state.snapshot, false)?;
+            let scan = super::super::capture::scan::scan(
+                store,
+                &access.connection,
+                &state.snapshot,
+                false,
+            )?;
             let total: u64 = scan
                 .changes
                 .iter()
@@ -75,6 +160,13 @@ pub(super) fn apply(
                 .ensure_child("namespace-staging".as_ref())?;
             let name = unique_id()?;
             let mut file = staging.create_file(name.as_ref())?;
+            retention::track_file(
+                &access.connection,
+                store,
+                &format!("namespace:{}", expected.operation_id),
+                &format!(".layrs/namespace-staging/{name}"),
+                &file,
+            )?;
             file.file_mut().write_all(bytes)?;
             #[cfg(unix)]
             {
@@ -98,7 +190,12 @@ pub(super) fn apply(
                 .source_file
                 .clone()
                 .ok_or_else(|| invalid("missing move source descriptor"))?;
-            let scan = super::super::capture::scan::scan(store, &state.snapshot, false)?;
+            let scan = super::super::capture::scan::scan(
+                store,
+                &access.connection,
+                &state.snapshot,
+                false,
+            )?;
             let remaining: Vec<_> = scan.changes.iter().filter(|c| &c.path != source).collect();
             let total: u64 = remaining
                 .iter()
@@ -139,15 +236,36 @@ pub(super) fn apply(
         return Err(invalid("namespace journal exceeds64KiB"));
     }
     access.verify()?;
-    access.connection.execute(
+    let tx = access
+        .connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if store.marker.shared.is_some() {
+        let pin = root.open_relative_file(Path::new(&journal.source_path))?;
+        retention::retain_pinned(
+            &tx,
+            store,
+            &pin,
+            &journal.file,
+            "namespace",
+            &expected.operation_id,
+        )?;
+    }
+    tx.execute(
         "INSERT INTO projection_namespace_pending VALUES(1,?1)",
         [bytes],
     )?;
+    retention::accept_staging(&tx, store, &format!("namespace:{}", expected.operation_id))?;
+    tx.commit()?;
     faults.check(NamespacePoint::JournalDurable)?;
     finish(store, &mut access, &journal, faults)
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    resume_with_access(store, format::recovery_access(store, None, false)?)
+}
+pub(in crate::projection) fn resume_with_access(
+    store: &ProjectionStore,
+    mut access: format::Access,
+) -> Result<CapturedPatch> {
     let conflicts:bool=access.connection.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)",[],|r|r.get(0))?;
     if conflicts {
         return Err(invalid(
@@ -238,8 +356,9 @@ fn finish(
     }
     verify_file(&root, &store.root, destination, journal)?;
     faults.check(NamespacePoint::PathApplied)?;
-    let first = super::super::capture::scan::scan(store, &state.snapshot, false)?;
-    let scan = super::super::capture::scan::scan(store, &state.snapshot, true)?;
+    let first =
+        super::super::capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
+    let scan = super::super::capture::scan::scan(store, &access.connection, &state.snapshot, true)?;
     if first.files != scan.files {
         return Err(invalid("checkout changed during namespace finalization"));
     }
@@ -257,6 +376,14 @@ fn finish(
     tx.execute(
         "DELETE FROM projection_namespace_pending WHERE singleton=1",
         [],
+    )?;
+    retention::transfer(
+        &tx,
+        store,
+        "namespace",
+        &expected.operation_id,
+        "namespace-history",
+        &capture.digest,
     )?;
     faults.check(NamespacePoint::BeforeCommit)?;
     tx.commit()?;

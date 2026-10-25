@@ -90,7 +90,7 @@ impl ProjectionStore {
                 actual: state.generation,
             });
         }
-        let preview = preview(self, &state, source, destination)?;
+        let preview = preview(self, &access.connection, &state, source, destination)?;
         access.verify()?;
         Ok(preview)
     }
@@ -116,11 +116,37 @@ impl ProjectionStore {
         {
             return Err(invalid("directory move projection changed"));
         }
-        let mut actual = preview(self, &state, &expected.source, &expected.destination)?;
+        let mut actual = preview(
+            self,
+            &access.connection,
+            &state,
+            &expected.source,
+            &expected.destination,
+        )?;
         actual.operation_id = expected.operation_id.clone();
         actual.digest = actual.computed_digest()?;
         if &actual != expected {
             return Err(invalid("directory move preview is stale"));
+        }
+        if self.marker.shared.is_some() {
+            let mut changes = BTreeMap::new();
+            for (source, file) in &expected.source_files {
+                let suffix = source
+                    .strip_prefix(expected.source.as_str())
+                    .ok_or_else(|| invalid("directory source mismatch"))?;
+                changes.insert(source.clone(), None);
+                changes.insert(
+                    format!("{}{suffix}", expected.destination.as_str()),
+                    Some(file.clone()),
+                );
+            }
+            retention::reserve_checkout(
+                &access.connection,
+                self,
+                &format!("directory-move:{}", expected.operation_id),
+                &state.snapshot,
+                &changes,
+            )?;
         }
         let journal = Journal {
             schema_version: JOURNAL_SCHEMA.into(),
@@ -132,10 +158,28 @@ impl ProjectionStore {
             return Err(invalid("directory move journal exceeds8MiB"));
         }
         access.verify()?;
-        access.connection.execute(
+        let tx = access
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if self.marker.shared.is_some() {
+            let root = PinnedDirectory::open(&self.root)?;
+            for (path, file) in &expected.source_files {
+                let pin = root.open_relative_file(Path::new(path))?;
+                retention::retain_pinned(
+                    &tx,
+                    self,
+                    &pin,
+                    file,
+                    "directory-move",
+                    &expected.operation_id,
+                )?;
+            }
+        }
+        tx.execute(
             "INSERT INTO projection_namespace_pending VALUES(1,?1)",
             [&bytes],
         )?;
+        tx.commit()?;
         faults.check(NamespacePoint::JournalDurable)?;
         finish(self, &mut access, &journal, faults)
     }
@@ -143,19 +187,26 @@ impl ProjectionStore {
 
 fn preview(
     store: &ProjectionStore,
+    c: &Connection,
     state: &VersionedProjection,
     source: &RepoPath,
     destination: &RepoPath,
 ) -> Result<DirectoryMovePreview> {
+    let selection = selection::for_scan(c, &state.snapshot)?;
+    if !selection.includes_subtree(source) || !selection.includes_subtree(destination) {
+        return Err(invalid(
+            "directory move requires fully selected source and destination subtrees",
+        ));
+    }
     validate_roots(&state.snapshot, source, destination)?;
     let root = PinnedDirectory::open(&store.root)?;
     let (source_parent, source_name) = root.existing_parent(Path::new(source.as_str()))?;
     let source_dir = source_parent.open_child_for_traversal(&source_name)?;
     let (destination_parent, _) = root.existing_parent(Path::new(destination.as_str()))?;
     absent(&store.root.join(destination.as_str()))?;
-    let scan = capture::scan::scan(store, &state.snapshot, false)?;
+    let scan = capture::scan::scan(store, c, &state.snapshot, false)?;
     let source_files = source_files(&scan.files, source)?;
-    validate_directory_mapping(store, &state.snapshot, source, destination)?;
+    validate_directory_mapping(store, c, &state.snapshot, source, destination)?;
     let after = mapped_files(
         &state.snapshot,
         &scan.files,
@@ -223,10 +274,13 @@ fn source_files(
 }
 fn validate_directory_mapping(
     store: &ProjectionStore,
+    c: &Connection,
     snapshot: &ProjectionSnapshot,
     source: &RepoPath,
     destination: &RepoPath,
 ) -> Result<()> {
+    let selection = selection::for_scan(c, snapshot)?;
+    let traversal = selection.traversal(snapshot.path_semantics)?;
     let mut pending = vec![(
         String::new(),
         PinnedDirectory::open(&store.root.join(source.as_str()))?,
@@ -236,9 +290,6 @@ fn validate_directory_mapping(
         directory.verify_path_identity()?;
         for item in fs::read_dir(store.root.join(source.as_str()).join(&relative))? {
             let item = item?;
-            if !item.file_type()?.is_dir() {
-                continue;
-            }
             let name = item
                 .file_name()
                 .into_string()
@@ -249,6 +300,18 @@ fn validate_directory_mapping(
                 format!("{relative}/{name}")
             };
             let mapped = format!("{destination}/{child}");
+            let original = RepoPath::parse(format!("{source}/{child}")).map_err(invalid)?;
+            if !traversal.intersects(original.as_str())? {
+                return Err(invalid(
+                    "directory move would relocate excluded local content",
+                ));
+            }
+            if !item.file_type()?.is_dir() {
+                if !selection.includes(&original) {
+                    return Err(invalid("directory move includes an excluded file"));
+                }
+                continue;
+            }
             let prefix = format!("{mapped}/");
             if !snapshot.entries.iter().any(|entry| {
                 entry.path.as_str() == mapped || entry.path.as_str().starts_with(&prefix)
@@ -366,6 +429,12 @@ fn finish(
 ) -> Result<CapturedPatch> {
     let expected = &journal.preview;
     let state = database::current(&access.connection)?;
+    let selection = selection::current(&access.connection)?;
+    if !selection.includes_subtree(&expected.source)
+        || !selection.includes_subtree(&expected.destination)
+    {
+        return Err(invalid("directory move requires fully selected subtrees"));
+    }
     if journal.schema_version != JOURNAL_SCHEMA
         || journal.capture_digest.is_some()
         || expected.digest != expected.computed_digest()?
@@ -386,7 +455,7 @@ fn finish(
                 return Err(invalid("directory source identity changed"));
             }
             absent(&store.root.join(expected.destination.as_str()))?;
-            let before = capture::scan::scan(store, &state.snapshot, false)?;
+            let before = capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
             if checkout_digest(&before.files)? != expected.checkout_digest
                 || source_files(&before.files, &expected.source)? != expected.source_files
             {
@@ -396,6 +465,7 @@ fn finish(
             }
             validate_directory_mapping(
                 store,
+                &access.connection,
                 &state.snapshot,
                 &expected.source,
                 &expected.destination,
@@ -420,12 +490,12 @@ fn finish(
     if destination_dir.identity_token() != expected.source_directory_identity {
         return Err(invalid("directory destination identity changed"));
     }
-    let first = capture::scan::scan(store, &state.snapshot, false)?;
+    let first = capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
     if checkout_digest(&first.files)? != expected.after_checkout_digest {
         return Err(invalid("directory destination content changed"));
     }
     faults.check(NamespacePoint::PathApplied)?;
-    let second = capture::scan::scan(store, &state.snapshot, true)?;
+    let second = capture::scan::scan(store, &access.connection, &state.snapshot, true)?;
     if first.files != second.files
         || checkout_digest(&second.files)? != expected.after_checkout_digest
     {
@@ -451,8 +521,16 @@ fn finish(
         "DELETE FROM projection_namespace_pending WHERE singleton=1",
         [],
     )?;
+    retention::transfer(
+        &tx,
+        store,
+        "directory-move",
+        &expected.operation_id,
+        "namespace-history",
+        &capture.digest,
+    )?;
     faults.check(NamespacePoint::BeforeCommit)?;
-    let final_scan = capture::scan::scan(store, &state.snapshot, false)?;
+    let final_scan = capture::scan::scan(store, &tx, &state.snapshot, false)?;
     if checkout_digest(&final_scan.files)? != expected.after_checkout_digest {
         return Err(invalid("directory checkout changed before commit"));
     }

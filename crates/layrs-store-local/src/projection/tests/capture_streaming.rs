@@ -110,7 +110,8 @@ fn legacy_blob_capture_survives_explicit_schema_migration() {
         [id],
     )
     .unwrap();
-    db.execute_batch("DROP TABLE projection_rebase_pending;
+    db.execute_batch("DROP TABLE projection_selections;
+        DROP TABLE projection_rebase_pending;
         DROP TABLE projection_rebase_history;
         DROP TABLE projection_rebase_previews;
         DROP TABLE projection_capture_chunks;
@@ -140,6 +141,6 @@ fn legacy_blob_capture_survives_explicit_schema_migration() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
 }

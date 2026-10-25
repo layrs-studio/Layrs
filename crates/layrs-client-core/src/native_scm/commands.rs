@@ -1,8 +1,10 @@
 //! Serializable local application contract shared by interactive surfaces.
 use super::{NativeClientError, NativeWorkspace, Result};
 use layrs_core::scm::{MarkerId, OperationId, OperationKind, StepId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
+#[path = "worktree_commands.rs"]
+mod worktrees;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(
@@ -89,6 +91,16 @@ pub enum WorkspaceAction {
         name: String,
     },
     Status,
+    ListWorktrees,
+    CreateWorktree {
+        path: String,
+        layer: String,
+        step: String,
+    },
+    OpenWorktree {
+        path: String,
+    },
+    ResumeWorktreeCreation,
     Capture,
     CaptureAutomatic,
     StepHistory {
@@ -169,6 +181,12 @@ pub enum WorkspaceAction {
 }
 
 pub fn execute_workspace(root: impl AsRef<Path>, action: WorkspaceAction) -> Result<Value> {
+    if let WorkspaceAction::OpenWorktree { path } = &action {
+        return worktrees::describe(&NativeWorkspace::open(path)?);
+    }
+    if matches!(action, WorkspaceAction::ResumeWorktreeCreation) {
+        return worktrees::describe(&NativeWorkspace::resume_worktree(&root)?);
+    }
     if matches!(action, WorkspaceAction::Diagnose) {
         return super::diagnose_checkout(root);
     }
@@ -177,6 +195,20 @@ pub fn execute_workspace(root: impl AsRef<Path>, action: WorkspaceAction) -> Res
         _ => NativeWorkspace::open(&root)?,
     };
     match action {
+        WorkspaceAction::ListWorktrees => {
+            return Ok(
+                json!({"worktrees":workspace.list_worktrees()?,"currentWorktreeId":workspace.worktree_id()}),
+            );
+        }
+        WorkspaceAction::CreateWorktree { path, layer, step } => {
+            let layer = worktrees::resolve_layer(&workspace, &layer)?;
+            let step = workspace.resolve_step_name(&step)?.step_id;
+            return worktrees::describe(&workspace.create_worktree(path, &layer, &step)?);
+        }
+        WorkspaceAction::ResumeWorktreeCreation => {
+            unreachable!("handled before opening the source")
+        }
+        WorkspaceAction::OpenWorktree { .. } => unreachable!("handled before opening the source"),
         WorkspaceAction::LocalIdentity => {
             return Ok(json!({"identity": workspace.local_identity()?}));
         }
@@ -451,7 +483,7 @@ pub fn execute_workspace(root: impl AsRef<Path>, action: WorkspaceAction) -> Res
         WorkspaceAction::PreviewView { operation } => {
             use layrs_store::scm::ScmReader;
             let state = workspace.state()?;
-            let store = layrs_store_local::scm_v1::open(workspace.store_root())?;
+            let store = workspace.open_store()?;
             let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
             let operation = reader
                 .get_operation(&operation)?

@@ -238,6 +238,8 @@ pub struct NativeStoreOpen {
     _store_lock: StoreLock,
     layout: NativeStoreLayout,
     store_id: StoreId,
+    bound_directory: Option<crate::secure_fs::PinnedDirectory>,
+    bound_metadata: Option<crate::secure_fs::PinnedDirectory>,
 }
 
 impl NativeStoreOpen {
@@ -252,6 +254,8 @@ impl NativeStoreOpen {
             _store_lock: store_lock,
             layout,
             store_id,
+            bound_directory: None,
+            bound_metadata: None,
         }
     }
 
@@ -264,9 +268,38 @@ impl NativeStoreOpen {
     }
 
     pub(crate) fn connection(&self) -> Result<MutexGuard<'_, Connection>, ScmStoreError> {
+        self.verify_filesystem_identity()
+            .map_err(|error| ScmStoreError::Backend {
+                message: error.to_string(),
+            })?;
         self.connection.lock().map_err(|_| ScmStoreError::Backend {
             message: "native Store read connection mutex is poisoned".into(),
         })
+    }
+
+    /// Bind this shared capability to an identity retained by its caller.
+    pub fn with_filesystem_identity(mut self, expected: &str) -> io::Result<Self> {
+        self.bound_directory = Some(bind_directory(self.layout.root(), expected)?);
+        self.bound_metadata = Some(crate::secure_fs::PinnedDirectory::open(
+            self.layout.metadata_dir(),
+        )?);
+        Ok(self)
+    }
+
+    pub fn with_metadata_identity(mut self, expected: &str) -> io::Result<Self> {
+        self.bound_metadata = Some(bind_directory(self.layout.metadata_dir(), expected)?);
+        self.verify_filesystem_identity()?;
+        Ok(self)
+    }
+
+    pub fn verify_filesystem_identity(&self) -> io::Result<()> {
+        if let Some(directory) = &self.bound_directory {
+            directory.verify_path_identity()?;
+        }
+        if let Some(directory) = &self.bound_metadata {
+            directory.verify_path_identity()?;
+        }
+        Ok(())
     }
 }
 
@@ -310,6 +343,8 @@ pub struct NativeStoreExclusive {
     _store_lock: StoreLock,
     layout: NativeStoreLayout,
     store_id: StoreId,
+    bound_directory: Option<crate::secure_fs::PinnedDirectory>,
+    bound_metadata: Option<crate::secure_fs::PinnedDirectory>,
 }
 
 impl NativeStoreExclusive {
@@ -318,6 +353,8 @@ impl NativeStoreExclusive {
             _store_lock: store_lock,
             layout,
             store_id,
+            bound_directory: None,
+            bound_metadata: None,
         }
     }
 
@@ -331,12 +368,45 @@ impl NativeStoreExclusive {
 
     /// Opens the writer connection at the explicit mutation boundary.
     pub(crate) fn begin_write_connection(&self) -> Result<Connection, ScmSchemaError> {
+        self.verify_filesystem_identity()?;
         sqlite::open_writer_existing_no_mutation(
             self.layout.sqlite_path(),
             Duration::from_secs(5),
             &self.store_id,
         )
     }
+
+    pub fn with_filesystem_identity(mut self, expected: &str) -> io::Result<Self> {
+        self.bound_directory = Some(bind_directory(self.layout.root(), expected)?);
+        self.bound_metadata = Some(crate::secure_fs::PinnedDirectory::open(
+            self.layout.metadata_dir(),
+        )?);
+        Ok(self)
+    }
+
+    pub fn with_metadata_identity(mut self, expected: &str) -> io::Result<Self> {
+        self.bound_metadata = Some(bind_directory(self.layout.metadata_dir(), expected)?);
+        self.verify_filesystem_identity()?;
+        Ok(self)
+    }
+
+    pub fn verify_filesystem_identity(&self) -> io::Result<()> {
+        if let Some(directory) = &self.bound_directory {
+            directory.verify_path_identity()?;
+        }
+        if let Some(directory) = &self.bound_metadata {
+            directory.verify_path_identity()?;
+        }
+        Ok(())
+    }
+}
+
+fn bind_directory(root: &Path, expected: &str) -> io::Result<crate::secure_fs::PinnedDirectory> {
+    let directory = crate::secure_fs::PinnedDirectory::open(root)?;
+    if directory.identity_token() != expected {
+        return Err(io::Error::other("Store filesystem identity changed"));
+    }
+    Ok(directory)
 }
 
 fn ensure_regular_file_durable(path: &Path, parent: &Path) -> io::Result<()> {

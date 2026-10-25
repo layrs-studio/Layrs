@@ -6,6 +6,9 @@ use layrs_weave::{
 };
 use sqlx::Row;
 
+#[path = "review_interference.rs"]
+mod review_interference;
+
 async fn bytes(repository: &PgV3Repository, space: &SpaceId, id: &str) -> Vec<u8> {
     let descriptor = load_space_descriptor(repository.pool(), space, &object_id(id))
         .await
@@ -47,7 +50,14 @@ async fn inputs(repository: &PgV3Repository, space: &SpaceId) -> MergeObjects {
 async fn approve(app: &Router, path: &str, reviewer: &str, version: u64, key: &str) {
     ok(app,"POST",&format!("{path}/actions"),reviewer,json!({"idempotencyKey":key,"version":version,"action":"approve","body":"Reviewed exact recomputed result","anchor":null,"replyTo":null})).await;
 }
-async fn prove(app: &Router, base: &str, runner: &str, step: &Step, recipe: &Value, key: &str) {
+async fn prove(
+    app: &Router,
+    base: &str,
+    runner: &str,
+    step: &Step,
+    recipe: &Value,
+    key: &str,
+) -> ProductEnvelope {
     let run = ok(
         app,
         "POST",
@@ -64,6 +74,37 @@ async fn prove(app: &Router, base: &str, runner: &str, step: &Step, recipe: &Val
         json!({"outcome":"passed","log":"review target advance exact Step fixture"}),
     )
     .await;
+    let detail = ok(
+        app,
+        "GET",
+        &format!("{base}/runs/{}", run["runId"].as_str().unwrap()),
+        runner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(detail["stepId"], step.id().as_str());
+    let product: ProductEnvelope = serde_json::from_value(detail["product"].clone()).unwrap();
+    product.verify_identity().unwrap();
+    let ProductEnvelope::Proof {
+        record,
+        depends_on_step_ids,
+        ..
+    } = &product
+    else {
+        panic!("completed Run must expose its immutable Proof");
+    };
+    assert_eq!(
+        record.subject,
+        ImmutableSubject::Step {
+            object_id: object_id(step.id().as_str())
+        }
+    );
+    assert_eq!(depends_on_step_ids, &vec![step.id().clone()]);
+    assert_eq!(record.recipe_object_id.as_str(), recipe.as_str().unwrap());
+    assert_eq!(detail["evidence"][0]["stepId"], step.id().as_str());
+    assert_eq!(&detail["evidence"][0]["recipeObjectId"], recipe);
+    assert_eq!(detail["evidence"][0]["outcome"], "passed");
+    product
 }
 async fn admit(
     facade: &ProductionV3Facade,
@@ -195,6 +236,10 @@ pub async fn run(
     assert_eq!(plan.merge_bases(), &[head]);
     assert_eq!(plan.step().root_tree_id(), empty.id());
     assert_ne!(plan.step().id(), proposed.id());
+    assert_ne!(plan.step().id(), moved.id());
+    let mut combined_parents = vec![proposed.id().clone(), moved.id().clone()];
+    combined_parents.sort();
+    assert_eq!(plan.step().parent_step_ids(), combined_parents);
     let current = facade.bootstrap(principal, space).await.unwrap();
     admit(
         facade,
@@ -204,55 +249,76 @@ pub async fn run(
         "target-recomputed-admit",
     )
     .await;
+    let gate_path = format!("{base}/layers/{layer}/gates/evaluate");
+    let review_required = ok(
+        app,
+        "POST",
+        &gate_path,
+        admin,
+        json!({"stepId":plan.step().id()}),
+    )
+    .await;
+    assert_eq!(review_required["outcome"], "failed");
+    assert_eq!(
+        review_required["rejection"]["message"],
+        "current Step, target View and policy require a review"
+    );
     let newer=ok(app,"POST",&format!("{old_path}/versions"),admin,json!({"idempotencyKey":"target-recomputed-version","layerId":layer,"proposedStepId":plan.step().id(),"title":"Recomputed after target advanced","participants":[],"expectedVersion":1})).await;
     assert_eq!(newer["version"], 2);
     let detail = ok(app, "GET", &old_path, admin, Value::Null).await;
     assert_eq!(detail["versions"][0], old);
     assert_eq!(detail["decisionState"]["state"], "pending");
     assert!(detail["actions"].as_array().unwrap().contains(&comment));
-    let gate_path = format!("{base}/layers/{layer}/gates/evaluate");
+    let approval_required = ok(
+        app,
+        "POST",
+        &gate_path,
+        admin,
+        json!({"stepId":plan.step().id()}),
+    )
+    .await;
+    assert_eq!(approval_required["outcome"], "failed");
     assert_eq!(
-        ok(
-            app,
-            "POST",
-            &gate_path,
-            admin,
-            json!({"stepId":plan.step().id()})
-        )
-        .await["outcome"],
-        "failed"
+        approval_required["rejection"]["message"],
+        "review has insufficient current approvals"
     );
     approve(app, &old_path, reviewer, 2, "target-recomputed-approve").await;
     // The old Proof and the competing Proof still cannot cover the new result.
+    let missing_proof = ok(
+        app,
+        "POST",
+        &gate_path,
+        admin,
+        json!({"stepId":plan.step().id()}),
+    )
+    .await;
+    assert_eq!(missing_proof["outcome"], "failed");
     assert_eq!(
-        ok(
-            app,
-            "POST",
-            &gate_path,
-            admin,
-            json!({"stepId":plan.step().id()})
+        missing_proof["rejection"]["message"],
+        "missing fresh passing Proof for exact Step, recipe and policy"
+    );
+    let refused = facade
+        .transact(
+            principal,
+            request(
+                &current,
+                plan.step(),
+                "target-old-proofs-refused",
+                LayerMutationMode::Advance,
+            ),
         )
-        .await["outcome"],
-        "failed"
+        .await
+        .unwrap();
+    assert_eq!(refused.receipt().status, ReceiptStatus::Rejected);
+    assert_eq!(
+        refused.receipt().rejections[0].code,
+        RejectionCode::GateRejected
     );
     assert_eq!(
-        facade
-            .transact(
-                principal,
-                request(
-                    &current,
-                    plan.step(),
-                    "target-old-proofs-refused",
-                    LayerMutationMode::Advance
-                )
-            )
-            .await
-            .unwrap()
-            .receipt()
-            .status,
-        ReceiptStatus::Rejected
+        refused.receipt().rejections[0].message,
+        "missing fresh passing Proof for exact Step, recipe and policy"
     );
-    prove(
+    let combined_proof = prove(
         app,
         base,
         runner,
@@ -261,16 +327,29 @@ pub async fn run(
         "target-recomputed-proof",
     )
     .await;
+    let evaluation = ok(
+        app,
+        "POST",
+        &gate_path,
+        admin,
+        json!({"stepId":plan.step().id()}),
+    )
+    .await;
+    assert_eq!(evaluation["outcome"], "passed");
+    let ProductEnvelope::GateEvaluation { record, .. } =
+        serde_json::from_value(evaluation["product"].clone()).unwrap()
+    else {
+        panic!("Gate evaluation must expose its immutable Product");
+    };
     assert_eq!(
-        ok(
-            app,
-            "POST",
-            &gate_path,
-            admin,
-            json!({"stepId":plan.step().id()})
-        )
-        .await["outcome"],
-        "passed"
+        record.subject,
+        ImmutableSubject::Step {
+            object_id: object_id(plan.step().id().as_str())
+        }
+    );
+    assert_eq!(
+        record.proof_object_ids,
+        vec![combined_proof.object_id().clone()]
     );
     let accepted = facade
         .transact(
@@ -292,5 +371,10 @@ pub async fn run(
         detail["integration"]["record"]["proposedStepId"],
         plan.step().id().as_str()
     );
+    assert_eq!(
+        detail["integration"]["record"]["transactionId"],
+        accepted.receipt().transaction_id.as_str()
+    );
     assert!(detail["actions"].as_array().unwrap().contains(&comment));
+    review_interference::run(app, admin, reviewer, runner, repository, facade, principal).await;
 }

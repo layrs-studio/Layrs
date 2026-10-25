@@ -512,6 +512,48 @@ impl Context<'_> {
                 }
                 queue.extend(targets.iter().cloned());
             }
+            // Historical Views retain their Worktree states too. Older Stores
+            // have no projected edges for these canonical dependencies, and
+            // current Worktree roots cannot substitute for historical states.
+            let worktree_count = match self.objects.get(&object) {
+                Some(CanonicalObject::RepositoryView(view)) => view.worktrees().len(),
+                _ => 0,
+            };
+            if !self.consume_cpu(worktree_count) {
+                return Ok(());
+            }
+            let view_dependencies: Vec<_> = match self.objects.get(&object) {
+                Some(CanonicalObject::RepositoryView(view)) => view
+                    .worktrees()
+                    .iter()
+                    .flat_map(|state| {
+                        [
+                            state.base_step_id().map(ToString::to_string),
+                            state.materialized_tree_id().map(ToString::to_string),
+                        ]
+                        .into_iter()
+                        .flatten()
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if !self.consume_cpu(view_dependencies.len()) {
+                return Ok(());
+            }
+            for dependency in view_dependencies {
+                if known.contains(&dependency) {
+                    queue.push_back(dependency);
+                } else {
+                    self.finding(
+                        FsckFindingCode::AdmissionClosureBroken,
+                        FsckSeverity::Error,
+                        None,
+                        Some(object.clone()),
+                        None,
+                        format!("retained View Worktree dependency {dependency} is missing"),
+                    );
+                }
+            }
             // A Tree names logical FileIds, not one preferred physical
             // manifest. Every verified manifest for that FileId is therefore
             // part of the GC closure; their canonical manifest_chunk edges

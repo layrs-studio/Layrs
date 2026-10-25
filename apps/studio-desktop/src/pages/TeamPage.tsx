@@ -122,6 +122,8 @@ function LimitedTeam() {
     ? `Opération en cours : ${workspace.busy}`
     : !data || !ready
       ? "Actualisez l’accès limité avant de continuer."
+      : data.latestCaptureImported === true
+        ? "Créez une capture locale dans cette copie avant de proposer un candidat."
       : !patch
         ? "Capturez d’abord vos modifications autorisées."
         : !target?.layerId

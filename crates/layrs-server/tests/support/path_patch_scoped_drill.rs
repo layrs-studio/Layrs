@@ -425,4 +425,10 @@ pub(super) fn review_integration(
     eprintln!(
         "HTTPS scoped review: candidate, redaction, integration and stale terminal replay PASS"
     );
+    crate::runner_drill::exact_result_runner::scoped_recipe(
+        read.client,
+        read.origin,
+        admin.token,
+        read.token,
+    );
 }

@@ -316,7 +316,7 @@ fn rebase_refuses_protected_collision_and_migrates_schema_four_history() {
     drop(store);
     let db =
         rusqlite::Connection::open(fixture.0.join(".layrs/metadata/projection.sqlite3")).unwrap();
-    db.execute_batch("DROP TABLE projection_rebase_pending; DROP TABLE projection_rebase_history; DROP TABLE projection_rebase_previews; PRAGMA user_version=4;").unwrap();
+    db.execute_batch("DROP TABLE projection_selections; DROP TABLE projection_rebase_pending; DROP TABLE projection_rebase_history; DROP TABLE projection_rebase_previews; PRAGMA user_version=4;").unwrap();
     drop(db);
     let reopened = ProjectionStore::open(&fixture.0).unwrap();
     assert_eq!(
@@ -329,7 +329,7 @@ fn rebase_refuses_protected_collision_and_migrates_schema_four_history() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
 }
 

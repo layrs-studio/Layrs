@@ -227,7 +227,9 @@ function LimitedSyncActions() {
           : undefined;
   const publishReason =
     common ??
-    (data?.capabilities.publish !== true
+    (data?.latestCaptureImported === true
+      ? "Créez une capture locale dans cette copie avant de publier son historique importé."
+      : data?.capabilities.publish !== true
       ? "La publication n’est pas disponible dans cette connexion."
       : !patch
         ? "Capturez d’abord vos modifications autorisées."

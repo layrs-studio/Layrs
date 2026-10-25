@@ -10,6 +10,7 @@ use layrs_core::{
     projection::{EntryState, ProjectionEntry},
     scm::{FileId, TreeEntryTarget},
 };
+pub(super) use recovery::resume_with_access;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -86,6 +87,7 @@ impl ProjectionStore {
         let mut access = format::access(self, SessionMode::Exclusive)?;
         database::require_mutable(&access.connection)?;
         let current = database::current(&access.connection)?;
+        selection::verify_target(&access.connection, target)?;
         if current.generation != expected_generation {
             return Err(ProjectionStoreError::Stale {
                 expected: expected_generation,
@@ -161,10 +163,65 @@ impl ProjectionStore {
         faults.check(RefreshPoint::Staged)?;
         journal.ready = true;
         access.verify()?;
-        access.connection.execute(
+        let retained = journal
+            .old
+            .iter()
+            .chain(&journal.new)
+            .map(|r| CapturedFile {
+                file_id: r.file_id.clone(),
+                executable: r.executable,
+                bytes: r.bytes,
+            })
+            .collect::<Vec<_>>();
+        retention::reserve(
+            &access.connection,
+            self,
+            &format!("refresh:{}", journal.expected_digest),
+            &journal.expected_digest,
+            &retained,
+            encode(&journal)?.len() as u64,
+        )?;
+        let tx = access
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if self.marker.shared.is_some() {
+            let checkout = PinnedDirectory::open(&self.root)?;
+            for record in &journal.old {
+                let pin = checkout.open_relative_file(Path::new(&record.path))?;
+                retention::retain_pinned(
+                    &tx,
+                    self,
+                    &pin,
+                    &CapturedFile {
+                        file_id: record.file_id.clone(),
+                        executable: record.executable,
+                        bytes: record.bytes,
+                    },
+                    "refresh-old-base",
+                    &journal.directory,
+                )?;
+            }
+            for record in &journal.new {
+                let pin = directory.open_file(record.name.as_ref())?;
+                retention::retain_pinned(
+                    &tx,
+                    self,
+                    &pin,
+                    &CapturedFile {
+                        file_id: record.file_id.clone(),
+                        executable: record.executable,
+                        bytes: record.bytes,
+                    },
+                    "refresh",
+                    &journal.directory,
+                )?;
+            }
+        }
+        tx.execute(
             "UPDATE projection_refresh_pending SET payload=?1 WHERE singleton=1",
             [encode(&journal)?],
         )?;
+        tx.commit()?;
         faults.check(RefreshPoint::JournalDurable)?;
         recovery::finish(self, &mut access, &journal, faults)
     }

@@ -25,6 +25,7 @@ const FILE_READ_DATA: u32 = 0x0000_0001;
 const FILE_WRITE_DATA: u32 = 0x0000_0002;
 const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
 const DELETE: u32 = 0x0001_0000;
+const READ_CONTROL: u32 = 0x0002_0000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
 const FILE_RENAME_INFORMATION: u32 = 10;
@@ -173,6 +174,16 @@ pub(super) fn open_directory_for_move(parent: &File, name: &OsStr) -> io::Result
     )
 }
 
+pub(super) fn create_new_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_at(
+        parent,
+        name,
+        FILE_TRAVERSE | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
 pub(super) fn create_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     open_at(
         parent,
@@ -293,6 +304,27 @@ fn open_at(
     open_at_with_security(parent, name, access, disposition, kind, ptr::null_mut())
 }
 
+pub(super) fn open_existing_private_directory_at(
+    parent: &File,
+    name: &OsStr,
+    writable: bool,
+) -> io::Result<File> {
+    // READ_CONTROL permits owner/DACL inspection; FILE_OPEN never creates.
+    // Inspection requests neither write nor ACL modification access.
+    let write_access = if writable {
+        FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY
+    } else {
+        0
+    };
+    open_at(
+        parent,
+        name,
+        FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE | 0x0002_0000 | write_access,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+    )
+}
+
 pub(super) fn open_private_directory_at(
     parent: &File,
     name: &OsStr,
@@ -309,6 +341,46 @@ pub(super) fn open_private_directory_at(
             | 0x0002_0000,
         FILE_OPEN_IF,
         FILE_DIRECTORY_FILE,
+        security_descriptor,
+    )
+}
+
+pub(super) fn create_new_private_directory_at(
+    parent: &File,
+    name: &OsStr,
+    security_descriptor: *mut c_void,
+) -> io::Result<File> {
+    open_at_with_security(
+        parent,
+        name,
+        FILE_TRAVERSE
+            | FILE_ADD_FILE
+            | FILE_ADD_SUBDIRECTORY
+            | FILE_READ_ATTRIBUTES
+            | READ_CONTROL
+            | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE,
+        security_descriptor,
+    )
+}
+
+pub(super) fn create_new_private_file_at(
+    parent: &File,
+    name: &OsStr,
+    security_descriptor: *mut c_void,
+) -> io::Result<File> {
+    open_at_with_security(
+        parent,
+        name,
+        FILE_READ_DATA
+            | FILE_WRITE_DATA
+            | FILE_READ_ATTRIBUTES
+            | READ_CONTROL
+            | DELETE
+            | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
         security_descriptor,
     )
 }

@@ -1,5 +1,48 @@
 use super::*;
 use std::io::Read;
+pub(in crate::projection) fn destination_selected_absent(
+    root: &PinnedDirectory,
+    base: &Path,
+    path: &str,
+    semantics: layrs_core::projection::PathSemantics,
+) -> Result<()> {
+    reject_aliases(base, path, semantics)?;
+    destination_absent(root, base, path)
+}
+pub(in crate::projection) fn reject_aliases(
+    base: &Path,
+    path: &str,
+    semantics: layrs_core::projection::PathSemantics,
+) -> Result<()> {
+    if semantics == layrs_core::projection::PathSemantics::PortableWindows {
+        let mut parent = base.to_owned();
+        for component in path.split('/') {
+            match fs::symlink_metadata(&parent) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                Err(e) => return Err(e.into()),
+                Ok(meta) if meta.is_file() => break,
+                Ok(_) => (),
+            }
+            let directory = PinnedDirectory::open(&parent)?;
+            for (index, entry) in fs::read_dir(&parent)?.enumerate() {
+                if index >= 100_000 {
+                    return Err(invalid("hydration parent exceeds namespace budget"));
+                }
+                let name = entry?.file_name();
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| invalid("non-UTF8 hydration parent entry"))?;
+                if name != component && name.to_uppercase() == component.to_uppercase() {
+                    return Err(invalid("hydration path aliases an existing checkout entry"));
+                }
+            }
+            directory.verify_path_identity()?;
+            parent.push(component);
+        }
+    }
+    Ok(())
+}
+
 pub(in crate::projection) fn destination_absent(
     root: &PinnedDirectory,
     base: &Path,

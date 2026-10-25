@@ -17,11 +17,14 @@ pub(in crate::projection) struct Scan {
 
 pub(in crate::projection) fn scan(
     store: &ProjectionStore,
+    c: &rusqlite::Connection,
     snapshot: &ProjectionSnapshot,
     _retain: bool,
 ) -> Result<Scan> {
+    super::super::provider::require_ordinary(c)?;
+    let selection = super::super::selection::for_scan(c, snapshot)?;
     let root = PinnedDirectory::open(&store.root)?;
-    let present = namespace(&root, &store.root, snapshot)?;
+    let present = namespace(&root, &store.root, snapshot, &selection)?;
     let mut result = Scan {
         files: BTreeMap::new(),
         changes: Vec::new(),
@@ -29,6 +32,9 @@ pub(in crate::projection) fn scan(
     let mut total = 0u64;
     let reserved = snapshot.reserved_paths()?;
     for entry in &snapshot.entries {
+        if !selection.includes(&entry.path) {
+            continue;
+        }
         if matches!(entry.state, EntryState::Reserved | EntryState::Unavailable) {
             continue;
         }
@@ -116,7 +122,7 @@ pub(in crate::projection) fn scan(
         }
         result.files.insert(path.to_owned(), actual);
     }
-    if namespace(&root, &store.root, snapshot)? != present {
+    if namespace(&root, &store.root, snapshot, &selection)? != present {
         return Err(invalid("checkout namespace changed during capture"));
     }
     root.verify_path_identity()?;
@@ -126,7 +132,9 @@ fn namespace(
     root: &PinnedDirectory,
     base: &Path,
     snapshot: &ProjectionSnapshot,
+    selection: &layrs_core::projection::ProjectionSelection,
 ) -> Result<BTreeSet<String>> {
+    let traversal = selection.traversal(snapshot.path_semantics)?;
     let entries: BTreeMap<&str, &ProjectionEntry> = snapshot
         .entries
         .iter()
@@ -167,6 +175,11 @@ fn namespace(
                 format!("{relative}/{name}")
             };
             let entry = entries.get(path.as_str());
+            // Excluded paths are not opened, hashed, or interpreted as deletions.
+            // Ancestors and case aliases of selected paths still get verified.
+            if !traversal.intersects(&path)? {
+                continue;
+            }
             if entry
                 .is_some_and(|e| matches!(e.state, EntryState::Reserved | EntryState::Unavailable))
             {

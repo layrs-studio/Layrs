@@ -248,9 +248,21 @@ fn two_worktrees_same_space_never_overwrite_each_others_operation_or_files() {
     let snapshot = SnapshotBuilder::new(SnapshotLimits::default())
         .finish()
         .unwrap();
-    assert!(matches!(
-        client.prepare_capture(&base, snapshot, MutationStamp::fresh().unwrap()),
-        Err(NativeClientError::NeedsIntegration)
+    let CapturePlan::Change(retried) = client
+        .prepare_capture(&base, snapshot, MutationStamp::fresh().unwrap())
+        .unwrap()
+    else {
+        panic!("independent Worktree can prepare against its own active View");
+    };
+    client.accept(&retried).unwrap();
+    let heads = repo.operation_heads(winning_worktree.space_id()).unwrap();
+    assert_eq!(heads.len(), 2);
+    assert!(heads.contains(winning_worktree.active_operation_id()));
+    assert!(heads.contains(
+        repo.get_worktree(&worktrees[loser])
+            .unwrap()
+            .unwrap()
+            .active_operation_id()
     ));
     assert!(!repo
         .object_admitted_to_space(

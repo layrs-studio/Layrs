@@ -1,9 +1,16 @@
 //! Local partial-checkout records. These are neither complete SCM admission nor
 //! cached authority to access remote content.
+mod availability;
 mod model;
 mod paths;
+mod selection;
+pub use availability::{
+    AvailabilityBlocker, AvailabilityRequest, OfflineOperation, ProjectionAvailability,
+    ProjectionVersion, VersionPathAvailability,
+};
 pub use model::{EntryState, ProjectionEntry, ProjectionSnapshot};
 pub use paths::{PathSemantics, ReservedPaths};
+pub use selection::{ProjectionSelection, SelectionTraversal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionError(pub String);

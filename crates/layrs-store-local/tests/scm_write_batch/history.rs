@@ -462,7 +462,7 @@ fn worktree_cas_updates_payload_atomically_and_fault_rolls_everything_back() {
     let third = Operation::new(
         OperationId::parse("operation:worktree-third").unwrap(),
         space.id().clone(),
-        vec![next.id().clone()],
+        vec![initial.id().clone()],
         view.id().clone(),
         OperationKind::CaptureWorktree,
         "Third",
@@ -493,7 +493,7 @@ fn worktree_cas_updates_payload_atomically_and_fault_rolls_everything_back() {
                     space.id().clone(),
                     vec![next.id().clone()],
                     third.id().clone(),
-                    vec![third.id().clone()],
+                    vec![next.id().clone(), third.id().clone()],
                 )
                 .unwrap(),
             ),
@@ -508,9 +508,15 @@ fn worktree_cas_updates_payload_atomically_and_fault_rolls_everything_back() {
         ],
     )
     .unwrap();
+    // The parent matches the stale own-Worktree expectation; the current
+    // global frontier preserves `next`. Only the durable own-active CAS fails.
     let error = repository.apply_batch(&stale).unwrap_err();
     assert_eq!(error.code(), "cas_mismatch");
-    assert!(error.to_string().contains("worktree_active_operation"));
+    assert!(
+        matches!(&error, layrs_store::scm::StoreError::CasMismatch { target }
+        if target == &format!("worktree_active_operation:{worktree_id}")),
+        "{error:?}"
+    );
     assert!(repository.get_operation(third.id()).unwrap().is_none());
     assert_eq!(
         repository

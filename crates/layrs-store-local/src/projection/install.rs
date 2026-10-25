@@ -51,6 +51,8 @@ struct Journal {
     stage_directory: String,
     target: ProjectionSnapshot,
     files: Vec<FileRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<layrs_core::projection::ProjectionSelection>,
 }
 
 pub(super) fn install(
@@ -60,11 +62,33 @@ pub(super) fn install(
     write_file: &mut dyn FnMut(&str, &mut dyn Write) -> io::Result<()>,
     faults: &dyn InstallFaults,
 ) -> Result<VersionedProjection> {
+    install_selected(store, expected, target, None, write_file, faults)
+}
+
+pub(super) fn install_selected(
+    store: &ProjectionStore,
+    expected: u64,
+    target: &ProjectionSnapshot,
+    expanded: Option<&layrs_core::projection::ProjectionSelection>,
+    write_file: &mut dyn FnMut(&str, &mut dyn Write) -> io::Result<()>,
+    faults: &dyn InstallFaults,
+) -> Result<VersionedProjection> {
     target.canonical_bytes()?;
     let mut access = format::access(store, SessionMode::Exclusive)?;
     database::require_mutable(&access.connection)?;
     let current = database::current(&access.connection)?;
-    if current.generation == expected.saturating_add(1) && current.snapshot == *target {
+    let before_selection = selection::current(&access.connection)?;
+    let after_selection = expanded.unwrap_or(&before_selection);
+    if !after_selection.is_expansion_of(&before_selection) {
+        return Err(invalid(
+            "selection shrink requires a separate eviction operation",
+        ));
+    }
+    after_selection.validate_snapshot(target)?;
+    if current.generation == expected.saturating_add(1)
+        && current.snapshot == *target
+        && after_selection == &before_selection
+    {
         return Ok(current);
     }
     if current.generation != expected {
@@ -74,13 +98,14 @@ pub(super) fn install(
         });
     }
     let paths = validate_transition(&current.snapshot, target)?;
-    if paths.is_empty() {
+    if paths.is_empty() && after_selection == &before_selection {
         return Ok(current);
     }
     let root = PinnedDirectory::open(&store.root)?;
     for path in &paths {
-        files::destination_absent(&root, &store.root, path)?;
+        files::destination_selected_absent(&root, &store.root, path, target.path_semantics)?;
     }
+    retention::require_no_staging(&access.connection, store)?;
     let staging = PinnedDirectory::open(&store.root.join(".layrs"))?
         .ensure_child("projection-staging".as_ref())?;
     let stage_directory = format!(
@@ -98,6 +123,14 @@ pub(super) fn install(
     fs::create_dir(&stage_path)?;
     staging.sync()?;
     let stage = staging.open_child(stage_directory.as_ref())?;
+    retention::track_directory(
+        &access.connection,
+        store,
+        &format!("install:{}", shared::digest(target)?),
+        &format!(".layrs/projection-staging/{stage_directory}"),
+        &stage,
+        (0..paths.len()).map(|i| format!("{i:08}")).collect(),
+    )?;
     let mut records = Vec::new();
     let mut total = 0u64;
     let entries: std::collections::BTreeMap<_, _> = target
@@ -146,15 +179,42 @@ pub(super) fn install(
         stage_directory,
         target: target.clone(),
         files: records,
+        selection: expanded.cloned(),
     };
     let bytes = layrs_core::scm::canonical_json(&journal).map_err(invalid)?;
     if bytes.len() > 64 * 1024 * 1024 {
         return Err(invalid("projection install journal exceeds64MiB"));
     }
     access.verify()?;
-    access
+    let retained = journal
+        .files
+        .iter()
+        .map(|r| CapturedFile {
+            file_id: r.file_id.clone(),
+            executable: r.executable,
+            bytes: r.bytes,
+        })
+        .collect::<Vec<_>>();
+    retention::reserve(
+        &access.connection,
+        store,
+        &format!("install:{}", shared::digest(target)?),
+        &journal.expected_digest,
+        &retained,
+        bytes.len() as u64,
+    )?;
+    let tx = access
         .connection
-        .execute("INSERT INTO projection_install VALUES(1,?1)", [bytes])?;
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if store.marker.shared.is_some() {
+        for (record, file) in journal.files.iter().zip(&retained) {
+            let pin = stage.open_file(record.stage_name.as_ref())?;
+            retention::retain_pinned(&tx, store, &pin, file, "install", &journal.stage_directory)?;
+        }
+    }
+    tx.execute("INSERT INTO projection_install VALUES(1,?1)", [bytes])?;
+    retention::accept_staging(&tx, store, &format!("install:{}", shared::digest(target)?))?;
+    tx.commit()?;
     faults.check(InstallPoint::JournalDurable)?;
     finish(store, &mut access, &journal, faults)
 }
@@ -204,7 +264,12 @@ fn validate_transition(
 }
 
 pub(super) fn resume(store: &ProjectionStore) -> Result<VersionedProjection> {
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    resume_with_access(store, format::recovery_access(store, None, false)?)
+}
+pub(in crate::projection) fn resume_with_access(
+    store: &ProjectionStore,
+    mut access: format::Access,
+) -> Result<VersionedProjection> {
     let length: u64 = access.connection.query_row(
         "SELECT length(payload) FROM projection_install WHERE singleton=1",
         [],
@@ -238,6 +303,12 @@ fn finish(
         return Err(invalid("another operation blocks installation recovery"));
     }
     let current = database::current(&access.connection)?;
+    let before_selection = selection::current(&access.connection)?;
+    let after_selection = journal.selection.as_ref().unwrap_or(&before_selection);
+    if !after_selection.is_expansion_of(&before_selection) {
+        return Err(invalid("installation cannot shrink selection"));
+    }
+    after_selection.validate_snapshot(&journal.target)?;
     if journal.schema_version != "layrs.projection-install.v1"
         || journal.expected_generation != current.generation
         || journal.expected_digest != current.digest
@@ -293,7 +364,12 @@ fn finish(
         match fs::symlink_metadata(&staged) {
             Ok(_) => {
                 files::verify_file(&staged, record)?;
-                files::destination_absent(&root, &store.root, path)?;
+                files::destination_selected_absent(
+                    &root,
+                    &store.root,
+                    path,
+                    journal.target.path_semantics,
+                )?;
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 files::verify_file(&store.root.join(path), record)?
@@ -307,6 +383,12 @@ fn finish(
             Ok(_) => {
                 let source = stage.open_file(record.stage_name.as_ref())?;
                 files::verify_file(&staged, record)?;
+                files::destination_selected_absent(
+                    &root,
+                    &store.root,
+                    &record.path,
+                    journal.target.path_semantics,
+                )?;
                 let (parent, name) = root.components_to_parent(Path::new(&record.path))?;
                 if source.rename_to(&parent, &name)? {
                     return Err(invalid(
@@ -325,6 +407,7 @@ fn finish(
     }
     faults.check(InstallPoint::BeforeCommit)?;
     for record in &journal.files {
+        files::reject_aliases(&store.root, &record.path, journal.target.path_semantics)?;
         files::verify_file(&store.root.join(&record.path), record)?;
     }
     access.verify()?;
@@ -346,7 +429,19 @@ fn finish(
         "UPDATE projection_head SET generation=?1 WHERE singleton=1",
         [generation],
     )?;
+    if after_selection != &before_selection {
+        selection::insert(&tx, generation, after_selection)?;
+    }
     tx.execute("DELETE FROM projection_install WHERE singleton=1", [])?;
+    retention::transfer(
+        &tx,
+        store,
+        "install",
+        &journal.stage_directory,
+        "generation",
+        &digest,
+    )?;
+    retention::finish_budget(&tx, store)?;
     tx.commit()?;
     faults.check(InstallPoint::AfterCommit)?;
     access.verify()?;

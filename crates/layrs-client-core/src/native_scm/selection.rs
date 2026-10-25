@@ -4,7 +4,7 @@ use layrs_graph::scm::{
     ReferenceKind, ReferenceSelector, SelectorError, SelectorSnapshot, StepDag, StepSelector,
 };
 use layrs_store::scm::{ScmReader, StoreObjectId};
-use layrs_store_local::scm_v1::{open, NativeScmReader};
+use layrs_store_local::scm_v1::NativeScmReader;
 use std::collections::BTreeMap;
 
 /// A read result, not permission to mutate. Applications must bind their later
@@ -47,7 +47,7 @@ impl NativeClient {
         selector: &StepSelector,
         max_steps: usize,
     ) -> Result<ResolvedStep> {
-        let store = open(&self.root)?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         let worktree = reader
             .get_worktree(worktree_id)?

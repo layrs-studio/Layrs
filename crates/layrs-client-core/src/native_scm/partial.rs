@@ -1,5 +1,5 @@
-//! Explicit format3 routing. Full Workspace operations never receive a partial Store.
-use layrs_store_local::projection::ProjectionStore;
+//! Explicit partial-Store routing. Complete Workspaces never receive missing objects.
+use layrs_store_local::projection::{ProjectionStore, RecoveryBinding};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{io::Read, path::Path};
@@ -12,6 +12,9 @@ use std::{io::Read, path::Path};
     deny_unknown_fields
 )]
 pub enum ProjectionAction {
+    Offline {
+        request: super::ProjectionOfflineAction,
+    },
     Status,
     Fsck,
     History {
@@ -25,11 +28,21 @@ pub enum ProjectionAction {
         expected_generation: u64,
         mutation: NamespaceMutation,
     },
-    ResumeInstallation,
-    ResumeNamespace,
-    ResumeRefresh,
-    ResumeRestore,
-    ResumeRebase,
+    ResumeInstallation {
+        expected: RecoveryBinding,
+    },
+    ResumeNamespace {
+        expected: RecoveryBinding,
+    },
+    ResumeRefresh {
+        expected: RecoveryBinding,
+    },
+    ResumeRestore {
+        expected: RecoveryBinding,
+    },
+    ResumeRebase {
+        expected: RecoveryBinding,
+    },
     RebaseDraft,
 }
 
@@ -49,6 +62,31 @@ pub enum NamespaceMutationKind {
 }
 
 pub fn checkout_kind(root: impl AsRef<Path>) -> Result<&'static str, String> {
+    let metadata = match std::fs::symlink_metadata(root.as_ref().join(".layrs")) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("absent"),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err("invalid_store_format: metadata cannot be a symlink".into());
+    }
+    if metadata.is_file() {
+        #[cfg(windows)]
+        if super::inspect_vfs_checkout(root.as_ref())
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Ok("vfs");
+        }
+        // Only the complete Workspace opener proves the locator's root, Store,
+        // registered Worktree and filesystem identities. Never infer from JSON.
+        super::NativeWorkspace::open(root.as_ref())
+            .map_err(|error| format!("invalid_worktree_locator: {error}"))?;
+        return Ok("complete");
+    }
+    if !metadata.is_dir() {
+        return Err("invalid_store_format: unsupported metadata entry".into());
+    }
     let path = root.as_ref().join(".layrs/FORMAT");
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -73,6 +111,13 @@ pub fn checkout_kind(root: impl AsRef<Path>) -> Result<&'static str, String> {
     match marker["formatVersion"].as_u64() {
         Some(2) => Ok("complete"),
         Some(3) => Ok("projection"),
+        Some(4) => {
+            // A family marker alone is not a checkout. Validate the locator,
+            // private database and shared family binding before routing it.
+            ProjectionStore::inspect_recovery(root.as_ref())
+                .map_err(|error| format!("invalid_partial_worktree: {error}"))?;
+            Ok("projection")
+        }
         _ => Err("unsupported_store_format: explicit migration required".into()),
     }
 }
@@ -81,29 +126,37 @@ pub fn execute_projection(
     root: impl AsRef<Path>,
     action: ProjectionAction,
 ) -> Result<Value, String> {
-    let resumed = match action {
-        ProjectionAction::ResumeInstallation => Some(
-            ProjectionStore::resume_installation(&root)
+    if let ProjectionAction::Offline { request } = action {
+        return super::execute_projection_offline(root, request);
+    }
+    let resumed = match &action {
+        ProjectionAction::ResumeInstallation { expected } => Some(
+            ProjectionStore::open_bound_recovery(&root, expected)
+                .and_then(|recovery| recovery.resume_installation())
                 .map(|state| json!({"projection":state}))
                 .map_err(|error| error.to_string()),
         ),
-        ProjectionAction::ResumeNamespace => Some(
-            ProjectionStore::resume_namespace(&root)
+        ProjectionAction::ResumeNamespace { expected } => Some(
+            ProjectionStore::open_bound_recovery(&root, expected)
+                .and_then(|recovery| recovery.resume_namespace())
                 .map(|patch| json!({"capture":patch}))
                 .map_err(|error| error.to_string()),
         ),
-        ProjectionAction::ResumeRefresh => Some(
-            ProjectionStore::resume_refresh(&root)
+        ProjectionAction::ResumeRefresh { expected } => Some(
+            ProjectionStore::open_bound_recovery(&root, expected)
+                .and_then(|recovery| recovery.resume_refresh())
                 .map(|state| json!({"projection":state}))
                 .map_err(|error| error.to_string()),
         ),
-        ProjectionAction::ResumeRebase => Some(
-            ProjectionStore::resume_rebase(&root)
+        ProjectionAction::ResumeRebase { expected } => Some(
+            ProjectionStore::open_bound_recovery(&root, expected)
+                .and_then(|recovery| recovery.resume_rebase())
                 .map(|capture| json!({"capture":capture}))
                 .map_err(|error| error.to_string()),
         ),
-        ProjectionAction::ResumeRestore => Some(
-            ProjectionStore::resume_restore(&root)
+        ProjectionAction::ResumeRestore { expected } => Some(
+            ProjectionStore::open_bound_recovery(&root, expected)
+                .and_then(|recovery| recovery.resume_restore())
                 .map(|receipt| json!({"restoration":receipt}))
                 .map_err(|error| error.to_string()),
         ),
@@ -112,10 +165,18 @@ pub fn execute_projection(
     if let Some(result) = resumed {
         return result;
     }
+    if let ProjectionAction::Fsck = action {
+        // An integrity check must not migrate an unsupported source merely
+        // because it was reached from the read-only recovery screen.
+        return ProjectionStore::open_for_recovery(root)
+            .and_then(|store| store.fsck())
+            .map(|report| json!(report))
+            .map_err(|error| format!("projection_store_error: {error}"));
+    }
     let store =
         ProjectionStore::open(root).map_err(|error| format!("projection_store_error: {error}"))?;
-    let current = store
-        .state()
+    let (current, selection) = store
+        .state_with_selection()
         .map_err(|error| format!("projection_store_error: {error}"))?;
     match action {
         ProjectionAction::RebaseDraft => store
@@ -145,16 +206,22 @@ pub fn execute_projection(
                 ),
                 None => store.latest_captured_patch().map_err(|e| e.to_string())?,
             };
+            let imported = latest
+                .as_ref()
+                .map(|patch| store.is_imported_capture(patch.sequence))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or(false);
             Ok(json!({
                 "identity": store.identity(), "projection": current, "needsRepair": false,
+                "selection": selection,
+                "offline": {"shared":store.is_shared()},
+                "latestCaptureImported":imported,
                 "latestCapture": latest, "pendingPublication":pending_info,
-                "capabilities": {"capture":pending.is_none(),"publish":true,"namespace":pending.is_none(),"receive":pending.is_none(),"restore":pending.is_none()}
+                "capabilities": {"capture":pending.is_none(),"publish":!imported,"namespace":pending.is_none(),"receive":pending.is_none(),"restore":pending.is_none()}
             }))
         }
-        ProjectionAction::Fsck => store
-            .fsck()
-            .map(|report| json!(report))
-            .map_err(|e| e.to_string()),
+        ProjectionAction::Fsck => unreachable!("handled before ordinary open"),
         ProjectionAction::History { before, limit } => store
             .capture_history(before, limit)
             .map(|page| json!(page))
@@ -200,10 +267,11 @@ pub fn execute_projection(
             // classify it under the current authority before returning a plan.
             Err("projection_path_authorization_required: refresh destination permissions before creating or moving a file".into())
         }
-        ProjectionAction::ResumeInstallation
-        | ProjectionAction::ResumeNamespace
-        | ProjectionAction::ResumeRefresh
-        | ProjectionAction::ResumeRebase
-        | ProjectionAction::ResumeRestore => unreachable!(),
+        ProjectionAction::ResumeInstallation { .. }
+        | ProjectionAction::Offline { .. }
+        | ProjectionAction::ResumeNamespace { .. }
+        | ProjectionAction::ResumeRefresh { .. }
+        | ProjectionAction::ResumeRebase { .. }
+        | ProjectionAction::ResumeRestore { .. } => unreachable!(),
     }
 }

@@ -2,6 +2,8 @@ use layrs_core::scm::{LayerId, SpaceId, StepId};
 use layrs_runner::{Job, Recipe};
 use serde_json::{Value, json};
 use std::path::Path;
+#[path = "exact_result_runner.rs"]
+pub(crate) mod exact_result_runner;
 fn call(
     client: &reqwest::blocking::Client,
     method: &str,
@@ -113,4 +115,9 @@ pub fn run(
         evaluation["outcome"], "failed",
         "proof for historical N must not cover N+1"
     );
+    if std::env::var_os("LAYRS_TEST_EMPTY_TREE_EXPORT_ONLY").is_some() {
+        exact_result_runner::empty_tree_export(&client, origin, admin, ca);
+    } else {
+        exact_result_runner::combined(&client, origin, admin, ca, root);
+    }
 }

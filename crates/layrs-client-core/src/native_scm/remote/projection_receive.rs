@@ -19,7 +19,7 @@ impl NativeRemote {
         if store.pending_publication().map_err(local)?.is_some() {
             return Err(NativeRemoteError::PublicationPending);
         }
-        let before = store.state().map_err(local)?;
+        let (before, selection) = store.state_with_selection().map_err(local)?;
         let base = self.bootstrap(&store.identity().space_id)?;
         if base.principal_id.as_str() != store.identity().principal_id {
             return Err(NativeRemoteError::Invalid("projection principal changed"));
@@ -48,13 +48,14 @@ impl NativeRemote {
                 .into_iter()
                 .filter(|e| !matches!(e.target, TreeEntryTarget::Tree { .. }))
                 .map(|e| LocalEntry {
-                    path: e.path,
+                    path: e.path.clone(),
                     target: Some(e.target.clone()),
                     executable: e.executable,
                     writable: e.writable && e.content_readable,
                     state: if !e.content_readable {
                         EntryState::Reserved
                     } else if matches!(e.target, TreeEntryTarget::File { .. })
+                        && selection.includes(&e.path)
                         && !(cfg!(windows) && e.executable)
                     {
                         EntryState::Materialized
@@ -80,6 +81,7 @@ impl NativeRemote {
             target.entries.sort_by(|a, b| a.path.cmp(&b.path));
         }
         target.validate().map_err(local)?;
+        selection.validate_snapshot(&target).map_err(local)?;
         let binding = Binding {
             origin: self.origin().into(),
             space_id: base.space_id.clone(),

@@ -6,8 +6,10 @@ use crate::secret_store::{OsSecretStore, SecretStore};
 use layrs_core::scm::{LayerId, ObjectId, SpaceId, StepId};
 use layrs_sync::v3::LayerMutationMode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
+#[path = "projection_commands.rs"]
+mod projection;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,6 +72,29 @@ pub enum NativeRemoteAction {
     CloneProjection {
         space: SpaceId,
         step: StepId,
+    },
+    CloneProjectionSelected {
+        space: SpaceId,
+        step: StepId,
+        selection: layrs_core::projection::ProjectionSelection,
+    },
+    /// Selection contains additions; existing intent is retained atomically.
+    ExpandProjectionSelection {
+        expected_generation: u64,
+        selection: layrs_core::projection::ProjectionSelection,
+    },
+    ObserveProjectionVersion {
+        expected_generation: u64,
+        step: StepId,
+        paths: Vec<layrs_core::scm::RepoPath>,
+    },
+    PrepareProjectionOffline {
+        expected_generation: u64,
+        request: layrs_core::projection::AvailabilityRequest,
+    },
+    ResumeProjectionOffline {
+        expected_generation: u64,
+        preparation_id: String,
     },
     PublishProjection {
         patch_id: u64,
@@ -189,6 +214,7 @@ fn execute_remote_with_store(
     request: NativeRemoteRequest,
     secrets: &impl SecretStore,
 ) -> Result<Value, String> {
+    validate_offline_action(&request.action)?;
     let ca = request.ca_pem.as_deref().map(str::as_bytes);
     let anonymous = NativeRemote::unauthenticated(&request.origin, ca).map_err(remote_error)?;
     let key = credential_key(anonymous.origin());
@@ -305,6 +331,54 @@ fn execute_remote_with_store(
             Ok(
                 json!({"status":"projectionCloned","identity":store.identity(),"projection":store.state().map_err(|e|e.to_string())?}),
             )
+        }
+        NativeRemoteAction::CloneProjectionSelected {
+            space,
+            step,
+            selection,
+        } => {
+            let store = remote
+                .clone_projection_selected_into(root, &space, &step, &selection)
+                .map_err(remote_error)?;
+            projection::describe(&store, "projectionCloned")
+        }
+        NativeRemoteAction::ExpandProjectionSelection {
+            expected_generation,
+            selection,
+        } => projection::expand(&remote, root, expected_generation, &selection),
+        NativeRemoteAction::ObserveProjectionVersion {
+            expected_generation,
+            step,
+            paths,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let version = remote
+                .observe_projection_version(&store, expected_generation, &step, &paths)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionVersionObserved", "version":version}))
+        }
+        NativeRemoteAction::PrepareProjectionOffline {
+            expected_generation,
+            request,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let preparation = remote
+                .prepare_projection_offline(&store, expected_generation, &request)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionOfflinePrepared", "preparation":preparation}))
+        }
+        NativeRemoteAction::ResumeProjectionOffline {
+            expected_generation,
+            preparation_id,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let preparation = remote
+                .resume_projection_offline(&store, expected_generation, &preparation_id)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionOfflinePrepared", "preparation":preparation}))
         }
         NativeRemoteAction::PublishProjection { patch_id, layer_id } => {
             let store = layrs_store_local::projection::ProjectionStore::open(root)
@@ -603,6 +677,80 @@ fn execute_remote_with_store(
     }
 }
 
+fn validate_offline_action(action: &NativeRemoteAction) -> Result<(), String> {
+    use layrs_core::projection::ProjectionVersion;
+    let generation = match action {
+        NativeRemoteAction::ObserveProjectionVersion {
+            expected_generation,
+            paths,
+            ..
+        } => {
+            if paths.is_empty() || paths.len() > 1024 || paths.windows(2).any(|p| p[0] >= p[1]) {
+                return Err("offline observation requires 1..1024 sorted unique paths".into());
+            }
+            expected_generation
+        }
+        NativeRemoteAction::PrepareProjectionOffline {
+            expected_generation,
+            request,
+        } => {
+            request.validate().map_err(|e| e.to_string())?;
+            for version in std::iter::once(&request.version).chain(request.other.as_ref()) {
+                let digest = match version {
+                    ProjectionVersion::Generation {
+                        generation, digest, ..
+                    } => {
+                        if *generation > i64::MAX as u64 {
+                            return Err("version generation exceeds bound".into());
+                        }
+                        digest
+                    }
+                    ProjectionVersion::Capture {
+                        sequence, digest, ..
+                    } => {
+                        if *sequence == 0 || *sequence > i64::MAX as u64 {
+                            return Err("capture sequence exceeds bound".into());
+                        }
+                        digest
+                    }
+                    ProjectionVersion::Remote {
+                        observation_digest, ..
+                    } => observation_digest,
+                };
+                if matches!(version, ProjectionVersion::Capture { .. }) {
+                    ObjectId::parse(digest).map_err(|e| e.to_string())?;
+                } else if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
+                    return Err("invalid projection metadata digest".into());
+                }
+            }
+            expected_generation
+        }
+        NativeRemoteAction::ResumeProjectionOffline {
+            expected_generation,
+            preparation_id,
+        } => {
+            if preparation_id.is_empty()
+                || preparation_id.len() > 128
+                || !preparation_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err("invalid offline preparation ID".into());
+            }
+            expected_generation
+        }
+        _ => return Ok(()),
+    };
+    if *generation > i64::MAX as u64 {
+        return Err("expected projection generation exceeds bound".into());
+    }
+    Ok(())
+}
+
 fn credential_key(canonical_origin: &str) -> String {
     format!(
         "native-v3:{}",
@@ -616,6 +764,37 @@ fn remote_error(e: super::NativeRemoteError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn offline_remote_actions_are_explicit_and_strict_before_credentials() {
+        let id = format!("blake3:{}", "a".repeat(64));
+        let version = json!({"kind":"generation","worktreeId":"worktree:test","generation":0,"digest":"a".repeat(64)});
+        let request = json!({"version":version,"other":null,"paths":["a.txt"],"operation":"read"});
+        for value in [
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["a.txt"]}),
+            json!({"action":"prepareProjectionOffline","expectedGeneration":0,"request":request}),
+            json!({"action":"resumeProjectionOffline","expectedGeneration":0,"preparationId":"123-456"}),
+        ] {
+            let action: NativeRemoteAction = serde_json::from_value(value.clone()).unwrap();
+            validate_offline_action(&action).unwrap();
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+        }
+        for value in [
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":[]}),
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["b","a"]}),
+            json!({"action":"resumeProjectionOffline","expectedGeneration":0,"preparationId":"../other"}),
+            json!({"action":"prepareProjectionOffline","expectedGeneration":u64::MAX,"request":request}),
+        ] {
+            let action: NativeRemoteAction = serde_json::from_value(value).unwrap();
+            assert!(validate_offline_action(&action).is_err());
+        }
+        for value in [
+            json!({"action":"prepareProjectionOffline","expectedGeneration":0,"request":request,"implicit":true}),
+            json!({"action":"resumeProjectionOffline","preparationId":"123"}),
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["../escape"]}),
+        ] {
+            assert!(serde_json::from_value::<NativeRemoteAction>(value).is_err());
+        }
+    }
     #[test]
     fn publication_cancellation_actions_require_a_scoped_transfer_id() {
         let publish: NativeRemoteAction = serde_json::from_value(
@@ -637,10 +816,10 @@ mod tests {
             candidates,
             NativeRemoteAction::PublishCandidatesCancellable { .. }
         ));
-        assert!(serde_json::from_value::<NativeRemoteAction>(
-            json!({"action":"publishCancellable"})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<NativeRemoteAction>(json!({"action":"publishCancellable"}))
+                .is_err()
+        );
     }
     #[test]
     fn catalog_actions_decode_with_optional_page_and_exact_space() {

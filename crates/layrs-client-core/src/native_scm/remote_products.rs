@@ -1,7 +1,7 @@
 use super::{NativeRemoteError, NativeWorkspace, WorkspaceState};
 use layrs_core::scm::*;
 use layrs_store::scm::ScmReader;
-use layrs_store_local::scm_v1::{self, NativeScmReader};
+use layrs_store_local::scm_v1::NativeScmReader;
 use layrs_sync::v3::*;
 use std::collections::BTreeMap;
 type Result<T> = std::result::Result<T, NativeRemoteError>;
@@ -36,7 +36,7 @@ pub(super) fn prepare(
         })?;
         candidates.insert(product.logical_id().to_owned(), product);
     }
-    let store = scm_v1::open(workspace.store_root())?;
+    let store = workspace.open_store()?;
     let reader = NativeScmReader::new(&store)?;
     for id in reader.products_in_space(state.space.id())? {
         let product = reader

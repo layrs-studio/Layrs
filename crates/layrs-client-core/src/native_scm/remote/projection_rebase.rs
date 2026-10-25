@@ -4,7 +4,10 @@ mod historical;
 mod merge;
 use super::*;
 pub use historical::ProjectionHistoricalSelection;
-use layrs_core::projection::{EntryState, ProjectionEntry, ProjectionSnapshot};
+use layrs_core::projection::{
+    AvailabilityRequest, EntryState, OfflineOperation, ProjectionEntry, ProjectionSnapshot,
+    ProjectionVersion,
+};
 use layrs_store_local::projection::{
     CapturedFile, CapturedPatch, ProjectionIdentity, ProjectionStore, RebasePreview,
 };
@@ -163,6 +166,67 @@ impl NativeRemote {
             .map_err(local)?
             .with_operation_id(&operation)
             .map_err(local)?;
+        if store.is_shared() {
+            // The callback below writes resolved checkout values. Preserve the
+            // independently verified incoming base first, including read-only
+            // selected leaves, so the two versions cannot be confused.
+            let (_, selection) = store.state_with_selection().map_err(local)?;
+            let version = store
+                .record_version_observation_at_generation(
+                    preview.local.projection_generation,
+                    &plan.target,
+                    &selection,
+                )
+                .map_err(local)?;
+            let paths: Vec<_> = plan
+                .target
+                .entries
+                .iter()
+                .filter(|e| {
+                    e.state == EntryState::Materialized
+                        && matches!(e.target, Some(TreeEntryTarget::File { .. }))
+                })
+                .map(|e| e.path.clone())
+                .collect();
+            for paths in paths.chunks(1024) {
+                let request = AvailabilityRequest {
+                    version: version.clone(),
+                    other: None,
+                    paths: paths.to_vec(),
+                    operation: OfflineOperation::Read,
+                };
+                store
+                    .prepare_offline_at_generation(
+                        preview.local.projection_generation,
+                        &request,
+                        &mut |actual, path, out| {
+                            if actual != &version {
+                                return Err(std::io::Error::other("incoming base version changed"));
+                            }
+                            let entry = plan
+                                .target
+                                .entries
+                                .binary_search_by(|e| e.path.cmp(path))
+                                .ok()
+                                .map(|n| &plan.target.entries[n])
+                                .ok_or_else(|| {
+                                    std::io::Error::other("incoming base path missing")
+                                })?;
+                            let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
+                                return Err(std::io::Error::other(
+                                    "incoming base is not a regular file",
+                                ));
+                            };
+                            prepared
+                                .graph
+                                .write_file(file_id, out)
+                                .map_err(std::io::Error::other)?;
+                            Ok(())
+                        },
+                    )
+                    .map_err(local)?;
+            }
+        }
         store
             .apply_rebase(&plan, &mut |path, out| {
                 let file = resolutions
@@ -200,7 +264,7 @@ impl NativeRemote {
         historical: Option<&ProjectionHistoricalSelection>,
     ) -> RemoteResult<Prepared> {
         self.rebase_identity(store)?;
-        let before = store.state().map_err(local)?;
+        let (before, selection) = store.state_with_selection().map_err(local)?;
         let capture = store.captured_patch(sequence).map_err(local)?;
         if capture.projection_generation != before.generation
             || capture.projection_digest != before.digest
@@ -238,13 +302,14 @@ impl NativeRemote {
                 .into_iter()
                 .filter(|e| !matches!(e.target, TreeEntryTarget::Tree { .. }))
                 .map(|e| ProjectionEntry {
-                    path: e.path,
+                    path: e.path.clone(),
                     target: Some(e.target.clone()),
                     executable: e.executable,
                     writable: e.writable && e.content_readable,
                     state: if !e.content_readable {
                         EntryState::Reserved
                     } else if matches!(e.target, TreeEntryTarget::File { .. })
+                        && selection.includes(&e.path)
                         && !(cfg!(windows) && e.executable)
                     {
                         EntryState::Materialized
@@ -260,7 +325,9 @@ impl NativeRemote {
             .snapshot
             .entries
             .iter()
-            .filter(|e| !target.entries.iter().any(|n| n.path == e.path))
+            .filter(|e| {
+                selection.includes(&e.path) && !target.entries.iter().any(|n| n.path == e.path)
+            })
             .map(|e| e.path.clone())
             .collect();
         for paths in missing.chunks(200) {
@@ -297,6 +364,7 @@ impl NativeRemote {
         }
         target.entries.sort_by(|a, b| a.path.cmp(&b.path));
         target.validate().map_err(local)?;
+        selection.validate_snapshot(&target).map_err(local)?;
         let historic_entries = historical
             .map(|selection| self.historical_entries(&base, &target, selection))
             .transpose()?;
@@ -318,13 +386,17 @@ impl NativeRemote {
             e.writable && matches!(e.state, EntryState::Materialized | EntryState::Absent)
         }) {
             let old = before.snapshot.entries.iter().find(|e| e.path == next.path);
-            let original = self.rebase_file(
-                &binding,
-                &before.snapshot.base_step_id,
-                old,
-                &mut graph,
-                &mut total,
-            )?;
+            let original = if store.is_shared() {
+                retained_base(store, &before, old, &mut spools, &mut total)?
+            } else {
+                self.rebase_file(
+                    &binding,
+                    &before.snapshot.base_step_id,
+                    old,
+                    &mut graph,
+                    &mut total,
+                )?
+            };
             let remote = if let (Some(selection), Some(entries)) = (historical, &historic_entries) {
                 if let Some(entry) = entries.get(&next.path) {
                     self.rebase_file(
@@ -371,6 +443,43 @@ impl NativeRemote {
                     &graph,
                     &mut spools,
                 )?);
+            }
+        }
+        if store.is_shared() {
+            for entry in target
+                .entries
+                .iter()
+                .filter(|e| e.state == EntryState::Materialized)
+            {
+                let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
+                    continue;
+                };
+                // Prove the incoming Step/path even when the same FileId was
+                // fetched for the original or historical comparison operand.
+                let actual = self.fetch_authorized_file(
+                    &binding,
+                    &target.base_step_id,
+                    &entry.path,
+                    &mut graph,
+                )?;
+                if &actual != file_id
+                    || graph
+                        .steps
+                        .get(&target.base_step_id)
+                        .is_none_or(|s| s.root_tree_id() != &target.base_root_tree_id)
+                {
+                    return Err(NativeRemoteError::Invalid(
+                        "incoming rebase base identity mismatch",
+                    ));
+                }
+                let manifest = graph.manifest(file_id)?;
+                graph.verify_file(manifest)?;
+                total = total
+                    .checked_add(manifest.byte_length())
+                    .filter(|n| *n <= MAX_STREAM_BYTES)
+                    .ok_or(NativeRemoteError::Invalid(
+                        "partial merge transfer exceeds4GiB",
+                    ))?;
             }
         }
         let current = self.bootstrap(&base.space_id)?;
@@ -463,4 +572,52 @@ impl NativeRemote {
             bytes,
         }))
     }
+}
+
+fn retained_base(
+    store: &ProjectionStore,
+    before: &layrs_store_local::projection::VersionedProjection,
+    entry: Option<&ProjectionEntry>,
+    spools: &mut BTreeMap<FileId, File>,
+    total: &mut u64,
+) -> RemoteResult<Option<CapturedFile>> {
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    if entry.state == EntryState::Absent && entry.target.is_none() {
+        return Ok(None);
+    }
+    let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
+        return Err(NativeRemoteError::Invalid(
+            "partial merge requires regular base files",
+        ));
+    };
+    if entry.state != EntryState::Materialized || !entry.writable {
+        return Err(NativeRemoteError::Invalid(
+            "partial merge changes protected base path",
+        ));
+    }
+    let version = ProjectionVersion::Generation {
+        worktree_id: store.identity().worktree_id.clone(),
+        generation: before.generation,
+        digest: before.digest.clone(),
+    };
+    let mut spool = layrs_store_local::private_spool_file()?;
+    // A missing or corrupt retained base is fatal; do not repair it from HTTP.
+    store
+        .read_version_file(&version, &entry.path, &mut spool)
+        .map_err(local)?;
+    let bytes = spool.seek(SeekFrom::End(0))?;
+    *total = total
+        .checked_add(bytes)
+        .filter(|n| *n <= MAX_STREAM_BYTES)
+        .ok_or(NativeRemoteError::Invalid(
+            "partial merge inputs exceed4GiB",
+        ))?;
+    spools.insert(file_id.clone(), spool);
+    Ok(Some(CapturedFile {
+        file_id: file_id.clone(),
+        executable: entry.executable,
+        bytes,
+    }))
 }

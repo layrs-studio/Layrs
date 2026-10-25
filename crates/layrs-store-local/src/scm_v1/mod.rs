@@ -4,6 +4,8 @@
 //! layout. Detection is read-only and initialization never imports, migrates,
 //! deletes, or rewrites an unsupported store.
 
+mod acquisition;
+pub use acquisition::{open_for_read_with_retry, open_for_registration_with_retry};
 mod admission;
 pub mod cas;
 pub mod checkout;
@@ -21,6 +23,9 @@ pub mod recovery;
 mod repository;
 pub mod schema;
 mod sqlite;
+pub mod worktrees;
+pub mod worktree_audit;
+pub mod vfs_recovery;
 mod write_batch;
 
 pub use admission::CompositeAdmissionResolver;

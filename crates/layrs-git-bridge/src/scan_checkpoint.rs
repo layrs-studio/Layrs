@@ -6,8 +6,8 @@ use crate::Result;
 use import::{AcquiredScan, FrozenMetadata};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, File},
+    io::{BufWriter, Read, Write},
     path::PathBuf,
 };
 
@@ -50,44 +50,23 @@ pub fn prepare_git_scan_checkpoint(
             .file_name()
             .ok_or_else(|| invalid("checkpoint filename missing"))?,
     );
-    let source_git = process::Git::new(&source, limits)?;
-    let common = source_git.run(
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        None,
-        16_384,
-    )?;
-    let common = fs::canonicalize(utf8(&common)?.trim())?;
+    let source_git = process::Git::for_import(&source, limits)?;
+    let common = source_git.import_common_path()?;
     if within(&destination, &source) || within(&destination, &common) {
         return Err(invalid("scan checkpoint must be outside the Git source"));
     }
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Err(invalid("scan checkpoint destination must not exist"));
-    }
-    let acquired = import::acquire(&source, selection, limits, callback)?;
+    let publication =
+        layrs_store_local::anchored_export::ScanCheckpointDestination::capture(&destination)?;
+    let acquired = import::acquire_with(&source_git, selection, limits, callback)?;
+    source_git.verify_import_source()?;
     validation::validate(&acquired, limits)?;
     let header = canonical_json(&acquired.metadata).map_err(invalid)?;
     if header.len() > MAX_HEADER.min(limits.max_total_bytes) {
         return Err(BridgeError::Limit("scan checkpoint header"));
     }
-    // A temporary sibling is exclusively created; hard-link publication cannot
-    // replace an existing destination on either Unix or Windows. Unsupported
-    // filesystems fail explicitly. A crashed partial sibling is never resumed.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(invalid)?
-        .as_nanos();
-    let pending = parent.join(format!(
-        ".layrs-git-scan-{}-{nonce}.incomplete",
-        std::process::id()
-    ));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&pending)?;
+    // Amortize the retained-parent verification across serialized fragments;
+    // the underlying writer still guards every physical write and publication.
+    let mut file = BufWriter::with_capacity(1024 * 1024, publication.begin()?);
     let mut hash = Sha256::new();
     let mut emit = |bytes: &[u8]| -> Result<()> {
         file.write_all(bytes)?;
@@ -113,11 +92,10 @@ pub fn prepare_git_scan_checkpoint(
     }
     let digest = hash.finalize();
     file.write_all(&digest)?;
-    file.sync_all()?;
-    drop(file);
-    fs::hard_link(&pending, &destination)?;
-    // Only the exact sibling created above is removed, never a caller path.
-    fs::remove_file(&pending)?;
+    file.flush()?;
+    file.into_inner()
+        .map_err(|error| error.into_error())?
+        .publish()?;
     Ok(GitScanCheckpoint {
         path: destination,
         digest: format!("sha256:{digest:x}"),

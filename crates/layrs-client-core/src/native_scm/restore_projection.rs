@@ -208,7 +208,7 @@ pub(super) fn preview_changes(
     if total.is_none() {
         return Ok(diff::diff_projection_entries(before, after));
     }
-    let store = layrs_store_local::scm_v1::open(workspace.store_root())?;
+    let store = workspace.open_store()?;
     let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
     let entries=|projection:&[CheckoutProjectionEntry]|->Result<Vec<layrs_store_local::scm_v1::checkout::CheckoutEntry>> {
         use layrs_store_local::scm_v1::checkout::{CheckoutContent,CheckoutEntry};

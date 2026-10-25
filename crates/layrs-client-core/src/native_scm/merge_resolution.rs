@@ -1,8 +1,7 @@
 use super::*;
 use crate::native_scm::{prepare, references::base_step, rewrite, SnapshotLimits};
-use layrs_store_local::scm_v1::{
-    materialize::{self, MaterializationFaults, NoMaterializationFaults},
-    NativeScmRepository,
+use layrs_store_local::scm_v1::materialize::{
+    self, MaterializationFaults, NoMaterializationFaults,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,7 +56,7 @@ impl NativeWorkspace {
             materialized: active && clean,
             already_accepted: false,
         };
-        let store = open(self.store_root())?;
+        let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
         if let Some(operation) = reader.get_operation(&preview.stamp.operation_id)? {
             let view = reader
@@ -80,16 +79,12 @@ impl NativeWorkspace {
             .current_repository_view(source.space.id())?
             .ok_or(NativeClientError::Missing("current View"))?;
         let heads = reader.operation_heads(source.space.id())?;
-        if current.view_id() != Some(source.view.id())
-            || reader
-                .worktree_active_operation(self.worktree_id())?
-                .as_ref()
-                != Some(source.operation.id())
+        if reader
+            .worktree_active_operation(self.worktree_id())?
+            .as_ref()
+            != Some(source.operation.id())
         {
             return Err(NativeClientError::StaleCapture);
-        }
-        if heads != [source.operation.id().clone()] {
-            return Err(NativeClientError::NeedsIntegration);
         }
         if active
             && !matches!(
@@ -191,7 +186,7 @@ impl NativeWorkspace {
         let operation = prepare::operation(
             &preview.stamp,
             source.space.id().clone(),
-            heads.clone(),
+            vec![source.operation.id().clone()],
             &view,
             OperationKind::ResolveConflict,
             "Resolve canonical conflicts",
@@ -213,9 +208,13 @@ impl NativeWorkspace {
                 )?),
                 StoreMutation::OperationHeads(OperationHeadsCas::new(
                     source.space.id().clone(),
-                    heads,
+                    heads.clone(),
                     preview.stamp.operation_id.clone(),
-                    vec![preview.stamp.operation_id.clone()],
+                    super::super::worktree_operations::advance_heads(
+                        &heads,
+                        source.operation.id(),
+                        &preview.stamp.operation_id,
+                    ),
                 )?),
                 StoreMutation::WorktreeActiveOperation(WorktreeActiveOperationCas::new(
                     self.worktree_id().clone(),
@@ -228,8 +227,10 @@ impl NativeWorkspace {
         drop(store);
         if active && clean {
             let before = self.read_step_files(&base_step(source)?)?;
-            materialize::apply_checkout(
+            materialize::apply_checkout_bound_metadata(
                 self.store_root(),
+                self.store_identity(),
+                self.metadata_identity(),
                 self.worktree_id(),
                 &before,
                 &after,
@@ -237,7 +238,7 @@ impl NativeWorkspace {
                 faults,
             )?;
         } else {
-            NativeScmRepository::new(self.store_root()).apply_batch(&batch)?;
+            self.client.repository().apply_batch(&batch)?;
         }
         Ok(outcome)
     }

@@ -7,7 +7,10 @@ import {
   type NativeNamespacePreviewRequest,
   type NativeProjectFilesSnapshot,
   type NativeProjectionStatus,
+  type NativeProjectionSelection,
 } from "@layrs/ui";
+import { expandSelectionRequest } from "./selection";
+import { filesystemRecoveryRequest, type ConversionInspection } from "./offline";
 import { nativeProjection } from "../tauri";
 import { useRemote } from "./remote";
 import { rememberTarget, rememberedTarget, type RemoteTarget } from "./serverMemory";
@@ -47,10 +50,11 @@ type ProjectionApi = {
   /** Runs one native call after the previous ones: the local store admits one opener per process. */
   serial: <T>(work: () => Promise<T>) => Promise<T>;
   refresh: () => Promise<void>;
-  resume: (kind: ResumeKind) => Promise<void>;
+  resume: (kind: ResumeKind, inspection: ConversionInspection) => Promise<void>;
   capture: () => Promise<void>;
   publish: (candidate?: boolean) => Promise<void>;
   receive: () => Promise<void>;
+  expandSelection: (expectedGeneration: number, selection: NativeProjectionSelection) => Promise<void>;
   previewNamespace: (request: NativeNamespacePreviewRequest) => Promise<void>;
   applyNamespace: () => Promise<void>;
   previewDirectory: (source: string, destination: string) => Promise<void>;
@@ -69,7 +73,7 @@ export function useProjection() {
 }
 
 /** Limited-access folder: only authorized files, reserved names kept visible without content. */
-export function ProjectionProvider({ children }: { children: ReactNode }) {
+export function ProjectionProvider({ children, mode = "ordinary" }: { children: ReactNode; mode?: "ordinary" | "inspection" }) {
   const workspace = useWorkspace();
   const remote = useRemote();
   const { root, acquire, release, setError } = workspace;
@@ -87,6 +91,8 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
   const generation = useRef(0);
   const active = useRef(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const serial = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
     const run = queue.current.then(work, work);
     queue.current = run.catch(() => undefined);
@@ -145,15 +151,20 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
   );
 
   // Inside `perform` the queue is already held: read directly there.
-  const status = useCallback(() => nativeProjection<NativeProjectionStatus>(root, { action: "status" }), [root]);
+  const status = useCallback(() => {
+    // Ordinary open can migrate a legacy source. Conversion and Diagnostic
+    // must use read-only inspection, including refreshes after explicit recovery.
+    if (modeRef.current === "inspection") return Promise.reject(new Error("Utilisez l’inspection en lecture seule de la source sur cette page."));
+    return nativeProjection<NativeProjectionStatus>(root, { action: "status" });
+  }, [root]);
 
   // A read: allowed while another view works, guarded against late answers.
   const refresh = useCallback(async () => {
     const revision = generation.current;
     setError("");
     try {
-      const next = await serial(status);
-      if (revision === generation.current) {
+      const next = await serial(() => revision === generation.current ? status() : Promise.resolve(null));
+      if (next && revision === generation.current) {
         accept(next);
         setNamespacePreview(null);
       }
@@ -175,17 +186,18 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
     setLastRestore("");
     setNotice(null);
     setTargetState(rememberedTarget(root));
-    void refresh();
+    if (mode === "ordinary") void refresh();
     return () => {
       generation.current++;
     };
-    // The folder is the only identity of this provider.
+    // Changing read mode invalidates ordinary status without replacing the
+    // native queue or permitting inspection routes to open/migrate the source.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [root]);
+  }, [root, mode]);
 
   let files: NativeProjectFilesSnapshot | null = null;
   try {
-    if (data) files = projectionStoreFiles(data);
+    if (data && mode === "ordinary") files = projectionStoreFiles(data);
   } catch {
     // A malformed registry stays read-only.
   }
@@ -200,14 +212,14 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
   );
 
   const resume = useCallback(
-    (kind: ResumeKind) =>
+    (kind: ResumeKind, inspection: ConversionInspection) =>
       perform("Reprise…", async (revision) => {
-        await nativeProjection(root, { action: kind });
-        const next = await status();
+        await nativeProjection(root, filesystemRecoveryRequest(inspection, kind));
+        const next = modeRef.current === "ordinary" ? await status() : null;
         if (revision === generation.current) {
-          accept(next);
+          if (next) accept(next);
           clearPreviews();
-          setNotice({ tone: "success", text: "Opération locale reprise et vérifiée." });
+          setNotice({ tone: "success", text: next ? "Opération locale reprise et vérifiée." : "Reprise exécutée. Relisez l’inspection du dossier pour vérifier son état." });
         }
       }),
     [perform, root, status, accept, clearPreviews],
@@ -219,8 +231,12 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
         if (!data || !ready || data.capabilities.capture !== true) return;
         const result = await nativeProjection<NativeCapturedProjectionPatch>(root, { action: "capture", expectedGeneration: data.projection.generation });
         if (!projectionCaptureMatches(data, result)) throw new Error("Capture incohérente avec l’accès limité ouvert. Actualisez avant de poursuivre.");
+        // The first capture after conversion changes provenance and publication
+        // capabilities. Ordinary captures already return their exact local patch.
+        const next = data.latestCaptureImported === true ? await status() : null;
         if (revision === generation.current) {
-          setPatch(result);
+          if (next) accept(next);
+          else setPatch(result);
           setNamespacePreview(null);
           setNotice({
             tone: "success",
@@ -230,13 +246,13 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
           });
         }
       }),
-    [perform, data, ready, root],
+    [perform, data, ready, root, status, accept],
   );
 
   const publish = useCallback(
     (candidate = false) =>
       perform(candidate ? "Envoi pour revue…" : "Publication…", async (revision) => {
-        if (!data || !patch || !ready || data.capabilities.publish !== true || !target?.layerId) return;
+        if (!data || !patch || !ready || data.latestCaptureImported === true || data.capabilities.publish !== true || !target?.layerId) return;
         const result = await track(
           { kind: candidate ? "candidates" : "publish", label: candidate ? "Envoi pour revue" : "Publication de la capture", context: "publish" },
           async () => {
@@ -307,6 +323,27 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
         }
       }),
     [perform, data, ready, target, track, transport, status, accept],
+  );
+
+  const expandSelection = useCallback(
+    (expectedGeneration: number, selection: NativeProjectionSelection) =>
+      perform("Élargissement de la sélection…", async (revision) => {
+        // Re-read under the foreground queue, while retaining the generation the user saw.
+        const before = await status();
+        const request = expandSelectionRequest(before, expectedGeneration, selection);
+        await track(
+          { kind: "receive", label: "Téléchargement des chemins ajoutés", context: "receive" },
+          () => transport(request),
+          () => ({ tone: "success", title: "Sélection élargie et fichiers vérifiés." }),
+        );
+        const next = await status();
+        if (revision === generation.current) {
+          accept(next);
+          clearPreviews();
+          setNotice({ tone: "success", text: "Sélection élargie. Les fichiers disponibles et autorisés ont été téléchargés ; les autres chemins restent identifiés." });
+        }
+      }),
+    [perform, status, track, transport, accept, clearPreviews],
   );
 
   const previewNamespace = useCallback(
@@ -430,7 +467,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ProjectionApi>(
     () => ({
-      data,
+      data: mode === "ordinary" ? data : null,
       files,
       ready,
       patch,
@@ -454,6 +491,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
       capture,
       publish,
       receive,
+      expandSelection,
       previewNamespace,
       applyNamespace,
       previewDirectory,
@@ -464,7 +502,7 @@ export function ProjectionProvider({ children }: { children: ReactNode }) {
     }),
     // `files` and `ready` derive from `data`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, patch, busy, notice, target, setTarget, candidateId, history, namespacePreview, directoryPreview, restorePreview, lastRestore, clearPreviews, perform, isCurrent, refresh, resume, capture, publish, receive, previewNamespace, applyNamespace, previewDirectory, applyDirectory, loadHistory, prepareRestore, applyRestore],
+    [mode, data, patch, busy, notice, target, setTarget, candidateId, history, namespacePreview, directoryPreview, restorePreview, lastRestore, clearPreviews, perform, isCurrent, refresh, resume, capture, publish, receive, expandSelection, previewNamespace, applyNamespace, previewDirectory, applyDirectory, loadHistory, prepareRestore, applyRestore],
   );
 
   return <ProjectionContext.Provider value={value}>{children}</ProjectionContext.Provider>;

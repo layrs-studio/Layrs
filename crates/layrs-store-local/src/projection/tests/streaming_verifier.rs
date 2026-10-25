@@ -218,6 +218,6 @@ fn failed_schema_migration_rolls_back_all_ddl_and_retries() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
 }

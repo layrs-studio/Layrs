@@ -1,8 +1,14 @@
 mod blocks;
 mod git;
+pub(crate) mod offline;
+mod vfs;
+mod worktree;
 pub use blocks::BlockChoice;
+pub use offline::OfflineCommand;
 use std::fmt;
 use std::path::PathBuf;
+pub use vfs::VfsCommand;
+pub use worktree::WorktreeCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
@@ -19,6 +25,9 @@ pub struct GlobalFlags {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
+    Offline(OfflineCommand),
+    Vfs(VfsCommand),
+    Worktree(WorktreeCommand),
     ResolveBlock {
         layer: String,
         conflict: String,
@@ -367,6 +376,11 @@ where
             )?
         }
         "remote" => CliCommand::Remote { args },
+        "worktree" => CliCommand::Worktree(worktree::parse(args)?),
+        "vfs" => CliCommand::Vfs(vfs::parse(args)?),
+        "partial" if args.first().is_some_and(|arg| arg == "offline") => {
+            CliCommand::Offline(offline::parse(args.into_iter().skip(1).collect())?)
+        }
         "partial" => CliCommand::Partial { args },
         "init" => parse_init(args)?,
         "step" => parse_no_extra(args, CliCommand::Step)?,

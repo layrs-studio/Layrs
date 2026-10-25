@@ -10,7 +10,14 @@ pub fn diagnose_checkout(root: impl AsRef<Path>) -> Result<Value> {
         .ancestors()
         .find(|path| path.join(".layrs").exists())
         .ok_or(NativeClientError::Missing("checkout .layrs directory"))?;
-    let report = scm_v1::fsck_existing(checkout.join(".layrs"), FsckOptions::default())
+    scm_v1::checkout::CheckoutReader::open(checkout, None)?;
+    let metadata = std::fs::symlink_metadata(checkout.join(".layrs"))?;
+    let store_root = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        checkout.join(".layrs")
+    } else {
+        super::NativeWorkspace::resolve_store_for_audit(checkout)?
+    };
+    let report = scm_v1::fsck_existing(store_root, FsckOptions::default())
         .map_err(|e| NativeClientError::InvalidSnapshot(format!("integrity inspection: {e}")))?;
     Ok(json!({
         "clean": report.is_clean(), "complete": !report.is_truncated(),

@@ -47,7 +47,32 @@ mod transfer_control;
 pub use transfer_control::{NativeTransferCancelStatus, NativeTransferControl};
 mod selection;
 mod snapshot;
+mod vfs_source;
 mod workspace;
+pub use vfs_source::{VerifiedVfsSnapshot, VerifiedVfsSnapshotBinding};
+#[cfg(windows)]
+mod vfs_capture;
+#[cfg(windows)]
+mod vfs_worktree;
+#[cfg(windows)]
+mod vfs_host;
+#[cfg(windows)]
+mod vfs_commands;
+#[cfg(windows)]
+pub use vfs_capture::{VfsCaptureCounts, VfsFileRecord};
+#[cfg(windows)]
+pub use vfs_worktree::{
+    VfsWorktree, VfsWorktreeLocator, VfsWorktreeStatus, VfsCaptureReport, VfsCaptureBlockedReason,
+    VfsExportReport, VfsWorktreeFaults, NoVfsWorktreeFaults, is_vfs_worktree,
+    inspect_vfs_checkout, verify_registered_vfs_root,
+};
+#[cfg(windows)]
+pub use vfs_host::{VfsHost, VfsHostClient, VfsHostTicket, VfsHostCommand, VfsHostResponse};
+#[cfg(windows)]
+pub use vfs_commands::{prepare_vfs_host, execute_vfs_control, VfsLaunchAction, VfsControlRequest};
+mod worktrees;
+pub use worktrees::{NoWorktreeCreationFaults, WorktreeCreationFaults};
+mod worktree_operations;
 pub use remote::{
     NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
     NativePolicyReplacement, NativePolicyRulesEntry, NativePolicyRulesSnapshot,
@@ -58,6 +83,8 @@ pub use remote::{
 
 pub use commands::{execute_workspace, WorkspaceAction};
 mod partial;
+mod projection_offline_commands;
+pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
 pub use diff::{NativeDiffLine, NativeFileChange};
 pub use filesystem::capture_checkout;
 pub use layrs_graph::scm::{ReferenceSelector, StepSelector};

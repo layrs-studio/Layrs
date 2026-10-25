@@ -9,6 +9,8 @@ mod publication;
 mod rebase;
 mod refresh;
 mod restore;
+mod selection;
+mod shared;
 mod streaming_verifier;
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry},

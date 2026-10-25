@@ -63,8 +63,25 @@ pub fn compact_metadata_with_faults(
     root: impl AsRef<Path>,
     faults: &dyn CompactionFaults,
 ) -> CompactionResult<MetadataCompactionReport> {
+    compact_metadata_impl(root.as_ref(), faults, None)
+}
+
+pub(crate) fn compact_metadata_audited(
+    audit: &super::worktree_audit::AuditedWorktreeStore,
+) -> CompactionResult<MetadataCompactionReport> {
+    compact_metadata_impl(audit.store_root(), &NoFaults, Some(audit))
+}
+
+fn compact_metadata_impl(
+    root: &Path,
+    faults: &dyn CompactionFaults,
+    audit: Option<&super::worktree_audit::AuditedWorktreeStore>,
+) -> CompactionResult<MetadataCompactionReport> {
     let store = super::open_exclusive(root)?;
     let layout = store.layout();
+    if let Some(audit) = audit {
+        audit.validate(layout, store.store_id())?;
+    }
     database::require_empty_sidecars(layout.sqlite_path())?;
     let before_hash = journal::file_hash(layout.sqlite_path())?;
     let source = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(2))?;
@@ -104,6 +121,9 @@ pub fn compact_metadata_with_faults(
         restart_history_traversal: true,
     };
     faults.check(CompactionFaultPoint::CandidateReady)?;
+    if let Some(audit) = audit {
+        audit.validate(layout, store.store_id())?;
+    }
     let record = journal::Journal {
         report,
         before_hash,
@@ -111,13 +131,26 @@ pub fn compact_metadata_with_faults(
     };
     journal::publish(layout, &record)?;
     faults.check(CompactionFaultPoint::JournalDurable)?;
-    finish(layout, &record, faults)
+    finish(layout, &record, faults, audit)
 }
 
 /// Resumes a journaled physical replacement. An altered database, backup or
 /// candidate is refused; this API never guesses which logical state is correct.
 pub fn resume_metadata_compaction(
     root: impl AsRef<Path>,
+) -> CompactionResult<MetadataCompactionReport> {
+    resume_metadata_compaction_impl(root.as_ref(), None)
+}
+
+pub(crate) fn resume_metadata_compaction_audited(
+    audit: &super::worktree_audit::AuditedWorktreeStore,
+) -> CompactionResult<MetadataCompactionReport> {
+    resume_metadata_compaction_impl(audit.store_root(), Some(audit))
+}
+
+fn resume_metadata_compaction_impl(
+    root: &Path,
+    audit: Option<&super::worktree_audit::AuditedWorktreeStore>,
 ) -> CompactionResult<MetadataCompactionReport> {
     let initial = inspect(root)?;
     let (layout, id) = match initial {
@@ -127,6 +160,9 @@ pub fn resume_metadata_compaction(
         _ => return Err("compaction requires a Ready native Store".into()),
     };
     let _lock = StoreLock::acquire_existing(layout.lock_path(), SessionMode::Exclusive)?;
+    if let Some(audit) = audit {
+        audit.validate(&layout, &id)?;
+    }
     match inspect(layout.root())? {
         NativeStoreInspection::NativeReady { marker, .. } if marker.store_id() == &id => (),
         _ => return Err("compaction Store identity changed".into()),
@@ -135,14 +171,18 @@ pub fn resume_metadata_compaction(
     if record.report.store_id != id {
         return Err("compaction journal belongs to another Store".into());
     }
-    finish(&layout, &record, &NoFaults)
+    finish(&layout, &record, &NoFaults, audit)
 }
 
 fn finish(
     layout: &super::NativeStoreLayout,
     record: &journal::Journal,
     faults: &dyn CompactionFaults,
+    audit: Option<&super::worktree_audit::AuditedWorktreeStore>,
 ) -> CompactionResult<MetadataCompactionReport> {
+    if let Some(audit) = audit {
+        audit.validate(layout, &record.report.store_id)?;
+    }
     journal::validate(layout, record)?;
     let backup = record.report.backup_directory.join("before.sqlite3");
     database::verify(&backup, &record.report)?;
@@ -161,9 +201,15 @@ fn finish(
         return Err("compaction live database changed; preserve backup and journal".into());
     }
     faults.check(CompactionFaultPoint::DatabasePublished)?;
+    if let Some(audit) = audit {
+        audit.validate(layout, &record.report.store_id)?;
+    }
     database::verify(layout.sqlite_path(), &record.report)?;
     journal::complete(layout, record)?;
     faults.check(CompactionFaultPoint::CompletionDurable)?;
+    if let Some(audit) = audit {
+        audit.validate(layout, &record.report.store_id)?;
+    }
     fs::remove_file(layout.metadata_dir().join(ACTIVE))?;
     sync_directory(layout.metadata_dir())?;
     Ok(record.report.clone())
