@@ -37,7 +37,15 @@ pub(crate) async fn snapshot(
     let choose_authorization = if super::transaction_choose::required(request)
         || super::transaction_policy::required(request)
     {
-        Some(super::transaction_choose::authorize(repository, principal, authority).await?)
+        Some(
+            super::transaction_choose::authorize(
+                repository,
+                principal,
+                authority,
+                super::transaction_choose::required(request),
+            )
+            .await?,
+        )
     } else {
         None
     };

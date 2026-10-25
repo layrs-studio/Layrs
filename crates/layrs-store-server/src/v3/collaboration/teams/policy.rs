@@ -1,6 +1,6 @@
 use super::*;
 impl PgCollaborationStore {
-    pub(super) async fn install_team_policy(
+    pub(crate) async fn install_team_policy(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         authority: &SpaceAuthority,

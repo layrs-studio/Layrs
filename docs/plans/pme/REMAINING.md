@@ -1,7 +1,13 @@
-# Reste à faire — audit du 23 septembre 2026
+# Reste à faire — moteur et distribution
+
+Revu le 5 octobre 2026 : le périmètre ci-dessous reprend l’audit technique du
+23 septembre. La refonte a progressé depuis ; son statut et ses propres limites
+figurent dans [l’état courant](../../STATUS.md) et le
+[registre UI](../../design/redesign/03-delivery.md). Les paquets et résultats
+datés ci-dessous restent des preuves antérieures, pas une livraison de la refonte.
 
 Les huit plans ne sont pas entièrement clos. Le [point de reprise](REPRISE.md)
-et les [preuves courantes](measurements/partial-qualification-2026-09-23.md)
+et les [preuves techniques du 23 septembre](measurements/partial-qualification-2026-09-23.md)
 prévalent sur les anciens checkpoints. La projection partielle est livrée dans
 son périmètre documenté ; elle n'est plus un choix produit en attente.
 
@@ -104,6 +110,7 @@ et signature de publication ne sont pas devenus des capacités livrées.
 
 [Journal T4](journal/T4.md), [intégration partielle](journal/PARTIAL-INTEGRATION.md),
 [journal T8](journal/T8.md), [manifestes qualified6](measurements/partial-artifacts-2026-09-23.json).
-Les archives natives courantes sont qualified6 ; [MSI qualified7](measurements/partial-desktop-followup-2026-09-23.json)
+Les dernières archives natives qualifiées avant la refonte sont qualified6 ; [MSI qualified7](measurements/partial-desktop-followup-2026-09-23.json)
 pour le complément UI. Les archives qualified4/5 sont historiques. Les paquets
-sont non signés ; MSI vérifié mais non installé. Aucun push ni déploiement.
+sont non signés ; MSI vérifié mais non installé. Aucune distribution de la refonte
+n’est qualifiée par ces anciens artefacts.

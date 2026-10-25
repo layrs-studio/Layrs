@@ -230,7 +230,17 @@ async fn main() -> Result<()> {
         layrs_server::collaboration::CollaborationHttpState::new(
             repository.clone(),
             Arc::new(identity.clone()),
-        ),
+        )
+        .with_trusted_lens_keys(layrs_store_server::v3::TrustedLensKeys::parse(
+            match std::env::var("LAYRS_LENS_TRUSTED_KEYS") {
+                Ok(value) => Some(value),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    return Err("invalid LAYRS_LENS_TRUSTED_KEYS encoding".into());
+                }
+            }
+            .as_deref(),
+        )?),
     );
     let webhooks = layrs_server::webhooks::WebhookService::new(
         repository.clone(),
@@ -312,10 +322,12 @@ async fn grant_runtime_role(pool: &PgPool, role: &str) -> Result<()> {
 async fn verify_deployment(pool: &PgPool, config: &ServerConfig) -> Result<()> {
     let expected =
         serde_jcs::to_string(&serde_json::json!({"path":config.cas_root.to_string_lossy()}))?;
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN stores s USING(store_id) WHERE d.deployment_id=$1 AND d.store_id=$2 AND d.status='ready' AND s.backend_kind='filesystem' AND s.backend_config_jcs=$3)")
-        .bind(&config.deployment_id).bind(config.store_id.as_str()).bind(expected).fetch_one(pool).await?;
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN stores s USING(store_id) JOIN layrs_collaboration.deployment_project_contexts c USING(deployment_id) WHERE d.deployment_id=$1 AND d.store_id=$2 AND d.status='ready' AND s.backend_kind='filesystem' AND s.backend_config_jcs=$3 AND (c.multi_organisation_managed OR c.multi_organisation_enabled=$4) AND c.personal_projects_enabled=$5)")
+        .bind(&config.deployment_id).bind(config.store_id.as_str()).bind(expected)
+        .bind(config.multi_organisation_enabled).bind(config.personal_projects_enabled)
+        .fetch_one(pool).await?;
     if !valid {
-        return Err("configured deployment or CAS differs from installation".into());
+        return Err("configured deployment, CAS or project context options differ from installation; run initialize first".into());
     }
     Ok(())
 }

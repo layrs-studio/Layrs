@@ -16,8 +16,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 hmac = "0.12"
 layrs-core = { path = "../layrs-core" }
 layrs-graph = { path = "../layrs-graph" }
+layrs-lens-sdk = { path = "../layrs-lens-sdk" }
 layrs-store = { path = "../layrs-store" }
 layrs-weave = { path = "../layrs-weave" }
+ring = "0.17"
 layrs-sync = { path = "../layrs-sync" }
 serde = { workspace = true }
 serde_jcs = "0.1"

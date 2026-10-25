@@ -16,12 +16,14 @@ import {
   Banner,
   Button,
   DiffView,
+  LensViewer,
   EmptyState,
   Kbd,
   Link,
   Menu,
   PageHeader,
   SegmentedControl,
+  SelectField,
   StatusDot,
   Switch,
   diffStats,
@@ -33,6 +35,7 @@ import {
   type DiffMode,
 } from "@layrs/ui";
 import { useWorkspace, type FileChange } from "../app/workspace";
+import { useCapturedChanges } from "./useCapturedChanges";
 
 const codeExtensions = /\.(tsx?|jsx?|mjs|cjs|rs|py|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|css|scss|html?|vue|svelte|sh|ps1|sql|toml|ya?ml)$/i;
 
@@ -59,7 +62,11 @@ export function ChangesPage() {
   const workspace = useWorkspace();
   const { data, busy, conflicted, activeLayer, automatic, setAutomatic, autoActivity } = workspace;
   const toast = useToast();
-  const changes = useMemo(() => data?.changes ?? [], [data]);
+  const pendingChanges = useMemo(() => data?.changes ?? [], [data]);
+  const own = data?.state.view.worktrees.find((item) => item.worktreeId === data.state.worktree.worktreeId);
+  const captured = useCapturedChanges(workspace.root, own?.worktreeId, own?.activeLayerId, own?.baseStepId);
+  const showingCapture = Boolean(own?.baseStepId && !pendingChanges.length && !conflicted && !data?.needsRepair);
+  const changes = showingCapture ? captured.changes ?? [] : pendingChanges;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [mode, setMode] = useState<DiffMode>("split");
   const listRef = useRef<HTMLUListElement>(null);
@@ -71,10 +78,9 @@ export function ChangesPage() {
     if (selectedPath && !changes.some((change) => change.path === selectedPath)) setSelectedPath(null);
   }, [changes, selectedPath]);
 
-  const lastCapture = useMemo(
-    () => data?.operations.find((operation) => operation.kind === "capture_worktree"),
-    [data],
-  );
+  const lastCapture = captured.observation;
+  const captureTitle = lastCapture ? "Dernière capture" : "Capture de référence";
+  const autoEnabled = automatic && activeLayer?.settings.automaticCapture;
 
   const captureBlocked = !data
     ? "Le projet n’est pas encore ouvert."
@@ -82,7 +88,7 @@ export function ChangesPage() {
       ? "Une opération interrompue doit d’abord être reprise."
       : conflicted
         ? "Résolvez d’abord les conflits de la fusion en cours."
-        : !changes.length
+        : !pendingChanges.length
           ? "Aucun changement à capturer."
           : undefined;
 
@@ -123,8 +129,8 @@ export function ChangesPage() {
   const layerName = activeLayer?.name ?? "ce Layer";
   const description = !data
     ? "Lecture de l’état local…"
-    : changes.length
-      ? `${changes.length} fichier${changes.length > 1 ? "s" : ""} modifié${changes.length > 1 ? "s" : ""} dans ${layerName}`
+    : pendingChanges.length
+      ? `${pendingChanges.length} fichier${pendingChanges.length > 1 ? "s" : ""} modifié${pendingChanges.length > 1 ? "s" : ""} dans ${layerName}`
       : `Votre travail local est capturé dans ${layerName}`;
 
   return (
@@ -154,13 +160,21 @@ export function ChangesPage() {
                   </span>
                 </StatusDot>
                 <span className="changes__auto-meta">
-                  {lastCapture ? `Dernière capture ${formatRelativeTime(lastCapture.createdAt)}` : "Aucune capture pour l’instant"}
+                  {lastCapture ? `Dernière capture ${formatRelativeTime(lastCapture.observedAt)}` : own?.baseStepId ? "État capturé disponible" : "Aucune capture pour l’instant"}
                 </span>
               </div>
             </div>
           }
         />
       </div>
+
+      <p className="changes__composer-hint">
+        {autoEnabled
+          ? "Layrs capture automatiquement vos fichiers après une pause dans vos modifications."
+          : "La capture automatique est en pause : capturez vos modifications avec le bouton ci-dessous."}
+        {" "}« En cours » montre les différences depuis la capture la plus récente, automatique ou manuelle.
+        {" "}Pour retrouver une étape importante, <Link to={`/projects/${projectKey}/versions`}>nommez une version</Link>.
+      </p>
 
       {conflicted && (
         <Banner
@@ -189,11 +203,24 @@ export function ChangesPage() {
         </Banner>
       )}
 
+      {showingCapture && <Banner tone="info" title="Aucun changement en attente de capture">
+        {lastCapture
+          ? "La dernière capture a enregistré ces modifications. Elles restent visibles ci-dessous jusqu’à vos prochaines modifications."
+          : "Le dossier correspond à sa capture de référence. Les différences de cette capture sont affichées ci-dessous ; elle n’a pas été créée dans ce dossier."}
+        {" "}<Link to={`/projects/${projectKey}/sync`}>Ouvrir la synchronisation pour publier ou vérifier l’état du serveur</Link>.
+      </Banner>}
+      {showingCapture && captured.loading && <p role="status">Lecture des fichiers de la dernière capture…</p>}
+      {showingCapture && captured.error && <Banner tone="warning" title="La dernière capture n’a pas pu être affichée" actions={<Button onClick={captured.retry}>Réessayer</Button>}>{captured.error}</Banner>}
+      {showingCapture && (captured.parents?.length ?? 0) > 1 && <SelectField label="Comparer la fusion à une capture parente" value={captured.parent} onChange={(event) => captured.setParent(event.target.value)}>
+        <option value="">Choisissez la capture de référence</option>
+        {captured.parents?.map((parent, index) => <option key={parent} value={parent}>Parent {index + 1} · {parent.slice(7, 19)}</option>)}
+      </SelectField>}
       <div className="changes__body">
-        <section className="changes__files" aria-label="Fichiers modifiés">
+        <section className="changes__files" aria-label={showingCapture ? lastCapture ? "Fichiers de la dernière capture" : "Fichiers de la capture de référence" : "Fichiers modifiés"}>
           <h2 className="changes__files-title">
             <ChevronDown aria-hidden size={16} />
-            Fichiers modifiés <span className="changes__count">({changes.length})</span>
+            {showingCapture ? captureTitle : "En cours"} <span className="changes__count">({changes.length})</span>
+            {showingCapture && lastCapture && <Badge tone="info">{lastCapture.captureReason === "automatic_idle" ? "Automatique" : "Locale"}</Badge>}
           </h2>
           {changes.length ? (
             <ul ref={listRef} className="changes__list" onKeyDown={onListKeyDown}>
@@ -202,8 +229,8 @@ export function ChangesPage() {
               ))}
             </ul>
           ) : (
-            <EmptyState compact icon={<CheckCircle2 size={22} />} title="Aucune modification de fichier.">
-              Les nouvelles modifications de ce dossier apparaîtront ici.
+            <EmptyState compact icon={<CheckCircle2 size={22} />} title={showingCapture ? "Aucune différence affichée." : "Aucune modification en attente."}>
+              {showingCapture ? captured.parents && captured.parents.length > 1 && !captured.parent ? "Choisissez un parent pour comparer cette fusion." : "Les captures précédentes restent disponibles dans l’historique." : "Après capture automatique, les fichiers passent dans la dernière capture."}
             </EmptyState>
           )}
         </section>
@@ -260,7 +287,7 @@ export function ChangesPage() {
             >
               {data && (
                 <>
-                  Modifiez des fichiers dans <code>{workspace.root}</code> : ils apparaîtront ici pour comparaison.{" "}
+                  {showingCapture ? "Cette vue montre la capture enregistrée, sans modifier vos fichiers. " : <>Modifiez des fichiers dans <code>{workspace.root}</code> pour les comparer. </>}
                   <Link to={`/projects/${projectKey}/history`}>Voir l’historique</Link>
                 </>
               )}
@@ -271,10 +298,9 @@ export function ChangesPage() {
 
       <footer className="changes__composer" aria-label="Créer une capture">
         <div className="changes__composer-text">
-          <p className="changes__composer-title">Capture de tout le travail de {layerName}</p>
+          <p className="changes__composer-title">{autoEnabled ? "Capturer maintenant, sans attendre" : `Capturer les modifications de ${layerName}`}</p>
           <p className="changes__composer-hint">
-            Enregistrée sur cet ordinateur, elle n’est pas publiée. Les captures n’ont pas encore de message :
-            nommez un état important depuis Versions.
+            Une capture enregistre l’état du dossier sur cet ordinateur. La publication se fait depuis Synchronisation.
           </p>
         </div>
         <span className="changes__composer-keys" aria-hidden>
@@ -339,5 +365,5 @@ function DiffContent({ change, mode }: { change: FileChange; mode: DiffMode }) {
         Taille : {formatBytes(change.beforeBytes)} → {formatBytes(change.afterBytes)}. Ouvrez-le dans votre éditeur pour le comparer.
       </EmptyState>
     );
-  return <DiffView lines={change.textDiff} mode={mode} />;
+  return <LensViewer input={{ kind: "diff", path: change.path, lines: change.textDiff }} fallback={<DiffView lines={change.textDiff} mode={mode} />} />;
 }

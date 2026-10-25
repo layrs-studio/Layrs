@@ -13,6 +13,11 @@ Layrs keeps product concepts separate from Git concepts:
 - **Lens**: preview, diff and reconcile adapter for a file type.
 - **Weave**: review and reconciliation flow between Layers.
 
+See the [current project status](docs/STATUS.md) and the
+[documentation index](docs/README.md) for delivery scope, validation and limits.
+For project creation and server-managed extensions, see the
+[projects and lenses guide](docs/guides/projects-and-lenses.md).
+
 ## Architecture
 
 Local behavior is implemented once in `layrs-client-core`. Studio Desktop and
@@ -25,7 +30,9 @@ compaction are part of the durability story, but performance must never be
 optimized by allowing silent data loss.
 
 Studio Web is the server interface for Workspaces, Teams, Spaces, Layers,
-access rules, devices, reviews and Weaves. Studio Desktop and Studio CLI
+access rules, devices, reviews and Weaves. Studio Web creates projects and
+installs server-side Lens packages; each project pins exact versions, and Web
+and Desktop download its verified client viewers as needed. Studio Desktop and Studio CLI
 are the local-first client surfaces.
 
 ## Common Commands

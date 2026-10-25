@@ -1,7 +1,7 @@
+use layrs_client_core::native_scm::{checkout_kind, execute_projection, ProjectionAction};
 use layrs_client_core::native_scm::{
-    NativeRemoteRequest, WorkspaceAction, execute_remote, execute_workspace,
+    execute_remote, execute_workspace, NativeRemoteRequest, WorkspaceAction,
 };
-use layrs_client_core::native_scm::{ProjectionAction, checkout_kind, execute_projection};
 
 #[tauri::command]
 pub async fn native_checkout_kind(root: String) -> Result<String, String> {

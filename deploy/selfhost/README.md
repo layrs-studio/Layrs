@@ -1,6 +1,6 @@
-# Instance native mono-serveur — intégration en cours
+# Instance native mono-serveur — exploitation et qualification locale
 
-Ce dossier compose PostgreSQL, le CAS filesystem persistant, le serveur V3 réel et Studio Web derrière Caddy HTTPS, sur la même origine. Le bundle Web fournit connexion, consultation des références publiées et revues ; le flux d'autorisation d'appareil possède sa page `/auth/device`. L'assemblage a passé une [recette locale HTTPS complète](LOCAL-PILOT.md), avec bootstrap, provisioning, restart et révocation. Cette preuve sur images identifiées ne constitue pas encore une distribution PME qualifiée ni un pilote client.
+Ce dossier compose PostgreSQL, le CAS filesystem persistant, le serveur V3 réel et Studio Web derrière Caddy HTTPS, sur la même origine. Le bundle Web fournit connexion, consultation des références publiées et revues ; le flux d'autorisation d'appareil possède sa page `/auth/device` et son script `/auth/device.js`, tous deux routés vers le backend. L'assemblage a passé une [recette locale HTTPS complète](LOCAL-PILOT.md), avec bootstrap, provisioning, restart et révocation. Cette preuve sur images identifiées ne constitue pas encore une distribution PME qualifiée ni un pilote client.
 
 ## Installation neuve
 
@@ -14,7 +14,7 @@ Prévoir un hôte Linux avec Docker Compose, un nom DNS public pointant vers lui
 
 Le bootstrap consomme atomiquement son empreinte. Deux demandes concurrentes ne peuvent pas créer deux premiers administrateurs. Redémarrer `initialize` ne réarme pas le bootstrap. Le secret du fichier n'est utilisé que pour préparer la première installation ; l'empreinte consommée persiste en base.
 
-Après bootstrap, ouvrir `https://VOTRE_HOTE/` et se connecter. Studio garde le Bearer uniquement en mémoire ; recharger la page demande une nouvelle connexion. Les identifiants de projet proviennent de `layrs init` / `layrs remote provision` ou du Desktop. Le proxy réserve `/v3/*` et `/auth/device` au backend ; les fichiers Web sont servis sur la même origine et les corps privés ne sont pas mis en cache. `Web.Dockerfile` compile le monorepo avec le lockfile pnpm, puis copie seulement les assets dans l'image Caddy.
+Après bootstrap, ouvrir `https://VOTRE_HOTE/` et se connecter. Studio garde le Bearer uniquement en mémoire ; recharger la page demande une nouvelle connexion. **Projets → Nouveau projet** prépare un projet dans le contexte sélectionné, avec son Layer initial et ses versions de lenses. Une installation neuve utilise son entreprise ; organisations multiples et projets personnels sont deux options indépendantes, désactivées par défaut. Desktop utilise le même catalogue et le même choix de contexte. Le proxy réserve `/v3/*` et `/auth/device` au backend ; les fichiers Web sont servis sur la même origine et les corps privés ne sont pas mis en cache. `Web.Dockerfile` compile le monorepo avec le lockfile pnpm, puis copie seulement les assets dans l'image Caddy.
 
 ## Authentification et récupération
 
@@ -23,7 +23,39 @@ Après bootstrap, ouvrir `https://VOTRE_HOTE/` et se connecter. Studio garde le 
 - `POST /v3/auth/password` : Bearer, `current_password` et `new_password` ; révoque toutes les générations de tokens précédentes.
 - Récupération hors ligne : arrêter le trafic, utiliser les credentials PostgreSQL de maintenance et lancer `layrs-server recover-password LOGIN PASSWORD_FILE`. Le fichier contient le nouveau mot de passe ; il ne figure pas dans les arguments. Cette opération révoque les anciens tokens. Aucun endpoint anonyme de récupération n'est exposé.
 
-L'administrateur peut créer des comptes (`POST /v3/auth/accounts` : `login`, `password`, `displayName`) et des comptes de service (`POST /v3/auth/service-accounts` : `displayName`, `label`, `expiresIn`, entre 1 h et 90 jours). Les services ne reçoivent aucun droit Workspace implicite. La rotation (`/v3/auth/service-accounts/rotate`) invalide leurs anciens tokens. Les tokens d'appareil durent 30 jours ; les autres sessions, 8 h. La création d'un Workspace/Space passe par `POST /v3/workspaces/provision` (`workspaceSlug`, `spaceSlug`, `name`). Les UI complètes d'administration et de revue restent à raccorder.
+L'administrateur peut créer des comptes (`POST /v3/auth/accounts` : `login`, `password`, `displayName`) et des comptes de service (`POST /v3/auth/service-accounts` : `displayName`, `label`, `expiresIn`, entre 1 h et 90 jours). Les services ne reçoivent aucun droit Workspace implicite. La rotation (`/v3/auth/service-accounts/rotate`) invalide leurs anciens tokens. Les tokens d'appareil durent 30 jours ; les autres sessions, 8 h. `GET /v3/contexts` liste les contextes accessibles et leurs possibilités de création ; `POST /v3/projects` crée le projet et, s'il est fourni, son choix initial de lenses en une transaction. `POST /v3/workspaces/provision` accepte le contexte choisi pour publier un dossier local en conservant ses identifiants. Le Web expose les pages de revue et d'administration ; leur couverture et celle de Desktop sont suivies dans le [registre de livraison](../../docs/design/redesign/03-delivery.md).
+
+## Lenses de l'instance
+
+**Administration → Lenses** permet à l'administrateur d'importer un paquet
+`.layrslens.json`. Le serveur contrôle le manifeste, les empreintes des
+composants, les limites et la signature éventuelle. Les paquets intégrés sont
+installés lors de l'initialisation. Le fichier d'exemple
+`deploy/lenses/example-markdown.layrslens.json` illustre un paquet importable ;
+sa provenance et son absence éventuelle de signature doivent être appréciées
+avant l'approbation explicite dans l'interface.
+
+Pour autoriser les signatures d'un éditeur, transmettre au service serveur
+`LAYRS_LENS_TRUSTED_KEYS`, objet JSON qui associe l'identifiant de la clé à sa
+clé publique Ed25519 brute en base64, par exemple
+`{"editeur-2026":"CLE_PUBLIQUE_BASE64"}`. Le Compose fourni relaie cette variable
+si elle est définie dans l'environnement de lancement. Une clé inconnue ou une
+signature invalide est refusée ; un paquet non signé nécessite une confirmation
+explicite de l'administrateur. Redémarrer le serveur après modification des
+clés de confiance. Conserver la politique de confiance et les paquets installés
+avec les sauvegardes du déploiement.
+
+Dans **Réglages du projet → Lenses**, le responsable autorisé choisit une version
+exacte et, si nécessaire, ses associations d'extensions. Une installation sur
+l'instance ne met pas à jour automatiquement les projets. Une version retirée
+reste utilisable par les projets qui l'ont déjà épinglée ; une version révoquée
+ne peut plus être téléchargée ou utilisée pour une nouvelle exécution. Les
+clients hors ligne n'apprennent une révocation nouvelle qu'à la reconnexion.
+Le navigateur de fichiers distants fournit actuellement un aperçu **texte UTF-8
+de 1 Mio maximum**, contrôlé par les droits du chemin ; il ne rend pas encore
+les octets d'image. Le [guide utilisateur](../../docs/guides/projects-and-lenses.md)
+et le [contrat technique](../../docs/contracts/lens-distribution-v1.md)
+détaillent le parcours, les routes et les limites.
 
 ## Exploitation et mises à jour
 
@@ -89,6 +121,37 @@ Avant `restore`, configurer **une base PostgreSQL vide et un nouveau chemin CAS*
 Premier exercice local réel du 20 septembre 2026 : 24 objets, 3 Steps, sauvegarde/restauration en 2 111 ms, fichiers et pointeurs d'histoire identiques ; scénarios de corruption/refus vérifiés. Ce petit fixture ne constitue ni un benchmark PME, ni un engagement RPO/RTO. Les recettes plus récentes et leurs éventuels blocages figurent dans le [journal T8](../../docs/plans/pme/journal/T8.md).
 
 Le [runbook de sauvegardes](BACKUPS.md) fournit le profil Compose, le script vérifié et des exemples de timer ; aucun timer n'est installé automatiquement. Les quotas globaux/par Space et les [alertes stockage](STORAGE-BUDGET.md) sont disponibles, leurs variables optionnelles sont transmises par Compose lorsqu'elles sont définies dans l'environnement. S3 reste non supporté dans le serveur normal.
+
+## Entreprise, organisations et projets personnels
+
+Une installation représente une entreprise. Les paramètres serveur suivants
+sont indépendants et valent `false` par défaut :
+
+- `LAYRS_MULTI_ORGANISATION_ENABLED=true` active les organisations supplémentaires.
+- `LAYRS_PERSONAL_PROJECTS_ENABLED=true` active les projets personnels privés.
+
+Compose transmet ces variables au serveur et à l'initialisation. Les valeurs
+acceptées sont `true` et `false`. Un changement par environnement nécessite de
+réappliquer l'initialisation puis de redémarrer le serveur avec la même configuration.
+**Administration → Organisations** permet de changer le mode multi/mono à chaud.
+Une fois utilisé, ce réglage enregistré en base prévaut sur la variable multi
+au redémarrage ; l'option des projets personnels reste indépendante.
+
+À la migration, les anciennes organisations restent intactes et une entreprise
+distincte est créée. Activer le mode multi-organisation si la base contient déjà
+des organisations. Les identifiants, projets, adhésions, droits et historiques
+existants restent conservés. Le retour en mono depuis Administration exige de
+choisir la principale et de confirmer l'avertissement. Les autres organisations
+sont conservées mais inaccessibles jusqu'à réactivation du mode multi. Les projets
+personnels ne peuvent pas être désactivés par configuration tant qu'ils existent.
+Voir le [contrat](../../docs/contracts/project-contexts.md)
+pour les contextes, la création et les équipes.
+
+Avant d'utiliser cette bascule après une mise à jour, remplacer tous les anciens
+processus serveur : ils ne connaissent pas le contrôle des organisations
+suspendues. Le fonctionnement avec plusieurs versions serveur simultanées
+n'est pas qualifié. Le redémarrage du service Compose remplace l'unique serveur
+de cette installation.
 
 ## Vérification PostgreSQL explicite
 

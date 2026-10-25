@@ -16,6 +16,7 @@ pub(super) async fn validate(
     record: &WeaveReceiptRecord,
     closure: &VerifiedClosure,
     steps: &BTreeMap<StepId, Step>,
+    previously_admitted: bool,
 ) -> V3StoreResult<()> {
     let profile = &record.determinism_profile;
     let ambient = &profile.host_policy.ambient_capabilities;
@@ -79,6 +80,52 @@ pub(super) async fn validate(
         return Ok(());
     }
     layrs_weave::wasm_host::validate_receipt_host(record).map_err(|_| invalid())?;
+    for execution in &record.lens_executions {
+        let historical_builtin = [
+            layrs_weave::reconciliation::NativeLens::Text,
+            layrs_weave::reconciliation::NativeLens::Code,
+        ]
+        .into_iter()
+        .any(|lens| {
+            let pin = layrs_weave::wasm_host::manifest(lens)
+                .pin()
+                .expect("built-in pin");
+            pin.lens_id == execution.pin.lens_id
+                && pin.version == execution.pin.version
+                && pin.digest == execution.pin.digest.as_str()
+                && execution.implementation_digest.as_str()
+                    == layrs_weave::wasm_host::module_digest()
+        });
+        if historical_builtin && !previously_admitted {
+            repo.validate_legacy_execution(&record.space_id)
+                .await
+                .map_err(|_| invalid())?;
+        } else if !historical_builtin {
+            let pin = layrs_lens_sdk::LensPin::try_new(
+                &execution.pin.lens_id,
+                &execution.pin.version,
+                execution.pin.digest.as_str(),
+            )
+            .map_err(|_| invalid())?;
+            if previously_admitted {
+                repo.validate_historical_execution(
+                    &record.space_id,
+                    &pin,
+                    execution.implementation_digest.as_str(),
+                )
+                .await
+                .map_err(|_| invalid())?;
+            } else {
+                repo.validate_installed_execution(
+                    &record.space_id,
+                    &pin,
+                    execution.implementation_digest.as_str(),
+                )
+                .await
+                .map_err(|_| invalid())?;
+            }
+        }
+    }
     let heads: BTreeSet<_> = record
         .source_heads
         .iter()

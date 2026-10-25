@@ -116,34 +116,11 @@ pub fn native_manifest(lens: NativeLens) -> LensManifest {
         NativeLens::Code => layrs_lens_code::reconciliation_manifest(),
         NativeLens::Text => layrs_lens_text::manifest(),
     };
-    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    manifest.digest = Some(
-        DIGEST
-            .get_or_init(|| {
-                let sources = [
-                    include_str!("../../layrs-core/src/scm/canonical.rs"),
-                    include_str!("../../layrs-core/src/scm/path.rs"),
-                    include_str!("../../layrs-lens-code/src/lib.rs"),
-                    include_str!("../../layrs-lens-sdk/src/contract.rs"),
-                    include_str!("../../layrs-lens-sdk/src/lib.rs"),
-                    include_str!("../../layrs-lens-sdk/src/manifest_validation.rs"),
-                    include_str!("../../layrs-lens-sdk/src/selection.rs"),
-                    include_str!("../../layrs-lens-sdk/src/sha256.rs"),
-                    include_str!("../../layrs-lens-sdk/src/validation.rs"),
-                    include_str!("../../layrs-lens-sdk/src/wire.rs"),
-                    include_str!("../../layrs-lens-text/src/lib.rs"),
-                    include_str!("reconciliation.rs"),
-                ];
-                let mut bytes = b"layrs-native-file-merge-v1\0".to_vec();
-                for source in sources {
-                    let normalized = source.replace("\r\n", "\n");
-                    bytes.extend_from_slice(&(normalized.len() as u64).to_be_bytes());
-                    bytes.extend_from_slice(normalized.as_bytes());
-                }
-                sha256_digest(&bytes)
-            })
-            .clone(),
-    );
+    // v1 is an immutable historical contract. The original source fingerprint
+    // is frozen so additive SDK metadata cannot silently invalidate the shipped
+    // guest's exact pin or already admitted receipts. Algorithm changes need v2.
+    manifest.digest =
+        Some("sha256:ed9ac77e4fb97df1bc5ce451d0cd355a4a72f945cff45fecbd21e794e93489b7".into());
     manifest
 }
 

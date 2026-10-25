@@ -1,7 +1,7 @@
 //! Serializable local application contract shared by interactive surfaces.
 use super::{NativeClientError, NativeWorkspace, Result};
 use layrs_core::scm::{MarkerId, OperationId, OperationKind, StepId};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 #[path = "worktree_commands.rs"]
 mod worktrees;
@@ -103,6 +103,10 @@ pub enum WorkspaceAction {
     ResumeWorktreeCreation,
     Capture,
     CaptureAutomatic,
+    StepDiff {
+        step: StepId,
+        parent: Option<StepId>,
+    },
     StepHistory {
         selector: String,
         cursor: Option<super::StepHistoryCursor>,
@@ -366,6 +370,11 @@ pub fn execute_workspace(root: impl AsRef<Path>, action: WorkspaceAction) -> Res
                 return Err(NativeClientError::StaleCapture);
             }
             workspace.accept_conflict_resolution(&plan)?;
+        }
+        WorkspaceAction::StepDiff { step, parent } => {
+            return Ok(
+                json!({"stepId":step,"changes":workspace.step_diff(&step, parent.as_ref())?}),
+            );
         }
         WorkspaceAction::StepHistory {
             selector,

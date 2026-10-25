@@ -1,11 +1,13 @@
 import { useMemo, type ReactNode } from "react";
 import { Bot, Gauge, HardDrive, Shield, Users } from "lucide-react";
-import { AccountsPanel, EmptyState, Link, PageHeader, ServerStatusPanel, ServiceAccountsPanel, StoragePanel } from "@layrs/ui";
+import { AccountsPanel, EmptyState, Link, PageHeader, ServerStatusPanel, ServiceAccountsPanel, StoragePanel, InstalledLensesPanel, OrganisationSettingsPanel } from "@layrs/ui";
 import { administrationTransport } from "../app/transports";
 import { useSession } from "../app/session";
 
-type Section = "accounts" | "services" | "storage" | "status";
+type Section = "accounts" | "services" | "storage" | "status" | "lenses" | "organisations";
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
+  { id: "organisations", label: "Organisations", icon: <Users aria-hidden size={16} /> },
+  { id: "lenses", label: "Lenses", icon: <Gauge aria-hidden size={16} /> },
   { id: "accounts", label: "Comptes", icon: <Users aria-hidden size={16} /> },
   { id: "services", label: "Comptes de service", icon: <Bot aria-hidden size={16} /> },
   { id: "storage", label: "Stockage", icon: <HardDrive aria-hidden size={16} /> },
@@ -49,6 +51,8 @@ export function AdminPage({ section }: { section?: string }) {
           </ul>
         </nav>
         <div>
+          {current === "organisations" && <OrganisationSettingsPanel key={scope} scope={scope} administration={instance} />}
+          {current === "lenses" && <InstalledLensesPanel key={scope} scope={scope} transport={instance} />}
           {current === "accounts" && <AccountsPanel scope={scope} administration={instance} selfId={principal.principalId} />}
           {current === "services" && <ServiceAccountsPanel scope={scope} administration={instance} />}
           {current === "storage" && <StoragePanel scope={scope} administration={instance} />}

@@ -25,7 +25,8 @@ import {
   type ReadPolicy,
 } from "./access-model";
 import { AccessTree, levelIcons, type EntryAccess, type TreeEntry } from "./AccessTree";
-import { PolicyChangeDialog, type PreparedPolicyChange } from "./PolicyChangeDialog";
+import { PolicyChangeDialog, policyWasUncertain, rememberPolicyUncertain, type PreparedPolicyChange } from "./PolicyChangeDialog";
+import { describeError } from "./errors";
 import { personName, type Person, type PolicyPreview, type PolicyTransport } from "./types";
 import type { Directory } from "./useDirectory";
 import { useTask } from "./useTask";
@@ -50,6 +51,7 @@ export function AccessPanel({
   projectName,
   canChange,
   onChanged,
+  recoverPendingPolicy,
 }: {
   scope: string;
   directory: Directory;
@@ -61,6 +63,8 @@ export function AccessPanel({
   /** Capability hint `managePolicy`; null when unknown. */
   canChange: boolean | null;
   onChanged?: () => void;
+  /** Desktop may recover a durable native policy intent before any new preview. */
+  recoverPendingPolicy?: () => Promise<PolicyPreview | null>;
 }) {
   const task = useTask(scope);
   const [context, setContext] = useState<NativeProjectionContext | null>(null);
@@ -73,6 +77,26 @@ export function AccessPanel({
   const [selected, setSelected] = useState("");
   const [change, setChange] = useState<Change>({ kind: "exact", access: "read", others: "allow" });
   const [prepared, setPrepared] = useState<PreparedPolicyChange | null>(null);
+  const [pendingPolicy, setPendingPolicy] = useState<PolicyPreview | null>(null);
+  const [recoveryError, setRecoveryError] = useState("");
+  const recovery = useRef(recoverPendingPolicy);
+  const pendingRead = useRef<{ scope: string; promise: Promise<PolicyPreview | null> } | null>(null);
+  recovery.current = recoverPendingPolicy;
+  useEffect(() => {
+    let cancelled = false;
+    setPendingPolicy(null);
+    setRecoveryError("");
+    if (recovery.current) {
+      if (pendingRead.current?.scope !== scope)
+        pendingRead.current = { scope, promise: recovery.current() };
+      const promise = pendingRead.current.promise;
+      void promise.then(
+      (preview) => { if (!cancelled && preview) { rememberPolicyUncertain(preview); setPendingPolicy(preview); } },
+      (cause) => { if (!cancelled) setRecoveryError(describeError(cause, "La demande de politique en attente n’a pas pu être lue.")); },
+      ).finally(() => { if (pendingRead.current?.promise === promise) pendingRead.current = null; });
+    }
+    return () => { cancelled = true; };
+  }, [scope]);
   const self_ = self?.principalId ?? "";
   const { policies, canAdminister, management } = directory;
 
@@ -111,13 +135,12 @@ export function AccessPanel({
     [task, loadContext, readPaths, layerId, stepId],
   );
 
-  const started = useRef("");
+  const initialLoad = useRef(open);
+  initialLoad.current = open;
   useEffect(() => {
-    if (started.current === scope) return;
-    started.current = scope;
     setSubject(self_);
-    void open();
-  }, [scope, open, self_]);
+    void initialLoad.current();
+  }, [scope, self_]);
 
   const byPath = useMemo(() => new Map(entries.map((entry) => [entry.path, entry])), [entries]);
   const tree: TreeEntry[] = useMemo(
@@ -170,6 +193,10 @@ export function AccessPanel({
   }, [selected, subject]);
 
   async function prepare() {
+    if (pendingPolicy) {
+      openPendingPolicy();
+      return;
+    }
     if (!policy || !policies || !directory.rules || !selected) return;
     await task.run("prepare", async (live) => {
       const original = target ? directory.rules!.policies.find((item) => item.policyId === target.policyId)?.rules ?? null : null;
@@ -186,14 +213,15 @@ export function AccessPanel({
         target ? { action: "previewReplacePolicyRules", policyId: target.policyId, rules } : { action: "previewPolicyRules", rules },
       );
       if (!live()) return;
-      if (preview.expectedPolicySetId !== directory.rules!.policySetId || preview.expectedAuthorizationEpoch !== directory.rules!.authorizationEpoch)
+      const resuming = policyWasUncertain(preview);
+      if (!resuming && (preview.expectedPolicySetId !== directory.rules!.policySetId || preview.expectedAuthorizationEpoch !== directory.rules!.authorizationEpoch))
         throw new Error("Les règles ont changé depuis leur lecture. Rechargez la page avant de préparer ce changement.");
       const reducing = accessLevel(next) !== "write" && (accessLevel(before) === "write" || (accessLevel(before) === "read" && accessLevel(next) === "none"));
       const name = subject === self_ ? "Vous" : personName(directory.people, subject);
       setPrepared({
         title: "Confirmer le changement d’accès",
-        subject: `${name} · ${change.kind === "subtree" ? `dossier « ${selected} » et son contenu` : `« ${selected} »`} · projet ${projectName}`,
-        effects: [
+        subject: resuming ? `Projet ${projectName} · demande de politique déjà envoyée` : `${name} · ${change.kind === "subtree" ? `dossier « ${selected} » et son contenu` : `« ${selected} »`} · projet ${projectName}`,
+        effects: resuming ? ["Une demande identique a déjà été envoyée, mais son reçu n’a pas été confirmé. Rejouez cet aperçu exact pour connaître son résultat ; aucun nouveau changement n’est préparé."] : [
           `Avant : ${accessLabels[accessLevel(before)]}. Après : ${accessLabels[accessLevel(next)]}.`,
           moved > 0
             ? `${moved} autre${moved > 1 ? "s" : ""} chemin${moved > 1 ? "s" : ""} affiché${moved > 1 ? "s" : ""} change${moved > 1 ? "nt" : ""} aussi pour cette personne.`
@@ -209,9 +237,22 @@ export function AccessPanel({
         preview,
         confirmLabel: "Appliquer ce changement",
         successTitle: "Accès appliqué",
-        danger: reducing,
+        danger: resuming || reducing,
       });
     }, "L’aperçu n’a pas pu être préparé.");
+  }
+
+  function openPendingPolicy() {
+    if (!pendingPolicy) return;
+    setPrepared({
+      title: "Reprendre la modification en attente",
+      subject: `Projet ${projectName} · demande de politique déjà envoyée`,
+      effects: ["Le résultat de cette demande exacte reste inconnu. Rejouez l’aperçu conservé par Desktop pour obtenir son reçu ; aucune nouvelle règle n’est préparée à partir de la politique actuelle."],
+      preview: pendingPolicy,
+      confirmLabel: "Réessayer ce même aperçu",
+      successTitle: "Politique appliquée",
+      danger: true,
+    });
   }
 
   const layer = context?.layers.find((item) => item.record.layerId === layerId);
@@ -237,6 +278,12 @@ export function AccessPanel({
       </Card>
 
       <div className="access-main">
+        {recoveryError && <Banner tone="warning">{recoveryError}</Banner>}
+        {pendingPolicy && (
+          <Banner tone="warning" title="Modification de politique en attente">
+            Le résultat de cette demande reste à confirmer. <Button onClick={openPendingPolicy}>Reprendre la modification en attente</Button>
+          </Banner>
+        )}
         {task.error && <Banner tone="danger">{task.error}</Banner>}
         {directory.rulesError && <Banner tone="warning">{directory.rulesError}</Banner>}
         {noPathRules && (
@@ -387,6 +434,7 @@ export function AccessPanel({
           value={prepared}
           policy={policy}
           onClose={() => setPrepared(null)}
+          onReceipt={() => setPendingPolicy(null)}
           onApplied={async () => {
             await directory.reload();
             onChanged?.();

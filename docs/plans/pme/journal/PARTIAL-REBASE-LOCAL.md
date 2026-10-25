@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Store3 resolved regular-file rebase, 23 September 2026
 
 Schema 5 adds an atomic, exact migration from schemas 3 and 4. It preserves prior snapshots, captures and namespace history, adds a 64 MiB rebase journal/history, and a separate 8 MiB opaque client draft table. A schema-4 reader rejects schema 5. The draft table grants no authority and does not block local edits; the client must revalidate its draft against current generation, capture and authorized remote projection.

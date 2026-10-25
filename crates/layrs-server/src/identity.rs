@@ -1,5 +1,6 @@
 //! Native local accounts. Bearer secrets are returned once and stored only as digests.
 use crate::v3::V3ServiceError;
+mod device_assets;
 mod devices;
 mod management;
 use argon2::{
@@ -144,6 +145,10 @@ impl PgIdentity {
             .route("/v3/auth/devices/poll", post(devices::poll))
             .route("/auth/device", axum::routing::get(devices::page))
             .route("/auth/device.js", axum::routing::get(devices::script))
+            .route(
+                "/auth/device/:asset",
+                axum::routing::get(device_assets::asset),
+            )
             .layer(DefaultBodyLimit::max(8192))
             .with_state(self)
     }

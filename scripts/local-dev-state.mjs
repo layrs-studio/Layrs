@@ -91,9 +91,23 @@ export function composeOverride(directory,state,caddy){
 }
 export function dockerEnvironment(source,state){
   const env=Object.fromEntries(Object.entries(source).filter(([key])=>!(/^(COMPOSE_|LAYRS_|BUILDX_|BUILDKIT_|DOCKER_BUILDKIT$)/i).test(key)));
+  Object.assign(env,serverOptions(source));
   env.COMPOSE_BAKE='false';env.DOCKER_BUILDKIT='1';
   if(state)Object.assign(env,{LAYRS_HOST:`localhost:${state.port}`,LAYRS_DEPLOYMENT_ID:state.deploymentId,LAYRS_STORE_ID:state.storeId,LAYRS_IMAGE_TAG:state.project});
   return env;
+}
+// Only these non-secret product options may pass through the local launcher.
+// Persisted options keep a later plain `npm run dev` on the same product mode.
+export function serverOptions(source,saved={}){
+  const result={};
+  const flags=['LAYRS_MULTI_ORGANISATION_ENABLED','LAYRS_PERSONAL_PROJECTS_ENABLED'];
+  for(const key of flags){
+    const value=source[key]??saved[key];
+    if(value===undefined)continue;
+    if(!['true','false'].includes(value))throw new Error(`Invalid ${key}`);
+    result[key]=value;
+  }
+  return result;
 }
 export function assertLocalEndpoint(endpoint){
   if(typeof endpoint!=='string'||!(/^(npipe:\/\/\/\/\.\/pipe\/[^\s]+|unix:\/\/\/[^\s]+)$/).test(endpoint))throw new Error('Local dev requires a local Docker socket (Docker Desktop or a Unix socket), not a remote/TCP context');

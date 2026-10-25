@@ -1,9 +1,11 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { FolderOpen, FolderTree, MoreHorizontal, Plus, Star } from "lucide-react";
 import { Badge, Button, Card, EmptyState, Menu, PageHeader, formatRelativeTime, navigate, segment, useToast } from "@layrs/ui";
 import { selectFolder } from "../tauri";
 import { forgetProject, readRecents, toggleFavorite, type RecentProject } from "../app/recents";
-import { RemoteProvider, useRemote } from "../app/remote";
+import { useRemote } from "../app/remote";
+import { useDesktopContexts } from "../app/contexts";
+import { recentContext } from "../app/recentContext";
 import { hostOf } from "../app/serverMemory";
 import { TeamCatalog } from "../sync/TeamCatalog";
 
@@ -14,7 +16,11 @@ export { openProject };
 export function ProjectsPage() {
   const toast = useToast();
   const [recents, setRecents] = useState(readRecents);
+  const contexts = useDesktopContexts();
   const sorted = [...recents].sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)) || b.openedAt.localeCompare(a.openedAt));
+  const current = contexts.selected ? sorted.filter((project) => recentContext(project.root, contexts.origin, contexts.principalId)?.contextId === contexts.selected!.id) : [];
+  // A remote session is never required to discover and open local work.
+  const unlinked = contexts.selected ? sorted.filter((project) => !recentContext(project.root, contexts.origin, contexts.principalId)) : sorted;
 
   async function browse() {
     try {
@@ -41,12 +47,16 @@ export function ProjectsPage() {
           </>
         }
       />
-      <section aria-labelledby="local-projects" className="projects-section">
-        <h2 id="local-projects">Sur cet ordinateur</h2>
-        {sorted.length ? (
+      {current.length > 0 && <section aria-labelledby="local-projects" className="projects-section">
+        <h2 id="local-projects">Sur cet ordinateur · {contexts.selected?.kind === "personal" ? "Personnel" : contexts.selected?.name}</h2>
+        <Card><ul className="project-list">{current.map((project) => <ProjectRow key={project.root} project={project} onChange={() => setRecents(readRecents())} />)}</ul></Card>
+      </section>}
+      <section aria-labelledby="unlinked-projects" className="projects-section">
+        <h2 id="unlinked-projects">{contexts.selected ? "Dossiers locaux sans espace serveur" : "Projets locaux · hors connexion"}</h2>
+        {unlinked.length ? (
           <Card>
             <ul className="project-list">
-              {sorted.map((project) => (
+              {unlinked.map((project) => (
                 <ProjectRow
                   key={project.root}
                   project={project}
@@ -75,7 +85,7 @@ export function ProjectsPage() {
         )}
       </section>
       <section aria-labelledby="team-projects" className="projects-section">
-        <h2 id="team-projects">Dans l’équipe</h2>
+        <h2 id="team-projects">{contexts.selected?.kind === "personal" ? "Projets personnels sur le serveur" : `Projets sur le serveur${contexts.selected ? ` · ${contexts.selected.name}` : ""}`}</h2>
         <TeamProjects />
       </section>
     </div>
@@ -129,27 +139,21 @@ function ProjectRow({ project, onChange }: { project: RecentProject; onChange: (
   );
 }
 
-/** Team projects of the last connected server, by name. A local recent is never an authorization. */
+/** Remote catalogue of the selected server context. A local recent is never an authorization. */
 function TeamProjects() {
-  const acquire = useCallback(() => false, []);
-  const release = useCallback(() => undefined, []);
-  const onChanged = useCallback(() => undefined, []);
-  return (
-    <RemoteProvider root="" acquire={acquire} release={release} onChanged={onChanged}>
-      <TeamProjectList />
-    </RemoteProvider>
-  );
+  return <TeamProjectList />;
 }
 
 function TeamProjectList() {
   const remote = useRemote();
+  const contexts = useDesktopContexts();
   const connected = remote.session.state === "connected";
   return (
     <Card className="projects-team">
       <div className="projects-team__head">
         <p>
           {connected
-            ? `Projets que votre compte peut ouvrir sur ${hostOf(remote.origin)}. Choisissez-en un pour le récupérer dans un dossier vide.`
+            ? `Projets que votre compte peut ouvrir dans ${contexts.selected?.kind === "personal" ? "votre espace personnel" : contexts.selected?.name ?? "cet espace"} sur ${hostOf(remote.origin)}. Choisissez-en un pour le récupérer dans un dossier vide.`
             : "Récupérez un projet partagé sur le serveur de votre équipe dans un dossier vide de cet ordinateur."}
         </p>
         <Button onClick={() => navigate("/projects/new", { query: { mode: "clone" } })}>Récupérer un projet de l’équipe</Button>

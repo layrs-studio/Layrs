@@ -54,6 +54,38 @@ pub(super) fn verify(
         "same FileId, different rights"
     );
     selection::clone_and_expand(read, remote, step);
+    // Preview access is tied to this path in this Step, never just its FileId.
+    for (path, readable) in [
+        ("public/allowed.txt", true),
+        ("public/blocked.txt", false),
+        ("private.txt", false),
+    ] {
+        let preview = read.call(
+            "POST",
+            &format!("/v3/spaces/{}/preview", read.space),
+            json!({
+                "stepId": step, "path": path, "expectedPolicySetId": base.current_policy_set_id,
+                "expectedAuthorizationEpoch": base.authorization_epoch
+            }),
+        );
+        if readable {
+            assert!(
+                preview.status().is_success(),
+                "authorized preview: {}",
+                preview.status()
+            );
+            let document: Value = preview.json().unwrap();
+            assert_eq!(document["path"], path);
+            assert_eq!(document["stepId"], serde_json::to_value(step).unwrap());
+            assert!(document["text"].is_string());
+        } else {
+            assert_eq!(
+                preview.status().as_u16(),
+                403,
+                "hidden path must not leak content"
+            );
+        }
+    }
     let saved = saved.unwrap();
     let mut forged = saved.clone();
     let mut cursor: Value = serde_json::from_slice(
@@ -98,6 +130,20 @@ pub(super) fn selected_publication(
 }
 
 pub(super) fn stale(read: &Http<'_>, request: ProjectionPageRequest) {
+    assert_eq!(
+        read.call(
+            "POST",
+            &format!("/v3/spaces/{}/preview", read.space),
+            json!({
+                "stepId": request.step_id, "path": "public/allowed.txt",
+                "expectedPolicySetId": request.expected_policy_set_id,
+                "expectedAuthorizationEpoch": request.expected_authorization_epoch
+            })
+        )
+        .status()
+        .as_u16(),
+        409
+    );
     assert_eq!(
         read.call(
             "POST",

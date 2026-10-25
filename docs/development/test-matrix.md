@@ -1,89 +1,59 @@
-# Layrs Local Reliability Test Matrix
+﻿# Matrice de vérification
 
-Layrs is source control. The first product invariant is that local user data is
-never silently lost. Every local feature must be proven at the lowest reliable
-layer, then exercised through the CLI and, for critical user workflows, through
-the real Studio Desktop UI.
+Revue le 6 octobre 2026 à partir de `package.json`, des scripts et des suites.
+Cette matrice indique les contrôles disponibles, pas leur dernier résultat.
+Les preuves sont dans [l’état courant](../STATUS.md) et le
+[registre UI](../design/redesign/03-delivery.md).
 
-## Proof Levels
-
-- `core`: direct `layrs-client-core` invariant test.
-- `cli`: black-box `layrs --json` test from a real temporary folder.
-- `desktop-native`: visible Studio Desktop test through the real Tauri app.
-- `server-sync`: publish/receive test against Layrs Server, without relying on
-  Studio Web for local correctness.
-
-## Trust Gate Matrix
-
-| Gate | Local command | CI proof | Failure policy |
-| --- | --- | --- | --- |
-| Migration immutability | `pnpm check:migrations` | Linux | changed, removed, or unreviewed migration fails |
-| Fresh PostgreSQL | `pnpm test:rust` | Linux service DB | missing or implicit DB fails |
-| Upgrade PostgreSQL | `pnpm test:migrations:upgrade` | Linux upgrade DB | baseline/current migration error fails |
-| Rust style/lints | `pnpm format:check`, `pnpm lint:rust` | Linux | warnings fail |
-| TypeScript/contracts | `pnpm check:typescript`, `pnpm test:sdk` | Linux | omitted workspace/test is not allowed |
-| Studio builds | `pnpm build:apps` | Linux | production bundle failure fails |
-| Renderer UI | `pnpm test:e2e:renderer` | Linux | zero retries; evidence retained |
-| Real Studio Web | `pnpm test:web:ci` | Linux | zero retries; isolated server/store |
-| Native Desktop | `pnpm test:desktop:ci` | Windows | zero retries; real Tauri/WebView2 |
-
-The canonical Windows `pnpm test` runs every row, including all Playwright
-specs. Platform CI jobs may split the rows, but must not describe a partial
-platform run as the canonical all-platform gate.
-
-## Canonical Matrix
-
-| Feature | Required proof | Current coverage |
+| Périmètre | Commande | Portée |
 | --- | --- | --- |
-| Init empty Local Space | core, cli, desktop-native | core + cli + desktop-native |
-| Init existing folder | core, cli, desktop-native | core + cli + desktop-native |
-| Discover `.layrs` from child directory | cli | cli |
-| Refuse init in existing Layrs folder | cli | cli |
-| Refuse init on file path | cli | cli |
-| Preserve nested project files byte-for-byte | cli | cli |
-| `.layrsignore` exclusions | cli | cli |
-| Scan additions/modifications/deletions | core, cli, desktop-native | core + cli + desktop-native |
-| Detect same-size edits after cache warmup | core | core |
-| Step creation and clean repeat step | core, cli, desktop-native | core + cli + desktop-native |
-| Latest pending Step diff when working tree is clean | cli, desktop-native | cli |
-| Timeline ordering and limits | cli | cli |
-| Diff by Step id | cli, desktop-native | cli |
-| Diff options: stat/name/window/wrap | cli | cli |
-| Long text lines are never truncated | core, cli, desktop-native | core + cli |
-| Binary/image assets preserve exact bytes | cli, desktop-native | cli |
-| Rename/move safety | cli | cli |
-| Layer create/use round trip | core, cli, desktop-native | core + cli + desktop-native |
-| Switch with unstepped work auto-saves before switch | cli, desktop-native | cli |
-| Switch with auto local steps disabled still preserves work | core | core |
-| Failed switch with missing object is non-destructive | core, cli | core + cli |
-| Delete non-active layer | core, cli, desktop-native | core + cli |
-| Refuse delete active layer | cli, desktop-native | cli |
-| Refuse delete layer with children | cli | cli |
-| Forget local archives `.layrs` and keeps project files | core, desktop-native | core |
-| Pending publish is per-layer and ordered | core, cli | core + cli |
-| Publish sends every pending Step | core, server-sync | core |
-| Receive materializes V2 chunks byte-for-byte | core, server-sync | core |
-| Compact keeps data readable and reduces storage | core, cli | core + cli |
-| Store corruption/hash mismatch is loud and non-destructive | core, cli | core + cli |
-| Desktop shortcuts and settings validation | core, desktop-native | core |
+| Migrations, sources, Rust, TypeScript, builds Web/Desktop | `pnpm check` | Contrôles statiques ; aucun parcours natif |
+| Packages Lens | `pnpm test:packages` | Contrats et diff des packages actuels |
+| Cœur local et CLI | `pnpm test:core` | Suites Rust cœur/CLI et conservation des données |
+| Workspace PostgreSQL | `pnpm test:rust` | Base jetable obligatoire et intégrations natives explicites |
+| Serveur seul | `pnpm test:postgres` | Serveur et intégrations natives sur base isolée |
+| Shell Desktop et adaptateurs | `pnpm test:tauri` | Tests Rust Tauri, dont adaptateur Git |
+| Présentation Web/Desktop | `pnpm test:e2e:renderer` | Transports contrôlés, interactions et erreurs |
+| Runtime des lenses | `node node_modules/@playwright/test/cli.js test tests/e2e/lens-runtime.spec.ts` | Empreintes, isolation, délais, cache hors ligne et réponses concurrentes |
+| Desktop complet | `pnpm test:desktop:ci` | Tauri réel : SCM, équipe et pont Git |
+| Desktop limité | `node scripts/test-native-ui-ci.mjs desktop-partial` | Projection et synchronisation sous droits restreints |
+| Collaboration Desktop ciblée | `node scripts/test-native-ui-ci.mjs desktop-team` | Appareil, revues, versions, équipe et administration |
+| Web réel | `pnpm test:web:ci` | Web construit, HTTPS/PostgreSQL, création de projet, installation et affichage dynamique des lenses |
+| Upgrade des migrations | `pnpm test:migrations:upgrade` | Baseline fournie par le harness CI |
+| Contrat SCM | `pnpm test:scm-contracts` | Fixtures canoniques SCM |
 
-## Gaps To Close Next
+`pnpm test` orchestre les gates statiques, packages, modèles ciblés, workspace
+PostgreSQL, Tauri, renderer, Desktop complet et Web. Le scénario Desktop limité
+est distinct. Les modes Web restreint (`LAYRS_NATIVE_WEB_RESTRICTED=1`) et
+clients partagés (`LAYRS_NATIVE_SHARED_CLIENTS=1`) sont explicites ; vérifier
+la configuration de la fixture avant de revendiquer leur couverture.
 
-- `desktop-native` for latest pending Step diff after clean working tree.
-- `desktop-native` for long text line diff and binary/image fallback.
-- `desktop-native` for layer delete and Forget local confirmations.
-- `server-sync` for CLI draft publish with multiple pending Steps, then receive
-  into a second Local Space.
-- `server-sync` for Desktop draft publish, then CLI receive into a second Local
-  Space.
+Les scénarios natifs utilisent des dossiers temporaires. La base doit être
+jetable, avec `LAYRS_TEST_DATABASE_ISOLATED=1` si une URL est fournie. Ne jamais
+copier ses identifiants dans les sorties ou capturer les secrets dans les
+artefacts. Les échecs conservent le contexte utile au diagnostic.
 
-## Rules For New Features
+Pour cibler la régression « création Web vide → clonage natif → publication »,
+définir `LAYRS_TEST_EMPTY_PROJECT_CLONE_ONLY=1`, puis exécuter
+`cargo test -p layrs-server --test native_clients_v3 two_native_clients_publish_clone_receive_divergence_and_local_operations -- --ignored --exact`.
+Ce scénario est également inclus dans la recette native générale sans cette option.
+Il utilise le vrai serveur HTTPS, PostgreSQL et les chemins annulables de Desktop.
+Il couvre aussi les destinations non vides : même projet, autre projet, projet
+absent du serveur, refus des fichiers ordinaires et données invalides, liaison
+sans remplacement des fichiers et rejeu exact de création après réponse perdue.
 
-- A local Desktop feature must call `layrs-client-core`; it must not invent a
-  second local implementation.
-- A local Desktop feature needs at least `core` and `cli` proof. Critical flows
-  also need `desktop-native`.
-- Server synchronization tests can use Layrs Server, Docker and Postgres, but
-  they should not use Studio Web as the proof of local data correctness.
-- Failed local durability tests must keep their temporary folder and print its
-  path for inspection.
+`cargo test -p layrs-client-core --test native_step_diff` vérifie la lecture des
+fichiers d'une capture automatique après réouverture, la conservation du checkout
+et le refus des Steps ou parents étrangers. Sous Windows restreint, placer
+`TEMP` et `TMP` dans un dossier temporaire accessible du dépôt.
+`desktop-renderer.spec.ts` couvre l'affichage après capture et rechargement,
+la distinction avec une capture reçue, les actions des dossiers occupés et les
+réponses tardives après changement de destination. Ses transports sont simulés.
+
+Windows/WebView2 est nécessaire aux recettes Tauri. Les jobs Linux prouvent
+leur périmètre Rust/serveur/Web, pas les parcours Desktop Windows. Une réussite
+locale ne prouve ni la CI distante, ni l’installation MSI, ni macOS/ARM.
+
+Pour une nouvelle fonctionnalité, vérifier l’invariant Rust, le raccord de
+commande et le parcours observable. Conserver les refus et protections lors
+d’une refonte d’interface. Voir [le guide](testing.md) pour les prérequis.

@@ -2,6 +2,10 @@ FROM rust:1.90.0-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY packages/ui/src/foundation/tokens.css ./packages/ui/src/foundation/tokens.css
+COPY packages/ui/src/assets/layrs-icon.svg ./packages/ui/src/assets/layrs-icon.svg
+COPY deploy/lens-runtime.html ./deploy/lens-runtime.html
+COPY deploy/lenses/builtin-packets.json ./deploy/lenses/builtin-packets.json
 RUN cargo build --locked --release -p layrs-server
 
 FROM postgres:17.6-bookworm

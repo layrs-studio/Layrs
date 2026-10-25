@@ -12,7 +12,14 @@ use super::{endpoints, error::V3HttpError, state::V3HttpState};
 
 pub fn router(state: V3HttpState) -> Router {
     Router::new()
+        .route("/v3/spaces/:space_id/preview", post(endpoints::file_preview))
         .route("/v3/workspaces/provision", post(endpoints::provision_space))
+        .route("/v3/workspaces", get(endpoints::creatable_workspaces))
+        .route("/v3/contexts", get(endpoints::project_contexts))
+        .route("/v3/admin/organisations/settings", get(endpoints::organisation_mode_settings).put(endpoints::update_organisation_mode))
+        .route("/v3/organisations", post(endpoints::create_organisation))
+        .route("/v3/projects", post(endpoints::create_project))
+        .route("/v3/projects/check-local", post(endpoints::check_local_project))
         .route("/v3/spaces/:space_id/bootstrap", get(endpoints::bootstrap))
         .route(
             "/v3/spaces/:space_id/path-patches",

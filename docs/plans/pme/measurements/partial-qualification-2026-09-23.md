@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Qualification des extensions partielles — 23 septembre 2026
 
 Sources de production figées : `fbd8d6f49858605919451e5cbfe8656b96e66d42`.

@@ -115,7 +115,7 @@
       "required": ["runtime", "path", "export", "digest", "resources"],
       "properties": {
         "runtime": {
-          "const": "wasi"
+          "enum": ["wasi", "wasm"]
         },
         "path": {
           "$ref": "#/$defs/bundlePath"

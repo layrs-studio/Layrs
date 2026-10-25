@@ -2,46 +2,49 @@
 
 Plan préparé le 24 septembre 2026. Ce document sert de registre de reprise.
 Les cases cochées indiquent des livrables réels, pas une intention.
+Actualisation du 5 octobre 2026 : L0–L6 intégrés dans leur périmètre documenté ; L6 validé localement. Le parcours création de projet et distribution de lenses a ensuite été ajouté ; ses preuves sont distinctes de la qualification L6. Voir aussi
+[l’état courant du projet](../../STATUS.md).
 
-## 1. État initial vérifié
+## 1. Surfaces actives
 
-- Web actif : `apps/studio-web/src/NativeStudio.tsx` monté par `main.tsx`.
-- Desktop actif : `NativeWorkbench.tsx`, branche `NativePartialWorkbench.tsx`.
-  L'ancien `DesktopApp` (`#local`) et l'ancien `StudioApp` Web ont été retirés
-  lors du nettoyage du 29 septembre 2026, avec le moteur local legacy.
-- Surfaces communes : `packages/ui/src/native-*` ; styles partagés et styles
-  Desktop séparés. L'ancien `NotificationProvider` (inutilisé) a été retiré ; le
-  récupérer depuis l'historique git (`packages/ui/src/studio-components.tsx`) ou
-  le réécrire pour la refonte.
+- Web : `apps/studio-web/src/main.tsx` monte `app/WebApp.tsx`.
+- Desktop : `apps/studio-desktop/src/main.tsx` monte `app/DesktopApp.tsx` ;
+  `app/ProjectFrame.tsx` route les projets complets et limités. Les anciens
+  `NativeWorkbench`, `NativePartialWorkbench` et `NativeRemotePanel` sont retirés.
+- Composants partagés : `packages/ui/src/collab`, `team`, shell et primitives.
+  Les contrats et composants `native-*` encore référencés ne sont pas tous
+  supprimables : certains servent aux accès limités et aux tests spécialisés.
 - Contrats de commandes/transports, garde de génération, brouillons et exclusions
   concurrentes sont à préserver pendant extraction en vues.
-- Image Lens existe pour PNG/JPEG/WebP avec données d'aperçu fournies ; le navigateur
-  de fichiers distant natif ne raccorde pas encore ces données.
+- Les fichiers publiés ont un aperçu distant autorisé du texte UTF-8 jusqu'à
+  1 Mio. Image Lens est au catalogue, mais les octets d'image ne sont pas encore
+  rendus dans cet aperçu ; l'interface présente un repli explicite.
 
-Cette analyse repose sur lecture de code et capture utilisateur. Elle ne remplace
-pas une recette de toutes les pages actuellement exécutées.
+La présence d’une route ou d’un composant ne remplace pas la recette du parcours.
 
 ## 2. Registre des contrats indispensables
 
-| Besoin UX | État réel | Travail prévu / garde-fou |
-| --- | --- | --- |
-| Projets par nom | Aucun catalogue V3 accessible au compte identifié dans les routeurs ; ancien registre Desktop uniquement local | Ajouter catalogue paginé autorisé, groupement par organisation, noms et contexte ; tester accès direct et par équipe, révocation, curseur et homonymes |
-| Créer un projet serveur | `POST /v3/workspaces/provision` existe ; workspace existant réservé à son propriétaire | Raccorder formulaire Web, noms/slug validés et aide ; refléter la restriction, ne pas offrir arbitrairement toutes les organisations |
-| Connaître la personne | `GET /v3/auth/whoami` fournit principal, acteur, nom et kind | Charger le profil d'affichage ; ne pas déduire tous les droits d'administration du seul kind |
-| Actions autorisées dans une page | Bootstrap/policy-management ne sont pas une synthèse complète des capacités effectives | Définir une réponse de capacités UI dérivée des mêmes contrôles serveur ; aucune autorisation client autonome ; contrôle serveur conservé à chaque mutation |
-| Choisir un compte à inviter | Liste globale de comptes réservée admin, liste de membres éligibles aux équipes disponible | Définir le sélecteur adapté au rôle ; si recherche de comptes nécessaire, endpoint borné avec politique d'exposition explicite ; ne pas ouvrir la liste globale à tous |
-| Changer le mot de passe | `POST /v3/auth/password` existe et invalide les jetons | Ajouter le formulaire et la reconnexion ; pas d'édition de nom/avatar inexistante |
-| Invitations et notifications | Inbox invitations globale ; notifications et lecture par projet | Commencer par onglets Invitations / Activité du projet ; différer l'agrégation globale sans badges trompeurs |
-| Aperçus distants | Liste native : chemin, objet et droits ; plans/transferts V3 protégés existants | Assembler les contenus autorisés via ces contrats, borner tailles et isoler formats ; pas d'URL publique de miniature inventée |
-| Import/export Git Desktop | Pont CLI existant, pas d'action Tauri dédiée identifiée | Adapter une commande structurée vers le cœur/bridge, analyse avant écriture et recette indépendante ; pas de shell composé depuis un champ |
-| Thèmes/Audiowide | Tokens sombres fixes, police non intégrée | Tokens sémantiques, police locale/licence, préférences locales initialisées avant rendu |
+Contrats revus le 5 octobre 2026. Les limites ci-dessous restent distinctes de la recette des interfaces.
 
-**Obligatoire pour la refonte utile :** catalogue, informations de capacité et
-sélection de personnes sans IDs manuels. Ces compléments backend sont de vrais
-lots testés, pas des détails CSS. Le design final des DTO/routes est arrêté au
-lot L0 après examen du stockage et de l'évaluation des permissions. Tout éventuel
-changement de schéma reçoit sa propre migration et ses tests ; aucune migration
-automatiquement supposée nécessaire dans ce plan.
+| Besoin UX | État actuel | Garde-fou / reste |
+| --- | --- | --- |
+| Projets par nom | Catalogue V3 paginé autorisé et filtré par contexte, raccordé Web/Desktop | Curseur lié au compte et au contexte ; capacités du projet pour résoudre son contexte sur lien direct |
+| Créer un projet serveur | Entreprise par défaut ; organisations et personnel activables indépendamment ; Layer vide et pins initiaux atomiques | Propriétaire du projet distinct de l'administration de l'organisation ; réessai exact idempotent |
+| Équipes d'organisation | Annuaire partagé et affectation de rôle par projet | Membres limités à l'organisation ; changements atomiques dans les projets liés ; anciennes équipes conservées |
+| Connaître la personne | whoami fournit identité et instance_administrator | Ne pas déduire les droits du kind ; administration indépendante des droits du projet |
+| Actions autorisées | Réponse de capacités L0 dérivée des prédicats serveur | Indices UI ; contrôle serveur conservé à chaque mutation |
+| Inviter une personne | Sélection par nom dans les comptes de l’instance (admin) ou membres de l’organisation | Pas d’annuaire général de projet ; référence technique en repli |
+| Mot de passe | Formulaire Web raccordé ; invalidation des jetons et reconnexion | Pas d’édition de nom/avatar ; Desktop gère la connexion appareil et les jetons |
+| Invitations et activité | Inbox globale d’invitations et notifications du projet | Pas d’agrégation globale des notifications |
+| Aperçus distants | Texte UTF-8 publié via chemin exact autorisé et viewer de lens isolé | 1 Mio ; image binaire et formats non textuels en repli ; droits revérifiés avant réponse |
+| Import/export Git Desktop | Commande Tauri structurée et assistant L6, via le pont existant | Aperçu lié à Operation/View ; export bare vers dossier neuf ; reprise CLI, recette L6 ci-dessous |
+| Thèmes et polices | Sombre/clair/système, préférence précoce, Audiowide et polices locales | Contraste exhaustif et autres plateformes non qualifiés par une capture |
+
+Les contrats L0 ont été livrés sans nouvelle migration. Les lenses utilisent
+0020, les contextes 0021, les équipes d'organisation 0022 et la bascule de mode
+0023. La sélection de
+personnes reste bornée aux annuaires autorisés ; les identifiants avancés ne
+sont pas masqués par des noms inventés.
 
 Pour chaque complément : documenter contrat, limites, erreurs, pagination, droits,
 invalidation et versionnement. Pas de liste reconstruite en scannant des IDs ni
@@ -117,8 +120,8 @@ le shell peut utiliser des fixtures dans ses tests, pas un faux catalogue en pro
 
 #### Correspondance de l’ancienne surface d’administration (L5)
 
-Web n’utilise plus `NativeAdminSurface` ; Desktop l’embarque encore dans
-`NativeRemotePanel` (voir limites L5). Composants partagés : `packages/ui/src/team/`.
+Web utilise `packages/ui/src/team/`. L6 raccorde ces mêmes composants au transport
+Tauri de Desktop ; la recette native vérifie la couverture de l’ancienne surface.
 
 | Ancien contrôle (`native-admin`, `-invitations`, `-teams`, `-policy-*`, `-storage`, `-metrics`) | Nouvelle page · action |
 | --- | --- |
@@ -157,7 +160,7 @@ Web n’utilise plus `NativeAdminSurface` ; Desktop l’embarque encore dans
 | L0 | Backend/contrats | Routeurs et stockage V3, modèles client ; aucun reformatage global |
 | L1 | Design system | `packages/ui` fondations/tokens/shell ; contrat partagé fixé avant autres imports |
 | L2 | Intégration/navigation | `main.tsx`, routeur, session et pages d'entrée des deux applications |
-| L3 | Desktop local | `NativeWorkbench`, `NativePartialWorkbench`, panneaux locaux et styles propres |
+| L3 | Desktop local | `app/workspace`, `app/projection`, `pages`, `merge`, `sync` et styles propres |
 | L4 | Collaboration | Modules communs revue/historique/fichiers/versions dans `packages/ui` |
 | L5 | Administration | Modules communs admin/invitations/équipes/policy dans `packages/ui` |
 | L6 Git | Pont natif | Adaptateur Tauri/bridge ; aucune modification concurrente de transport sans coordination |
@@ -184,15 +187,58 @@ case « implémenté » en « vérifié » sans preuve du parcours réel.
 | --- | --- | --- | --- |
 | Direction visuelle | Validée | Accord utilisateur | Maquette graphite, corail/ambre, logo original |
 | Plan pages/UX | Rédigé | Revue indépendante ; corrections intégrées | 24 fiches, liens vérifiés ; identité locale, provenance et limites Web explicitées |
-| L0 Contrats | Implémenté (catalogue, capacités, whoami, transport Desktop) : `GET /v3/spaces` paginé par curseur scellé lié au principal, `GET /v3/spaces/:space/capabilities` dérivé des prédicats partagés avec les handlers (`space_access`), `instance_administrator` dans `whoami`, actions `native_remote` `listSpaces`/`spaceCapabilities`, types TS `packages/ui/src/api/catalog-types.ts` ; contrat `docs/contracts/ui-catalog-and-capabilities.md` ; aucune migration | Vérifiée sur PostgreSQL jetable : `native_catalog` (accès direct, par équipe, sans accès, révocation entre liste et ouverture, retrait d'équipe, homonymes, pagination et balayage borné, curseur d'un autre principal/altéré refusé, bornes de `limit`, capacités propriétaire/membre/équipe/extérieur/limité, `whoami`) + tests unitaires curseur et client ; fmt, clippy workspace et Tauri | Reste : sélecteur de personnes à inviter (registre §2) non traité ; accès limité vérifié via un authorizer de test qui marque la décision réelle restreinte, pas via une vraie racine de politique de contenu ; `lastActivityAt` ne couvre que les événements de dépôt |
-| L1 Fondations | Fait (`packages/ui` : tokens sombre/clair, polices locales OFL, thème précoce, routeur hash, shell, composants, diff) | Tests renderer + captures sombre/clair de Changements comparées à la maquette | Contraste clair mesuré à refaire par outil ; pas encore de test clavier automatisé du menu/palette |
+| L0 Contrats | Implémenté (catalogue, capacités, whoami, transport Desktop) : `GET /v3/spaces` paginé par curseur scellé lié au principal, `GET /v3/spaces/:space/capabilities` dérivé des prédicats partagés avec les handlers (`space_access`), `instance_administrator` dans `whoami`, actions `native_remote` `listSpaces`/`spaceCapabilities`, types TS `packages/ui/src/api/catalog-types.ts` ; contrat `docs/contracts/ui-catalog-and-capabilities.md` ; aucune migration | Vérifiée sur PostgreSQL jetable : `native_catalog` (accès direct, par équipe, sans accès, révocation entre liste et ouverture, retrait d'équipe, homonymes, pagination et balayage borné, curseur d'un autre principal/altéré refusé, bornes de `limit`, capacités propriétaire/membre/équipe/extérieur/limité, `whoami`) + tests unitaires curseur et client ; fmt, clippy workspace et Tauri | Sélecteur de personnes livré avec les annuaires autorisés en L5 (limites §2). La preuve L0 d’accès limité utilise un authorizer de test ; la recette native distincte utilise une vraie politique de contenu ; `lastActivityAt` ne couvre que les événements de dépôt |
+| L1 Fondations | Fait (`packages/ui` : tokens sombre/clair, polices locales OFL, thème précoce, routeur hash, shell, composants, diff) | Tests renderer + captures sombre/clair de Changements comparées à la maquette | Contraste clair mesuré à refaire par outil ; palette clavier couverte en L6 (ouverture, Échap, focus, recherche Git) |
 | L2 Entrée/navigation | Fait : shell routé Web + Desktop ; connexion, compte, apparence ; projets Web par nom depuis le catalogue L0 (y compris sur lien direct) | Renderer + recettes natives Web/Desktop réécrites par L3/L4/L5 | Nom de projet sur lien direct résolu en parcourant au plus 5 pages du catalogue du compte |
-| L3 Desktop | Fait : Synchronisation P11 en panneau permanent du bandeau (serveur/compte, Publier et Recevoir distincts, transfert en cours avec étapes observées et annulation, « publication à confirmer » distincte d’un échec, activité conservée après redémarrage, transfert interrompu signalé) + route `/sync` (reprise, avancé : publier en gardant les têtes, créer sur le serveur, captures candidates et choix des têtes, passage en accès limité) ; connexion P02 dédiée `/connect` (code lisible, vérification automatique bornée à l’intervalle serveur, expiration/refus, certificat d’entreprise en étape avancée ; serveur mémorisé par dossier, autorité publique par serveur, jetons toujours dans le coffre OS) ; projet d’équipe choisi par nom dans le catalogue L0 (assistant Récupérer et Projets « Dans l’équipe »), référence en option avancée ; Fusion P10 `/merge[/:conflict]` (liste, comparaison base/variantes en `DiffView`, choix variante/passage/texte, aperçu final lié à `expectedOperation`/`expectedStep`, brouillons conservés par Layer/passage) ; Historique P07/P08 (captures filtrées et groupées, opérations locales, restauration par aperçu), Layers P09, Réglages P17 (capture locale, identité, serveur, réécriture), Diagnostic P23 sans panneaux hérités ; accès limité dans le même shell (Changements, Fichiers, Historique, Équipe, Fusion, Synchronisation, Réglages, Diagnostic) avec actions selon capacités, pages projet complet refusées, appels au magasin local sérialisés ; Équipe encadre les surfaces partagées (revues, versions, historique publié, fichiers distants, administration ; revues à portée limitée) | `pnpm check` vert ; `pnpm test:e2e:renderer` 18/18 (6 nouveaux tests Desktop : connexion + publication/annulation même `transferId`, publication non confirmée, fusion avec préconditions, aperçu périmé refusé, accès limité, clone par nom) ; recettes natives réelles sur PostgreSQL jetable (Docker) : `desktop` 5/5 (4 SCM + équipe), `desktop-partial` 1/1 ; captures sombre/clair 1440 et 960 px sur données fictives | Panneaux retirés : `NativeRemotePanel`, `NativeMergePanel`, `NativeConflictBlocks`, `NativeConflictComparison`, `NativePartialMerge`, `NativeHistoryPanel`, `NativeIdentityPanel`, `NativeDiagnosticsPanel`, `NativeChoosePanel`, `NativePartialWorkbench`, `NativeRewriteImpact`, `NativeReviewPanel`. Encore intégrés (lots L4/L5) : surfaces `Native*` partagées dans Équipe, `NativeProjectFiles` (Fichiers accès limité), `NativeScopedReviews`. Limites : pas d’octets/pourcentage de transfert (le moteur n’en publie pas) ; le navigateur n’est pas ouvert automatiquement (lien + copie) ; accès limité : Layer cible par identifiant (pas de liste de Layers pour une projection), capture publiée à fournir pour un clone limité, reprise manuelle au choix (le journal n’indique pas l’opération) ; pas de page capture P08 dédiée (pas de diff capture/parent local) ; capture automatique en pause par session seulement (pas de commande de réglage par Layer) |
-| L4 Collaboration | Web fait : composants partagés sans transport imposé dans `packages/ui/src/collab` (Fichiers P06, Historique P07 et capture en lecture seule P08, comparaison, Revues P12 avec proposition, détail P13 onglets Discussion/Fichiers/Validations, validation et journal P13b, Versions et repères P14 avec publication/révocation) ; pages Web une par fichier (`apps/studio-web/src/pages/{Files,History,Reviews,ReviewDetail,Run,Versions}Page.tsx`), routes `/history/:capture`, `/reviews/:review?version=&tab=`, `/reviews/:review/runs/:run` ; indices de capacités L0 appliqués (action désactivée avec raison) | Recette native Web réelle (`node scripts/test-native-ui-ci.mjs web`, PostgreSQL jetable) : connexion, projet ouvert par son nom de catalogue, fichiers et droits, historique d’un chemin et comparaison, commentaire, retour perdu puis relance sans doublon (vérifié au serveur), versions 2 et 3 d’une proposition avec décision précédente affichée comme caduque et version 2 en lecture seule, brouillon restauré après rechargement, preuve et journal CI, refus de la Gate de publication sans événement ajouté, comptes (surface héritée), stockage sans jeton/mot de passe/donnée projet, déconnexion puis rechargement ; tests de modèle purs dans `pnpm test:e2e:renderer` ; captures Web sombre/clair 1440 et 800 px | Desktop garde `NativeHistorySurface`, `NativeReviewSurface`, `NativeReleaseSurface`, `NativeRemoteProjectFiles` (et `NativeCompareSurface`, `NativeReviewComments`) dans sa page Équipe : suppression après adoption des composants `collab` par Desktop (L6). Accès limité vérifié localement avec `LAYRS_NATIVE_WEB_RESTRICTED=1` (politique de chemins appliquée par un Desktop Tauri) : contenu verrouillé sans identifiant, historique expliqué (403 à l’API), capacité d’octets refusée, projet fermé après refus du bootstrap ; non exécuté par défaut en CI Linux |
-| L5 Administration | Fait côté Web : Équipe et accès (Membres/Invitations/Équipes), Accès aux fichiers, Réglages (Général, Protections, Automatisations, Webhooks, Avancé ; garde de sortie), Boîte de réception (Invitations/Activité), Administration (Comptes, Comptes de service, Stockage, État du serveur), sessions du Compte ; composants `packages/ui/src/team/` pilotés par transports ; transport de politique Web (`apps/studio-web/src/app/policy/`, BLAKE3 via `@noble/hashes`, JCS vérifié contre `layrs-sync`) ; capacités L0 et `instanceAdministrator` utilisés comme indices | Recette native Web réelle (`fixtures/nativeWebTeam.ts`) : comptes, compte de service et secret unique, stockage, état, rôles lus, équipe + historique, invitation par nom puis acceptation par le compte invité, droits propres, protection + garde, webhook + secret, exception de fichier appliquée puis vérifiée par le serveur, retour à la gestion par équipes ; `pnpm check` ; renderer ; captures sombre/clair 1440/800 | Desktop garde `NativeAdminSurface` (recette `desktop-native-team` inchangée) ; voir « Limites constatées pendant L5 » |
-| L6 Git/finitions | Non commencé | Non exécutée | Bridge Tauri et recette complète |
+| L3 Desktop | Fait : Synchronisation P11 en panneau permanent du bandeau (serveur/compte, Publier et Recevoir distincts, transfert en cours avec étapes observées et annulation, « publication à confirmer » distincte d’un échec, activité conservée après redémarrage, transfert interrompu signalé) + route `/sync` (reprise, avancé : publier en gardant les têtes, créer sur le serveur, captures candidates et choix des têtes, passage en accès limité) ; connexion P02 dédiée `/connect` (code lisible, vérification automatique bornée à l’intervalle serveur, expiration/refus, certificat d’entreprise en étape avancée ; serveur mémorisé par dossier, autorité publique par serveur, jetons toujours dans le coffre OS) ; projet d’équipe choisi par nom dans le catalogue L0 (assistant Récupérer et Projets « Dans l’équipe »), référence en option avancée ; Fusion P10 `/merge[/:conflict]` (liste, comparaison base/variantes en `DiffView`, choix variante/passage/texte, aperçu final lié à `expectedOperation`/`expectedStep`, brouillons conservés par Layer/passage) ; Historique P07/P08 (captures filtrées et groupées, opérations locales, restauration par aperçu), Layers P09, Réglages P17 (capture locale, identité, serveur, réécriture), Diagnostic P23 sans panneaux hérités ; accès limité dans le même shell (Changements, Fichiers, Historique, Équipe, Fusion, Synchronisation, Réglages, Diagnostic) avec actions selon capacités, pages projet complet refusées, appels au magasin local sérialisés ; Équipe encadre les surfaces partagées (revues, versions, historique publié, fichiers distants, administration ; revues à portée limitée) | `pnpm check` vert ; `pnpm test:e2e:renderer` 18/18 (6 nouveaux tests Desktop : connexion + publication/annulation même `transferId`, publication non confirmée, fusion avec préconditions, aperçu périmé refusé, accès limité, clone par nom) ; recettes natives réelles sur PostgreSQL jetable (Docker) : `desktop` 5/5 (4 SCM + équipe), `desktop-partial` 1/1 ; captures sombre/clair 1440 et 960 px sur données fictives | Panneaux retirés : `NativeRemotePanel`, `NativeMergePanel`, `NativeConflictBlocks`, `NativeConflictComparison`, `NativePartialMerge`, `NativeHistoryPanel`, `NativeIdentityPanel`, `NativeDiagnosticsPanel`, `NativeChoosePanel`, `NativePartialWorkbench`, `NativeRewriteImpact`, `NativeReviewPanel`. L6 remplace les anciennes surfaces complètes d’Équipe par `collab` et `team` ; `NativeProjectFiles` (Fichiers accès limité) et `NativeScopedReviews` conservent leurs contrats spécifiques. Limites : pas d’octets/pourcentage de transfert (le moteur n’en publie pas) ; le navigateur n’est pas ouvert automatiquement (lien + copie) ; accès limité : Layer cible par identifiant (pas de liste de Layers pour une projection), capture publiée à fournir pour un clone limité, reprise manuelle au choix (le journal n’indique pas l’opération) ; pas de page capture P08 dédiée (pas de diff capture/parent local) ; capture automatique en pause par session seulement (pas de commande de réglage par Layer) |
+| L4 Collaboration | Web fait : composants partagés sans transport imposé dans `packages/ui/src/collab` (Fichiers P06, Historique P07 et capture en lecture seule P08, comparaison, Revues P12 avec proposition, détail P13 onglets Discussion/Fichiers/Validations, validation et journal P13b, Versions et repères P14 avec publication/révocation) ; pages Web une par fichier (`apps/studio-web/src/pages/{Files,History,Reviews,ReviewDetail,Run,Versions}Page.tsx`), routes `/history/:capture`, `/reviews/:review?version=&tab=`, `/reviews/:review/runs/:run` ; indices de capacités L0 appliqués (action désactivée avec raison) | Recette native Web réelle (`node scripts/test-native-ui-ci.mjs web`, PostgreSQL jetable) : connexion, projet ouvert par son nom de catalogue, fichiers et droits, historique d’un chemin et comparaison, commentaire, retour perdu puis relance sans doublon (vérifié au serveur), versions 2 et 3 d’une proposition avec décision précédente affichée comme caduque et version 2 en lecture seule, brouillon restauré après rechargement, preuve et journal CI, refus de la Gate de publication sans événement ajouté, comptes (surface héritée), stockage sans jeton/mot de passe/donnée projet, déconnexion puis rechargement ; tests de modèle purs dans `pnpm test:e2e:renderer` ; captures Web sombre/clair 1440 et 800 px | Desktop adopte les composants `collab` via `pages/TeamPage.tsx` et `remoteTeam.ts` : Revues et Contenu publié (fichiers/historique/versions), routes par revue/capture/version et brouillons isolés. La qualification L6 est distincte des preuves Web ci-contre. Accès limité vérifié localement avec `LAYRS_NATIVE_WEB_RESTRICTED=1` (politique de chemins appliquée par un Desktop Tauri) : contenu verrouillé sans identifiant, historique expliqué (403 à l’API), capacité d’octets refusée, projet fermé après refus du bootstrap ; non exécuté par défaut en CI Linux |
+| L5 Administration | Fait côté Web : Équipe et accès (Membres/Invitations/Équipes), Accès aux fichiers, Réglages (Général, Protections, Automatisations, Webhooks, Avancé ; garde de sortie), Boîte de réception (Invitations/Activité), Administration (Comptes, Comptes de service, Stockage, État du serveur), sessions du Compte ; composants `packages/ui/src/team/` pilotés par transports ; transport de politique Web (`apps/studio-web/src/app/policy/`, BLAKE3 via `@noble/hashes`, JCS vérifié contre `layrs-sync`) ; capacités L0 et `instanceAdministrator` utilisés comme indices | Recette native Web réelle (`fixtures/nativeWebTeam.ts`) : comptes, compte de service et secret unique, stockage, état, rôles lus, équipe + historique, invitation par nom puis acceptation par le compte invité, droits propres, protection + garde, webhook + secret, exception de fichier appliquée puis vérifiée par le serveur, retour à la gestion par équipes ; `pnpm check` ; renderer ; captures sombre/clair 1440/800 | Desktop adopte les composants `team` avec transport Tauri : Équipe, Accès aux fichiers, Réglages serveur et administration d’instance gardée par whoami. La recette `desktop-native-team` est adaptée ; voir L6 pour sa preuve actuelle. |
+| L6 Git/finitions | Fait le 5 octobre : assistant Git Tauri, composants collaboration/administration Desktop, session liée au compte, reprise exacte des politiques et documentation courante | `pnpm check` réussi ; renderer 27/27 ; recettes réelles SCM, équipe, Git, accès limité et Web ; binaire Windows embarqué reconstruit ; constats des revues indépendantes corrigés | [Qualification L6 : commandes, preuves, empreinte et limites](04-qualification-l6.md). Tests locaux exécutés en plusieurs commandes ; aucune distribution signée ni CI distante annoncée |
+| Création Web et lenses par projet, après L6 | Projets › Nouveau projet, organisations créables listées par droits, pins exacts à la création ; Administration › Lenses pour importer/retirer/révoquer ; Réglages › Lenses par projet avec révision attendue ; Web/Desktop téléchargent les viewers vérifiés, affichage isolé et secours ; aperçu texte publié contrôlé par chemin | `native_catalog` PostgreSQL : création partagée, refus membre, suspension, réessai exact, pin/association initiale, retrait/révocation/historique ; Web HTTPS : 2 tests dont import Markdown, création projet et rendu du README publié ; 24 tests renderer sélectionnés dont 6 lenses ; cinq tests du vérificateur de paquet avec WASM réel ; `pnpm check` complet (migrations 20, format, Clippy workspace, TypeScript, builds Web/Desktop), contrats SDK TS et paquets intégrés validés | [Contrat de distribution](../../contracts/lens-distribution-v1.md) et [guide](../../guides/projects-and-lenses.md). Qualification Desktop native de ce parcours réussie ; distribution externe encore en cours ; historique L6 ci-dessus inchangé. Analyseur de paquet indisponible, image binaire non rendue, worker JS sans quota mémoire dur. |
 
 ## 6. Qualification significative
+
+Complément du 5 octobre : contextes entreprise/organisation/personnel et équipes
+d'organisation intégrés. Les deux options serveur sont indépendantes et inactives
+par défaut. `pnpm check` passe avec 23 migrations ; PostgreSQL vérifie les quatre
+configurations, la réinitialisation, la migration conservatrice et les droits
+personnels. Les équipes réutilisables sont vérifiées sur plusieurs projets,
+y compris rollback et révocation à la limite des versions. Le fichier renderer
+Desktop passe 19 tests ; la recette Desktop native HTTPS et les trois tests Web
+HTTPS passent. Administration → Organisations permet la bascule à chaud avec
+choix principal, avertissement et confirmation saisie (identifiant unique si
+homonymes). Les organisations masquées gardent projets, membres et droits ;
+les projets personnels restent indépendants. La navigation Web/Desktop présente
+le sélecteur d'organisation puis « Tous les projets » et les projets ; créer
+une organisation est le dernier choix du menu. Le menu disparaît en mode mono.
+`organisation_mode`, `native_contexts` et `native_sync_v3` passent, notamment
+le refus d'anciens téléchargements/reçus pendant le masquage puis leur retour.
+Les recettes Web et Desktop valident la bascule et la restauration ; Web couvre
+aussi les homonymes et l'annulation. Les revues UI et sécurité sont favorables.
+La concurrence forcée et la pause/reprise des webhooks restent sans recette
+dédiée ; les anciens processus serveur doivent être remplacés avant la bascule.
+Le modèle,
+les API et la limite d'adhésion via un premier projet sont documentés dans le
+[contrat des contextes](../../contracts/project-contexts.md).
+
+Correction du parcours d'autorisation d'appareil : `/auth/device.js` est routé
+vers le serveur au lieu du HTML Studio. La page réutilise une session Web ouverte
+sur la même origine, sans transférer le jeton, avec choix entre comptes et
+confirmation explicite liée à une vérification de courte durée. La connexion
+manuelle reste disponible. Quatre régressions HTTPS réelles passent en plus des
+trois recettes Web précédentes (**7/7**) ; `pnpm check` passe. La revue critique
+a vérifié l'invalidation des sessions et des demandes, les réponses HTTP 204 et
+le nettoyage des sessions temporaires. L'instance locale reconstruite sert les
+ressources corrigées et conserve ses projets et adhésions.
+
+Finition du 6 octobre : la page d'autorisation reprend logo, tokens et polices
+de Studio, thème partagé et adaptation mobile. Ses assets sont embarqués et
+vérifiés par la recette HTTPS ; vues sombre/claire/mobile/confirmation inspectées.
+Le catalogue Desktop est corrigé pour la connexion depuis Nouveau projet avant
+choix du dossier : cette connexion notifie le catalogue global, et un compte
+sans organisation voit un état vide. Six tests renderer ciblés passent, ainsi
+que la recette Tauri réelle désormais démarrée depuis ce parcours et les sept
+tests Web. `pnpm check` passe ; serveur local et exécutable embarqué actualisés.
 
 ### Contrats et confidentialité
 
@@ -212,7 +258,7 @@ Tests des comportements, pas des classes CSS. Inspection visuelle distincte.
 ### Parcours réels
 
 Réutiliser `studio-web-native.spec.ts`, `desktop-native-scm.spec.ts`,
-`desktop-native-team.spec.ts`, `desktop-native-partial.spec.ts` et leurs fixtures
+`desktop-native-team.spec.ts`, `desktop-native-git.spec.ts`, `desktop-native-partial.spec.ts` et leurs fixtures
 HTTPS/Tauri. Adapter les sélecteurs accessibles au nouveau vocabulaire ; ne pas
 supprimer un scénario parce que son ancien bouton a disparu.
 
@@ -264,8 +310,10 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
 - **Noms des personnes** (P07/P12/P13) : pas d’annuaire lisible par un membre. Seul
   « Vous » est nommé ; les autres restent « Autre compte », identifiant en détails.
   Les participants d’une proposition se saisissent encore par référence (champ avancé).
-- **Aperçus de fichiers** (P06) : non raccordés ; type et droits seulement. Un contenu
-  interdit n’affiche ni taille, ni identifiant de contenu, ni aperçu.
+- **Aperçus de fichiers** (P06) : le texte UTF-8 publié jusqu'à 1 Mio est lu
+  par un transport lié au chemin exact et aux droits, puis affiché par une lens
+  ou en repli. Un contenu interdit ne fournit ni octets ni aperçu. Image binaire
+  et fichiers plus grands restent sans aperçu de contenu.
 - **Validations** (P13) : l’API liste toutes les exécutions du projet par pages ; le
   filtre « Capture proposée » porte sur les pages chargées et le dit.
 - **Accès limité** : l’historique complet est refusé par le serveur (403) ; la page
@@ -274,8 +322,8 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
   option `LAYRS_NATIVE_WEB_RESTRICTED=1`.
 - **Capture P08 Web** : pas de route de détail ; lecture de l’historique ancré sur la
   capture (une entrée). Restauration réservée à Desktop.
-- Après rechargement sur un lien profond, le fil d’Ariane montre la référence du
-  projet tant que le catalogue n’a pas été relu (mémoire de session L2).
+- Sur un lien profond Web, le nom est désormais résolu depuis le catalogue du
+  compte, avec un parcours borné à cinq pages ; la référence sert de repli.
 
 ### Limites constatées pendant L5
 
@@ -299,9 +347,9 @@ de recette. Windows et Docker Linux disponibles ; macOS/ARM non qualifiables ici
   projet : membres de l’organisation par nom, sinon identifiant technique en
   repli. Une invitation reçue pour un projet encore inaccessible n’affiche pas
   son nom. Un webhook désactivé ne se réactive pas.
-- **Desktop.** Le panneau distant Desktop utilise encore l’ancienne surface ;
-  les composants partagés acceptent un transport Tauri pour une adoption
-  ultérieure.
+- **Desktop.** Les composants partagés sont désormais raccordés au transport Tauri.
+  Les mutations et aperçus de politique prennent le verrou de travail du dossier.
+  Les revues des projections limitées gardent leur parcours natif distinct.
 
 ## 7. Suggestions différées, sans confusion de périmètre
 

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { CloudUpload, FolderOpen, LogOut, Plug, RefreshCw, ServerCog, Shuffle } from "lucide-react";
-import { Button, Card, Dialog, PageHeader, SelectField, TextField, navigate, useToast } from "@layrs/ui";
+import { Banner, Button, Card, Dialog, PageHeader, SelectField, TextField, navigate, useLocation, useToast } from "@layrs/ui";
 import { useProjection } from "../app/projection";
 import { useRemote } from "../app/remote";
+import { useDesktopContexts } from "../app/contexts";
 import { rememberProject } from "../app/recents";
 import { rememberOrigin, rememberTarget } from "../app/serverMemory";
 import { useWorkspace } from "../app/workspace";
@@ -16,6 +17,8 @@ export function SyncPage() {
   const remote = useRemote();
   const connected = remote.session.state === "connected";
   const projection = workspace.kind === "projection";
+  const { query } = useLocation();
+  const preparePublication = query.get("publish") === "1";
   return (
     <div className="layrs-page layrs-page--narrow">
       <PageHeader
@@ -42,6 +45,10 @@ export function SyncPage() {
         </Card>
       </section>
 
+      {preparePublication && !projection && connected && <section className="settings-section" aria-labelledby="first-publication">
+        <h2 id="first-publication">Publier ce projet local</h2>
+        <Card className="sync-card"><PublicationSetup /></Card>
+      </section>}
       <section className="settings-section" aria-labelledby="sync-actions">
         <h2 id="sync-actions">Publier et recevoir</h2>
         <Card className="sync-card">
@@ -64,7 +71,7 @@ export function SyncPage() {
         </Card>
       </section>
 
-      {!projection && connected && <AdvancedServerOperations />}
+      {!projection && connected && <AdvancedServerOperations hidePublication={preparePublication} />}
     </div>
   );
 }
@@ -92,13 +99,35 @@ function TargetLayer() {
   );
 }
 
-function AdvancedServerOperations() {
+function PublicationSetup() {
+  const workspace = useWorkspace();
+  const remote = useRemote();
+  const contexts = useDesktopContexts();
+  const [slug, setSlug] = useState(() => (workspace.data?.state.space.name ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, ""));
+  const [createdFor, setCreatedFor] = useState("");
+  const space = workspace.data?.state.space.spaceId;
+  const identity = `${remote.origin}|${remote.session.state === "connected" ? remote.session.principalId : ""}|${space}|${contexts.selected?.id}`;
+  const matching = remote.session.state === "connected" && contexts.origin === remote.origin && contexts.principalId === remote.session.principalId;
+  const reason = workspace.busy || (remote.transfer ? "Un transfert est en cours." : !matching || !contexts.selected?.canCreateProject ? "Choisissez une organisation dans laquelle vous pouvez créer un projet." : !space || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) ? "Indiquez un identifiant valide : lettres minuscules, chiffres et tirets." : undefined);
+  return <>
+    <p>Crée <strong>{workspace.data?.state.space.name}</strong> dans <strong>{contexts.selected?.kind === "personal" ? "votre espace personnel" : contexts.selected?.name ?? "l’organisation sélectionnée"}</strong> en conservant ses fichiers et son historique. Vous pourrez ensuite cliquer sur <strong>Publier</strong> pour envoyer vos captures.</p>
+    <TextField label="Identifiant du projet" value={slug} maxLength={63} onChange={(event) => setSlug(event.target.value)} />
+    <Button disabledReason={reason || undefined} onClick={() => {
+      if (reason) return;
+      void remote.operate(
+        { kind: "provision", label: "Création du projet local sur le serveur", busy: "Création sur le serveur…", context: "remote" },
+        { action: "provision", workspace: "company", contextId: contexts.selected?.id, slug, expectedSpace: space },
+      ).then((reply) => { if (reply) setCreatedFor(identity); });
+    }}>Créer ce projet sur le serveur</Button>
+    {createdFor === identity && <Banner tone="success" title="Projet créé sur le serveur">Cliquez sur Publier ci-dessous pour envoyer les captures de ce dossier.</Banner>}
+  </>;
+}
+
+function AdvancedServerOperations({ hidePublication }: { hidePublication: boolean }) {
   const workspace = useWorkspace();
   const remote = useRemote();
   const toast = useToast();
   const layers = workspace.data?.state.layers ?? [];
-  const [organisation, setOrganisation] = useState("");
-  const [slug, setSlug] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [destination, setDestination] = useState("");
   const [layer, setLayer] = useState(workspace.activeLayer?.layerId ?? layers[0]?.layerId ?? "");
@@ -145,27 +174,12 @@ function AdvancedServerOperations() {
             Publier en conservant les têtes concurrentes
           </Button>
         </details>
-        <details>
+        {!hidePublication && <details>
           <summary>
             <ServerCog aria-hidden size={16} /> Créer ce projet sur le serveur
           </summary>
-          <p>Crée le projet dans une organisation du serveur et y relie ce dossier. Vos fichiers locaux ne sont pas modifiés.</p>
-          <div className="sync-advanced__grid">
-            <TextField label="Organisation" value={organisation} onChange={(event) => setOrganisation(event.target.value)} />
-            <TextField label="Identifiant du projet" value={slug} hint="Lettres minuscules, chiffres et tirets." onChange={(event) => setSlug(event.target.value)} />
-          </div>
-          <Button
-            disabledReason={locked ?? (!organisation.trim() || !slug.trim() ? "Indiquez l’organisation et l’identifiant." : undefined)}
-            onClick={() =>
-              void remote.operate(
-                { kind: "provision", label: "Création du projet sur le serveur", busy: "Création sur le serveur…", context: "remote" },
-                { action: "provision", workspace: organisation.trim(), slug: slug.trim() },
-              )
-            }
-          >
-            Créer le projet sur le serveur
-          </Button>
-        </details>
+          <PublicationSetup />
+        </details>}
         <ChooseHeads locked={locked} />
         <details>
           <summary>

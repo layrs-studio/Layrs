@@ -195,7 +195,7 @@ function validateBundle(value: unknown, manifestDigest: string): void {
 function validateEntrypoint(value: unknown, runtime: "wasi" | "esm", label: string): void {
   const entrypoint = record(value, label) as unknown as WasiLensEntrypoint | EsmLensEntrypoint;
   onlyKeys(entrypoint as unknown as Record<string, unknown>, new Set(["runtime", "path", "export", "digest", "resources"]), label);
-  if (entrypoint.runtime !== runtime) {
+  if (entrypoint.runtime !== runtime && !(runtime === "wasi" && entrypoint.runtime === "wasm")) {
     throw new Error(`${label} runtime must be ${runtime}`);
   }
   if (typeof entrypoint.path !== "string" || !BUNDLE_PATH.test(entrypoint.path)) {

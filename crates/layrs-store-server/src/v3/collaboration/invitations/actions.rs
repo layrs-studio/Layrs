@@ -19,6 +19,10 @@ impl PgCollaborationStore {
             return Err(V3StoreError::InvalidCapability);
         }
         let space: SpaceId = parse(row.get("space_id"))?;
+        let mut visibility = self.repository.pool().begin().await.map_err(pg_error)?;
+        super::super::super::contexts::require_visible_space(&mut visibility, principal, &space)
+            .await?;
+        visibility.commit().await.map_err(pg_error)?;
         let desired = match action {
             InvitationAction::Accept => "accepted",
             InvitationAction::Reject => "rejected",
@@ -27,6 +31,8 @@ impl PgCollaborationStore {
         // Replays never regrant access after a subsequent explicit revocation.
         if row.get::<String, _>("state") == desired {
             let mut tx = self.repository.pool().begin().await.map_err(pg_error)?;
+            super::super::super::contexts::require_visible_space(&mut tx, principal, &space)
+                .await?;
             self.lock_invitation_principal(&mut tx, principal).await?;
             return Ok(document(&self.invitation_row(&mut tx, id, false).await?));
         }
@@ -63,6 +69,8 @@ impl PgCollaborationStore {
         } else {
             let mut tx = self.repository.pool().begin().await.map_err(pg_error)?;
             self.repository.lock_cas_budget(&mut tx).await?;
+            super::super::super::contexts::require_visible_space(&mut tx, principal, &space)
+                .await?;
             self.lock_invitation_principal(&mut tx, principal).await?;
             sqlx::query("SELECT space_id FROM spaces WHERE space_id=$1 FOR UPDATE")
                 .bind(space.as_str())
@@ -71,6 +79,7 @@ impl PgCollaborationStore {
                 .map_err(pg_error)?;
             tx
         };
+        super::super::super::contexts::require_visible_space(&mut tx, principal, &space).await?;
         self.lock_invitation_principal(&mut tx, principal).await?;
         let current = self.invitation_row(&mut tx, id, true).await?;
         if current.get::<String, _>("state") == desired {

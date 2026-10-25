@@ -26,6 +26,26 @@ export interface SpaceCatalogEntry {
   lastActivityAt: string | null;
 }
 
+/** Server-authorized project owner visible to the current account. */
+export interface ProjectContextEntry {
+  id: string;
+  slug?: string;
+  kind: "company" | "organisation" | "personal";
+  workspaceId: string;
+  name: string;
+  role: WorkspaceRole;
+  canCreateProject: boolean;
+}
+
+/** `GET /v3/contexts`; flags are independent server settings. */
+export interface ProjectContexts {
+  multiOrganisationEnabled: boolean;
+  personalProjectsEnabled: boolean;
+  defaultContextId: string;
+  contexts: ProjectContextEntry[];
+  canCreateOrganisation: boolean;
+}
+
 /** `GET /v3/spaces?limit=&cursor=` */
 export interface SpaceCatalogPage {
   schemaVersion: "layrs.space-catalog.v1";
@@ -40,6 +60,7 @@ export interface SpaceCatalogQuery {
   /** 1..=100, default 50. */
   limit?: number;
   cursor?: string;
+  contextId?: string;
 }
 
 export interface SpaceCapabilityFlags {
@@ -71,6 +92,8 @@ export interface SpaceCapabilityFlags {
 export interface SpaceCapabilities {
   schemaVersion: "layrs.space-capabilities.v1";
   spaceId: string;
+  contextId: string;
+  contextKind: "company" | "organisation" | "personal";
   /** Flags describe this epoch; refetch after any 409 `authorization_epoch_changed`. */
   authorizationEpoch: number;
   access: SpaceAccess;
@@ -94,5 +117,6 @@ export interface ApiErrorBody {
 
 /** Desktop `native_remote` actions (Tauri); `root` is ignored by both. */
 export type CatalogRemoteAction =
-  | { action: "listSpaces"; limit?: number; cursor?: string }
+  | { action: "listContexts" }
+  | { action: "listSpaces"; limit?: number; cursor?: string; contextId?: string }
   | { action: "spaceCapabilities"; space: string };

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/Button";
 import { Badge, Banner, Card, TechnicalId } from "../components/Feedback";
 import { SelectField, TextAreaField, TextField } from "../components/Field";
-import { PolicyChangeDialog, type PreparedPolicyChange } from "./PolicyChangeDialog";
+import { PolicyChangeDialog, policyWasUncertain, type PreparedPolicyChange } from "./PolicyChangeDialog";
 import type { PolicyPreview, PolicyTransport } from "./types";
 import type { Directory } from "./useDirectory";
 import { useTask } from "./useTask";
@@ -58,12 +58,15 @@ export function AdvancedPanel({
     await task.run("prepare", async (live) => {
       const { preview } = await policy<{ preview: PolicyPreview }>(command as { action: string });
       if (!live()) return;
-      if (read && (preview.expectedPolicySetId !== read.policySetId || preview.expectedAuthorizationEpoch !== read.authorizationEpoch))
+      const resuming = policyWasUncertain(preview);
+      if (!resuming && read && (preview.expectedPolicySetId !== read.policySetId || preview.expectedAuthorizationEpoch !== read.authorizationEpoch))
         throw new Error("La politique a changé depuis la lecture. Rechargez la page avant de préparer ce changement.");
       setPrepared({
         title: label,
         subject: `Projet ${projectName}`,
-        effects: [...effects, "Ce changement peut retirer votre propre accès. Le serveur le refusera si la politique a changé entre-temps."],
+        effects: resuming
+          ? ["Une demande identique a déjà été envoyée, mais son reçu n’a pas été confirmé. Rejouez cet aperçu exact pour connaître son résultat ; aucun nouveau changement n’est préparé."]
+          : [...effects, "Ce changement peut retirer votre propre accès. Le serveur le refusera si la politique a changé entre-temps."],
         preview,
         confirmLabel,
         successTitle: "Politique appliquée",

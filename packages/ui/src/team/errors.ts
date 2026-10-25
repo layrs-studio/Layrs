@@ -7,6 +7,12 @@
 type HttpLike = { status?: unknown; code?: unknown; message?: unknown };
 
 const codes: Record<string, string> = {
+  stale_organisation_mode: "La configuration ou la liste des organisations a changé. Relisez l’état actualisé avant de confirmer à nouveau.",
+  remote_principal_changed: "Le compte connecté à ce serveur a changé. Vérifiez de nouveau la session avant de poursuivre ; la demande n’a pas été envoyée.",
+  remote_scope_changed: "Le serveur ou le dossier actif a changé. Rouvrez cette page avant de poursuivre ; la demande n’a pas été envoyée.",
+  remote_identity_check_failed: "L’identité de la session n’a pas pu être vérifiée. Réessayez après avoir vérifié la connexion ; la demande n’a pas été envoyée.",
+  workspace_busy: "Une autre opération est en cours dans ce dossier. Réessayez après sa fin ; la demande n’a pas été envoyée.",
+  remote_lock_unavailable: "Une autre opération native utilise ce dossier. Réessayez après sa fin ; la demande n’a pas été envoyée.",
   authorization_epoch_changed: "Les droits du projet ont changé entre-temps. Rechargez puis recommencez ; rien n’a été modifié.",
   custom_policy_root_active:
     "Ce projet utilise des règles d’accès personnalisées : les équipes, rôles et invitations sont suspendus. Rétablissez la gestion par équipes dans Réglages → Avancé.",

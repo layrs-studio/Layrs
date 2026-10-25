@@ -6,6 +6,36 @@ pub(super) fn require_complete_access(bootstrap: &SpaceBootstrap) -> RemoteResul
     }
     Ok(())
 }
+
+// Web creation provisions a base Layer before the first capture. Recognize only
+// that empty shape; a missing base head in an established graph is not an empty
+// project and must not silently discard remote history.
+fn is_empty_project(bootstrap: &SpaceBootstrap) -> bool {
+    let [layer] = bootstrap.layers.as_slice() else {
+        return false;
+    };
+    let view = &bootstrap.current_repository_view.record;
+    let [heads] = view.layer_heads() else {
+        return false;
+    };
+    bootstrap.current_repository_view_generation == 0
+        && layer.record.kind() == LayerKind::Base
+        && layer.record.parent_layer_ids().is_empty()
+        && layer.head_step_ids.is_empty()
+        && heads.layer_id() == layer.record.id()
+        && heads.step_ids().is_empty()
+        && bootstrap.graph_root_step_ids.is_empty()
+        && bootstrap.markers.is_empty()
+        && bootstrap.releases.is_empty()
+        && view.marker_ids().is_empty()
+        && view.release_ids().is_empty()
+        && view.worktrees().is_empty()
+        && bootstrap
+            .product_roots
+            .iter()
+            .all(|root| matches!(root, ProductRoot::Layer { .. } | ProductRoot::Policy { .. }))
+}
+
 impl NativeRemote {
     /// Download rooted history, preserve concurrent heads, and record a local
     /// ReceiveRemoteState Operation. Only an unambiguous head is materialized.
@@ -58,6 +88,7 @@ impl NativeRemote {
             require_complete_access(&refreshed)?;
             if refreshed == bootstrap {
                 self.verify_unchanged_checkout(workspace, &source)?;
+                self.sync_project_lenses(workspace)?;
                 return Ok(unchanged::report(&source));
             }
             bootstrap = refreshed;
@@ -74,6 +105,7 @@ impl NativeRemote {
         binding.clone_pending = false;
         binding.observed = Some(bootstrap);
         save_binding(workspace, &binding)?;
+        self.sync_project_lenses(workspace)?;
         Ok(report)
     }
     /// Creates a distinct local Store/Worktree; remote Space/Layer identities are
@@ -98,9 +130,10 @@ impl NativeRemote {
                 p.record.kind() == LayerKind::Base && p.record.parent_layer_ids().is_empty()
             })
             .collect();
-        if bases.len() != 1 || bases[0].head_step_ids.len() != 1 {
+        if bases.len() != 1 || (bases[0].head_step_ids.len() != 1 && !is_empty_project(&bootstrap))
+        {
             return Err(NativeRemoteError::Invalid(
-                "clone requires a unique base Layer with one head",
+                "clone requires a unique base Layer with one head or an empty project",
             ));
         }
         let mut binding = Binding {
@@ -167,6 +200,7 @@ impl NativeRemote {
         )?;
         binding.clone_pending = false;
         save_binding(&workspace, &binding)?;
+        self.sync_project_lenses(&workspace)?;
         Ok(workspace)
     }
     pub(super) fn download_graph(
@@ -481,6 +515,17 @@ impl NativeRemote {
             for h in source.view.layer_heads() {
                 heads.insert(h.layer_id().clone(), h.step_ids().iter().cloned().collect());
             }
+        } else if is_empty_project(remote) {
+            // Retain the deterministic empty genesis created by prepare_initialize
+            // as an unpublished local head. Without it, the checkout has a base
+            // Step outside its Layer heads and the first Capture cannot proceed.
+            // Reconstruct only that head, so interrupted clones still reject any
+            // subsequently acquired local changes below. No remote mutation occurs.
+            let genesis = Step::new(vec![], Tree::new(vec![])?.id().clone())?;
+            heads.insert(
+                remote.layers[0].record.id().clone(),
+                BTreeSet::from([genesis.id().clone()]),
+            );
         }
         for h in remote.current_repository_view.record.layer_heads() {
             heads

@@ -68,12 +68,11 @@ function useRead<T>(scope: string, read: () => Promise<T>, context: string) {
       }, context),
     [task, read, context],
   );
-  const started = useRef("");
+  const initialLoad = useRef(load);
+  initialLoad.current = load;
   useEffect(() => {
-    if (started.current === scope) return;
-    started.current = scope;
-    void load();
-  }, [scope, load]);
+    void initialLoad.current();
+  }, [scope]);
   return { task, value, load };
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   Camera,
@@ -15,10 +15,11 @@ import {
   Tag,
   Users,
 } from "lucide-react";
-import { Banner, Button, EmptyState, Link, Loading, NavItem, NavSection, PageHeader, Spinner, navigate, segment, useLocation, type Command } from "@layrs/ui";
+import { Banner, Button, EmptyState, Link, Loading, NavItem, NavSection, PageHeader, Spinner, ProjectLensProvider, navigate, segment, useLocation, type Command, type LensTransport, type SpaceCapabilities } from "@layrs/ui";
 import { MergePage } from "../merge/MergePage";
 import { ChangesPage } from "../pages/ChangesPage";
 import { HealthPage } from "../pages/HealthPage";
+import { GitPage } from "../pages/GitPage";
 import { HistoryPage } from "../pages/HistoryPage";
 import { LayersPage } from "../pages/LayersPage";
 import { LimitedChanges } from "../pages/limited/LimitedChanges";
@@ -37,10 +38,12 @@ import { Frame, openProject } from "./Frame";
 import { PreviewDialog } from "./PreviewDialog";
 import { ProjectionProvider, useProjection } from "./projection";
 import { folderName, readRecents } from "./recents";
-import { RemoteProvider } from "./remote";
+import { RemoteProvider, useRemote } from "./remote";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
+import { useDesktopContexts } from "./contexts";
+import { rememberRecentContext } from "./recentContext";
 
-export type ProjectView = "changes" | "files" | "history" | "layers" | "worktrees" | "git" | "versions" | "team" | "merge" | "sync" | "connect" | "settings" | "health";
+export type ProjectView = "changes" | "files" | "history" | "layers" | "worktrees" | "versions" | "team" | "merge" | "sync" | "connect" | "settings" | "health" | "git" | "git-assistant" | "reviews" | "published" | "access" | "admin" | "remote-settings";
 
 type PageEntry = { view: ProjectView; label: string; icon: ReactNode; secondary?: boolean; complete?: boolean; limited?: boolean };
 
@@ -53,13 +56,18 @@ const projectPages: PageEntry[] = [
   { view: "worktrees", label: "Worktrees", icon: <FolderTree aria-hidden size={20} /> },
   { view: "versions", label: "Versions", icon: <Tag aria-hidden size={20} />, complete: true },
   { view: "team", label: "Équipe", icon: <Users aria-hidden size={20} /> },
+  { view: "reviews", label: "Revues", icon: <GitMerge aria-hidden size={20} />, complete: true },
+  { view: "published", label: "Contenu publié", icon: <FileStack aria-hidden size={20} />, complete: true },
+  { view: "access", label: "Accès aux fichiers", icon: <Lock aria-hidden size={20} />, complete: true, secondary: true },
+  { view: "remote-settings", label: "Réglages serveur", icon: <Settings aria-hidden size={20} />, complete: true, secondary: true },
   { view: "sync", label: "Synchronisation", icon: <RefreshCw aria-hidden size={20} />, secondary: true },
   { view: "settings", label: "Réglages du projet", icon: <Settings aria-hidden size={20} />, secondary: true },
+  { view: "git-assistant", label: "Import / export Git", icon: <GitBranch aria-hidden size={20} />, secondary: true, complete: true },
   { view: "health", label: "Diagnostic", icon: <Stethoscope aria-hidden size={20} />, secondary: true },
   { view: "git", label: "Pont Git", icon: <GitBranch aria-hidden size={20} />, secondary: true, complete: true },
 ];
 
-const contextual: Partial<Record<ProjectView, string>> = { merge: "Fusion", connect: "Connexion au serveur" };
+const contextual: Partial<Record<ProjectView, string>> = { merge: "Fusion", connect: "Connexion au serveur", admin: "Administration du serveur" };
 
 export function ProjectRoute({ root, rest }: { root: string; rest: string }) {
   const [view, ...tail] = rest.split("/");
@@ -78,9 +86,29 @@ function ProjectRemote({ children }: { children: ReactNode }) {
   const onChanged = useCallback((next: string) => (next === root ? void refresh() : openProject(next)), [root, refresh]);
   return (
     <RemoteProvider root={root} acquire={acquire} release={release} onChanged={onChanged}>
-      {children}
+      <RemoteLenses>{children}</RemoteLenses>
     </RemoteProvider>
   );
+}
+
+function RemoteLenses({ children }: { children: ReactNode }) {
+  const workspace = useWorkspace();
+  const remote = useRemote();
+  const identityKey = `layrs.lens-account.v1:${remote.origin}:${workspace.root}`;
+  const [remembered, setRemembered] = useState<{ key: string; principal: string } | null>(null);
+  useEffect(() => {
+    try {
+      if (remote.session.state === "signedOut") { localStorage.removeItem(identityKey); setRemembered(null); }
+      else if (remote.session.state === "connected") { localStorage.setItem(identityKey, remote.session.principalId); setRemembered({ key: identityKey, principal: remote.session.principalId }); }
+      else { const value = localStorage.getItem(identityKey); setRemembered(value ? { key: identityKey, principal: value } : null); }
+    } catch { setRemembered(null); }
+  }, [identityKey, remote.session]);
+  const offline = remote.session.state === "unreachable";
+  const principalId = remote.session.state === "connected" ? remote.session.principalId : offline && remembered?.key === identityKey ? remembered.principal : "";
+  const transport = useCallback<LensTransport>(command => remote.transport({ action: "administration", command }, { root: workspace.root, origin: remote.origin, principalId }), [remote.transport, remote.origin, workspace.root, principalId]);
+  if (!principalId || !workspace.data?.state.space.spaceId) return <>{children}</>;
+  const scope = `${workspace.root}|${remote.origin}|${principalId}|${workspace.data.state.space.spaceId}`;
+  return <ProjectLensProvider scope={scope} transport={transport} offline={offline} persist>{children}</ProjectLensProvider>;
 }
 
 function ProjectKind({ view, detail }: { view: ProjectView; detail: string }) {
@@ -100,13 +128,34 @@ function available(page: PageEntry, limited: boolean) {
 
 function ProjectFrame({ view, detail }: { view: ProjectView; detail: string }) {
   const workspace = useWorkspace();
+  const remote = useRemote();
+  const contexts = useDesktopContexts();
   const { data, kind, busy, error, root } = workspace;
+  const [projectContextKind, setProjectContextKind] = useState<SpaceCapabilities["contextKind"] | null>(null);
+  const [contextChecked, setContextChecked] = useState(false);
+  useEffect(() => {
+    const spaceId = data?.state.space.spaceId;
+    if (!spaceId || remote.session.state !== "connected") { setProjectContextKind(null); setContextChecked(false); return; }
+    let active = true;
+    setProjectContextKind(null);
+    setContextChecked(false);
+    void remote.transport<SpaceCapabilities>({ action: "spaceCapabilities", space: spaceId }).then((result) => {
+      if (!active) return;
+      setProjectContextKind(result.contextKind);
+      setContextChecked(true);
+      if (remote.origin === contexts.origin && remote.session.state === "connected" && remote.session.principalId === contexts.principalId) {
+        contexts.adopt(result.contextId);
+        rememberRecentContext(root, remote.origin, remote.session.principalId, result.contextId, spaceId);
+      }
+    }).catch(() => { if (active) { setProjectContextKind(null); setContextChecked(true); } });
+    return () => { active = false; };
+  }, [data?.state.space.spaceId, remote.origin, remote.session, remote.transport, contexts.origin, contexts.principalId, contexts.adopt, root]);
   const limited = kind === "projection";
   const key = segment(root);
   const name = data?.state.space.name || readRecents().find((entry) => entry.root === root)?.name || folderName(root);
   const pages = projectPages.filter((page) => available(page, limited));
   const current = pages.find((page) => page.view === view);
-  const known = Boolean(current) || view in contextual;
+  const known = Boolean(current) || (view in contextual && !(limited && view === "admin"));
 
   const commands = useMemo<Command[]>(
     () => [
@@ -156,7 +205,10 @@ function ProjectFrame({ view, detail }: { view: ProjectView; detail: string }) {
   else if (view === "settings") content = <ProjectSettingsPage />;
   else if (view === "worktrees" && (limited || data)) content = limited ? <LimitedWorktrees /> : <WorktreesPage />;
   else if (view === "git") content = <GitBridgePage />;
-  else if (view === "team") content = <TeamPage />;
+  else if (view === "git-assistant") content = <GitPage />;
+  else if (view === "team" && remote.session.state === "connected" && !contextChecked) content = <div className="layrs-page"><Loading label="Vérification de l’espace du projet…" /></div>;
+  else if (view === "team" && projectContextKind === "personal") content = <div className="layrs-page"><PageHeader title="Projet personnel" /><EmptyState icon={<Lock size={22} />} title="Accès réservé à votre compte">Ce projet personnel ne possède ni équipe ni invitations.</EmptyState></div>;
+  else if (["team", "reviews", "published", "access", "admin", "remote-settings"].includes(view)) content = <TeamPage section={view} detail={detail} />;
   else if (view === "merge") content = <MergePage conflictId={detail ? decodeURIComponent(detail) : undefined} />;
   else if (limited) content = view === "files" ? <LimitedFiles /> : view === "history" ? <HistoryPage /> : <LimitedChanges />;
   else if (!data) content = <div className="layrs-page">{!error && <Loading label="Lecture de l’état local…" />}</div>;

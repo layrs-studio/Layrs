@@ -138,6 +138,8 @@ impl NativeRemote {
         }
         self.transfer_begin_commit()?;
         let Some(graph) = graph else {
+            drop(_lock);
+            self.sync_project_lenses(workspace)?;
             return Ok(unchanged::report(&source));
         };
         let report = self.accept_remote(
@@ -151,6 +153,8 @@ impl NativeRemote {
         binding.clone_pending = false;
         binding.observed = Some(bootstrap);
         save_binding(workspace, &binding)?;
+        drop(_lock);
+        self.sync_project_lenses(workspace)?;
         Ok(report)
     }
 }

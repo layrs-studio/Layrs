@@ -85,6 +85,9 @@ async fn main() -> Result<()> {
         ("LAYRS_STORE_ID".into(), format!("store:ui-{suffix}")),
         ("LAYRS_SIGNING_KEY".into(), random_secret()),
         ("LAYRS_BOOTSTRAP_SECRET".into(), bootstrap_secret.clone()),
+        // UI qualification exercises opt-in contexts; production defaults stay off.
+        ("LAYRS_MULTI_ORGANISATION_ENABLED".into(), "true".into()),
+        ("LAYRS_PERSONAL_PROJECTS_ENABLED".into(), "true".into()),
     ]))?;
     installation::initialize(&maintenance, &config).await?;
     let runtime_password = random_secret();

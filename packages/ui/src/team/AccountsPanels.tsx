@@ -27,12 +27,11 @@ function useAccounts(scope: string, administration: TeamTransport) {
       }, "Les comptes n’ont pas pu être lus."),
     [administration, task],
   );
-  const started = useRef("");
+  const loader = useRef(load);
+  loader.current = load;
   useEffect(() => {
-    if (started.current === scope) return;
-    started.current = scope;
-    void load();
-  }, [scope, load]);
+    void loader.current();
+  }, [scope]);
   return { task, accounts, more, load };
 }
 

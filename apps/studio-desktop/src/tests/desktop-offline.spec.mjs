@@ -357,7 +357,7 @@ test("local Restore reviews exact metadata then applies the unchanged preview wi
   await page.getByRole("button", { name: "Appliquer cette restauration locale", exact: true }).click();
   await expect(page.getByText(/Restauration locale confirmée · capture 3/)).toBeVisible();
   expect((await localCalls(page)).at(-1)).toEqual({ action: "applyRestore", preview: reviewed });
-  expect((await networkCalls(page)).filter(a => a.action !== "whoami")).toEqual([]);
+  expect((await networkCalls(page)).filter(a => !["whoami", "listContexts"].includes(a.action))).toEqual([]);
   expect((await calls(page)).filter(c => c.command === "native_projection").at(-1).args.request).toEqual({ action: "status" });
 });
 
@@ -384,7 +384,7 @@ for (const invalid of [false, true]) test(`local Restore preview refusal or mism
   await expect(page.getByText(invalid ? /restauration incohérent/ : /currently writable regular-file leaves/).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Appliquer cette restauration locale", exact: true })).toHaveCount(0);
   expect((await localCalls(page)).some(a => ["applyRestore", "releasePreparation"].includes(a.action))).toBe(false);
-  expect((await networkCalls(page)).filter(a => a.action !== "whoami")).toEqual([]);
+  expect((await networkCalls(page)).filter(a => !["whoami", "listContexts"].includes(a.action))).toEqual([]);
 });
 
 for (const wrongReceipt of [false, true]) test(`local Restore stale apply or foreign receipt cannot report success (${wrongReceipt})`, async ({ page }) => {
@@ -395,7 +395,7 @@ for (const wrongReceipt of [false, true]) test(`local Restore stale apply or for
   await expect(page.getByText(wrongReceipt ? /restauration incohérent/ : /restore preview is stale/).first()).toBeVisible();
   await expect(page.getByText(/Restauration locale confirmée/)).toHaveCount(0);
   expect((await localCalls(page)).filter(a => a.action === "applyRestore")).toHaveLength(1);
-  expect((await networkCalls(page)).filter(a => a.action !== "whoami")).toEqual([]);
+  expect((await networkCalls(page)).filter(a => !["whoami", "listContexts"].includes(a.action))).toEqual([]);
 });
 
 test("typed hot-database recovery is explicit and leaves application recovery needs visible", async ({ page }) => {

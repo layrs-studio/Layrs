@@ -159,6 +159,57 @@ impl NativeWorkspace {
                 ));
             }
         };
+        let host = if let Some(mut host) = host {
+            if let Some(cache) = super::remote::lenses::read_cache(self).map_err(|error| {
+                NativeClientError::InvalidSnapshot(format!("project Lens cache: {error}"))
+            })? {
+                host = host.restrict_to_project();
+                for manifest in &cache.catalogue {
+                    host = host
+                        .with_project_manifest(manifest.clone())
+                        .map_err(|error| {
+                            NativeClientError::InvalidSnapshot(format!(
+                                "project Lens catalogue: {error}"
+                            ))
+                        })?;
+                }
+                for module in &cache.modules {
+                    if !cache.pins.contains(&module.pin)
+                        || module.manifest.pin().as_ref() != Some(&module.pin)
+                    {
+                        return Err(NativeClientError::InvalidSnapshot(
+                            "project Lens cache pin mismatch".into(),
+                        ));
+                    }
+                    let bytes = super::remote::lenses::read_module(
+                        self.store_root(),
+                        &module.module_digest,
+                    )
+                    .map_err(|error| {
+                        NativeClientError::InvalidSnapshot(format!("project Lens module: {error}"))
+                    })?;
+                    host = host
+                        .with_package(module.manifest.clone(), bytes)
+                        .map_err(|error| {
+                            NativeClientError::InvalidSnapshot(format!(
+                                "project Lens module: {error}"
+                            ))
+                        })?;
+                }
+                for association in &cache.associations {
+                    host = host
+                        .assign_extension(&association.extension, &association.lens_id)
+                        .map_err(|error| {
+                            NativeClientError::InvalidSnapshot(format!(
+                                "project Lens association: {error}"
+                            ))
+                        })?;
+                }
+            }
+            Some(host)
+        } else {
+            None
+        };
         if capture {
             self.capture_with_reason(CaptureReason::BeforeOperation)?;
         } else if self.is_dirty()? {

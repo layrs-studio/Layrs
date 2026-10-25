@@ -5,12 +5,17 @@ work.
 
 ## Workspace
 
-Server-side organization boundary. A Workspace owns members, Teams, Spaces,
-devices, audit events and governance defaults.
+Server-side project ownership boundary. Each installation has a company
+Workspace. Additional organisations and private personal Workspaces are two
+independent server options, both disabled by default. See
+[project contexts](../contracts/project-contexts.md). The UI does not require
+users to create an organisation before creating their first project.
 
 ## Team
 
 Group of Workspace members used for permissions and ownership.
+Organisation teams can be assigned to several projects with a separate role
+in each. Legacy project-local teams retain their scope and existing grants.
 
 ## Space
 

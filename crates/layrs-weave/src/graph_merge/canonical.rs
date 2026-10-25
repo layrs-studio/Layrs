@@ -30,7 +30,7 @@ pub(super) fn conflict(
     path: &str,
     bases: &[TermEntry],
     sides: &[TermEntry],
-    pin: Option<&layrs_lens_sdk::LensPin>,
+    pin: Option<(&layrs_lens_sdk::LensPin, &str)>,
 ) -> MergeResult<PlannedConflict> {
     let placement = placement(path)?;
     let terms = |kind, entries: &[TermEntry]| -> MergeResult<Vec<Value>> {
@@ -66,8 +66,8 @@ pub(super) fn conflict(
     };
     let origins: BTreeSet<_> = bases.iter().chain(sides).map(|(step, _)| step).collect();
     let mut value = json!({"schemaVersion":"layrs.scm.conflict.v1", "kind":kind,
-        "placements":[placement], "bases":b, "sides":s, "lensPin":pin,
-        "lensImplementationDigest":pin.map(|p| &p.digest), "renderedObjectId":null,
+        "placements":[placement], "bases":b, "sides":s, "lensPin":pin.map(|(p, _)| p),
+        "lensImplementationDigest":pin.map(|(_, digest)| digest), "renderedObjectId":null,
         "resolutionState":"unresolved", "placementResolutions":[], "blocks":[], "segments":[],
         "originStepIds":origins });
     value["conflictId"] = json!(digest("layrs-conflict-v1", &value)?);

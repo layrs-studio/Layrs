@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Croissance des captures automatiques
 
 Recette Windows/debug du 20 septembre 2026 : un fichier de 64 Kio, 32 modifications à contenu distinct puis les mêmes 32 contenus revisités. L'appel `capture_with_reason(AutomaticIdle)` est celui du Desktop ; l'ordonnanceur et sa période de calme ne sont pas simulés. Avant et après les changements, 64 appels sans modification, soit 128 au total, n'ajoutent aucun objet, aucune observation, aucune Operation et aucun octet au Store.

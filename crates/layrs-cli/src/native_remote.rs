@@ -85,6 +85,16 @@ fn prepare(cli: &Cli, arguments: &[String]) -> Result<PreparedRequest, CliError>
         });
     }
     let request_id = option(&mut args, "--request-id")?;
+    let context_id = option(&mut args, "--context")?;
+    if context_id.is_some()
+        && args
+            .first()
+            .is_none_or(|arg| !matches!(arg.as_str(), "provision" | "projects"))
+    {
+        return Err(CliError::usage(
+            "--context requires remote provision or projects",
+        ));
+    }
     let choose_output = option(&mut args, "--output")?;
     let history_path = option(&mut args, "--path")?;
     let history_actor = option(&mut args, "--actor")?;
@@ -155,6 +165,12 @@ fn prepare(cli: &Cli, arguments: &[String]) -> Result<PreparedRequest, CliError>
     {
         ["login"] => Action::StartLogin,
         ["whoami"] => Action::Whoami,
+        ["contexts"] => Action::ListContexts,
+        ["projects"] => Action::ListSpaces {
+            limit: None,
+            cursor: None,
+            context_id,
+        },
         ["file", step, path] => Action::ReadFile {
             step: layrs_core::scm::StepId::parse(*step).map_err(error)?,
             path: layrs_core::scm::RepoPath::parse(*path).map_err(error)?,
@@ -421,6 +437,8 @@ fn prepare(cli: &Cli, arguments: &[String]) -> Result<PreparedRequest, CliError>
         ["provision", workspace, slug] => Action::Provision {
             workspace: (*workspace).into(),
             slug: (*slug).into(),
+            context_id,
+            expected_space: None,
         },
         ["publish"] => Action::Publish { integrate: false },
         ["publish-candidates"] => Action::PublishCandidates,
@@ -460,7 +478,7 @@ fn prepare(cli: &Cli, arguments: &[String]) -> Result<PreparedRequest, CliError>
         }
         _ => {
             return Err(CliError::usage(
-                "usage: layrs remote login | whoami | logout | metrics | storage-budget [SPACE_ID] | provision WORKSPACE_SLUG SPACE_SLUG | publish [--integrate] | receive | clone SPACE_ID EMPTY_DIRECTORY --endpoint HTTPS_URL [--ca FILE]",
+                "usage: layrs remote login | whoami | logout | contexts | projects [--context WORKSPACE_ID] | metrics | storage-budget [SPACE_ID] | provision WORKSPACE_SLUG SPACE_SLUG [--context WORKSPACE_ID] | publish [--integrate] | receive | clone SPACE_ID EMPTY_DIRECTORY --endpoint HTTPS_URL [--ca FILE]",
             ));
         }
     };
@@ -499,6 +517,7 @@ fn execute(
         NativeRemoteRequest {
             origin: origin.clone(),
             ca_pem: ca_pem.clone(),
+            expected_principal_id: None,
             action,
         },
     )
@@ -569,6 +588,7 @@ fn execute(
                 NativeRemoteRequest {
                     origin: origin.clone(),
                     ca_pem: ca_pem.clone(),
+                    expected_principal_id: None,
                     action: Action::PollLogin,
                 },
             )

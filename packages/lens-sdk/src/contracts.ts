@@ -66,7 +66,7 @@ export interface LensResourceQuotas {
 }
 
 export interface WasiLensEntrypoint {
-  runtime: "wasi";
+  runtime: "wasi" | "wasm";
   path: string;
   export: string;
   digest: string;

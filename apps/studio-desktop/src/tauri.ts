@@ -47,9 +47,25 @@ export function nativeProjection<T>(root: string, request: NativeRequest): Promi
   return tauriInvoke<T>("native_projection", { root, request });
 }
 
+export type GitExportMode =
+  | { kind: "history" }
+  | { kind: "selected_history"; references: string[] }
+  | { kind: "snapshot"; stepId: string };
+
+export type GitRequest =
+  | { action: "previewImport"; source: string; references: string[] }
+  | { action: "applyImport"; previewId: string }
+  | { action: "previewExport"; destination: string; mode: GitExportMode }
+  | { action: "applyExport"; previewId: string }
+  | { action: "discardPreview"; previewId: string };
+
+export function nativeGit<T>(root: string, request: GitRequest): Promise<T> {
+  return tauriInvoke<T>("native_git", { root, request });
+}
+
 export function nativeRemote<T>(
   root: string,
-  request: { origin: string; caPem: string | null; action: NativeRequest }
+  request: { origin: string; caPem: string | null; expectedPrincipalId?: string; action: NativeRequest }
 ): Promise<T> {
   return tauriInvoke<T>("native_remote", { root, request });
 }

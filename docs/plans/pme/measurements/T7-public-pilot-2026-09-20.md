@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Qualification Git sur deux dépôts publics
 
 Recette Windows x64, binaire debug, poste partagé, 20 septembre 2026. Aucun code, hook, filtre ou sous-module de ces projets n'a été exécuté. Les clones bare complets et artefacts restent dans `tmp/t7-*-20260920` ; aucun dépôt externe n'a été modifié. Les empreintes de tous les fichiers de chaque miroir sont identiques avant/après.

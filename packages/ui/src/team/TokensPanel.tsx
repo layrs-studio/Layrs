@@ -37,12 +37,11 @@ export function TokensPanel({
       }, "Vos sessions n’ont pas pu être lues."),
     [administration, task],
   );
-  const started = useRef("");
+  const loader = useRef(load);
+  loader.current = load;
   useEffect(() => {
-    if (started.current === scope) return;
-    started.current = scope;
-    void load();
-  }, [scope, load]);
+    void loader.current();
+  }, [scope]);
 
   const active = (tokens ?? []).filter((token) => !token.revoked && timeOf(token.expiresAt) > Date.now());
   const inactive = (tokens ?? []).filter((token) => !active.includes(token));

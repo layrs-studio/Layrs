@@ -103,10 +103,14 @@ impl GraphMergePlan {
             let host: crate::wasm_host::EnforcedProfile =
                 serde_json::from_value(value.clone()).map_err(invalid)?;
             if host.module_digest != crate::wasm_host::module_digest()
-                || self
-                    .executions
-                    .iter()
-                    .any(|e| e.pin.digest != host.module_digest)
+                || self.executions.iter().any(|e| {
+                    let built_in = e.pin.digest == host.module_digest
+                        && e.implementation_digest == host.module_digest;
+                    let package = host.packages.iter().any(|package| {
+                        package.pin == e.pin && package.module_digest == e.implementation_digest
+                    });
+                    !built_in && !package
+                })
             {
                 return Err(invalid("executions do not match the enforced WASM module"));
             }
@@ -234,7 +238,8 @@ impl GraphMergePlan {
                     version: pending.pin.version.clone(),
                     digest: Sha256Id::parse(&pending.pin.digest).map_err(invalid)?,
                 },
-                implementation_digest: Sha256Id::parse(&pending.pin.digest).map_err(invalid)?,
+                implementation_digest: Sha256Id::parse(&pending.implementation_digest)
+                    .map_err(invalid)?,
                 determinism_profile_id: profile.profile_id.clone(),
                 term_roles: pending.term_roles.clone(),
                 result: if pending.conflict.is_some() {

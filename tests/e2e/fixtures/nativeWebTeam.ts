@@ -74,7 +74,10 @@ export async function webTeamAndAccess(page: Page, fixture: Fixture) {
   await create.getByLabel("Nom affiché", { exact: true }).fill("Carole — invitée test");
   await create.getByLabel("Identifiant de connexion", { exact: true }).fill(carole.login);
   await create.getByLabel("Mot de passe initial", { exact: true }).fill(carole.password);
+  const accountCreated = page.waitForResponse(response => response.url().endsWith('/v3/auth/accounts') && response.request().method() === 'POST');
   await create.getByRole("button", { name: "Créer le compte", exact: true }).click();
+  const carolePrincipalId = (await (await accountCreated).json()).principalId as string;
+  expect(carolePrincipalId).toMatch(/^principal:/);
   await expect(create).toBeHidden();
   await expect(page.getByRole("list", { name: "Comptes de l’instance" }).getByText("Carole — invitée test", { exact: true })).toBeVisible();
 
@@ -191,4 +194,5 @@ export async function webTeamAndAccess(page: Page, fixture: Fixture) {
   await expect(page.getByText("Équipes et rôles", { exact: true })).toBeVisible();
   expect(await readable(fixture, bob, "docs/readme.txt")).toBe(true);
   console.log("[team] restriction enforced by the server, then removed; project back to team-managed rules");
+  return { carolePrincipalId };
 }

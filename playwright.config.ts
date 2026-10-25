@@ -35,7 +35,7 @@ export default defineConfig({
   projects: [
     {
       name: "Desktop renderer - Chromium",
-      testMatch: /desktop-renderer\.spec\.ts/,
+      testMatch: /desktop-(?:renderer|remote-team)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         baseURL: `http://127.0.0.1:${desktopPort}`
@@ -43,7 +43,7 @@ export default defineConfig({
     },
     {
       name: "Studio Web renderer - Chromium",
-      testMatch: /(studio-web-renderer|collab-model)\.spec\.ts/,
+      testMatch: /(studio-web-renderer|collab-model|lens-runtime)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         baseURL: `http://127.0.0.1:${studioWebPort}`

@@ -93,6 +93,10 @@ try {
   const asset = html.text.match(/src="([^" ]+\.js)"/); assert(asset, 'built JavaScript entry point');
   const js = await request('GET', asset[1]); assert.equal(js.status, 200); assert.match(js.headers['content-type'], /javascript/); assert(js.text.length > 1000);
   assert.equal((await request('GET', '/auth/device')).status, 200);
+  const deviceScript = await request('GET', '/auth/device.js');
+  assert.equal(deviceScript.status, 200);
+  assert.match(deviceScript.headers['content-type'], /javascript/);
+  assert.doesNotMatch(deviceScript.text, /<!doctype html/i);
   record('Studio HTML, bundled JavaScript, CSP and device page share the HTTPS origin');
   const login = 'pilot-admin@example.test';
   const first = await request('POST', '/v3/auth/bootstrap', { secret: bootstrap, login, password, display_name: 'Local pilot administrator' });

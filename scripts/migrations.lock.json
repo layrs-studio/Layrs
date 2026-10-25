@@ -97,6 +97,26 @@
       "version": 19,
       "file": "0019_v3_scoped_patch_catalog_namespace.sql",
       "sha256": "da3b91c4205c7d16b3500006a665b0d38e42546eec15c62d5b9f79a894929a2c"
+    },
+    {
+      "version": 20,
+      "file": "0020_v3_lenses.sql",
+      "sha256": "98a4f8e8c1e70e6116150a5f0a400ed4b952b1ea5b4d914d3610aa3f38e4eedf"
+    },
+    {
+      "version": 21,
+      "file": "0021_v3_project_contexts.sql",
+      "sha256": "3584cad5a5545546b55481ce22b96653582a4984ad69df21b071999d591eb53e"
+    },
+    {
+      "version": 22,
+      "file": "0022_v3_organisation_teams.sql",
+      "sha256": "3e124f76ba9aa881267785e424de7676e463c3a9f008b4912a189096d35f9bc5"
+    },
+    {
+      "version": 23,
+      "file": "0023_v3_organisation_mode.sql",
+      "sha256": "85f4b4cf320e9c2d40106db52e026499450ef13e7899c5f61041fef97dc762ff"
     }
   ]
 }

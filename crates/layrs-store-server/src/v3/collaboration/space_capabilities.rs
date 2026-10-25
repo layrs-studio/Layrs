@@ -18,6 +18,8 @@ use crate::v3::space_access::{
 pub struct SpaceCapabilities {
     pub schema_version: &'static str,
     pub space_id: SpaceId,
+    pub context_id: String,
+    pub context_kind: String,
     /// Flags are valid for this epoch; any policy change increments it.
     pub authorization_epoch: u64,
     pub access: SpaceAccess,
@@ -57,8 +59,8 @@ pub struct SpaceCapabilityFlags {
     pub manage_teams: bool,
     /// Create/revoke invitations: same predicate as `manage_members`.
     pub manage_invitations: bool,
-    /// Policy management state and policy/choose transactions:
-    /// `policy.administer` full access and Workspace owner/administrator.
+    /// Policy management state and policy transactions: `policy.administer`
+    /// full access and Workspace owner/administrator or project creator.
     pub manage_policy: bool,
     /// Webhooks: `policy.administer`, full access.
     pub manage_webhooks: bool,
@@ -110,6 +112,10 @@ impl PgCollaborationStore {
             .map_err(pg_error)?;
         let human = human_principal(&mut *tx, principal).await?;
         let service = service_principal(&mut *tx, principal).await?;
+        let context = sqlx::query("SELECT w.workspace_id,COALESCE(c.kind,'organisation') AS kind FROM spaces s JOIN workspaces w USING(workspace_id) LEFT JOIN layrs_collaboration.workspace_contexts c USING(workspace_id) WHERE s.space_id=$1")
+            .bind(space.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
+        let context_id: String = context.get("workspace_id");
+        let context_kind: String = context.get("kind");
         let administrator =
             administer && workspace_administrator(&mut *tx, principal, space).await?;
         let managed = administrator
@@ -133,9 +139,9 @@ impl PgCollaborationStore {
             propose_scoped_reviews: granted(V3Action::ScopedReviewWrite).await?,
             decide_scoped_reviews: human && granted(V3Action::ScopedReviewApprove).await?,
             integrate_scoped_reviews: granted(V3Action::ScopedReviewWrite).await?,
-            manage_members: managed,
-            manage_teams: managed,
-            manage_invitations: managed,
+            manage_members: managed && context_kind != "personal",
+            manage_teams: managed && context_kind != "personal",
+            manage_invitations: managed && context_kind != "personal",
             manage_policy: administrator,
             manage_webhooks: administer,
             configure_protection: administer,
@@ -148,6 +154,8 @@ impl PgCollaborationStore {
         Ok(SpaceCapabilities {
             schema_version: "layrs.space-capabilities.v1",
             space_id: space.clone(),
+            context_id,
+            context_kind,
             authorization_epoch: authority.authorization_epoch,
             access,
             capabilities,

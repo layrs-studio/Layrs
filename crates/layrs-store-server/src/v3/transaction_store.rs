@@ -122,16 +122,32 @@ impl PgTransactionStore {
                 tx.rollback().await.map_err(pg_error)?;
                 continue;
             }
-            if prepared.rejection.is_none()
-                && (super::transaction_choose::required(request)
-                    || super::transaction_policy::required(request))
-                && !super::transaction_choose::administrator(&mut tx, principal, &request.space_id)
-                    .await?
-            {
-                prepared.rejection = Some(reject(
-                    RejectionCode::PermissionDenied,
-                    "administrative transaction requires active Workspace administrator role",
-                ));
+            if prepared.rejection.is_none() {
+                let choosing_heads = super::transaction_choose::required(request);
+                let policy_root = super::transaction_policy::required(request);
+                if choosing_heads || policy_root {
+                    let permitted = if choosing_heads {
+                        super::transaction_choose::administrator(
+                            &mut tx,
+                            principal,
+                            &request.space_id,
+                        )
+                        .await?
+                    } else {
+                        super::space_access::workspace_administrator(
+                            &mut *tx,
+                            principal,
+                            &request.space_id,
+                        )
+                        .await?
+                    };
+                    if !permitted {
+                        prepared.rejection = Some(reject(
+                            RejectionCode::PermissionDenied,
+                            "administrative transaction requires the active project administrator role",
+                        ));
+                    }
+                }
             }
             if prepared.rejection.is_none() {
                 prepared.rejection = super::observations::assertions::recheck(
@@ -144,6 +160,7 @@ impl PgTransactionStore {
             }
             if prepared.rejection.is_none() {
                 prepared.rejection = super::transaction_products::recheck_products(
+                    &self.repository,
                     &mut tx,
                     &request.space_id,
                     &mut prepared.products,
@@ -731,12 +748,17 @@ pub(crate) async fn lock_identity(
     principal: &PrincipalContext,
     space: &layrs_core::scm::SpaceId,
 ) -> V3StoreResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,18))")
+        .bind(&principal.deployment_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(pg_error)?;
     let active:Option<String>=sqlx::query_scalar("SELECT p.principal_id FROM principals p JOIN deployments d ON d.deployment_id=p.deployment_id WHERE p.principal_id=$1 AND p.actor_id=$2 AND p.deployment_id=$3 AND p.subject_digest=$4 AND p.status='active' AND d.status='ready' FOR SHARE OF p,d")
         .bind(principal.principal_id.as_str()).bind(principal.actor_id.as_str()).bind(&principal.deployment_id).bind(&principal.subject_digest).fetch_optional(&mut **tx).await.map_err(pg_error)?;
     if active.is_none() {
         return Err(V3StoreError::InvalidCapability);
     }
-    let member:Option<String>=sqlx::query_scalar("SELECT wm.principal_id FROM workspace_memberships wm JOIN spaces s ON s.workspace_id=wm.workspace_id JOIN workspaces w ON w.workspace_id=s.workspace_id JOIN principals p ON p.principal_id=wm.principal_id AND p.deployment_id=w.deployment_id WHERE s.space_id=$1 AND wm.principal_id=$2 AND wm.state='active' AND s.lifecycle_state='ready' FOR SHARE OF wm")
+    let member:Option<String>=sqlx::query_scalar("SELECT wm.principal_id FROM workspace_memberships wm JOIN spaces s ON s.workspace_id=wm.workspace_id JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id JOIN principals p ON p.principal_id=wm.principal_id AND p.deployment_id=w.deployment_id WHERE s.space_id=$1 AND wm.principal_id=$2 AND wm.state='active' AND s.lifecycle_state='ready' AND ((c.kind='personal' AND dc.personal_projects_enabled AND c.owner_principal_id=$2) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))) FOR SHARE OF wm")
         .bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_optional(&mut **tx).await.map_err(pg_error)?;
     if member.is_none() {
         return Err(V3StoreError::InvalidCapability);

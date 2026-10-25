@@ -61,6 +61,10 @@ for (const definition of [
   assert.ok(schema.$defs[definition], `missing schema definition ${definition}`);
 }
 assertSchemaSubsetSupported(schema);
+const wasmManifest = clone(expected.manifest);
+wasmManifest.bundle.entrypoints.reconcile.runtime = "wasm";
+assertLensManifest(wasmManifest);
+assertValidDefinition(schema, "lensManifest", wasmManifest);
 for (const [definition, value] of [
   ["lensManifest", expected.manifest],
   ["previewWindow", expected.previewWindow],

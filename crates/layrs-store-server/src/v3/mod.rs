@@ -14,11 +14,14 @@ mod compare;
 mod history;
 mod history_path;
 mod observations;
+mod organisation_mode;
 pub use observations::{
     PublishedObservationFilter, PublishedObservationProvenance, PublishedObservationSnapshot,
     PublishedStepObservation,
 };
+pub use organisation_mode::*;
 mod content_policy;
+mod contexts;
 mod error;
 mod event_store;
 mod fetch_snapshot;
@@ -31,6 +34,7 @@ pub use path_patch_service::{PgPathPatchService, ScopedPatchCandidate, load_cand
 mod plans;
 mod policy_authorizer;
 pub use content_policy::*;
+pub use contexts::*;
 mod policy_management;
 pub use policy_management::PolicyManagementState;
 mod postgres;

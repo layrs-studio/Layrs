@@ -253,6 +253,7 @@ async fn cross_space(
         .provision_space(
             principal,
             ProvisionSpaceRequest {
+                context_id: None,
                 workspace_slug: "team".into(),
                 space_slug: "assertions-other".into(),
                 name: "Other assertions".into(),

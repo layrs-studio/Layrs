@@ -1,19 +1,14 @@
 # Development And Testing
 
-The easiest development path is:
+For the current server and Web, run `npm run dev` with Node.js 22+ and Docker
+Desktop in Linux container mode. The default URL is `https://localhost:19443`;
+the launcher prints the actual URL and credential-file path. It builds the
+applications in containers. Stop with `npm run dev:down`, preserving data.
+See the [local server guide](local-server.md).
 
-```powershell
-pnpm install
-pnpm run dev
-```
-
-`pnpm run dev` starts version-pinned Docker services, runs server migrations,
-then starts Layrs Server and Studio Web. Stop the services with
-`pnpm run dev:down`.
-
-Default endpoints are Studio Web on `127.0.0.1:5173`, Layrs Server on
-`127.0.0.1:8787`, PostgreSQL on `127.0.0.1:15432`, and MinIO on
-`127.0.0.1:19000`.
+For source development and the checks below, install the pinned toolchain
+(`rust-toolchain.toml`), Node.js and pnpm 9.15.0, then run
+`pnpm install --frozen-lockfile`. Start Desktop with `pnpm dev:studio-desktop`.
 
 ## Canonical Trust Gate
 
@@ -28,11 +23,13 @@ This deliberately runs all of the following:
 1. migration checksums, source-size limits, Rust format and Clippy with
    warnings denied;
 2. every TypeScript workspace check, both Studio production builds and the
-   client SDK unit tests;
+   Lens package contract tests;
 3. the whole Rust workspace against mandatory disposable PostgreSQL;
 4. Studio Desktop Tauri shell tests;
-5. both renderer projects, real native Desktop, real Studio Web, and the real
-   Desktop-to-server-to-Web flow.
+5. both renderer projects, real native Desktop and real Studio Web.
+
+The shared-client and limited-access recipes are explicit extra modes; their
+coverage is not implied by the default command. See the [matrix](test-matrix.md).
 
 `pnpm test` does not silently skip the Windows-native suite on another OS. CI
 uses explicit platform jobs: Linux proves static/PostgreSQL/Web behavior and
@@ -94,12 +91,12 @@ Use `RUST_TEST_THREADS=1` until all temp-path-sensitive tests are parallel-safe.
 
 ```powershell
 pnpm check:typescript
-pnpm test:sdk
+pnpm test:packages
 pnpm build:apps
 ```
 
-SDK unit tests are separate because TypeScript compilation does not execute
-normalization and Lens diff assertions.
+Lens package tests are separate because TypeScript compilation does not execute
+contract and diff assertions.
 
 ## Migration Integrity
 
@@ -139,7 +136,7 @@ traces, screenshots and videos are retained as CI artifacts for 14 days.
 
 ## CI Jobs
 
-- `Linux / static, PostgreSQL, Web`: static checks, SDK, builds, all workspace
+- `Linux / static, PostgreSQL, Web`: static checks, Lens packages, builds, all workspace
   Rust tests on PostgreSQL, migration upgrade, renderer and Studio Web tests.
 - `Windows / Tauri native Desktop`: Desktop typecheck, Tauri shell tests,
   package build and real native Desktop UI tests.

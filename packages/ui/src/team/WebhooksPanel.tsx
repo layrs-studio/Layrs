@@ -68,16 +68,15 @@ export function WebhooksPanel({
 
   // Secrets never survive a change of project or account.
   useEffect(() => setSecret(null), [scope]);
-  const started = useRef("");
+  const initialLoad = useRef(load);
+  initialLoad.current = load;
   useEffect(() => {
     if (canManage === false) {
       setForbidden(true);
       return;
     }
-    if (started.current === scope) return;
-    started.current = scope;
-    void load();
-  }, [scope, canManage, load]);
+    void initialLoad.current();
+  }, [scope, canManage]);
 
   if (forbidden)
     return (

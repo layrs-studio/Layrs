@@ -119,6 +119,10 @@ pub(crate) async fn prepare_products(
         }
         let mut closure_availability = Vec::new();
         if let ProductEnvelope::Weave { record, .. } = product {
+            let previously_admitted: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM products WHERE space_id=$1 AND logical_id=$2 AND product_object_id=$3)",
+            ).bind(space.as_str()).bind(product.logical_id()).bind(product.object_id().as_str())
+                .fetch_one(repository.pool()).await.map_err(pg_error)?;
             let result = steps
                 .get(&record.result_step_id)
                 .ok_or(V3StoreError::NotFound)?;
@@ -138,13 +142,14 @@ pub(crate) async fn prepare_products(
                     "Weave outcome and conflicts differ from exact result closure",
                 )));
             }
-            match weave::validate(repository, record, &closure, steps).await {
+            match weave::validate(repository, record, &closure, steps, previously_admitted).await {
                 Ok(()) => {}
                 Err(
                     V3StoreError::NotFound
                     | V3StoreError::IdentityMismatch
                     | V3StoreError::CorruptObject(_)
-                    | V3StoreError::InvalidDescriptor(_),
+                    | V3StoreError::InvalidDescriptor(_)
+                    | V3StoreError::InvalidCapability,
                 ) => {
                     return Ok(Err(reject(
                         RejectionCode::ImmutableObjectMismatch,
@@ -310,6 +315,7 @@ pub(crate) async fn prepare_products(
 /// Called while the Space is locked. Revalidation handles concurrent publication
 /// of an immutable logical ID even when that transaction changed no View.
 pub(crate) async fn recheck_products(
+    repository: &PgV3Repository,
     tx: &mut Transaction<'_, Postgres>,
     space: &SpaceId,
     products: &mut [PreparedProduct],
@@ -343,6 +349,64 @@ pub(crate) async fn recheck_products(
             )));
         }
         product.existing = !rows.is_empty();
+        if !product.existing {
+            if let ProductEnvelope::Weave { record, .. } = &product.envelope {
+                for execution in &record.lens_executions {
+                    let historical_builtin = [
+                        layrs_weave::reconciliation::NativeLens::Text,
+                        layrs_weave::reconciliation::NativeLens::Code,
+                    ]
+                    .into_iter()
+                    .any(|lens| {
+                        let pin = layrs_weave::wasm_host::manifest(lens)
+                            .pin()
+                            .expect("built-in pin");
+                        pin.lens_id == execution.pin.lens_id
+                            && pin.version == execution.pin.version
+                            && pin.digest == execution.pin.digest.as_str()
+                            && execution.implementation_digest.as_str()
+                                == layrs_weave::wasm_host::module_digest()
+                    });
+                    if historical_builtin {
+                        match repository.validate_legacy_execution_in(tx, space).await {
+                            Ok(()) => {}
+                            Err(V3StoreError::InvalidCapability) => {
+                                return Ok(Some(reject(
+                                    RejectionCode::ImmutableObjectMismatch,
+                                    "A configured project requires its exact installed Lens pin",
+                                )));
+                            }
+                            Err(error) => return Err(error),
+                        }
+                        continue;
+                    }
+                    let pin = layrs_lens_sdk::LensPin::try_new(
+                        &execution.pin.lens_id,
+                        &execution.pin.version,
+                        execution.pin.digest.as_str(),
+                    )
+                    .map_err(|_| V3StoreError::InvalidCapability)?;
+                    match repository
+                        .validate_installed_execution_in(
+                            tx,
+                            space,
+                            &pin,
+                            execution.implementation_digest.as_str(),
+                        )
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(V3StoreError::InvalidCapability | V3StoreError::NotFound) => {
+                            return Ok(Some(reject(
+                                RejectionCode::ImmutableObjectMismatch,
+                                "Weave Lens is no longer selected or its module identity changed",
+                            )));
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
         if product.existing && !product.availability.contains(product.envelope.object_id()) {
             product
                 .availability

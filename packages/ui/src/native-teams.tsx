@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { NativeAdminCommand } from "./native-admin-route";
 import { NativePolicyManagement, type PolicyManagement } from "./native-policy-management";
+import { OrganisationTeamsPanel } from "./team/OrganisationTeamsPanel";
 
 type Role = "member" | "auditor" | "release_manager";
 type Team = { teamId: string; version: number; name: string; role: Role; memberPrincipalIds: string[]; state: string; eventObjectId: string; updatedAt: string; changedBy: string; reason?: string };
@@ -83,7 +84,7 @@ export function NativeTeamsSurface({ scope, transport, busy, onBusy, onPolicy, g
     setHistory({team,page});
   }
   const memberName = (id: string) => members.find(member => member.principalId === id)?.displayName || id;
-  return <details><summary>Équipes du projet</summary>
+  return <><OrganisationTeamsPanel scope={scope} administration={transport} /><details><summary>Équipes historiques du projet</summary>
     <NativePolicyManagement value={policy} />
     <p>Une équipe attribue le même rôle à ses membres dans ce projet. Les accès individuels restent indépendants ; une interdiction explicite reste prioritaire.</p>
     <div className="native-buttons"><button disabled={busy} onClick={() => void perform(load)}>Charger les équipes</button><button disabled={busy || !canManage} onClick={() => edit(null)}>Nouvelle équipe</button></div>
@@ -113,5 +114,5 @@ export function NativeTeamsSurface({ scope, transport, busy, onBusy, onPolicy, g
       <details><summary>Identifiant de l’événement</summary><code>{event.eventObjectId}</code></details>
     </li>)}</ol><button disabled={busy || !history.page.hasMore} onClick={()=>void perform(()=>readHistory(history.team,true))}>Page suivante des changements d’équipe</button></section>}
     {notice && <p role="status">{notice}</p>}{error && <p role="alert" className="native-error">{error}</p>}
-  </details>;
+  </details></>;
 }

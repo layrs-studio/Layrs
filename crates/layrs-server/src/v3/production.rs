@@ -322,6 +322,19 @@ impl V3Facade for ProductionV3Facade {
             .await
             .map_err(map_error)
     }
+    async fn file_preview(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        space: &SpaceId,
+        request: store::FilePreviewRequest,
+    ) -> Result<store::FilePreviewResponse, V3ServiceError> {
+        let principal = self.principal(principal).await?;
+        let authority = self.authority(space).await?;
+        self.repository
+            .file_preview(&principal, &authority, request)
+            .await
+            .map_err(map_error)
+    }
     async fn compare_steps(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -342,6 +355,74 @@ impl V3Facade for ProductionV3Facade {
     ) -> Result<store::ProvisionSpaceResponse, V3ServiceError> {
         self.repository
             .provision_space(&self.principal(principal).await?, &request)
+            .await
+            .map_err(map_error)
+    }
+    async fn creatable_workspaces(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        cursor: Option<String>,
+    ) -> Result<store::CreatableWorkspacesPage, V3ServiceError> {
+        self.repository
+            .creatable_workspaces(&self.principal(principal).await?, cursor.as_deref())
+            .await
+            .map_err(map_error)
+    }
+    async fn create_project(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: store::CreateProjectRequest,
+    ) -> Result<store::ProvisionSpaceResponse, V3ServiceError> {
+        self.repository
+            .create_project(&self.principal(principal).await?, &request)
+            .await
+            .map_err(map_error)
+    }
+    async fn check_local_project(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: store::CheckLocalProjectRequest,
+    ) -> Result<store::CheckLocalProjectResponse, V3ServiceError> {
+        self.repository
+            .check_local_project(&self.principal(principal).await?, &request)
+            .await
+            .map_err(map_error)
+    }
+    async fn project_contexts(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<store::ProjectContexts, V3ServiceError> {
+        self.repository
+            .project_contexts(&self.principal(principal).await?)
+            .await
+            .map_err(map_error)
+    }
+    async fn organisation_mode_settings(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<store::OrganisationModeSettings, V3ServiceError> {
+        self.repository
+            .organisation_mode_settings(&self.principal(principal).await?)
+            .await
+            .map_err(map_error)
+    }
+    async fn update_organisation_mode(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: store::UpdateOrganisationModeRequest,
+    ) -> Result<store::OrganisationModeSettings, V3ServiceError> {
+        self.repository
+            .update_organisation_mode(&self.principal(principal).await?, &request)
+            .await
+            .map_err(map_error)
+    }
+    async fn create_organisation(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: store::CreateOrganisationRequest,
+    ) -> Result<store::CreatedOrganisation, V3ServiceError> {
+        self.repository
+            .create_organisation(&self.principal(principal).await?, &request)
             .await
             .map_err(map_error)
     }
@@ -647,6 +728,9 @@ fn token_digest(token: &str) -> String {
 fn map_error(error: store::V3StoreError) -> V3ServiceError {
     match error {
         store::V3StoreError::AuthorizationEpochChanged => V3ServiceError::AuthorizationEpochChanged,
+        store::V3StoreError::OrganisationModeConflict => V3ServiceError::Conflict {
+            code: "stale_organisation_mode",
+        },
         store::V3StoreError::InvalidCapability => V3ServiceError::Forbidden,
         store::V3StoreError::ExpiredCapability
         | store::V3StoreError::CapabilityBindingMismatch

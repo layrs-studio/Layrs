@@ -5,6 +5,19 @@ natifs ne dépendent pas de Git. Un exécutable Git installé est nécessaire po
 ces conversions ; aucun checkout, filtre de contenu, hook ou accès réseau n'est
 effectué par le pont.
 
+Studio Desktop expose ce pont dans **Import / export Git**, pour les projets
+locaux complets. Son adaptateur Tauri conserve un aperçu temporaire lié au
+dossier, à l’Operation et à la View. Il relit la source avant confirmation et
+conserve un `ExpectedBridgeState` et, pour l’export, une destination ancrée dès
+l’aperçu. `ImportPlan::install_expected` et `export_workspace_reviewed`
+revalident cet état et les identités de fichiers avant l’opération. Les API
+existantes sans précondition explicite capturent elles aussi un état attendu.
+
+L’aperçu d’export vérifie destination et sélection syntaxique ; il ne promet
+pas une conversion complète sans écriture. Les refus de compatibilité pendant
+l’export peuvent laisser une destination incomplète, dont la reprise explicite
+reste disponible via CLI. Voir le [parcours utilisateur](../../docs/native-workflows.md).
+
 ```rust,ignore
 let plan = scan_git(source, GitBridgeLimits::default())?;
 // Dry-run : rapport et objets en mémoire, source inchangée.

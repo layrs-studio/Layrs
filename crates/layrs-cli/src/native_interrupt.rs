@@ -72,6 +72,7 @@ pub fn run_remote(
             NativeRemoteRequest {
                 origin: origin.clone(),
                 ca_pem: ca_pem.clone(),
+                expected_principal_id: None,
                 action: Action::CancelTransfer {
                     transfer_id: transfer_id.clone(),
                 },

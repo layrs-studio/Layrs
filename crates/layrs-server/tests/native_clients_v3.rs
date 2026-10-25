@@ -13,8 +13,12 @@ mod concurrent_clients;
 mod concurrent_publications;
 #[path = "support/conflict_drill.rs"]
 mod conflict_drill;
+#[path = "support/destination_drill.rs"]
+mod destination_drill;
 #[path = "support/durable_download_drill.rs"]
 mod durable_download_drill;
+#[path = "support/empty_project_clone_drill.rs"]
+mod empty_project_clone_drill;
 #[path = "support/unchanged_drill.rs"]
 mod unchanged_drill;
 
@@ -385,6 +389,22 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
     std::fs::create_dir_all(clients.join("corrupt")).unwrap();
     let client_root = clients.clone();
     let space = tokio::task::spawn_blocking(move || {
+        // This Web-created project path is part of the ordinary native suite.
+        // The environment switch only skips the unrelated long-running drills.
+        lose_response.store(false, std::sync::atomic::Ordering::SeqCst);
+        let empty_space =
+            empty_project_clone_drill::run(&origin, &session.access_token, &ca, &client_root);
+        destination_drill::run(
+            &origin,
+            &session.access_token,
+            &ca,
+            &client_root,
+            &empty_space,
+        );
+        if std::env::var_os("LAYRS_TEST_EMPTY_PROJECT_CLONE_ONLY").is_some() {
+            return empty_space;
+        }
+        lose_response.store(true, std::sync::atomic::Ordering::SeqCst);
         let aroot = client_root.join("alice");
         let broot = client_root.join("bob");
         std::fs::create_dir(aroot.join("docs")).unwrap();
@@ -946,7 +966,14 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(head_count, 2);
+    assert_eq!(
+        head_count,
+        if std::env::var_os("LAYRS_TEST_EMPTY_PROJECT_CLONE_ONLY").is_some() {
+            1
+        } else {
+            2
+        }
+    );
     assert!(
         sqlx::query("UPDATE layrs_collaboration.release_events SET sequence=sequence WHERE false")
             .execute(&pool)

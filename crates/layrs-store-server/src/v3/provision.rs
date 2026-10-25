@@ -1,5 +1,6 @@
-//! Creates Spaces in a caller-owned Workspace for an authenticated local account.
-//! Existing workspace permissions are never modified by this operation.
+//! Creates Spaces for an authenticated local account. Existing Workspace
+//! memberships and Space permissions are not widened by project creation;
+//! the selected company context may grant the caller its baseline membership.
 use super::*;
 use bytes::Bytes;
 use futures_util::stream;
@@ -15,6 +16,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProvisionSpaceRequest {
+    #[serde(default)]
+    pub context_id: Option<String>,
     pub workspace_slug: String,
     pub space_slug: String,
     pub name: String,
@@ -22,6 +25,58 @@ pub struct ProvisionSpaceRequest {
     #[serde(default)]
     pub initial_layer: Option<Layer>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateProjectRequest {
+    #[serde(default)]
+    pub context_id: Option<String>,
+    /// Legacy selector for an existing context; new callers use `context_id`.
+    pub workspace_id: Option<String>,
+    /// Deprecated inline organisation fields are rejected.
+    pub workspace_slug: Option<String>,
+    pub workspace_name: Option<String>,
+    pub space_slug: String,
+    pub name: String,
+    /// Exact initial project pins and file associations. Absence keeps the
+    /// empty revision-zero configuration for older API consumers.
+    #[serde(default)]
+    pub lens_configuration: Option<InitialLensConfig>,
+}
+
+/// A narrow, authenticated preflight for a native Space that may be published
+/// into an existing project context. This is a hint, not a reservation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckLocalProjectRequest {
+    pub space_id: SpaceId,
+    #[serde(default)]
+    pub context_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckLocalProjectResponse {
+    pub can_publish: bool,
+    pub context_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatableWorkspace {
+    pub workspace_id: String,
+    pub slug: String,
+    pub name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatableWorkspacesPage {
+    pub workspaces: Vec<CreatableWorkspace>,
+    pub next_cursor: Option<String>,
+    pub can_create_organisation: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProvisionSpaceResponse {
@@ -32,7 +87,7 @@ pub struct ProvisionSpaceResponse {
 
 impl ProvisionSpaceRequest {
     pub fn validate(&self) -> V3StoreResult<()> {
-        for slug in [&self.workspace_slug, &self.space_slug] {
+        for slug in [&self.space_slug] {
             if slug.is_empty()
                 || slug.len() > 63
                 || !slug.as_bytes()[0].is_ascii_alphanumeric()
@@ -44,6 +99,11 @@ impl ProvisionSpaceRequest {
                     "invalid workspace/Space slug".into(),
                 ));
             }
+        }
+        if self.context_id.is_none() && !super::contexts::valid_slug(&self.workspace_slug) {
+            return Err(V3StoreError::InvalidDescriptor(
+                "invalid workspace slug".into(),
+            ));
         }
         if self.name.trim().is_empty() || self.name.chars().count() > 255 {
             return Err(V3StoreError::InvalidDescriptor(
@@ -64,22 +124,179 @@ impl ProvisionSpaceRequest {
 }
 
 impl PgV3Repository {
+    /// Does not create a context or membership. A Space already present anywhere
+    /// receives the same generic refusal as an unavailable destination context.
+    pub async fn check_local_project(
+        &self,
+        principal: &PrincipalContext,
+        request: &CheckLocalProjectRequest,
+    ) -> V3StoreResult<CheckLocalProjectResponse> {
+        let mut tx = self.pool().begin().await.map_err(pg_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,18))")
+            .bind(&principal.deployment_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg_error)?;
+        let live_human: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM principals p JOIN deployments d USING(deployment_id) WHERE p.principal_id=$1 AND p.actor_id=$2 AND p.subject_digest=$3 AND p.deployment_id=$4 AND p.status='active' AND p.principal_kind IN ('account','bootstrap_admin') AND d.status='ready' FOR SHARE OF p,d)")
+            .bind(principal.principal_id.as_str())
+            .bind(principal.actor_id.as_str())
+            .bind(&principal.subject_digest)
+            .bind(&principal.deployment_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(pg_error)?;
+        if !live_human {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        let primary: Option<String> = if request.context_id.is_none() {
+            sqlx::query_scalar::<_, Option<String>>("SELECT primary_workspace_id FROM layrs_collaboration.deployment_project_contexts WHERE deployment_id=$1")
+                .bind(&principal.deployment_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(pg_error)?
+                .flatten()
+        } else {
+            None
+        };
+        let context_id = request
+            .context_id
+            .clone()
+            .or(primary)
+            .ok_or(V3StoreError::InvalidCapability)?;
+        if !context_id.starts_with("workspace:") || context_id.len() > 128 {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces w LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN workspace_memberships m ON m.workspace_id=w.workspace_id JOIN deployments d ON d.deployment_id=w.deployment_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=d.deployment_id WHERE w.workspace_id=$1 AND w.deployment_id=$2 AND m.principal_id=$3 AND m.state='active' AND ((c.kind='personal' AND dc.personal_projects_enabled AND c.owner_principal_id=$3 AND m.role='owner') OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id) AND (c.kind='company' AND m.role IN ('owner','administrator','member') OR COALESCE(c.kind,'organisation')='organisation' AND m.role IN ('owner','administrator')))) FOR SHARE OF m,d)")
+            .bind(&context_id)
+            .bind(&principal.deployment_id)
+            .bind(principal.principal_id.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(pg_error)?;
+        if !allowed {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        let occupied: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spaces WHERE space_id=$1)")
+                .bind(request.space_id.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(pg_error)?;
+        if occupied {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        tx.commit().await.map_err(pg_error)?;
+        Ok(CheckLocalProjectResponse {
+            can_publish: true,
+            context_id,
+        })
+    }
+
+    pub async fn creatable_workspaces(
+        &self,
+        principal: &PrincipalContext,
+        cursor: Option<&str>,
+    ) -> V3StoreResult<CreatableWorkspacesPage> {
+        if cursor.is_some_and(|value| value.len() > 128 || !value.starts_with("workspace:")) {
+            return Err(V3StoreError::InvalidCursor);
+        }
+        let contexts = self.project_contexts(principal).await?;
+        let mut tx = self.pool().begin().await.map_err(pg_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,18))")
+            .bind(&principal.deployment_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg_error)?;
+        let live_multi: bool = sqlx::query_scalar("SELECT multi_organisation_enabled FROM layrs_collaboration.deployment_project_contexts WHERE deployment_id=$1")
+            .bind(&principal.deployment_id).fetch_one(&mut *tx).await.map_err(pg_error)?;
+        let rows = sqlx::query("SELECT w.workspace_id,w.slug,w.display_name,m.role FROM workspaces w LEFT JOIN layrs_collaboration.workspace_contexts c USING(workspace_id) JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id JOIN workspace_memberships m ON m.workspace_id=w.workspace_id WHERE w.deployment_id=$1 AND m.principal_id=$2 AND m.state='active' AND ($3::text IS NULL OR w.workspace_id>$3) AND ((c.kind='personal' AND dc.personal_projects_enabled AND c.owner_principal_id=$2 AND m.role='owner') OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id) AND (c.kind='company' AND m.role IN ('owner','administrator','member') OR COALESCE(c.kind,'organisation')='organisation' AND m.role IN ('owner','administrator')))) ORDER BY w.workspace_id LIMIT 101")
+            .bind(&principal.deployment_id).bind(principal.principal_id.as_str()).bind(cursor).fetch_all(&mut *tx).await.map_err(pg_error)?;
+        tx.commit().await.map_err(pg_error)?;
+        let next_cursor = if rows.len() > 100 {
+            Some(rows[99].get("workspace_id"))
+        } else {
+            None
+        };
+        Ok(CreatableWorkspacesPage {
+            workspaces: rows
+                .into_iter()
+                .take(100)
+                .map(|row| CreatableWorkspace {
+                    workspace_id: row.get("workspace_id"),
+                    slug: row.get("slug"),
+                    name: row.get("display_name"),
+                    role: row.get("role"),
+                })
+                .collect(),
+            next_cursor,
+            can_create_organisation: contexts.can_create_organisation && live_multi,
+        })
+    }
+
+    pub async fn create_project(
+        &self,
+        principal: &PrincipalContext,
+        request: &CreateProjectRequest,
+    ) -> V3StoreResult<ProvisionSpaceResponse> {
+        let contexts = self.project_contexts(principal).await?;
+        let target = match (
+            &request.context_id,
+            &request.workspace_id,
+            &request.workspace_slug,
+            &request.workspace_name,
+        ) {
+            (Some(id), None, None, None) if id.starts_with("workspace:") && id.len() <= 128 => {
+                id.as_str()
+            }
+            (None, Some(id), None, None) if id.starts_with("workspace:") && id.len() <= 128 => {
+                id.as_str()
+            }
+            (None, None, None, None) => contexts.default_context_id.as_str(),
+            _ => {
+                return Err(V3StoreError::InvalidDescriptor(
+                    "select an available project context".into(),
+                ));
+            }
+        };
+        let provision = ProvisionSpaceRequest {
+            context_id: None,
+            workspace_slug: "selected".to_owned(),
+            space_slug: request.space_slug.clone(),
+            name: request.name.clone(),
+            initial_layer: None,
+        };
+        self.provision_with_target(
+            principal,
+            &provision,
+            target,
+            request.lens_configuration.as_ref(),
+        )
+        .await
+    }
+
     pub async fn provision_space(
         &self,
         principal: &PrincipalContext,
         request: &ProvisionSpaceRequest,
     ) -> V3StoreResult<ProvisionSpaceResponse> {
+        let contexts = self.project_contexts(principal).await?;
+        let selected = request
+            .context_id
+            .as_deref()
+            .unwrap_or(&contexts.default_context_id);
+        self.provision_with_target(principal, request, selected, None)
+            .await
+    }
+
+    async fn provision_with_target(
+        &self,
+        principal: &PrincipalContext,
+        request: &ProvisionSpaceRequest,
+        workspace_id: &str,
+        lens_configuration: Option<&InitialLensConfig>,
+    ) -> V3StoreResult<ProvisionSpaceResponse> {
         request.validate()?;
-        let seed = blake3::hash(
-            format!(
-                "{}/{}/{}",
-                principal.deployment_id, principal.principal_id, request.workspace_slug
-            )
-            .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
-        let workspace_id = format!("workspace:{seed}");
+        let workspace_id = workspace_id.to_owned();
         let space_seed = blake3::hash(format!("{workspace_id}/{}", request.space_slug).as_bytes())
             .to_hex()
             .to_string();
@@ -253,6 +470,11 @@ impl PgV3Repository {
         let _budget_writer = self.cas_budget_writer().await;
         let mut tx = self.pool().begin().await.map_err(pg_error)?;
         self.lock_cas_budget(&mut tx).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,18))")
+            .bind(&principal.deployment_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg_error)?;
         let expected_store:Option<String>=sqlx::query_scalar("SELECT d.store_id FROM principals p JOIN deployments d ON d.deployment_id=p.deployment_id WHERE p.principal_id=$1 AND p.actor_id=$2 AND p.subject_digest=$3 AND p.deployment_id=$4 AND p.status='active' AND p.principal_kind IN ('account','bootstrap_admin') AND d.status='ready' FOR SHARE OF p,d")
             .bind(principal.principal_id.as_str()).bind(principal.actor_id.as_str()).bind(&principal.subject_digest).bind(&principal.deployment_id).fetch_optional(&mut *tx).await.map_err(pg_error)?;
         let expected_store = expected_store.ok_or(V3StoreError::InvalidCapability)?;
@@ -293,11 +515,13 @@ impl PgV3Repository {
                 .await
                 .map_err(pg_error)?;
         if workspace_exists {
-            let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces w JOIN workspace_memberships m ON m.workspace_id=w.workspace_id WHERE w.workspace_id=$1 AND w.deployment_id=$2 AND w.created_by_principal_id=$3 AND w.slug=$4 AND m.principal_id=$3 AND m.state='active' AND m.role='owner')")
-                .bind(&workspace_id).bind(&principal.deployment_id).bind(principal.principal_id.as_str()).bind(&request.workspace_slug).fetch_one(&mut *tx).await.map_err(pg_error)?;
-            if !owns {
+            let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces w LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN workspace_memberships m ON m.workspace_id=w.workspace_id JOIN deployments d ON d.deployment_id=w.deployment_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=d.deployment_id WHERE w.workspace_id=$1 AND w.deployment_id=$2 AND m.principal_id=$3 AND m.state='active' AND ((c.kind='personal' AND dc.personal_projects_enabled AND c.owner_principal_id=$3 AND m.role='owner') OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id) AND (c.kind='company' AND m.role IN ('owner','administrator','member') OR COALESCE(c.kind,'organisation')='organisation' AND m.role IN ('owner','administrator')))) FOR SHARE OF m,d)")
+                .bind(&workspace_id).bind(&principal.deployment_id).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
+            if !allowed {
                 return Err(V3StoreError::InvalidCapability);
             }
+        } else {
+            return Err(V3StoreError::InvalidCapability);
         }
         let existing = sqlx::query(
             "SELECT s.display_name,s.created_by_principal_id,s.workspace_id,s.slug FROM spaces s WHERE s.space_id=$1",
@@ -324,14 +548,27 @@ impl PgV3Repository {
                     "Space exists with different Layer definition".into(),
                 ));
             }
+            if let Some(config) = lens_configuration {
+                if !initial_lens_config_matches(&mut tx, &space_id, config).await? {
+                    return Err(V3StoreError::InvalidDescriptor(
+                        "project already exists with different lenses".into(),
+                    ));
+                }
+            }
             tx.commit().await.map_err(pg_error)?;
             return Ok(response);
         }
-        if !workspace_exists {
-            sqlx::query("INSERT INTO workspaces(workspace_id,deployment_id,slug,display_name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)").bind(&workspace_id).bind(&principal.deployment_id).bind(&request.workspace_slug).bind(&request.name).bind(principal.principal_id.as_str()).execute(&mut *tx).await.map_err(pg_error)?;
-            sqlx::query("INSERT INTO workspace_memberships(workspace_id,principal_id,role) VALUES($1,$2,'owner')").bind(&workspace_id).bind(principal.principal_id.as_str()).execute(&mut *tx).await.map_err(pg_error)?;
+        let occupied_slug: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spaces WHERE workspace_id=$1 AND slug=$2 AND space_id<>$3)")
+            .bind(&workspace_id).bind(&request.space_slug).bind(space_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
+        if occupied_slug {
+            return Err(V3StoreError::InvalidDescriptor(
+                "project slug already exists".into(),
+            ));
         }
         sqlx::query("INSERT INTO spaces(space_id,workspace_id,slug,display_name,lifecycle_state,current_repository_view_id,current_policy_set_id,created_by_principal_id) VALUES($1,$2,$3,$4,'provisioning',$5,$6,$7)").bind(space_id.as_str()).bind(&workspace_id).bind(&request.space_slug).bind(&request.name).bind(view.id().as_str()).bind(policy_set.policy_set_id.as_str()).bind(principal.principal_id.as_str()).execute(&mut *tx).await.map_err(pg_error)?;
+        if let Some(config) = lens_configuration {
+            validate_and_insert_initial_lens_config(&mut tx, &space_id, config).await?;
+        }
         let catalog = PgCatalogStore::new(self.clone());
         for object in &prepared {
             catalog.install_prepared(&mut tx, object).await?;
@@ -392,6 +629,7 @@ mod tests {
         for slug in ["", "../escape", "UPPER", "-leading", "with space"] {
             assert!(
                 ProvisionSpaceRequest {
+                    context_id: None,
                     workspace_slug: slug.into(),
                     space_slug: "project".into(),
                     name: "Project".into(),
@@ -403,6 +641,7 @@ mod tests {
         }
         assert!(
             ProvisionSpaceRequest {
+                context_id: None,
                 workspace_slug: "team".into(),
                 space_slug: "project".into(),
                 name: " ".into(),

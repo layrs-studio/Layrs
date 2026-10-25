@@ -382,6 +382,12 @@ impl NativeRemote {
         let mut spools = BTreeMap::new();
         let mut files = Vec::new();
         let mut total = 0u64;
+        let legacy_text_merge =
+            match self.get::<serde_json::Value>(&format!("v3/spaces/{}/lenses", base.space_id)) {
+                Ok(_) => false,
+                Err(NativeRemoteError::Http(404)) => true,
+                Err(error) => return Err(error),
+            };
         for next in target.entries.iter().filter(|e| {
             e.writable && matches!(e.state, EntryState::Materialized | EntryState::Absent)
         }) {
@@ -442,6 +448,7 @@ impl NativeRemote {
                     remote,
                     &graph,
                     &mut spools,
+                    legacy_text_merge,
                 )?);
             }
         }

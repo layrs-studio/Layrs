@@ -21,8 +21,9 @@ use layrs_server::{
     v3::*,
 };
 use layrs_store_server::v3::{
-    CapabilityCodec, CasLimits, CatalogedFsCas, EventCursorCodec, FsServerCas, PgPolicyAuthorizer,
-    PgV3Repository, ProvisionSpaceRequest,
+    CapabilityCodec, CasLimits, CatalogedFsCas, CreateOrganisationRequest, EventCursorCodec,
+    FsServerCas, OrganisationModeSettings, PgPolicyAuthorizer, PgV3Repository,
+    ProvisionSpaceRequest, UpdateOrganisationModeRequest, load_principal_context,
 };
 use layrs_sync::v3::*;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -30,6 +31,19 @@ use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 fn object_id(value: &str) -> ObjectId {
     ObjectId::parse(value).unwrap()
+}
+fn mode_update(
+    settings: &OrganisationModeSettings,
+    multi: bool,
+    primary: &str,
+) -> UpdateOrganisationModeRequest {
+    UpdateOrganisationModeRequest {
+        expected_revision: settings.revision,
+        expected_state_token: settings.state_token.clone(),
+        multi_organisation_enabled: multi,
+        primary_organisation_id: primary.into(),
+        confirm_danger: !multi,
+    }
 }
 fn descriptor(kind: ObjectKind, id: &str, bytes: &[u8]) -> ObjectDescriptor {
     ObjectDescriptor {
@@ -227,6 +241,7 @@ async fn real_service_provision_upload_advance_replay_concurrency_fetch_and_revo
         .await
         .unwrap();
     let create = || ProvisionSpaceRequest {
+        context_id: None,
         workspace_slug: "team".into(),
         space_slug: "project".into(),
         name: "Project".into(),
@@ -444,6 +459,105 @@ async fn real_service_provision_upload_advance_replay_concurrency_fetch_and_revo
         }
         assert_eq!(received.len() as u64, cap.descriptor.encoded_byte_len);
     }
+    // A previously issued download grant and a persisted transaction receipt
+    // must stop working while their organisation is hidden, then resume when
+    // the original mode is restored. The receipt is never rewritten.
+    let admin_context = load_principal_context(&pool, &principal.principal_id)
+        .await
+        .unwrap();
+    let settings = repository
+        .organisation_mode_settings(&admin_context)
+        .await
+        .unwrap();
+    let enabled = repository
+        .update_organisation_mode(
+            &admin_context,
+            &mode_update(&settings, true, &provisioned.workspace_id),
+        )
+        .await
+        .unwrap();
+    assert!(enabled.multi_organisation_enabled);
+    let secondary = repository
+        .create_organisation(
+            &admin_context,
+            &CreateOrganisationRequest {
+                slug: "temporary".into(),
+                name: "Temporary".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let settings = repository
+        .organisation_mode_settings(&admin_context)
+        .await
+        .unwrap();
+    repository
+        .update_organisation_mode(
+            &admin_context,
+            &mode_update(&settings, false, &secondary.id),
+        )
+        .await
+        .unwrap();
+    assert!(
+        facade
+            .bootstrap(&principal, &initial.space_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        facade
+            .download(&fetch.download_capabilities[0].token, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        facade
+            .transact(&principal, first_request.clone())
+            .await
+            .is_err()
+    );
+    let settings = repository
+        .organisation_mode_settings(&admin_context)
+        .await
+        .unwrap();
+    repository
+        .update_organisation_mode(
+            &admin_context,
+            &mode_update(&settings, true, &provisioned.workspace_id),
+        )
+        .await
+        .unwrap();
+    assert!(
+        facade
+            .bootstrap(&principal, &initial.space_id)
+            .await
+            .is_ok()
+    );
+    assert!(
+        facade
+            .download(&fetch.download_capabilities[0].token, None)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        facade
+            .transact(&principal, first_request.clone())
+            .await
+            .unwrap()
+            .into_canonical_jcs(),
+        bytes
+    );
+    let settings = repository
+        .organisation_mode_settings(&admin_context)
+        .await
+        .unwrap();
+    repository
+        .update_organisation_mode(
+            &admin_context,
+            &mode_update(&settings, false, &provisioned.workspace_id),
+        )
+        .await
+        .unwrap();
     let events = facade
         .events(
             &principal,

@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Réception inchangée : audit du 20 septembre 2026
 
 Audit historique avant modifications. Le [lot livré et sa qualification](T4-receive-unchanged.md)

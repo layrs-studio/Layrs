@@ -151,6 +151,31 @@ impl NativeRemote {
         }
         Ok(())
     }
+    /// Read the durable pending policy request without deriving a new request
+    /// from the current PolicySet. The binding and journal must agree exactly.
+    pub fn pending_policy_preview(
+        &self,
+        workspace: &NativeWorkspace,
+    ) -> RemoteResult<Option<NativePolicyPreview>> {
+        let _lock = remote_lock(workspace)?;
+        let binding = self.binding(workspace)?;
+        if binding.clone_pending {
+            return Err(invalid());
+        }
+        let Some(pending) = &binding.pending else {
+            return Ok(None);
+        };
+        if pending.policy_root_mutation.is_none() {
+            return Ok(None);
+        }
+        let preview = load_intent(workspace)?;
+        let principal = self.policy_identity()?;
+        self.check_policy_scope(workspace, &preview, &principal)?;
+        if pending != &preview.request {
+            return Err(invalid());
+        }
+        Ok(Some(preview))
+    }
     /// Pure read: neither pending publication nor local Operations are changed.
     /// Existing pending policy intent is returned exactly, never rebuilt at a new epoch.
     pub fn preview_stored_policy(
@@ -228,7 +253,7 @@ impl NativeRemote {
         preview: &NativePolicyPreview,
     ) -> RemoteResult<SyncTransactionReceipt> {
         validate(preview)?;
-        let _lock = remote_lock(workspace)?;
+        let _lock = remote_lock(workspace).map_err(|_| NativeRemoteError::LockUnavailable)?;
         let mut binding = self.binding(workspace)?;
         if binding.clone_pending {
             return Err(invalid());

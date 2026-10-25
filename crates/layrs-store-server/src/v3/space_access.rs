@@ -21,7 +21,9 @@ pub(crate) fn full_access(decision: &AuthorizationDecision) -> bool {
     decision.allowed && !decision.content_restricted
 }
 
-/// Active owner/administrator membership of the Workspace containing `space`.
+/// Active Workspace administrator or the creator of this Space. Project
+/// creators can manage their own project's access without administering the
+/// whole company or organisation.
 pub(crate) async fn workspace_administrator<'e, E>(
     executor: E,
     principal: &PrincipalContext,
@@ -30,7 +32,7 @@ pub(crate) async fn workspace_administrator<'e, E>(
 where
     E: PgExecutor<'e>,
 {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active' AND m.role=ANY($3))")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active' AND (m.role=ANY($3) OR s.created_by_principal_id=$2))")
         .bind(space.as_str())
         .bind(principal.principal_id.as_str())
         .bind(WORKSPACE_ADMINISTRATOR_ROLES.as_slice())

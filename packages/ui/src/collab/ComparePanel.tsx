@@ -134,7 +134,7 @@ export function ComparePanel({
             ) : change.textOmitted || !change.textDiff ? (
               <EmptyState compact title="Aperçu texte indisponible">Contenu trop volumineux ou non textuel pour cette comparaison.</EmptyState>
             ) : (
-              <DiffView lines={lines} mode={mode} beforeLabel={beforeLabel} afterLabel={afterLabel} />
+              <LensViewer input={{ kind: "diff", path: change.path, lines }} fallback={<DiffView lines={lines} mode={mode} beforeLabel={beforeLabel} afterLabel={afterLabel} />} />
             )}
           </>
         )}
@@ -142,3 +142,4 @@ export function ComparePanel({
     </div>
   );
 }
+import { LensViewer } from "../lenses/LensViewer";

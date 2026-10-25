@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Revue des candidats à portée de chemins — 23 septembre 2026
 
 Le domaine serveur `scoped_reviews` associe chaque revue à un `candidate_id` issu de la requête de patch v2. La provenance persistée fixe auteur, Layer, Step et arbre de base, Step et arbre candidats, View, PolicySet, époque et chemins changés. Un Step seul ne sélectionne jamais une revue, car plusieurs captures peuvent produire le même Step.

@@ -1,6 +1,9 @@
 # Refonte Layrs — plan détaillé Web et Desktop
 
-Statut : **plan prêt pour implémentation, produit non modifié**.
+Statut au 5 octobre 2026 : **L0–L6 intégrés dans leur périmètre documenté ; L6 validé localement**.
+L’état livré et les preuves figurent dans le [registre](03-delivery.md).
+Les fiches de pages et d’expérience restent la spécification cible, pas une
+déclaration que toutes les capacités décrites sont disponibles.
 Direction validée par l'utilisateur : première proposition révisée avec le logo
 original, Audiowide pour la marque, graphite et accents corail/ambre.
 
@@ -22,6 +25,7 @@ thèmes et comportements ; le Web ne simule pas un accès au disque local.
 | [Pages et architecture](01-pages.md) | Chaque page, son public, ce qu'elle regroupe et pourquoi, actions, états et critères de réussite |
 | [Design et interactions](02-experience.md) | Identité, composants, mouvement, feedback, clavier, accessibilité et responsive |
 | [Exécution et qualification](03-delivery.md) | Contrats à compléter, lots, dépendances, parallélisation, tests, critères de livraison et journal |
+| [Recette L6](04-qualification-l6.md) | Couverture Desktop/Git, résultats locaux, reconstruction et limites de qualification |
 | [Maquette approuvée](../layrs-brand/atelier-revised.png) | Référence de composition et d'ambiance ; pas une spécification de données métier |
 | [Icône originale](../layrs-brand/icon.svg) | Source utilisateur à réutiliser telle quelle |
 | [Journal historique](../../plans/pme/journal/UI-REDESIGN.md) | Exploration, inventaire et décisions précédentes |
@@ -85,4 +89,5 @@ les limites actuelles du moteur de fusion, du pont Git ou des aperçus d'assets.
 L'identité retenue et ce plan n'exigent pas une nouvelle validation esthétique
 pour chaque écran. Les choix courants pourront être résolus pendant le travail ;
 les changements de capacité métier devront être rendus explicites dans le journal.
-La demande présente est un plan : aucune implémentation produit n'est lancée ici.
+L’implémentation est engagée. Pour reprendre le travail, consulter
+[l’état courant](../../STATUS.md) et le registre plutôt que le journal de conception.

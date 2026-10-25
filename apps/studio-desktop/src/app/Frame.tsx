@@ -2,11 +2,13 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { FolderOpen, FolderTree, Palette, Plus, Search, Settings } from "lucide-react";
 import {
   AppShell,
+  AllProjectsNav,
   Breadcrumbs,
   CommandPalette,
   IconButton,
   NavItem,
   NavSection,
+  PersonalProjectsNav,
   SearchTrigger,
   ThemeSwitcher,
   navigate,
@@ -17,6 +19,8 @@ import {
 } from "@layrs/ui";
 import { selectFolder } from "../tauri";
 import { folderName, readRecents } from "./recents";
+import { DesktopContextSelector, useDesktopContexts } from "./contexts";
+import { recentContext } from "./recentContext";
 
 export function openProject(root: string) {
   navigate(`/projects/${segment(root)}/changes`);
@@ -44,11 +48,17 @@ export function Frame({
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   useCommandPaletteShortcut(openPalette);
   const recents = readRecents();
+  const projectContexts = useDesktopContexts();
+  const scopedRecents = recents.filter((project) => {
+    if (!projectContexts.selected) return true;
+    const binding = recentContext(project.root, projectContexts.origin, projectContexts.principalId);
+    return !binding || binding.contextId === projectContexts.selected?.id;
+  });
 
   const allCommands = useMemo<Command[]>(
     () => [
       ...commands,
-      ...recents.map((project) => ({
+      ...scopedRecents.map((project) => ({
         id: `project:${project.root}`,
         group: "Projets",
         label: project.name || folderName(project.root),
@@ -56,7 +66,7 @@ export function Frame({
         icon: <FolderTree aria-hidden size={16} />,
         run: () => openProject(project.root),
       })),
-      { id: "projects", group: "Pages", label: "Tous les projets", icon: <FolderTree aria-hidden size={16} />, run: () => navigate("/projects") },
+      { id: "projects", group: "Pages", label: "Tous les projets", icon: <FolderTree aria-hidden size={16} />, run: projectContexts.openAllProjects },
       { id: "appearance", group: "Pages", label: "Apparence", icon: <Palette aria-hidden size={16} />, run: () => navigate("/settings/appearance") },
       { id: "new", group: "Actions", label: "Nouveau projet", icon: <Plus aria-hidden size={16} />, run: () => navigate("/projects/new") },
       {
@@ -72,7 +82,7 @@ export function Frame({
     ],
     // Recents are re-read on each render; commands change with the project.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [commands, recents.map((project) => project.root).join("|")],
+    [commands, scopedRecents.map((project) => project.root).join("|"), projectContexts.openAllProjects],
   );
 
   return (
@@ -80,7 +90,7 @@ export function Frame({
       <AppShell
         sidebar={
           <>
-            {context}
+            <DesktopContextSelector />
             <NavSection
               title="Projets"
               actions={
@@ -90,11 +100,13 @@ export function Frame({
                 </>
               }
             >
-              {recents.slice(0, 5).map((project) => (
+              <AllProjectsNav currentContextIsPersonal={projectContexts.selected?.kind === "personal"} onOpen={projectContexts.openAllProjects} />
+              {scopedRecents.slice(0, 5).map((project) => (
                 <NavItem key={project.root} to={`/projects/${segment(project.root)}`} label={project.name || folderName(project.root)} dot="muted" />
               ))}
-              <NavItem to="/projects" exact label="Tous les projets" icon={<FolderTree aria-hidden size={20} />} />
+              <PersonalProjectsNav context={projectContexts.data?.personalProjectsEnabled ? projectContexts.data.contexts.find((item) => item.kind === "personal") : undefined} selected={projectContexts.selected?.kind === "personal"} onSelect={projectContexts.select} />
             </NavSection>
+            {context}
             {projectNav}
           </>
         }

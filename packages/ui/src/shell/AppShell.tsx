@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronRight, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
+import { ChevronRight, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Search, Triangle, X } from "lucide-react";
 import { Kbd } from "../components/Feedback";
 import { Brand } from "./Brand";
 import { Link, useLocation } from "./router";
@@ -140,7 +140,7 @@ export function NavItem({
   /** Real count only, rendered as text for assistive technology. */
   badge?: { count: number; label: string };
   exact?: boolean;
-  /** Small colour dot, e.g. for projects. */
+  /** Coloured project marker; points up, then right when selected. */
   dot?: "accent" | "muted";
 }) {
   const { path } = useLocation();
@@ -148,7 +148,7 @@ export function NavItem({
   return (
     <li>
       <Link to={to} className="layrs-nav__item" aria-current={active ? "page" : undefined} title={label}>
-        {dot ? <span className={`layrs-nav__dot layrs-nav__dot--${dot}`} aria-hidden /> : icon}
+        {dot ? <Triangle className={`layrs-nav__dot layrs-nav__dot--${dot}`} strokeWidth={0} aria-hidden /> : icon}
         <span className="layrs-nav__label">{label}</span>
         {badge && badge.count > 0 && (
           <span className="layrs-nav__badge" aria-label={badge.label}>
@@ -184,7 +184,7 @@ export function Breadcrumbs({ items }: { items: Crumb[] }) {
 export function SearchTrigger({ onOpen, label = "Rechercher…" }: { onOpen: () => void; label?: string }) {
   const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   return (
-    <button type="button" className="layrs-search-trigger" onClick={onOpen} aria-keyshortcuts={mac ? "Meta+K" : "Control+K"}>
+    <button type="button" className="layrs-search-trigger" onClick={onOpen} aria-label={label} aria-keyshortcuts={mac ? "Meta+K" : "Control+K"}>
       <Search aria-hidden size={16} />
       <span className="layrs-search-trigger__label">{label}</span>
       <span className="layrs-search-trigger__keys" aria-hidden>

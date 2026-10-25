@@ -17,6 +17,20 @@ impl NativeRemote {
         workspace_slug: &str,
         space_slug: &str,
     ) -> RemoteResult<RemoteProvisionedSpace> {
+        self.provision_in_context(workspace, workspace_slug, space_slug, None)
+    }
+
+    /// Select a server context while preserving the local Space and Layer IDs.
+    pub fn provision_in_context(
+        &self,
+        workspace: &NativeWorkspace,
+        workspace_slug: &str,
+        space_slug: &str,
+        context_id: Option<&str>,
+    ) -> RemoteResult<RemoteProvisionedSpace> {
+        if let Some(id) = context_id {
+            super::catalog::validate_context_id(id)?;
+        }
         let state = workspace.state()?;
         let bases: Vec<_> = state
             .layers
@@ -29,7 +43,7 @@ impl NativeRemote {
             ));
         }
         let response:RemoteProvisionedSpace=self.post("v3/workspaces/provision",&serde_json::json!({
-            "workspaceSlug":workspace_slug,"spaceSlug":space_slug,"name":state.space.name(),"initialLayer":bases[0]
+            "workspaceSlug":workspace_slug,"spaceSlug":space_slug,"name":state.space.name(),"initialLayer":bases[0],"contextId":context_id
         }))?;
         if response.space_id != *state.space.id() || response.layer_id != *bases[0].id() {
             return Err(NativeRemoteError::Invalid(

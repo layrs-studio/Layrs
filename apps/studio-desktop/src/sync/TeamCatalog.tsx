@@ -3,6 +3,7 @@ import { FolderGit2, Search } from "lucide-react";
 import { Badge, Banner, Button, EmptyState, Loading, TextField, formatRelativeTime, type SpaceCatalogEntry, type SpaceCatalogPage } from "@layrs/ui";
 import { explainError } from "../app/errors";
 import { useRemote } from "../app/remote";
+import { useDesktopContexts } from "../app/contexts";
 
 const roleLabels: Record<string, string> = { owner: "Propriétaire", administrator: "Administration", member: "Membre", auditor: "Lecture" };
 
@@ -23,7 +24,9 @@ export function TeamCatalog({
   preselect?: string | null;
 }) {
   const remote = useRemote();
+  const contexts = useDesktopContexts();
   const [entries, setEntries] = useState<SpaceCatalogEntry[]>([]);
+  const [loadedContextId, setLoadedContextId] = useState("");
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -31,15 +34,18 @@ export function TeamCatalog({
   const [filter, setFilter] = useState("");
   const generation = useRef(0);
   const connected = remote.session.state === "connected";
+  const contextId = remote.session.state === "connected" && remote.origin === contexts.origin && remote.session.principalId === contexts.principalId ? contexts.selected?.id : undefined;
 
   const load = useCallback(
     async (next: string | null) => {
+      if (!contextId) return;
       const version = ++generation.current;
       setLoading(true);
       setError("");
       try {
-        const page = await remote.transport<SpaceCatalogPage>({ action: "listSpaces", limit: 50, ...(next ? { cursor: next } : {}) });
+        const page = await remote.transport<SpaceCatalogPage>({ action: "listSpaces", limit: 50, contextId, ...(next ? { cursor: next } : {}) }, { root: remote.root, origin: remote.origin, principalId: contexts.principalId });
         if (version !== generation.current) return;
+        setLoadedContextId(contextId);
         setEntries((current) => {
           const known = next ? current : [];
           const seen = new Set(known.map((entry) => entry.spaceId));
@@ -53,30 +59,37 @@ export function TeamCatalog({
         if (version === generation.current) setLoading(false);
       }
     },
-    [remote],
+    [remote.transport, contextId],
   );
 
   // A new session (or account) starts a new listing; old pages are never mixed in.
   useEffect(() => {
     generation.current++;
     setEntries([]);
+    setLoadedContextId("");
     setCursor(null);
     setHasMore(false);
-    if (connected) void load(null);
+    if (contextId) void load(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, remote.origin, remote.epoch]);
+  }, [connected, remote.origin, remote.epoch, contextId]);
 
   useEffect(() => {
     if (!preselect || selected) return;
-    const entry = entries.find((item) => item.spaceId === preselect);
+    const entry = loadedContextId === contextId ? entries.find((item) => item.spaceId === preselect) : undefined;
     if (entry) onSelect(entry);
-  }, [entries, preselect, selected, onSelect]);
+  }, [entries, loadedContextId, contextId, preselect, selected, onSelect]);
 
   if (!connected) return null;
+  if (!contextId) return contexts.error
+    ? <Banner tone="danger" title="Espaces indisponibles" actions={<Button size="sm" onClick={() => void contexts.refresh()}>Réessayer</Button>}>{contexts.error}</Banner>
+    : contexts.data?.contexts.length === 0 && !contexts.loading && remote.origin === contexts.origin && remote.session.state === "connected" && remote.session.principalId === contexts.principalId
+      ? <EmptyState compact icon={<FolderGit2 size={22} />} title="Aucun espace accessible sur ce serveur">Demandez accès à une organisation ou activez les projets personnels.</EmptyState>
+    : <Loading label="Chargement de l’espace…" />;
+  const visibleEntries = loadedContextId === contextId ? entries : [];
   const query = filter.trim().toLocaleLowerCase("fr");
-  const shown = query ? entries.filter((entry) => `${entry.name} ${entry.workspace.name}`.toLocaleLowerCase("fr").includes(query)) : entries;
+  const shown = query ? visibleEntries.filter((entry) => `${entry.name} ${entry.workspace.name}`.toLocaleLowerCase("fr").includes(query)) : visibleEntries;
   const names = new Map<string, number>();
-  for (const entry of entries) names.set(entry.name, (names.get(entry.name) ?? 0) + 1);
+  for (const entry of visibleEntries) names.set(entry.name, (names.get(entry.name) ?? 0) + 1);
 
   return (
     <div className="catalog">
@@ -93,7 +106,7 @@ export function TeamCatalog({
           <code className="sync-detail">{error}</code>
         </Banner>
       )}
-      {loading && !entries.length ? (
+      {loading && !visibleEntries.length ? (
         <Loading label="Lecture des projets de l’équipe…" />
       ) : shown.length ? (
         <ul className="catalog__list" aria-label="Projets de l’équipe">
@@ -125,12 +138,12 @@ export function TeamCatalog({
       ) : (
         !loading &&
         !error && (
-          <EmptyState compact icon={<FolderGit2 size={22} />} title={entries.length ? "Aucun projet ne correspond" : "Aucun projet accessible sur ce serveur"}>
-            {entries.length ? "Modifiez la recherche, ou chargez la suite de la liste." : "Demandez une invitation à la personne responsable du projet."}
+          <EmptyState compact icon={<FolderGit2 size={22} />} title={visibleEntries.length ? "Aucun projet ne correspond" : "Aucun projet accessible sur ce serveur"}>
+            {visibleEntries.length ? "Modifiez la recherche, ou chargez la suite de la liste." : "Demandez une invitation à la personne responsable du projet."}
           </EmptyState>
         )
       )}
-      {hasMore && (
+      {loadedContextId === contextId && hasMore && (
         <Button size="sm" busy={loading} busyLabel="Lecture…" onClick={() => void load(cursor)}>
           Afficher plus de projets
         </Button>

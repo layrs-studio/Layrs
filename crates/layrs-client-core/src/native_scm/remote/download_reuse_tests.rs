@@ -224,6 +224,15 @@ impl Fixture {
                             String::new(),
                             serde_json::to_vec(&state.bootstrap).unwrap(),
                         )
+                    } else if path == format!("/v3/spaces/{}/lenses", state.bootstrap.space_id) {
+                        // Successful receive also refreshes the project Lens configuration.
+                        // These counters measure object transfers, not catalog requests.
+                        (
+                            "200 OK",
+                            String::new(),
+                            br#"{"revision":0,"pins":[],"associations":[],"availableCatalog":[]}"#
+                                .to_vec(),
+                        )
                     } else if path.ends_with("/fetch-plans") {
                         let request: FetchPlanRequest =
                             serde_json::from_slice(&bytes[end..end + length]).unwrap();

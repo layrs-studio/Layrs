@@ -9,6 +9,31 @@ cd D:\Layrs\layrs
 npm run dev
 ```
 
+Les organisations multiples et les projets personnels sont deux options
+indépendantes, désactivées par défaut sur une installation neuve. Pour activer
+les projets personnels tout en conservant une seule entreprise :
+
+```powershell
+$env:LAYRS_PERSONAL_PROJECTS_ENABLED = 'true'
+$env:LAYRS_MULTI_ORGANISATION_ENABLED = 'false'
+npm run dev
+```
+
+Le lanceur conserve ces choix dans le fichier privé
+`.layrs-local/native-dev-default/server-options.json` : un prochain `npm run dev`
+reprend les mêmes options. Une variable explicite remplace le choix enregistré.
+Utiliser `LAYRS_MULTI_ORGANISATION_ENABLED='true'` pour activer les organisations.
+Une fois le réglage modifié dans **Administration → Organisations**, le choix
+en base prévaut sur cette variable et persiste au redémarrage. Cette page permet
+de revenir en mono-organisation : choisir la principale, lire les conséquences
+puis confirmer son nom. Les autres organisations sont conservées et inaccessibles
+jusqu'à la réactivation du mode multi. Les projets personnels restent configurés
+séparément par `LAYRS_PERSONAL_PROJECTS_ENABLED`.
+Une installation contenant déjà des organisations conserve le mode
+multi-organisation et reçoit une entreprise distincte. Les anciens projets
+restent dans leur organisation, sans modification des adhésions. Voir le
+[contrat des contextes](../contracts/project-contexts.md).
+
 La commande construit le serveur actuel et Studio Web, démarre PostgreSQL,
 applique les migrations et crée un administrateur de test. Le premier démarrage
 peut prendre plusieurs minutes. Rust, pnpm et les dépendances sont installés
@@ -33,9 +58,19 @@ Le certificat public de l'autorité est `root.crt` dans le même dossier.
 Le lanceur ne modifie pas les certificats de confiance du système.
 
 Pour Studio Desktop, utiliser cette même URL serveur et copier le contenu de
-`root.crt` dans « Certificat privé de l'entreprise » → « Autorité de
-certification PEM », puis se connecter. Le lancement du serveur n'ouvre pas
+`root.crt` dans « Certificat d'entreprise (avancé) » → « Autorité de
+certification (PEM) », puis se connecter. Le lancement du serveur n'ouvre pas
 automatiquement Desktop.
+
+Ouvrir ensuite le lien `/auth/device` affiché par Desktop dans le même navigateur
+que Studio Web. La page propose le compte déjà connecté dans un autre onglet de
+cette origine, sans transmettre son jeton à la page d'autorisation. Garder cet
+onglet ouvert ; s'il y a plusieurs comptes, choisir explicitement celui à utiliser.
+Saisir le code de Desktop, cliquer sur « Vérifier la demande », vérifier le compte
+et le nom de l'appareil, puis cliquer sur « Autoriser cet appareil ». Desktop
+détecte alors l'autorisation. Sans onglet connecté, la connexion par identifiant
+et mot de passe reste disponible. Après une mise à jour, recharger et reconnecter
+l'onglet Studio Web pour qu'il utilise ce parcours.
 
 ## Arrêter, reprendre, reconstruire
 

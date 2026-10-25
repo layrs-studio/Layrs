@@ -9,16 +9,19 @@ import { when } from "./time";
 import { describeError } from "./errors";
 import { personName, teamRoles, type Person, type Team, type TeamHistoryPage, type TeamRole, type TeamTransport } from "./types";
 import type { Directory } from "./useDirectory";
+import { OrganisationTeamsPanel } from "./OrganisationTeamsPanel";
 
 type Editor = { original: Team | null; archive: boolean };
 
 /** P15 · Équipes: composition, role and history of each team. */
 export function TeamsPanel({
+  scope,
   directory,
   administration,
   projectName,
   onChanged,
 }: {
+  scope: string;
   directory: Directory;
   administration: TeamTransport;
   projectName: string;
@@ -34,6 +37,9 @@ export function TeamsPanel({
   if (loading && !teams.length) return <Loading label="Lecture des équipes…" />;
   return (
     <div className="team-panel">
+      <OrganisationTeamsPanel key={scope} scope={scope} administration={administration} onChanged={onChanged} />
+      <h2 className="team-section-title">Équipes historiques du projet</h2>
+      <p className="team-muted">Ces équipes restent liées à ce projet. Leur composition et leurs droits existants sont conservés.</p>
       {error && <Banner tone="danger">{error}</Banner>}
       <div className="team-toolbar">
         <p className="team-muted">

@@ -155,6 +155,7 @@ pub async fn run(
         .provision_space(
             principal,
             ProvisionSpaceRequest {
+                context_id: None,
                 workspace_slug: "team".into(),
                 space_slug: "policy-roots".into(),
                 name: "Policy roots".into(),
@@ -598,13 +599,19 @@ pub async fn run(
     )
     .await;
     sqlx::query("UPDATE workspace_memberships m SET role='member' FROM spaces s WHERE s.workspace_id=m.workspace_id AND s.space_id=$1 AND m.principal_id=$2").bind(space.as_str()).bind(principal.principal_id.as_str()).execute(maintenance).await.unwrap();
-    denied(
-        facade,
-        principal,
-        mutation(&current, &seed, &set, "policy-admin-role-required"),
-    )
-    .await;
+    // The creator remains a project administrator after company membership is
+    // reduced to member. Reinstalling the same root proves the policy gate
+    // admits that role; publication still advances the policy epoch.
+    let creator_noop = facade
+        .transact(
+            principal,
+            mutation(&current, &seed, &managed, "policy-creator-member-allowed"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(creator_noop.receipt().status, ReceiptStatus::Applied);
     sqlx::query("UPDATE workspace_memberships m SET role='owner' FROM spaces s WHERE s.workspace_id=m.workspace_id AND s.space_id=$1 AND m.principal_id=$2").bind(space.as_str()).bind(principal.principal_id.as_str()).execute(maintenance).await.unwrap();
+    let current = facade.bootstrap(principal, space).await.unwrap();
     // Unsupported rule schemas/actions/fields are not accepted as inert policy roots.
     for (index,rules) in [json!({"schemaVersion":"future","rules":[]}),json!({"schemaVersion":"layrs.space-policy-rules.v1","rules":[{"effect":"allow","principalIds":[member.principal_id],"actions":["*"]}]}),json!({"schemaVersion":"layrs.space-policy-rules.v1","rules":[],"paths":["private"]})].into_iter().enumerate() {
         let label=format!("policy-invalid-{index}"); let (p,s)=policy(facade,principal,&current,rules,&label).await;

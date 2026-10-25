@@ -5,7 +5,8 @@ The UI calls a Space a *project*. Examples use fake data only.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /v3/spaces?limit=&cursor=` | Spaces the caller may open, by name |
+| `GET /v3/contexts` | Enabled modes and accessible company, organisation or personal contexts |
+| `GET /v3/spaces?contextId=&limit=&cursor=` | Spaces the caller may open in the selected context, by name |
 | `GET /v3/spaces/:space/capabilities` | Presentation hint: which actions to show for one Space |
 | `GET /v3/auth/whoami` | Identity for the account page, plus `instance_administrator` |
 
@@ -34,8 +35,10 @@ Workspace membership alone never lists a Space; a revoked grant, an archived or
 emptied Team, a suspended membership or principal hides it. Instance
 administrators get no implicit listing of other owners' Workspaces.
 
-**Query.** `limit` 1–100 (default 50); `cursor` from a previous page. Unknown
-parameters are refused.
+**Query.** `contextId` selects an authorized Workspace; `limit` is 1–100
+(default 50); `cursor` comes from a previous page in that same context.
+Unknown parameters and cursors from another context are refused. See the
+[context contract](project-contexts.md) for server options and ownership.
 
 **Order.** `lower(name)` in the server database collation, then `spaceId`, so
 homonyms have a stable order; display `workspace.name` to disambiguate.
@@ -204,6 +207,37 @@ the JSON bodies above unchanged; failures are strings `"<code>: <detail>"`
 
 The client refuses `limit` outside 1–100 and cursors that are empty, longer than
 2048 characters or not base64url before sending anything.
+
+### Desktop session binding (L6, 2026-10-05)
+
+`NativeRemoteRequest` additionally accepts optional `expectedPrincipalId`.
+The shared Desktop collaboration/administration transport supplies the displayed
+principal and checks the folder/origin before dispatch. The native client reads
+the OS credential once, verifies `whoami` with that captured token, and uses the
+same authenticated remote for the requested operation. Another process replacing
+the origin credential therefore cannot silently execute this view's operation
+as a different account. The field remains optional for older callers.
+
+`remote_principal_changed` and `remote_identity_check_failed` stop the requested
+operation before dispatch. The initial policy lock failure is separately named
+`remote_lock_unavailable`; generic journal errors must not imply non-dispatch,
+because some journal writes happen after the server may have committed.
+The shared adapter exposes numeric HTTP `status` and `dispatched: false` for
+these known pre-dispatch failures. Server authorization still applies to every
+operation; displayed capabilities do not authorize a mutation.
+
+Policy confirmation preserves an unresolved native intent across reopening by
+its exact account/project/worktree/client/idempotency/digest identity. Only a
+non-secret uncertainty marker is stored locally. An authoritative receipt clears
+it; a later refusal does not erase uncertainty from an earlier request. If local
+storage is unavailable, the fallback lasts for the current renderer session.
+
+Desktop also supports `readPendingPolicy`, returning `{ "preview": null }` or
+the exact durable native policy preview. The native client takes the remote
+lock, checks journal/binding agreement and validates origin/account/Space/Store
+scope. AccessPanel exposes explicit receipt recovery from that preview, so a
+committed addition is not reconstructed as a replacement after refreshed rules.
+This is a local native command, not a new HTTP endpoint.
 
 ## Limits and versioning
 

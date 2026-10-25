@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # HTTPS 99 000 fichiers — recette complète réussie
 
 20 septembre 2026 : **PASS3827,27s** (63min47s), un test effectivement exécuté,

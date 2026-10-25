@@ -193,16 +193,23 @@
 
 .layrs-nav__dot {
   flex: none;
-  width: 8px;
-  height: 8px;
-  margin: 0 5px;
-  border-radius: 50%;
-  background: var(--text-subtle);
+  width: 10px;
+  height: 10px;
+  margin: 0 4px;
+  color: var(--text-subtle);
+  fill: currentColor;
+  stroke: none;
+  transform: rotate(0deg);
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 
 .layrs-nav__item[aria-current="page"] .layrs-nav__dot,
 .layrs-nav__dot--accent {
-  background: var(--layrs-coral);
+  color: var(--layrs-coral);
+}
+
+.layrs-nav__item[aria-current="page"] .layrs-nav__dot {
+  transform: rotate(90deg);
 }
 
 .layrs-nav__badge {

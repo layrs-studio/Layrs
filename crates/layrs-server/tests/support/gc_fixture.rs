@@ -129,6 +129,7 @@ impl Fixture {
             .provision_space(
                 &principal,
                 ProvisionSpaceRequest {
+                    context_id: None,
                     workspace_slug: "gc".into(),
                     space_slug: "project".into(),
                     name: "GC roots".into(),
@@ -329,6 +330,8 @@ impl Fixture {
             signing_key: self.config.signing_key.clone(),
             bootstrap_secret: None,
             cas_quotas: self.config.cas_quotas,
+            multi_organisation_enabled: self.config.multi_organisation_enabled,
+            personal_projects_enabled: self.config.personal_projects_enabled,
         };
         config.cas_root = self.base.join("restored");
         let mut url = url::Url::parse(&config.database_url).unwrap();

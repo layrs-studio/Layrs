@@ -8,6 +8,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::AdministerPolicy)
             .await?;
+        self.require_shared_team_context(space).await?;
         let mut tx = self.locked(principal, &authority).await?;
         if !super::super::super::space_access::workspace_administrator(&mut *tx, principal, space)
             .await?
@@ -30,6 +31,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::Bootstrap)
             .await?;
+        self.require_shared_team_context(space).await?;
         let mut tx = self.locked(principal, &authority).await?;
         let rows=sqlx::query("SELECT v.evidence_object_id,v.canonical_document_jcs FROM layrs_collaboration.space_teams t JOIN layrs_collaboration.team_versions v ON v.team_id=t.team_id AND v.version=t.current_version WHERE t.space_id=$1 ORDER BY t.team_id LIMIT 33").bind(space.as_str()).fetch_all(&mut *tx).await.map_err(pg_error)?;
         if rows.len() > 32 {
@@ -73,6 +75,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::Bootstrap)
             .await?;
+        self.require_shared_team_context(space).await?;
         let mut tx = self.locked(principal, &authority).await?;
         let current:Option<i32>=sqlx::query_scalar("SELECT current_version FROM layrs_collaboration.space_teams WHERE team_id=$1 AND space_id=$2").bind(id).bind(space.as_str()).fetch_optional(&mut *tx).await.map_err(pg_error)?;
         let current = current.ok_or(V3StoreError::NotFound)? as u32;

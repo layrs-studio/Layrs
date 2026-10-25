@@ -27,6 +27,15 @@ impl<S: Source> Reader<'_, S> {
     }
 
     pub(super) async fn file(&mut self, id: &FileId) -> V3StoreResult<Arc<[u8]>> {
+        self.file_bounded(id, MAX_FILE).await
+    }
+
+    pub(super) async fn file_bounded(
+        &mut self,
+        id: &FileId,
+        maximum: u64,
+    ) -> V3StoreResult<Arc<[u8]>> {
+        let maximum = maximum.min(MAX_FILE);
         // Selection is live: another verified representation may have become preferred.
         let selected = self.source.manifest(id).await?;
         let descriptor = self.descriptor(&selected, ObjectKind::FileManifest).await?;
@@ -36,6 +45,9 @@ impl<S: Source> Reader<'_, S> {
             .filter(|file| file.manifest == descriptor)
             .cloned();
         if let Some(file) = previous {
+            if file.bytes.len() as u64 > maximum {
+                return Err(limit("comparison file", maximum));
+            }
             let mut offset = 0;
             for chunk in &file.chunks {
                 let current = self
@@ -60,8 +72,8 @@ impl<S: Source> Reader<'_, S> {
         if manifest.file_id() != id {
             return Err(V3StoreError::IdentityMismatch);
         }
-        if manifest.byte_length() > MAX_FILE {
-            return Err(limit("comparison file", MAX_FILE));
+        if manifest.byte_length() > maximum {
+            return Err(limit("comparison file", maximum));
         }
         let mut bytes = Vec::new();
         let mut chunks = Vec::new();

@@ -12,6 +12,8 @@ use layrs_store_server::v3::*;
 use std::sync::Arc;
 mod catalog;
 mod invitations;
+mod lenses;
+mod organisation_teams;
 #[path = "collaboration/releases.rs"]
 mod releases;
 mod scoped_reviews;
@@ -22,6 +24,7 @@ pub struct CollaborationHttpState {
     store: PgCollaborationStore,
     pool: sqlx::PgPool,
     identity: Arc<dyn BearerVerifier>,
+    trusted_lens_keys: TrustedLensKeys,
 }
 impl CollaborationHttpState {
     pub fn new(repository: PgV3Repository, identity: Arc<dyn BearerVerifier>) -> Self {
@@ -29,13 +32,42 @@ impl CollaborationHttpState {
             pool: repository.pool().clone(),
             store: PgCollaborationStore::new(repository),
             identity,
+            trusted_lens_keys: TrustedLensKeys::default(),
         }
+    }
+    pub fn with_trusted_lens_keys(mut self, keys: TrustedLensKeys) -> Self {
+        self.trusted_lens_keys = keys;
+        self
     }
 }
 pub fn router(state: CollaborationHttpState) -> Router {
     Router::new()
         .route("/v3/spaces", get(catalog::spaces))
         .route("/v3/spaces/:space/capabilities", get(catalog::capabilities))
+        .route("/v3/lenses/catalog", get(lenses::catalog))
+        .route("/v3/lens-runtime/host", get(lenses::runtime_host))
+        .route(
+            "/v3/lenses",
+            get(lenses::admin_catalog)
+                .post(lenses::install)
+                .layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/v3/lenses/:id/:version/:digest/retire",
+            post(lenses::retire),
+        )
+        .route(
+            "/v3/lenses/:id/:version/:digest/revoke",
+            post(lenses::revoke),
+        )
+        .route(
+            "/v3/spaces/:space/lenses",
+            get(lenses::space_config).put(lenses::configure_space),
+        )
+        .route(
+            "/v3/spaces/:space/lenses/:id/:version/:digest",
+            get(lenses::artifact),
+        )
         .route(
             "/v3/spaces/:space/policy-management",
             get(policy_management),
@@ -57,6 +89,22 @@ pub fn router(state: CollaborationHttpState) -> Router {
             post(teams::archive),
         )
         .route("/v3/spaces/:space/teams/:team/history", get(teams::history))
+        .route(
+            "/v3/spaces/:space/organisation-teams",
+            get(organisation_teams::list).post(organisation_teams::create),
+        )
+        .route(
+            "/v3/spaces/:space/organisation-teams/:team",
+            axum::routing::put(organisation_teams::update),
+        )
+        .route(
+            "/v3/spaces/:space/organisation-teams/:team/archive",
+            post(organisation_teams::archive),
+        )
+        .route(
+            "/v3/spaces/:space/organisation-teams/:team/assignment",
+            axum::routing::put(organisation_teams::assignment),
+        )
         .route("/v3/invitations", get(invitations::inbox))
         .route(
             "/v3/invitations/:invitation/actions",
@@ -174,7 +222,9 @@ impl IntoResponse for Error {
             V3StoreError::AuthorizationEpochChanged | V3StoreError::CustomPolicyRootActive => {
                 StatusCode::CONFLICT
             }
-            V3StoreError::ReleaseStateConflict => StatusCode::CONFLICT,
+            V3StoreError::ReleaseStateConflict | V3StoreError::LensConfigConflict => {
+                StatusCode::CONFLICT
+            }
             V3StoreError::Backend(_) | V3StoreError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::BAD_REQUEST,
         };

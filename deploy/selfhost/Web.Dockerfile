@@ -5,6 +5,7 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages ./packages
 COPY apps/studio-web ./apps/studio-web
+COPY deploy/lens-runtime.html ./deploy/lens-runtime.html
 RUN pnpm install --frozen-lockfile --filter @layrs/studio-web...
 RUN pnpm --filter @layrs/studio-web build
 

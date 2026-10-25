@@ -3,7 +3,7 @@ import {existsSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {bootstrapAdmin,composeArguments,dockerCommand,localDocker,localRequest} from './local-dev-runtime.mjs';
-import {assertSameEngine,choosePort,composeOverride,createState,ensureExactFile,lockState,parsePrivateJson,privateDirectory,readState,regularFile,secretFiles,stateDirectory,writeNewState} from './local-dev-state.mjs';
+import {assertSameEngine,choosePort,composeOverride,createState,ensureExactFile,lockState,parsePrivateJson,privateDirectory,readState,regularFile,secretFiles,serverOptions,stateDirectory,writeNewState} from './local-dev-state.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const args=process.argv.slice(2);
@@ -27,7 +27,15 @@ if(args.includes('--help')){
     if(engine)assertSameEngine(state,engine);
     if(process.env.LAYRS_DEV_PORT!==undefined&&Number(process.env.LAYRS_DEV_PORT)!==state.port)throw new Error('LAYRS_DEV_PORT differs from the saved instance. Use its existing port or a new LAYRS_DEV_INSTANCE.');
     const origin=`https://localhost:${state.port}`;
-    const docker=(command,options)=>dockerCommand(root,directory,process.env,state,engine?.prefix??[],command,options);
+    const optionsPath=join(directory,'server-options.json');
+    let savedOptions={};
+    if(existsSync(optionsPath)){
+      if(regularFile(optionsPath).size>4096)throw new Error('Oversized local server options');
+      savedOptions=parsePrivateJson(readFileSync(optionsPath,'utf8'));
+    }
+    const options=serverOptions(process.env,savedOptions);
+    if(!info&&!stopping)writeFileSync(optionsPath,JSON.stringify(options,null,2)+'\n',{mode:0o600});
+    const docker=(command,settings)=>dockerCommand(root,directory,{...process.env,...options},state,engine?.prefix??[],command,settings);
     const compose=(...command)=>composeArguments(root,directory,state,...command);
     if(!info){
       const caddy=join(directory,'Caddyfile');

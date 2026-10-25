@@ -1,7 +1,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{
         HeaderValue, StatusCode,
         header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE},
@@ -39,6 +39,109 @@ pub async fn provision_space(
     Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreatableWorkspacesQuery {
+    cursor: Option<String>,
+}
+
+pub async fn creatable_workspaces(
+    State(state): State<V3HttpState>,
+    Query(query): Query<CreatableWorkspacesQuery>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    Ok(Json(
+        state
+            .facade()
+            .creatable_workspaces(&principal, query.cursor)
+            .await?,
+    )
+    .into_response())
+}
+
+pub async fn create_project(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let body: layrs_store_server::v3::CreateProjectRequest = limited_json(request, 4096).await?;
+    let response = state.facade().create_project(&principal, body).await?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+pub async fn check_local_project(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let body: layrs_store_server::v3::CheckLocalProjectRequest =
+        limited_json(request, 4096).await?;
+    Ok(Json(state.facade().check_local_project(&principal, body).await?).into_response())
+}
+
+pub async fn project_contexts(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    Ok(Json(state.facade().project_contexts(&principal).await?).into_response())
+}
+
+pub async fn organisation_mode_settings(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    Ok(Json(
+        state
+            .facade()
+            .organisation_mode_settings(&principal)
+            .await?,
+    )
+    .into_response())
+}
+
+pub async fn update_organisation_mode(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let body: layrs_store_server::v3::UpdateOrganisationModeRequest =
+        limited_json(request, 4096).await?;
+    Ok(Json(
+        state
+            .facade()
+            .update_organisation_mode(&principal, body)
+            .await?,
+    )
+    .into_response())
+}
+
+pub async fn create_organisation(
+    State(state): State<V3HttpState>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let body: layrs_store_server::v3::CreateOrganisationRequest =
+        limited_json(request, 4096).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(state.facade().create_organisation(&principal, body).await?),
+    )
+        .into_response())
+}
+
 pub async fn compare_steps(
     State(state): State<V3HttpState>,
     Path(space): Path<String>,
@@ -53,6 +156,25 @@ pub async fn compare_steps(
         state
             .facade()
             .compare_steps(&principal, &space_id, body)
+            .await?,
+    )
+    .into_response())
+}
+
+pub async fn file_preview(
+    State(state): State<V3HttpState>,
+    Path(space): Path<String>,
+    request: Request,
+) -> Result<Response, V3HttpError> {
+    reject_query(&request)?;
+    require_json(request.headers())?;
+    let principal = authenticate(&state, principal_token(&request)?).await?;
+    let space_id = parse_space_id(&space)?;
+    let body = limited_json(request, 8192).await?;
+    Ok(Json(
+        state
+            .facade()
+            .file_preview(&principal, &space_id, body)
             .await?,
     )
     .into_response())

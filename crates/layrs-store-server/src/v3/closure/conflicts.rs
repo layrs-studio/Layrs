@@ -4,7 +4,11 @@ use layrs_core::scm::{Step, TreeEntry};
 use layrs_weave::{graph_merge::PlannedConflict, reconciliation::NativeLens, wasm_host};
 use serde_json::Value;
 
-pub(super) fn supported_pin(document: &Value) -> V3StoreResult<()> {
+pub(super) async fn supported_pin(
+    repo: &PgV3Repository,
+    space: &SpaceId,
+    document: &Value,
+) -> V3StoreResult<()> {
     if document["lensPin"].is_null() {
         return Ok(());
     }
@@ -14,12 +18,16 @@ pub(super) fn supported_pin(document: &Value) -> V3StoreResult<()> {
             let pin = wasm_host::manifest(lens).pin().expect("built-in manifest");
             serde_json::to_value(pin).ok().as_ref() == Some(&document["lensPin"])
         });
-    if !supported || document["lensImplementationDigest"] != wasm_host::module_digest() {
-        return Err(V3StoreError::InvalidDescriptor(
-            "unsupported Conflict Lens pin".into(),
-        ));
+    if supported && document["lensImplementationDigest"] == wasm_host::module_digest() {
+        return Ok(());
     }
-    Ok(())
+    let pin: layrs_lens_sdk::LensPin = serde_json::from_value(document["lensPin"].clone())
+        .map_err(|_| V3StoreError::InvalidDescriptor("invalid Conflict Lens pin".into()))?;
+    let implementation_digest = document["lensImplementationDigest"]
+        .as_str()
+        .ok_or_else(|| V3StoreError::InvalidDescriptor("missing Conflict module digest".into()))?;
+    repo.validate_historical_execution(space, &pin, implementation_digest)
+        .await
 }
 
 pub(crate) async fn entry_at(
@@ -71,7 +79,7 @@ pub(super) async fn verify_origins(
     steps: &BTreeMap<StepId, Step>,
 ) -> V3StoreResult<()> {
     let document = conflict.document();
-    supported_pin(document)?;
+    supported_pin(repo, space, document).await?;
     // Structural expansion retains old origins; pinned conflicts must retain
     // the actual original value at this exact immutable Step and placement.
     if document["lensPin"].is_null() {

@@ -18,6 +18,63 @@ fn nested_fixture() -> (Fixture, StepId, FileId) {
 }
 
 #[tokio::test]
+async fn preview_limit_refuses_large_files_before_reading_chunks() {
+    let mut fixture = Fixture::default();
+    let bytes = vec![b'x'; 1024 * 1024 + 1];
+    let file = fixture.file(&bytes);
+    let source = fixture.source();
+    let space_id = space();
+    let mut actual = reader(&source, &space_id);
+    assert!(matches!(
+        actual.file_bounded(&file, 1024 * 1024).await,
+        Err(V3StoreError::LimitExceeded {
+            resource: "comparison file",
+            limit: 1_048_576
+        })
+    ));
+    assert_eq!(source.counts.lock().unwrap().reads(ObjectKind::Chunk), 0);
+    // A refused preview does not change the ordinary comparison limit.
+    assert_eq!(actual.file(&file).await.unwrap().as_ref(), bytes.as_slice());
+    let reads = source.counts.lock().unwrap().reads(ObjectKind::Chunk);
+    assert!(matches!(
+        actual.file_bounded(&file, 1024 * 1024).await,
+        Err(V3StoreError::LimitExceeded { .. })
+    ));
+    assert_eq!(
+        source.counts.lock().unwrap().reads(ObjectKind::Chunk),
+        reads
+    );
+}
+
+#[tokio::test]
+async fn preview_limit_accepts_exact_boundary_and_rechecks_availability() {
+    let mut fixture = Fixture::default();
+    let bytes = vec![b'x'; 1024 * 1024];
+    let file = fixture.file(&bytes);
+    let source = fixture.source();
+    let space_id = space();
+    let mut actual = reader(&source, &space_id);
+    assert_eq!(
+        actual
+            .file_bounded(&file, 1024 * 1024)
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes.as_slice()
+    );
+    source
+        .data
+        .lock()
+        .unwrap()
+        .objects
+        .retain(|_, (descriptor, _)| descriptor.kind != ObjectKind::Chunk);
+    assert!(matches!(
+        actual.file_bounded(&file, 1024 * 1024).await,
+        Err(V3StoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn equal_second_snapshot_has_zero_duplicate_tree_manifest_or_chunk_reads() {
     let (fixture, step, _) = nested_fixture();
     let source = fixture.source();

@@ -46,6 +46,7 @@ pub enum NativeRemoteError {
     Http(u16),
     Service { status: u16, code: String },
     Transport,
+    LockUnavailable,
     Cancelled,
     PublicationPending,
 }
@@ -64,6 +65,7 @@ impl std::fmt::Display for NativeRemoteError {
             Self::Transport => {
                 f.write_str("remote transport failed; pending publication remains retryable")
             }
+            Self::LockUnavailable => f.write_str("native remote lock is unavailable before dispatch"),
         }
     }
 }
@@ -83,6 +85,7 @@ impl NativeRemoteError {
             Self::Service { code, .. } => code,
             Self::Http(_) => "remote_http_error",
             Self::Transport => "remote_transport_failed",
+            Self::LockUnavailable => "remote_lock_unavailable",
         }
     }
 }
@@ -625,9 +628,12 @@ fn decode(kind: ObjectKind, bytes: &[u8]) -> RemoteResult<CanonicalObject> {
 }
 
 mod catalog;
+mod destination;
+pub use destination::CloneDestination;
 mod chunk_spool;
 mod file;
 mod graph;
+pub(crate) mod lenses;
 mod observations;
 mod path_patch;
 mod projection;
@@ -660,17 +666,18 @@ fn conflict_references(
             .map_err(|_| NativeRemoteError::Invalid("invalid structural Conflict"))?;
     let document = parsed.document();
     if !document["lensPin"].is_null() {
-        use layrs_weave::{reconciliation::NativeLens, wasm_host};
-        let supported = [NativeLens::Text, NativeLens::Code]
-            .into_iter()
-            .any(|lens| {
-                serde_json::to_value(wasm_host::manifest(lens).pin().expect("built-in pin"))
-                    .ok()
-                    .as_ref()
-                    == Some(&document["lensPin"])
-            });
-        if !supported || document["lensImplementationDigest"] != wasm_host::module_digest() {
-            return Err(NativeRemoteError::Invalid("unsupported Conflict Lens pin"));
+        // Historical conflicts remain readable after a project unpins a Lens.
+        // Parsing a conflict never loads or executes its referenced module.
+        let pin: layrs_lens_sdk::LensPin = serde_json::from_value(document["lensPin"].clone())?;
+        pin.validate()
+            .map_err(|_| NativeRemoteError::Invalid("invalid Conflict Lens pin"))?;
+        if !document["lensImplementationDigest"]
+            .as_str()
+            .is_some_and(layrs_lens_sdk::is_sha256_digest)
+        {
+            return Err(NativeRemoteError::Invalid(
+                "invalid Conflict implementation digest",
+            ));
         }
     }
     let mut origins = BTreeSet::new();

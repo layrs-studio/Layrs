@@ -139,6 +139,7 @@ pub async fn run(
         .provision_space(
             principal,
             ProvisionSpaceRequest {
+                context_id: None,
                 workspace_slug: "team".into(),
                 space_slug: "choose-heads".into(),
                 name: "Choose exact heads".into(),

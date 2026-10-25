@@ -15,6 +15,9 @@ x-server: &server
     LAYRS_DEPLOYMENT_ID: ${LAYRS_DEPLOYMENT_ID:?Set a stable deployment ID}
     LAYRS_STORE_ID: ${LAYRS_STORE_ID:?Set a stable store ID}
     LAYRS_SIGNING_KEY_FILE: /run/secrets/signing_key
+    LAYRS_LENS_TRUSTED_KEYS:
+    LAYRS_MULTI_ORGANISATION_ENABLED:
+    LAYRS_PERSONAL_PROJECTS_ENABLED:
     LAYRS_DATABASE_URL_FILE: /run/secrets/runtime_database_url
     # Optional passthrough: absent stays absent; explicit invalid/empty values
     # are rejected by server configuration instead of disabling a quota.

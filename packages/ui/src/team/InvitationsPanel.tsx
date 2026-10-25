@@ -61,12 +61,11 @@ export function InvitationsPanel({
     [administration, next, task],
   );
 
-  const started = useRef("");
+  const loader = useRef(load);
+  loader.current = load;
   useEffect(() => {
-    if (!canAdminister || started.current === scope) return;
-    started.current = scope;
-    void load();
-  }, [scope, canAdminister, load]);
+    if (canAdminister) void loader.current();
+  }, [scope, canAdminister]);
 
   useEffect(() => {
     if (inviteRequested) {

@@ -1,12 +1,16 @@
 mod folder_dialog;
+mod git;
 mod git_bridge;
 mod native;
 
 use tauri::{Manager, PhysicalSize, Size};
 
 #[tauri::command]
-fn select_folder(initial_directory: Option<String>) -> Result<Option<String>, String> {
-    folder_dialog::select_folder(initial_directory)
+fn select_folder(
+    window: tauri::WebviewWindow,
+    initial_directory: Option<String>,
+) -> Result<Option<String>, String> {
+    folder_dialog::select_folder(&window, initial_directory)
 }
 
 fn apply_e2e_window_settings(app: &tauri::App) -> Result<(), tauri::Error> {
@@ -24,10 +28,33 @@ fn apply_e2e_window_settings(app: &tauri::App) -> Result<(), tauri::Error> {
     Ok(())
 }
 
+fn configure_bundled_lens_worker(app: &tauri::App) -> Result<(), tauri::Error> {
+    if std::env::var_os("LAYRS_LENS_WORKER").is_some()
+        || std::env::var_os("LAYRS_LENS_WORKER_SHA256").is_some()
+    {
+        return Ok(());
+    }
+    let bundled = app.path().resource_dir()?.join("layrs-lens-worker.exe");
+    let worker = if bundled.is_file() {
+        bundled
+    } else if cfg!(debug_assertions) {
+        std::path::PathBuf::from(env!("LAYRS_DEBUG_WORKER_PATH"))
+    } else {
+        return Err(tauri::Error::AssetNotFound("bundled Lens worker".into()));
+    };
+    std::env::set_var("LAYRS_LENS_WORKER", worker);
+    std::env::set_var(
+        "LAYRS_LENS_WORKER_SHA256",
+        env!("LAYRS_BUNDLED_WORKER_SHA256"),
+    );
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(git_bridge::GitBridgeState::default())
         .setup(|app| {
+            configure_bundled_lens_worker(app)?;
             apply_e2e_window_settings(app)?;
             Ok(())
         })
@@ -37,6 +64,7 @@ fn main() {
             native::native_checkout_kind,
             native::native_projection,
             git_bridge::native_git_bridge,
+            git::native_git,
             select_folder
         ])
         .run(tauri::generate_context!())

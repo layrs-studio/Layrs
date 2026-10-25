@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Settings2, ShieldCheck, SlidersHorizontal, Webhook, Workflow } from "lucide-react";
 import {
   AdvancedPanel,
+  ProjectLensesPanel,
   AutomationsPanel,
   Badge,
   Card,
@@ -19,8 +20,9 @@ import {
 } from "@layrs/ui";
 import { useTeamContext } from "./team-context";
 
-type Section = "general" | "protections" | "automations" | "webhooks" | "advanced";
+type Section = "general" | "protections" | "automations" | "webhooks" | "advanced" | "lenses";
 const sections: { id: Section; label: string; icon: ReactNode }[] = [
+  { id: "lenses", label: "Lenses", icon: <SlidersHorizontal aria-hidden size={16} /> },
   { id: "general", label: "Général", icon: <Settings2 aria-hidden size={16} /> },
   { id: "protections", label: "Protections", icon: <ShieldCheck aria-hidden size={16} /> },
   { id: "automations", label: "Automatisations", icon: <Workflow aria-hidden size={16} /> },
@@ -87,6 +89,8 @@ function SettingsContent({
   const dirty = useCallback((value: boolean) => onDirtyChange(value), [onDirtyChange]);
 
   switch (section) {
+    case "lenses":
+      return <ProjectLensesPanel key={scope} scope={scope} transport={project.administration} onDirtyChange={dirty} />;
     case "protections":
       return (
         <ProtectionsPanel

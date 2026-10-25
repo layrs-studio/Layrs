@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { FileLock, FileText, FolderTree, History, Inbox, LogOut, MessageSquare, Palette, Settings, Settings2, Shield, Tag, User, Users } from "lucide-react";
 import {
   AppShell,
+  AllProjectsNav,
   AppearanceSettings,
   Avatar,
   Banner,
@@ -13,6 +14,8 @@ import {
   Menu,
   NavItem,
   NavSection,
+  PersonalProjectsNav,
+  PageHeader,
   SearchTrigger,
   StatusDot,
   ThemeSwitcher,
@@ -29,6 +32,8 @@ import {
 import { AccountPage } from "../pages/AccountPage";
 import { LoginPage } from "../pages/LoginPage";
 import { ProjectsPage, openProject } from "../pages/ProjectsPage";
+import { NewProjectPage } from "../pages/NewProjectPage";
+import { NewOrganisationPage } from "../pages/NewOrganisationPage";
 import { AccessPage } from "../pages/AccessPage";
 import { AdminPage } from "../pages/AdminPage";
 import { InboxPage } from "../pages/InboxPage";
@@ -42,6 +47,7 @@ import { RunPage } from "../pages/RunPage";
 import { VersionsPage } from "../pages/VersionsPage";
 import { ProjectProvider, forgetKnownProjects, knownProjects, useProject } from "./project";
 import { SessionProvider, useSession } from "./session";
+import { ContextSelector, ProjectContextsProvider, useProjectContexts } from "./contexts";
 
 type ProjectView = "files" | "history" | "reviews" | "versions" | "team" | "access" | "settings";
 
@@ -72,15 +78,24 @@ function Gate() {
     if (!principal) forgetKnownProjects();
   }, [principal]);
   if (!principal) return <LoginPage />;
-  return <Routes key={generation} />;
+  return <ProjectContextsProvider key={generation}><Routes /></ProjectContextsProvider>;
 }
 
 function Routes() {
   const { path, query } = useLocation();
+  const { selected } = useProjectContexts();
 
   useEffect(() => {
     if (path === "/") navigate("/projects", { replace: true });
   }, [path]);
+
+  if (path === "/projects/new") {
+    return <Frame crumbs={[{ label: "Projets", to: "/projects" }, { label: "Nouveau projet" }]}><NewProjectPage /></Frame>;
+  }
+
+  if (path === "/organisations/new") {
+    return <Frame crumbs={[{ label: "Projets", to: "/projects" }, { label: "Nouvelle organisation" }]}><NewOrganisationPage /></Frame>;
+  }
 
   const project = matchRoute("/projects/:project/*", path);
   if (project) {
@@ -112,7 +127,7 @@ function Routes() {
   } else if (matchRoute("/inbox", path) || matchRoute("/inbox/:section", path)) {
     page = <InboxPage section={matchRoute("/inbox/:section", path)?.section} />;
     title = "Boîte de réception";
-  } else page = <ProjectsPage />;
+  } else page = <ProjectsPage key={selected?.id} />;
   return (
     <Frame crumbs={[{ label: "Projets", to: "/projects" }, ...(title ? [{ label: title }] : [])]}>
       {page}
@@ -122,11 +137,12 @@ function Routes() {
 
 function Frame({ children, crumbs, projectNav, commands = [] }: { children: ReactNode; crumbs: Crumb[]; projectNav?: ReactNode; commands?: Command[] }) {
   const { principal, signOut } = useSession();
+  const { data, selected, select, openAllProjects } = useProjectContexts();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   useCommandPaletteShortcut(openPalette);
   const admin = principal?.instanceAdministrator === true;
-  const projects = knownProjects();
+  const projects = knownProjects(selected?.id);
 
   const allCommands = useMemo<Command[]>(
     () => [
@@ -138,7 +154,7 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
         icon: <FolderTree aria-hidden size={16} />,
         run: () => openProject(project.spaceId),
       })),
-      { id: "projects", group: "Pages", label: "Tous les projets", icon: <FolderTree aria-hidden size={16} />, run: () => navigate("/projects") },
+      { id: "projects", group: "Pages", label: "Tous les projets", icon: <FolderTree aria-hidden size={16} />, run: openAllProjects },
       { id: "account", group: "Pages", label: "Compte", icon: <User aria-hidden size={16} />, run: () => navigate("/settings/account") },
       { id: "appearance", group: "Pages", label: "Apparence", icon: <Palette aria-hidden size={16} />, run: () => navigate("/settings/appearance") },
       { id: "inbox", group: "Pages", label: "Boîte de réception", icon: <Inbox aria-hidden size={16} />, run: () => navigate("/inbox") },
@@ -148,7 +164,7 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
       { id: "theme-system", group: "Actions", label: "Thème du système", keywords: ["apparence"], run: () => setAppearance({ theme: "system" }) },
       { id: "logout", group: "Actions", label: "Se déconnecter", icon: <LogOut aria-hidden size={16} />, run: () => void signOut() },
     ],
-    [commands, projects.map((project) => project.spaceId).join("|"), admin, signOut],
+    [commands, projects.map((project) => project.spaceId).join("|"), admin, signOut, openAllProjects],
   );
 
   return (
@@ -156,11 +172,13 @@ function Frame({ children, crumbs, projectNav, commands = [] }: { children: Reac
       <AppShell
         sidebar={
           <>
+            <ContextSelector />
             <NavSection title="Projets">
+              <AllProjectsNav currentContextIsPersonal={selected?.kind === "personal"} onOpen={openAllProjects} />
               {projects.slice(0, 6).map((project) => (
                 <NavItem key={project.spaceId} to={`/projects/${segment(project.spaceId)}`} label={project.name} dot="muted" />
               ))}
-              <NavItem to="/projects" exact label="Tous les projets" icon={<FolderTree aria-hidden size={20} />} />
+              <PersonalProjectsNav context={data?.personalProjectsEnabled ? data.contexts.find((item) => item.kind === "personal") : undefined} selected={selected?.kind === "personal"} onSelect={select} />
             </NavSection>
             {projectNav}
           </>
@@ -256,6 +274,10 @@ function ProjectFrame({ view, detail, layer }: { view: ProjectView; detail: stri
         </EmptyState>
       </div>
     );
+  else if (view === "team" && !project.contextKind)
+    content = <div className="layrs-page"><Loading label="Vérification de l’espace du projet…" /></div>;
+  else if (view === "team" && project.contextKind === "personal")
+    content = <div className="layrs-page"><PageHeader title="Projet personnel" /><EmptyState icon={<User size={22} />} title="Accès réservé à votre compte">Ce projet personnel ne possède ni équipe ni invitations.</EmptyState></div>;
   else
     content = {
       files: <FilesPage />,

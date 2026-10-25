@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Qualification HTTPS, runner et restauration — 20 septembre 2026
 
 Cette mesure complète les précédentes recettes ; elle ne remplace notamment pas celle de 263,44 s. Exécution locale Windows, profil Rust debug, PostgreSQL dans un conteneur dédié et bases UUID isolées. Aucun changement de production pendant cette recette.

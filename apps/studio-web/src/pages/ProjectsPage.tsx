@@ -16,6 +16,7 @@ import {
   type SpaceCatalogPage,
 } from "@layrs/ui";
 import { rememberProject } from "../app/project";
+import { useProjectContexts } from "../app/contexts";
 import { describeError, useSession } from "../app/session";
 
 export function openProject(spaceId: string) {
@@ -33,9 +34,10 @@ function normalize(value: string) {
   return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 }
 
-/** P03: projects this account may open, by name, grouped by organisation. */
+/** Projects authorized within the selected server context. */
 export function ProjectsPage() {
   const { api } = useSession();
+  const { selected } = useProjectContexts();
   const [entries, setEntries] = useState<SpaceCatalogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -43,17 +45,20 @@ export function ProjectsPage() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [reference, setReference] = useState("");
-  const requested = useRef(false);
+  const generation = useRef(0);
 
   const load = useCallback(
     async (from: string | null) => {
+      if (!selected) return;
+      const requestGeneration = generation.current;
       setLoading(true);
       setError("");
       try {
-        const query = new URLSearchParams({ limit: "50" });
+        const query = new URLSearchParams({ limit: "50", contextId: selected.id });
         if (from) query.set("cursor", from);
         const page = await api<SpaceCatalogPage>(`/v3/spaces?${query}`);
-        page.spaces.forEach((space) => rememberProject(space.spaceId, space.name));
+        if (requestGeneration !== generation.current) return;
+        page.spaces.forEach((space) => rememberProject(space.spaceId, space.name, selected.id));
         setEntries((current) => {
           const seen = new Set(current.map((entry) => entry.spaceId));
           return [...current, ...page.spaces.filter((space) => !seen.has(space.spaceId))];
@@ -61,19 +66,23 @@ export function ProjectsPage() {
         setCursor(page.nextCursor);
         setHasMore(page.hasMore);
       } catch (cause) {
-        setError(describeError(cause));
+        if (requestGeneration === generation.current) setError(describeError(cause));
       } finally {
-        setLoading(false);
+        if (requestGeneration === generation.current) setLoading(false);
       }
     },
-    [api],
+    [api, selected?.id],
   );
 
   useEffect(() => {
-    if (requested.current) return;
-    requested.current = true;
-    void load(null);
-  }, [load]);
+    generation.current++;
+    setEntries([]);
+    setCursor(null);
+    setHasMore(false);
+    setSearch("");
+    if (selected) void load(null);
+    else setLoading(false);
+  }, [load, selected?.id]);
 
   const filtered = useMemo(() => {
     const terms = normalize(search).split(/\s+/).filter(Boolean);
@@ -101,7 +110,10 @@ export function ProjectsPage() {
 
   return (
     <div className="layrs-page">
-      <PageHeader title="Vos projets" description="Les projets que votre compte peut ouvrir sur cette instance." />
+      <PageHeader title="Vos projets" description={selected ? `Projets accessibles dans ${selected.kind === "personal" ? "votre espace personnel" : selected.name}.` : "Votre compte n’a accès à aucune organisation active. Demandez un accès à un administrateur."} />
+      <div className="projects-actions">
+        {selected?.canCreateProject && <Button onClick={() => navigate("/projects/new")}>Nouveau projet</Button>}
+      </div>
       {error && (
         <Banner
           tone="danger"
@@ -120,7 +132,7 @@ export function ProjectsPage() {
           label="Rechercher un projet"
           hideLabel
           value={search}
-          placeholder="Rechercher par nom ou organisation…"
+          placeholder="Rechercher par nom ou identifiant…"
           hint={hasMore ? "La recherche porte sur les projets déjà chargés." : undefined}
           trailing={<Search aria-hidden size={16} className="projects-search__icon" />}
           onChange={(event) => setSearch(event.target.value)}
@@ -130,7 +142,7 @@ export function ProjectsPage() {
         <Loading label="Chargement des projets…" />
       ) : !entries.length && !error ? (
         <EmptyState icon={<FolderTree size={22} />} title="Aucun projet accessible pour l’instant">
-          Un responsable de projet doit vous inviter. Vos invitations en attente apparaissent dans la boîte de réception.
+          Créez un projet ou demandez une invitation. Vos invitations en attente apparaissent dans la boîte de réception.
         </EmptyState>
       ) : (
         groups.map((group) => (

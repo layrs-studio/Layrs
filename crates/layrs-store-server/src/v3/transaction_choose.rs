@@ -22,13 +22,20 @@ pub(crate) async fn administrator(
     principal: &PrincipalContext,
     space: &SpaceId,
 ) -> V3StoreResult<bool> {
-    super::space_access::workspace_administrator(&mut **tx, principal, space).await
+    // Choosing published heads is a repository-wide administrative action.
+    // A project creator who was demoted to a Workspace member cannot retain
+    // this authority through creator status alone.
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_memberships m JOIN spaces s USING(workspace_id) WHERE s.space_id=$1 AND m.principal_id=$2 AND m.state='active' AND m.role=ANY($3))")
+        .bind(space.as_str()).bind(principal.principal_id.as_str())
+        .bind(super::space_access::WORKSPACE_ADMINISTRATOR_ROLES.as_slice())
+        .fetch_one(&mut **tx).await.map_err(pg_error)
 }
 
 pub(crate) async fn authorize(
     repository: &PgV3Repository,
     principal: &PrincipalContext,
     authority: &SpaceAuthority,
+    choosing_heads: bool,
 ) -> V3StoreResult<super::AuthorizationDecision> {
     let mut decision = repository
         .authorizer()
@@ -41,7 +48,13 @@ pub(crate) async fn authorize(
         })
         .await?;
     let mut tx = repository.pool().begin().await.map_err(pg_error)?;
-    if !administrator(&mut tx, principal, &authority.space_id).await? {
+    let role_allowed = if choosing_heads {
+        administrator(&mut tx, principal, &authority.space_id).await?
+    } else {
+        super::space_access::workspace_administrator(&mut *tx, principal, &authority.space_id)
+            .await?
+    };
+    if !role_allowed {
         decision = super::AuthorizationDecision::deny("choose_requires_workspace_administrator");
     }
     Ok(decision)

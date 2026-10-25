@@ -169,6 +169,8 @@ pub struct LensResourceQuotas {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WasiEntrypointRuntime {
+    /// Portable no-import WebAssembly ABI used by installed native lenses.
+    Wasm,
     Wasi,
 }
 

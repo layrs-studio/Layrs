@@ -95,12 +95,18 @@ impl PgCollaborationStore {
             let auth = self
                 .authority(principal, space, V3Action::AdministerPolicy)
                 .await?;
+            self.require_shared_team_context(space).await?;
             self.locked(principal, &auth).await?
         } else {
             self.repository.pool().begin().await.map_err(pg_error)?
         };
         self.lock_invitation_principal(&mut tx, principal).await?;
-        let rows=sqlx::query(&format!("SELECT {COLUMNS} FROM layrs_collaboration.space_invitations i JOIN spaces s USING(space_id) WHERE (($1::text IS NULL AND i.recipient_principal_id=$2) OR i.space_id=$1) AND i.sequence>$3 ORDER BY i.sequence LIMIT 101")).bind(space.map(SpaceId::as_str)).bind(principal.principal_id.as_str()).bind(after).fetch_all(&mut *tx).await.map_err(pg_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,18))")
+            .bind(&principal.deployment_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(pg_error)?;
+        let rows=sqlx::query(&format!("SELECT {COLUMNS} FROM layrs_collaboration.space_invitations i JOIN spaces s USING(space_id) JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id WHERE w.deployment_id=$4 AND (($1::text IS NULL AND i.recipient_principal_id=$2) OR i.space_id=$1) AND i.sequence>$3 AND ((c.kind='personal' AND dc.personal_projects_enabled AND c.owner_principal_id=$2) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))) ORDER BY i.sequence LIMIT 101")).bind(space.map(SpaceId::as_str)).bind(principal.principal_id.as_str()).bind(after).bind(&principal.deployment_id).fetch_all(&mut *tx).await.map_err(pg_error)?;
         let more = rows.len() > 100;
         let visible = &rows[..rows.len().min(100)];
         Ok(
@@ -122,6 +128,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::AdministerPolicy)
             .await?;
+        self.require_shared_team_context(space).await?;
         let id = key_id("invitation", principal, space, &request.idempotency_key);
         let request_digest = digest(&request)?;
         let created = OffsetDateTime::now_utc();

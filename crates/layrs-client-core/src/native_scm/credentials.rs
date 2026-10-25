@@ -6,7 +6,7 @@ use crate::secret_store::{OsSecretStore, SecretStore};
 use layrs_core::scm::{LayerId, ObjectId, SpaceId, StepId};
 use layrs_sync::v3::LayerMutationMode;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 #[path = "projection_commands.rs"]
 mod projection;
@@ -16,6 +16,8 @@ mod projection;
 pub struct NativeRemoteRequest {
     pub origin: String,
     pub ca_pem: Option<String>,
+    #[serde(default)]
+    pub expected_principal_id: Option<String>,
     pub action: NativeRemoteAction,
 }
 
@@ -30,6 +32,13 @@ pub enum NativeRemoteAction {
     StartLogin,
     PollLogin,
     Whoami,
+    ListContexts,
+    CreateOrganisation {
+        request: Value,
+    },
+    CreateProject {
+        request: Value,
+    },
     /// One page of the Spaces this principal may open (`GET /v3/spaces`).
     /// Independent of the local checkout; `root` is ignored.
     ListSpaces {
@@ -37,6 +46,8 @@ pub enum NativeRemoteAction {
         limit: Option<u16>,
         #[serde(default)]
         cursor: Option<String>,
+        #[serde(default)]
+        context_id: Option<String>,
     },
     /// UI capability hint for one Space (`GET /v3/spaces/:space/capabilities`).
     SpaceCapabilities {
@@ -46,6 +57,10 @@ pub enum NativeRemoteAction {
     Provision {
         workspace: String,
         slug: String,
+        #[serde(default)]
+        context_id: Option<String>,
+        #[serde(default)]
+        expected_space: Option<SpaceId>,
     },
     Publish {
         #[serde(default)]
@@ -68,6 +83,19 @@ pub enum NativeRemoteAction {
         space: SpaceId,
         name: String,
         transfer_id: String,
+    },
+    InspectCloneDestination {
+        #[serde(default)]
+        space: Option<SpaceId>,
+        #[serde(default)]
+        context_id: Option<String>,
+    },
+    LinkExisting {
+        space: SpaceId,
+    },
+    PrepareExistingPublication {
+        space: SpaceId,
+        context_id: String,
     },
     CloneProjection {
         space: SpaceId,
@@ -174,6 +202,7 @@ pub enum NativeRemoteAction {
         rules: serde_json::Value,
     },
     ReadPolicyRules {},
+    ReadPendingPolicy {},
     ApplyPolicy {
         preview: Box<super::NativePolicyPreview>,
     },
@@ -260,20 +289,79 @@ fn execute_remote_with_store(
     }
     let token = secrets
         .get_token(&key)
-        .map_err(|e| e.to_string())?
-        .ok_or("Sign in to this server first with remote login")?;
+        .map_err(|e| {
+            if request.expected_principal_id.is_some() {
+                format!("remote_identity_check_failed: {e}")
+            } else {
+                e.to_string()
+            }
+        })?
+        .ok_or_else(|| {
+            if request.expected_principal_id.is_some() {
+                "remote_identity_check_failed: Sign in to this server first with remote login"
+            } else {
+                "Sign in to this server first with remote login"
+            }
+        })?;
     let remote = match ca {
         Some(ca) => NativeRemote::with_trusted_ca(anonymous.origin(), &token, ca),
         None => NativeRemote::new(anonymous.origin(), &token),
     }
     .map_err(remote_error)?;
+    // The OS credential can change between the UI's session check and this
+    // request (for example, another CLI login). Check the identity using the
+    // exact token already captured for the operation, before dispatching it.
+    if let Some(expected) = request.expected_principal_id.as_deref() {
+        let who = remote
+            .whoami()
+            .map_err(|error| format!("remote_identity_check_failed: {}", remote_error(error)))?;
+        if !principal_matches(expected, &who) {
+            return Err(
+                "remote_principal_changed: Recheck the Desktop session before continuing".into(),
+            );
+        }
+    }
     match request.action {
         NativeRemoteAction::Whoami => remote.whoami().map_err(remote_error),
-        NativeRemoteAction::ListSpaces { limit, cursor } => remote
-            .list_spaces(limit, cursor.as_deref())
+        NativeRemoteAction::ListContexts => remote.list_contexts().map_err(remote_error),
+        NativeRemoteAction::CreateOrganisation { request } => {
+            remote.create_organisation(&request).map_err(remote_error)
+        }
+        NativeRemoteAction::CreateProject { request } => {
+            remote.create_project(&request).map_err(remote_error)
+        }
+        NativeRemoteAction::ListSpaces {
+            limit,
+            cursor,
+            context_id,
+        } => remote
+            .list_spaces_in_context(limit, cursor.as_deref(), context_id.as_deref())
             .map_err(remote_error),
         NativeRemoteAction::SpaceCapabilities { space } => {
             remote.space_capabilities(&space).map_err(remote_error)
+        }
+        NativeRemoteAction::InspectCloneDestination { space, context_id } => Ok(json!(
+            remote.inspect_clone_destination(root, space.as_ref(), context_id.as_deref())
+        )),
+        NativeRemoteAction::LinkExisting { space } => {
+            let state = remote.link_existing(root, &space).map_err(remote_error)?;
+            Ok(json!({"status":"linked","state":state}))
+        }
+        NativeRemoteAction::Provision {
+            workspace,
+            slug,
+            context_id: Some(context_id),
+            expected_space: Some(expected_space),
+        } => Ok(json!({"provisioned":remote
+            .provision_existing(root, &expected_space, &context_id, &workspace, &slug)
+            .map_err(remote_error)?})),
+        NativeRemoteAction::PrepareExistingPublication { space, context_id } => {
+            let (state, context_id) = remote
+                .prepare_existing_publication(root, &space, &context_id)
+                .map_err(remote_error)?;
+            Ok(
+                json!({"status":"readyToPublish","localSpaceId":space,"name":state.space.name(),"contextId":context_id,"state":state}),
+            )
         }
         NativeRemoteAction::CancelTransfer { transfer_id } => Ok(
             json!({"transferId":transfer_id,"status":super::transfer_control::cancel(&transfer_id,remote.origin(),root,&token).map_err(remote_error)?}),
@@ -546,14 +634,31 @@ fn execute_remote_with_store(
             .map_err(|_| "invalid restoration application response".into())
         }
         action => {
-            let workspace = NativeWorkspace::discover(root).map_err(|e| e.to_string())?;
+            let workspace = if matches!(
+                &action,
+                NativeRemoteAction::Provision {
+                    expected_space: Some(_),
+                    ..
+                }
+            ) {
+                NativeWorkspace::open(root).map_err(|e| e.to_string())?
+            } else {
+                NativeWorkspace::discover(root).map_err(|e| e.to_string())?
+            };
             match action {
                 NativeRemoteAction::Provision {
                     workspace: slug,
                     slug: space,
-                } => Ok(
-                    json!({"provisioned":remote.provision(&workspace, &slug, &space).map_err(remote_error)?}),
-                ),
+                    context_id,
+                    expected_space,
+                } => {
+                    if expected_space.is_some() {
+                        return Err("expectedSpace requires an explicit project context".into());
+                    }
+                    Ok(
+                        json!({"provisioned":remote.provision_in_context(&workspace, &slug, &space, context_id.as_deref()).map_err(remote_error)?}),
+                    )
+                }
                 NativeRemoteAction::Publish { integrate } => Ok(
                     json!({"receipt":remote.publish(&workspace, if integrate {LayerMutationMode::Integrate}else{LayerMutationMode::Advance}).map_err(remote_error)?}),
                 ),
@@ -641,6 +746,9 @@ fn execute_remote_with_store(
                     remote.read_policy_rules(&workspace).map_err(remote_error)?,
                 )
                 .map_err(|_| "invalid policy rules response".into()),
+                NativeRemoteAction::ReadPendingPolicy {} => Ok(json!({
+                    "preview": remote.pending_policy_preview(&workspace).map_err(remote_error)?
+                })),
                 NativeRemoteAction::ApplyPolicy { preview } => Ok(
                     json!({"receipt":remote.apply_policy_preview(&workspace, &preview).map_err(remote_error)?}),
                 ),
@@ -757,6 +865,10 @@ fn credential_key(canonical_origin: &str) -> String {
         blake3::hash(canonical_origin.as_bytes()).to_hex()
     )
 }
+
+fn principal_matches(expected: &str, who: &Value) -> bool {
+    !expected.is_empty() && who["principal_id"].as_str() == Some(expected)
+}
 fn remote_error(e: super::NativeRemoteError) -> String {
     format!("{}: {e}", e.code())
 }
@@ -764,6 +876,59 @@ fn remote_error(e: super::NativeRemoteError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct NoCredential;
+    impl SecretStore for NoCredential {
+        fn status(&self) -> crate::secret_store::SecretStoreStatus {
+            crate::secret_store::SecretStoreStatus {
+                available: true,
+                provider: "test",
+                message: String::new(),
+            }
+        }
+        fn set_token(&self, _: &str, _: &str) -> Result<(), crate::secret_store::SecretStoreError> {
+            unreachable!()
+        }
+        fn get_token(
+            &self,
+            _: &str,
+        ) -> Result<Option<String>, crate::secret_store::SecretStoreError> {
+            Ok(None)
+        }
+        fn delete_token(&self, _: &str) -> Result<(), crate::secret_store::SecretStoreError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn missing_rotated_credential_is_rejected_before_any_remote_action() {
+        let request: NativeRemoteRequest = serde_json::from_value(json!({
+            "origin": "https://example.com", "caPem": null,
+            "expectedPrincipalId": "principal:alice", "action": {"action": "administration", "command": {"action": "listAccounts"}}
+        })).unwrap();
+        let error = execute_remote_with_store(Path::new("."), request, &NoCredential).unwrap_err();
+        assert!(error.starts_with("remote_identity_check_failed: Sign in"));
+    }
+    #[test]
+    fn expected_principal_rejects_a_rotated_credential_identity() {
+        let request: NativeRemoteRequest = serde_json::from_value(json!({
+            "origin": "https://example.com", "caPem": null,
+            "expectedPrincipalId": "principal:alice", "action": {"action": "administration", "command": {"action": "listAccounts"}}
+        })).unwrap();
+        assert_eq!(
+            request.expected_principal_id.as_deref(),
+            Some("principal:alice")
+        );
+        assert!(principal_matches(
+            "principal:alice",
+            &json!({"principal_id":"principal:alice"})
+        ));
+        assert!(!principal_matches(
+            "principal:alice",
+            &json!({"principal_id":"principal:bob"})
+        ));
+        assert!(!principal_matches("principal:alice", &json!({})));
+        assert!(!principal_matches("", &json!({"principal_id":""})));
+    }
     #[test]
     fn offline_remote_actions_are_explicit_and_strict_before_credentials() {
         let id = format!("blake3:{}", "a".repeat(64));
@@ -816,10 +981,10 @@ mod tests {
             candidates,
             NativeRemoteAction::PublishCandidatesCancellable { .. }
         ));
-        assert!(
-            serde_json::from_value::<NativeRemoteAction>(json!({"action":"publishCancellable"}))
-                .is_err()
-        );
+        assert!(serde_json::from_value::<NativeRemoteAction>(
+            json!({"action":"publishCancellable"})
+        )
+        .is_err());
     }
     #[test]
     fn catalog_actions_decode_with_optional_page_and_exact_space() {
@@ -829,7 +994,8 @@ mod tests {
             first,
             NativeRemoteAction::ListSpaces {
                 limit: None,
-                cursor: None
+                cursor: None,
+                context_id: None
             }
         ));
         let next: NativeRemoteAction =
@@ -839,7 +1005,8 @@ mod tests {
             next,
             NativeRemoteAction::ListSpaces {
                 limit: Some(20),
-                cursor: Some(_)
+                cursor: Some(_),
+                context_id: None
             }
         ));
         let capabilities: NativeRemoteAction =
@@ -874,6 +1041,18 @@ mod tests {
         }
         let too_long = "A".repeat(2049);
         assert!(remote.list_spaces(None, Some(&too_long)).is_err());
+        for context in [
+            "workspace:",
+            "space:wrong",
+            "workspace:a&contextId=b",
+            "workspace:a/b",
+            "workspace:a?limit=1",
+        ] {
+            assert!(matches!(
+                remote.list_spaces_in_context(None, None, Some(context)),
+                Err(super::super::NativeRemoteError::Invalid(_))
+            ));
+        }
     }
     #[test]
     fn credentials_are_scoped_to_the_exact_canonical_origin() {

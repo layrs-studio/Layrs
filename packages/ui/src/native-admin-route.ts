@@ -10,6 +10,17 @@ export function nativeAdminRoute(command: NativeAdminCommand, space: string): Na
   const post = (path: string, body: unknown = {}): NativeAdminRoute => ({ method: "POST", path, body });
   const number = (value: unknown) => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Position invalide"); return value; };
   switch (command.action) {
+    case "organisationSettings": return get("/v3/admin/organisations/settings");
+    case "configureOrganisations": return { method: "PUT", path: "/v3/admin/organisations/settings", body: command.request };
+    case "retireLens":
+    case "revokeLens": {
+      const pin = command.pin as { lensId: string; version: string; digest: string };
+      if (!pin || !/^[a-zA-Z0-9._-]{1,160}$/.test(pin.lensId) || !/^[a-zA-Z0-9.+_-]{1,80}$/.test(pin.version) || !/^sha256:[a-f0-9]{64}$/.test(pin.digest)) throw Error("Version de lens invalide");
+      return post(`/v3/lenses/${encodeURIComponent(pin.lensId)}/${encodeURIComponent(pin.version)}/${encodeURIComponent(pin.digest)}/${command.action === "retireLens" ? "retire" : "revoke"}`);
+    }
+    case "listLenses": return get("/v3/lenses");
+    case "lensCatalog": return get("/v3/lenses/catalog");
+    case "installLens": return post("/v3/lenses", command.request);
     case "metrics": return get("/v3/admin/metrics");
     case "invitationInbox": return get(`/v3/invitations?after=${number(command.after)}`);
     case "decideInvitation": {
@@ -27,7 +38,20 @@ export function nativeAdminRoute(command: NativeAdminCommand, space: string): Na
   }
   const base = `/v3/spaces/${segment(space)}`;
   switch (command.action) {
+    case "projectLenses": return get(`${base}/lenses`);
+    case "filePreview": return post(`${base}/preview`, command.request);
+    case "configureLenses": return { method: "PUT", path: `${base}/lenses`, body: command.request };
+    case "lensPacket": {
+      const pin = command.pin as { lensId: string; version: string; digest: string };
+      if (!pin || !/^[a-zA-Z0-9._-]{1,160}$/.test(pin.lensId) || !/^[a-zA-Z0-9.+_-]{1,80}$/.test(pin.version) || !/^sha256:[a-f0-9]{64}$/.test(pin.digest)) throw Error("Version de lens invalide");
+      return get(`${base}/lenses/${encodeURIComponent(pin.lensId)}/${encodeURIComponent(pin.version)}/${encodeURIComponent(pin.digest)}`);
+    }
     case "listTeams": return get(`${base}/teams`);
+    case "listOrganisationTeams": return get(`${base}/organisation-teams`);
+    case "createOrganisationTeam": return post(`${base}/organisation-teams`, command.request);
+    case "updateOrganisationTeam": return {method:"PUT",path:`${base}/organisation-teams/${segment(command.team)}`,body:command.request};
+    case "archiveOrganisationTeam": return post(`${base}/organisation-teams/${segment(command.team)}/archive`,command.request);
+    case "assignOrganisationTeam": return {method:"PUT",path:`${base}/organisation-teams/${segment(command.team)}/assignment`,body:command.request};
     case "policyManagement": return get(`${base}/policy-management`);
     case "eligibleTeamMembers": return get(`${base}/teams/eligible-members`);
     case "createTeam": return post(`${base}/teams`, command.request);

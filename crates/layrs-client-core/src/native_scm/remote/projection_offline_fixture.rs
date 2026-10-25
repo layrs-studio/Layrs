@@ -2,13 +2,13 @@
 use super::*;
 use layrs_core::projection::PathSemantics;
 use layrs_store_local::projection::{PartialStoreFamily, PartialStoreIdentity, SharedQuota};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     net::TcpListener,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     thread,
 };
@@ -380,13 +380,11 @@ impl Server {
         self.base.graph_root_step_ids = vec![step.id().clone()];
         let view = RepositoryView::new(
             self.base.space_id.clone(),
-            vec![
-                LayerHeadSet::new(
-                    self.base.layers[0].record.id().clone(),
-                    vec![step.id().clone()],
-                )
-                .unwrap(),
-            ],
+            vec![LayerHeadSet::new(
+                self.base.layers[0].record.id().clone(),
+                vec![step.id().clone()],
+            )
+            .unwrap()],
             vec![],
             vec![],
             vec![],
@@ -444,6 +442,9 @@ impl Server {
                 }
             }
             serde_json::to_value(&self.base).unwrap()
+        } else if route == format!("/v3/spaces/{}/lenses", self.base.space_id) {
+            // The current service exposes a Lens configuration even with no pins.
+            json!({"revision":0,"pins":[],"associations":[],"availableCatalog":[]})
         } else if route.ends_with("/whoami") {
             json!({"principal_id": self.base.principal_id})
         } else if route.ends_with("/projection") {

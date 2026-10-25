@@ -26,6 +26,10 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 10_000;
 
+#[path = "file_preview.rs"]
+mod preview;
+pub use preview::*;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompareStepsRequest {

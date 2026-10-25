@@ -15,6 +15,7 @@ pub(super) fn reconcile(
     remote: Option<CapturedFile>,
     graph: &GraphObjects,
     spools: &mut BTreeMap<FileId, File>,
+    allow_legacy_text: bool,
 ) -> RemoteResult<ProjectionMergeFile> {
     let mut row = ProjectionMergeFile {
         path: path.clone(),
@@ -33,6 +34,11 @@ pub(super) fn reconcile(
         return Ok(row);
     }
     row.conflict = true;
+    // A project catalogue must select the exact package. Partial checkouts do
+    // not yet retain executable modules, so keep both terms for explicit choice.
+    if !allow_legacy_text {
+        return Ok(row);
+    }
     let mode = |f: &Option<CapturedFile>| f.as_ref().map(|f| f.executable);
     let (b, l, r) = (mode(&row.base), mode(&row.local), mode(&row.remote));
     let mode = if l == b {
@@ -126,6 +132,14 @@ mod tests {
         local: Option<&[u8]>,
         remote: Option<&[u8]>,
     ) -> (ProjectionMergeFile, BTreeMap<FileId, File>) {
+        plan_with_legacy(base, local, remote, true)
+    }
+    fn plan_with_legacy(
+        base: Option<&[u8]>,
+        local: Option<&[u8]>,
+        remote: Option<&[u8]>,
+        allow_legacy_text: bool,
+    ) -> (ProjectionMergeFile, BTreeMap<FileId, File>) {
         let mut spools = BTreeMap::new();
         let mut file = |bytes: Option<&[u8]>| {
             bytes.map(|bytes| {
@@ -148,9 +162,21 @@ mod tests {
             remote,
             &GraphObjects::default(),
             &mut spools,
+            allow_legacy_text,
         )
         .unwrap();
         (result, spools)
+    }
+    #[test]
+    fn configured_project_without_partial_runtime_keeps_both_variants() {
+        let (result, _) = plan_with_legacy(
+            Some(b"a\nb\nc\n"),
+            Some(b"A\nb\nc\n"),
+            Some(b"a\nb\nC\n"),
+            false,
+        );
+        assert!(result.conflict);
+        assert!(result.automatic.is_none());
     }
     #[test]
     fn disjoint_edits_merge_but_overlaps_remain_choices() {

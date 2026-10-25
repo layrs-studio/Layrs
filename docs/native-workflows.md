@@ -1,6 +1,39 @@
 # Parcours natifs actuellement raccordés
 
-État de développement : 20 septembre 2026. Les limites et validations détaillées se trouvent dans [les journaux PME](plans/pme/REPRISE.md). Ce document décrit les commandes disponibles ; il ne constitue pas une annonce de disponibilité générale.
+Mis à jour le 6 octobre 2026. Les limites et validations détaillées se trouvent
+dans [l’état courant](STATUS.md) et le [registre de livraison](design/redesign/03-delivery.md).
+Ce guide décrit les parcours disponibles dans les sources ; il ne constitue
+pas une annonce de disponibilité générale.
+
+## Navigation Desktop
+
+Ouvrir un dossier depuis **Projets**. **Changements**, **Historique**, **Layers**,
+**Versions** et **Réglages du projet** portent sur le travail local.
+**Synchronisation** distingue publier, recevoir et reprendre une opération.
+
+Après connexion au serveur, les projets complets donnent accès aux pages :
+
+- **Revues** : proposition, discussion, versions exactes et validations.
+- **Contenu publié** : fichiers, historique et versions du serveur.
+- **Équipe** : membres, invitations, équipes, activité et jetons du compte.
+- **Accès aux fichiers** et **Réglages serveur** : règles, protections et webhooks.
+- **Administration de l’instance**, depuis Équipe : visible seulement pour
+  l’administrateur de cette instance.
+
+Les vues locales et publiées restent distinctes : une capture locale ne devient
+pas une publication en changeant de page. Pour un dossier à accès limité,
+**Équipe** conserve le parcours de revue limité aux chemins autorisés ; les
+pages de projet complet et le pont Git n’y sont pas proposés.
+
+### Reprendre une modification des droits
+
+Une réponse perdue ne prouve pas que la modification a échoué. Si le moteur
+conserve une demande de politique en attente, **Accès aux fichiers** propose
+**Reprendre la modification en attente**, y compris après réouverture de
+Desktop. Cette action relit la demande exacte du journal et récupère son reçu ;
+elle ne transforme pas un ancien ajout en nouvelle modification des règles
+actuelles. Vérifiez le dialogue puis rejouez la même demande. Le serveur reste
+responsable de l’autorisation et de l’idempotence.
 
 ## Projet local
 
@@ -17,6 +50,15 @@ layrs layer use "essai"
 ```
 
 La capture conserve les octets, les fichiers vides et les suppressions. Les dossiers `.layrs` et `.git` sont réservés et exclus. Les changements de Layer et restaurations capturent d'abord le travail courant. Une capture sans changement ne crée pas d'Operation. Les captures automatiques fonctionnent pendant l'ouverture du projet dans Desktop, après une période de calme ; elles ne constituent pas un service permanent lorsque Desktop est fermé.
+
+La page **Changements** distingue **En cours** (différences depuis la dernière
+capture, automatique ou manuelle) et **Dernière capture** lorsque rien n'attend
+d'être capturé. Les fichiers d'une capture automatique restent donc consultables
+après leur enregistrement, y compris après réouverture du projet. Cette lecture
+ne crée aucune capture. Une capture sans observation locale est présentée comme
+**Capture de référence** ; une fusion exige un choix explicite de son parent
+pour afficher la comparaison. Les étapes nommées se gèrent dans **Versions**,
+et la publication vers le serveur dans **Synchronisation**.
 
 Le fichier racine `.layrsignore` ignore les fichiers non suivis : une règle par ligne, commentaires `#`, jokers `*` et `?`, composant `**`, suffixe `/` pour les dossiers, préfixe `/` pour ancrer à la racine et `!` pour réinclure. Les règles sont appliquées dans l'ordre ; la dernière correspondance prévaut. Les motifs avec `/` sont relatifs à la racine. Les classes `[...]` et les échappements `\` sont refusés explicitement. Le fichier est limité à 64 KiB UTF-8 et 512 règles ; il reste toujours capturé. Un fichier déjà suivi reste suivi même si une règle l'exclut. Une restauration qui écraserait un fichier ignoré non suivi est refusée avant écriture.
 
@@ -69,7 +111,9 @@ Les aperçus de fusion et de réécriture sont sans écriture. Si le checkout co
 
 Desktop peut lire le texte d'une variante (UTF-8, sans NUL, au plus 1 MiB), le copier dans un brouillon et prévisualiser un contenu final manuel. Les brouillons restent dans l'écran, séparés du conflit immuable. `resolve-file` accepte les octets exacts d'un fichier texte ou binaire, jusqu'à 64 MiB et dans les budgets globaux de résolution. Enregistrez ce fichier hors du checkout conflictuel pour garder sa projection intacte ; l'application refuse les modifications concurrentes. Un remplacement vide crée un fichier vide ; la suppression se choisit via une variante absente. `--executable` s'applique aux plateformes Unix capables de matérialiser ce mode.
 
-Sous Windows et Linux x86_64, CLI et Desktop utilisent la Lens WASM si leur environnement de lancement définit `LAYRS_LENS_WORKER` (chemin absolu du binaire installé `layrs-lens-worker`, suffixe .exe sous Windows) et `LAYRS_LENS_WORKER_SHA256` (empreinte `sha256:…` issue de la distribution approuvée). Ces valeurs ne proviennent jamais du dépôt. Le binaire et ses parents restent épinglés pendant l'exécution ; mémoire, durée, carburant WASM et absence d'import sont imposés. Une configuration incomplète ou une empreinte incorrecte bloque avant capture. Sans configuration, la fusion structurelle conserve les variantes conflictuelles.
+Desktop embarque son worker WASM et son empreinte figée à la compilation. Lors du clonage ou de la réception d'un projet, il récupère les lenses sélectionnées et les associations de fichiers, vérifie les empreintes des modules et les met en cache pour les fusions locales. Une version révoquée connue à la prochaine synchronisation est retirée de la sélection active ; hors ligne, seule la dernière sélection vérifiée localement est connue. Le binaire worker et ses parents restent épinglés pendant l'exécution ; mémoire, durée, carburant WASM et absence d'import sont imposés. Un module absent ou altéré bloque la fusion sémantique. Les checkouts partiels conservent les variantes en conflit lorsque la sélection du projet exige une lens : leur rebase ne charge pas encore les modules du projet.
+
+La CLI peut utiliser la Lens WASM sous Windows et Linux x86_64 en définissant `LAYRS_LENS_WORKER` (chemin absolu du binaire installé `layrs-lens-worker`, suffixe .exe sous Windows) et `LAYRS_LENS_WORKER_SHA256` (empreinte `sha256:…` issue de la distribution approuvée). Ces valeurs ne proviennent jamais du dépôt. Une configuration incomplète ou une empreinte incorrecte bloque avant capture. Sans worker configuré, la fusion structurelle conserve les variantes conflictuelles.
 
 ## Serveur HTTPS
 
@@ -124,6 +168,30 @@ Chaque page fige la racine et un instantané des observations : une observation 
 
 ## Passerelle Git : commandes
 
+Dans un projet Desktop complet, ouvrir **Import / export Git**.
+
+1. Pour importer, choisir le dépôt Git source et, facultativement, les références
+   locales complètes à prendre (une par ligne). Prévisualiser puis lire les
+   branches, avertissements et volumes avant de confirmer. Les branches et tags
+   sont ajoutés sans remplacer les fichiers courants ; utiliser **Layers** pour
+   travailler sur une branche importée.
+2. Pour exporter, choisir un **nouveau dossier hors du projet Layrs** et le mode :
+   historique, références précises ou capture seule. L’aperçu vérifie la
+   destination et fige l’état natif ; la compatibilité des objets/références est
+   vérifiée pendant l’export. Le résultat est un dépôt Git **bare**, sans dossier
+   de travail, avec un rapport de références et d’avertissements.
+3. Refaire l’aperçu si le projet ou la source ont changé. Les aperçus expirent et
+   ne sont pas réutilisables après confirmation. Un export interrompu conserve
+   sa destination pour diagnostic ; la reprise exacte se fait par la CLI avec
+   `--resume`. Ne pas effacer ce dossier pour masquer une erreur.
+
+Un Git installé est nécessaire. Les chemins réservés, LFS, submodules et
+historiques non représentables sont refusés selon la matrice du pont. Le rapport
+est consultable sur la page après réussite ; les limitations existantes du
+moteur ne sont pas transformées en capacités par l’assistant.
+
+Les commandes CLI correspondantes restent disponibles :
+
 ```text
 layrs git import CHEMIN_GIT --dry-run
 layrs git import CHEMIN_GIT
@@ -149,7 +217,7 @@ configuration et leurs limites.
 - Les budgets de vérification du contenu historique restent bornés : 4 GiB logiques par parcours, 256 MiB de métadonnées, 64 MiB par objet. Les versions distinctes et reconstructions répétées consomment ce budget même si leurs chunks sont dédupliqués ; le dépasser entraîne un refus explicite. Ce ne sont pas des quotas de disque ni une garantie pour un historique arbitrairement volumineux.
 - Les gros diffs affichent chemins, identités, tailles et modes sans charger tout le texte ; le rendu détaillé est conservé pour les comparaisons totalisant au plus 8 MiB. Les API historiques retournant tous les octets et la résolution sémantique gardent leurs propres limites de 64/256 MiB.
 - Lens WASM isolée et reçus testés sous Windows et Linux x86_64 ; distribution signée, recette macOS et pilote PME externe restent à effectuer.
-- Certaines anciennes surfaces/code sont encore présents pendant le raccordement natif. Le pilote Compose HTTPS local est documenté dans `deploy/selfhost/LOCAL-PILOT.md`. La recette visuelle Web reste distincte de la recette Desktop native.
+- Les accès limités gardent leurs composants et commandes spécifiques ; les vues complètes Web/Desktop partagent les composants de collaboration et d’administration. Le pilote Compose HTTPS local est documenté dans `deploy/selfhost/LOCAL-PILOT.md`. La recette visuelle Web reste distincte de la recette Desktop native.
 
 ## Prévisualiser une restauration et rétablir un marker
 
@@ -204,11 +272,11 @@ L'historique publié est consultable avec `layrs remote history STEP_ID --endpoi
 https://layrs.example.com`, puis `layrs remote history STEP_ID CURSOR --endpoint
 https://layrs.example.com` pour la valeur `next` reçue. La page contient les captures
 et leurs parents, ancrés sur le même Step immuable même si une Layer avance.
-Desktop et Web proposent **Historique publié** et une comparaison avec chaque
+Desktop propose **Contenu publié → Historique**, le Web **Historique**, avec une comparaison avec chaque
 parent. Les droits sont revérifiés à chaque page ; après changement de droits,
 recommencer le parcours. Les observations locales (date, acteur et motif de
 capture automatique) ne sont pas inventées sur le serveur. Les filtres locaux
-par chemin/acteur restent dans **Explorer l'historique** du Desktop.
+par chemin/acteur restent dans **Historique** local du Desktop.
 
 Bornes du parcours distant : 1 à 100 captures par page (30 dans la CLI/UI),
 100 000 objets visités, 64 Mio de métadonnées lues et 2 Mio de captures retournées.
@@ -295,7 +363,7 @@ L'aperçu liste têtes actuelles, nouvelles têtes et têtes écartées, et capt
 View/génération attendues. `--output` crée un fichier UTF-8 neuf, sans écraser
 d'aperçu existant. Après une réponse perdue, rejouez **le même aperçu**. Une vue
 périmée exige un nouvel aperçu explicite. Desktop expose ce parcours dans
-**Choisir les têtes distantes · administration**. Seuls les administrateurs de
+**Synchronisation → Captures candidates et têtes publiées**. Seuls les administrateurs de
 l'organisation possédant aussi `policy.administer` peuvent appliquer ce choix.
 Il ne modifie pas le checkout local ; utilisez ensuite `remote receive`.
 

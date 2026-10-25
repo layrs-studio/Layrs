@@ -197,6 +197,7 @@ impl InstallationBundle {
 pub(crate) struct PendingExecution {
     path: RepoPath,
     pin: layrs_lens_sdk::LensPin,
+    implementation_digest: String,
     term_roles: Vec<layrs_sync::v3::TermRole>,
     conflict: Option<ConflictId>,
 }
@@ -264,6 +265,15 @@ pub fn plan_sandboxed_merge(
 
 trait FileExecutor {
     fn pin(&self, lens: NativeLens) -> layrs_lens_sdk::LensPin;
+    fn allows_native(&self) -> bool {
+        true
+    }
+    fn package_for(&self, _path: &str) -> Option<layrs_lens_sdk::LensPin> {
+        None
+    }
+    fn implementation_digest(&self, pin: &layrs_lens_sdk::LensPin) -> Option<String> {
+        Some(pin.digest.clone())
+    }
     fn reconcile(
         &self,
         request: &LensReconcileRequest,
@@ -274,6 +284,16 @@ trait FileExecutor {
 impl FileExecutor for crate::wasm_host::WasmHost {
     fn pin(&self, lens: NativeLens) -> layrs_lens_sdk::LensPin {
         crate::wasm_host::manifest(lens).pin().unwrap()
+    }
+    fn allows_native(&self) -> bool {
+        crate::wasm_host::WasmHost::allows_native(self)
+    }
+    fn package_for(&self, path: &str) -> Option<layrs_lens_sdk::LensPin> {
+        self.selected_package(path)
+            .and_then(|manifest| manifest.pin())
+    }
+    fn implementation_digest(&self, pin: &layrs_lens_sdk::LensPin) -> Option<String> {
+        crate::wasm_host::WasmHost::implementation_digest(self, pin).map(str::to_owned)
     }
     fn reconcile(
         &self,
@@ -774,22 +794,36 @@ impl Planner<'_> {
                 mode_b
             };
             let ext = path.rsplit('.').next().unwrap_or("");
-            let lens = if layrs_lens_code::code_extensions().contains(&ext) {
+            let native_lens = if layrs_lens_code::code_extensions().contains(&ext) {
                 Some(NativeLens::Code)
             } else if ["txt", "md", "markdown", "rst", "log"].contains(&ext) {
                 Some(NativeLens::Text)
             } else {
                 None
             };
-            if let Some(lens) = lens {
-                let pin = self
+            let package_pin = self
+                .executor
+                .and_then(|executor| executor.package_for(path));
+            if let Some(pin) = package_pin.or_else(|| {
+                native_lens
+                    .filter(|_| {
+                        self.executor
+                            .is_none_or(|executor| executor.allows_native())
+                    })
+                    .map(|lens| {
+                        self.executor
+                            .map(|executor| executor.pin(lens))
+                            .unwrap_or_else(|| {
+                                reconciliation::native_manifest(lens)
+                                    .pin()
+                                    .expect("native pin")
+                            })
+                    })
+            }) {
+                let implementation_digest = self
                     .executor
-                    .map(|executor| executor.pin(lens))
-                    .unwrap_or_else(|| {
-                        reconciliation::native_manifest(lens)
-                            .pin()
-                            .expect("native pin")
-                    });
+                    .and_then(|executor| executor.implementation_digest(&pin))
+                    .unwrap_or_else(|| pin.digest.clone());
                 let side = |e: &Option<TreeEntry>| {
                     LensReconcileSideContract::present(
                         self.objects.files[e.as_ref().unwrap().target().file_id().unwrap()].clone(),
@@ -813,7 +847,7 @@ impl Planner<'_> {
                     None => reconciliation::reconcile_file(&request, self.plan.file_policy)
                         .map_err(|e| invalid(format!("{e:?}")))?,
                 };
-                execution = Some(pin);
+                execution = Some((pin, implementation_digest));
                 if let FileMergeOutcome::Semantic(result) = result.outcome {
                     if let Some(ref resolved) = result.resolved {
                         let file_id = FileId::from_bytes(&resolved.bytes);
@@ -823,7 +857,15 @@ impl Planner<'_> {
                                 .files
                                 .insert(file_id.clone(), resolved.bytes.clone());
                         }
-                        self.record_execution(path, bases, sides, execution.unwrap(), None)?;
+                        let (pin, implementation_digest) = execution.take().unwrap();
+                        self.record_execution(
+                            path,
+                            bases,
+                            sides,
+                            pin,
+                            implementation_digest,
+                            None,
+                        )?;
                         return Ok(Some(TreeEntry::new(
                             name.clone(),
                             TreeEntryTarget::file(file_id),
@@ -834,7 +876,14 @@ impl Planner<'_> {
                 }
             }
         }
-        let mut conflict = conflict(path, bases, sides, execution.as_ref())?;
+        let mut conflict = conflict(
+            path,
+            bases,
+            sides,
+            execution
+                .as_ref()
+                .map(|(pin, digest)| (pin, digest.as_str())),
+        )?;
         if let Some(result) = semantic_conflict {
             let p = placement(path)?;
             let terms = [
@@ -862,8 +911,15 @@ impl Planner<'_> {
         let id = conflict.id();
         self.charge(conflict.canonical_bytes()?.len())?;
         self.plan.conflicts.insert(id.clone(), conflict);
-        if let Some(pin) = execution {
-            self.record_execution(path, bases, sides, pin, Some(id.clone()))?;
+        if let Some((pin, implementation_digest)) = execution {
+            self.record_execution(
+                path,
+                bases,
+                sides,
+                pin,
+                implementation_digest,
+                Some(id.clone()),
+            )?;
         }
         Ok(Some(TreeEntry::new(
             name.clone(),
@@ -877,6 +933,7 @@ impl Planner<'_> {
         bases: &[TermEntry],
         sides: &[TermEntry],
         pin: layrs_lens_sdk::LensPin,
+        implementation_digest: String,
         conflict: Option<ConflictId>,
     ) -> MergeResult<()> {
         let placement = placement(path)?;
@@ -900,6 +957,7 @@ impl Planner<'_> {
         self.plan.executions.push(PendingExecution {
             path: RepoPath::parse(path).map_err(invalid)?,
             pin,
+            implementation_digest,
             term_roles: roles,
             conflict,
         });

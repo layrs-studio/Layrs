@@ -4,7 +4,7 @@ export default defineConfig({
   testDir: "./tests/e2e",
   testMatch: process.env.LAYRS_NATIVE_UI_TARGET === "desktop-partial"
     ? /desktop-native-partial\.spec\.ts/
-    : /desktop-native-(?:scm|team)\.spec\.ts/,
+    : /desktop-native-(?:scm|team|git)\.spec\.ts/,
   fullyParallel: false,
   workers: 1,
   outputDir: "test-results/native",

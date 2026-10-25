@@ -1,12 +1,20 @@
 //! Authenticated collaboration over immutable native objects.
 pub(crate) mod gates;
 mod invitations;
+mod lenses;
+pub use lenses::{
+    InitialLensConfig, LensAssociation, LensCatalogItem, LensConfigRequest, LensPacket,
+    LensPacketFile, SpaceLensConfig, TrustedLensKeys, initial_lens_config_matches,
+    install_builtin_lens_packets, validate_and_insert_initial_lens_config, verify_lens_packet,
+};
 mod members;
+mod organisation_teams;
 mod teams;
 pub use invitations::{
     InvitationAction, InvitationActionRequest, InvitationListQuery, InvitationRole,
     InviteMemberRequest,
 };
+pub use organisation_teams::{OrganisationTeamAssignmentRequest, OrganisationTeamRequest};
 pub use teams::{ArchiveTeamRequest, TeamHistoryQuery, TeamRecord, TeamRequest, TeamRole};
 mod comment_corrections;
 mod notifications;

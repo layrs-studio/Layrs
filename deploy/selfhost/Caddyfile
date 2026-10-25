@@ -3,7 +3,7 @@
     request_body {
         max_size 64MB
     }
-    @api path /v3/* /auth/device /auth/device/* /health /healthz /ready /readyz
+    @api path /v3/* /auth/device /auth/device.js /auth/device/* /health /healthz /ready /readyz
     handle @api {
         reverse_proxy server:8787
     }

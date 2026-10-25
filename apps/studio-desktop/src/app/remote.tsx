@@ -15,6 +15,7 @@ import {
 } from "./serverMemory";
 
 export type RemoteAction = { action: string; [key: string]: unknown };
+export type RemoteIdentity = { root: string; origin: string; principalId: string };
 
 export type Session =
   | { state: "none" }
@@ -96,7 +97,7 @@ type RemoteApi = {
   track: <T>(spec: Omit<OperateSpec, "busy">, work: () => Promise<T>, describe: (result: T) => Pick<Notice, "tone" | "title" | "body"> & { unconfirmed?: boolean }) => Promise<T>;
   cancelTransfer: () => Promise<void>;
   /** Raw authenticated call for embedded team surfaces. */
-  transport: <T>(action: RemoteAction) => Promise<T>;
+  transport: <T>(action: RemoteAction, identity?: RemoteIdentity) => Promise<T>;
 };
 
 const RemoteContext = createContext<RemoteApi | null>(null);
@@ -117,6 +118,7 @@ export function RemoteProvider({
   acquire,
   release,
   onChanged,
+  announceConnection = false,
   children,
 }: {
   root: string;
@@ -124,6 +126,8 @@ export function RemoteProvider({
   release: () => void;
   /** Called after an operation that changed a local folder (its root). */
   onChanged: (root: string) => void;
+  /** A folderless connection flow can still refresh the global catalogue. */
+  announceConnection?: boolean;
   children: ReactNode;
 }) {
   const [origin, setOrigin] = useState(() => rememberedOrigin(root) || lastOrigin());
@@ -142,8 +146,15 @@ export function RemoteProvider({
   const config = useRef({ root, origin, authority });
   config.current = { root, origin, authority };
 
-  const call = useCallback(<T,>(action: RemoteAction, target = config.current) => {
-    return nativeRemote<T>(target.root, { origin: target.origin, caPem: target.authority || null, action });
+  // A folder provider can disappear while its session check is still pending.
+  // Ignore that reply so an older folder cannot switch the global catalogue.
+  useEffect(() => () => {
+    generation.current++;
+    polling.current = false;
+  }, []);
+
+  const call = useCallback(<T,>(action: RemoteAction, target = config.current, expectedPrincipalId?: string) => {
+    return nativeRemote<T>(target.root, { origin: target.origin, caPem: target.authority || null, expectedPrincipalId, action });
   }, []);
 
   const record = useCallback((entry: ActivityEntry) => {
@@ -188,12 +199,14 @@ export function RemoteProvider({
       if (version !== generation.current) return;
       setSession({ state: "connected", principalId: reply.principalId || reply.principal_id || "", displayName: reply.display_name || undefined });
       rememberOrigin(target.root, target.origin);
+      if (target.root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: target.origin } }));
     } catch (cause) {
       if (version !== generation.current) return;
       const explained = explainError(cause, "session");
       setSession(explained.signedOut ? { state: "signedOut" } : { state: "unreachable", reason: explained.detail });
+      if (target.root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: target.origin } }));
     }
-  }, [call]);
+  }, [call, announceConnection]);
 
   const chooseServer = useCallback(
     (value: string) => {
@@ -207,8 +220,9 @@ export function RemoteProvider({
       setOrigin(next);
       setAuthority(rememberedAuthority(next));
       setSession(next ? { state: "unknown" } : { state: "none" });
+      if (root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: next } }));
     },
-    [fixed, invalidate],
+    [fixed, invalidate, root, announceConnection],
   );
 
   const bindOrigin = useCallback(
@@ -233,14 +247,35 @@ export function RemoteProvider({
       setAuthority(pem.trim() ? pem : "");
       invalidate();
       setSession(config.current.origin ? { state: "unknown" } : { state: "none" });
+      if (root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: config.current.origin } }));
     },
-    [invalidate],
+    [invalidate, root, announceConnection],
   );
 
   // Read-only session check whenever the server or its certificate changes.
   useEffect(() => {
     if (session.state === "unknown" && config.current.origin) void check();
   }, [session.state, check]);
+
+  // The unbound catalogue follows server and account changes made in a folder flow.
+  useEffect(() => {
+    if (root || announceConnection) return;
+    const update = (event: Event) => {
+      const next = (event as CustomEvent<{ origin?: string }>).detail?.origin;
+      if (!next) return;
+      if (next !== config.current.origin) chooseServer(next);
+      else if (rememberedAuthority(next) !== config.current.authority) {
+        const authority = rememberedAuthority(next);
+        config.current = { ...config.current, authority };
+        invalidate();
+        setAuthority(authority);
+        setSession({ state: "unknown" });
+      }
+      else { invalidate(); void check(); }
+    };
+    window.addEventListener("layrs-remote-changed", update);
+    return () => window.removeEventListener("layrs-remote-changed", update);
+  }, [root, announceConnection, chooseServer, invalidate, check]);
 
   const startLogin = useCallback(async () => {
     const target = config.current;
@@ -288,6 +323,7 @@ export function RemoteProvider({
         setSession({ state: "connected", principalId: reply.principalId || reply.principal_id || "" });
         setNotice({ tone: "success", title: "Connexion autorisée.", body: "Le jeton est conservé dans le coffre du système." });
         rememberOrigin(config.current.root, config.current.origin);
+        if (root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: config.current.origin } }));
         void check();
       } else {
         setLogin((value) => value && { ...value, status: "waiting", interval: Math.max(value.interval, reply.interval ?? value.interval) });
@@ -305,7 +341,7 @@ export function RemoteProvider({
     } finally {
       if (version === generation.current) polling.current = false;
     }
-  }, [call, check, login]);
+  }, [call, check, login, root, announceConnection]);
 
   // Bounded automatic check at the interval requested by the server.
   useEffect(() => {
@@ -328,6 +364,7 @@ export function RemoteProvider({
       await call({ action: "logout" });
       invalidate();
       setSession({ state: "signedOut" });
+      if (root || announceConnection) window.dispatchEvent(new CustomEvent("layrs-remote-changed", { detail: { origin: config.current.origin } }));
       setNotice({ tone: "info", title: "Session révoquée.", body: "Le jeton de cet ordinateur a été supprimé du coffre du système." });
     } catch (cause) {
       const explained = explainError(cause, "session");
@@ -335,7 +372,7 @@ export function RemoteProvider({
     } finally {
       inFlight.current = false;
     }
-  }, [call, invalidate]);
+  }, [call, invalidate, root, announceConnection]);
 
   const track = useCallback<RemoteApi["track"]>(
     async (spec, work, describe) => {
@@ -375,7 +412,8 @@ export function RemoteProvider({
   const operate = useCallback<RemoteApi["operate"]>(
     async <T extends Reply>(spec: OperateSpec, action: RemoteAction) => {
       const target = { ...config.current };
-      if (!target.origin || inFlight.current) return null;
+      if (!target.origin || inFlight.current || session.state !== "connected") return null;
+      const expectedPrincipalId = session.principalId;
       if (!acquire(spec.busy)) return null;
       inFlight.current = true;
       setNotice(null);
@@ -397,7 +435,7 @@ export function RemoteProvider({
       let result: T | null = null;
       try {
         const request = transferId ? { ...action, action: `${action.action}Cancellable`, transferId } : action;
-        const reply = await call<T>(request, target);
+        const reply = await call<T>(request, target, expectedPrincipalId);
         if (reply.receipt && reply.receipt.status !== "applied")
           throw new Error(
             "Publication refusée. Recevez la vue actuelle, puis vérifiez les droits, les protections et les têtes avant un nouvel essai.",
@@ -458,7 +496,7 @@ export function RemoteProvider({
       if (changed) onChanged(changed);
       return result;
     },
-    [acquire, call, invalidate, onChanged, record, release],
+    [acquire, call, invalidate, onChanged, record, release, session],
   );
 
   const cancelTransfer = useCallback(async () => {
@@ -489,7 +527,14 @@ export function RemoteProvider({
     }
   }, [call]);
 
-  const transport = useCallback(<T,>(action: RemoteAction) => call<T>(action), [call]);
+  const transport = useCallback(<T,>(action: RemoteAction, identity?: RemoteIdentity) => {
+    const target = config.current;
+    if (identity && (target.root !== identity.root || target.origin !== identity.origin))
+      return Promise.reject(new Error("remote_scope_changed: Recheck the Desktop session before continuing"));
+    const expectedPrincipalId = identity?.principalId ?? (session.state === "connected" ? session.principalId : "");
+    if (!expectedPrincipalId) return Promise.reject(new Error("Connectez-vous à cette instance."));
+    return call<T>(action, target, expectedPrincipalId);
+  }, [call, session]);
 
   const value = useMemo<RemoteApi>(
     () => ({

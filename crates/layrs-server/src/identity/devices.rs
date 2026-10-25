@@ -40,7 +40,7 @@ pub(super) async fn page() -> impl IntoResponse {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
             ),
             (header::CACHE_CONTROL, "no-store"),
         ],

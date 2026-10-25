@@ -21,6 +21,7 @@ export interface NativeTauriDesktop {
 export interface NativeTauriDesktopOptions {
   selectedFolder?: string;
   visual?: boolean;
+  bundledLensWorker?: boolean;
 }
 
 declare global {
@@ -157,6 +158,10 @@ function spawnTauriDev(
     delete env.CI;
   }
 
+  if (options.bundledLensWorker) {
+    delete env.LAYRS_LENS_WORKER;
+    delete env.LAYRS_LENS_WORKER_SHA256;
+  }
   const child = spawn(
     process.platform === "win32" ? "cmd.exe" : "pnpm",
     process.platform === "win32"

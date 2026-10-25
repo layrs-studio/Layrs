@@ -55,7 +55,7 @@ test("Web uses the real native identity, project, review, proof and account serv
   // P08 on the Web — read-only capture with its comparison to the parent.
   await captures.locator(":scope > li").first().getByRole("button").first().click();
   const capture = page.getByRole("region", { name: "Capture publiée", exact: true });
-  await expect(capture.getByText("Consultation seule sur le Web", { exact: false })).toBeVisible();
+  await expect(capture.getByText("Cette capture publiée est en lecture seule.", { exact: false })).toBeVisible();
   await expect(capture.getByRole("region", { name: "Comparaison du fichier sélectionné" })).toContainText("Modification proposée pour la revue.");
   await capture.getByRole("button", { name: "Retour à l’historique", exact: true }).click();
   await expect(page.getByRole("region", { name: "Historique publié", exact: true }).getByLabel("Chemin exact", { exact: true })).toHaveValue("docs/readme.txt");
@@ -169,15 +169,17 @@ test("Web uses the real native identity, project, review, proof and account serv
   }
 
   // L5: instance accounts, team, invitations, protections, webhooks and file access.
-  await webTeamAndAccess(page,fixture);
+  const { carolePrincipalId } = await webTeamAndAccess(page,fixture);
 
   // Session credentials live only in React memory; storage keeps preferences only.
   const storage = await page.evaluate(() => {
     const dump = (store: Storage) => Array.from({ length: store.length }, (_, index) => store.key(index)!).map((key) => [key, store.getItem(key) ?? ""]);
     return { local: dump(localStorage), session: dump(sessionStorage) };
   });
+  const contextPreferenceKeys = [fixture.accounts.alice.principalId, carolePrincipalId].flatMap(principal => ["context", "organisation"].map(kind => `layrs.web.${kind}.v1:${new URL(page.url()).origin}:${principal}`));
   for (const [key, value] of [...storage.local, ...storage.session]) {
-    expect(allowedStorageKeys, `unexpected storage key ${key}`).toContain(key);
+    expect([...allowedStorageKeys, ...contextPreferenceKeys], `unexpected storage key ${key}`).toContain(key);
+    if (contextPreferenceKeys.includes(key)) expect(value).toMatch(/^workspace:[A-Za-z0-9._:-]{1,128}$/);
     for (const secret of [fixture.accounts.alice.password, fixture.adminAccessToken, fixture.spaceId, fixture.reviewId, fixture.accounts.alice.principalId, comment])
       expect(value.includes(secret), `storage ${key} holds session or project data`).toBe(false);
   }

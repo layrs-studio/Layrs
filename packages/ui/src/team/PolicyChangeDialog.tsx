@@ -19,6 +19,61 @@ export type PreparedPolicyChange = {
   danger?: boolean;
 };
 
+type NativeIntent = PolicyPreview & {
+  origin?: string;
+  principalId?: string;
+  worktreeId?: string;
+  request?: { clientId?: string; idempotencyKey?: string; requestDigest?: string };
+};
+const uncertainInMemory = new Set<string>();
+
+/** Only non-secret identity fields; no policy document, preview, or token is stored. */
+export function policyUncertaintyKey(preview: PolicyPreview): string | null {
+  const native = preview as NativeIntent;
+  const request = native.request;
+  if (!native.origin || !native.principalId || !native.worktreeId || !request?.clientId || !request.idempotencyKey || !request.requestDigest)
+    return null;
+  return `layrs.policy-uncertain.v1:${JSON.stringify([native.origin, native.principalId, native.spaceId, native.worktreeId, request.clientId, request.idempotencyKey, request.requestDigest])}`;
+}
+
+export function policyWasUncertain(preview: PolicyPreview): boolean {
+  const key = policyUncertaintyKey(preview);
+  if (!key) return false;
+  if (uncertainInMemory.has(key)) return true;
+  try { return window.localStorage.getItem(key) === "1"; } catch { return false; }
+}
+
+export function rememberPolicyUncertain(preview: PolicyPreview): void {
+  const key = policyUncertaintyKey(preview);
+  if (!key) return;
+  uncertainInMemory.add(key);
+  try { window.localStorage.setItem(key, "1"); } catch { /* In-memory fallback for restricted storage. */ }
+}
+
+export function clearPolicyUncertain(preview: PolicyPreview): void {
+  const key = policyUncertaintyKey(preview);
+  if (!key) return;
+  uncertainInMemory.delete(key);
+  try { window.localStorage.removeItem(key); } catch { /* In-memory fallback for restricted storage. */ }
+}
+
+/** Keep an earlier uncertain apply uncertain even if a later retry is rejected before dispatch. */
+export function policyApplyFailure(cause: unknown, previouslyUncertain: boolean) {
+  if (previouslyUncertain)
+    return {
+      uncertain: true,
+      message: `Une tentative précédente reste sans réponse : elle a peut-être été appliquée. ${describeError(cause, "Cette nouvelle tentative n’a pas confirmé le résultat.")}`,
+    };
+  const status = (cause as { status?: unknown })?.status;
+  const beforeDispatch = (cause as { dispatched?: unknown })?.dispatched === false;
+  if (beforeDispatch || (typeof status === "number" && status >= 400 && status < 500))
+    return { uncertain: false, message: describeError(cause, "La modification n’a pas été appliquée.") };
+  return {
+    uncertain: true,
+    message: "La réponse du serveur n’est pas arrivée. Le changement a peut-être été appliqué : réessayez ce même aperçu pour connaître le résultat, il ne sera jamais appliqué deux fois.",
+  };
+}
+
 /**
  * Confirms and applies one prepared policy change. The server compares the
  * expected PolicySet and epoch; a concurrent change is refused. A lost answer
@@ -29,12 +84,15 @@ export function PolicyChangeDialog({
   policy,
   onClose,
   onApplied,
+  onReceipt,
 }: {
   value: PreparedPolicyChange | null;
   policy: PolicyTransport;
   onClose: () => void;
   /** Re-reads rules and rights; the change is only reported once re-read. */
   onApplied: () => Promise<void>;
+  /** An authoritative applied or rejected receipt releases a recovered pending intent. */
+  onReceipt?: (receipt: PolicyReceipt) => void;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -42,16 +100,23 @@ export function PolicyChangeDialog({
   const [uncertain, setUncertain] = useState(false);
   useEffect(() => {
     setError("");
-    setUncertain(false);
+    setUncertain(value ? policyWasUncertain(value.preview) : false);
   }, [value]);
 
   async function apply() {
     if (!value) return;
+    const previouslyUncertain = uncertain || policyWasUncertain(value.preview);
     setBusy(true);
     setError("");
+    // A process can stop while the request is in flight, before a network
+    // failure reaches catch. Keep the exact intent uncertain until a receipt
+    // or a proven refusal before dispatch clears it.
+    rememberPolicyUncertain(value.preview);
     try {
       const { receipt } = await policy<{ receipt: PolicyReceipt }>({ action: "applyPolicy", preview: value.preview });
       setUncertain(false);
+      clearPolicyUncertain(value.preview);
+      onReceipt?.(receipt);
       if (receipt.status !== "applied") {
         const codes = receipt.rejections?.map((item) => item.code).join(", ");
         setError(`Le serveur a refusé la modification${codes ? ` (${codes})` : ""}. Rien n’a changé. Fermez, rechargez les règles et préparez un nouvel aperçu.`);
@@ -65,14 +130,10 @@ export function PolicyChangeDialog({
       }
       onClose();
     } catch (cause) {
-      const status = (cause as { status?: unknown })?.status;
-      if (typeof status === "number" && status >= 400 && status < 500) setError(describeError(cause, "La modification n’a pas été appliquée."));
-      else {
-        setUncertain(true);
-        setError(
-          "La réponse du serveur n’est pas arrivée. Le changement a peut-être été appliqué : réessayez ce même aperçu pour connaître le résultat, il ne sera jamais appliqué deux fois.",
-        );
-      }
+      const failure = policyApplyFailure(cause, previouslyUncertain);
+      setUncertain(failure.uncertain);
+      if (!failure.uncertain) clearPolicyUncertain(value.preview);
+      setError(failure.message);
     } finally {
       setBusy(false);
     }
@@ -106,6 +167,7 @@ export function PolicyChangeDialog({
               <li key={index}>{effect}</li>
             ))}
           </ul>
+          {uncertain && !error && <Banner tone="warning">Le résultat de cette demande exacte reste à confirmer. Réessayez ce même aperçu pour obtenir son reçu, sans créer une nouvelle modification.</Banner>}
           <details className="team-details">
             <summary>Références techniques de l’aperçu</summary>
             <dl className="settings-facts">

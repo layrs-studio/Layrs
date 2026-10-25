@@ -5,6 +5,7 @@ pub(super) async fn revalidate_plan_authority(
     principal: &PrincipalContext,
     context: &PlanContext,
 ) -> V3StoreResult<()> {
+    super::super::contexts::require_visible_space(tx, principal, &context.actor.space_id).await?;
     let valid: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS (

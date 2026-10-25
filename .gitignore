@@ -1,6 +1,7 @@
 # Rust
 /target/
 **/target/
+/apps/studio-desktop/src-tauri/resources/layrs-lens-worker.exe
 
 # JavaScript and TypeScript
 /node_modules/

@@ -4,10 +4,18 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {test} from 'node:test';
-import {assertLocalEndpoint,assertSameEngine,composeOverride,createState,dockerEnvironment,ensureExactFile,lockState,parsePrivateJson,privateDirectory,readState,regularFile,stateDirectory,writeNewState} from './local-dev-state.mjs';
+import {assertLocalEndpoint,assertSameEngine,composeOverride,createState,dockerEnvironment,ensureExactFile,lockState,parsePrivateJson,privateDirectory,readState,regularFile,serverOptions,stateDirectory,writeNewState} from './local-dev-state.mjs';
 import {assertLocalBuilder,composeArguments} from './local-dev-runtime.mjs';
 
 const docker={engineId:'fixture-engine',endpoint:'unix:///var/run/docker.sock'};
+test('independent context options persist and reject malformed values',()=>{
+  const saved={LAYRS_MULTI_ORGANISATION_ENABLED:'true',LAYRS_PERSONAL_PROJECTS_ENABLED:'false'};
+  assert.deepEqual(serverOptions({},saved),saved);
+  assert.deepEqual(serverOptions({LAYRS_PERSONAL_PROJECTS_ENABLED:'true'},saved),{...saved,LAYRS_PERSONAL_PROJECTS_ENABLED:'true'});
+  assert.equal(dockerEnvironment(saved).LAYRS_MULTI_ORGANISATION_ENABLED,'true');
+  assert.throws(()=>serverOptions({LAYRS_PERSONAL_PROJECTS_ENABLED:'yes'}));
+  assert.deepEqual(serverOptions({LAYRS_DATABASE_URL:'hidden',LAYRS_HOST:'external'}),{});
+});
 function fixture(run){
   const directory=mkdtempSync(join(tmpdir(),'layrs-dev-test-'));
   try{return run(directory);}finally{rmSync(directory,{recursive:true,force:true});}

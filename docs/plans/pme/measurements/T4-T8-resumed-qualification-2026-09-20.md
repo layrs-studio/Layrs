@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Qualification après reprise — HTTPS et PostgreSQL
 
 Mesure locale Windows debug, sources compilées après baseline `0453a88` ; la release candidate `e994526` conserve ces contrats. Cette preuve complète le rapport précédent de 424,23s sans l'écraser. Tests Linux et Desktop qualifiés séparément par les autres recettes.

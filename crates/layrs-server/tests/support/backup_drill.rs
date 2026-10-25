@@ -89,6 +89,8 @@ fn config_for(original: &ServerConfig, url: String, root: std::path::PathBuf) ->
         signing_key: original.signing_key.clone(),
         bootstrap_secret: None,
         cas_quotas: original.cas_quotas,
+        multi_organisation_enabled: original.multi_organisation_enabled,
+        personal_projects_enabled: original.personal_projects_enabled,
     }
 }
 

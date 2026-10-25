@@ -155,6 +155,7 @@ async fn invitations_are_nominative_atomic_expiring_and_never_regrant_on_replay(
         .provision_space(
             &alice_context,
             &ProvisionSpaceRequest {
+                context_id: None,
                 workspace_slug: "invites".into(),
                 space_slug: "project".into(),
                 name: "Invitations".into(),

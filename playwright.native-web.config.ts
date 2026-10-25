@@ -5,7 +5,7 @@ if (!process.env.LAYRS_NATIVE_UI_FIXTURE || !process.env.LAYRS_NATIVE_WEB_URL ||
 }
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: /studio-web-native\.spec\.ts/,
+  testMatch: /studio-web-(?:(?:lenses|contexts|device)-)?native\.spec\.ts/,
   workers: 1,
   fullyParallel: false,
   timeout: 120_000,

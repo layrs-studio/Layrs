@@ -67,6 +67,62 @@ fn real_process_wasm_host_matches_pure_output_and_checks_pinned_worker() {
     assert_eq!(result.request, input);
 }
 
+#[test]
+fn installed_builtin_packet_uses_project_pin_and_separate_module_digest() {
+    use layrs_lens_sdk::LensManifest;
+    use layrs_weave::wasm_host::{self, SandboxLimits, WasmHost};
+    let packets: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../../deploy/lenses/builtin-packets.json")).unwrap();
+    let manifest: LensManifest = serde_json::from_value(
+        packets
+            .iter()
+            .find(|packet| packet["manifest"]["id"] == "layrs.code")
+            .unwrap()["manifest"]
+            .clone(),
+    )
+    .unwrap();
+    let pin = manifest.pin().unwrap();
+    let module = wasm_host::MODULE.to_vec();
+    assert_ne!(pin.digest, sha256_digest(&module));
+    let executable = Path::new(env!("CARGO_BIN_EXE_layrs-lens-worker"));
+    let worker_digest = sha256_digest(&std::fs::read(executable).unwrap());
+    let host = WasmHost::open(executable, &worker_digest, SandboxLimits::default())
+        .unwrap()
+        .with_package(manifest.clone(), module.clone())
+        .unwrap()
+        .restrict_to_project()
+        .assign_extension(".ts", &pin.lens_id)
+        .unwrap();
+    let mut input = request();
+    let expected = reconcile_file(&input, policy()).unwrap();
+    input.lens = pin;
+    let result = host.reconcile(&input, policy()).unwrap();
+    assert_eq!(result.request, input);
+    assert_eq!(result.outcome, expected.outcome);
+    let mut changed = manifest;
+    changed.name.push('!');
+    assert!(
+        WasmHost::open(executable, &worker_digest, SandboxLimits::default())
+            .unwrap()
+            .with_package(changed, module)
+            .is_err()
+    );
+}
+
+#[test]
+fn shipped_v1_guest_keeps_the_historical_native_pin() {
+    const HISTORICAL: &str =
+        "sha256:ed9ac77e4fb97df1bc5ce451d0cd355a4a72f945cff45fecbd21e794e93489b7";
+    assert_eq!(
+        native_manifest(NativeLens::Text).pin().unwrap().digest,
+        HISTORICAL
+    );
+    assert_eq!(
+        native_manifest(NativeLens::Code).pin().unwrap().digest,
+        HISTORICAL
+    );
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn linux_pinned_worker_survives_replacement_and_rejects_symlink_paths() {

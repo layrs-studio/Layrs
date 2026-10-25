@@ -1,6 +1,10 @@
-# Layrs System Overview
+# Layrs V1 — architecture historique
 
-This document describes the current intended V1 architecture. It is written for
+> Ce document décrit le modèle initial, remplacé pour le contrôle de versions
+> par [SCM natif](scm-v1-target.md). Il ne décrit pas les surfaces actives ni
+> les commandes du produit actuel. Voir [l’index courant](../README.md).
+
+This document records the original intended V1 architecture. It was written for
 both human developers and coding agents.
 
 ## Goals

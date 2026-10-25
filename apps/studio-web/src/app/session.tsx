@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { startDeviceAuthorizationBridge } from "./device-authorization";
 
 /*
  * Web session. The access token lives only in memory: a reload or a new tab
@@ -52,13 +53,17 @@ export class ApiError extends Error {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const secret = useRef("");
   const generationRef = useRef(0);
+  const signInAttemptRef = useRef(0);
+  const principalRef = useRef<Principal | null>(null);
   const [generation, setGeneration] = useState(0);
   const [principal, setPrincipal] = useState<Principal | null>(null);
   const [sessionTokenId, setSessionTokenId] = useState<string | null>(null);
 
   const forget = useCallback(() => {
     secret.current = "";
+    signInAttemptRef.current++;
     generationRef.current++;
+    principalRef.current = null;
     setGeneration(generationRef.current);
     setPrincipal(null);
     setSessionTokenId(null);
@@ -88,6 +93,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         forget();
         throw new ApiError("Session expirée ou révoquée. Reconnectez-vous.", 401, "unauthorized");
       }
+      // Device approval and several other commands legitimately return 204.
+      if (response.status === 204) return {} as T;
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Réponse serveur absente.");
       const chunks: Uint8Array[] = [];
@@ -124,10 +131,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (login: string, password: string) => {
+      const attempt = ++signInAttemptRef.current;
+      const previousGeneration = generationRef.current;
       const session = await api<{ principal_id: string; access_token: string }>("/v3/auth/login", "POST", { login, password }, { anonymous: true });
+      if (attempt !== signInAttemptRef.current || previousGeneration !== generationRef.current) return;
       secret.current = session.access_token;
       generationRef.current++;
-      setGeneration(generationRef.current);
+      const signedInGeneration = generationRef.current;
+      principalRef.current = null;
+      setPrincipal(null);
+      setSessionTokenId(null);
+      setGeneration(signedInGeneration);
       let identity: Principal = { principalId: session.principal_id, displayName: "", kind: "", instanceAdministrator: false };
       try {
         const who = await api<Record<string, unknown>>("/v3/auth/whoami");
@@ -140,7 +154,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       } catch {
         // The profile is only for display; the session stays valid without it.
       }
-      setSessionTokenId(await tokenDigest(session.access_token));
+      const digest = await tokenDigest(session.access_token);
+      if (attempt !== signInAttemptRef.current || signedInGeneration !== generationRef.current || secret.current !== session.access_token) return;
+      principalRef.current = identity;
+      setSessionTokenId(digest);
       setPrincipal(identity);
     },
     [api],
@@ -158,6 +175,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     () => ({ principal, api, signIn, signOut, forget, generation, sessionTokenId }),
     [principal, api, signIn, signOut, forget, generation, sessionTokenId],
   );
+  useEffect(() => {
+    if (!principal) return;
+    return startDeviceAuthorizationBridge({
+      api,
+      principal,
+      isCurrent: () =>
+        generationRef.current === generation &&
+        principalRef.current?.principalId === principal.principalId &&
+        secret.current.length > 0,
+    });
+  }, [api, generation, principal]);
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

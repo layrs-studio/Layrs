@@ -1,7 +1,7 @@
 //! Explicit fresh installation and checksummed identity migration.
 //! The migration ledger lives outside the immutable native catalog fingerprint.
 use crate::{config::ServerConfig, identity::token_digest};
-use layrs_store_server::v3::schema;
+use layrs_store_server::v3::{LensPacket, install_builtin_lens_packets, schema};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 
@@ -75,6 +75,22 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!(
             "../../layrs-store-server/migrations/0019_v3_scoped_patch_catalog_namespace.sql"
         ),
+    ),
+    (
+        20,
+        include_str!("../../layrs-store-server/migrations/0020_v3_lenses.sql"),
+    ),
+    (
+        21,
+        include_str!("../../layrs-store-server/migrations/0021_v3_project_contexts.sql"),
+    ),
+    (
+        22,
+        include_str!("../../layrs-store-server/migrations/0022_v3_organisation_teams.sql"),
+    ),
+    (
+        23,
+        include_str!("../../layrs-store-server/migrations/0023_v3_organisation_mode.sql"),
     ),
 ];
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -155,6 +171,12 @@ async fn initialize_locked(
     }
     use sqlx::Connection;
     let mut tx = connection.begin().await?;
+    // Acquire the same context-option lock before touching deployment rows;
+    // serving transactions take the shared variant first as well.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,18))")
+        .bind(&config.deployment_id)
+        .execute(&mut *tx)
+        .await?;
     let backend =
         serde_jcs::to_string(&serde_json::json!({"path":config.cas_root.to_string_lossy()}))?;
     sqlx::query("INSERT INTO stores(store_id,backend_kind,backend_config_jcs) VALUES($1,'filesystem',$2) ON CONFLICT DO NOTHING")
@@ -178,6 +200,39 @@ async fn initialize_locked(
     if installed_store != config.store_id.as_str() {
         return Err("configured deployment differs from installed deployment".into());
     }
+    // A configuration change waits for in-flight context/project creations.
+    // Advisory key 18 is shared by serving transactions, exclusively here.
+    sqlx::query("INSERT INTO layrs_collaboration.deployment_project_contexts(deployment_id) VALUES($1) ON CONFLICT DO NOTHING")
+        .bind(&config.deployment_id).execute(&mut *tx).await?;
+    // Legacy workspaces remain organisations, with every membership and Space
+    // authority unchanged. A fresh company is created lazily for active users.
+    let mode = sqlx::query("SELECT multi_organisation_enabled,multi_organisation_managed,primary_workspace_id FROM layrs_collaboration.deployment_project_contexts WHERE deployment_id=$1 FOR UPDATE")
+        .bind(&config.deployment_id).fetch_one(&mut *tx).await?;
+    let managed: bool = mode.get("multi_organisation_managed");
+    if !managed && !config.multi_organisation_enabled {
+        let organisations: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces w LEFT JOIN layrs_collaboration.workspace_contexts c USING(workspace_id) WHERE w.deployment_id=$1 AND COALESCE(c.kind,'organisation')='organisation'")
+            .bind(&config.deployment_id).fetch_one(&mut *tx).await?;
+        if organisations > 0 {
+            return Err(
+                "multi-organisation mode must remain enabled while organisations exist until an administrator selects a primary organisation".into(),
+            );
+        }
+    }
+    if !config.personal_projects_enabled {
+        let personal: i64 = sqlx::query_scalar("SELECT count(*) FROM spaces s JOIN workspaces w USING(workspace_id) JOIN layrs_collaboration.workspace_contexts c USING(workspace_id) WHERE w.deployment_id=$1 AND c.kind='personal'")
+            .bind(&config.deployment_id).fetch_one(&mut *tx).await?;
+        if personal > 0 {
+            return Err(
+                "personal projects must remain enabled while personal projects exist".into(),
+            );
+        }
+    }
+    sqlx::query("UPDATE layrs_collaboration.deployment_project_contexts SET multi_organisation_enabled=CASE WHEN multi_organisation_managed THEN multi_organisation_enabled ELSE $2 END,personal_projects_enabled=$3 WHERE deployment_id=$1")
+        .bind(&config.deployment_id).bind(config.multi_organisation_enabled).bind(config.personal_projects_enabled)
+        .execute(&mut *tx).await?;
+    let builtin_packets: Vec<LensPacket> =
+        serde_json::from_str(include_str!("../../../deploy/lenses/builtin-packets.json"))?;
+    install_builtin_lens_packets(&mut tx, &config.deployment_id, &builtin_packets).await?;
     let bootstrap_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM layrs_identity.bootstrap WHERE deployment_id=$1)",
     )

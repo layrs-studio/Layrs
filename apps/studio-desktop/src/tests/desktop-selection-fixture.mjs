@@ -195,6 +195,8 @@ export async function installDesktop(page, scenario = {}) {
       if (command === "native_remote") {
         const action = request.action;
         if (action.action === "whoami") return { principal_id: "principal:test", display_name: "Test" };
+        if (action.action === "listContexts") return { multiOrganisationEnabled: false, personalProjectsEnabled: false, defaultContextId: "workspace:test", contexts: [{ id: "workspace:test", workspaceId: "workspace:test", kind: "company", name: "Test", role: "member", canCreateProject: true }] };
+        if (action.action === "inspectCloneDestination") return { kind: "empty" };
         if (scenario.offline && ["observeProjectionVersion", "prepareProjectionOffline", "resumeProjectionOffline"].includes(action.action)) {
           if (action.expectedGeneration !== projection.generation) throw new Error("offline_generation_changed: refresh before retry");
           if (action.action === "observeProjectionVersion") return { status: "projectionVersionObserved", version: { kind: "remote", stepId: action.step, rootTreeId: hash("a"), policySetId: hash("b"), authorizationEpoch: 2, observationDigest: "c".repeat(64) } };

@@ -388,7 +388,7 @@ export function CaptureDetail({
           ))}
         </div>
       </header>
-      <Banner tone="info">Consultation seule sur le Web : la restauration d’une capture se prépare et s’applique depuis Desktop, avec aperçu.</Banner>
+      <Banner tone="info">Cette capture publiée est en lecture seule. Pour restaurer une capture présente sur votre poste, ouvrez l’Historique local dans Desktop et vérifiez l’aperçu avant application.</Banner>
       {error ? <CollabError error={error} title="Capture non chargée" onRetry={() => setAttempt((value) => value + 1)} /> : null}
       <DelayedRows active={loading} rows={2} label="Chargement de la capture…" />
       {step && (

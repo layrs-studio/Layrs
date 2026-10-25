@@ -220,12 +220,20 @@ impl PolicyAuthorizer for PgMembershipAuthorizer {
                    s.current_policy_set_id,
                    p.actor_id,
                    p.deployment_id,
-                   wm.state AS membership_state
+                   wm.state AS membership_state,
+                   c.kind AS context_kind,
+                   c.owner_principal_id AS context_owner,
+                   s.workspace_id,
+                   dc.multi_organisation_enabled,
+                   dc.personal_projects_enabled,
+                   dc.primary_workspace_id
             FROM principals p
             JOIN spaces s ON s.space_id = $2
             JOIN workspace_memberships wm
               ON wm.workspace_id = s.workspace_id
              AND wm.principal_id = p.principal_id
+            LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=s.workspace_id
+            JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=p.deployment_id
             WHERE p.principal_id = $1
               AND p.subject_digest = $3
               AND p.actor_id = $4
@@ -257,6 +265,26 @@ impl PolicyAuthorizer for PgMembershipAuthorizer {
             || membership_state != "active"
         {
             return Ok(AuthorizationDecision::deny("principal_or_space_inactive"));
+        }
+        if row.get::<Option<String>, _>("context_kind").as_deref() == Some("personal")
+            && row.get::<Option<String>, _>("context_owner").as_deref()
+                != Some(check.principal.principal_id.as_str())
+        {
+            return Ok(AuthorizationDecision::deny("personal_owner_only"));
+        }
+        let kind: Option<String> = row.get("context_kind");
+        let workspace_id: String = row.get("workspace_id");
+        let visible = if kind.as_deref() == Some("personal") {
+            row.get::<bool, _>("personal_projects_enabled")
+        } else {
+            row.get::<bool, _>("multi_organisation_enabled")
+                || row
+                    .get::<Option<String>, _>("primary_workspace_id")
+                    .as_deref()
+                    == Some(workspace_id.as_str())
+        };
+        if !visible {
+            return Ok(AuthorizationDecision::deny("organisation_hidden"));
         }
 
         Ok(AuthorizationDecision::deny(

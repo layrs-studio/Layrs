@@ -12,7 +12,7 @@ export async function nativeUiProxy(fixture, directory) {
     try {
       const url = new URL(incoming.url, origin);
       if (incoming.headers.origin && incoming.headers.origin !== origin) { outgoing.writeHead(403).end(); return; }
-      if (url.pathname.startsWith('/v3/') || url.pathname === '/auth/device') {
+      if (url.pathname.startsWith('/v3/') || url.pathname === '/auth/device' || url.pathname === '/auth/device.js' || url.pathname.startsWith('/auth/device/')) {
         const headers = { ...incoming.headers, host: new URL(fixture.origin).host };
         if (headers.origin) headers.origin = fixture.origin;
         delete headers.cookie;
@@ -29,7 +29,8 @@ export async function nativeUiProxy(fixture, directory) {
       const resolved = await realpath(path);
       if (!resolved.startsWith(root + sep) || !(await stat(resolved)).isFile()) { outgoing.writeHead(404).end(); return; }
       const type = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' }[extname(resolved)] || 'application/octet-stream';
-      outgoing.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+      outgoing.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
       outgoing.end(incoming.method === 'HEAD' ? undefined : await readFile(resolved));
     } catch { if (!outgoing.headersSent) outgoing.writeHead(404); outgoing.end(); }
   });

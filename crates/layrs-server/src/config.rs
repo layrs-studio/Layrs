@@ -13,6 +13,8 @@ pub struct ServerConfig {
     pub signing_key: Vec<u8>,
     pub bootstrap_secret: Option<String>,
     pub cas_quotas: layrs_store_server::v3::CasQuotas,
+    pub multi_organisation_enabled: bool,
+    pub personal_projects_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +105,17 @@ impl ServerConfig {
             signing_key,
             bootstrap_secret,
             cas_quotas: parse_quotas(env)?,
+            multi_organisation_enabled: parse_flag(env, "LAYRS_MULTI_ORGANISATION_ENABLED")?,
+            personal_projects_enabled: parse_flag(env, "LAYRS_PERSONAL_PROJECTS_ENABLED")?,
         })
+    }
+}
+
+fn parse_flag(env: &BTreeMap<String, String>, name: &'static str) -> Result<bool, ConfigError> {
+    match env.get(name).map(String::as_str) {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        _ => Err(ConfigError(name)),
     }
 }
 
@@ -190,6 +202,30 @@ mod tests {
     #[test]
     fn valid_https_config() {
         assert!(ServerConfig::parse(&env()).is_ok());
+    }
+    #[test]
+    fn project_context_options_are_independent_and_default_off() {
+        let base = ServerConfig::parse(&env()).unwrap();
+        assert!(!base.multi_organisation_enabled && !base.personal_projects_enabled);
+        for (multi, personal) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut values = env();
+            values.insert("LAYRS_MULTI_ORGANISATION_ENABLED".into(), multi.to_string());
+            values.insert(
+                "LAYRS_PERSONAL_PROJECTS_ENABLED".into(),
+                personal.to_string(),
+            );
+            let parsed = ServerConfig::parse(&values).unwrap();
+            assert_eq!(parsed.multi_organisation_enabled, multi);
+            assert_eq!(parsed.personal_projects_enabled, personal);
+        }
+        for name in [
+            "LAYRS_MULTI_ORGANISATION_ENABLED",
+            "LAYRS_PERSONAL_PROJECTS_ENABLED",
+        ] {
+            let mut values = env();
+            values.insert(name.into(), "TRUE".into());
+            assert!(ServerConfig::parse(&values).is_err());
+        }
     }
     #[test]
     fn quota_configuration_is_explicit_and_checked() {

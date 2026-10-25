@@ -75,7 +75,19 @@ impl PlannedConflict {
         if let Some(pin) = &pin {
             pin.validate().map_err(invalid)?;
         }
-        let mut expected = conflict(path, &bases, &sides, pin.as_ref())?.0;
+        let implementation_digest = value["lensImplementationDigest"].as_str();
+        if pin.is_some() != implementation_digest.is_some() {
+            return Err(invalid(
+                "Lens pin and implementation digest must both be present",
+            ));
+        }
+        let mut expected = conflict(
+            path,
+            &bases,
+            &sides,
+            pin.as_ref().zip(implementation_digest),
+        )?
+        .0;
         let kind = value["kind"]
             .as_str()
             .ok_or_else(|| invalid("conflict kind"))?;

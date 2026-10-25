@@ -1833,12 +1833,14 @@ dependencies = [
  "blake3",
  "idna_adapter",
  "layrs-client-core",
+ "layrs-core",
  "layrs-git-bridge",
  "plist",
  "serde",
  "serde_json",
  "serde_with",
  "serde_with_macros",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-codegen",
@@ -1846,6 +1848,8 @@ dependencies = [
  "tauri-runtime",
  "tauri-runtime-wry",
  "tauri-utils",
+ "uuid",
+ "windows",
 ]
 
 [[package]]

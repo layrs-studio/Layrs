@@ -37,7 +37,48 @@ pub struct NativeArchiveTeamRequest {
     deny_unknown_fields
 )]
 pub enum AdministrationCommand {
+    OrganisationSettings,
+    ConfigureOrganisations {
+        request: Value,
+    },
+    ListLenses,
+    RetireLens {
+        pin: layrs_lens_sdk::LensPin,
+    },
+    RevokeLens {
+        pin: layrs_lens_sdk::LensPin,
+    },
+    LensCatalog,
+    InstallLens {
+        request: Value,
+    },
+    ProjectLenses,
+    FilePreview {
+        request: Value,
+    },
+    ConfigureLenses {
+        request: Value,
+    },
+    LensPacket {
+        pin: layrs_lens_sdk::LensPin,
+    },
     ListTeams {},
+    ListOrganisationTeams,
+    CreateOrganisationTeam {
+        request: Value,
+    },
+    UpdateOrganisationTeam {
+        team: String,
+        request: Value,
+    },
+    ArchiveOrganisationTeam {
+        team: String,
+        request: Value,
+    },
+    AssignOrganisationTeam {
+        team: String,
+        request: Value,
+    },
     PolicyManagement {},
     EligibleTeamMembers {},
     TeamHistory {
@@ -130,6 +171,13 @@ impl AdministrationCommand {
         !matches!(
             self,
             Self::ListAccounts
+                | Self::ListLenses
+                | Self::RetireLens { .. }
+                | Self::RevokeLens { .. }
+                | Self::LensCatalog
+                | Self::InstallLens { .. }
+                | Self::OrganisationSettings
+                | Self::ConfigureOrganisations { .. }
                 | Self::Metrics { .. }
                 | Self::InvitationInbox { .. }
                 | Self::DecideInvitation { .. }
@@ -158,7 +206,100 @@ pub(super) fn execute(
         None => String::new(),
     };
     let (method, path, body) = match command {
+        AdministrationCommand::OrganisationSettings => {
+            (Method::GET, "v3/admin/organisations/settings".into(), None)
+        }
+        AdministrationCommand::ConfigureOrganisations { request } => (
+            Method::PUT,
+            "v3/admin/organisations/settings".into(),
+            Some(request),
+        ),
+        AdministrationCommand::RetireLens { pin } => (
+            Method::POST,
+            lens_state_path(&pin, "retire")?,
+            Some(json!({})),
+        ),
+        AdministrationCommand::RevokeLens { pin } => (
+            Method::POST,
+            lens_state_path(&pin, "revoke")?,
+            Some(json!({})),
+        ),
+        AdministrationCommand::ListLenses => (Method::GET, "v3/lenses".into(), None),
+        AdministrationCommand::LensCatalog => (Method::GET, "v3/lenses/catalog".into(), None),
+        AdministrationCommand::InstallLens { request } => {
+            (Method::POST, "v3/lenses".into(), Some(request))
+        }
+        AdministrationCommand::ProjectLenses => (Method::GET, format!("{base}/lenses"), None),
+        AdministrationCommand::FilePreview { request } => {
+            (Method::POST, format!("{base}/preview"), Some(request))
+        }
+        AdministrationCommand::ConfigureLenses { request } => {
+            (Method::PUT, format!("{base}/lenses"), Some(request))
+        }
+        AdministrationCommand::LensPacket { pin } => {
+            if pin.lens_id.is_empty()
+                || pin.lens_id.len() > 160
+                || !pin
+                    .lens_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                || pin.version.is_empty()
+                || pin.version.len() > 80
+                || !pin
+                    .version
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".+_-".contains(&b))
+            {
+                return Err(NativeRemoteError::Invalid("invalid Lens pin"));
+            }
+            let digest = pin.digest.as_str();
+            if !digest.starts_with("sha256:")
+                || digest.len() != 71
+                || !digest[7..]
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err(NativeRemoteError::Invalid("invalid Lens digest"));
+            }
+            (
+                Method::GET,
+                format!("{base}/lenses/{}/{}/{}", pin.lens_id, pin.version, digest),
+                None,
+            )
+        }
         AdministrationCommand::ListTeams {} => (Method::GET, format!("{base}/teams"), None),
+        AdministrationCommand::ListOrganisationTeams => {
+            (Method::GET, format!("{base}/organisation-teams"), None)
+        }
+        AdministrationCommand::CreateOrganisationTeam { request } => (
+            Method::POST,
+            format!("{base}/organisation-teams"),
+            Some(request),
+        ),
+        AdministrationCommand::UpdateOrganisationTeam { team, request } => {
+            organisation_team_identifier(&team)?;
+            (
+                Method::PUT,
+                format!("{base}/organisation-teams/{team}"),
+                Some(request),
+            )
+        }
+        AdministrationCommand::ArchiveOrganisationTeam { team, request } => {
+            organisation_team_identifier(&team)?;
+            (
+                Method::POST,
+                format!("{base}/organisation-teams/{team}/archive"),
+                Some(request),
+            )
+        }
+        AdministrationCommand::AssignOrganisationTeam { team, request } => {
+            organisation_team_identifier(&team)?;
+            (
+                Method::PUT,
+                format!("{base}/organisation-teams/{team}/assignment"),
+                Some(request),
+            )
+        }
         AdministrationCommand::PolicyManagement {} => {
             (Method::GET, format!("{base}/policy-management"), None)
         }
@@ -343,6 +484,30 @@ fn segment(value: &str) -> RemoteResult<&str> {
         return Err(NativeRemoteError::Invalid("invalid webhook identifier"));
     }
     Ok(value)
+}
+
+fn lens_state_path(pin: &layrs_lens_sdk::LensPin, action: &str) -> RemoteResult<String> {
+    pin.validate()
+        .map_err(|_| NativeRemoteError::Invalid("invalid Lens pin"))?;
+    // SDK identifiers/version syntax contains no URL separators or query characters.
+    Ok(format!(
+        "v3/lenses/{}/{}/{}/{action}",
+        pin.lens_id, pin.version, pin.digest
+    ))
+}
+
+fn organisation_team_identifier(value: &str) -> RemoteResult<()> {
+    let suffix = value.strip_prefix("org-team:").unwrap_or_default();
+    if suffix.len() != 64
+        || !suffix
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(NativeRemoteError::Invalid(
+            "invalid organisation team identifier",
+        ));
+    }
+    Ok(())
 }
 
 fn team_identifier(value: &str) -> RemoteResult<()> {

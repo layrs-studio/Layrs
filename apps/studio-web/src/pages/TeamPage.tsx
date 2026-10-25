@@ -80,7 +80,7 @@ function TeamContent({ tab, context }: { tab: Tab; context: ReturnType<typeof us
           onInviteHandled={handled}
         />
       )}
-      {tab === "teams" && <TeamsPanel directory={directory} administration={project.administration} projectName={project.name} onChanged={changed} />}
+      {tab === "teams" && <TeamsPanel scope={scope} directory={directory} administration={project.administration} projectName={project.name} onChanged={changed} />}
     </Tabs>
   );
 }

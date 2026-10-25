@@ -11,16 +11,34 @@ export type Scenario = {
   conflicted?: boolean;
   /** Remembered server of the project. */
   origin?: string;
+  lastOrigin?: string;
+  linkedRecent?: boolean;
+  secondOrigin?: string;
+  delayedFolderOrigin?: string;
+  contextsUnavailable?: boolean;
+  emptyContexts?: boolean;
   /** Token already in the OS store for that server. */
   signedIn?: boolean;
   publish?: "hold" | "unconfirmed" | "ok";
   stale?: boolean;
+  bootstrapDenied?: boolean;
+  instanceAdmin?: boolean;
+  multiContexts?: boolean;
+  personalProjects?: boolean;
+  canCreateOrganisation?: boolean;
+  destination?: "sameProject" | "otherProject" | "unpublishedProject" | "blocked";
+  holdDestination?: boolean;
 };
 
 declare global {
   interface Window {
     __layrsInvocations?: Invocation[];
     __layrsRelease?: (outcome: "cancelled" | "applied") => void;
+    __layrsRotatePrincipal?: (principalId: string) => void;
+    __layrsReleaseWhoami?: () => Promise<void>;
+    __layrsDispatched?: string[];
+    __layrsSetMultiOrganisation?: (enabled: boolean) => void;
+    __layrsReleaseDestination?: () => void;
   }
 }
 
@@ -34,9 +52,20 @@ export async function installWorkStub(page: Page, scenario: Scenario) {
       const hash = (seed: string) => `blake3:${seed.repeat(64).slice(0, 64)}`;
       const invocations: Invocation[] = [];
       window.__layrsInvocations = invocations;
+      const dispatched: string[] = [];
+      window.__layrsDispatched = dispatched;
+      let credentialPrincipal = "principal:alice";
+      window.__layrsRotatePrincipal = (principalId) => { credentialPrincipal = principalId; };
       let signedIn = scenario.signedIn === true;
+      let multiOrganisationEnabled = scenario.multiContexts === true;
+      window.__layrsSetMultiOrganisation = (enabled) => { multiOrganisationEnabled = enabled; };
       let polls = 0;
       let conflicted = scenario.conflicted === true;
+      let releaseWhoami: (() => void) | null = null;
+      window.__layrsReleaseWhoami = async () => {
+        releaseWhoami?.();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      };
       const operation = { operationId: "op:1", summary: "Initialisation", kind: "initialize", createdAt: "2026-09-01T10:00:00Z" };
       const status = () => ({
         state: {
@@ -145,10 +174,47 @@ export async function installWorkStub(page: Page, scenario: Scenario) {
           }
           if (command === "native_remote") {
             const action = (request.action ?? { action: "" }) as { action: string; [key: string]: unknown };
+            if (request.expectedPrincipalId && request.expectedPrincipalId !== credentialPrincipal)
+              throw new Error("remote_principal_changed: Recheck the Desktop session before continuing");
+            dispatched.push(action.action === "administration" ? `administration:${String((action.command as { action?: string })?.action)}` : action.action);
             switch (action.action) {
+              case "inspectCloneDestination": {
+                const result = { kind: scenario.destination ?? "empty", localSpaceId: scenario.destination === "sameProject" ? "space:site" : "space:demo", name: "Démo locale", contextId: "workspace:a", reason: "notLayrsProject" };
+                if (scenario.holdDestination && String(args?.root).endsWith("old")) return new Promise<T>((resolve) => { window.__layrsReleaseDestination = () => resolve(reply(result)); });
+                return reply(String(args?.root).endsWith("empty") ? { kind: "empty" } : result);
+              }
+              case "linkExisting":
+              case "prepareExistingPublication":
+                return reply({ status: action.action === "linkExisting" ? "linked" : "readyToPublish", state: { worktree: { checkoutRoot: root } } });
+              case "provision":
+                return reply({ provisioned: { spaceId: "space:demo", workspaceId: "workspace:a" } });
               case "whoami":
+                if (args?.root && request.origin === scenario.delayedFolderOrigin) {
+                  await new Promise<void>((resolve) => { releaseWhoami = resolve; });
+                }
                 if (!signedIn) throw new Error("remote_unauthorized: Sign in to this server first with remote login");
-                return reply({ principal_id: "principal:alice", actor_id: "actor:alice", display_name: "Alice Démo", kind: "account" });
+                return reply({ principal_id: "principal:alice", actor_id: "actor:alice", display_name: "Alice Démo", kind: "account", instance_administrator: scenario.instanceAdmin === true });
+              case "spaceCapabilities":
+                if (scenario.bootstrapDenied) throw new Error("remote_forbidden: project access revoked");
+                throw new Error("renderer stub: spaceCapabilities unavailable");
+              case "listContexts":
+                if (scenario.contextsUnavailable) throw new Error("remote_transport_failed: contexts unavailable");
+                return reply({ multiOrganisationEnabled, personalProjectsEnabled: scenario.personalProjects ?? scenario.multiContexts === true, defaultContextId: scenario.emptyContexts ? null : "workspace:a", contexts: scenario.emptyContexts ? [] : [
+                  { id: "workspace:a", workspaceId: "workspace:a", kind: "company", name: "Atelier", role: "member", canCreateProject: true },
+                  ...(scenario.personalProjects ?? scenario.multiContexts ? [
+                    { id: "workspace:personal", workspaceId: "workspace:personal", kind: "personal", name: "Personnel", role: "owner", canCreateProject: true },
+                  ] : []),
+                  ...(multiOrganisationEnabled ? [
+                    { id: "workspace:org", workspaceId: "workspace:org", kind: "organisation", name: "Design", role: "owner", canCreateProject: true },
+                  ] : []),
+                ], canCreateOrganisation: scenario.canCreateOrganisation === true });
+              case "collaboration":
+                if (scenario.bootstrapDenied && (action.command as { action?: string })?.action === "projectionContext") throw new Error("remote_forbidden: project access revoked");
+                throw new Error("renderer stub: collaboration unavailable");
+              case "administration":
+                if ((action.command as { action?: string })?.action === "listAccounts") return reply({ accounts: [{ principalId: "principal:alice", displayName: "Alice Démo", kind: "account", status: "active" }] });
+                if ((action.command as { action?: string })?.action === "lensCatalog") return reply({ items: [] });
+                throw new Error("renderer stub: administration unavailable");
               case "startLogin":
                 return reply({ status: "pending", userCode: "WDJBMJHT", verificationUri: "https://layrs.example.test/auth/device", expiresIn: 600, interval: 5 });
               case "pollLogin":
@@ -157,6 +223,12 @@ export async function installWorkStub(page: Page, scenario: Scenario) {
                 signedIn = true;
                 return reply({ status: "authorized", principalId: "principal:alice" });
               case "listSpaces":
+                if ((scenario.personalProjects ?? scenario.multiContexts) && action.contextId === "workspace:personal") return reply({ schemaVersion: "layrs.space-catalog.v1", spaces: [
+                  { spaceId: "space:notes", slug: "notes", name: "Notes privées", workspace: { workspaceId: "workspace:personal", slug: "personal", name: "Personnel" }, workspaceRole: "owner", access: "full", lastActivityAt: null },
+                ], nextCursor: null, hasMore: false });
+                if (multiOrganisationEnabled && action.contextId === "workspace:org") return reply({ schemaVersion: "layrs.space-catalog.v1", spaces: [
+                  { spaceId: "space:design", slug: "design", name: "Maquettes", workspace: { workspaceId: "workspace:org", slug: "design", name: "Design" }, workspaceRole: "owner", access: "full", lastActivityAt: null },
+                ], nextCursor: null, hasMore: false });
                 return reply({
                   schemaVersion: "layrs.space-catalog.v1",
                   spaces: [
@@ -166,6 +238,8 @@ export async function installWorkStub(page: Page, scenario: Scenario) {
                   nextCursor: null,
                   hasMore: false,
                 });
+              case "createProject":
+                return reply({ workspaceId: (action.request as { contextId: string }).contextId, spaceId: "space:new", layerId: "layer:main" });
               case "publishCancellable":
                 if (scenario.publish === "unconfirmed") throw new Error("remote_transport_failed: remote transport failed; pending publication remains retryable");
                 if (scenario.publish === "hold")
@@ -190,8 +264,12 @@ export async function installWorkStub(page: Page, scenario: Scenario) {
       if (scenario.origin) {
         localStorage.setItem(
           "layrs.desktop.servers.v1",
-          JSON.stringify({ projects: { [root]: scenario.origin }, authorities: {}, targets: {}, activity: {}, last: scenario.origin }),
+          JSON.stringify({ projects: { [root]: scenario.origin, ...(scenario.secondOrigin ? { "C:/projects/second": scenario.secondOrigin } : {}) }, authorities: {}, targets: {}, activity: {}, last: scenario.lastOrigin ?? scenario.origin }),
         );
+      }
+      if (scenario.linkedRecent && scenario.origin) {
+        localStorage.setItem("layrs.desktop.recents.v1", JSON.stringify([{ root, name: "Démo", kind: "complete", openedAt: "2026-10-05T10:00:00Z" }]));
+        localStorage.setItem(`layrs.desktop.recent-context.v1:${scenario.origin}:principal:alice`, JSON.stringify({ [root]: { contextId: "workspace:a", spaceId: "space:demo" } }));
       }
     },
     { scenario, root },

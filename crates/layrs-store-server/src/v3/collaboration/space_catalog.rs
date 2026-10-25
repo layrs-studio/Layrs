@@ -1,7 +1,7 @@
 //! Authorized Space catalog: the Spaces the caller may open, by name.
 //!
-//! Candidates are the ready Spaces of Workspaces where the caller holds an
-//! active membership; each candidate is then admitted only by the same
+//! Candidates are the ready Spaces of the selected authorized context where
+//! the caller holds an active membership; each candidate is admitted by the same
 //! `space.bootstrap` decision that guards `GET /v3/spaces/:space/bootstrap`.
 //! Nothing is cached, so a revocation hides a Space from the next page.
 //! Responses never reveal how many candidates were hidden, and the resume
@@ -23,6 +23,7 @@ const CURSOR_DOMAIN: &str = "layrs.space-catalog.v1/name-then-id";
 pub struct SpaceCatalogQuery {
     pub limit: Option<u16>,
     pub cursor: Option<String>,
+    pub context_id: Option<String>,
 }
 
 /// `limited` means content-restricted: the Space opens but paths are filtered
@@ -78,6 +79,7 @@ pub struct SpaceCatalogPage {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Position {
+    context_id: String,
     sort_name: String,
     space_id: String,
 }
@@ -95,6 +97,15 @@ impl PgCollaborationStore {
                 limit: u64::from(SPACE_CATALOG_MAX_LIMIT),
             });
         }
+        let contexts = self.repository.project_contexts(principal).await?;
+        let context_id = query.context_id.unwrap_or(contexts.default_context_id);
+        if !contexts
+            .contexts
+            .iter()
+            .any(|context| context.id == context_id)
+        {
+            return Err(V3StoreError::InvalidCapability);
+        }
         let cursors = SealedCursorCodec::new(self.repository.capabilities(), CURSOR_DOMAIN);
         let mut position = query
             .cursor
@@ -103,12 +114,18 @@ impl PgCollaborationStore {
                 serde_json::from_slice::<Position>(&bytes).map_err(|_| V3StoreError::InvalidCursor)
             })
             .transpose()?;
+        if position
+            .as_ref()
+            .is_some_and(|position| position.context_id != context_id)
+        {
+            return Err(V3StoreError::InvalidCursor);
+        }
         let mut spaces = Vec::with_capacity(limit);
         let mut evaluated = 0;
         let mut has_more = false;
         'scan: loop {
             let rows = self
-                .catalog_candidates(principal, position.as_ref())
+                .catalog_candidates(principal, &context_id, position.as_ref())
                 .await?;
             let exhausted = rows.len() < CANDIDATE_BATCH as usize;
             for row in rows {
@@ -119,7 +136,7 @@ impl PgCollaborationStore {
                 evaluated += 1;
                 let space: SpaceId = parse(row.get("space_id"))?;
                 let Some(decision) = self.open_decision(principal, &space, &row).await? else {
-                    position = Some(row_position(&row));
+                    position = Some(row_position(&row, &context_id));
                     continue;
                 };
                 if decision.allowed {
@@ -130,7 +147,7 @@ impl PgCollaborationStore {
                     }
                     spaces.push(entry(&row, space, &decision));
                 }
-                position = Some(row_position(&row));
+                position = Some(row_position(&row, &context_id));
             }
             if exhausted {
                 break;
@@ -154,6 +171,7 @@ impl PgCollaborationStore {
     async fn catalog_candidates(
         &self,
         principal: &PrincipalContext,
+        context_id: &str,
         after: Option<&Position>,
     ) -> V3StoreResult<Vec<sqlx::postgres::PgRow>> {
         sqlx::query(
@@ -170,7 +188,7 @@ impl PgCollaborationStore {
             JOIN spaces s ON s.workspace_id = w.workspace_id AND s.lifecycle_state = 'ready'
             LEFT JOIN space_events e
               ON e.space_id = s.space_id AND e.sequence = s.next_event_sequence - 1
-            WHERE m.principal_id = $1 AND m.state = 'active'
+            WHERE m.principal_id = $1 AND m.state = 'active' AND w.workspace_id=$6
               AND ($3::text IS NULL OR (lower(s.display_name), s.space_id) > ($3::text, $4::text))
             ORDER BY lower(s.display_name), s.space_id
             LIMIT $5
@@ -181,6 +199,7 @@ impl PgCollaborationStore {
         .bind(after.map(|p| p.sort_name.as_str()))
         .bind(after.map(|p| p.space_id.as_str()))
         .bind(CANDIDATE_BATCH)
+        .bind(context_id)
         .fetch_all(self.repository.pool())
         .await
         .map_err(pg_error)
@@ -221,8 +240,9 @@ impl PgCollaborationStore {
     }
 }
 
-fn row_position(row: &sqlx::postgres::PgRow) -> Position {
+fn row_position(row: &sqlx::postgres::PgRow, context_id: &str) -> Position {
     Position {
+        context_id: context_id.to_owned(),
         sort_name: row.get("sort_name"),
         space_id: row.get("space_id"),
     }

@@ -15,6 +15,8 @@ import { accessLabel, denied, findFile, folderChildren, kindLabel, searchFiles, 
 import type { CollabCapabilities } from "./types";
 import { CollabError, CopyButton, DelayedRows, LockedContent, TechnicalDetails } from "./parts";
 import { useScopedTasks } from "./useScopedTasks";
+import { FilePreview } from "../lenses/FilePreview";
+import type { LensTransport } from "../lenses/types";
 
 const PAGE_SIZE = 100;
 const MAX_ENTRIES = 100_000;
@@ -30,9 +32,11 @@ export function ProjectFiles({
   loadPage,
   onOpenHistory,
   capabilities,
+  previewTransport,
 }: {
   scope: string;
   capabilities?: CollabCapabilities;
+  previewTransport?: LensTransport;
   loadContext: () => Promise<NativeProjectionContext>;
   loadPage: (request: NativeProjectionPageRequest) => Promise<NativeProjectionPage>;
   onOpenHistory?: (path: string) => void;
@@ -280,7 +284,8 @@ export function ProjectFiles({
           </div>
           <aside className="collab-split__detail" aria-label="Détail de la sélection">
             {file ? (
-              <FileDetail file={file} step={step} epoch={last?.authorizationEpoch} onOpenHistory={onOpenHistory} />
+              <><FileDetail file={file} step={step} epoch={last?.authorizationEpoch} onOpenHistory={onOpenHistory} hasPreview={Boolean(previewTransport)} />
+              {previewTransport && context && file.readable && file.kind === "file" && <FilePreview key={`${scope}|${step}|${file.path}|${context.authorizationEpoch}`} path={file.path} stepId={step} policySetId={context.currentPolicySetId} authorizationEpoch={context.authorizationEpoch} transport={previewTransport} />}</>
             ) : (
               <EmptyState compact icon={<File size={20} />} title="Aucune sélection">
                 Choisissez un fichier pour voir ses droits, copier son chemin ou ouvrir son historique.
@@ -298,7 +303,7 @@ export function ProjectFiles({
   );
 }
 
-function FileDetail({ file, step, epoch, onOpenHistory }: { file: FileRow; step: string; epoch?: number; onOpenHistory?: (path: string) => void }) {
+function FileDetail({ file, step, epoch, onOpenHistory, hasPreview }: { file: FileRow; step: string; epoch?: number; onOpenHistory?: (path: string) => void; hasPreview?: boolean }) {
   const access = accessLabel(file);
   return (
     <div className="collab-file">
@@ -322,8 +327,8 @@ function FileDetail({ file, step, epoch, onOpenHistory }: { file: FileRow; step:
         <Banner tone="warning" title="Contenu non accessible">
           Le chemin est réservé dans ce projet mais son contenu ne vous est pas ouvert. Aucune taille, empreinte ni aperçu n’est affiché.
         </Banner>
-      ) : file.kind === "file" ? (
-        <p className="collab-muted">Aperçu non disponible sur le Web pour l’instant : les contenus restent consultables depuis Desktop, selon vos droits.</p>
+      ) : file.kind === "file" && !hasPreview ? (
+        <p className="collab-muted">Cette vue affiche les chemins et les droits, sans aperçu du contenu. Le contenu se consulte dans les fichiers locaux du projet après réception avec Desktop, selon vos droits.</p>
       ) : null}
       <div className="collab-actions">
         <CopyButton value={file.path} label="Copier le chemin" done="Chemin copié" />

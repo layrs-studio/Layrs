@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Projection éditable et distribution — 22 septembre 2026
 
 Sources de distribution figées au commit `6436fb0f34e7c9b883b5e69610bc876caadae592`.

@@ -40,6 +40,7 @@ export function ReviewDetail({
   onOpenVersion,
   onOpenRun,
   onBack,
+  integrationUnavailableReason,
   capabilities,
 }: {
   scope: string;
@@ -57,6 +58,8 @@ export function ReviewDetail({
   onOpenVersion: (version: number | null) => void;
   onOpenRun: (runId: string) => void;
   onBack?: () => void;
+  /** Explains where integration is performed when this view cannot bind the exact capture. */
+  integrationUnavailableReason?: string;
 }) {
   const key = `${scope}|${reviewId}`;
   // A different exact version is a different request: late answers for the previous one are dropped.
@@ -216,9 +219,11 @@ export function ReviewDetail({
             <Button
               icon={<GitPullRequestArrow aria-hidden size={16} />}
               disabledReason={
-                denied(capabilities, "integrateReviews")
+                historical
+                  ? "Seule la version actuelle peut être intégrée."
+                  : denied(capabilities, "integrateReviews")
                   ? "Votre compte ne peut pas intégrer dans ce projet."
-                  : "L’intégration n’est pas disponible sur le Web : utilisez Desktop pour publier sur le Layer cible."
+                  : integrationUnavailableReason ?? "L’intégration n’est pas disponible sur le Web : utilisez Desktop pour publier sur le Layer cible."
               }
             >
               Intégrer

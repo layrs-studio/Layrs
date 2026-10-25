@@ -8,6 +8,14 @@ pub use types::{ArchiveTeamRequest, TeamHistoryQuery, TeamRecord, TeamRequest, T
 use types::{response, team_id};
 
 impl PgCollaborationStore {
+    pub(super) async fn require_shared_team_context(&self, space: &SpaceId) -> V3StoreResult<()> {
+        let kind: String = sqlx::query_scalar("SELECT COALESCE(c.kind,'organisation') FROM spaces s JOIN workspaces w USING(workspace_id) LEFT JOIN layrs_collaboration.workspace_contexts c USING(workspace_id) WHERE s.space_id=$1")
+            .bind(space.as_str()).fetch_one(self.repository.pool()).await.map_err(pg_error)?;
+        if kind == "personal" {
+            return Err(V3StoreError::InvalidCapability);
+        }
+        Ok(())
+    }
     pub async fn change_team(
         &self,
         principal: &PrincipalContext,
@@ -77,6 +85,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::AdministerPolicy)
             .await?;
+        self.require_shared_team_context(space).await?;
         let _budget_writer = self.repository.cas_budget_writer().await;
         let mut tx = self.repository.pool().begin().await.map_err(pg_error)?;
         self.repository.lock_cas_budget(&mut tx).await?;
@@ -104,9 +113,12 @@ impl PgCollaborationStore {
             }
         }
         super::super::transaction_store::lock_identity(&mut tx, principal, space).await?;
-        let current=sqlx::query("SELECT s.current_policy_set_id,s.authorization_epoch,m.role FROM spaces s JOIN workspace_memberships m ON m.workspace_id=s.workspace_id AND m.principal_id=$2 WHERE s.space_id=$1 FOR UPDATE OF s")
+        let current=sqlx::query("SELECT s.current_policy_set_id,s.authorization_epoch,s.created_by_principal_id,m.role FROM spaces s JOIN workspace_memberships m ON m.workspace_id=s.workspace_id AND m.principal_id=$2 WHERE s.space_id=$1 FOR UPDATE OF s")
             .bind(space.as_str()).bind(principal.principal_id.as_str()).fetch_one(&mut *tx).await.map_err(pg_error)?;
-        if !super::super::space_access::administers_workspace(&current.get::<String, _>("role")) {
+        if !super::super::space_access::administers_workspace(&current.get::<String, _>("role"))
+            && current.get::<String, _>("created_by_principal_id")
+                != principal.principal_id.as_str()
+        {
             return Err(V3StoreError::InvalidCapability);
         }
         if current.get::<String, _>("current_policy_set_id") != authority.policy_set_id.as_str()

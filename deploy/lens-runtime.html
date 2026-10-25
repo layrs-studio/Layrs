@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data:; worker-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Layrs Lens worker host</title>
+<script>
+/* This trusted host never evaluates extension code in a Window. Its response
+   CSP denies network access; data workers inherit this document's CSP. */
+"use strict";
+let claimed = false;
+addEventListener("message", event => {
+  if (claimed || event.source !== parent || event.data !== "layrs.lens.worker.v1" || event.ports.length !== 1) return;
+  claimed = true;
+  const port = event.ports[0];
+  let worker, timer;
+  function stop() {
+    clearTimeout(timer);
+    if (worker) worker.terminate();
+  }
+  port.onmessage = async ({ data }) => {
+    stop();
+    try {
+      const bounded = (value, ceiling) => {
+        if (!Number.isSafeInteger(value) || value < 1) throw Error("invalid_limit");
+        return Math.min(value, ceiling);
+      };
+      const inputLimit = bounded(data?.limits?.input, 2097152);
+      const outputLimit = bounded(data?.limits?.output, 1048576);
+      const deadline = bounded(data?.limits?.deadline, 5000);
+      if (!data || typeof data.source !== "string" || new TextEncoder().encode(data.source).length > 2 * 1024 * 1024 ||
+          !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(data.exportName) ||
+          new TextEncoder().encode(JSON.stringify(data.input)).length > inputLimit) throw Error("invalid_request");
+      const asUrl = source => "data:text/javascript;base64," + btoa(Array.from(new TextEncoder().encode(source), byte => String.fromCharCode(byte)).join(""));
+      const moduleUrl = asUrl(data.source);
+      const wrapper = `import * as lens from ${JSON.stringify(moduleUrl)};\n` +
+        `const send = self.postMessage.bind(self); self.onmessage = async event => { try { const result = await lens[${JSON.stringify(data.exportName)}](event.data); const value = JSON.stringify(result); if (new TextEncoder().encode(value).length > ${outputLimit}) throw Error('output_limit'); send({value}); } catch { send({error:'execution_failed'}); } };`;
+      const workerUrl = asUrl(wrapper);
+      worker = new Worker(workerUrl, { type: "module" });
+      worker.onmessage = ({ data: result }) => {
+        stop();
+        if (typeof result?.value === "string" && new TextEncoder().encode(result.value).length <= outputLimit) port.postMessage({ value: result.value });
+        else port.postMessage({ error: "invalid_output" });
+      };
+      worker.onerror = () => { stop(); port.postMessage({ error: "execution_failed" }); };
+      timer = setTimeout(() => { stop(); port.postMessage({ error: "timeout" }); }, deadline);
+      worker.postMessage(data.input);
+    } catch { stop(); port.postMessage({ error: "invalid_request" }); }
+  };
+  port.start();
+  port.postMessage({ ready: true });
+});
+</script>

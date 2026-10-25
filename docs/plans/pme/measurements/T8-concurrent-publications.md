@@ -1,3 +1,5 @@
+> Archive de preuve ou de conception datée. Ce document décrit son lot à la date indiquée, pas les sources actuelles. Pour reprendre : [état courant](../../../STATUS.md) et [registre de livraison](../../../design/redesign/03-delivery.md). Les anciens statuts et instructions ci-dessous sont historiques.
+
 # Publications concurrentes natives — 20 septembre 2026
 
 Recette Windows, PostgreSQL réel et serveur HTTPS à CA privée, binaires debug. Chaque client possède un Store, Worktree et identifiant Sync indépendants. Les clients partagent ici un compte autorisé et une petite fixture ; il ne s'agit pas d'un essai de charge de production.

@@ -84,7 +84,7 @@ impl PgPolicyAuthorizer {
 #[async_trait]
 impl PolicyAuthorizer for PgPolicyAuthorizer {
     async fn authorize(&self, check: &AuthorizationCheck) -> V3StoreResult<AuthorizationDecision> {
-        let row=sqlx::query("SELECT s.authorization_epoch,s.current_policy_set_id,p.status AS principal_status,wm.state AS membership_state,s.lifecycle_state,d.status AS deployment_status FROM principals p JOIN spaces s ON s.space_id=$2 JOIN workspaces w ON w.workspace_id=s.workspace_id AND w.deployment_id=p.deployment_id JOIN deployments d ON d.deployment_id=p.deployment_id JOIN workspace_memberships wm ON wm.workspace_id=w.workspace_id AND wm.principal_id=p.principal_id WHERE p.principal_id=$1 AND p.actor_id=$3 AND p.deployment_id=$4 AND p.subject_digest=$5")
+        let row=sqlx::query("SELECT s.authorization_epoch,s.current_policy_set_id,p.status AS principal_status,wm.state AS membership_state,s.lifecycle_state,d.status AS deployment_status,c.kind AS context_kind,c.owner_principal_id AS context_owner,w.workspace_id,dc.multi_organisation_enabled,dc.personal_projects_enabled,dc.primary_workspace_id FROM principals p JOIN spaces s ON s.space_id=$2 JOIN workspaces w ON w.workspace_id=s.workspace_id AND w.deployment_id=p.deployment_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN deployments d ON d.deployment_id=p.deployment_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=d.deployment_id JOIN workspace_memberships wm ON wm.workspace_id=w.workspace_id AND wm.principal_id=p.principal_id WHERE p.principal_id=$1 AND p.actor_id=$3 AND p.deployment_id=$4 AND p.subject_digest=$5")
             .bind(check.principal.principal_id.as_str()).bind(check.target.space_id().as_str()).bind(check.principal.actor_id.as_str()).bind(&check.principal.deployment_id).bind(&check.principal.subject_digest).fetch_optional(&self.pool).await.map_err(pg_error)?;
         let Some(row) = row else {
             return Ok(AuthorizationDecision::deny("membership_not_active"));
@@ -102,6 +102,26 @@ impl PolicyAuthorizer for PgPolicyAuthorizer {
             || row.get::<String, _>("deployment_status") != "ready"
         {
             return Ok(AuthorizationDecision::deny("identity_or_space_inactive"));
+        }
+        if row.get::<Option<String>, _>("context_kind").as_deref() == Some("personal")
+            && row.get::<Option<String>, _>("context_owner").as_deref()
+                != Some(check.principal.principal_id.as_str())
+        {
+            return Ok(AuthorizationDecision::deny("personal_owner_only"));
+        }
+        let kind: Option<String> = row.get("context_kind");
+        let workspace_id: String = row.get("workspace_id");
+        let visible = if kind.as_deref() == Some("personal") {
+            row.get::<bool, _>("personal_projects_enabled")
+        } else {
+            row.get::<bool, _>("multi_organisation_enabled")
+                || row
+                    .get::<Option<String>, _>("primary_workspace_id")
+                    .as_deref()
+                    == Some(workspace_id.as_str())
+        };
+        if !visible {
+            return Ok(AuthorizationDecision::deny("organisation_hidden"));
         }
         let space = check.target.space_id();
         let content_rules = self.rules(space, &check.policy_set_id).await?;

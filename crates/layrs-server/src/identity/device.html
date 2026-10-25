@@ -1,7 +1,44 @@
 <!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Autoriser un appareil · Layrs</title>
-<style>body{font:17px system-ui;background:#f3f4f7;color:#172033;max-width:32rem;margin:8vh auto;padding:2rem}main{background:white;border:1px solid #d6dbe5;border-radius:14px;padding:2rem}label{display:block;margin-top:1rem}input,button{box-sizing:border-box;width:100%;padding:.8rem;margin:.3rem 0;border:1px solid #9aa6bc;border-radius:6px;font:inherit}button{background:#2349af;color:white;cursor:pointer}button[disabled]{opacity:.5}#status{min-height:2rem}small{color:#49566f}[hidden]{display:none}</style>
-</head><body><main><h1>Autoriser un appareil</h1><p>Saisissez le code affiché par votre CLI ou Desktop Layrs. Validez uniquement une demande que vous venez de lancer.</p>
-<form id="login"><label for="account">Compte</label><input id="account" autocomplete="username" required><label for="password">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required><label for="code">Code de l'appareil</label><input id="code" autocomplete="off" placeholder="ABCDE-12345" maxlength="11" required><button>Vérifier la demande</button></form>
-<section id="confirmation" hidden><h2>Confirmer l'accès</h2><p id="device"></p><small>Cet appareil accèdera aux projets autorisés pour votre compte. Vous pourrez révoquer son token.</small><button id="approve">Autoriser cet appareil</button><button id="cancel">Annuler</button></section>
-<p id="status" role="status" aria-live="polite"></p></main><script src="/auth/device.js" defer></script></body></html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Autoriser un appareil · Layrs</title>
+  <script src="/auth/device/appearance.js"></script>
+  <link rel="stylesheet" href="/auth/device/style.css">
+  <link rel="icon" type="image/svg+xml" href="/auth/device/icon.svg">
+</head>
+<body>
+<main>
+  <a class="brand" href="/" aria-label="Layrs — accueil"><img src="/auth/device/icon.svg" alt="" width="40" height="39"><span>layrs</span></a>
+  <h1>Autoriser un appareil</h1>
+  <p class="intro">Retrouvez vos projets sur cet ordinateur. Saisissez le code affiché dans Layrs pour continuer.</p>
+  <p class="instance"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Instance <strong id="instance">Layrs</strong></p>
+  <form id="login"><fieldset id="fields" disabled>
+    <div class="field">
+      <label for="session">Compte utilisé pour l'autorisation</label>
+      <select id="session" required aria-describedby="session-help"><option value="manual">Se connecter avec un compte</option></select>
+      <small id="session-help">Recherche d'un compte connecté dans un autre onglet…</small>
+      <button id="refresh" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 6a8 8 0 0 1 13 3M5 15a8 8 0 0 0 13 3"/></svg>Rechercher les onglets connectés</button>
+    </div>
+    <div id="credentials">
+      <div class="field"><label for="account">Compte</label><input id="account" autocomplete="username" placeholder="vous@entreprise.fr" required></div>
+      <div class="field"><label for="password">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required></div>
+    </div>
+    <div class="field"><label for="code">Code de l'appareil</label><input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE-12345" maxlength="11" required aria-describedby="code-help"><small id="code-help">Le code se trouve dans la fenêtre de connexion de Desktop ou dans votre terminal.</small></div>
+    <button class="primary" type="submit">Vérifier la demande</button>
+  </fieldset></form>
+  <section id="confirmation" hidden>
+    <h2>Confirmer l'accès</h2>
+    <div class="summary"><p id="identity"></p><p id="device"></p></div>
+    <small>Cet appareil accèdera aux projets autorisés pour ce compte. Vous pourrez révoquer son accès.</small>
+    <div class="actions"><button class="primary" id="approve">Autoriser cet appareil</button><button id="cancel">Annuler</button></div>
+  </section>
+  <p id="status" role="status" aria-live="polite">Chargement de la page d'autorisation… Si ce message persiste, rechargez la page ou contactez l'administrateur.</p>
+  <noscript>JavaScript doit être activé pour autoriser un appareil.</noscript>
+  <p class="help">Validez uniquement une demande que vous venez de lancer.</p>
+</main>
+<script src="/auth/device.js" defer></script>
+</body>
+</html>

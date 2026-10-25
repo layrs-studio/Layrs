@@ -37,6 +37,7 @@ impl PgCollaborationStore {
         let authority = self
             .authority(principal, space, V3Action::AdministerPolicy)
             .await?;
+        self.require_shared_team_context(space).await?;
         if request.principal_id == principal.principal_id
             && !matches!(request.role, MemberRole::ReleaseManager)
         {

@@ -180,6 +180,14 @@ pub trait V3Facade: Send + Sync {
     ) -> Result<layrs_store_server::v3::StepHistoryResponse, V3ServiceError> {
         Err(V3ServiceError::Unavailable)
     }
+    async fn file_preview(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _space: &SpaceId,
+        _request: layrs_store_server::v3::FilePreviewRequest,
+    ) -> Result<layrs_store_server::v3::FilePreviewResponse, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
     async fn compare_steps(
         &self,
         _principal: &AuthenticatedPrincipal,
@@ -193,6 +201,53 @@ pub trait V3Facade: Send + Sync {
         _principal: &AuthenticatedPrincipal,
         _request: layrs_store_server::v3::ProvisionSpaceRequest,
     ) -> Result<layrs_store_server::v3::ProvisionSpaceResponse, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn creatable_workspaces(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _cursor: Option<String>,
+    ) -> Result<layrs_store_server::v3::CreatableWorkspacesPage, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn create_project(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: layrs_store_server::v3::CreateProjectRequest,
+    ) -> Result<layrs_store_server::v3::ProvisionSpaceResponse, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn check_local_project(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: layrs_store_server::v3::CheckLocalProjectRequest,
+    ) -> Result<layrs_store_server::v3::CheckLocalProjectResponse, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn project_contexts(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+    ) -> Result<layrs_store_server::v3::ProjectContexts, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn organisation_mode_settings(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+    ) -> Result<layrs_store_server::v3::OrganisationModeSettings, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn update_organisation_mode(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: layrs_store_server::v3::UpdateOrganisationModeRequest,
+    ) -> Result<layrs_store_server::v3::OrganisationModeSettings, V3ServiceError> {
+        Err(V3ServiceError::Unavailable)
+    }
+    async fn create_organisation(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: layrs_store_server::v3::CreateOrganisationRequest,
+    ) -> Result<layrs_store_server::v3::CreatedOrganisation, V3ServiceError> {
         Err(V3ServiceError::Unavailable)
     }
 

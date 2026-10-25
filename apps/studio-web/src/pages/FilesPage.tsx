@@ -18,6 +18,7 @@ export function FilesPage() {
         key={scope}
         scope={scope}
         capabilities={capabilities}
+        previewTransport={project.administration}
         loadContext={() => api(`${space}/bootstrap`)}
         loadPage={(request) => api(`${space}/projection`, "POST", request)}
         onOpenHistory={(path) => navigate(`${base}/history`, { query: { path } })}

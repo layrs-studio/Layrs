@@ -218,10 +218,10 @@ impl WebhookService {
     /// Each invocation commits a durable claim; expired claims survive process loss.
     pub async fn dispatch_once(&self) -> Result<bool> {
         let pool = self.repository.pool();
-        sqlx::query("UPDATE layrs_collaboration.webhook_deliveries SET state='dead',lease_until=NULL,last_error='attempts_exhausted' WHERE state='sending' AND lease_until<clock_timestamp() AND attempts>=8").execute(pool).await?;
-        sqlx::query("INSERT INTO layrs_collaboration.webhook_deliveries(webhook_id,notification_sequence,delivery_id) SELECT h.webhook_id,n.sequence,h.webhook_id||':'||n.sequence FROM layrs_collaboration.webhooks h JOIN layrs_collaboration.notifications n ON n.space_id=h.space_id AND n.sequence>h.start_sequence AND n.event_kind=ANY(h.event_kinds) WHERE h.enabled AND NOT EXISTS(SELECT 1 FROM layrs_collaboration.webhook_deliveries d WHERE d.webhook_id=h.webhook_id AND d.notification_sequence=n.sequence) ORDER BY n.sequence LIMIT 1000 ON CONFLICT DO NOTHING").execute(pool).await?;
+        sqlx::query("UPDATE layrs_collaboration.webhook_deliveries d SET state='dead',lease_until=NULL,last_error='attempts_exhausted' WHERE d.state='sending' AND d.lease_until<clock_timestamp() AND d.attempts>=8 AND EXISTS(SELECT 1 FROM layrs_collaboration.webhooks h JOIN spaces s ON s.space_id=h.space_id JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id WHERE h.webhook_id=d.webhook_id AND ((c.kind='personal' AND dc.personal_projects_enabled) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))))").execute(pool).await?;
+        sqlx::query("INSERT INTO layrs_collaboration.webhook_deliveries(webhook_id,notification_sequence,delivery_id) SELECT h.webhook_id,n.sequence,h.webhook_id||':'||n.sequence FROM layrs_collaboration.webhooks h JOIN layrs_collaboration.notifications n ON n.space_id=h.space_id AND n.sequence>h.start_sequence AND n.event_kind=ANY(h.event_kinds) JOIN spaces s ON s.space_id=h.space_id JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id WHERE h.enabled AND ((c.kind='personal' AND dc.personal_projects_enabled) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))) AND NOT EXISTS(SELECT 1 FROM layrs_collaboration.webhook_deliveries d WHERE d.webhook_id=h.webhook_id AND d.notification_sequence=n.sequence) ORDER BY n.sequence LIMIT 1000 ON CONFLICT DO NOTHING").execute(pool).await?;
         let mut tx = pool.begin().await?;
-        let row=sqlx::query("SELECT d.webhook_id,d.notification_sequence,d.delivery_id,d.attempts,h.space_id,h.url,h.secret_generation,h.created_by,n.actor_principal_id,n.event_kind,n.subject_id,n.evidence_object_id,n.created_at::text FROM layrs_collaboration.webhook_deliveries d JOIN layrs_collaboration.webhooks h USING(webhook_id) JOIN layrs_collaboration.notifications n ON n.sequence=d.notification_sequence WHERE h.enabled AND ((d.state='pending' AND d.next_attempt_at<=clock_timestamp()) OR (d.state='sending' AND d.lease_until<clock_timestamp())) ORDER BY d.next_attempt_at,d.delivery_id LIMIT 1 FOR UPDATE OF d SKIP LOCKED").fetch_optional(&mut *tx).await?;
+        let row=sqlx::query("SELECT d.webhook_id,d.notification_sequence,d.delivery_id,d.attempts,h.space_id,h.url,h.secret_generation,h.created_by,n.actor_principal_id,n.event_kind,n.subject_id,n.evidence_object_id,n.created_at::text FROM layrs_collaboration.webhook_deliveries d JOIN layrs_collaboration.webhooks h USING(webhook_id) JOIN layrs_collaboration.notifications n ON n.sequence=d.notification_sequence JOIN spaces s ON s.space_id=h.space_id JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id WHERE h.enabled AND ((c.kind='personal' AND dc.personal_projects_enabled) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))) AND ((d.state='pending' AND d.next_attempt_at<=clock_timestamp()) OR (d.state='sending' AND d.lease_until<clock_timestamp())) ORDER BY d.next_attempt_at,d.delivery_id LIMIT 1 FOR UPDATE OF d SKIP LOCKED").fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(false) };
         let id: String = row.get("delivery_id");
         let attempt: i32 = row.get::<i32, _>("attempts") + 1;
@@ -252,10 +252,25 @@ impl WebhookService {
                     authorization_epoch: row.get::<i64, _>("authorization_epoch") as u64,
                 })
                 .await?;
-            Ok::<bool, V3StoreError>(decision.allowed)
+            Ok::<AuthorizationDecision, V3StoreError>(decision)
         }
         .await
-        .unwrap_or(false);
+        .ok();
+        let mode_hidden = authorization
+            .as_ref()
+            .is_some_and(|decision| decision.reason_code == "organisation_hidden");
+        let authorization = authorization.is_some_and(|decision| decision.allowed);
+        // A mode switch may have hidden the workspace after dequeue. Keep the
+        // delivery pending without spending an attempt; it resumes on re-enable.
+        if !authorization {
+            let visible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spaces s JOIN workspaces w ON w.workspace_id=s.workspace_id LEFT JOIN layrs_collaboration.workspace_contexts c ON c.workspace_id=w.workspace_id JOIN layrs_collaboration.deployment_project_contexts dc ON dc.deployment_id=w.deployment_id WHERE s.space_id=$1 AND ((c.kind='personal' AND dc.personal_projects_enabled) OR (COALESCE(c.kind,'organisation')<>'personal' AND (dc.multi_organisation_enabled OR dc.primary_workspace_id=w.workspace_id))))")
+                .bind(space.as_str()).fetch_one(pool).await?;
+            if mode_hidden || !visible {
+                sqlx::query("UPDATE layrs_collaboration.webhook_deliveries SET state='pending',attempts=$2,lease_until=NULL WHERE delivery_id=$1 AND state='sending' AND attempts=$3")
+                    .bind(&id).bind(row.get::<i32,_>("attempts")).bind(attempt).execute(pool).await?;
+                return Ok(true);
+            }
+        }
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_secs()

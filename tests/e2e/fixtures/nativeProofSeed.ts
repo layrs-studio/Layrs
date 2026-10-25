@@ -16,6 +16,7 @@ export interface NativeProofSeed {
   pendingRunId: string;
   proofId: string;
   proofObjectId: string;
+  recipe: Record<string, unknown>;
 }
 
 // Immutable ID of the locally inspected ubuntu:22.04 image. This helper does
@@ -50,9 +51,10 @@ export async function seedNativeProof(fixture: NativeProofFixture): Promise<Nati
   await call("POST", `${space}/members`, fixture.adminAccessToken, {
     principalId: principal, role: "automation",
   });
+  const recipe = { image, command: ["/bin/sh", "-c", "printf 'UI proof fixture'"], timeoutSeconds: 15, maximumLogBytes: 4096 };
   const protection = await call("PUT", `${space}/layers/${encodeURIComponent(fixture.layerId)}/protection`, fixture.adminAccessToken, {
     minimumApprovals: 0, allowSelfApproval: false, rejectConflicts: true,
-    recipe: { image, command: ["/bin/sh", "-c", "printf 'UI proof fixture'"], timeoutSeconds: 15, maximumLogBytes: 4096 },
+    recipe,
     trustedRunnerPrincipalIds: [principal], maximumProofAgeSeconds: 3600,
   });
   const run = await call("POST", `${space}/runs`, serviceToken, {
@@ -76,7 +78,7 @@ export async function seedNativeProof(fixture: NativeProofFixture): Promise<Nati
     idempotencyKey: `ui-cancel-fixture-${randomUUID()}`,
     stepId: fixture.firstStepId, recipeObjectId: requiredString(protection, "recipeObjectId"),
   });
-  return { runId, pendingRunId: requiredString(pending,"runId"), proofObjectId, proofId: requiredString(proof, "proofId") };
+  return { runId, pendingRunId: requiredString(pending,"runId"), proofObjectId, proofId: requiredString(proof, "proofId"), recipe };
 }
 
 function validatedOrigin(value: string): URL {

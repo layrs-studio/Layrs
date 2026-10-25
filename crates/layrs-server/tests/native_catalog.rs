@@ -288,6 +288,7 @@ async fn catalog_lists_only_openable_spaces_and_capabilities_follow_handler_chec
     let provision = |context: PrincipalContext, workspace: &str, slug: &str, name: &str| {
         let repo = repo.clone();
         let request = ProvisionSpaceRequest {
+            context_id: None,
             workspace_slug: workspace.into(),
             space_slug: slug.into(),
             name: name.into(),
@@ -370,7 +371,12 @@ async fn catalog_lists_only_openable_spaces_and_capabilities_follow_handler_chec
     )
     .await;
     let entry = &first["spaces"][0];
-    assert_eq!(entry["workspace"]["slug"], "acme");
+    assert!(
+        entry["workspace"]["slug"]
+            .as_str()
+            .unwrap()
+            .starts_with("company-")
+    );
     assert_eq!(entry["workspaceRole"], "owner");
     assert_eq!(entry["access"], "full");
     assert_eq!(
@@ -405,7 +411,7 @@ async fn catalog_lists_only_openable_spaces_and_capabilities_follow_handler_chec
         roles,
         [
             (json!(alpha), json!("member")),
-            (json!(notes), json!("owner"))
+            (json!(notes), json!("member"))
         ]
     );
     assert_eq!(
@@ -785,14 +791,536 @@ async fn catalog_lists_only_openable_spaces_and_capabilities_follow_handler_chec
         .execute(&maintenance)
         .await
         .unwrap();
-    let remaining = catalog_names(&router, &alice.access_token, 100).await;
-    assert_eq!(remaining.len(), 261);
-    assert!(
-        remaining
-            .iter()
-            .all(|name| name.starts_with("Bulk ") || name == "Zz visible"),
-        "no acme Space remains listed"
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            "/v3/spaces",
+            &alice.access_token,
+            Value::Null
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN,
+        "a suspended sole company membership hides its catalog"
     );
+
+    // Company members may create their own projects, while auditors cannot.
+    // Retrying the same request returns the same ready project.
+    let bob_workspaces = ok(
+        &router,
+        "GET",
+        "/v3/workspaces",
+        &bob.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(bob_workspaces["canCreateOrganisation"], false);
+    assert!(
+        bob_workspaces["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["slug"]
+                .as_str()
+                .is_some_and(|slug| slug.starts_with("company-"))
+                && item["role"] == "member")
+    );
+    let acme_id: String = sqlx::query_scalar("SELECT workspace_id FROM spaces WHERE space_id=$1")
+        .bind(alpha.as_str())
+        .fetch_one(&maintenance)
+        .await
+        .unwrap();
+    let existing_request =
+        json!({"workspaceId":acme_id,"spaceSlug":"web-created","name":"Web created"});
+    sqlx::query(
+        "UPDATE workspace_memberships SET role='auditor' WHERE workspace_id=$1 AND principal_id=$2",
+    )
+    .bind(&acme_id)
+    .bind(bob.principal_id.as_str())
+    .execute(&maintenance)
+    .await
+    .unwrap();
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/projects",
+            &bob.access_token,
+            existing_request.clone()
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    sqlx::query(
+        "UPDATE workspace_memberships SET role='member' WHERE workspace_id=$1 AND principal_id=$2",
+    )
+    .bind(&acme_id)
+    .bind(bob.principal_id.as_str())
+    .execute(&maintenance)
+    .await
+    .unwrap();
+    let listed = ok(
+        &router,
+        "GET",
+        "/v3/workspaces",
+        &bob.access_token,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        listed["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["workspaceId"] == acme_id && item["role"] == "member")
+    );
+    let created = ok(
+        &router,
+        "POST",
+        "/v3/projects",
+        &bob.access_token,
+        existing_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        ok(
+            &router,
+            "POST",
+            "/v3/projects",
+            &bob.access_token,
+            existing_request
+        )
+        .await,
+        created
+    );
+    assert_eq!(
+        ok(
+            &router,
+            "GET",
+            &format!(
+                "/v3/spaces/{}/bootstrap",
+                created["spaceId"].as_str().unwrap()
+            ),
+            &bob.access_token,
+            Value::Null
+        )
+        .await["spaceId"],
+        created["spaceId"]
+    );
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/projects",
+            &bob.access_token,
+            json!({"workspaceId":acme_id,"spaceSlug":"web-created","name":"Different"})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("UPDATE workspace_memberships SET state='suspended' WHERE workspace_id=$1 AND principal_id=$2")
+        .bind(&acme_id).bind(bob.principal_id.as_str()).execute(&maintenance).await.unwrap();
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/projects",
+            &bob.access_token,
+            json!({"workspaceId":acme_id,"spaceSlug":"blocked","name":"Blocked"})
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let new_organisation = json!({"workspaceSlug":"erin-web","workspaceName":"Erin Web","spaceSlug":"first","name":"First project"});
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/projects",
+            &erin.access_token,
+            new_organisation
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST,
+        "inline organisation creation is disabled"
+    );
+    let first_request = json!({"spaceSlug":"first","name":"First project"});
+    let first = ok(
+        &router,
+        "POST",
+        "/v3/projects",
+        &erin.access_token,
+        first_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        ok(
+            &router,
+            "POST",
+            "/v3/projects",
+            &erin.access_token,
+            first_request
+        )
+        .await,
+        first
+    );
+    assert_eq!(call(&router, "POST", "/v3/projects", &erin.access_token, json!({"workspaceSlug":"erin-web","workspaceName":"Other name","spaceSlug":"second","name":"Second project"})).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        ok(
+            &router,
+            "GET",
+            &format!(
+                "/v3/spaces/{}/bootstrap",
+                first["spaceId"].as_str().unwrap()
+            ),
+            &erin.access_token,
+            Value::Null
+        )
+        .await["spaceId"],
+        first["spaceId"]
+    );
+
+    let lens_catalog = ok(
+        &router,
+        "GET",
+        "/v3/lenses/catalog",
+        &erin.access_token,
+        Value::Null,
+    )
+    .await;
+    let items = lens_catalog
+        .as_array()
+        .or_else(|| lens_catalog["items"].as_array())
+        .unwrap();
+    let text_lens = items
+        .iter()
+        .find(|item| {
+            item["manifest"]["analyzer"]["fileExtensions"]
+                .as_array()
+                .is_some_and(|extensions| extensions.iter().any(|extension| extension == "txt"))
+        })
+        .expect("installed text Lens");
+    let lens_id = text_lens["pin"]["lensId"].as_str().unwrap();
+    let configured_request = json!({
+        "workspaceId": first["workspaceId"], "spaceSlug":"with-text", "name":"With Text",
+        "lensConfiguration":{"pins":[text_lens["pin"].clone()],"associations":[{"extension":".txt","lensId":lens_id}]}
+    });
+    let configured = ok(
+        &router,
+        "POST",
+        "/v3/projects",
+        &erin.access_token,
+        configured_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        ok(
+            &router,
+            "POST",
+            "/v3/projects",
+            &erin.access_token,
+            configured_request.clone()
+        )
+        .await,
+        configured
+    );
+    let pinned = ok(
+        &router,
+        "GET",
+        &format!(
+            "/v3/spaces/{}/lenses",
+            configured["spaceId"].as_str().unwrap()
+        ),
+        &erin.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(pinned["revision"], 1);
+    assert_eq!(pinned["pins"], json!([text_lens["pin"].clone()]));
+    assert_eq!(
+        pinned["associations"],
+        configured_request["lensConfiguration"]["associations"]
+    );
+    let different_config = json!({
+        "workspaceId": first["workspaceId"], "spaceSlug":"with-text", "name":"With Text",
+        "lensConfiguration":{"pins":[],"associations":[]}
+    });
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/projects",
+            &erin.access_token,
+            different_config
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+
+    let project = configured["spaceId"].as_str().unwrap();
+    let text_pin = text_lens["pin"].clone();
+    let artifact = format!(
+        "/v3/spaces/{project}/lenses/{}/{}/{}",
+        text_pin["lensId"].as_str().unwrap(),
+        text_pin["version"].as_str().unwrap(),
+        text_pin["digest"].as_str().unwrap()
+    );
+    let typed_text_pin: layrs_lens_sdk::LensPin = serde_json::from_value(text_pin.clone()).unwrap();
+    let erin_context = load_principal_context(&pool, &erin.principal_id)
+        .await
+        .unwrap();
+    let direct_packet = PgCollaborationStore::new(repo.clone())
+        .fetch_lens_packet(
+            &erin_context,
+            &SpaceId::parse(project.to_owned()).unwrap(),
+            &typed_text_pin,
+        )
+        .await;
+    assert!(
+        direct_packet.is_ok(),
+        "direct Lens packet fetch: {:?}",
+        direct_packet.err()
+    );
+    assert_eq!(
+        ok(&router, "GET", &artifact, &erin.access_token, Value::Null).await["manifest"]["id"],
+        text_pin["lensId"]
+    );
+    assert_eq!(
+        call(&router, "GET", &artifact, &bob.access_token, Value::Null)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            "/v3/lenses",
+            &erin.access_token,
+            Value::Null
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        text_lens.get("usageCount").is_none(),
+        "public catalog must not reveal other projects' usage"
+    );
+    let admin_lenses = ok(
+        &router,
+        "GET",
+        "/v3/lenses",
+        &alice.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(admin_lenses["errors"], json!([]));
+    assert!(
+        admin_lenses["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["pin"] == text_pin && item["usageCount"] == 1)
+    );
+
+    let mut example: Value = serde_json::from_str(include_str!(
+        "../../../deploy/lenses/example-markdown.layrslens.json"
+    ))
+    .unwrap();
+    example["approveUnsigned"] = json!(false);
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            "/v3/lenses",
+            &alice.access_token,
+            example.clone()
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    example["approveUnsigned"] = json!(true);
+    let installed = ok(&router, "POST", "/v3/lenses", &alice.access_token, example).await;
+    assert_eq!(installed["state"], "active");
+    assert_eq!(installed["source"], "installed");
+
+    let config_path = format!("/v3/spaces/{project}/lenses");
+    let updated = ok(
+        &router,
+        "PUT",
+        &config_path,
+        &erin.access_token,
+        json!({
+            "expectedRevision":1,"pins":[text_pin.clone(),installed["pin"].clone()],
+            "associations":[{"extension":".txt","lensId":lens_id}]
+        }),
+    )
+    .await;
+    assert_eq!(updated["revision"], 2);
+    assert_eq!(
+        call(
+            &router,
+            "PUT",
+            &config_path,
+            &erin.access_token,
+            json!({
+                "expectedRevision":1,"pins":[],"associations":[]
+            })
+        )
+        .await
+        .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            &router,
+            "PUT",
+            &config_path,
+            &bob.access_token,
+            json!({
+                "expectedRevision":2,"pins":[],"associations":[]
+            })
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+
+    let state_path = format!(
+        "/v3/lenses/{}/{}/{}",
+        text_pin["lensId"].as_str().unwrap(),
+        text_pin["version"].as_str().unwrap(),
+        text_pin["digest"].as_str().unwrap()
+    );
+    let retired = ok(
+        &router,
+        "POST",
+        &format!("{state_path}/retire"),
+        &alice.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(retired["state"], "retired");
+    assert_eq!(
+        ok(&router, "GET", &artifact, &erin.access_token, Value::Null).await["manifest"]["id"],
+        text_pin["lensId"]
+    );
+    assert!(
+        ok(
+            &router,
+            "GET",
+            &config_path,
+            &erin.access_token,
+            Value::Null
+        )
+        .await["availableCatalog"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["pin"] == text_pin && item["available"] == true)
+    );
+    let revoked = ok(
+        &router,
+        "POST",
+        &format!("{state_path}/revoke"),
+        &alice.access_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(revoked["state"], "revoked");
+    assert_eq!(
+        call(&router, "GET", &artifact, &erin.access_token, Value::Null)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        ok(
+            &router,
+            "GET",
+            &config_path,
+            &erin.access_token,
+            Value::Null
+        )
+        .await["availableCatalog"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["pin"] == text_pin && item["available"] == false)
+    );
+    let unpinned = ok(
+        &router,
+        "PUT",
+        &config_path,
+        &erin.access_token,
+        json!({
+            "expectedRevision":2,"pins":[installed["pin"].clone()],"associations":[]
+        }),
+    )
+    .await;
+    assert_eq!(unpinned["revision"], 3);
+    let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM layrs_collaboration.space_lens_history WHERE space_id=$1 AND lens_id=$2 AND version=$3 AND digest=$4)")
+        .bind(project).bind(text_pin["lensId"].as_str().unwrap()).bind(text_pin["version"].as_str().unwrap()).bind(text_pin["digest"].as_str().unwrap())
+        .fetch_one(&pool).await.unwrap();
+    assert!(historical, "removed pin keeps its authorization history");
+    assert_eq!(
+        call(
+            &router,
+            "PUT",
+            &config_path,
+            &erin.access_token,
+            json!({
+                "expectedRevision":3,"pins":[text_pin],"associations":[]
+            })
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // A pre-catalogue client may only submit its old built-in execution pin
+    // while this project has no explicit configuration. An empty configuration
+    // is a decision to disable lenses, not an invitation to use legacy pins.
+    let legacy_space = SpaceId::parse(first["spaceId"].as_str().unwrap()).unwrap();
+    let configured_space = SpaceId::parse(configured["spaceId"].as_str().unwrap()).unwrap();
+    assert!(repo.validate_legacy_execution(&legacy_space).await.is_ok());
+    assert!(
+        repo.validate_legacy_execution(&configured_space)
+            .await
+            .is_err()
+    );
+    let empty = ok(
+        &router,
+        "PUT",
+        &format!("/v3/spaces/{legacy_space}/lenses"),
+        &erin.access_token,
+        json!({"expectedRevision":0,"pins":[],"associations":[]}),
+    )
+    .await;
+    assert_eq!(empty["pins"], json!([]));
+    assert!(repo.validate_legacy_execution(&legacy_space).await.is_err());
+    // The prepare observation above was valid. Commit must observe the new
+    // explicit configuration under the same Space lock used by configuration.
+    let mut admission = pool.begin().await.unwrap();
+    sqlx::query("SELECT space_id FROM spaces WHERE space_id=$1 FOR UPDATE")
+        .bind(legacy_space.as_str())
+        .fetch_one(&mut *admission)
+        .await
+        .unwrap();
+    assert!(
+        repo.validate_legacy_execution_in(&mut admission, &legacy_space)
+            .await
+            .is_err()
+    );
+    admission.rollback().await.unwrap();
 
     drop(router);
     drop(repo);

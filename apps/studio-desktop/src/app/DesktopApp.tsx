@@ -2,14 +2,23 @@ import { useEffect, type ReactNode } from "react";
 import { AppearanceSettings, ToastProvider, matchRoute, navigate, segment, useLocation } from "@layrs/ui";
 import { NewProjectPage } from "../pages/NewProjectPage";
 import { ProjectsPage } from "../pages/ProjectsPage";
+import { NewOrganisationPage } from "../pages/NewOrganisationPage";
 import { Frame } from "./Frame";
 import { ProjectRoute } from "./ProjectFrame";
 import { readRecents } from "./recents";
+import { RemoteProvider } from "./remote";
+import { DesktopContextsProvider } from "./contexts";
+
+const noAcquire = () => false;
+const noRelease = () => undefined;
+const noChange = () => undefined;
 
 export function DesktopApp() {
   return (
     <ToastProvider>
-      <Router />
+      <RemoteProvider root="" acquire={noAcquire} release={noRelease} onChanged={noChange}>
+        <DesktopContextsProvider><Router /></DesktopContextsProvider>
+      </RemoteProvider>
     </ToastProvider>
   );
 }
@@ -32,6 +41,9 @@ function Router() {
   if (matchRoute("/projects/new", path)) {
     page = <NewProjectPage />;
     title = "Nouveau projet";
+  } else if (matchRoute("/organisations/new", path)) {
+    page = <NewOrganisationPage />;
+    title = "Nouvelle organisation";
   } else if (matchRoute("/settings/appearance", path)) {
     page = <AppearanceSettings surface="desktop" />;
     title = "Apparence";
