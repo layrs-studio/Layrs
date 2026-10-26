@@ -1,6 +1,7 @@
 //! Consuming activation writer. The retained owner and native READY proof are
 //! returned on every refusal, including uncertain SQL close or family commit.
 mod ranges;
+mod recovery_export;
 mod capture_image;
 mod capture;
 pub use capture::{ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep};
@@ -9,6 +10,12 @@ mod capture_sql;
 mod report;
 mod session;
 pub use ranges::ProviderActiveRangeFailure;
+pub use recovery_export::{
+    ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
+    ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
+    ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
+    ProviderRecoveryExportStep,
+};
 mod reopen;
 mod sql;
 #[cfg(test)]

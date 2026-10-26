@@ -11,6 +11,8 @@ pub(in crate::projection) mod activation;
 pub(in crate::projection) mod capture;
 #[path = "records/codec.rs"]
 pub(super) mod codec;
+#[path = "records/import.rs"]
+pub(in crate::projection) mod import;
 #[path = "records/preparation.rs"]
 pub(in crate::projection) mod preparation;
 #[path = "records/receipts.rs"]
@@ -20,9 +22,9 @@ mod rows;
 #[path = "records/source.rs"]
 pub(in crate::projection) mod source;
 
-use crate::projection::{invalid, Result};
+use crate::projection::{Result, invalid};
 use layrs_core::scm::canonical_json;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub(in crate::projection) use receipts::*;
 pub use receipts::{PreparedBinding, ProviderBootstrapBinding, ReceiptRef};

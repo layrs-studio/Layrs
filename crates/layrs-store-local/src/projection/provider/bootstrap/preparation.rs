@@ -22,6 +22,10 @@ pub use activation::{
     ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
     ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+    ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
+    ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
+    ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
+    ProviderRecoveryExportStep,
 };
 pub use ranges::ProviderRangeFailure;
 pub use reopen::{ProviderPreparedOpenFailure, ProviderPreparedReopened};

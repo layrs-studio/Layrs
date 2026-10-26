@@ -199,6 +199,25 @@ impl ProviderActiveSession {
     pub fn checkpoint(&self) -> layrs_vfs::Result<layrs_vfs::Checkpoint<'_>> {
         self.session.checkpoint()
     }
+    /// Explicit portable recovery export. Callers keep every external editor,
+    /// build tool and agent quiescent through the response. This does not admit
+    /// the exported files into managed capture or change the native source.
+    pub fn export_quiesced(
+        &mut self,
+        parent: &Path,
+        cancel: &Cancellation,
+    ) -> std::result::Result<ProviderRecoveryExportOutcome, ProviderRecoveryExportFailure> {
+        recovery_export::run(
+            &self.session,
+            self.source.as_ref(),
+            &self.source.held,
+            &self.source.root,
+            &self.source.record,
+            &self.source.activation,
+            parent,
+            cancel,
+        )
+    }
     /// Capture a complete selected image. The caller keeps external namespace
     /// mutation quiescent. The same transaction ID resumes or returns its
     /// durable acknowledgement; a changed staged image is refused.

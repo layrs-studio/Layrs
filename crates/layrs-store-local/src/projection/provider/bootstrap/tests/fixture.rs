@@ -113,6 +113,30 @@ impl Fixture {
     pub fn source() -> ProviderBootstrapSource {
         Pure::new("G1", false).source
     }
+    /// README is an initially cold, selected nonempty file with a descriptor.
+    /// Activation materializes its placeholder; capture may later replace it.
+    pub fn writable_file_source() -> ProviderBootstrapSource {
+        use layrs_core::scm::{Chunk, ChunkingDescriptor, FileManifest, TreeEntryTarget};
+        let old = Self::source();
+        let mut snapshot = old.initial().clone();
+        let entry = snapshot
+            .entries
+            .iter_mut()
+            .find(|entry| entry.path.as_str() == "README.md")
+            .expect("G1 README entry");
+        assert_eq!(entry.state, layrs_core::projection::EntryState::Unavailable);
+        entry.writable = true;
+        let chunk = Chunk::new(b"provider base content".to_vec()).unwrap();
+        let manifest = FileManifest::from_chunks(ChunkingDescriptor::single(), &[chunk]).unwrap();
+        entry.target = Some(TreeEntryTarget::File {
+            file_id: manifest.file_id().clone(),
+        });
+        let descriptors = vec![super::super::super::records::ProviderSourceDescriptor {
+            path: entry.path.clone(),
+            manifest,
+        }];
+        ProviderBootstrapSource::validate(snapshot, old.selection().clone(), descriptors).unwrap()
+    }
     pub fn begin(&self) -> Result<ProviderControlPublicationOutcome> {
         self.family.begin_provider_bootstrap(
             &self.checkout,

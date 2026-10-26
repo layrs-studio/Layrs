@@ -1,5 +1,24 @@
 # État courant de Layrs
 
+## Export de récupération du 26 octobre 2026
+
+La session Active peut exporter les fichiers vérifiés vers un dossier ordinaire
+distinct. Le manifeste distingue les fichiers candidats au travail géré, les
+modifications à récupérer séparément, les suppressions et les octets manquants.
+Une lacune produit un résultat explicitement incomplet. L’annulation avant la
+publication finale conserve les fichiers sans annoncer une réussite.
+
+**109 tests purs provider, 45 tests purs VFS et cinq recettes natives ciblées
+passent**, ainsi que le test d’annulation entre blocs de vérification. Le
+[checkpoint d’export](plans/worktrees-partial-vfs-recovery-export-checkpoint.md)
+conserve le binaire, les résultats et leurs limites. Trois recettes natives
+supplémentaires couvrent remplacement, suppression et refus de modification
+protégée dans le [checkpoint de capture](plans/worktrees-partial-vfs-capture-checkpoint.md).
+
+Les codecs purs de provenance et companion sont prêts ; leur lecteur SQL et
+les transitions gérées restent en cours. L’expansion de sélection, les essais
+de panne restants et l’intégration CLI/Desktop restent à terminer.
+
 ## Capture provider du 26 octobre 2026
 
 La session Active capture maintenant une image sélectionnée, conserve un reçu

@@ -5,7 +5,6 @@ use super::*;
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
-    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
@@ -16,22 +15,26 @@ pub use bootstrap::{
     ProviderBootstrapReceipt, ProviderBootstrapSqlWrite, ProviderBootstrapWriteEffect,
     ProviderBootstrapWriteReport, ProviderBootstrapWriteReportProvenance,
     ProviderBootstrapWriteState, ProviderBootstrapWriteStep, ProviderBootstrapWriterOperation,
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderCatalogDescriptor, ProviderControlCommitDisposition, ProviderControlPublicationOutcome,
     ProviderControlPublished, ProviderControlWithheld, ProviderPreparationFailure,
     ProviderPreparationFailureKind, ProviderPreparationOutcome, ProviderPreparationSqlPhase,
     ProviderPreparationWithheld, ProviderPreparationWriteEffect, ProviderPreparationWriteReport,
     ProviderPreparationWriteReportProvenance, ProviderPreparationWriteState,
     ProviderPreparationWriteStep, ProviderPrepared, ProviderPreparedOpenFailure,
-    ProviderPreparedReopened, ProviderRangeFailure,
+    ProviderPreparedReopened, ProviderRangeFailure, ProviderRecoveryExportCause,
+    ProviderRecoveryExportClass, ProviderRecoveryExportDeletion, ProviderRecoveryExportFailure,
+    ProviderRecoveryExportFile, ProviderRecoveryExportGap, ProviderRecoveryExportGapKind,
+    ProviderRecoveryExportOutcome, ProviderRecoveryExportReport, ProviderRecoveryExportStep,
 };
 #[cfg(windows)]
 pub use records::{ProviderBootstrapSource, ProviderSourceDescriptor};
 #[cfg(windows)]
 mod artifacts;
 #[cfg(windows)]
-mod capture_lock;
-#[cfg(windows)]
 pub(in crate::projection) mod cancellation;
+#[cfg(windows)]
+mod capture_lock;
 #[cfg(windows)]
 pub(in crate::projection) mod content_catalog;
 #[cfg(windows)]
@@ -50,8 +53,8 @@ pub(in crate::projection) mod validation;
 pub use journal::Refusal as ProviderJournalRefusal;
 #[cfg(windows)]
 pub use process_profile::{
-    PROVIDER_SQLITE_SOURCE_ID, ProviderSqliteBuildProfile, ProviderSqliteProcessDeclaration,
-    ProviderSqliteProfileError, declare_provider_sqlite_process_profile,
+    declare_provider_sqlite_process_profile, ProviderSqliteBuildProfile,
+    ProviderSqliteProcessDeclaration, ProviderSqliteProfileError, PROVIDER_SQLITE_SOURCE_ID,
 };
 #[cfg(windows)]
 pub use records::{
@@ -95,6 +98,17 @@ pub(super) fn require_ordinary(c: &rusqlite::Connection) -> Result<()> {
         } else {
             "provider backend requires a provider capability; ordinary access refused"
         }));
+    }
+    require_reclamation_safe(c)
+}
+
+/// Reclamation has a separate fail-closed boundary from ordinary history
+/// interpretation. Imported immutable evidence must not make live provider
+/// reservations or companion dependencies invisible to the ordinary sweeper.
+pub(super) fn require_reclamation_safe(c: &rusqlite::Connection) -> Result<()> {
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != PROJECTION_PROVIDER_SCHEMA_VERSION {
+        return Ok(());
     }
     for table in schema::EVIDENCE_TABLES {
         if c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table})"), [], |r| {

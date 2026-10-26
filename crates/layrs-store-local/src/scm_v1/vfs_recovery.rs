@@ -1182,6 +1182,21 @@ impl VfsExportWriter {
         length: u64,
         produce: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.write_file_with_check(path, expected, length, produce, &mut || Ok(()))
+    }
+
+    /// As `write_file`, with a cooperative check before effects and during the
+    /// bounded verification reread. The producer remains responsible for its
+    /// own checks while it supplies bytes.
+    pub fn write_file_with_check(
+        &mut self,
+        path: &layrs_core::scm::RepoPath,
+        expected: &layrs_core::scm::FileId,
+        length: u64,
+        produce: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        check()?;
         if self.files.contains_key(path) || self.files.len() >= 100_000 {
             return Err(invalid("duplicate or excessive export paths"));
         }
@@ -1201,13 +1216,24 @@ impl VfsExportWriter {
         }
         let mut sink = io::sink();
         let mut verifier = ExportHasher::new(&mut sink, expected, length);
-        io::copy(&mut checked.file(), &mut verifier)?;
+        copy_export_checked(&mut checked.file(), &mut verifier, check)?;
         verifier.finish()?;
         self.files.insert(path.clone(), (expected.clone(), length));
         Ok(())
     }
 
     pub fn finish(self, manifest: &[u8]) -> io::Result<PathBuf> {
+        self.finish_with_check(manifest, &mut || Ok(()))
+    }
+
+    /// Rechecks copied files in bounded blocks and checks once more before
+    /// publishing the manifest. An error leaves the incomplete artifact intact.
+    pub fn finish_with_check(
+        self,
+        manifest: &[u8],
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<PathBuf> {
+        check()?;
         if manifest.len() > 32 * 1024 * 1024 {
             return Err(invalid("export manifest exceeds limit"));
         }
@@ -1222,6 +1248,7 @@ impl VfsExportWriter {
         let mut visited = 0usize;
         while let Some((relative, directory)) = pending.pop() {
             for entry in std::fs::read_dir(self.tree_root().join(&relative))? {
+                check()?;
                 visited += 1;
                 if visited > 200_000 {
                     return Err(invalid("export namespace exceeds limit"));
@@ -1247,7 +1274,7 @@ impl VfsExportWriter {
                     let file = directory.open_file(name.as_ref())?;
                     let mut sink = io::sink();
                     let mut verifier = ExportHasher::new(&mut sink, expected, *length);
-                    io::copy(&mut file.file(), &mut verifier)?;
+                    copy_export_checked(&mut file.file(), &mut verifier, check)?;
                     verifier.finish()?;
                     found.insert(path);
                 }
@@ -1256,16 +1283,34 @@ impl VfsExportWriter {
         if found.len() != self.files.len() {
             return Err(invalid("export file disappeared"));
         }
+        check()?;
         let mut file = self.container.create_file("manifest.pending".as_ref())?;
         file.file_mut().write_all(manifest)?;
         file.file().sync_all()?;
         self.container.sync()?;
+        check()?;
         if file.rename_to(&self.container, "manifest.json".as_ref())? {
             return Err(invalid("export completion manifest collision"));
         }
         self.container.sync()?;
         self.container.verify_path_identity()?;
         Ok(self.tree_root())
+    }
+}
+
+fn copy_export_checked(
+    input: &mut dyn Read,
+    output: &mut dyn Write,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        check()?;
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        output.write_all(&buffer[..count])?;
     }
 }
 
@@ -1328,6 +1373,25 @@ impl Write for ExportHasher<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_verification_checks_cancellation_between_bounded_blocks() {
+        let bytes = vec![0x63; 128 * 1024];
+        let mut input = std::io::Cursor::new(&bytes);
+        let mut output = Vec::new();
+        let mut checks = 0;
+        let error = copy_export_checked(&mut input, &mut output, &mut || {
+            checks += 1;
+            if checks > 1 {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(output, bytes[..64 * 1024]);
+        assert_eq!(input.position(), 64 * 1024);
+    }
 
     fn capture_batch(id: &WorktreeId) -> WriteBatch {
         WriteBatch::new(

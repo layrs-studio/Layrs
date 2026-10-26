@@ -153,6 +153,10 @@ fn reconcile(lease: &Lease) -> Result<u64> {
             &marker,
             &pin,
         )?;
+        // Ordinary imported-history admission and reclamation deliberately have
+        // different authority. Keep this check before any family mutation even
+        // when a future typed interpreter admits an ordinary imported member.
+        provider::require_reclamation_safe(&c)?;
         let mut q = c.prepare("SELECT root_id,digest FROM projection_claims")?;
         let rows = q
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?

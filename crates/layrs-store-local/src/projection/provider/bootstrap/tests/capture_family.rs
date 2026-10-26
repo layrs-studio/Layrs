@@ -154,6 +154,16 @@ pub(in crate::projection::provider::bootstrap) fn active_holder_with_writable_pr
     active_holder_with_source(Some(source))
 }
 
+pub(in crate::projection::provider::bootstrap) fn active_holder_with_writable_file_private() -> (
+    Fixture,
+    super::super::preparation::ProviderActive,
+    AllocationRecord,
+    PreparedRecord,
+    ProviderBootstrapBinding,
+) {
+    active_holder_with_source(Some(Fixture::writable_file_source()))
+}
+
 fn active_holder_with_source(
     source: Option<crate::projection::provider::records::ProviderBootstrapSource>,
 ) -> (

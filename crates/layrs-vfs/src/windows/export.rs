@@ -1,4 +1,4 @@
-use super::{Checkpoint, InspectionPurpose, Session, api::check, fs};
+use super::{api::check, fs, Checkpoint, InspectionPurpose, Session};
 use crate::{CaptureEvidence, Error, Inspection, Result};
 use layrs_core::scm::{FileId, RepoPath};
 use std::{
@@ -60,6 +60,66 @@ impl ExportCheckpoint<'_> {
         self.checkpoint.entries()
     }
 
+    /// The catalog path encoded in this retained file's original CFAPI
+    /// identity. This is observation data, not a capture/checkpoint grant.
+    /// The caller must revalidate the export namespace around its full use.
+    /// Ordinary files and deleted catalog entries have no original path.
+    pub fn original_path(&self, path: &RepoPath) -> Result<Option<RepoPath>> {
+        // Checkpoint paths originate from a BTreeSet and remain sorted.
+        let index = self
+            .entries()
+            .binary_search_by(|entry| entry.path.cmp(path))
+            .map_err(|_| Error::IdentityMismatch)?;
+        let entry = &self.entries()[index];
+        let Some(proof) = self.proofs.get(path) else {
+            return if matches!(&entry.evidence, CaptureEvidence::Deleted { .. }) {
+                Ok(None)
+            } else {
+                Err(Error::IdentityMismatch)
+            };
+        };
+        match (&proof.identity, &entry.evidence) {
+            // An ordinary replacement at a catalogued path still carries a
+            // path-derived `base`, but has no CFAPI identity/original path.
+            (None, CaptureEvidence::NeedsHash { .. }) => Ok(None),
+            (
+                Some(identity),
+                CaptureEvidence::NeedsHash {
+                    base: Some(base), ..
+                },
+            ) => {
+                let original = self
+                    .checkpoint
+                    .session()
+                    .catalog
+                    .resolve_identity(identity)?;
+                if &original.file_id != base || proof.backing.as_ref() != Some(base) {
+                    return Err(Error::IdentityMismatch);
+                }
+                Ok(Some(original.path.clone()))
+            }
+            (
+                Some(identity),
+                CaptureEvidence::Immutable {
+                    file_id,
+                    original_path,
+                    ..
+                },
+            ) => {
+                let original = self
+                    .checkpoint
+                    .session()
+                    .catalog
+                    .resolve_identity(identity)?;
+                if &original.file_id != file_id || &original.path != original_path {
+                    return Err(Error::IdentityMismatch);
+                }
+                Ok(Some(original.path.clone()))
+            }
+            _ => Err(Error::IdentityMismatch),
+        }
+    }
+
     /// Recheck exact namespace/native identity and the original backing blob.
     /// Residency and in-sync metadata may change during an explicit export read;
     /// neither is substituted for byte verification.
@@ -92,15 +152,15 @@ impl ExportCheckpoint<'_> {
         path: &RepoPath,
         consume: impl FnOnce(&mut dyn Read) -> Result<T>,
     ) -> Result<T> {
-        let entry = self
+        let index = self
             .entries()
-            .iter()
-            .find(|entry| entry.path == *path)
-            .ok_or_else(|| Error::ExportRead {
+            .binary_search_by(|entry| entry.path.cmp(path))
+            .map_err(|_| Error::ExportRead {
                 path: path.clone(),
                 backing: None,
                 cause: Box::new(Error::IdentityMismatch),
             })?;
+        let entry = &self.entries()[index];
         self.read_entry(entry, consume)
             .map_err(|error| match error {
                 Error::ExportConsumer { .. } => error,
