@@ -185,6 +185,14 @@ impl PinnedDirectory {
         self.wrap_file(name, file)
     }
 
+    /// Read-only input does not need the DELETE right used by CAS mutations.
+    #[cfg(windows)]
+    pub(crate) fn open_readonly_file(&self, name: &OsStr) -> io::Result<PinnedFile> {
+        validate_name(name)?;
+        let file = platform::open_readonly_file_at(&self.file, name)?;
+        self.wrap_file(name, file)
+    }
+
     pub(crate) fn unlink_file(&self, name: &OsStr) -> io::Result<()> {
         validate_name(name)?;
         platform::unlink_name_at(&self.file, name)

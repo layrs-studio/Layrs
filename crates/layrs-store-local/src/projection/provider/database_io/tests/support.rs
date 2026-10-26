@@ -56,7 +56,7 @@ pub(in crate::projection::provider) fn witness(path: &std::path::Path) -> (Strin
 
 /// Real unprivileged NTFS junction, using the already qualified constant-command
 /// transport. This is test setup only; no native allocator/ACL bypass is copied.
-pub(super) fn junction(root: &std::path::Path, link: &std::path::Path, target: &std::path::Path) {
+pub(in crate::projection::provider) fn junction(root: &std::path::Path, link: &std::path::Path, target: &std::path::Path) {
     use super::super::super::process_profile::tests::child::OwnedChild;
     use std::{
         os::windows::{fs::MetadataExt, process::CommandExt},

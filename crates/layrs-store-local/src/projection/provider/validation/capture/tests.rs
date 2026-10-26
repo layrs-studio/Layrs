@@ -231,6 +231,119 @@ fn write_accepted(c: &Connection, tx: &ProviderCaptureTransactionRecord) {
 }
 
 #[test]
+#[ignore = "owned audited Windows SQLite process; nonrecursive imported capture/publication metadata"]
+fn imported_metadata_uses_exact_origin_and_retains_semantic_checks() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::imported_metadata_uses_exact_origin_and_retains_semantic_checks"
+        ),
+        120,
+        || {
+            child::declare();
+            let database = BareConnection::reference().unwrap();
+            let c = database.connection();
+            let (f, _, _, _, activated) = active_fixture(c, true);
+            let entry = &activated.snapshot.entries[0];
+            let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
+                panic!("fixture file required");
+            };
+            let mut patch = CapturedPatch {
+                schema_version: "layrs.projection-capture.v1".into(),
+                sequence: 1,
+                previous_patch_digest: None,
+                projection_generation: activated.generation,
+                projection_digest: activated.digest.clone(),
+                identity: f.allocation.format.identity.clone(),
+                changes: vec![CapturedChange {
+                    path: entry.path.clone(),
+                    expected: Some(CapturedTarget {
+                        file_id: file_id.clone(),
+                        executable: entry.executable,
+                    }),
+                    replacement: Some(CapturedFile {
+                        file_id: FileId::from_bytes(b"metadata without installed bytes"),
+                        executable: false,
+                        bytes: 32,
+                    }),
+                }],
+                digest: String::new(),
+            };
+            set_patch_digest(&mut patch);
+            c.execute(
+                "INSERT INTO projection_captures VALUES(?1,?2,?3,?4)",
+                params![
+                    patch.sequence,
+                    patch.digest,
+                    patch.projection_generation,
+                    canonical_json(&patch).unwrap()
+                ],
+            )
+            .unwrap();
+            let origin = patch.identity.clone();
+            let load = |identity: &crate::projection::ProjectionIdentity, generation| {
+                crate::projection::capture::storage::load_metadata_for_origin(
+                    c, 1, identity, generation,
+                )
+            };
+            assert_eq!(load(&origin, 1).unwrap(), patch);
+            // No content rows or claims exist: this API proves metadata only.
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM projection_content", [], |r| r
+                    .get::<_, u64>(0))
+                    .unwrap(),
+                0
+            );
+            let mut foreign = origin.clone();
+            foreign.worktree_id =
+                layrs_core::scm::WorktreeId::parse("worktree:foreign-origin").unwrap();
+            assert!(load(&foreign, 1).is_err());
+            assert!(load(&origin, 0).is_err());
+
+            let receipt = b"{}";
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"layrs-projection-receipt-v1\0");
+            hash.update(receipt);
+            c.execute(
+                "INSERT INTO projection_publications VALUES(1,?1,?2,?3,NULL,?4,?5,?6)",
+                params![
+                    format!("blake3:{}", "0".repeat(64)),
+                    format!("blake3:{}", hash.finalize()),
+                    receipt.as_slice(),
+                    activated.generation,
+                    activated.digest,
+                    canonical_json(&activated).unwrap()
+                ],
+            )
+            .unwrap();
+            let publication = |identity: &crate::projection::ProjectionIdentity| {
+                crate::projection::publication::storage::completed_record_for_origin(
+                    c, 1, identity, 1,
+                )
+            };
+            assert!(publication(&origin).unwrap().is_some());
+            assert!(publication(&foreign).is_err());
+            c.execute(
+                "UPDATE projection_publications SET receipt_bytes=x'7b2278223a317d'",
+                [],
+            )
+            .unwrap();
+            assert!(publication(&origin).is_err());
+
+            patch.changes[0].expected = None;
+            set_patch_digest(&mut patch);
+            c.execute(
+                "UPDATE projection_captures SET digest=?1,payload=?2 WHERE sequence=1",
+                params![patch.digest, canonical_json(&patch).unwrap()],
+            )
+            .unwrap();
+            assert!(load(&origin, 1).is_err());
+            database.finish(Ok(())).unwrap();
+        },
+    );
+}
+
+#[test]
 #[ignore = "owned audited Windows SQLite process; bounded Active capture SQL interpretation"]
 fn active_capture_rows_are_separate_from_initial_active_admission() {
     child::run(

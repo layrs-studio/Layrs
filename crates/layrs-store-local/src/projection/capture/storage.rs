@@ -114,6 +114,37 @@ fn load_inner(
     sequence: u64,
     verify_bytes: bool,
 ) -> Result<CapturedPatch> {
+    let patch = load_record(c, sequence)?;
+    validate_with_bytes(c, store, &patch, verify_bytes)?;
+    Ok(patch)
+}
+
+/// Metadata interpretation with an origin supplied by an independently verified
+/// import lineage. This performs no provenance lookup, content read, claim
+/// acceptance or native authorization, so import validation cannot recurse back
+/// into conversion::provenance through a capture loader.
+pub(in crate::projection) fn load_metadata_for_origin(
+    c: &Connection,
+    sequence: u64,
+    identity: &ProjectionIdentity,
+    maximum_generation: u64,
+) -> Result<CapturedPatch> {
+    let patch = load_record(c, sequence)?;
+    validate_record(
+        c,
+        &patch,
+        || {
+            if &patch.identity != identity || patch.projection_generation > maximum_generation {
+                return Err(invalid("capture escaped its verified origin boundary"));
+            }
+            Ok(())
+        },
+        |_| Ok(()),
+    )?;
+    Ok(patch)
+}
+
+fn load_record(c: &Connection, sequence: u64) -> Result<CapturedPatch> {
     let length: u64 = c.query_row(
         "SELECT length(payload) FROM projection_captures WHERE sequence=?1",
         [sequence],
@@ -135,7 +166,6 @@ fn load_inner(
     {
         return Err(invalid("capture identity or canonical document mismatch"));
     }
-    validate_with_bytes(c, store, &patch, verify_bytes)?;
     Ok(patch)
 }
 fn validate(c: &Connection, store: &ProjectionStore, patch: &CapturedPatch) -> Result<()> {
@@ -147,6 +177,25 @@ fn validate_with_bytes(
     patch: &CapturedPatch,
     verify_bytes: bool,
 ) -> Result<()> {
+    validate_record(
+        c,
+        patch,
+        || conversion::validate_capture_identity(c, store, patch),
+        |file| {
+            if verify_bytes {
+                file_manifest(c, store, file)?;
+            }
+            Ok(())
+        },
+    )
+}
+
+fn validate_record(
+    c: &Connection,
+    patch: &CapturedPatch,
+    validate_origin: impl FnOnce() -> Result<()>,
+    mut validate_content: impl FnMut(&CapturedFile) -> Result<()>,
+) -> Result<()> {
     if patch.schema_version != "layrs.projection-capture.v1"
         || patch.sequence == 0
         || patch.digest != patch.computed_digest()?
@@ -154,7 +203,7 @@ fn validate_with_bytes(
     {
         return Err(invalid("capture digest, identity or schema mismatch"));
     }
-    conversion::validate_capture_identity(c, store, patch)?;
+    validate_origin()?;
     let prior: Option<String> = if patch.sequence == 1 {
         None
     } else {
@@ -233,9 +282,7 @@ fn validate_with_bytes(
             if file.bytes > MAX_CAPTURE_FILE_BYTES {
                 return Err(invalid("capture file exceeds1GiB"));
             }
-            if verify_bytes {
-                file_manifest(c, store, file)?;
-            }
+            validate_content(file)?;
         }
     }
     Ok(())

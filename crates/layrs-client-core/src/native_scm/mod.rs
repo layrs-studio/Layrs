@@ -83,6 +83,10 @@ pub use remote::{
 
 pub use commands::{execute_workspace, WorkspaceAction};
 mod partial;
+#[cfg(windows)]
+mod partial_provider;
+#[cfg(windows)]
+pub use partial_provider::{provider_status, ProviderStatus, ProviderStatusError, ProviderStatusTicket};
 mod projection_offline_commands;
 pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
 pub use diff::{NativeDiffLine, NativeFileChange};

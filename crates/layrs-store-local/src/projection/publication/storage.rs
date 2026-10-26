@@ -76,6 +76,31 @@ pub(in crate::projection) fn completed_record(
     store: &ProjectionStore,
     sequence: u64,
 ) -> Result<Option<(CompletedPublication, Option<Vec<u8>>)>> {
+    completed_record_with_capture(c, sequence, || {
+        super::super::capture::storage::load(c, store, sequence)
+    })
+}
+
+/// Read-only inherited publication interpretation using an origin already
+/// resolved from immutable lineage. Content protection remains a separate proof.
+pub(in crate::projection) fn completed_record_for_origin(
+    c: &Connection,
+    sequence: u64,
+    identity: &ProjectionIdentity,
+    maximum_generation: u64,
+) -> Result<Option<(CompletedPublication, Option<Vec<u8>>)>> {
+    completed_record_with_capture(c, sequence, || {
+        super::super::capture::storage::load_metadata_for_origin(
+            c, sequence, identity, maximum_generation,
+        )
+    })
+}
+
+fn completed_record_with_capture(
+    c: &Connection,
+    sequence: u64,
+    load_capture: impl FnOnce() -> Result<CapturedPatch>,
+) -> Result<Option<(CompletedPublication, Option<Vec<u8>>)>> {
     let exists: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_publications WHERE sequence=?1)",
         [sequence],
@@ -122,7 +147,7 @@ pub(in crate::projection) fn completed_record(
     {
         return Err(invalid("completed publication snapshot changed"));
     }
-    let capture = super::super::capture::storage::load(c, store, sequence)?;
+    let capture = load_capture()?;
     match &stored_next {
         Some(next) => {
             if next != &snapshot

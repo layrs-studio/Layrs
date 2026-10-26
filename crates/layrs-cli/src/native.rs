@@ -59,6 +59,9 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     if let CliCommand::Vfs(command) = &cli.command {
         return Some(crate::native_vfs::run(cli, command));
     }
+    if let CliCommand::PartialProvider(command) = &cli.command {
+        return Some(partial_provider_command(command));
+    }
     if let CliCommand::Partial { args } = &cli.command {
         return Some(partial_command(cli, args));
     }
@@ -786,6 +789,25 @@ fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
         human: serde_json::to_string_pretty(&data).map_err(error)?,
         data,
     })
+}
+
+#[cfg(windows)]
+fn partial_provider_command(command: &crate::args::PartialProviderCommand) -> Result<Rendered, CliError> {
+    use crate::args::PartialProviderCommand;
+    let data = match command {
+        PartialProviderCommand::Status { ticket } => {
+            let status = layrs_client_core::native_scm::provider_status(ticket).map_err(error)?;
+            serde_json::to_value(status).map_err(error)?
+        }
+    };
+    Ok(Rendered {
+        human: serde_json::to_string_pretty(&data).map_err(error)?,
+        data,
+    })
+}
+#[cfg(not(windows))]
+fn partial_provider_command(_: &crate::args::PartialProviderCommand) -> Result<Rendered, CliError> {
+    Err(CliError::runtime("partial provider status requires Windows"))
 }
 fn error(e: impl std::fmt::Display) -> CliError {
     CliError::runtime(e.to_string())

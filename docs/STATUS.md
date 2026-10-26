@@ -1,5 +1,19 @@
 # État courant de Layrs
 
+## Lecture d’historique importé et statut provider
+
+La lecture des captures et publications peut vérifier une origine héritée sans
+récursion dans la provenance. La commande dédiée
+`layrs partial provider status --ticket FILE` est câblée avec un ticket borné
+lu sans suivre de liens. Elle reste conditionnée à la déclaration explicite du
+profil SQLite d’un hôte audité ; le CLI générique ne s’accorde pas ce profil.
+
+Les **110 tests purs provider**, les **deux tests ciblés client/CLI** et les
+**cinq recettes de métadonnées, ticket et régressions ordinaires** passent.
+Le [checkpoint des lecteurs](plans/worktrees-partial-vfs-import-seams-checkpoint.md)
+conserve leurs limites. Le validateur SQL complet d’import et les transitions
+managed/companion restent en cours ; cette tranche ne les déclare pas terminés.
+
 ## Export de récupération du 26 octobre 2026
 
 La session Active peut exporter les fichiers vérifiés vers un dossier ordinaire

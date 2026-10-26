@@ -68,6 +68,7 @@ pub use provider::{
     ProviderRecoveryEffectState, ProviderRollbackTrigger, ProviderSqliteBuildProfile,
     ProviderSqliteProcessDeclaration,
     ProviderSqliteProfileError, declare_provider_sqlite_process_profile,
+    read_provider_ticket_document,
 };
 mod refresh;
 mod retention;

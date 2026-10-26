@@ -52,6 +52,7 @@ Commands:
     Add paths to the current selection and hydrate them; partial-hydrate is an alias.
     Repeat either selection flag. Existing selected paths and local edits are retained.
   layrs partial status | capture EXPECTED_GENERATION | resume-installation
+  layrs partial provider status --ticket FILE
   layrs partial fsck | history [BEFORE_SEQUENCE]
   layrs partial resume-namespace | resume-refresh | resume-restore | resume-rebase
   layrs partial rebase-draft
