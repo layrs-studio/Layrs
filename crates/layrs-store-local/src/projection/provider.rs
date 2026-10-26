@@ -40,9 +40,13 @@ pub(in crate::projection) mod content_catalog;
 #[cfg(windows)]
 pub(super) mod database_io;
 #[cfg(windows)]
-mod journal;
+mod destination_sql;
+#[cfg(windows)]
+mod destination_validation;
 #[cfg(windows)]
 pub(in crate::projection) mod import_validation;
+#[cfg(windows)]
+mod journal;
 #[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]

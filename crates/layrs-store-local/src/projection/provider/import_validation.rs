@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 mod ancestry;
 mod copy;
+mod copied;
 mod rows;
 mod scoped;
 mod source;
@@ -227,6 +228,7 @@ fn bind_provider_inputs(
 }
 
 pub(in crate::projection) use copy::copy_verified_prefix;
+pub(in crate::projection::provider) use copied::require_exact_copied_rows;
 
 /// Evidence-bearing family of the connection supplied to `require_schema`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

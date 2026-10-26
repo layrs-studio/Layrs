@@ -1,5 +1,14 @@
 # État courant de Layrs
 
+## Initialisation SQL de la destination gérée
+
+L’initialiseur crée uniquement l’ingress vide schema8, dans la transaction de
+l’appelant, et refuse un schéma existant ou des liaisons incohérentes. Un lecteur
+distinct vérifie aussi l’inventaire complet des douze ensembles importés.
+**Quatre recettes SQL et 128 tests purs passent** ; détails et limites dans le
+[checkpoint géré](plans/worktrees-partial-vfs-managed-source-checkpoint.md).
+La création physique, la copie avec mise à jour du head et Ready restent à relier.
+
 ## Image et journal source pour l’import géré
 
 L’image vérifie les octets et chaque manifeste sous checkpoint retenu. Le plan

@@ -506,6 +506,24 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
                 (snapshots, descriptors, live_mounts, backend.as_str()),
                 (2, 1, 0, "ordinary")
             );
+            require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None)
+                .unwrap();
+            destination.execute_batch("SAVEPOINT foreign_tail").unwrap();
+            destination.execute(
+                "INSERT INTO projection_snapshots(generation,digest,parent_digest,payload) SELECT 2,?1,digest,payload FROM projection_snapshots WHERE generation=1",
+                ["9".repeat(64)],
+            ).unwrap();
+            assert!(require_exact_copied_rows(
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None
+            )
+            .is_err());
+            destination
+                .execute_batch("ROLLBACK TO foreign_tail; RELEASE foreign_tail")
+                .unwrap();
             destination.execute_batch("SAVEPOINT collision").unwrap();
             destination
                 .execute(
@@ -513,6 +531,14 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
                     [],
                 )
                 .unwrap();
+            assert!(require_exact_copied_rows(
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None
+            )
+            .is_err());
             let refusal = copy_verified_prefix(
                 source,
                 destination,

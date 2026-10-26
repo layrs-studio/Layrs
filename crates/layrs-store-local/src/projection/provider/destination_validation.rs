@@ -1,0 +1,248 @@
+//! Schema-8 ordinary import ingress before any immutable prefix copy. This
+//! validates DATA only; pinned files, family Initializing and source ownership
+//! remain caller obligations. It grants neither ordinary admission nor Ready.
+use super::{
+    cancellation, database_io,
+    import_validation::{self, ImportDatabaseKind},
+    records::{
+        activation::ProviderActivationRecord,
+        import::{
+            ImportSource, ImportSourceReferences, ProviderImportKind, ProviderImportPrefixRecord,
+        },
+        transition::{
+            ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole,
+            TransitionRowData, TransitionState,
+        },
+        AllocationRecord, PreparedRecord, ProviderBootstrapSource, Record,
+    },
+    recovery::error::{invalid, Result},
+};
+use crate::projection::{database, format, selection};
+use layrs_vfs::Cancellation;
+use rusqlite::Connection;
+
+pub(in crate::projection::provider) struct EmptyIngress;
+
+pub(super) fn require_inputs(
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+) -> Result<()> {
+    marker.validate()?;
+    let source_identity = &allocation.format.identity;
+    let source_shared = allocation
+        .format
+        .shared
+        .as_ref()
+        .ok_or_else(|| invalid("source has no shared family"))?;
+    let destination_shared = marker
+        .shared
+        .as_ref()
+        .ok_or_else(|| invalid("destination has no shared family"))?;
+    if marker.identity == *source_identity
+        || marker.identity.store_id != source_identity.store_id
+        || marker.identity.space_id != source_identity.space_id
+        || marker.identity.origin != source_identity.origin
+        || marker.identity.principal_id != source_identity.principal_id
+        || destination_shared.root != source_shared.root
+        || destination_shared.incarnation != source_shared.incarnation
+        || destination_shared.root_identity != source_shared.root_identity
+        || marker.initial_snapshot_digest != source.commitment().snapshot_digest
+        || marker.import_digest.as_deref() != Some(prefix.digest()?.as_str())
+        || marker.identity != prefix.destination_identity
+        || source.commitment() != &activation.source
+        || source.commitment().catalog_id != activation.catalog_id
+        || intent
+            .destination
+            .as_ref()
+            .is_none_or(|proof| proof.family_marker_digest != allocation.family.marker_digest)
+    {
+        return Err(invalid("destination FORMAT/source family binding differs"));
+    }
+    marker.validate_initial_selection(source.selection())?;
+    prefix.require_references(ImportSourceReferences::Provider {
+        allocation,
+        prepared,
+        activation,
+    })?;
+    let ImportSource::Provider { version, .. } = &prefix.source else {
+        return Err(invalid("destination ingress requires provider source"));
+    };
+    if prefix.kind != ProviderImportKind::ManagedOrdinary
+        || version.generation == 0
+        || version.generation > i64::MAX as u64
+        || intent.plan.source_prefix != *prefix
+        || intent.plan.source_prefix_id != prefix.digest()?
+        || intent.role != TransitionRole::Destination
+        || intent.state != TransitionState::Copying
+        || intent.local_generation != 0
+        || intent.reservation.is_some()
+        || intent.receipt_id.is_some()
+        || intent.destination.as_ref().is_none_or(|proof| {
+            proof.backend != TransitionBackendKind::Ordinary
+                || proof.format != *marker
+                || proof.private_database_identity != destination_shared.database_identity
+                || proof.native_control_identity_hex.is_some()
+                || proof.native_root_identity.is_some()
+        })
+    {
+        return Err(invalid(
+            "destination Copying intent or source boundary differs",
+        ));
+    }
+    intent.validate_fields()?;
+    source
+        .selection()
+        .validate_snapshot(source.initial())
+        .map_err(|e| invalid(e.to_string()))?;
+    Ok(())
+}
+
+/// The caller retains the same lock and read transaction across this read.
+/// Every table is counted only up to two rows after the schema fingerprint.
+pub(in crate::projection::provider) fn read_empty(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<EmptyIngress> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit() {
+        return Err(invalid("destination ingress requires retained transaction"));
+    }
+    import_validation::require_schema(c, marker, ImportDatabaseKind::Provider, cancel)?;
+    require_inputs(
+        marker, source, allocation, prepared, activation, prefix, intent,
+    )?;
+    for (kind, name, _) in database_io::schema_inventory(c)? {
+        cancellation::check(cancel)?;
+        if kind != "table" {
+            continue;
+        }
+        // The name comes from the exact reference-schema fingerprint above.
+        let observed: u64 = c.query_row(
+            &format!("SELECT count(*) FROM (SELECT 1 FROM \"{name}\" LIMIT 2)"),
+            [],
+            |r| r.get(0),
+        )?;
+        let expected = match name.as_str() {
+            "projection_meta"
+            | "projection_snapshots"
+            | "projection_head"
+            | "projection_selections"
+            | "projection_backend"
+            | "projection_imports"
+            | "projection_provider_transitions" => 1,
+            _ => 0,
+        };
+        if observed != expected {
+            return Err(invalid(
+                "destination EmptyIngress table cardinality differs",
+            ));
+        }
+    }
+    cancellation::check(cancel)?;
+    let (generation, digest_len, parent_null, payload_len): (u64, u64, bool, u64) =
+        c.query_row("SELECT generation,length(CAST(digest AS BLOB)),parent_digest IS NULL,length(payload) FROM projection_snapshots", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    if generation != 0 || digest_len != 64 || !parent_null || payload_len > 64 * 1024 * 1024 {
+        return Err(invalid("destination initial snapshot shape differs"));
+    }
+    let (digest, payload): (String, Vec<u8>) = c.query_row(
+        "SELECT digest,payload FROM projection_snapshots WHERE generation=0",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if payload
+        != source
+            .initial()
+            .canonical_bytes()
+            .map_err(|e| invalid(e.to_string()))?
+        || digest != database::digest(0, None, &payload)
+        || digest != marker.initial_snapshot_digest
+    {
+        return Err(invalid(
+            "destination initial snapshot differs from source/FORMAT",
+        ));
+    }
+    let head: (u64, u64) = c.query_row(
+        "SELECT singleton,generation FROM projection_head",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if head != (1, 0) {
+        return Err(invalid("destination EmptyIngress head differs"));
+    }
+    let (selection_generation, digest_len, selection_payload_len): (u64, u64, u64) = c.query_row(
+        "SELECT generation,length(CAST(digest AS BLOB)),length(payload) FROM projection_selections",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if selection_generation != 0 || digest_len != 64 || selection_payload_len > 16 * 1024 * 1024 {
+        return Err(invalid("destination initial selection row exceeds bound"));
+    }
+    if selection::at(c, 0)? != *source.selection() {
+        return Err(invalid("destination initial selection differs"));
+    }
+    let ordinary: bool = c.query_row(
+        "SELECT backend='ordinary' AND mount_id IS NULL FROM projection_backend WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if !ordinary {
+        return Err(invalid("destination backend differs"));
+    }
+    let (prefix_len, payload_len): (u64,u64) = c.query_row(
+        "SELECT length(CAST(digest AS BLOB)),length(payload) FROM projection_imports WHERE singleton=1", [],
+        |r| Ok((r.get(0)?,r.get(1)?)))?;
+    if prefix_len != 71 || payload_len > ProviderImportPrefixRecord::MAX_BYTES as u64 {
+        return Err(invalid("destination import ingress row exceeds bound"));
+    }
+    let (id, payload): (String, Vec<u8>) = c.query_row(
+        "SELECT digest,payload FROM projection_imports WHERE singleton=1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    prefix.require_row(&id, &payload)?;
+    let bad: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE \
+         length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 \
+         OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 \
+         OR length(payload)>262144 OR length(CAST(reservation AS BLOB))>128 \
+         OR length(CAST(receipt_id AS BLOB))>71)",
+        [],
+        |r| r.get(0),
+    )?;
+    if bad {
+        return Err(invalid("destination intent row exceeds bound"));
+    }
+    let (id,role,state,local_generation,reservation,receipt_id,payload,digest):
+        (String,String,String,u64,Option<String>,Option<String>,Vec<u8>,String) = c.query_row(
+        "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions",
+        [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))?;
+    let observed = ProviderTransitionIntentRecord::decode(&payload)?;
+    observed.require_row(TransitionRowData {
+        id: &id,
+        role: &role,
+        state: &state,
+        local_generation,
+        reservation: reservation.as_deref(),
+        receipt_id: receipt_id.as_deref(),
+        payload: &payload,
+        digest: &digest,
+    })?;
+    if &observed != intent {
+        return Err(invalid("destination intent differs from expected Copying"));
+    }
+    cancellation::check(cancel)?;
+    Ok(EmptyIngress)
+}

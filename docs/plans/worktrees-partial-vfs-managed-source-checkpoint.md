@@ -64,11 +64,40 @@ success there was legitimate because no source bytes were needed. Its artifact,
 fixture and failure log are retained. The test now requires a nonempty descriptor
 and r2 uses a fresh parent. The first replacement recipe passed on both runs.
 
+## Empty destination SQL ingress
+
+`destination_sql::initialize_empty` creates the exact schema8 ordinary ingress
+inside a caller-owned transaction. It requires a completely empty schema at
+version zero and foreign keys enabled. The typed reader requires exactly seven
+bootstrap rows (FORMAT, snapshot zero, head, selection, backend, import prefix,
+Destination/Copying intent); every other table must be empty. It binds source
+A/P/activation, prefix, family marker and destination DATA. String/blob bounds
+are checked before reading payloads, including digest bytes after embedded NUL.
+The caller remains responsible for actual distinct pins and the deterministic
+destination member path, family state, COMMIT, rollback and observable close.
+
+`require_exact_copied_rows` separately validates the twelve complete immutable
+tables against a retained verified source closure. Cardinalities stop at the
+first extra row, then the scoped semantic/hash reader validates each rowset.
+This catches an out-of-scope tail as well as altered or missing rows. It does
+not interpret the destination head, live state, ingress or Ready receipt.
+
+`provider-destination-empty-check-r3.log` passes all targets of layrs-store-local.
+`provider-destination-empty-20261026-r1` retains 448 source/input files,
+CodeView age 46, EXE SHA256
+`112257b42786f2258db75a522e22b986f20cef37725ec6c0a797978f906b6313`.
+**128 pure tests pass, 304 ignored. Four exact owned SQLite recipes pass**:
+fresh initialization/reinitialization refusal/rollback/reopen; marker, family,
+backend and foreign-row refusal; hostile parent/mount TEXT and embedded-NUL
+selection digest refusal; and exact copy/replay/collision/tail refusal.
+Source review authorizes only these memory SQLite recipes, with 120-second
+owned child / 180-second outer bounds. They create no real destination owner.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.
 It is not a genuine sqlite3_close failure, quarantined connection, interrupted
-commit or power-loss test. No destination initializer, copied-prefix admission,
+commit or power-loss test. No physical destination initializer, copied-prefix admission,
 content installation, claim, Ready receipt, family Ready publication, companion
 conversion or selection expansion is qualified by these recipes. Product routes
 and Desktop integration remain separate. The existing strict GC fence remains.
