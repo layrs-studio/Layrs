@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Image et journal source pour l’import géré
+
+L’image vérifie les octets et chaque manifeste sous checkpoint retenu. Le plan
+lie les représentations protégées à la fermeture SQL exacte. Le journal source
+écrit Planned/Cancelled avec verrous, fermeture observée et rejeu après refus
+d’acquittement. **128 tests purs, trois recettes natives et une recette SQL
+ciblée passent** ; le [checkpoint source gérée](plans/worktrees-partial-vfs-managed-source-checkpoint.md)
+conserve les limites et le scénario de test corrigé. L’initialisation de la
+destination, sa publication, les compagnons et l’expansion restent en cours.
+
 ## Capture après annulation d’une transition
 
 Le parcours natif complet passe : une intention Planned bloque la capture ;

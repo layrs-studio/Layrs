@@ -1,12 +1,15 @@
 //! Consuming activation writer. The retained owner and native READY proof are
 //! returned on every refusal, including uncertain SQL close or family commit.
+mod capture;
+mod capture_image;
+mod managed_image;
+mod managed_journal;
+mod managed_plan;
 mod ranges;
 mod recovery_export;
-mod capture_image;
-mod capture;
 pub use capture::{ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep};
-mod capture_state;
 mod capture_sql;
+mod capture_state;
 mod report;
 mod session;
 pub use ranges::ProviderActiveRangeFailure;

@@ -221,6 +221,21 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
             .unwrap();
             assert_eq!(verified.closure(), &prefix.closure);
             assert_eq!(verified.prefix_id(), prefix.digest().unwrap());
+            verified.require_provider_inputs(&proof).unwrap();
+            let other_bare = BareConnection::reference().unwrap();
+            let other = other_bare.connection();
+            let (other_fixture, _, _, other_activation, _) = active_fixture(other, true);
+            let other_proof = private_active_capture_with_source(
+                other,
+                &other_fixture.allocation,
+                &other_fixture.prepared,
+                &other_activation.binding,
+                Some([0x41; 16]),
+                None,
+            )
+            .unwrap();
+            assert!(verified.require_provider_inputs(&other_proof).is_err());
+            other_bare.finish(Ok(())).unwrap();
             c.execute_batch("SAVEPOINT tamper").unwrap();
             c.execute(
                 "UPDATE projection_provider_activations SET activated_digest=?1 WHERE id=?2",

@@ -6,12 +6,14 @@ use super::{
         ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportedSegment,
         ProviderImportPrefixRecord, ProviderTransitionReceiptRecord, TransitionReceiptRowData,
     },
-    recovery::error::{Result as CauseResult, invalid},
+    recovery::error::{invalid, Result as CauseResult},
     validation::PrivateActiveCaptureValidation,
 };
 use crate::projection::{database, format, retention, selection};
+use layrs_core::scm::canonical_json;
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 
 mod ancestry;
 mod copy;
@@ -20,7 +22,7 @@ mod scoped;
 mod source;
 pub(in crate::projection::provider) use scoped::compute_scoped_closure;
 pub(in crate::projection) use scoped::read_scoped_closure;
-pub(in crate::projection) use source::{SourceMetadata, read_source_metadata};
+pub(in crate::projection) use source::{read_source_metadata, SourceMetadata};
 
 /// A closed SQL DATA interpretation. Source image/bytes, family and native
 /// registration retain their independent proofs.
@@ -29,6 +31,14 @@ pub(in crate::projection) struct VerifiedImportClosure {
     source_connection: *const Connection,
     marker: format::Marker,
     metadata: SourceMetadata,
+    provider_inputs: Option<ProviderInputBinding>,
+}
+struct ProviderInputBinding {
+    activation_id: String,
+    source_digest: String,
+    capture_count: u64,
+    capture_head: Option<String>,
+    content_digest: String,
 }
 impl VerifiedImportClosure {
     pub(in crate::projection) fn closure(&self) -> &ImportClosure {
@@ -36,6 +46,27 @@ impl VerifiedImportClosure {
     }
     pub(in crate::projection) fn prefix_id(&self) -> &str {
         &self.metadata.prefix_id
+    }
+    /// Compare the exact private proof used to verify this SQL closure. A
+    /// different, individually valid provider source cannot be substituted.
+    pub(in crate::projection::provider) fn require_provider_inputs(
+        &self,
+        proof: &PrivateActiveCaptureValidation,
+    ) -> CauseResult<()> {
+        let Some(expected) = &self.provider_inputs else {
+            return Err(invalid("import closure has no provider source binding"));
+        };
+        let (_, activation, source, _, captures) = proof.import_parts();
+        if activation.digest()? != expected.activation_id
+            || source_commitment_digest(source)? != expected.source_digest
+            || captures.patches.len() as u64 != expected.capture_count
+            || captures.patches.last().map(|patch| patch.digest.as_str())
+                != expected.capture_head.as_deref()
+            || scoped_content_digest(&self.metadata, captures)? != expected.content_digest
+        {
+            return Err(invalid("import closure provider inputs differ"));
+        }
+        Ok(())
     }
     pub(in crate::projection) fn capture_origin(
         &self,
@@ -106,11 +137,92 @@ pub(in crate::projection) fn verify_source(
         return Err(invalid("import source foreign key check differs"));
     }
     super::cancellation::check(cancel)?;
+    let provider_inputs = provider_proof
+        .map(|proof| bind_provider_inputs(c, &metadata, proof, cancel))
+        .transpose()?;
     Ok(VerifiedImportClosure {
         closure,
         source_connection: c,
         marker: marker.clone(),
         metadata,
+        provider_inputs,
+    })
+}
+
+fn source_commitment_digest(
+    source: &super::records::ProviderBootstrapSource,
+) -> CauseResult<String> {
+    let bytes = canonical_json(source.commitment()).map_err(|e| invalid(e.to_string()))?;
+    Ok(format!("blake3:{}", blake3::hash(&bytes)))
+}
+
+fn scoped_content_digest(
+    metadata: &SourceMetadata,
+    captures: &super::validation::PrivateCaptureProof,
+) -> CauseResult<String> {
+    if metadata.content_file_ids.len() > 100_000 || captures.content.len() > 100_000 {
+        return Err(invalid(
+            "import provider content mapping count exceeds bound",
+        ));
+    }
+    let mut proof = BTreeMap::new();
+    for row in &captures.content {
+        if row.file_id.len() > 71
+            || row.manifest_id.len() > 71
+            || proof
+                .insert(&row.file_id, (&row.manifest_id, row.bytes))
+                .is_some()
+        {
+            return Err(invalid("import provider content proof malformed"));
+        }
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"layrs-provider-import-verified-content-v1\0");
+    hash.update(&(metadata.content_file_ids.len() as u64).to_be_bytes());
+    for file_id in &metadata.content_file_ids {
+        let (manifest_id, bytes) = proof
+            .get(file_id)
+            .ok_or_else(|| invalid("import provider capture content mapping absent"))?;
+        let encoded =
+            canonical_json(&(file_id, manifest_id, bytes)).map_err(|e| invalid(e.to_string()))?;
+        hash.update(&(encoded.len() as u64).to_be_bytes());
+        hash.update(&encoded);
+    }
+    Ok(format!("blake3:{}", hash.finalize()))
+}
+
+fn bind_provider_inputs(
+    c: &Connection,
+    metadata: &SourceMetadata,
+    proof: &PrivateActiveCaptureValidation,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<ProviderInputBinding> {
+    let (_, activation, source, _, captures) = proof.import_parts();
+    let content_digest = scoped_content_digest(metadata, captures)?;
+    let proof_content: BTreeMap<_, _> = captures
+        .content
+        .iter()
+        .map(|row| (&row.file_id, (&row.manifest_id, row.bytes)))
+        .collect();
+    for file_id in &metadata.content_file_ids {
+        super::cancellation::check(cancel)?;
+        let (manifest_id, bytes): (String, u64) = c.query_row(
+            "SELECT manifest_id,bytes FROM projection_content WHERE file_id=?1",
+            [file_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if proof_content.get(file_id) != Some(&(&manifest_id, bytes)) {
+            return Err(invalid(
+                "import provider content proof differs from scoped SQL",
+            ));
+        }
+    }
+    Ok(ProviderInputBinding {
+        activation_id: activation.digest()?,
+        source_digest: source_commitment_digest(source)?,
+        capture_count: captures.patches.len() as u64,
+        capture_head: captures.patches.last().map(|patch| patch.digest.clone()),
+        content_digest,
     })
 }
 

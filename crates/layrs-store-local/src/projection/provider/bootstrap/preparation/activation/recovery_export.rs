@@ -32,8 +32,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 const FILE_LIMIT: u64 = 1024 * 1024 * 1024;
 const TOTAL_LIMIT: u64 = 4 * FILE_LIMIT;
-const PATH_LIMIT: usize = 100_000;
-const PATH_BYTES_LIMIT: usize = 8 * 1024 * 1024;
+pub(super) const PATH_LIMIT: usize = 100_000;
+pub(super) const PATH_BYTES_LIMIT: usize = 8 * 1024 * 1024;
 const MANIFEST_LIMIT: usize = 32 * 1024 * 1024;
 const READ_BYTES: usize = 64 * 1024;
 const IMAGE_DOMAIN: &str = "layrs-provider-recovery-image-v1";
@@ -180,29 +180,29 @@ pub enum ProviderRecoveryExportOutcome {
 }
 
 #[derive(Clone)]
-struct Observed {
-    path: RepoPath,
-    evidence: CaptureEvidence,
-    original_path: Option<RepoPath>,
+pub(super) struct Observed {
+    pub(super) path: RepoPath,
+    pub(super) evidence: CaptureEvidence,
+    pub(super) original_path: Option<RepoPath>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReaderKind {
+pub(super) enum ReaderKind {
     ImmutableSource,
     Native,
 }
-struct PlannedFile {
-    path: RepoPath,
-    backing: Option<FileId>,
-    size: u64,
-    executable: Option<bool>,
-    class: ProviderRecoveryExportClass,
-    expected: Option<(FileId, bool)>,
-    writable: bool,
-    reader: ReaderKind,
+pub(super) struct PlannedFile {
+    pub(super) path: RepoPath,
+    pub(super) backing: Option<FileId>,
+    pub(super) size: u64,
+    pub(super) executable: Option<bool>,
+    pub(super) class: ProviderRecoveryExportClass,
+    pub(super) expected: Option<(FileId, bool)>,
+    pub(super) writable: bool,
+    pub(super) reader: ReaderKind,
 }
-struct Plan {
-    files: Vec<PlannedFile>,
-    deletions: Vec<ProviderRecoveryExportDeletion>,
+pub(super) struct Plan {
+    pub(super) files: Vec<PlannedFile>,
+    pub(super) deletions: Vec<ProviderRecoveryExportDeletion>,
 }
 
 fn fail(
@@ -237,7 +237,7 @@ fn checked_path(
 /// Classifies the entire observed namespace before any source/native content
 /// read or output creation. Unknown, excluded and protected edits remain
 /// recovery-only evidence. A managed candidate is still never admitted here.
-fn plan(
+pub(super) fn plan(
     observations: &[Observed],
     source: &ProviderBootstrapSource,
     activated: &ProjectionSnapshot,
@@ -383,7 +383,10 @@ fn add_size(total: u64, size: u64) -> CauseResult<u64> {
         .ok_or_else(|| invalid("recovery export exceeds 4 GiB aggregate"))
 }
 
-fn verified_class(planned: &PlannedFile, actual: &FileId) -> ProviderRecoveryExportClass {
+pub(super) fn verified_class(
+    planned: &PlannedFile,
+    actual: &FileId,
+) -> ProviderRecoveryExportClass {
     if planned.class == ProviderRecoveryExportClass::ManagedCandidate
         && !planned.writable
         && !planned
@@ -543,7 +546,7 @@ struct Manifest<'a> {
     gaps: Vec<ManifestGap<'a>>,
 }
 
-fn image_digest(
+pub(super) fn image_digest(
     files: &[ProviderRecoveryExportFile],
     deletions: &[ProviderRecoveryExportDeletion],
     gaps: &[ProviderRecoveryExportGap],

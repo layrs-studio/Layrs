@@ -302,7 +302,7 @@ fn check(cancel: &Cancellation) -> CauseResult<()> {
     }
 }
 
-fn hash_reader(
+pub(super) fn hash_reader(
     reader: &mut dyn Read,
     size: u64,
     cancel: &Cancellation,

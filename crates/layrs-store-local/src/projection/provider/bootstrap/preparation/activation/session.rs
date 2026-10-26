@@ -375,3 +375,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session/managed_image_tests.rs"]
+mod managed_image_tests;
+
+#[cfg(test)]
+#[path = "session/managed_journal_tests.rs"]
+mod managed_journal_tests;

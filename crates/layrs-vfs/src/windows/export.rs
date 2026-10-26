@@ -56,6 +56,12 @@ impl Session {
 }
 
 impl ExportCheckpoint<'_> {
+    /// Retained root identity only. This does not grant capture or namespace
+    /// mutation authority, and does not convert this view into a Checkpoint.
+    pub fn root_guard(&self) -> Option<&super::ProviderRootGuard> {
+        self.checkpoint.root_guard()
+    }
+
     pub fn entries(&self) -> &[Inspection] {
         self.checkpoint.entries()
     }

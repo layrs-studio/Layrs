@@ -19,7 +19,7 @@ mod product_status;
 mod recipes;
 mod recovery_export;
 mod recovery_export_writer;
-mod transition_capture;
+pub(in crate::projection::provider::bootstrap) mod transition_capture;
 use fixture::{failure, has, Fixture};
 use std::path::PathBuf;
 

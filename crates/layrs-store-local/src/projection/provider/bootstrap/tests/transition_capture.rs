@@ -61,6 +61,24 @@ fn planned(
     prepared: &PreparedRecord,
     binding: &ProviderBootstrapBinding,
 ) -> ProviderTransitionIntentRecord {
+    planned_for_image(
+        f,
+        allocation,
+        prepared,
+        binding,
+        &blake3::hash(b"native-transition-capture-planned-image")
+            .to_hex()
+            .to_string(),
+    )
+}
+
+pub(in crate::projection::provider::bootstrap) fn planned_for_image(
+    f: &Fixture,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    binding: &ProviderBootstrapBinding,
+    image: &str,
+) -> ProviderTransitionIntentRecord {
     let c = Connection::open_with_flags(
         f.metadata.join("projection.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -88,9 +106,7 @@ fn planned(
     inherited.update(&0u64.to_be_bytes());
     // The image digest and future destination fields below are declared plan
     // DATA, not a native destination or capture-byte witness.
-    let image = blake3::hash(b"native-transition-capture-planned-image")
-        .to_hex()
-        .to_string();
+    let image = image.to_owned();
     let mut prefix = ProviderImportPrefixRecord {
         schema_version: "layrs.projection-provider-import-prefix.v1".into(),
         kind: ProviderImportKind::ManagedOrdinary,
