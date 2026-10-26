@@ -92,8 +92,10 @@ atomicité face à un writer hostile ou une qualification de distribution.
 
 ## Prochaine étape
 
-1. Définir et faire relire le contrat durable post-bootstrap : enregistrement,
-   ticket de préparation et états de population native sans source de contenu.
+1. Le [contrat durable post-bootstrap](worktrees-partial-vfs-preparation-contract.md)
+   est désormais défini et son codec pur est implémenté. La suite est son
+   validateur SQL complet, le transfert du détenteur et le writer du ticket,
+   avant les états de population native sans source de contenu.
 2. Implémenter ensuite les leases locales de lecture et leur mapping Active
    exact, avec les refus de contenu manquant et la gestion de l'annulation.
 3. Intégrer capture, transitions managed/companion et expansion de sélection.

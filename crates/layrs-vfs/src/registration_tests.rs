@@ -32,6 +32,24 @@ fn ticket() -> Registration {
 }
 
 #[test]
+fn public_v2_control_comparison_is_pure_and_exact() {
+    let control = control();
+    let registration = Registration::for_control_directory(&control, [0x11; 16], id('2')).unwrap();
+    let parsed = Registration::decode_control_directory(&registration.encode()).unwrap();
+    parsed.matches_control_identity(&control).unwrap();
+
+    let mut changed = control.clone();
+    changed.size += 1;
+    assert!(parsed.matches_control_identity(&changed).is_err());
+    let mut changed = control.clone();
+    changed.stage.root_index += 1;
+    assert!(parsed.matches_control_identity(&changed).is_err());
+    let mut legacy = parsed.clone();
+    legacy.flavor = RegistrationFlavor::Legacy;
+    assert!(legacy.matches_control_identity(&control).is_err());
+}
+
+#[test]
 fn v1_wire_golden_and_v2_decoder_are_disjoint() {
     let mut value = ticket();
     value.flavor = RegistrationFlavor::Legacy;

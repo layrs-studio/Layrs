@@ -608,8 +608,9 @@ in this dependency order:
 
 1. Expose bound catalog/descriptor DATA from the retained Published holder,
    with full readonly validation and no content capability.
-2. Review the durable registration/preparation contract, then implement
-   source-free native population. Separately qualify an eligible local-only
+2. The [durable registration/preparation contract and pure codec](worktrees-partial-vfs-preparation-contract.md)
+   are implemented. Add the full SQL validator, holder transfer and ticket writer,
+   then source-free native population. Separately qualify an eligible local-only
    read lease and exact Active mapping before connecting the adapter's source
    gate. Qualify cold, prepared, missing-protected-content, restart and isolation.
 3. Extract common reconciliation and implement two-pass guarded capture with

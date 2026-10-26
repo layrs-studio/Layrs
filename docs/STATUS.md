@@ -1,5 +1,20 @@
 # État courant de Layrs
 
+## Contrat de préparation du 26 octobre 2026
+
+Le [contrat post-bootstrap](plans/worktrees-partial-vfs-preparation-contract.md)
+est défini, relu et implémenté sous forme de codec pur `mount.v2`. Il lie le
+ticket VFS à la source et aux reçus exacts, et distingue l'intention d'enregistrement
+de l'état préparé. Il tient dans le schéma 8 existant ; le format bootstrap v1
+et son validateur restent inchangés et refusent v2.
+
+**129 tests réussissent** : 77 provider, 45 VFS et 7 sélections SQLite explicites.
+La compilation de tout le workspace passe ; la revue indépendante ne relève
+aucun blocage dans le périmètre du codec et de ses comparaisons.
+La suite est le validateur SQL post-bootstrap complet et le transfert du
+détenteur, puis le writer du ticket et la population native. Le codec livré ne
+modifie pas les Stores de production et n'active pas le provider.
+
 ## Reprise du 26 octobre 2026
 
 La passation distante `10f93d7` est intégrée par `b54d18c`, après la fusion

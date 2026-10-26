@@ -37,6 +37,14 @@ impl Registration {
     pub fn filesystem_identity(&self) -> String {
         format!("fs:v1:{:016x}:{:016x}", self.volume, self.file_index)
     }
+    /// Compare V2 ticket DATA with an expected control-directory identity.
+    /// This reads no native state and grants no registration or serving authority.
+    pub fn matches_control_identity(
+        &self,
+        control: &crate::ControlDirectoryIdentity,
+    ) -> Result<()> {
+        self.matches_control(control)
+    }
     /// Checks the owned native registration without opening a connection.
     #[cfg(windows)]
     pub fn verify(&self, catalog: &crate::Catalog) -> Result<()> {

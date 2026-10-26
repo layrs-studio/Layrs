@@ -9,6 +9,8 @@
 pub(super) mod codec;
 #[path = "records/receipts.rs"]
 mod receipts;
+#[path = "records/preparation.rs"]
+pub(in crate::projection) mod preparation;
 #[path = "records/rows.rs"]
 mod rows;
 #[path = "records/source.rs"]
