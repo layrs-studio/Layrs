@@ -162,6 +162,51 @@ fn durable_source(
     checked.transitions.into_iter().next().unwrap()
 }
 
+fn bound_holder<'a>(
+    session: &'a ProviderActiveSession,
+    attempt: &'a CaptureAttemptLock,
+    planned: &'a ProviderTransitionIntentRecord,
+) -> (
+    super::super::managed_allocation::ManagedDestinationAllocation<'a>,
+    ProviderTransitionIntentRecord,
+) {
+    let holder = super::super::managed_allocation::allocate(
+        &session.session,
+        &session.source.held,
+        &session.source.root,
+        &session.source.record,
+        &session.source.activation,
+        attempt,
+        planned,
+        &Cancellation::default(),
+    )
+    .unwrap_or_else(|error| panic!("fresh managed allocation failed: {error:?}"));
+    let mut copying = ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
+    copying.state = TransitionState::Copying;
+    copying.destination =
+        Some(serde_json::from_slice(&serde_json::to_vec(holder.proof()).unwrap()).unwrap());
+    copying.require_transition(planned).unwrap();
+    let mut close = Close::default();
+    assert_eq!(
+        super::super::managed_journal::bind_allocation(
+            &session.source.held,
+            &session.source.root,
+            &session.source.record,
+            &session.source.activation,
+            attempt,
+            planned,
+            &copying,
+            &holder,
+            &mut close,
+            &Cancellation::default(),
+        )
+        .unwrap(),
+        SourceIntentEffect::Updated,
+    );
+    assert!(close.closed, "source Copying writer must close observably");
+    (holder, copying)
+}
+
 owned!(
     fresh_allocation_binds_exact_copying_without_publishing_format,
     {
@@ -305,5 +350,130 @@ owned!(occupied_root_is_never_adopted_or_deleted, {
         );
         assert_eq!(durable_source(fixture, session), before);
         drop(error); // only release pins; no cleanup
+    });
+});
+
+owned!(copying_publishes_exact_inode_and_replay_is_idempotent, {
+    with_planned(|fixture, session, attempt, planned| {
+        let (mut holder, copying) = bound_holder(session, attempt, planned);
+        let family_database = fixture.family.root().join("metadata/catalog.sqlite3");
+        let family_before = database_io::tests::support::witness(&family_database);
+        let temporary = holder.root().join(".layrs").join(format!(
+            "FORMAT.pending-{}",
+            planned.plan.destination_leaf_nonce,
+        ));
+        let final_path = holder.root().join(".layrs/FORMAT");
+        assert_eq!(fs::metadata(&temporary).unwrap().len(), 0);
+        let publication = holder
+            .publish_format(
+                &session.source.root,
+                &session.source.record,
+                &session.source.activation,
+                attempt,
+                &copying,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            publication.state,
+            super::super::managed_allocation::ManagedFormatState::Published
+        );
+        assert!(publication.effects.iter().any(|e| {
+            e.step == super::super::managed_allocation::ManagedFormatStep::Rename && e.confirmed
+        }));
+        holder.require_published(&copying.plan).unwrap();
+        assert!(!temporary.exists());
+        assert_eq!(
+            fs::read(&final_path).unwrap(),
+            holder.proof().format.bytes().unwrap()
+        );
+        assert_eq!(
+            fs::metadata(holder.destination_database().path())
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            database_io::tests::support::witness(&family_database),
+            family_before
+        );
+        assert_eq!(durable_source(fixture, session), copying);
+
+        let replay = holder
+            .publish_format(
+                &session.source.root,
+                &session.source.record,
+                &session.source.activation,
+                attempt,
+                &copying,
+                &Cancellation::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            replay.state,
+            super::super::managed_allocation::ManagedFormatState::AlreadyPublished
+        );
+        assert!(!replay.effects.iter().any(|e| matches!(
+            e.step,
+            super::super::managed_allocation::ManagedFormatStep::Append
+                | super::super::managed_allocation::ManagedFormatStep::Rename,
+        )));
+        holder.require_published(&copying.plan).unwrap();
+        assert_eq!(
+            fs::read(&final_path).unwrap(),
+            holder.proof().format.bytes().unwrap()
+        );
+        assert_eq!(
+            database_io::tests::support::witness(&family_database),
+            family_before
+        );
+        assert_eq!(durable_source(fixture, session), copying);
+    });
+});
+
+owned!(foreign_final_format_collision_preserves_both_inodes, {
+    with_planned(|fixture, session, attempt, planned| {
+        let (mut holder, copying) = bound_holder(session, attempt, planned);
+        let family_database = fixture.family.root().join("metadata/catalog.sqlite3");
+        let family_before = database_io::tests::support::witness(&family_database);
+        let temporary = holder.root().join(".layrs").join(format!(
+            "FORMAT.pending-{}",
+            planned.plan.destination_leaf_nonce,
+        ));
+        let final_path = holder.root().join(".layrs/FORMAT");
+        let foreign = b"valuable unrelated FORMAT bytes";
+        fs::write(&final_path, foreign).unwrap();
+        let error = holder
+            .publish_format(
+                &session.source.root,
+                &session.source.record,
+                &session.source.activation,
+                attempt,
+                &copying,
+                &Cancellation::default(),
+            )
+            .unwrap_err();
+        assert!(
+            error.cause.to_string().contains("both names")
+                || error.cause.to_string().contains("inode"),
+            "{error}"
+        );
+        assert!(
+            error.effects.is_empty(),
+            "collision is rejected before byte effects"
+        );
+        assert_eq!(fs::read(&final_path).unwrap(), foreign);
+        assert_eq!(fs::metadata(&temporary).unwrap().len(), 0);
+        assert_eq!(
+            fs::metadata(holder.destination_database().path())
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            database_io::tests::support::witness(&family_database),
+            family_before
+        );
+        assert_eq!(durable_source(fixture, session), copying);
     });
 });

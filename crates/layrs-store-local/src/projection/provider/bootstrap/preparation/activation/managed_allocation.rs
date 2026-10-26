@@ -1,6 +1,7 @@
 //! Exclusive filesystem allocation for a fresh managed destination. The
-//! source Planned row already exists; no FORMAT bytes, SQLite rows, family
-//! registration, or imported content are written by this module.
+//! source Planned row already exists. Allocation writes no FORMAT bytes,
+//! SQLite rows, family registration, or imported content. A later explicit
+//! Copying-only method may publish the exact pinned FORMAT inode.
 use super::*;
 use crate::{
     projection::{
@@ -25,7 +26,8 @@ use layrs_core::scm::canonical_json;
 use layrs_vfs::{Cancellation, ExportParentGuard, Session};
 use std::{
     ffi::OsStr,
-    fmt,
+    fmt, fs,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -128,7 +130,9 @@ pub(super) struct ManagedDestinationAllocation<'a> {
     worktrees: PinnedDirectory,
     member: PinnedDirectory,
     metadata: PinnedDirectory,
-    lock: PinnedFile,
+    lock: Option<PinnedFile>,
+    lock_identity: String,
+    owner_lock: Option<crate::lock::StoreLock>,
     database: DatabaseFile,
     temporary_format: PinnedFile,
     temporary_format_path: PathBuf,
@@ -146,6 +150,17 @@ impl ManagedDestinationAllocation<'_> {
     }
     pub(super) fn destination_database(&self) -> &DatabaseFile {
         &self.database
+    }
+
+    /// Factual published FORMAT proof for the next destination writer. This
+    /// holds the destination owner lock but grants no SQL/family readiness.
+    pub(super) fn require_published(&self, plan: &TransitionPlan) -> CauseResult<()> {
+        self.verify(plan)?;
+        if self.owner_lock.is_none() || self.format_location()? != FormatLocation::Final {
+            return Err(invalid("managed destination FORMAT is not owner-published"));
+        }
+        let bytes = self.proof.format.bytes()?;
+        self.require_format_bytes(FormatLocation::Final, &bytes, &Cancellation::default())
     }
 
     /// Pure physical/binding check; no SQL lock or Planned re-observation.
@@ -172,22 +187,15 @@ impl ManagedDestinationAllocation<'_> {
         ] {
             pin.verify_path_identity()?;
         }
-        self.lock.verify_parent()?;
-        let lock = self.metadata.open_file(OsStr::new("layrs.lock"))?;
-        if !self.lock.same_file(&lock) {
+        if let Some(creator) = &self.lock {
+            creator.verify_parent()?;
+        }
+        let lock = self.metadata.open_readonly_file(OsStr::new("layrs.lock"))?;
+        if file::identity(lock.file())? != self.lock_identity {
             return Err(invalid("managed destination owner lock changed"));
         }
         self.temporary_format.verify_parent()?;
-        let name = self
-            .temporary_format_path
-            .file_name()
-            .ok_or_else(|| invalid("managed temporary FORMAT leaf absent"))?;
-        let format = self.control.open_file(name)?;
-        if !self.temporary_format.same_file(&format)
-            || file::identity(self.temporary_format.file())? != self.proof.format_file_identity
-        {
-            return Err(invalid("managed temporary FORMAT identity changed"));
-        }
+        self.format_location()?;
         self.database.verify()?;
         let db = crate::layout::open_read_no_follow(self.database.path())?;
         if file::identity(&db)? != self.proof.private_database_identity {
@@ -209,6 +217,385 @@ impl ManagedDestinationAllocation<'_> {
         self.parent_guard.revalidate()?;
         Ok(())
     }
+
+    fn format_location(&self) -> CauseResult<FormatLocation> {
+        let temporary_name = self
+            .temporary_format_path
+            .file_name()
+            .ok_or_else(|| invalid("managed temporary FORMAT leaf absent"))?;
+        let temporary = self.read_format_name(temporary_name)?;
+        let final_file = self.read_format_name(OsStr::new("FORMAT"))?;
+        let (location, file) = match (temporary, final_file) {
+            (Some(file), None) => (FormatLocation::Temporary, file),
+            (None, Some(file)) => (FormatLocation::Final, file),
+            (None, None) => return Err(invalid("managed FORMAT inode disappeared")),
+            (Some(_), Some(_)) => return Err(invalid("managed FORMAT has both names")),
+        };
+        if file::identity(self.temporary_format.file())? != self.proof.format_file_identity
+            || file::identity(file.file())? != self.proof.format_file_identity
+            || !self.temporary_format.same_file(&file)
+        {
+            return Err(invalid("managed FORMAT inode differs"));
+        }
+        Ok(location)
+    }
+
+    fn read_format_name(&self, name: &OsStr) -> CauseResult<Option<PinnedFile>> {
+        match self.control.open_readonly_file(name) {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormatLocation {
+    Temporary,
+    Final,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ManagedFormatStep {
+    OwnerLock,
+    Append,
+    FileSync,
+    Rename,
+    ParentSync,
+}
+#[derive(Debug)]
+pub(super) struct ManagedFormatEffect {
+    pub(super) step: ManagedFormatStep,
+    pub(super) path: PathBuf,
+    pub(super) confirmed: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ManagedFormatState {
+    Published,
+    AlreadyPublished,
+}
+#[derive(Debug)]
+pub(super) struct ManagedFormatPublication {
+    pub(super) state: ManagedFormatState,
+    pub(super) effects: Vec<ManagedFormatEffect>,
+}
+#[derive(Debug)]
+pub(super) struct ManagedFormatPublicationFailure {
+    pub(super) cause: Cause,
+    pub(super) effects: Vec<ManagedFormatEffect>,
+}
+impl fmt::Display for ManagedFormatPublicationFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+impl std::error::Error for ManagedFormatPublicationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+fn publication_arm(
+    effects: &mut Vec<ManagedFormatEffect>,
+    step: ManagedFormatStep,
+    path: &Path,
+) -> usize {
+    let index = effects.len();
+    effects.push(ManagedFormatEffect {
+        step,
+        path: path.to_owned(),
+        confirmed: false,
+    });
+    index
+}
+
+impl ManagedDestinationAllocation<'_> {
+    /// Publish the same allocated FORMAT inode under Copying. The caller keeps
+    /// `self` on every error, including uncertain rename/sync. This grants no
+    /// source or destination Ready state and cannot adopt a foreign FORMAT.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_format(
+        &mut self,
+        source_root: &layrs_vfs::ProviderRootGuard,
+        mount: &ProviderActiveMountRecord,
+        activation: &ProviderActivationRecord,
+        attempt: &CaptureAttemptLock,
+        copying: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+    ) -> std::result::Result<ManagedFormatPublication, ManagedFormatPublicationFailure> {
+        let mut effects = Vec::with_capacity(5);
+        let result = self.publish_format_inner(
+            source_root,
+            mount,
+            activation,
+            attempt,
+            copying,
+            cancel,
+            &mut effects,
+        );
+        match result {
+            Ok(state) => Ok(ManagedFormatPublication { state, effects }),
+            Err(cause) => Err(ManagedFormatPublicationFailure { cause, effects }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_format_inner(
+        &mut self,
+        source_root: &layrs_vfs::ProviderRootGuard,
+        mount: &ProviderActiveMountRecord,
+        activation: &ProviderActivationRecord,
+        attempt: &CaptureAttemptLock,
+        copying: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+        effects: &mut Vec<ManagedFormatEffect>,
+    ) -> CauseResult<ManagedFormatState> {
+        copying.validate_fields()?;
+        if copying.role != TransitionRole::Source
+            || copying.state != TransitionState::Copying
+            || copying.destination.as_ref() != Some(&self.proof)
+            || copying.reservation.is_some()
+            || copying.receipt_id.is_some()
+        {
+            return Err(invalid(
+                "managed FORMAT publication requires exact source Copying",
+            ));
+        }
+        self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+        self.verify(&copying.plan)?;
+        self.require_fresh_namespace()?;
+        let bytes = self.proof.format.bytes()?;
+        if bytes.is_empty() || bytes.len() > 64 * 1024 {
+            return Err(invalid("managed FORMAT publication byte bound differs"));
+        }
+        let final_path = self.root_path.join(".layrs/FORMAT");
+        if self.owner_lock.is_none() {
+            self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+            let index = publication_arm(
+                effects,
+                ManagedFormatStep::OwnerLock,
+                &self.metadata_path().join("layrs.lock"),
+            );
+            drop(self.lock.take()); // DELETE creator must close before StoreLock opens.
+            self.owner_lock = Some(
+                self.held
+                    .family
+                    .writer_owner(&copying.plan.source_prefix.destination_identity.worktree_id)?,
+            );
+            effects[index].confirmed = true;
+            self.verify(&copying.plan)?;
+            self.require_fresh_namespace()?;
+        }
+        self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+        self.require_fresh_namespace()?;
+        match self.format_location()? {
+            FormatLocation::Final => {
+                self.require_format_bytes(FormatLocation::Final, &bytes, cancel)?;
+                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                let index = publication_arm(effects, ManagedFormatStep::ParentSync, &final_path);
+                self.control.sync()?;
+                effects[index].confirmed = true;
+                self.verify(&copying.plan)?;
+                self.require_fresh_namespace()?;
+                self.require_format_bytes(FormatLocation::Final, &bytes, cancel)?;
+                Ok(ManagedFormatState::AlreadyPublished)
+            }
+            FormatLocation::Temporary => {
+                let prefix =
+                    self.read_format_bytes(FormatLocation::Temporary, bytes.len(), cancel)?;
+                if !bytes.starts_with(&prefix) {
+                    return Err(invalid("managed temporary FORMAT has unknown bytes"));
+                }
+                if prefix.len() < bytes.len() {
+                    self.observed_copying(
+                        source_root,
+                        mount,
+                        activation,
+                        attempt,
+                        copying,
+                        cancel,
+                    )?;
+                    self.require_fresh_namespace()?;
+                    let index = publication_arm(
+                        effects,
+                        ManagedFormatStep::Append,
+                        &self.temporary_format_path,
+                    );
+                    self.temporary_format.file_mut().seek(SeekFrom::End(0))?;
+                    self.temporary_format
+                        .file_mut()
+                        .write_all(&bytes[prefix.len()..])?;
+                    effects[index].confirmed = true;
+                }
+                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.require_fresh_namespace()?;
+                let index = publication_arm(
+                    effects,
+                    ManagedFormatStep::FileSync,
+                    &self.temporary_format_path,
+                );
+                self.temporary_format.file().sync_all()?;
+                effects[index].confirmed = true;
+                self.require_format_bytes(FormatLocation::Temporary, &bytes, cancel)?;
+                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.require_fresh_namespace()?;
+                let index = publication_arm(effects, ManagedFormatStep::Rename, &final_path);
+                if self
+                    .temporary_format
+                    .rename_to(&self.control, OsStr::new("FORMAT"))?
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "managed FORMAT final name collides; allocated inode retained",
+                    )
+                    .into());
+                }
+                effects[index].confirmed = true;
+                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                let index = publication_arm(effects, ManagedFormatStep::ParentSync, &final_path);
+                self.control.sync()?;
+                effects[index].confirmed = true;
+                self.verify(&copying.plan)?;
+                self.require_fresh_namespace()?;
+                self.require_format_bytes(FormatLocation::Final, &bytes, cancel)?;
+                Ok(ManagedFormatState::Published)
+            }
+        }
+    }
+
+    fn metadata_path(&self) -> PathBuf {
+        self.held
+            .family
+            .member(&self.proof.format.identity.worktree_id)
+    }
+
+    /// Refuse an unexpected sibling before publishing an ordinary FORMAT.
+    /// Enumeration grants no authority; retained pins are checked around it.
+    fn require_fresh_namespace(&self) -> CauseResult<()> {
+        self.root.verify_path_identity()?;
+        self.control.verify_path_identity()?;
+        self.member.verify_path_identity()?;
+        self.metadata.verify_path_identity()?;
+        require_names(&self.root_path, &[".layrs"])?;
+        let name = match self.format_location()? {
+            FormatLocation::Temporary => self
+                .temporary_format_path
+                .file_name()
+                .ok_or_else(|| invalid("managed temporary FORMAT leaf absent"))?,
+            FormatLocation::Final => OsStr::new("FORMAT"),
+        };
+        require_names(
+            &self.root_path.join(".layrs"),
+            &[name
+                .to_str()
+                .ok_or_else(|| invalid("managed FORMAT name is not Unicode"))?],
+        )?;
+        let member = self
+            .metadata_path()
+            .parent()
+            .ok_or_else(|| invalid("managed member path absent"))?
+            .to_owned();
+        require_names(&member, &["metadata"])?;
+        require_names(&self.metadata_path(), &["layrs.lock", "projection.sqlite3"])?;
+        self.root.verify_path_identity()?;
+        self.control.verify_path_identity()?;
+        self.member.verify_path_identity()?;
+        self.metadata.verify_path_identity()?;
+        Ok(())
+    }
+
+    fn observed_copying(
+        &self,
+        source_root: &layrs_vfs::ProviderRootGuard,
+        mount: &ProviderActiveMountRecord,
+        activation: &ProviderActivationRecord,
+        attempt: &CaptureAttemptLock,
+        copying: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        managed_journal::observe_copying(
+            self.held,
+            source_root,
+            mount,
+            activation,
+            attempt,
+            copying,
+            cancel,
+        )
+    }
+
+    fn read_format_bytes(
+        &self,
+        expected_location: FormatLocation,
+        limit: usize,
+        cancel: &Cancellation,
+    ) -> CauseResult<Vec<u8>> {
+        cancel.check()?;
+        if self.format_location()? != expected_location {
+            return Err(invalid("managed FORMAT name moved during read"));
+        }
+        let name = match expected_location {
+            FormatLocation::Temporary => self
+                .temporary_format_path
+                .file_name()
+                .ok_or_else(|| invalid("managed temporary FORMAT leaf absent"))?,
+            FormatLocation::Final => OsStr::new("FORMAT"),
+        };
+        let file = self.control.open_readonly_file(name)?;
+        if file::identity(file.file())? != self.proof.format_file_identity
+            || file.file().metadata()?.len() > limit as u64
+        {
+            return Err(invalid("managed FORMAT inode/length changed"));
+        }
+        let length = usize::try_from(file.file().metadata()?.len())
+            .map_err(|_| invalid("managed FORMAT length does not fit memory bound"))?;
+        let mut actual = Vec::with_capacity(limit.min(length));
+        let mut reader = file.file().try_clone()?;
+        Read::by_ref(&mut reader)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut actual)?;
+        if actual.len() > limit
+            || file.file().metadata()?.len() != actual.len() as u64
+            || self.format_location()? != expected_location
+        {
+            return Err(invalid("managed FORMAT changed during bounded read"));
+        }
+        cancel.check()?;
+        Ok(actual)
+    }
+
+    fn require_format_bytes(
+        &self,
+        location: FormatLocation,
+        expected: &[u8],
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        if self.read_format_bytes(location, expected.len(), cancel)? != expected {
+            return Err(invalid("managed FORMAT canonical bytes differ"));
+        }
+        Ok(())
+    }
+}
+
+fn require_names(path: &Path, expected: &[&str]) -> CauseResult<()> {
+    let mut seen = vec![false; expected.len()];
+    for entry in fs::read_dir(path)? {
+        let name = entry?.file_name();
+        let Some(index) = expected
+            .iter()
+            .position(|wanted| name == OsStr::new(*wanted))
+        else {
+            return Err(invalid("managed fresh namespace has unexpected entry"));
+        };
+        if seen[index] {
+            return Err(invalid("managed fresh namespace has duplicate entry"));
+        }
+        seen[index] = true;
+    }
+    if seen.iter().any(|seen| !seen) {
+        return Err(invalid("managed fresh namespace is missing entry"));
+    }
+    Ok(())
 }
 
 fn arm(
@@ -243,7 +630,7 @@ pub(super) fn allocate<'a>(
         PathBuf::from(&planned.plan.destination_parent).join(&planned.plan.destination_leaf_nonce);
     let mut pins = PartialPins::default();
     let mut effects = Vec::with_capacity(7);
-    let result = (|| -> CauseResult<(TransitionDestinationProof, String, PathBuf)> {
+    let result = (|| -> CauseResult<(TransitionDestinationProof, String, PathBuf, String)> {
         cancel.check()?;
         planned.validate_fields()?;
         if planned.role != TransitionRole::Source
@@ -429,6 +816,7 @@ pub(super) fn allocate<'a>(
                 .unwrap()
                 .create_new_private_file(OsStr::new("layrs.lock"))?,
         );
+        let lock_identity = file::identity(pins.lock.as_ref().unwrap().file())?;
         confirm(&mut effects, index);
         boundary(
             held,
@@ -511,10 +899,10 @@ pub(super) fn allocate<'a>(
             native_root_identity: None,
         };
         proof.digest(&planned.plan)?;
-        Ok((proof, plan_digest, temporary_format_path))
+        Ok((proof, plan_digest, temporary_format_path, lock_identity))
     })();
     match result {
-        Ok((proof, plan_digest, temporary_format_path)) => {
+        Ok((proof, plan_digest, temporary_format_path, lock_identity)) => {
             let holder = ManagedDestinationAllocation {
                 held,
                 parent_guard: pins.parent_guard.take().unwrap(),
@@ -524,7 +912,9 @@ pub(super) fn allocate<'a>(
                 worktrees: pins.worktrees.take().unwrap(),
                 member: pins.member.take().unwrap(),
                 metadata: pins.metadata.take().unwrap(),
-                lock: pins.lock.take().unwrap(),
+                lock: pins.lock.take(),
+                lock_identity,
+                owner_lock: None,
                 database: pins.database.take().unwrap(),
                 temporary_format: pins.temporary_format.take().unwrap(),
                 temporary_format_path,
@@ -549,7 +939,7 @@ pub(super) fn allocate<'a>(
                         worktrees: Some(holder.worktrees),
                         member: Some(holder.member),
                         metadata: Some(holder.metadata),
-                        lock: Some(holder.lock),
+                        lock: holder.lock,
                         database: Some(holder.database),
                         temporary_format: Some(holder.temporary_format),
                     },

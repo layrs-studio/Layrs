@@ -100,6 +100,43 @@ pub(super) fn observe_planned(
             "fresh allocation requires exact unreserved source Planned",
         ));
     }
+    observe_unregistered_source(held, root, mount, activation, attempt, planned, cancel)
+}
+
+/// Pre-publication source admission. Destination must still be unregistered;
+/// FORMAT may be absent, partially written or already published at its pinned
+/// inode. The caller independently proves its actual allocation before effects.
+pub(super) fn observe_copying(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    copying: &ProviderTransitionIntentRecord,
+    cancel: &Cancellation,
+) -> CauseResult<()> {
+    if copying.role != TransitionRole::Source
+        || copying.state != TransitionState::Copying
+        || copying.destination.is_none()
+        || copying.reservation.is_some()
+        || copying.receipt_id.is_some()
+    {
+        return Err(invalid(
+            "FORMAT publication requires exact unreserved source Copying",
+        ));
+    }
+    observe_unregistered_source(held, root, mount, activation, attempt, copying, cancel)
+}
+
+fn observe_unregistered_source(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    planned: &ProviderTransitionIntentRecord,
+    cancel: &Cancellation,
+) -> CauseResult<()> {
     let _locks = held.family.locks(
         &held.artifacts.allocation.format.identity.worktree_id,
         false,

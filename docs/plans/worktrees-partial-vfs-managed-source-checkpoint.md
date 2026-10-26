@@ -136,6 +136,27 @@ crash before the source Copying receipt leaves unproven objects: retain and
 refuse them; never infer ownership from the nonce. No restart recipe for that
 window or for FORMAT publication has run yet.
 
+## Pinned FORMAT publication
+
+The retained allocation now closes its lock creator and acquires the destination
+owner lock before publication. The durable source Copying proof and full source
+closure are checked before effects. Only the recorded FORMAT inode is accepted,
+at its temporary or final name. A temporary exact prefix of the canonical bytes
+may be completed; any unrelated content is refused. Publication writes, syncs,
+reads back and uses a no-replace rename. Replay requires that same final inode
+and exact bytes. Errors retain the holder and effects; no cleanup is attempted.
+
+`provider-managed-format-check-r1.log` passes all store-local targets. The
+retained `provider-managed-format-20261026-r1` artifact has 451 source/input
+files, CodeView age 48 and EXE SHA256
+`6004a0648097ec7b4dc661fe51d6bf36c6d57180f5e63c3006217e094e71633a`.
+**130 pure tests pass, 309 ignored. Two exact native recipes pass**: publication
+with preserved inode and idempotent replay; and a foreign final FORMAT collision
+preserving both original inodes and contents. They ran serially in a fresh C:
+parent with 240-second owned child and 300-second outer bounds, after independent
+source review. These tests cover same-process replay and preexisting collision,
+not restart after crash, interrupted rename or power loss.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.
