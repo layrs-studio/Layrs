@@ -393,5 +393,9 @@ mod managed_allocation_tests;
 mod managed_destination_tests;
 
 #[cfg(test)]
+#[path = "session/managed_staging_tests.rs"]
+mod managed_staging_tests;
+
+#[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]
 mod managed_journal_tests;

@@ -32,7 +32,7 @@ pub(super) struct ManagedDestinationSqlEffect {
     pub destination: DestinationSqlState,
 }
 
-fn valid<T>(state: database_io::ReadState<T>) -> CauseResult<T> {
+pub(super) fn valid<T>(state: database_io::ReadState<T>) -> CauseResult<T> {
     match state {
         database_io::ReadState::Valid(value) => Ok(value),
         database_io::ReadState::Uninitialized => Err(invalid("managed database uninitialized")),
@@ -47,7 +47,7 @@ fn valid<T>(state: database_io::ReadState<T>) -> CauseResult<T> {
     }
 }
 
-fn boundary(
+pub(super) fn boundary(
     held: &outcome::PublicationPins,
     root: &layrs_vfs::ProviderRootGuard,
     attempt: &CaptureAttemptLock,
@@ -70,7 +70,7 @@ fn boundary(
 /// Reopen the source only for a bounded SQL step. The issued closure never
 /// escapes its source connection. A failed observable close ends the step.
 #[allow(clippy::too_many_arguments)]
-fn with_source<T>(
+pub(super) fn with_source<T>(
     held: &outcome::PublicationPins,
     root: &layrs_vfs::ProviderRootGuard,
     mount: &ProviderActiveMountRecord,
@@ -291,7 +291,7 @@ fn inspect_destination(
     }
 }
 
-fn destination_intent(
+pub(super) fn destination_intent(
     source: &ProviderTransitionIntentRecord,
 ) -> CauseResult<ProviderTransitionIntentRecord> {
     let mut intent = ProviderTransitionIntentRecord::decode(&source.encode()?)?;

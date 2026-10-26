@@ -7,6 +7,7 @@ mod managed_destination;
 mod managed_image;
 mod managed_journal;
 mod managed_plan;
+mod managed_staging;
 mod ranges;
 mod recovery_export;
 pub use capture::{ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep};

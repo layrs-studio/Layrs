@@ -334,6 +334,50 @@ pub(super) fn bind_allocation(
     )
 }
 
+/// Source Copying -> Staging after a full image rehash and exact destination
+/// CopiedPrefix/Initializing preflight by the orchestration caller. No family
+/// reservation, installation or Ready state is created by this source CAS.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_source(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    copying: &ProviderTransitionIntentRecord,
+    staging: &ProviderTransitionIntentRecord,
+    image: &managed_image::VerifiedManagedImage<'_, '_>,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<SourceIntentEffect> {
+    staging.require_transition(copying)?;
+    if copying.role != TransitionRole::Source
+        || copying.state != TransitionState::Copying
+        || staging.state != TransitionState::Staging
+        || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
+        || copying.destination.as_ref() != Some(destination.proof())
+        || staging.destination.as_ref() != Some(destination.proof())
+        || staging.receipt_id.is_some()
+    {
+        return Err(invalid("managed source Staging predecessor differs"));
+    }
+    destination.require_published(&staging.plan)?;
+    write(
+        held,
+        root,
+        mount,
+        activation,
+        attempt,
+        Some(copying),
+        staging,
+        Some(image),
+        Some(destination),
+        close,
+        cancel,
+    )
+}
+
 fn write(
     held: &outcome::PublicationPins,
     root: &layrs_vfs::ProviderRootGuard,

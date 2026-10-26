@@ -220,6 +220,34 @@ change refusing a second copy before any output. Independent source reviews
 released both recipes; SQL child 120 seconds, Native child 240 seconds,
 outer 300 seconds, fresh owned C: parent and serial stop-on-failure execution.
 
+## Physical Staging coordination
+
+`managed_staging::stage` rehashes the retained image and binds the manifest union
+before acquiring SQL gates. The first source write requires the exact copied
+destination and family Initializing. Source Staging COMMIT, observable close and
+readback precede the destination Staging write. A separate retry can complete
+Source Staging/Destination Copying; fully Staging replay opens no writer. The
+family reader for this phase requires Initializing with no actual reservation,
+installation or root. A reservation identifier in private SQL is only intent.
+
+All store-local targets compile (`provider-managed-staging-driver-check-r4.log`).
+The retained r3 artifact has 460 source/input files, CodeView age 55 and EXE
+SHA256 `4a956832fa59baeef51183bacd77d21528d384e1ed1f64f7ad8ba77b55e95c6a`.
+The preceding r1 pure run passes 134 tests, 316 ignored. **Both final r3 native
+recipes pass**: physical Staging and no-write replay; and an acknowledgement
+refusal after successful source COMMIT/close, proving destination remains
+Copying, followed by a distinct retry and no-write replay. Child 240 / outer
+300 seconds, fresh owned C: parent, independent source release and serial
+stop-on-failure rules apply. The source-reviewed test file SHA256 is
+`e4146fe120494e321d52fe9de3e137085ca4d9ea192081b0597a0830d413a477`.
+
+The first r1 native recipe correctly refused an old synthetic allocation plan
+whose manifest union was empty. That failed fixture and log are retained; the
+second recipe was not run. The corrected fixture derives its actual plan from
+the complete SQL closure and retained image under scoped source/catalog gates.
+No production validation was relaxed. These tests do not simulate a genuine
+SQLite close failure, process crash or power loss.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.

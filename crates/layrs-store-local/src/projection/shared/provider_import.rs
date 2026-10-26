@@ -30,6 +30,12 @@ pub(in crate::projection) enum ImportRegistrationEffect {
     AlreadyPresent,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnreservedPhase {
+    Copying,
+    Staging,
+}
+
 /// Require the source's Ready family row and all of its capture protections,
 /// then inspect only the destination's exact registry row and owner claims.
 /// The source Copying intent must also have been interpreted from the pinned
@@ -43,6 +49,31 @@ fn validate_import_initializing(
     source_activation: &ProviderActivationRecord,
     source_capture: &PrivateCaptureProof,
     source_copying: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    validate_unreserved(
+        family,
+        c,
+        source_a,
+        source_p,
+        source_activation,
+        source_capture,
+        source_copying,
+        UnreservedPhase::Copying,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_unreserved(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<ImportRegistration> {
     cancellation::check(cancel)?;
@@ -60,8 +91,12 @@ fn validate_import_initializing(
         return Err(invalid("import Copying has no destination proof"));
     };
     if source_copying.role != TransitionRole::Source
-        || source_copying.state != TransitionState::Copying
-        || source_copying.reservation.is_some()
+        || source_copying.state
+            != match phase {
+                UnreservedPhase::Copying => TransitionState::Copying,
+                UnreservedPhase::Staging => TransitionState::Staging,
+            }
+        || source_copying.reservation.is_some() != (phase == UnreservedPhase::Staging)
         || source_copying.receipt_id.is_some()
         || source_copying.plan.kind != ProviderImportKind::ManagedOrdinary
         || destination.backend != TransitionBackendKind::Ordinary
@@ -69,7 +104,7 @@ fn validate_import_initializing(
         || destination.native_root_identity.is_some()
     {
         return Err(invalid(
-            "import requires unreserved ordinary source Copying",
+            "import requires exact ordinary source phase without family effects",
         ));
     }
     source_copying
@@ -154,6 +189,11 @@ fn validate_import_initializing(
             ))
         }
     };
+    if phase == UnreservedPhase::Staging && registration != ImportRegistration::Initializing {
+        return Err(invalid(
+            "import Staging requires existing Initializing registration",
+        ));
+    }
     for sql in [
         "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
@@ -233,6 +273,34 @@ fn register_import_initializing(
 }
 
 impl FamilyAccess {
+    /// The private Staging intent names its future reservation, but no family
+    /// reservation, installation or protection may exist yet. Caller proves
+    /// this exact Staging row from the retained source transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection) fn validate_import_staging_unreserved(
+        &self,
+        c: &Connection,
+        source_a: &AllocationRecord,
+        source_p: &PreparedRecord,
+        source_activation: &ProviderActivationRecord,
+        source_capture: &PrivateCaptureProof,
+        source_staging: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        validate_unreserved(
+            self,
+            c,
+            source_a,
+            source_p,
+            source_activation,
+            source_capture,
+            source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )?;
+        Ok(())
+    }
+
     /// Full source Ready and destination Initializing/Absent SQL interpretation
     /// under the caller's held family catalog gate and transaction.
     #[allow(clippy::too_many_arguments)]
