@@ -54,25 +54,14 @@ pub(in crate::projection) fn read_scoped_closure(
 /// A planner may compute commitments as DATA before constructing its prefix.
 /// This never grants source/readiness authority; `read_scoped_closure` must
 /// independently compare the completed prefix under the same locks/snapshot.
-pub(super) fn compute_scoped_closure(
+pub(in crate::projection::provider) fn compute_scoped_closure(
     c: &Connection,
     kind: ImportDatabaseKind,
     prefix: &ProviderImportPrefixRecord,
     metadata: &SourceMetadata,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ImportClosure> {
-    let scope = ScopeView {
-        kind: metadata.kind,
-        prefix_id: &metadata.prefix_id,
-        catalog_ids: &metadata.catalog_ids,
-        activation_ids: &metadata.activation_ids,
-        receipt_ids: &metadata.receipt_ids,
-        companion_ids: &metadata.companion_ids,
-        content_file_ids: &metadata.content_file_ids,
-        capture_lengths: &metadata.capture_lengths,
-        receipts: metadata.lineage.receipts(),
-        lineage: &metadata.lineage,
-    };
+    let scope = ScopeView::from_metadata(metadata);
     compute_from_scope(c, kind, prefix, &scope, cancel)
 }
 
@@ -89,6 +78,22 @@ pub(super) struct ScopeView<'a> {
     pub receipts: &'a [ProviderTransitionReceiptRecord],
     pub lineage: &'a ProvenanceIndex,
 }
+impl<'a> ScopeView<'a> {
+    pub(super) fn from_metadata(metadata: &'a SourceMetadata) -> Self {
+        Self {
+            kind: metadata.kind,
+            prefix_id: &metadata.prefix_id,
+            catalog_ids: &metadata.catalog_ids,
+            activation_ids: &metadata.activation_ids,
+            receipt_ids: &metadata.receipt_ids,
+            companion_ids: &metadata.companion_ids,
+            content_file_ids: &metadata.content_file_ids,
+            capture_lengths: &metadata.capture_lengths,
+            receipts: metadata.lineage.receipts(),
+            lineage: &metadata.lineage,
+        }
+    }
+}
 
 pub(super) fn compute_from_scope(
     c: &Connection,
@@ -97,6 +102,19 @@ pub(super) fn compute_from_scope(
     scope: &ScopeView<'_>,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ImportClosure> {
+    with_scope(c, kind, prefix, scope, cancel, |_, closure| {
+        Ok(closure.clone())
+    })
+}
+
+pub(super) fn with_scope<T>(
+    c: &Connection,
+    kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
+    scope: &ScopeView<'_>,
+    cancel: Option<&Cancellation>,
+    after: impl FnOnce(&[Spec<'_>], &ImportClosure) -> CauseResult<T>,
+) -> CauseResult<T> {
     if kind != scope.kind || prefix.digest()? != scope.prefix_id {
         return Err(invalid("import source metadata/prefix binding changed"));
     }
@@ -306,7 +324,7 @@ pub(super) fn compute_from_scope(
     {
         return Err(invalid("import scoped row is missing from SQL closure"));
     }
-    Ok(closure)
+    after(&specs, &closure)
 }
 
 fn derive_catalog_scope(

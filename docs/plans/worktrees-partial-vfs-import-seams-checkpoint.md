@@ -1,5 +1,34 @@
 # Import metadata and provider status checkpoint — 26 October 2026
 
+## Immutable SQL copy and source journal reader
+
+`copy_verified_prefix` reuses the exact twelve scoped SQL selectors, checks all
+existing-row collisions before inserting, copies in foreign-key order, and
+rehashes the destination. Repeating an identical copy is harmless. It never
+replaces a row or copies live mount, transaction, head, ownership or import
+state. Foreign keys are checked with indexed probes over the copied rows;
+unrelated destination tables are not scanned. The caller owns both transactions
+and must roll back after an error. This is not destination readiness admission.
+
+The separate `ActiveTransition` reader accepts bounded source journal rows in
+Planned/Copying/Staging/Cancelled, tied to the Active source and capture history.
+It bounds these rows before the capture reader's global foreign-key check.
+The existing `ActiveCapture` admission remains strict. Terminal receipts,
+physical destination and the import closure still require their own interpreters.
+
+`provider-transition-sql-check-r1.log` records workspace/all-targets success;
+`provider-transition-sql-pure-r1.log` records **117 passed, 296 ignored**.
+The retained `provider-import-copy-20261026-r2` EXE is
+`bb7bd50243a1abce8a5724c8bbbb1f3e6efee407459a787638031d4533dd751e`,
+PDB age 38, with 436 source inputs. Three reviewed SQL child recipes pass:
+exact copy/replay/collision refusal, copying history after two imports (including
+six snapshots, two captures and two receipts), and source journal admission with
+the UNIQUE active-intent refusal and unchanged strict ActiveCapture behavior.
+The r1 queue stopped at a fixture whose provisional snapshot/selection counts
+were zero; r2 fixes those counts before computing the real rowset commitments.
+All failure artifacts were retained. The compiled source journal mutation
+primitive is not qualified by these three recipes.
+
 ## Full SQL source closure and transition intent
 
 The bounded import reader now checks the exact schema and FORMAT ingress,

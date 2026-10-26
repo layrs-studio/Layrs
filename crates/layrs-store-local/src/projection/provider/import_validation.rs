@@ -14,9 +14,11 @@ use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
 mod ancestry;
+mod copy;
 mod rows;
 mod scoped;
 mod source;
+pub(in crate::projection::provider) use scoped::compute_scoped_closure;
 pub(in crate::projection) use scoped::read_scoped_closure;
 pub(in crate::projection) use source::{SourceMetadata, read_source_metadata};
 
@@ -24,22 +26,25 @@ pub(in crate::projection) use source::{SourceMetadata, read_source_metadata};
 /// registration retain their independent proofs.
 pub(in crate::projection) struct VerifiedImportClosure {
     closure: ImportClosure,
-    prefix_id: String,
-    lineage: ProvenanceIndex,
+    source_connection: *const Connection,
+    marker: format::Marker,
+    metadata: SourceMetadata,
 }
 impl VerifiedImportClosure {
     pub(in crate::projection) fn closure(&self) -> &ImportClosure {
         &self.closure
     }
     pub(in crate::projection) fn prefix_id(&self) -> &str {
-        &self.prefix_id
+        &self.metadata.prefix_id
     }
     pub(in crate::projection) fn capture_origin(
         &self,
         sequence: u64,
         local_max_generation: u64,
     ) -> CauseResult<(&crate::projection::ProjectionIdentity, u64, u64)> {
-        self.lineage.capture_source(sequence, local_max_generation)
+        self.metadata
+            .lineage
+            .capture_source(sequence, local_max_generation)
     }
 }
 
@@ -103,10 +108,13 @@ pub(in crate::projection) fn verify_source(
     super::cancellation::check(cancel)?;
     Ok(VerifiedImportClosure {
         closure,
-        prefix_id: metadata.prefix_id,
-        lineage: metadata.lineage,
+        source_connection: c,
+        marker: marker.clone(),
+        metadata,
     })
 }
+
+pub(in crate::projection) use copy::copy_verified_prefix;
 
 /// Evidence-bearing family of the connection supplied to `require_schema`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

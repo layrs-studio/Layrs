@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Copie d’historique importé
+
+La copie SQL vérifie les collisions avant écriture, conserve exactement les douze
+ensembles du préfixe et accepte un rejeu identique. Les contrôles FK restent dans
+le périmètre copié. **Trois recettes SQL passent**, dont la copie après deux
+imports ; le lecteur du journal source est qualifié séparément de son writer.
+Le [checkpoint d’import](plans/worktrees-partial-vfs-import-seams-checkpoint.md)
+conserve les binaires et limites. La création physique et la publication de la
+destination restent à raccorder.
+
 ## Fermeture SQL d’import et journal de transition
 
 Le lecteur vérifie maintenant le préfixe immuable complet, les origines après

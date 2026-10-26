@@ -409,6 +409,66 @@ fn two_imports_preserve_historical_closures() {
             let (origin, first, last) = verified.capture_origin(1, 5).unwrap();
             assert_eq!(origin, &destination_identity(original, "imported-one"));
             assert_eq!((first, last), (2, 3));
+            let destination_handle = BareConnection::reference().unwrap();
+            let destination = destination_handle.connection();
+            let ddl = [
+                crate::projection::database::SQL,
+                crate::projection::selection::SQL,
+                crate::projection::retention::SQL,
+                crate::projection::provider::schema::SQL,
+            ]
+            .concat();
+            destination.execute_batch(&ddl).unwrap();
+            destination.pragma_update(None, "user_version", 8).unwrap();
+            let mut copied_marker = final_marker.clone();
+            copied_marker.identity = third_prefix.destination_identity.clone();
+            copied_marker.import_digest = Some(third_prefix.digest().unwrap());
+            destination
+                .execute(
+                    "INSERT INTO projection_meta VALUES(1,?1)",
+                    [copied_marker.bytes().unwrap()],
+                )
+                .unwrap();
+            destination
+                .execute(
+                    "INSERT INTO projection_backend VALUES(1,'ordinary',NULL)",
+                    [],
+                )
+                .unwrap();
+            destination.execute_batch("BEGIN IMMEDIATE").unwrap();
+            copy_verified_prefix(
+                c,
+                destination,
+                &copied_marker,
+                &third_prefix,
+                &verified,
+                None,
+            )
+            .unwrap();
+            copy_verified_prefix(
+                c,
+                destination,
+                &copied_marker,
+                &third_prefix,
+                &verified,
+                None,
+            )
+            .unwrap();
+            for (table, expected) in [
+                ("projection_snapshots", 6u64),
+                ("projection_captures", 2),
+                ("projection_provider_transition_receipts", 2),
+                ("projection_provider_activations", 1),
+                ("projection_provider_mounts", 0),
+                ("projection_provider_transitions", 0),
+                ("projection_imports", 0),
+            ] {
+                let query = format!("SELECT count(*) FROM {table}");
+                let count: u64 = destination.query_row(&query, [], |r| r.get(0)).unwrap();
+                assert_eq!(count, expected, "{table}");
+            }
+            destination.execute_batch("COMMIT").unwrap();
+            destination_handle.finish(Ok(())).unwrap();
             for import_digest in [None, Some(ZERO.to_owned())] {
                 c.execute_batch("SAVEPOINT marker_mismatch").unwrap();
                 let mut bad_marker = final_marker.clone();

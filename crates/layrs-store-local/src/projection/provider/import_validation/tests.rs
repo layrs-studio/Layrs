@@ -93,11 +93,11 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
-            ProviderBootstrapBinding, Receipt, Record,
             import::{
                 ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
                 ProviderImportKind, ProviderImportPrefixRecord,
             },
+            ProviderBootstrapBinding, Receipt, Record,
         },
         validation::{active_fixture, private_active_capture_with_source},
     };
@@ -227,23 +227,21 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
                 rusqlite::params!["0".repeat(64), activation.digest().unwrap()],
             )
             .unwrap();
-            assert!(
-                verify_source(
-                    c,
-                    marker,
-                    ImportDatabaseKind::Provider,
-                    &prefix,
-                    ImportSourceReferences::Provider {
-                        allocation: &f.allocation,
-                        prepared: &f.prepared,
-                        activation: &activation,
-                    },
-                    Some(&proof),
-                    RAW,
-                    None
-                )
-                .is_err()
-            );
+            assert!(verify_source(
+                c,
+                marker,
+                ImportDatabaseKind::Provider,
+                &prefix,
+                ImportSourceReferences::Provider {
+                    allocation: &f.allocation,
+                    prepared: &f.prepared,
+                    activation: &activation,
+                },
+                Some(&proof),
+                RAW,
+                None
+            )
+            .is_err());
             c.execute_batch("ROLLBACK TO tamper; RELEASE tamper; COMMIT")
                 .unwrap();
             c.execute_batch("PRAGMA foreign_keys=OFF; BEGIN DEFERRED")
@@ -271,6 +269,252 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
             assert!(oversized.to_string().contains("snapshot/selection prefix"));
             c.execute_batch("ROLLBACK").unwrap();
             bare.finish(Ok(())).unwrap();
+        },
+    );
+}
+
+#[test]
+#[ignore = "owned audited Windows SQLite process; exact provider prefix copy"]
+fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
+    use crate::projection::provider::{
+        database_io::BareConnection,
+        process_profile::tests::child,
+        records::{
+            import::{
+                ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
+                ProviderImportKind, ProviderImportPrefixRecord,
+            },
+            Receipt, Record,
+        },
+        validation::{active_fixture, private_active_capture_with_source},
+    };
+    const IMAGE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ZERO: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
+    let empty = || ImportRowset {
+        count: 0,
+        digest: ZERO.into(),
+    };
+    child::run(
+        concat!(
+            module_path!(),
+            "::verified_prefix_copy_is_idempotent_and_refuses_collision"
+        ),
+        120,
+        || {
+            child::declare();
+            let source_handle = BareConnection::reference().unwrap();
+            let source = source_handle.connection();
+            let (fixture, _, _, activation, activated) = active_fixture(source, false);
+            let original = fixture.allocation.format.clone();
+            let mut destination_marker = original.clone();
+            destination_marker.identity.worktree_id = WorktreeId::parse("worktree:copied").unwrap();
+            let destination_handle = BareConnection::reference().unwrap();
+            let destination = destination_handle.connection();
+            let ddl = [
+                crate::projection::database::SQL,
+                crate::projection::selection::SQL,
+                crate::projection::retention::SQL,
+                crate::projection::provider::schema::SQL,
+            ]
+            .concat();
+            destination.execute_batch(&ddl).unwrap();
+            destination.pragma_update(None, "user_version", 8).unwrap();
+            destination
+                .execute(
+                    "INSERT INTO projection_meta VALUES(1,?1)",
+                    [destination_marker.bytes().unwrap()],
+                )
+                .unwrap();
+            destination
+                .execute(
+                    "INSERT INTO projection_backend VALUES(1,'ordinary',NULL)",
+                    [],
+                )
+                .unwrap();
+            source.execute_batch("BEGIN DEFERRED").unwrap();
+            destination.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"layrs-projection-provider-import-segments-v1\0");
+            hash.update(&0u64.to_be_bytes());
+            let mut prefix = ProviderImportPrefixRecord {
+                schema_version: "layrs.projection-provider-import-prefix.v1".into(),
+                kind: ProviderImportKind::ManagedOrdinary,
+                source: ImportSource::Provider {
+                    identity: original.identity.clone(),
+                    format_digest: crate::projection::provider::records::codec::hash(
+                        "layrs-projection-provider-import-format-v1",
+                        &original.bytes().unwrap(),
+                    ),
+                    private_schema: 8,
+                    allocation: fixture.allocation.data_reference().unwrap(),
+                    prepared: fixture.prepared.data_reference().unwrap(),
+                    binding:
+                        crate::projection::provider::records::ProviderBootstrapBinding::decode(
+                            &activation.binding.encode().unwrap(),
+                        )
+                        .unwrap(),
+                    activation_map_id: activation.digest().unwrap(),
+                    version: ImportVersion {
+                        generation: 1,
+                        snapshot_digest: activated.digest,
+                        selection_digest: activation.selection_digest.clone(),
+                        capture_count: 0,
+                        capture_head: None,
+                        effective_image_digest: IMAGE.into(),
+                    },
+                },
+                destination_identity: destination_marker.identity.clone(),
+                inherited_segments: ImportRowset {
+                    count: 0,
+                    digest: format!("blake3:{}", hash.finalize()),
+                },
+                ancestry_root_receipt: None,
+                closure: ImportClosure {
+                    snapshots: ImportRowset {
+                        count: 2,
+                        ..empty()
+                    },
+                    selections: ImportRowset {
+                        count: 1,
+                        ..empty()
+                    },
+                    captures: empty(),
+                    publications: empty(),
+                    catalogs: ImportRowset {
+                        count: 1,
+                        ..empty()
+                    },
+                    descriptors: ImportRowset {
+                        count: 1,
+                        ..empty()
+                    },
+                    activation_maps: ImportRowset {
+                        count: 1,
+                        ..empty()
+                    },
+                    transition_receipts: empty(),
+                    companions: empty(),
+                    companion_files: empty(),
+                    companion_deletions: empty(),
+                    content_mappings: empty(),
+                },
+            };
+            let metadata = read_source_metadata(
+                source,
+                &original,
+                ImportDatabaseKind::Provider,
+                &prefix,
+                ImportSourceReferences::Provider {
+                    allocation: &fixture.allocation,
+                    prepared: &fixture.prepared,
+                    activation: &activation,
+                },
+                IMAGE,
+                None,
+            )
+            .unwrap();
+            prefix.closure = scoped::compute_scoped_closure(
+                source,
+                ImportDatabaseKind::Provider,
+                &prefix,
+                &metadata,
+                None,
+            )
+            .unwrap();
+            let active_proof = private_active_capture_with_source(
+                source,
+                &fixture.allocation,
+                &fixture.prepared,
+                &activation.binding,
+                Some([0x41; 16]),
+                None,
+            )
+            .unwrap();
+            let proof = verify_source(
+                source,
+                &original,
+                ImportDatabaseKind::Provider,
+                &prefix,
+                ImportSourceReferences::Provider {
+                    allocation: &fixture.allocation,
+                    prepared: &fixture.prepared,
+                    activation: &activation,
+                },
+                Some(&active_proof),
+                IMAGE,
+                None,
+            )
+            .unwrap();
+            copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .unwrap();
+            copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .unwrap();
+            let snapshots: u64 = destination
+                .query_row("SELECT count(*) FROM projection_snapshots", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let descriptors: u64 = destination
+                .query_row(
+                    "SELECT count(*) FROM projection_provider_descriptors",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let live_mounts: u64 = destination
+                .query_row("SELECT count(*) FROM projection_provider_mounts", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let backend: String = destination
+                .query_row(
+                    "SELECT backend FROM projection_backend WHERE singleton=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                (snapshots, descriptors, live_mounts, backend.as_str()),
+                (2, 1, 0, "ordinary")
+            );
+            destination.execute_batch("SAVEPOINT collision").unwrap();
+            destination
+                .execute(
+                    "UPDATE projection_snapshots SET payload=x'00' WHERE generation=1",
+                    [],
+                )
+                .unwrap();
+            let refusal = copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .err()
+            .expect("same-key altered row must refuse");
+            assert!(refusal.to_string().contains("collision"), "{refusal}");
+            destination
+                .execute_batch("ROLLBACK TO collision; RELEASE collision; COMMIT")
+                .unwrap();
+            source.execute_batch("COMMIT").unwrap();
+            source_handle.finish(Ok(())).unwrap();
+            destination_handle.finish(Ok(())).unwrap();
         },
     );
 }

@@ -17,6 +17,7 @@ use layrs_core::{
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 mod capture;
+mod transition;
 #[cfg(test)]
 pub(in crate::projection::provider) use capture::tests::active_fixture;
 pub(in crate::projection) use capture::{CaptureContentProof, PrivateCaptureProof};
@@ -45,6 +46,13 @@ pub(super) struct PrivateActiveValidation {
 pub(super) struct PrivateActiveCaptureValidation {
     pub(super) active: PrivateActiveValidation,
     pub(super) capture: PrivateCaptureProof,
+}
+/// SQL DATA only. The caller still proves the import closure, pinned family,
+/// destination effects, and native image independently.
+pub(super) struct PrivateActiveTransitionValidation {
+    pub(super) active: PrivateActiveValidation,
+    pub(super) capture: PrivateCaptureProof,
+    pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
 }
 impl PrivateActiveCaptureValidation {
     /// Borrow only validated private SQL DATA for the import interpreter.
@@ -87,14 +95,27 @@ enum PrivateMode<'a> {
         expected_binding: &'a ProviderBootstrapBinding,
         expected_root_id: Option<[u8; 16]>,
     },
+    ActiveTransition {
+        expected_binding: &'a ProviderBootstrapBinding,
+        expected_root_id: Option<[u8; 16]>,
+    },
 }
 
 impl PrivateMode<'_> {
     fn active(self) -> bool {
-        matches!(self, Self::Active { .. } | Self::ActiveCapture { .. })
+        matches!(
+            self,
+            Self::Active { .. } | Self::ActiveCapture { .. } | Self::ActiveTransition { .. }
+        )
     }
     fn capture(self) -> bool {
-        matches!(self, Self::ActiveCapture { .. })
+        matches!(
+            self,
+            Self::ActiveCapture { .. } | Self::ActiveTransition { .. }
+        )
+    }
+    fn transition(self) -> bool {
+        matches!(self, Self::ActiveTransition { .. })
     }
 }
 
@@ -324,6 +345,53 @@ pub(super) fn private_active_capture_with_source(
     })
 }
 
+/// Separate source journal mode. Terminal transition receipts and destination
+/// authority require a later, explicit interpreter.
+pub(super) fn private_active_transition_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: Option<[u8; 16]>,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateActiveTransitionValidation> {
+    let Some((ValidatedMount::Active(mount, activation, activated), source)) = private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::ActiveTransition {
+            expected_binding,
+            expected_root_id,
+        },
+        cancel,
+    )?
+    else {
+        unreachable!("transition mode is initialized Active only")
+    };
+    transition::preflight(c, cancel)?;
+    let capture = capture::validate(c, allocation, &mount, &activation, &activated, cancel)?;
+    let transitions = transition::validate(
+        c,
+        allocation,
+        prepared,
+        &activation,
+        &activated,
+        &source,
+        &capture,
+        cancel,
+    )?;
+    Ok(PrivateActiveTransitionValidation {
+        active: PrivateActiveValidation {
+            mount,
+            activation,
+            source,
+            activated,
+        },
+        capture,
+        transitions,
+    })
+}
+
 /// Select a prepared or active interpreter only after the exact schema and a
 /// bounded singleton phase are known. The selected interpreter repeats every
 /// fence and returns no authority without its full source/history validation.
@@ -418,7 +486,8 @@ fn private_interpret(
             PrivateMode::Bootstrap => Ok(None),
             PrivateMode::Preparation { .. }
             | PrivateMode::Active { .. }
-            | PrivateMode::ActiveCapture { .. } => {
+            | PrivateMode::ActiveCapture { .. }
+            | PrivateMode::ActiveTransition { .. } => {
                 Err(invalid("post-bootstrap private database is uninitialized"))
             }
         };
@@ -431,6 +500,7 @@ fn private_interpret(
     // Account for every table before any potentially unbounded FK traversal.
     for table in EMPTY_TABLES {
         if (mode.active() && table == "projection_provider_activations")
+            || (mode.transition() && table == "projection_provider_transitions")
             || (mode.capture()
                 && matches!(
                     table,
@@ -499,12 +569,16 @@ fn private_interpret(
         PrivateMode::Preparation { .. } => {
             "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('control_published','provider_prepared')"
         }
-        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
+        PrivateMode::Active { .. }
+        | PrivateMode::ActiveCapture { .. }
+        | PrivateMode::ActiveTransition { .. } => {
             "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase!='active'"
         }
     };
     let snapshot_projection_bound = match mode {
-        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
+        PrivateMode::Active { .. }
+        | PrivateMode::ActiveCapture { .. }
+        | PrivateMode::ActiveTransition { .. } => {
             "generation NOT IN (0,1) OR length(CAST(digest AS BLOB))!=64 OR (generation=0 AND parent_digest IS NOT NULL) OR (generation=1 AND (parent_digest IS NULL OR length(CAST(parent_digest AS BLOB))!=64))"
         }
         _ => "length(CAST(digest AS BLOB))!=64 OR parent_digest IS NOT NULL",
@@ -563,9 +637,9 @@ fn private_interpret(
     let mount_payload_bound = match mode {
         PrivateMode::Bootstrap => 1024 * 1024,
         PrivateMode::Preparation { .. } => ProviderPreparationRecord::MAX_BYTES as u64,
-        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
-            ProviderActiveMountRecord::MAX_BYTES as u64
-        }
+        PrivateMode::Active { .. }
+        | PrivateMode::ActiveCapture { .. }
+        | PrivateMode::ActiveTransition { .. } => ProviderActiveMountRecord::MAX_BYTES as u64,
     };
     for (table, column, bound) in [
         ("projection_meta", "identity", 65536u64),
@@ -818,6 +892,10 @@ fn private_interpret(
             expected_root_id,
         }
         | PrivateMode::ActiveCapture {
+            expected_binding,
+            expected_root_id,
+        }
+        | PrivateMode::ActiveTransition {
             expected_binding,
             expected_root_id,
         } => {
