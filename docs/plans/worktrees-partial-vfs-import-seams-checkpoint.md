@@ -83,9 +83,11 @@ DELETE right on the ticket. The result is untrusted input until Store admission.
 The status route reopens and revalidates Active, without connecting, activating,
 recovering or scanning an ordinary checkout. Its DTO reports `active`, root,
 catalogue, generation and digest. It does not grant ordinary mutation capabilities.
-The CLI does **not** declare its own process-wide SQLite profile. Until a product
-host is audited and explicitly declares that profile, this route returns
-`process_profile_unavailable`; product-host qualification remains open.
+The Windows executable now declares its process-wide SQLite profile only on
+this exact status route, before its first SQLite access. Library callers still
+receive `process_profile_unavailable` unless their own host explicitly qualifies
+and declares the profile. See the [product-host checkpoint](worktrees-partial-vfs-product-host-checkpoint.md)
+for the exact audited executable and runtime evidence.
 
 ## Retained evidence
 

@@ -16,6 +16,7 @@ mod preparation_ranges;
 mod preparation_reopen;
 mod recovery_export;
 mod recovery_export_writer;
+mod product_status;
 pub(super) mod process;
 mod recipes;
 use fixture::{Fixture, failure, has};

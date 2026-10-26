@@ -58,6 +58,19 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
             data: serde_json::json!({ "usage": usage() }),
         });
     }
+    #[cfg(windows)]
+    if matches!(
+        &cli.command,
+        CliCommand::PartialProvider(layrs_cli::args::PartialProviderCommand::Status { .. })
+    ) {
+        // This executable owns the audited startup/native closure. Keep this
+        // assertion before the route's first SQLite access and out of libraries:
+        // embedding the client does not qualify another host process.
+        layrs_store_local::projection::declare_provider_sqlite_process_profile(
+            layrs_store_local::projection::ProviderSqliteProcessDeclaration::AuditedLayrsHostV1,
+        )
+        .map_err(|error| CliError::runtime(format!("process_profile_unavailable: {error}")))?;
+    }
     layrs_cli::native::try_run(&cli).unwrap_or_else(|| {
         Err(CliError::runtime(
             "No Layrs project found here. Run `layrs init NAME` to create one.",

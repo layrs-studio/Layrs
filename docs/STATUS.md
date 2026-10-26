@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Statut provider dans le CLI produit
+
+La commande Windows `layrs partial provider status --ticket FILE` fonctionne
+sur l’exécutable audité. Cinq processus CLI vérifient les sorties JSON/texte,
+les refus de tickets étrangers et d’un provider encore Prepared, sans modifier
+les bases. Le profil SQLite est déclaré uniquement par cette route du binaire.
+Le [checkpoint produit](plans/worktrees-partial-vfs-product-host-checkpoint.md)
+conserve l’audit EXE/PDB et ses limites. Les autres routes provider et Desktop
+restent à intégrer.
+
 ## Copie d’historique importé
 
 La copie SQL vérifie les collisions avant écriture, conserve exactement les douze
@@ -36,7 +46,8 @@ La lecture des captures et publications peut vérifier une origine héritée san
 récursion dans la provenance. La commande dédiée
 `layrs partial provider status --ticket FILE` est câblée avec un ticket borné
 lu sans suivre de liens. Elle reste conditionnée à la déclaration explicite du
-profil SQLite d’un hôte audité ; le CLI générique ne s’accorde pas ce profil.
+profil SQLite d’un hôte audité ; la route Status du binaire Windows est désormais
+qualifiée dans le checkpoint produit ci-dessus, contrairement aux hôtes embarqués.
 
 Les **110 tests purs provider**, les **deux tests ciblés client/CLI** et les
 **cinq recettes de métadonnées, ticket et régressions ordinaires** passent.
