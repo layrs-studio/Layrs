@@ -171,6 +171,61 @@ impl VerifiedManagedImage<'_, '_> {
         cancel.check()?;
         Ok(())
     }
+
+    /// Copy one chunk of an exact current-image representation. The sink may
+    /// contain a prefix on failure and must remain unpublished. This proves
+    /// the selected ChunkId only; the importer must verify the full FileId
+    /// after assembling all chunks. Historical-only manifests are rejected.
+    pub(super) fn copy_exact_chunk(
+        &mut self,
+        path: &RepoPath,
+        manifest: &FileManifest,
+        ordinal: usize,
+        output: &mut dyn Write,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        cancel.check()?;
+        let file = exact_file(&self.data.files, path, manifest)?;
+        let chunk = stream::exact_chunk(manifest, ordinal)?;
+        self.checkpoint.revalidate_namespace()?;
+        match &file.manifest {
+            ManagedManifest::Source(_) => {
+                stream::copy_verified_chunk(manifest, ordinal, output, cancel, |offset, part| {
+                    self.bytes
+                        .read_exact_at(manifest.file_id(), offset, part, cancel)?;
+                    Ok(())
+                })?;
+            }
+            ManagedManifest::Native(_) => {
+                let mut consumer_error = None;
+                let native = self.checkpoint.with_range_reader(
+                    path,
+                    chunk.offset(),
+                    chunk.byte_length(),
+                    |reader| {
+                        let result = stream::copy_verified_chunk(
+                            manifest,
+                            ordinal,
+                            output,
+                            cancel,
+                            |_, part| reader.read_exact(part).map_err(Into::into),
+                        );
+                        if let Err(error) = result {
+                            consumer_error = Some(error);
+                            return Err(layrs_vfs::Error::Io(io::Error::other(
+                                "managed image chunk copy consumer failed",
+                            )));
+                        }
+                        Ok(())
+                    },
+                );
+                finish_native_copy(native, consumer_error)?;
+            }
+        }
+        self.checkpoint.revalidate_namespace()?;
+        cancel.check()?;
+        Ok(())
+    }
     pub(super) fn revalidate_and_match_digest(
         &mut self,
         expected: &str,

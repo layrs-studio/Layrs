@@ -387,6 +387,33 @@ not subsequent restart or recovery. Final native source SHA256 is
 All native executions use independently released sources, child 240 / outer
 300 seconds, fresh C: parents and serial stop-on-first-failure operation.
 
+## Exact current-image chunk producer (2026-10-27)
+
+`VerifiedManagedImage::copy_exact_chunk` binds the complete current-image
+manifest and path before selecting an ordinal. It transfers at most 64 KiB
+per read, checks cancellation and the selected ChunkId, and deliberately does
+not assert a full FileId. `ExportCheckpoint::with_range_reader` reads a checked
+range from the retained native handle with surrounding file/namespace proofs.
+Range EOF is synthetic; the original full reader still requires physical EOF.
+Reader and consumer failure provenance remain distinct.
+
+All store-local targets compile, and both final store-local and VFS no-run
+builds succeed. The retained `provider-managed-chunk-20261027-r1` store artifact
+(475 source/input files, CodeView age 63, EXE SHA256
+`d30d385e17775d7f78551a6147329c4309c0472ae7ed0a16b1d7d479e633f8b2`)
+passes **137 provider pure tests and one released native recipe**. The separately
+pinned VFS artifact (CodeView age 3, EXE SHA256
+`fd08c3652172192dc8d9a02b12a5dec19474b84367fa00af26d19a95cea73c34`)
+passes both exact memory range-reader recipes. Native test source SHA256 is
+`2027763cf4875cb485f8fc90ae94a622c63952fcafcd80a36d2d32b23c860d25`.
+The native fixture verifies the second chunk of a 1 MiB + 512 KiB + 17 byte
+ordinary replacement, range EOF, invalid range/ordinal/representation refusal,
+and namespace drift with zero output. It does not qualify nonzero CFAPI range
+hydration of a partial/relocated placeholder or interruption of synchronous
+hydration. Child 240 / outer 300 seconds, fresh C: parent, serial execution.
+Unmodulated exact-installer drafts retained in the source snapshot are outside
+this qualification.
+
 ## Remaining boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately

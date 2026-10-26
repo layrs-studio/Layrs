@@ -128,3 +128,161 @@ fn missing_bytes_cancellation_and_short_sink_refuse_success() {
     )
     .is_err());
 }
+
+#[test]
+fn selected_chunk_reads_only_its_absolute_range_with_bounded_scratch() {
+    let first = Chunk::new(vec![b'a'; 1024 * 1024]).unwrap();
+    let second = Chunk::new(vec![b'b'; 500 * 1024 + 17]).unwrap();
+    let manifest = FileManifest::from_chunks(
+        ChunkingDescriptor::deterministic_fixed(1024 * 1024).unwrap(),
+        &[first.clone(), second.clone()],
+    )
+    .unwrap();
+    let chunk = &manifest.chunks()[1];
+    let mut expected_offset = chunk.offset();
+    let mut output = Vec::new();
+    copy_verified_chunk(
+        &manifest,
+        1,
+        &mut output,
+        &Cancellation::default(),
+        |offset, part| {
+            assert_eq!(offset, expected_offset);
+            assert!(part.len() <= 64 * 1024);
+            let local = usize::try_from(offset - chunk.offset()).unwrap();
+            part.copy_from_slice(&second.bytes()[local..local + part.len()]);
+            expected_offset += part.len() as u64;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(output, second.bytes());
+    assert_eq!(expected_offset, manifest.byte_length());
+
+    // A chunk proof deliberately does not claim to verify the full FileId.
+    // The engine verifies it once after assembling every chunk.
+    let different_file_id = FileManifest::new(
+        FileId::from_bytes(b"different whole file"),
+        manifest.byte_length(),
+        manifest.chunking().clone(),
+        manifest.chunks().to_vec(),
+    )
+    .unwrap();
+    copy_verified_chunk(
+        &different_file_id,
+        1,
+        &mut std::io::sink(),
+        &Cancellation::default(),
+        |offset, part| {
+            let local = usize::try_from(offset - chunk.offset()).unwrap();
+            part.copy_from_slice(&second.bytes()[local..local + part.len()]);
+            Ok(())
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn selected_chunk_rejects_absent_ordinal_corruption_cancel_and_sink_failure() {
+    let bytes = vec![b'x'; 70 * 1024];
+    let expected = manifest(&bytes);
+    let mut output = Vec::new();
+    assert!(copy_verified_chunk(
+        &expected,
+        1,
+        &mut output,
+        &Cancellation::default(),
+        |_, _| panic!("absent ordinal must not read"),
+    )
+    .is_err());
+    assert!(output.is_empty());
+    assert!(copy_verified_chunk(
+        &FileManifest::empty(ChunkingDescriptor::single()).unwrap(),
+        0,
+        &mut output,
+        &Cancellation::default(),
+        |_, _| panic!("empty file has no chunk"),
+    )
+    .is_err());
+    assert!(copy_verified_chunk(
+        &expected,
+        0,
+        &mut output,
+        &Cancellation::default(),
+        |_, part| {
+            part.fill(b'z');
+            Ok(())
+        },
+    )
+    .is_err());
+
+    let cancelled = Cancellation::default();
+    cancelled.cancel();
+    let mut output = Vec::new();
+    assert!(
+        copy_verified_chunk(&expected, 0, &mut output, &cancelled, |_, _| {
+            panic!("cancelled before read")
+        })
+        .is_err()
+    );
+    assert!(output.is_empty());
+    let during = Cancellation::default();
+    assert!(
+        copy_verified_chunk(&expected, 0, &mut output, &during, |_, part| {
+            part.fill(b'x');
+            during.cancel();
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(output.is_empty());
+
+    struct FailingSink;
+    impl Write for FailingSink {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WriteZero.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let error = copy_verified_chunk(
+        &expected,
+        0,
+        &mut FailingSink,
+        &Cancellation::default(),
+        |_, part| {
+            part.fill(b'x');
+            Ok(())
+        },
+    );
+    assert!(
+        matches!(error, Err(crate::projection::provider::recovery::error::ProviderBootstrapCause::Io(e)) if e.kind() == io::ErrorKind::WriteZero)
+    );
+    let missing = copy_verified_chunk(
+        &expected,
+        0,
+        &mut Vec::new(),
+        &Cancellation::default(),
+        |offset, part| {
+            Err(layrs_vfs::Error::MissingBytes {
+                file_id: expected.file_id().clone(),
+                offset,
+                length: part.len(),
+            }
+            .into())
+        },
+    );
+    assert!(matches!(
+        missing,
+        Err(
+            crate::projection::provider::recovery::error::ProviderBootstrapCause::Vfs(
+                layrs_vfs::Error::MissingBytes {
+                    offset: 0,
+                    length: 65536,
+                    ..
+                }
+            )
+        )
+    ));
+}

@@ -174,6 +174,75 @@ impl ExportCheckpoint<'_> {
             })
     }
 
+    /// Read exactly one checked range from the retained NeedsHash handle.
+    /// This verifies native identity and namespace, not a full-file digest.
+    /// Success requires consuming the entire range; EOF is the range boundary.
+    /// The full-file reader separately continues to require physical EOF.
+    pub fn with_range_reader<T>(
+        &mut self,
+        path: &RepoPath,
+        offset: u64,
+        length: u64,
+        consume: impl FnOnce(&mut dyn Read) -> Result<T>,
+    ) -> Result<T> {
+        let index = self
+            .entries()
+            .binary_search_by(|entry| entry.path.cmp(path))
+            .map_err(|_| Error::ExportRead {
+                path: path.clone(),
+                backing: None,
+                cause: Box::new(Error::IdentityMismatch),
+            })?;
+        let entry = &self.entries()[index];
+        self.read_range_entry(entry, offset, length, consume)
+            .map_err(|error| match error {
+                Error::ExportConsumer { .. } | Error::ExportRead { .. } => error,
+                other => contextual(entry, other),
+            })
+    }
+
+    fn read_range_entry<T>(
+        &self,
+        entry: &Inspection,
+        offset: u64,
+        length: u64,
+        consume: impl FnOnce(&mut dyn Read) -> Result<T>,
+    ) -> Result<T> {
+        let CaptureEvidence::NeedsHash { size, .. } = &entry.evidence else {
+            return Err(Error::Unsupported(
+                "only NeedsHash export entries may read content",
+            ));
+        };
+        // Validate all arithmetic before namespace/native work, hydration, or
+        // consumer invocation. checked_range also enforces signed CFAPI bounds.
+        crate::checked_range(*size, offset, length)?;
+        self.revalidate_namespace()?;
+        let file = entry._guard.as_ref().ok_or(Error::IdentityMismatch)?;
+        let expected = self
+            .proofs
+            .get(&entry.path)
+            .ok_or(Error::IdentityMismatch)?;
+        let session = self.checkpoint.session();
+        expected.verify(&FileProof::read(session, file)?)?;
+        hydrate_file(session, file, expected, offset as i64, length as i64)?;
+        expected.verify(&FileProof::read(session, file)?)?;
+        let mut reader = file.try_clone()?;
+        reader.seek(SeekFrom::Start(offset))?;
+        let result = match read_range(reader, length, consume) {
+            Ok(result) => result,
+            Err(ReadFailure::Reader(error)) => return Err(error),
+            Err(ReadFailure::Consumer(error)) => {
+                return Err(Error::ExportConsumer {
+                    path: entry.path.clone(),
+                    cause: Box::new(error),
+                });
+            }
+        };
+        expected.verify(&FileProof::read(session, file)?)?;
+        self.revalidate_namespace()?;
+        Ok(result)
+    }
+
     fn read_entry<T>(
         &self,
         entry: &Inspection,
@@ -191,18 +260,8 @@ impl ExportCheckpoint<'_> {
             .ok_or(Error::IdentityMismatch)?;
         let session = self.checkpoint.session();
         expected.verify(&FileProof::read(session, file)?)?;
-        if expected.identity.is_some() && *size != 0 {
-            #[cfg(test)]
-            super::stage2_tests::hydration_call();
-            check("CfHydratePlaceholder(export)", unsafe {
-                (session.api.hydrate)(
-                    fs::handle(file),
-                    0,
-                    -1,
-                    CF_HYDRATE_FLAG_NONE,
-                    std::ptr::null_mut(),
-                )
-            })?;
+        if *size != 0 {
+            hydrate_file(session, file, expected, 0, -1)?;
         }
         expected.verify(&FileProof::read(session, file)?)?;
         let mut reader = file.try_clone()?;
@@ -220,6 +279,29 @@ impl ExportCheckpoint<'_> {
         expected.verify(&FileProof::read(session, file)?)?;
         Ok(result)
     }
+}
+
+fn hydrate_file(
+    session: &Session,
+    file: &File,
+    expected: &FileProof,
+    offset: i64,
+    length: i64,
+) -> Result<()> {
+    if expected.identity.is_some() && length != 0 {
+        #[cfg(test)]
+        super::stage2_tests::hydration_call();
+        check("CfHydratePlaceholder(export)", unsafe {
+            (session.api.hydrate)(
+                fs::handle(file),
+                offset,
+                length,
+                CF_HYDRATE_FLAG_NONE,
+                std::ptr::null_mut(),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn backing(entry: &Inspection) -> Option<FileId> {
@@ -330,6 +412,27 @@ impl FileProof {
 enum ReadFailure {
     Reader(Error),
     Consumer(Error),
+}
+
+fn read_range<R: Read, T>(
+    reader: R,
+    length: u64,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T>,
+) -> std::result::Result<T, ReadFailure> {
+    let mut bounded = ExactReader {
+        inner: reader,
+        remaining: length,
+        failure: None,
+    };
+    let consumed = consume(&mut bounded);
+    if let Some(error) = bounded.failure.take() {
+        return Err(ReadFailure::Reader(Error::Io(shared_read_error(error))));
+    }
+    let result = consumed.map_err(ReadFailure::Consumer)?;
+    if bounded.remaining != 0 {
+        return Err(ReadFailure::Consumer(Error::InvalidRange));
+    }
+    Ok(result)
 }
 
 fn read_complete<R: Read, T>(
@@ -507,6 +610,75 @@ mod tests {
         .unwrap();
         assert_eq!(bytes, b"abc");
         read_complete(Cursor::new(b""), 0, |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn export_range_requires_exact_consumption_without_reading_the_tail() {
+        let mut input = Cursor::new(b"prefix-range-tail");
+        input.set_position(7);
+        let result = read_range(&mut input, 5, |reader| {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes)?;
+            assert_eq!(reader.read(&mut [0u8; 1])?, 0);
+            Ok(bytes)
+        })
+        .unwrap();
+        assert_eq!(result, b"range");
+        assert_eq!(input.position(), 12, "range must not probe physical EOF");
+        assert!(matches!(
+            read_range(Cursor::new(b"range-tail"), 5, |_| Ok(())),
+            Err(ReadFailure::Consumer(Error::InvalidRange))
+        ));
+        assert!(matches!(
+            read_range(Cursor::new(b"short"), 6, |reader| {
+                reader.read_to_end(&mut Vec::new())?;
+                Ok(())
+            }),
+            Err(ReadFailure::Reader(Error::Io(error))) if error.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+        struct NoRead;
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("zero range must not read the retained file")
+            }
+        }
+        read_range(NoRead, 0, |reader| {
+            assert_eq!(reader.read(&mut [0u8; 1])?, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn export_range_preserves_reader_and_consumer_error_provenance() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(30))
+            }
+        }
+        let result = read_range(Broken, 1, |reader| {
+            reader.read_exact(&mut [0u8; 1])?;
+            Ok(())
+        });
+        let Err(ReadFailure::Reader(error)) = result else {
+            panic!("native reader failure must retain its provenance")
+        };
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = false;
+        while let Some(error) = current {
+            found |= error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.raw_os_error() == Some(30));
+            current = error.source();
+        }
+        assert!(found);
+        let result = read_range(Cursor::new(b"range"), 5, |_| -> Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into())
+        });
+        assert!(
+            matches!(result, Err(ReadFailure::Consumer(Error::Io(error))) if error.kind() == std::io::ErrorKind::WriteZero)
+        );
     }
 
     #[test]
