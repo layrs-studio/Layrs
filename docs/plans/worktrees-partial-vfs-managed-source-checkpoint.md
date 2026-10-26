@@ -157,11 +157,40 @@ parent with 240-second owned child and 300-second outer bounds, after independen
 source review. These tests cover same-process replay and preexisting collision,
 not restart after crash, interrupted rename or power loss.
 
+## Physical destination SQL and family Initializing
+
+`managed_destination::register_and_copy` retains both physical owners and the
+source attempt while registering the exact destination as Initializing. The
+family writer must commit, close and pass a durable typed readback before any
+destination SQL write. A retained source read transaction issues and keeps the
+verified closure through destination initialization and immutable prefix copy.
+The destination writer also commits and observably closes before the final
+CopiedPrefix/family readbacks. Exact replay opens no writer. Foreign registry
+rows, hot journals and all uncertain closes are refused without cleanup.
+
+All store-local targets compile (`provider-managed-destination-check-r1.log`).
+The r1 pure run passes 130 tests, 310 ignored. The retained native artifact
+`provider-managed-destination-20261026-r2` has 453 source/input files, CodeView
+age 50 and EXE SHA256
+`77d459c5ecf9c2044e25abdbd146bbafc795e87a3131ef0f5e26d8a23d94e7b7`.
+**Three exact native recipes pass**: actual family registration and physical
+SQL copy plus no-write replay with source DB witness unchanged; refusal of an
+acknowledgement after successful family COMMIT/close, leaving destination DB
+zero bytes; and a foreign Initializing registration, refused before any writer.
+The source-reviewed test file SHA256 is
+`05c1f9535c61a45ec66b1ef4c0a3669e7ac94d44b0e24f4bd5481cd5f3e15711`.
+Fresh C: parent, serial execution and owned 240/outer 300 second bounds apply.
+
+Only fresh zero bytes, exact EmptyIngress or exact CopiedPrefix are admitted.
+A nonzero SQLite header with version-zero empty schema after interrupted
+initialization remains refused in this slice. These recipes do not qualify
+restart recovery, hot-journal recovery or a genuine SQLite close failure.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.
 It is not a genuine sqlite3_close failure, quarantined connection, interrupted
-commit or power-loss test. No physical destination SQL initializer,
-content installation, claim, Ready receipt, family Ready publication, companion
+commit or power-loss test. No content installation, claim, Ready receipt,
+family Ready publication, companion
 conversion or selection expansion is qualified by these recipes. Product routes
 and Desktop integration remain separate. The existing strict GC fence remains.

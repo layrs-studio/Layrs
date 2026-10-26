@@ -4,11 +4,14 @@ use super::*;
 use crate::projection::provider::{
     database_io::{self, DatabaseFile},
     records::AllocationRecord,
-    recovery::error::{Result as ProviderResult, invalid as provider_invalid},
+    recovery::error::{invalid as provider_invalid, Result as ProviderResult},
 };
 use std::{ffi::OsStr, fs::File};
 #[path = "provider_capture.rs"]
 pub(in crate::projection) mod provider_capture;
+#[path = "provider_import.rs"]
+pub(in crate::projection) mod provider_import;
+pub(in crate::projection) use provider_import::{ImportRegistration, ImportRegistrationEffect};
 
 pub(in crate::projection) struct FamilyAccess {
     family: PartialStoreFamily,

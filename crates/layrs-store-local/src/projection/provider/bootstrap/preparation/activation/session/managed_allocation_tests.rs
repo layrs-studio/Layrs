@@ -54,7 +54,7 @@ fn remove_placeholder(path: &Path) {
     }
 }
 
-fn with_planned(
+pub(super) fn with_planned(
     test: impl FnOnce(
         &Fixture,
         &ProviderActiveSession,
@@ -162,7 +162,7 @@ fn durable_source(
     checked.transitions.into_iter().next().unwrap()
 }
 
-fn bound_holder<'a>(
+pub(super) fn bound_holder<'a>(
     session: &'a ProviderActiveSession,
     attempt: &'a CaptureAttemptLock,
     planned: &'a ProviderTransitionIntentRecord,

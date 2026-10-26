@@ -13,6 +13,11 @@ use rusqlite::{ffi, Connection};
 pub(in crate::projection) use sidecars::DatabaseFile;
 use std::sync::Arc;
 
+/// Validate the SQLite filename before any destination admission side effect.
+pub(super) fn validate_native_filename(path: &std::path::Path) -> Result<()> {
+    bare::native_filename(path).map(|_| ())
+}
+
 pub(super) enum ReadState<T> {
     Uninitialized,
     Valid(T),
