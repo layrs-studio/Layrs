@@ -44,6 +44,8 @@ mod destination_sql;
 #[cfg(windows)]
 mod destination_validation;
 #[cfg(windows)]
+mod family_upgrade;
+#[cfg(windows)]
 pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod journal;

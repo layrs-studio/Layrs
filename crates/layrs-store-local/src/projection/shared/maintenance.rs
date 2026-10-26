@@ -18,6 +18,7 @@ impl PartialStoreFamily {
         let tx = catalog
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let schema = catalog_schema_version(&tx)?;
         let mut query=tx.prepare("SELECT id,length(payload) FROM manifests WHERE NOT EXISTS(SELECT 1 FROM root_manifests WHERE manifest_id=manifests.id) ORDER BY id LIMIT 1024")?;
         let manifests = query
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?
@@ -32,7 +33,7 @@ impl PartialStoreFamily {
                 params![id, bytes],
             )?;
             tx.execute("DELETE FROM manifest_chunks WHERE manifest_id=?1", [&id])?;
-            tx.execute("DELETE FROM manifests WHERE id=?1", [&id])?;
+            delete_manifest_metadata(&tx, &id, schema)?;
         }
         let mut query=tx.prepare("SELECT id,bytes FROM chunks WHERE NOT EXISTS(SELECT 1 FROM manifest_chunks WHERE chunk_id=chunks.id) ORDER BY id LIMIT 16384")?;
         let chunks = query
@@ -92,6 +93,46 @@ impl PartialStoreFamily {
         Ok(count)
     }
 }
+
+fn delete_manifest_metadata(c: &Connection, id: &str, schema: CatalogSchema) -> Result<()> {
+    if c.is_autocommit() {
+        return Err(invalid("manifest reclamation requires caller transaction"));
+    }
+    #[cfg(windows)]
+    let file = if schema == CatalogSchema::V2 {
+        let length: u64 = c.query_row(
+            "SELECT length(CAST(file_id AS BLOB)) FROM manifests WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if length != 71 {
+            return Err(invalid("reclaimed manifest FileId exceeds bound"));
+        }
+        Some(
+            c.query_row("SELECT file_id FROM manifests WHERE id=?1", [id], |r| {
+                r.get::<_, String>(0)
+            })?,
+        )
+    } else {
+        None
+    };
+    c.execute("DELETE FROM manifests WHERE id=?1", [id])?;
+    #[cfg(windows)]
+    if let Some(file) = file {
+        c.execute(
+            "DELETE FROM files WHERE file_id=?1 AND NOT EXISTS(SELECT 1 FROM manifests WHERE manifests.file_id=files.file_id)",
+            [file],
+        )?;
+    }
+    #[cfg(not(windows))]
+    let _ = schema;
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[path = "maintenance/schema_tests.rs"]
+mod schema_tests;
+
 fn reconcile(lease: &Lease) -> Result<u64> {
     let catalog = lease.inspection_catalog(false)?;
     let mut query=catalog.connection.prepare("SELECT id,metadata_path,database_identity,marker,state FROM worktrees ORDER BY id LIMIT 16385")?;

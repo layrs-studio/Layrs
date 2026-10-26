@@ -33,6 +33,30 @@ pub(in crate::projection) fn reference_inventory() -> Result<Vec<(String, String
     })
 }
 
+/// Construct the same schema-2 reference on a caller-opened fresh memory DB.
+/// Ordinary callers keep their own SQLite opening/profile contract. This must
+/// never receive a business database or an already-open caller transaction.
+pub(super) fn initialize_reference(c: &Connection) -> Result<()> {
+    if !c.is_autocommit()
+        || c.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))? != 0
+        || !schema_inventory(c)?.is_empty()
+        || !c.query_row(
+            "SELECT file='' FROM pragma_database_list WHERE name='main'",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(invalid(
+            "family schema2 reference requires fresh memory database",
+        ));
+    }
+    c.execute_batch(SQL1)?;
+    c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")?;
+    transform(c)?;
+    c.execute_batch("COMMIT")?;
+    Ok(())
+}
+
 /// Caller retains a fresh, FK-enabled connection and its already-open SQL
 /// transaction. Caller alone decides COMMIT/ROLLBACK and observable close.
 /// The caller must hold the family's exclusive lifecycle/catalog gates and

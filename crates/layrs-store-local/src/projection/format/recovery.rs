@@ -40,10 +40,9 @@ impl ProjectionStore {
     ) -> Result<ProjectionRecovery> {
         ProjectionRecovery::open(root.as_ref(), expected)
     }
-    /// Recovers a shared family journal only after the private database passes
-    /// complete ordinary validation on a read-only connection. A shared
-    /// private hot journal cannot supply that proof and is refused. Legacy
-    /// unshared worktrees retain explicit private database recovery.
+    /// Legacy unshared worktrees retain explicit private database recovery.
+    /// Shared private or family hot journals cannot prove their backend and
+    /// staged content state without rollback, so this entry refuses them.
     pub fn recover_databases(
         root: impl AsRef<Path>,
         expected: &RecoveryBinding,
@@ -122,11 +121,12 @@ fn inspect(
     // SQLite query and therefore any classification of its typed error.
     verify()?;
     if recover && family.is_some() {
-        // The family catalog opener below may settle a hot journal. First
-        // establish ordinary ownership from the complete private database on
+        // Establish ordinary ownership from the complete private database on
         // a strictly read-only connection, while the bound owner/lifecycle
         // locks and both filesystem pins are held. A private hot journal cannot
-        // reveal its backend and must refuse before either writable fallback.
+        // reveal its backend and must refuse before any writable fallback.
+        // Family catalog admission itself also refuses hot journals because
+        // their version and exact-installation state cannot be read safely.
         // Nonshared legacy worktrees have no provider backend and retain their
         // explicit recovery path.
         drop(database::read_owner_readonly(

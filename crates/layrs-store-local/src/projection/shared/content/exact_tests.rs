@@ -107,3 +107,87 @@ fn exact_manifest_reads_preserve_representations_and_reject_corruption() {
         },
     );
 }
+
+#[test]
+#[ignore = "owned audited SQLite child; v1/v2 manifest writer FileId length integrity"]
+fn file_metadata_writer_preserves_v1_and_refuses_v2_length_collision() {
+    use layrs_core::scm::FileChunk;
+    use layrs_vfs::Cancellation;
+    child::run(
+        concat!(
+            module_path!(),
+            "::file_metadata_writer_preserves_v1_and_refuses_v2_length_collision"
+        ),
+        120,
+        || {
+            child::declare();
+            with_reference(SQL, |c| {
+                let (one, two) = pair();
+                c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")?;
+                prepare_manifest_file(c, &one).unwrap();
+                c.execute(
+                    "INSERT INTO manifests VALUES(?1,?2,?3,?4)",
+                    params![
+                        one.id().as_str(),
+                        one.file_id().as_str(),
+                        one.byte_length(),
+                        canonical_json(&one).unwrap()
+                    ],
+                )?;
+                assert_eq!(
+                    c.query_row(
+                        "SELECT count(*) FROM sqlite_schema WHERE name='files'",
+                        [],
+                        |r| r.get::<_, u64>(0)
+                    )?,
+                    0
+                );
+                c.execute_batch("ROLLBACK; BEGIN IMMEDIATE")?;
+                schema_v2::migrate(c, &Cancellation::default())?;
+                prepare_manifest_file(c, &one).unwrap();
+                prepare_manifest_file(c, &two).unwrap();
+                for manifest in [&one, &two] {
+                    c.execute(
+                        "INSERT INTO manifests VALUES(?1,?2,?3,?4)",
+                        params![
+                            manifest.id().as_str(),
+                            manifest.file_id().as_str(),
+                            manifest.byte_length(),
+                            canonical_json(manifest).unwrap()
+                        ],
+                    )?;
+                }
+                assert_eq!(
+                    c.query_row("SELECT count(*) FROM files", [], |r| r.get::<_, u64>(0))?,
+                    1
+                );
+                let forged = FileManifest::new(
+                    one.file_id().clone(),
+                    7,
+                    one.chunking().clone(),
+                    vec![FileChunk::new(one.chunks()[0].chunk_id().clone(), 0, 7).unwrap()],
+                )
+                .unwrap();
+                let before = c.total_changes();
+                assert!(prepare_manifest_file(c, &forged).is_err());
+                assert_eq!(
+                    c.total_changes(),
+                    before,
+                    "a collision must not mutate existing file metadata"
+                );
+                assert_eq!(
+                    c.query_row(
+                        "SELECT bytes FROM files WHERE file_id=?1",
+                        [one.file_id().as_str()],
+                        |r| r.get::<_, u64>(0)
+                    )?,
+                    6
+                );
+                c.execute_batch("ROLLBACK")?;
+                assert_eq!(catalog_schema_version(c).unwrap(), CatalogSchema::V1);
+                Ok(())
+            })
+            .unwrap();
+        },
+    );
+}

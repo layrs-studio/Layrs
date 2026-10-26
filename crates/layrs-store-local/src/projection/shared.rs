@@ -36,6 +36,65 @@ CREATE TABLE installations(reservation TEXT NOT NULL REFERENCES reservations(id)
 CREATE TABLE sweep(kind TEXT NOT NULL CHECK(kind IN ('chunks','manifests')),id TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0),PRIMARY KEY(kind,id)) STRICT;
 "#;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum CatalogSchema {
+    V1,
+    #[cfg(windows)]
+    V2,
+}
+
+fn catalog_schema_version(c: &Connection) -> Result<CatalogSchema> {
+    match c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? {
+        1 => Ok(CatalogSchema::V1),
+        #[cfg(windows)]
+        2 => Ok(CatalogSchema::V2),
+        #[cfg(not(windows))]
+        2 => Err(invalid(
+            "family schema2 is currently supported on Windows only",
+        )),
+        _ => Err(invalid("unsupported shared catalog schema version")),
+    }
+}
+
+/// Ordinary references preserve the ordinary SQLite opening contract. The
+/// provider uses its own profile-gated reference opener in provider_access.
+fn require_catalog_schema(c: &Connection) -> Result<CatalogSchema> {
+    let version = catalog_schema_version(c)?;
+    let reference = Connection::open_in_memory()?;
+    match version {
+        CatalogSchema::V1 => reference.execute_batch(SQL)?,
+        #[cfg(windows)]
+        CatalogSchema::V2 => schema_v2::initialize_reference(&reference)
+            .map_err(|cause| ProjectionStoreError::ProviderContent(Box::new(cause)))?,
+    }
+    if database::schema(c)? != database::schema(&reference)? {
+        return Err(invalid("shared content schema fingerprint differs"));
+    }
+    Ok(version)
+}
+
+fn require_no_exact_installations(c: &Connection, schema: CatalogSchema) -> Result<()> {
+    #[cfg(windows)]
+    if schema == CatalogSchema::V2
+        && c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM exact_installations)",
+            [],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
+        return Err(invalid(
+            "exact managed installations prevent ordinary catalog access",
+        ));
+    }
+    #[cfg(not(windows))]
+    let _ = (c, schema);
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[path = "shared/admission_tests.rs"]
+mod admission_tests;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PartialStoreIdentity {
@@ -447,8 +506,8 @@ pub(in crate::projection) fn provider_content_lease(
     Ok(ProviderLease(lease))
 }
 impl Lease {
-    /// Content engine calls use one scoped catalog opener. Ordinary access is
-    /// unchanged; the provider policy never reaches the legacy recovery path.
+    /// Content engine calls use one scoped catalog opener. Ordinary access
+    /// requires readable admission; the provider policy has its own opener.
     pub(in crate::projection) fn with_content_catalog<T>(
         &self,
         write: bool,
@@ -483,16 +542,7 @@ impl Lease {
         } else {
             self.catalog_once(false)?
         };
-        let reference = Connection::open_in_memory()?;
-        reference.execute_batch(SQL)?;
-        if database::schema(&catalog.connection)? != database::schema(&reference)?
-            || catalog
-                .connection
-                .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?
-                != 1
-        {
-            return Err(invalid("shared content schema mismatch"));
-        }
+        require_catalog_schema(&catalog.connection)?;
         Ok(catalog)
     }
     pub(in crate::projection) fn family_root(&self) -> &Path {
@@ -503,39 +553,18 @@ impl Lease {
     }
     pub(super) fn catalog(&self, write: bool) -> Result<Catalog> {
         #[cfg(windows)]
-        if matches!(&self.content_catalog, ContentCatalogPolicy::Provider(_)) {
+        if !matches!(&self.content_catalog, ContentCatalogPolicy::Ordinary) {
             return Err(invalid(
                 "provider content cannot use ordinary catalog recovery",
             ));
         }
-        match self.catalog_once(write) {
-            Err(error) if !write && database::readonly_rollback(&error) => {
-                // catalog_once dropped its read connection and shared lock on
-                // error. Revalidate paths/inodes before opening a write handle.
-                let recovered = self.catalog_once(true)?;
-                let reference = Connection::open_in_memory()?;
-                reference.execute_batch(SQL)?;
-                if database::schema(&recovered.connection)? != database::schema(&reference)?
-                    || recovered
-                        .connection
-                        .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?
-                        != 1
-                {
-                    return Err(invalid("recovered shared catalog schema mismatch"));
-                }
-                recovered
-                    .pin
-                    .verify(&self.family.root.join("metadata/catalog.sqlite3"))?;
-                self.family.verify()?;
-                drop(recovered);
-                self.catalog_once(false)
-            }
-            result => result,
-        }
+        // A rollback error cannot identify the catalog version or its staged
+        // owners. Never infer permission for recovery from that error alone.
+        self.catalog_once(write)
     }
     pub(super) fn catalog_once(&self, write: bool) -> Result<Catalog> {
         #[cfg(windows)]
-        if matches!(&self.content_catalog, ContentCatalogPolicy::Provider(_)) {
+        if !matches!(&self.content_catalog, ContentCatalogPolicy::Ordinary) {
             return Err(invalid("provider content cannot open ordinary catalog"));
         }
         let mode = if write {
@@ -552,7 +581,27 @@ impl Lease {
         if pin.identity() != self.family.marker.database_identity {
             return Err(invalid("shared catalog replaced"));
         }
+        // Keep the exclusive catalog gate across RO admission and RW opening.
+        // In particular, no RW setup pragma may recover an unknown/hot v2
+        // catalog before its exact-installation fence has been examined.
+        if write {
+            let read = database::connect(&path, false)?;
+            self.validate_ordinary_catalog(&read)?;
+            read.close().map_err(|(_, error)| error)?;
+            pin.verify(&path)?;
+            self.family.verify()?;
+        }
         let c = database::connect(&path, write)?;
+        self.validate_ordinary_catalog(&c)?;
+        Ok(Catalog {
+            connection: c,
+            pin,
+            _lock: lock,
+        })
+    }
+    fn validate_ordinary_catalog(&self, c: &Connection) -> Result<()> {
+        let schema = require_catalog_schema(&c)?;
+        require_no_exact_installations(&c, schema)?;
         let bytes: Vec<u8> = c.query_row(
             "SELECT marker FROM family WHERE singleton=1 AND length(marker)<=65536",
             [],
@@ -561,11 +610,7 @@ impl Lease {
         if bytes != canonical_json(&self.family.marker).map_err(invalid)? {
             return Err(invalid("shared catalog marker mismatch"));
         }
-        Ok(Catalog {
-            connection: c,
-            pin,
-            _lock: lock,
-        })
+        Ok(())
     }
     pub(super) fn verify(&self) -> Result<()> {
         self.family.verify()

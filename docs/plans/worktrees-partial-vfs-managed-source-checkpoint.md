@@ -277,12 +277,57 @@ refusal before DDL; exact shared reader/corruption refusal; and preferred truste
 representation/fallback metadata selection. Independent source reviews released
 all four, child 120 / outer 180 seconds, serial stop on failure, fresh C: parent.
 
-The migration is not yet wired into physical family admission. Active sessions
-and checkpoints retain shared lifecycle gates, so an actual upgrade must happen
-before a new managed run, with those guards released, using a dedicated clean
-admission path and exclusive lifecycle gate. Ordinary/provider schema dispatch,
-v2 writers, exact installation, physical reopen and GC handling still need
-integration. No legacy GC fence was relaxed by this slice.
+These four SQL recipes alone do not qualify physical family admission; the
+subsequent integration is described below. No legacy GC fence was relaxed.
+
+## Explicit physical upgrade and ordinary admission (2026-10-27)
+
+`family_upgrade::upgrade_source_family` takes nonblocking exclusive lifecycle,
+source-owner and catalog gates before SQLite. It retains the validated Active
+source read transaction while the family passes clean admission, migrates in
+one transaction, commits and closes observably. A fresh source/family readback
+follows only positive closes. Exact v2 replay opens no writer. FORMAT, catalog
+inode and source private data retain their identities. Sessions/checkpoints
+must be dropped before migration. Bare Active holders do not permanently hold
+the lifecycle gate, so dropping them remains a caller precondition.
+
+Ordinary and provider catalog readers dispatch exact v1/v2 fingerprints.
+Ordinary v2 access refuses any exact installation stage. Manifest writers
+establish the v2 FileId/length relation before publishing filesystem objects;
+reclamation removes that relation only after its last representation disappears.
+Existing root foreign keys and provider reclamation fences remain in force.
+
+Independent review found that the old ordinary RW opener could recover a hot
+journal before examining exact installation stages. The corrected writer holds
+the exclusive catalog gate through read-only schema/stage/marker admission,
+positive read close and pin verification before RW. The ordinary hot-journal
+retry is removed. This deliberately refuses hot family catalogs in both v1 and
+v2: an unreadable catalog cannot establish which recovery contract applies.
+Explicit unshared private recovery is unchanged. Shared recovery docs and the
+old ordinary crash test now describe refusal rather than automatic rollback.
+
+Independent source reviews release three SQL-memory recipes, three physical
+upgrade recipes and one real interrupted-family-writer refusal recipe. The last
+uses two fresh fixtures (v1 and v2 with a committed exact stage), kills/reaps only
+its owned flushed writer, confirms `SQLITE_READONLY_ROLLBACK`, then checks that
+ordinary usage/open/quota changes refuse with unchanged DB/journal/private/
+FORMAT witnesses.
+
+All store-local targets compile (`provider-family-upgrade-check-r3.log`;
+PowerShell reports stderr warnings, while Cargo finishes successfully). Final
+no-run build r2 exits zero. The retained `provider-family-upgrade-20261026-r2`
+artifact has 470 source/input files, CodeView age 58 and EXE SHA256
+`48362a93117e3a9c9038956cdb148ed8a3d81b3ee2c1834355bd058000eb57ac`.
+**135 provider pure tests pass, 320 ignored; all seven released recipes pass.**
+The native test file SHA256 is
+`14208e6430e0dc1d9b26e8f339ef0814c0288b92c3baef5497ded4c97f50b22c`.
+SQL children are bounded at 120 seconds, physical children at 240 seconds,
+outer processes at 300 seconds, in a fresh C: parent with serial stop-on-failure.
+The real interrupted writer test qualifies refusal with retained evidence,
+not migration interrupted during DDL or automatic recovery. The unchanged
+shared `recover_databases` entry is source-reviewed but not exercised by that
+native recipe. The extra managed-reservation code retained in this artifact's
+source snapshot is not qualified by these seven recipes.
 
 ## Remaining boundaries
 

@@ -44,6 +44,59 @@ enum CatalogRegistration {
     Ready,
 }
 
+/// DATA-only schema dispatch through the provider's audited reference opener.
+/// This performs no migration and never opens the target database itself.
+pub(in crate::projection) fn require_provider_catalog_schema(
+    c: &Connection,
+    cancel: Option<&layrs_vfs::Cancellation>,
+) -> ProviderResult<CatalogSchema> {
+    crate::projection::provider::cancellation::check(cancel)?;
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let observed = database_io::schema_inventory(c)?;
+    let schema = match version {
+        1 => {
+            database_io::with_reference(SQL, |reference| {
+                if database_io::schema_inventory(reference)? != observed {
+                    return Err(provider_invalid(
+                        "provider family catalog fingerprint differs",
+                    ));
+                }
+                Ok(())
+            })?;
+            CatalogSchema::V1
+        }
+        2 => {
+            if schema_v2::reference_inventory()? != observed {
+                return Err(provider_invalid(
+                    "provider family catalog fingerprint differs",
+                ));
+            }
+            CatalogSchema::V2
+        }
+        _ => {
+            return Err(provider_invalid(
+                "provider family requires exact catalog schema1 or schema2",
+            ))
+        }
+    };
+    crate::projection::provider::cancellation::check(cancel)?;
+    Ok(schema)
+}
+
+pub(super) fn require_no_owner_exact_installations(
+    c: &Connection,
+    schema: CatalogSchema,
+    owner: &str,
+) -> ProviderResult<()> {
+    if schema == CatalogSchema::V2 && c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+        [owner], |r| r.get::<_, bool>(0),
+    )? {
+        return Err(provider_invalid("provider capture/bootstrap owner has unsupported exact installations"));
+    }
+    Ok(())
+}
+
 impl FamilyAccess {
     /// Hold a shared lifecycle gate for the entire native callback lifetime.
     /// Short read operations may acquire another shared gate with it held.
@@ -232,21 +285,7 @@ impl FamilyAccess {
         capture: Option<&crate::projection::provider::validation::PrivateCaptureProof>,
     ) -> ProviderResult<CatalogRegistration> {
         crate::projection::provider::cancellation::check(cancel)?;
-        let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 1 {
-            return Err(provider_invalid(
-                "provider family requires exact catalog schema1",
-            ));
-        }
-        let observed = database_io::schema_inventory(c)?;
-        database_io::with_reference(SQL, |reference| {
-            if database_io::schema_inventory(reference)? != observed {
-                return Err(provider_invalid(
-                    "provider family catalog fingerprint differs",
-                ));
-            }
-            Ok(())
-        })?;
+        let schema = require_provider_catalog_schema(c, cancel)?;
         crate::projection::provider::cancellation::check(cancel)?;
         let (count, length): (u64, u64) = c.query_row(
             "SELECT count(*),coalesce(max(length(marker)),0) FROM family",
@@ -279,6 +318,7 @@ impl FamilyAccess {
             return Err(provider_invalid("provider family quota singleton differs"));
         }
         let owner = a.format.identity.worktree_id.as_str();
+        require_no_owner_exact_installations(c, schema, owner)?;
         let oversized: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND (length(CAST(metadata_path AS BLOB))>4096 OR length(CAST(database_identity AS BLOB))>512 OR length(CAST(state AS BLOB))>12))", [owner], |r| r.get(0))?;
         if oversized {
             return Err(provider_invalid(

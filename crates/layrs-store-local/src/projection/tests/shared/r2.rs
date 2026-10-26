@@ -535,14 +535,15 @@ pub(super) fn kill_spilled_writer(path: &Path, mode: &str, ready: &Path) {
     ));
 }
 #[test]
-fn killed_catalog_spill_recovers_once_under_bound_exclusive_catalog_lock() {
+fn killed_catalog_spill_refuses_recovery_without_readable_admission() {
     let f = Fixture::new();
     let family = family(&f);
     let store = member(&f, &family, "a", true);
-    let before = family.usage().unwrap();
     let path = family.root().join("metadata/catalog.sqlite3");
     kill_spilled_writer(&path, "catalog", &f.0.join("ready"));
     let spilled = fs::read(&path).unwrap();
+    let journal = PathBuf::from(format!("{}-journal", path.display()));
+    let spilled_journal = fs::read(&journal).unwrap();
     assert!(ProjectionStore::open_for_recovery(store.checkout_root()).is_err());
     let discovery = ProjectionStore::inspect_recovery(store.checkout_root()).unwrap();
     assert_eq!(
@@ -551,12 +552,11 @@ fn killed_catalog_spill_recovers_once_under_bound_exclusive_catalog_lock() {
     );
     assert!(!discovery.conversion_eligible);
     assert_unchanged_database(&fs::read(&path).unwrap(), &spilled);
-    let recovered =
-        ProjectionStore::recover_databases(store.checkout_root(), &discovery.binding).unwrap();
-    assert!(recovered.recovery.is_empty());
-    let recovered = PartialStoreFamily::open(family.root()).unwrap();
-    assert_eq!(recovered.usage().unwrap(), before);
-    store.fsck().unwrap();
+    assert!(ProjectionStore::recover_databases(store.checkout_root(), &discovery.binding).is_err());
+    assert!(PartialStoreFamily::open(family.root()).is_err());
+    assert!(family.usage().is_err());
+    assert_unchanged_database(&fs::read(&path).unwrap(), &spilled);
+    assert_unchanged_database(&fs::read(&journal).unwrap(), &spilled_journal);
 }
 #[test]
 fn killed_owner_spill_refuses_recovery_without_losing_claims() {

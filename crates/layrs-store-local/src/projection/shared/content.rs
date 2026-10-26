@@ -149,6 +149,7 @@ impl Lease {
                 "partial_store_quota: installation exceeds reservation",
             ));
         }
+        prepare_manifest_file(&tx, &manifest)?;
         let chunks = directory
             .open_child("objects".as_ref())?
             .open_child("chunks".as_ref())?;
@@ -463,6 +464,37 @@ impl Lease {
         })
     }
 }
+
+/// The active catalog gate and caller transaction cover this check and the
+/// subsequent publication. A schema-2 length collision is refused before any
+/// immutable filesystem object is renamed into the family.
+fn prepare_manifest_file(c: &Connection, manifest: &FileManifest) -> Result<()> {
+    if c.is_autocommit() {
+        return Err(invalid(
+            "manifest file metadata requires caller transaction",
+        ));
+    }
+    match catalog_schema_version(c)? {
+        CatalogSchema::V1 => Ok(()),
+        #[cfg(windows)]
+        CatalogSchema::V2 => {
+            c.execute(
+                "INSERT INTO files(file_id,bytes) VALUES(?1,?2) ON CONFLICT(file_id) DO NOTHING",
+                params![manifest.file_id().as_str(), manifest.byte_length()],
+            )?;
+            let bytes: u64 = c.query_row(
+                "SELECT bytes FROM files WHERE file_id=?1",
+                [manifest.file_id().as_str()],
+                |r| r.get(0),
+            )?;
+            if bytes != manifest.byte_length() {
+                return Err(invalid("shared FileId length collision"));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn read_manifest_for(c: &Connection, file: &FileId) -> Result<Option<FileManifest>> {
     let key_bytes: Option<u64> = c
         .query_row(

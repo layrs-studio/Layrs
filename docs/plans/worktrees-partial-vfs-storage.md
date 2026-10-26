@@ -385,9 +385,10 @@ ProviderBootstrapRecovery::recover_databases(
 
 These proposed signatures do not expose control publication or resume. Inspection
 and handle construction are nonmutating even when either database requires
-rollback. Ordinary family opening keeps its existing behavior: public
+rollback. Ordinary family opening now requires readable admission: public
 [`PartialStoreFamily::open`](../../crates/layrs-store-local/src/projection/shared.rs:201)
-calls `inspection_catalog(true)`, which may recover a hot catalog. The provider
+calls `inspection_catalog(true)`, which refuses a hot catalog because its schema
+version and exact installation state cannot be established before rollback. The provider
 static entries must internally use filesystem-only `read_bound`, retain/revalidate
 family FORMAT/root/metadata/catalog-inode evidence, and never call public `open`,
 `open_inner`, `for_store`, `catalog(false)` or `inspection_catalog(true)` as discovery
@@ -834,11 +835,13 @@ root's 23 passing shared tests predate this R2 patch; no Cargo was run by the au
   removes only these authenticated stages. Repeated staging requires cancellation,
   preventing duplicate physical attempts under one charge. Earlier draft format-4
   schema fingerprints are explicitly rejected, with no automatic migration.
-- **Hot rollback journals:** only typed `SQLITE_READONLY_ROLLBACK` triggers one
-  validated exclusive catalog recovery/re-read. GC also holds the owner lock for
-  typed private-database recovery. Other read-only, schema and corruption errors
-  propagate. Tests kill a real child after cache-spilled uncommitted catalog/owner
-  writes and verify the hot-journal condition before exercising recovery.
+- **Hot rollback journals:** ordinary shared catalog access refuses recovery,
+  including v1, because a rollback error cannot distinguish legacy state from
+  managed exact installations. Writers first validate a read-only connection
+  under the exclusive catalog gate. Shared private recovery and GC also refuse
+  hot journals. Explicit unshared private recovery retains its existing contract;
+  provider recovery uses its separate typed admission. Crash fixtures retain the
+  uncommitted database and journal when admission is refused.
 - **Retired generations:** release first accepts exact required manifest subsets
   for active and retained capture bases in the same private transaction, then
   removes the retired generation claims. Clean outgoing refresh bases remain
