@@ -86,56 +86,17 @@ fn validate(
     expected: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
     cancel: &Cancellation,
-) -> std::result::Result<ProviderBootstrapSource, ProviderActiveRangeFailure> {
+) -> std::result::Result<validation::PrivateActiveCaptureValidation, ProviderActiveRangeFailure> {
     cancel
         .check()
         .map_err(|_| ProviderActiveRangeFailure::Cancelled)?;
-    boundary(held, native).map_err(|e| unavailable(e.into()))?;
-    let family = database_io::read_cancellable(&held.family.catalog, cancel, |c| {
-        held.family
-            .validate_activation_catalog(c, &held.artifacts.allocation, Some(cancel))
-    })
-    .map_err(|e| {
-        unavailable(preparation_report::Failure::new(
-            e,
-            Some(ProviderDatabaseScope::FamilyCatalog),
-        ))
-    })?;
-    if read_state(family, ProviderDatabaseScope::FamilyCatalog).map_err(unavailable)?
-        != ActivationRegistration::Ready
-    {
-        return Err(unavailable(preparation_report::Failure::new(
-            invalid("active range requires ready family"),
-            Some(ProviderDatabaseScope::FamilyCatalog),
-        )));
+    let inspected = capture_state::read(held, Some(native), Some(cancel)).map_err(unavailable)?;
+    if inspected.active.mount != *expected || inspected.active.activation != *activation {
+        return Err(unavailable(preparation_report::Failure::private(invalid(
+            "active range activation map changed",
+        ))));
     }
-    let private = database_io::read_cancellable(&held.artifacts.database, cancel, |c| {
-        let p = held
-            .artifacts
-            .prepared
-            .as_ref()
-            .ok_or_else(|| invalid("active range P absent"))?;
-        let inspected = validation::private_active_with_source(
-            c,
-            &held.artifacts.allocation,
-            p,
-            &held.binding,
-            Some(native.registration().root_id()),
-            Some(cancel),
-        )?;
-        if inspected.mount != *expected || inspected.activation != *activation {
-            return Err(invalid("active range activation map changed"));
-        }
-        Ok(inspected.source)
-    })
-    .map_err(|e| unavailable(preparation_report::Failure::private(e)))?;
-    let source =
-        read_state(private, ProviderDatabaseScope::PrivateMetadata).map_err(unavailable)?;
-    boundary(held, native).map_err(|e| unavailable(e.into()))?;
-    cancel
-        .check()
-        .map_err(|_| ProviderActiveRangeFailure::Cancelled)?;
-    Ok(source)
+    Ok(inspected)
 }
 
 pub(super) fn read(
@@ -189,11 +150,11 @@ pub(super) fn read(
                 unavailable(e.into())
             }
         })?;
-    let source = validate(held, native, expected, activation, cancel)?;
+    let inspected = validate(held, native, expected, activation, cancel)?;
     let mut manifest: Option<FileManifestId> = None;
     let mut ambiguous = false;
     let mut found = false;
-    for row in source.descriptors() {
+    for row in inspected.active.source.descriptors() {
         cancel
             .check()
             .map_err(|_| ProviderActiveRangeFailure::Cancelled)?;
@@ -221,10 +182,12 @@ pub(super) fn read(
         manifest = None;
     }
     let family = database_io::read_cancellable(&held.family.catalog, cancel, |c| {
-        if held
-            .family
-            .validate_activation_catalog(c, &held.artifacts.allocation, Some(cancel))?
-            != ActivationRegistration::Ready
+        if held.family.validate_capture_catalog(
+            c,
+            &held.artifacts.allocation,
+            &inspected.capture,
+            Some(cancel),
+        )? != ActivationRegistration::Ready
         {
             return Err(invalid("active range family changed"));
         }

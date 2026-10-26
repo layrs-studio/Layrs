@@ -137,6 +137,7 @@ impl From<ProjectionStoreError> for ProviderBootstrapCause {
         match e {
             ProjectionStoreError::Io(e) => Self::Io(e),
             ProjectionStoreError::Database(e) => Self::Sqlite(e),
+            ProjectionStoreError::ProviderContent(e) => *e,
             e => Self::Validation(Box::new(e)),
         }
     }

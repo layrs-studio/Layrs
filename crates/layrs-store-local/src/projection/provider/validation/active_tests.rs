@@ -1,8 +1,8 @@
 //! Owned in-memory schema8 interpretation of the exact Active transition.
 use super::*;
 use crate::projection::{
-    provider::{database_io::BareConnection, process_profile::tests::child, records::Receipt},
     RecoveryBinding,
+    provider::{database_io::BareConnection, process_profile::tests::child, records::Receipt},
 };
 use layrs_core::scm::FileId;
 use rusqlite::params;
@@ -209,23 +209,27 @@ fn exact_active_chain_and_v1_v2_mutual_refusal() {
             let database = BareConnection::reference().unwrap();
             let c = database.connection();
             f.populate(c, MountPhase::ControlPublished);
-            assert!(private_active_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                None,
-                None
-            )
-            .is_err());
-            assert!(private_activation_state_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                [0x41; 16]
-            )
-            .is_err());
+            assert!(
+                private_active_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
+            assert!(
+                private_activation_state_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    [0x41; 16]
+                )
+                .is_err()
+            );
             c.execute(
                 "UPDATE projection_provider_mounts SET phase=?1,payload=?2,digest=?3",
                 params![
@@ -235,15 +239,17 @@ fn exact_active_chain_and_v1_v2_mutual_refusal() {
                 ],
             )
             .unwrap();
-            assert!(private_active_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                None,
-                None
-            )
-            .is_err());
+            assert!(
+                private_active_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
             assert!(matches!(
                 private_activation_state_with_source(
                     c, &f.allocation, &f.prepared, &predecessor.binding, [0x41; 16]
@@ -253,23 +259,27 @@ fn exact_active_chain_and_v1_v2_mutual_refusal() {
             let (mount, map, activated) = install(c, &f, &predecessor);
             check(c, &f, &predecessor, &mount, &map, &activated);
             assert!(private(c, &f.allocation, Some(&f.prepared)).is_err());
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                [0x41; 16]
-            )
-            .is_err());
-            assert!(private_active_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                Some([0x42; 16]),
-                None
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    [0x41; 16]
+                )
+                .is_err()
+            );
+            assert!(
+                private_active_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    Some([0x42; 16]),
+                    None
+                )
+                .is_err()
+            );
             database.finish(Ok(())).unwrap();
         },
     );
@@ -293,16 +303,16 @@ fn active_map_generation_head_owner_phase_bounds_and_extra_rows_refuse() {
             let (mount, map, activated) = install(c, &f, &predecessor);
             check(c, &f, &predecessor, &mount, &map, &activated);
             let altered = [
-            "UPDATE projection_provider_activations SET id='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
-            "UPDATE projection_provider_activations SET owner_identity_digest='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
-            "UPDATE projection_head SET generation=0",
-            "UPDATE projection_snapshots SET digest='0000000000000000000000000000000000000000000000000000000000000000' WHERE generation=1",
-            "UPDATE projection_selections SET generation=1",
-            "UPDATE projection_provider_mounts SET phase='provider_prepared'",
-            "UPDATE projection_provider_mounts SET payload=zeroblob(262145)",
-            "INSERT INTO projection_provider_activations SELECT 'blake3:0000000000000000000000000000000000000000000000000000000000000000','blake3:0000000000000000000000000000000000000000000000000000000000000000',mount_id,catalog_id,source_generation,source_digest,activated_generation,activated_digest,payload FROM projection_provider_activations",
-            "INSERT INTO projection_snapshots VALUES(2,'0000000000000000000000000000000000000000000000000000000000000000',NULL,x'7b7d')",
-        ];
+                "UPDATE projection_provider_activations SET id='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
+                "UPDATE projection_provider_activations SET owner_identity_digest='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
+                "UPDATE projection_head SET generation=0",
+                "UPDATE projection_snapshots SET digest='0000000000000000000000000000000000000000000000000000000000000000' WHERE generation=1",
+                "UPDATE projection_selections SET generation=1",
+                "UPDATE projection_provider_mounts SET phase='provider_prepared'",
+                "UPDATE projection_provider_mounts SET payload=zeroblob(262145)",
+                "INSERT INTO projection_provider_activations SELECT 'blake3:0000000000000000000000000000000000000000000000000000000000000000','blake3:0000000000000000000000000000000000000000000000000000000000000000',mount_id,catalog_id,source_generation,source_digest,activated_generation,activated_digest,payload FROM projection_provider_activations",
+                "INSERT INTO projection_snapshots VALUES(2,'0000000000000000000000000000000000000000000000000000000000000000',NULL,x'7b7d')",
+            ];
             for statement in altered {
                 c.execute_batch("SAVEPOINT altered").unwrap();
                 c.execute_batch(statement).unwrap();
@@ -332,15 +342,17 @@ fn active_map_generation_head_owner_phase_bounds_and_extra_rows_refuse() {
                 [format!("blake3:{}", "0".repeat(64))],
             )
             .unwrap();
-            assert!(private_active_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &predecessor.binding,
-                None,
-                None
-            )
-            .is_err());
+            assert!(
+                private_active_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &predecessor.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO orphan; RELEASE orphan")
                 .unwrap();
             if foreign_keys != 0 {

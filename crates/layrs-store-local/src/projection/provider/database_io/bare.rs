@@ -153,6 +153,12 @@ impl BareConnection {
             .expect("live provider connection ownership")
     }
 
+    pub(in crate::projection::provider) fn connection_mut(&mut self) -> &mut Connection {
+        self.connection
+            .as_mut()
+            .expect("live provider connection ownership")
+    }
+
     pub(in crate::projection::provider) fn finish<T>(mut self, result: Result<T>) -> Result<T> {
         let Some(c) = self.connection.take() else {
             return Err(invalid("provider connection already closed"));

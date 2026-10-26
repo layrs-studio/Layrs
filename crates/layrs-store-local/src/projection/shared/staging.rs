@@ -27,19 +27,19 @@ impl Stage {
         &self.intent.reservation
     }
     pub fn begin(lease: &Lease, reservation: &str, expected: &CapturedFile) -> Result<Self> {
-        let catalog = lease.catalog(true)?;
-        let (owner, operation, database_identity): (String, String, String) = catalog.connection.query_row(
+        lease.with_content_catalog(true, |c| {
+        let (owner, operation, database_identity): (String, String, String) = c.query_row(
             "SELECT r.owner,r.operation,w.database_identity FROM reservations r JOIN worktrees w ON w.id=r.owner WHERE r.id=?1",
             [reservation], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        let existing = load(&catalog.connection, reservation, &expected.file_id)?;
-        let remaining: u64 = catalog.connection.query_row(
+        let existing = load(c, reservation, &expected.file_id)?;
+        let remaining: u64 = c.query_row(
             "SELECT remaining FROM reservations WHERE id=?1",
             [reservation],
             |r| r.get(0),
         )?;
         let required = retention::budget_for(std::slice::from_ref(expected), 0)?;
         if remaining < required && existing.is_none() {
-            lease.grow_reservation(&catalog.connection, reservation, remaining, required)?;
+            lease.grow_reservation(c, reservation, remaining, required)?;
         }
         let stage = if let Some(stage) = existing {
             stage
@@ -61,7 +61,7 @@ impl Stage {
             let payload = canonical_json(&intent).map_err(invalid)?;
             // No content is written before this row commits. A crash between the
             // mkdir and this insert can leave only an empty directory.
-            catalog.connection.execute(
+            c.execute(
                 "INSERT INTO installations VALUES(?1,?2,?3,NULL,0)",
                 params![reservation, expected.file_id.as_str(), payload],
             )?;
@@ -88,6 +88,7 @@ impl Stage {
             }
         }
         Ok(stage)
+        })
     }
     pub fn directory(&self, lease: &Lease) -> Result<PinnedDirectory> {
         if self.intent.directory.is_empty()
@@ -156,7 +157,7 @@ impl Stage {
         {
             return Err(invalid("verified installation identity mismatch"));
         }
-        let changed = lease.catalog(true)?.connection.execute("UPDATE installations SET manifest=?1 WHERE reservation=?2 AND file_id=?3 AND payload=?4 AND published=0", params![payload, self.intent.reservation, self.intent.file_id.as_str(), self.payload])?;
+        let changed = lease.with_content_catalog(true, |c| Ok(c.execute("UPDATE installations SET manifest=?1 WHERE reservation=?2 AND file_id=?3 AND payload=?4 AND published=0", params![payload, self.intent.reservation, self.intent.file_id.as_str(), self.payload])?))?;
         if changed != 1 {
             return Err(invalid("installation intent changed"));
         }
@@ -186,14 +187,16 @@ impl Stage {
             }
             Err(e) => return Err(e),
         }
-        if lease.catalog(true)?.connection.execute(
-            "DELETE FROM installations WHERE reservation=?1 AND file_id=?2 AND payload=?3",
-            params![
-                self.intent.reservation,
-                self.intent.file_id.as_str(),
-                self.payload
-            ],
-        )? != 1
+        if lease.with_content_catalog(true, |c| {
+            Ok(c.execute(
+                "DELETE FROM installations WHERE reservation=?1 AND file_id=?2 AND payload=?3",
+                params![
+                    self.intent.reservation,
+                    self.intent.file_id.as_str(),
+                    self.payload
+                ],
+            )?)
+        })? != 1
         {
             return Err(invalid("installation cleanup lost its intent"));
         }
@@ -204,9 +207,9 @@ impl Stage {
         reservation: &str,
         expected: &CapturedFile,
     ) -> Result<()> {
-        let catalog = lease.catalog(false)?;
-        let exists = load(&catalog.connection, reservation, &expected.file_id)?.is_some();
-        drop(catalog);
+        let exists = lease.with_content_catalog(false, |c| {
+            Ok(load(c, reservation, &expected.file_id)?.is_some())
+        })?;
         if exists {
             let stage = Self::begin(lease, reservation, expected)?;
             stage.finish(lease)?;
@@ -222,8 +225,8 @@ impl Lease {
         std::collections::BTreeSet<String>,
         std::collections::BTreeSet<String>,
     )> {
-        let catalog = self.catalog(false)?;
-        let mut q = catalog.connection.prepare("SELECT reservation,file_id FROM installations WHERE manifest IS NOT NULL ORDER BY reservation,file_id LIMIT 16385")?;
+        self.with_content_catalog(false, |c| {
+        let mut q = c.prepare("SELECT reservation,file_id FROM installations WHERE manifest IS NOT NULL ORDER BY reservation,file_id LIMIT 16385")?;
         let keys = q
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -237,7 +240,7 @@ impl Lease {
         let mut budget = 0usize;
         for (reservation, file) in keys {
             let stage = load(
-                &catalog.connection,
+                c,
                 &reservation,
                 &FileId::parse(file).map_err(invalid)?,
             )?
@@ -259,6 +262,7 @@ impl Lease {
             chunks.extend(manifest.chunks().iter().map(|p| p.chunk_id().to_string()));
         }
         Ok((manifests, chunks))
+        })
     }
     /// Caller holds either this owner's exclusive private lock or the exclusive
     /// family lifecycle. Verified pieces are admitted before releasing their
@@ -268,43 +272,41 @@ impl Lease {
         reservation: &str,
         owner: &WorktreeId,
     ) -> Result<()> {
-        let catalog = self.catalog(false)?;
-        let actual: Option<String> = catalog
-            .connection
-            .query_row(
-                "SELECT owner FROM reservations WHERE id=?1",
-                [reservation],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(actual) = actual else {
-            return Ok(());
-        };
-        if actual != owner.as_str() {
-            return Err(invalid("reservation owner mismatch"));
-        }
-        let mut q = catalog.connection.prepare(
+        let stages = self.with_content_catalog(false, |c| {
+            let actual: Option<String> = c
+                .query_row(
+                    "SELECT owner FROM reservations WHERE id=?1",
+                    [reservation],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(actual) = actual else {
+                return Ok(None);
+            };
+            if actual != owner.as_str() {
+                return Err(invalid("reservation owner mismatch"));
+            }
+            let mut q = c.prepare(
             "SELECT file_id FROM installations WHERE reservation=?1 ORDER BY file_id LIMIT 1025",
         )?;
-        let files = q
-            .query_map([reservation], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if files.len() > 1024 {
-            return Err(invalid("installation recovery exceeds bound"));
-        }
-        let mut stages = Vec::new();
-        for file in files {
-            stages.push(
-                load(
-                    &catalog.connection,
-                    reservation,
-                    &FileId::parse(file).map_err(invalid)?,
-                )?
-                .ok_or_else(|| invalid("installation disappeared"))?,
-            );
-        }
-        drop(q);
-        drop(catalog);
+            let files = q
+                .query_map([reservation], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if files.len() > 1024 {
+                return Err(invalid("installation recovery exceeds bound"));
+            }
+            let mut stages = Vec::new();
+            for file in files {
+                stages.push(
+                    load(c, reservation, &FileId::parse(file).map_err(invalid)?)?
+                        .ok_or_else(|| invalid("installation disappeared"))?,
+                );
+            }
+            Ok(Some(stages))
+        })?;
+        let Some(stages) = stages else {
+            return Ok(());
+        };
         for stage in stages {
             let expected = CapturedFile {
                 file_id: stage.intent.file_id.clone(),

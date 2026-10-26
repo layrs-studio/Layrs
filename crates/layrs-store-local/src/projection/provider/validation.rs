@@ -7,15 +7,17 @@ use super::{
         preparation::{MountRowData, ProviderPreparationRecord},
         *,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
-use crate::projection::{database, retention, selection, VersionedProjection};
+use crate::projection::{VersionedProjection, database, retention, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
     scm::{FileManifest, RepoPath},
 };
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
+mod capture;
+pub(in crate::projection) use capture::{CaptureContentProof, PrivateCaptureProof};
 
 pub(super) enum PrivateValidation {
     Uninitialized,
@@ -38,6 +40,10 @@ pub(super) struct PrivateActiveValidation {
     pub(super) source: ProviderBootstrapSource,
     pub(super) activated: VersionedProjection,
 }
+pub(super) struct PrivateActiveCaptureValidation {
+    pub(super) active: PrivateActiveValidation,
+    pub(super) capture: PrivateCaptureProof,
+}
 pub(super) enum PrivateActivationStateValidation {
     Prepared(PrivatePreparationValidation),
     Active(PrivateActiveValidation),
@@ -54,6 +60,19 @@ enum PrivateMode<'a> {
         expected_binding: &'a ProviderBootstrapBinding,
         expected_root_id: Option<[u8; 16]>,
     },
+    ActiveCapture {
+        expected_binding: &'a ProviderBootstrapBinding,
+        expected_root_id: Option<[u8; 16]>,
+    },
+}
+
+impl PrivateMode<'_> {
+    fn active(self) -> bool {
+        matches!(self, Self::Active { .. } | Self::ActiveCapture { .. })
+    }
+    fn capture(self) -> bool {
+        matches!(self, Self::ActiveCapture { .. })
+    }
 }
 
 enum ValidatedMount {
@@ -246,6 +265,42 @@ pub(super) fn private_active_with_source(
     }
 }
 
+/// A separate interpreter for mutable Active capture state. Callers must also
+/// validate the returned private proof against the pinned family database.
+/// The strict Active admission above remains unchanged.
+pub(super) fn private_active_capture_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: Option<[u8; 16]>,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateActiveCaptureValidation> {
+    let Some((ValidatedMount::Active(mount, activation, activated), source)) = private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::ActiveCapture {
+            expected_binding,
+            expected_root_id,
+        },
+        cancel,
+    )?
+    else {
+        unreachable!("capture mode is initialized Active only")
+    };
+    let capture = capture::validate(c, allocation, &mount, &activation, &activated, cancel)?;
+    Ok(PrivateActiveCaptureValidation {
+        active: PrivateActiveValidation {
+            mount,
+            activation,
+            source,
+            activated,
+        },
+        capture,
+    })
+}
+
 /// Select a prepared or active interpreter only after the exact schema and a
 /// bounded singleton phase are known. The selected interpreter repeats every
 /// fence and returns no authority without its full source/history validation.
@@ -338,7 +393,9 @@ fn private_interpret(
     if version == 0 && observed.is_empty() {
         return match mode {
             PrivateMode::Bootstrap => Ok(None),
-            PrivateMode::Preparation { .. } | PrivateMode::Active { .. } => {
+            PrivateMode::Preparation { .. }
+            | PrivateMode::Active { .. }
+            | PrivateMode::ActiveCapture { .. } => {
                 Err(invalid("post-bootstrap private database is uninitialized"))
             }
         };
@@ -350,7 +407,16 @@ fn private_interpret(
     super::cancellation::check(cancel)?;
     // Account for every table before any potentially unbounded FK traversal.
     for table in EMPTY_TABLES {
-        if matches!(mode, PrivateMode::Active { .. }) && table == "projection_provider_activations"
+        if (mode.active() && table == "projection_provider_activations")
+            || (mode.capture()
+                && matches!(
+                    table,
+                    "projection_provider_capture_transactions"
+                        | "projection_provider_capture_receipts"
+                        | "projection_captures"
+                        | "projection_content"
+                        | "projection_claims"
+                ))
         {
             continue;
         }
@@ -368,8 +434,7 @@ fn private_interpret(
     }
     for table in SINGLE_TABLES {
         super::cancellation::check(cancel)?;
-        let active_snapshots =
-            matches!(mode, PrivateMode::Active { .. }) && table == "projection_snapshots";
+        let active_snapshots = mode.active() && table == "projection_snapshots";
         let limit = if active_snapshots { 3 } else { 2 };
         let count: u64 = c.query_row(
             &format!("SELECT count(*) FROM (SELECT 1 FROM {table} LIMIT {limit})"),
@@ -383,7 +448,7 @@ fn private_interpret(
             )));
         }
     }
-    if matches!(mode, PrivateMode::Active { .. }) {
+    if mode.active() {
         let count: u64 = c.query_row(
             "SELECT count(*) FROM (SELECT 1 FROM projection_provider_activations LIMIT 2)",
             [],
@@ -405,19 +470,24 @@ fn private_interpret(
     // Bound every materialized TEXT projection before fetching Rust Strings or
     // sorting descriptor rows; corrupt/ignore_check_constraints data is refused.
     let mount_phase_bound = match mode {
-        PrivateMode::Bootstrap => "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('allocating','control_prepared','control_published')",
-        PrivateMode::Preparation { .. } => "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('control_published','provider_prepared')",
-        PrivateMode::Active { .. } => "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase!='active'",
+        PrivateMode::Bootstrap => {
+            "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('allocating','control_prepared','control_published')"
+        }
+        PrivateMode::Preparation { .. } => {
+            "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('control_published','provider_prepared')"
+        }
+        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
+            "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase!='active'"
+        }
     };
     let snapshot_projection_bound = match mode {
-        PrivateMode::Active { .. } => "generation NOT IN (0,1) OR length(CAST(digest AS BLOB))!=64 OR (generation=0 AND parent_digest IS NOT NULL) OR (generation=1 AND (parent_digest IS NULL OR length(CAST(parent_digest AS BLOB))!=64))",
+        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
+            "generation NOT IN (0,1) OR length(CAST(digest AS BLOB))!=64 OR (generation=0 AND parent_digest IS NOT NULL) OR (generation=1 AND (parent_digest IS NULL OR length(CAST(parent_digest AS BLOB))!=64))"
+        }
         _ => "length(CAST(digest AS BLOB))!=64 OR parent_digest IS NOT NULL",
     };
     for (table, predicate) in [
-        (
-            "projection_snapshots",
-            snapshot_projection_bound,
-        ),
+        ("projection_snapshots", snapshot_projection_bound),
         ("projection_selections", "length(CAST(digest AS BLOB))!=64"),
         (
             "projection_backend",
@@ -427,10 +497,7 @@ fn private_interpret(
             "projection_provider_catalogs",
             "length(CAST(id AS BLOB))!=71 OR length(CAST(source_digest AS BLOB))!=64 OR length(CAST(selection_digest AS BLOB))!=64",
         ),
-        (
-            "projection_provider_mounts",
-            mount_phase_bound,
-        ),
+        ("projection_provider_mounts", mount_phase_bound),
         (
             "projection_provider_descriptors",
             "length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(file_id AS BLOB))!=71 OR length(CAST(manifest_id AS BLOB))!=71 OR executable NOT IN (0,1) OR bytes<0",
@@ -448,7 +515,7 @@ fn private_interpret(
             )));
         }
     }
-    if matches!(mode, PrivateMode::Active { .. }) {
+    if mode.active() {
         super::cancellation::check(cancel)?;
         let bad: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM projection_provider_activations WHERE length(CAST(id AS BLOB))!=71 OR length(CAST(owner_identity_digest AS BLOB))!=71 OR length(CAST(mount_id AS BLOB))=0 OR length(CAST(mount_id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR source_generation!=0 OR length(CAST(source_digest AS BLOB))!=64 OR activated_generation!=1 OR length(CAST(activated_digest AS BLOB))!=64)",
@@ -473,7 +540,9 @@ fn private_interpret(
     let mount_payload_bound = match mode {
         PrivateMode::Bootstrap => 1024 * 1024,
         PrivateMode::Preparation { .. } => ProviderPreparationRecord::MAX_BYTES as u64,
-        PrivateMode::Active { .. } => ProviderActiveMountRecord::MAX_BYTES as u64,
+        PrivateMode::Active { .. } | PrivateMode::ActiveCapture { .. } => {
+            ProviderActiveMountRecord::MAX_BYTES as u64
+        }
     };
     for (table, column, bound) in [
         ("projection_meta", "identity", 65536u64),
@@ -491,8 +560,7 @@ fn private_interpret(
             ProviderActivationRecord::MAX_BYTES as u64,
         ),
     ] {
-        if table == "projection_provider_activations" && !matches!(mode, PrivateMode::Active { .. })
-        {
+        if table == "projection_provider_activations" && !mode.active() {
             continue;
         }
         super::cancellation::check(cancel)?;
@@ -545,11 +613,7 @@ fn private_interpret(
         c.query_row("SELECT generation FROM projection_selections", [], |r| {
             r.get(0)
         })?;
-    let expected_head = if matches!(mode, PrivateMode::Active { .. }) {
-        (1, 1)
-    } else {
-        (1, 0)
-    };
+    let expected_head = if mode.active() { (1, 1) } else { (1, 0) };
     if head != expected_head || selection_generation != 0 {
         return Err(invalid(
             "provider bootstrap head/selection generation differs",
@@ -729,6 +793,10 @@ fn private_interpret(
         PrivateMode::Active {
             expected_binding,
             expected_root_id,
+        }
+        | PrivateMode::ActiveCapture {
+            expected_binding,
+            expected_root_id,
         } => {
             let prepared = prepared.ok_or_else(|| invalid("active provider P is absent"))?;
             let mount = ProviderActiveMountRecord::decode(&mount_payload)?;
@@ -818,13 +886,15 @@ fn private_interpret(
         }
     };
     super::cancellation::check(cancel)?;
-    let failures: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
-        [],
-        |r| r.get(0),
-    )?;
-    if failures {
-        return Err(invalid("provider private foreign-key corruption"));
+    if !mode.capture() {
+        let failures: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+            [],
+            |r| r.get(0),
+        )?;
+        if failures {
+            return Err(invalid("provider private foreign-key corruption"));
+        }
     }
     super::cancellation::check(cancel)?;
     Ok(Some((mount, source)))

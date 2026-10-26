@@ -7,6 +7,8 @@
 
 #[path = "records/activation.rs"]
 pub(in crate::projection) mod activation;
+#[path = "records/capture.rs"]
+pub(in crate::projection) mod capture;
 #[path = "records/codec.rs"]
 pub(super) mod codec;
 #[path = "records/preparation.rs"]

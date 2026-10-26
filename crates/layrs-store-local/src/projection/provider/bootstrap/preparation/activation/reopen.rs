@@ -218,28 +218,31 @@ fn open(
         binding,
         guard,
     };
-    let observed_family = super::family_state(&held)?;
-    if required == RequiredFamily::Ready && observed_family != ActivationRegistration::Ready {
-        return Err(preparation_report::Failure::new(
-            invalid("active reopen requires ready family registration"),
-            Some(ProviderDatabaseScope::FamilyCatalog),
-        ));
-    }
-    let private = database_io::read(&held.artifacts.database, |c| {
-        validation::private_active_with_source(
-            c,
-            &held.artifacts.allocation,
-            held.artifacts
-                .prepared
-                .as_ref()
-                .ok_or_else(|| invalid("active reopen P absent"))?,
-            &held.binding,
-            None,
-            None,
+    let (observed_family, interpreted) = if required == RequiredFamily::Ready {
+        let capture = capture_state::read(&held, None, None)?;
+        (ActivationRegistration::Ready, capture.active)
+    } else {
+        // Activation recovery remains strict: capture starts only after READY.
+        let family = super::family_state(&held)?;
+        let private = database_io::read(&held.artifacts.database, |c| {
+            validation::private_active_with_source(
+                c,
+                &held.artifacts.allocation,
+                held.artifacts
+                    .prepared
+                    .as_ref()
+                    .ok_or_else(|| invalid("active reopen P absent"))?,
+                &held.binding,
+                None,
+                None,
+            )
+        })
+        .map_err(preparation_report::Failure::private)?;
+        (
+            family,
+            super::read_state(private, ProviderDatabaseScope::PrivateMetadata)?,
         )
-    })
-    .map_err(preparation_report::Failure::private)?;
-    let interpreted = super::read_state(private, ProviderDatabaseScope::PrivateMetadata)?;
+    };
     let record = interpreted.mount;
     let activation = interpreted.activation;
     let ticket = record
@@ -266,6 +269,9 @@ fn require_exact_state(
     activation: &ProviderActivationRecord,
     family: ActivationRegistration,
 ) -> std::result::Result<(), preparation_report::Failure> {
+    if family == ActivationRegistration::Ready {
+        return capture_state::require_exact(held, root, record, activation);
+    }
     super::boundary(held, root).map_err(preparation_report::Failure::from)?;
     if super::family_state(held)? != family {
         return Err(preparation_report::Failure::new(

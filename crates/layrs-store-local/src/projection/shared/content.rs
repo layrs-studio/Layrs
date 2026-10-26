@@ -115,10 +115,8 @@ impl Lease {
         let directory = PinnedDirectory::open(&self.family.root)?;
         let staging = attempt.directory(self)?;
         let payload = canonical_json(&manifest).map_err(invalid)?;
-        let mut catalog = self.catalog(true)?;
-        let tx = catalog
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        self.with_content_catalog(true, |c| {
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut cost = 0u64;
         let mut unique = BTreeSet::new();
         for part in manifest.chunks() {
@@ -248,30 +246,25 @@ impl Lease {
         attempt.accept(&tx)?;
         faults(InstallationPoint::BeforeCatalogCommit)?;
         tx.commit()?;
-        catalog
-            .pin
-            .verify(&self.family.root.join("metadata/catalog.sqlite3"))?;
-        drop(catalog);
+        Ok(())
+        })?;
         attempt.published = true;
         faults(InstallationPoint::CatalogCommitted)?;
         self.verify_manifest(&manifest)?;
-        drop(source);
         drop(staging);
         attempt.finish(self)?;
         Ok(manifest)
     }
     pub(in crate::projection) fn manifest_for(&self, id: &FileId) -> Result<Option<FileManifest>> {
-        let catalog = self.catalog(false)?;
-        let bytes: Option<Vec<u8>> = catalog
-            .connection
-            .query_row(
+        let bytes: Option<Vec<u8>> = self.with_content_catalog(false, |c| {
+            Ok(c.query_row(
                 "SELECT payload FROM manifests WHERE file_id=?1 AND length(payload)<=262144",
                 [id.as_str()],
                 |r| r.get(0),
             )
-            .optional()?;
+            .optional()?)
+        })?;
         let decoded = bytes.map(|bytes| decode_manifest(&bytes)).transpose()?;
-        drop(catalog);
         decoded
             .map(|m| {
                 if m.file_id() != id {
@@ -282,8 +275,8 @@ impl Lease {
             .transpose()
     }
     pub(in crate::projection) fn manifest(&self, id: &FileManifestId) -> Result<FileManifest> {
-        let catalog = self.catalog(false)?;
-        let bytes: Vec<u8> = catalog.connection.query_row(
+        self.with_content_catalog(false, |c| {
+        let bytes: Vec<u8> = c.query_row(
             "SELECT payload FROM manifests WHERE id=?1 AND length(payload)<=262144",
             [id.as_str()],
             |r| r.get(0),
@@ -292,7 +285,7 @@ impl Lease {
         if value.id() != id {
             return Err(invalid("shared manifest index mismatch"));
         }
-        let mut query = catalog.connection.prepare("SELECT mc.ordinal,mc.chunk_id,c.bytes FROM manifest_chunks mc JOIN chunks c ON c.id=mc.chunk_id WHERE mc.manifest_id=?1 ORDER BY mc.ordinal LIMIT 1025")?;
+        let mut query = c.prepare("SELECT mc.ordinal,mc.chunk_id,c.bytes FROM manifest_chunks mc JOIN chunks c ON c.id=mc.chunk_id WHERE mc.manifest_id=?1 ORDER BY mc.ordinal LIMIT 1025")?;
         let actual = query
             .query_map([id.as_str()], |r| {
                 Ok((
@@ -314,6 +307,7 @@ impl Lease {
             return Err(invalid("shared manifest chunk index mismatch"));
         }
         Ok(value)
+        })
     }
     pub(in crate::projection) fn verify_manifest(&self, manifest: &FileManifest) -> Result<()> {
         self.stream(manifest, &mut io::sink())
@@ -425,34 +419,33 @@ impl Lease {
         }
         let digest = digest(&protection)?;
         let id = digest.clone();
-        let mut catalog = self.catalog(true)?;
-        let tx = catalog
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "INSERT INTO roots VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
-            params![
-                id,
-                protection.owner.as_str(),
-                protection.database_identity,
-                operation,
-                digest,
-                payload
-            ],
-        )?;
-        let old: Vec<u8> =
-            tx.query_row("SELECT payload FROM roots WHERE id=?1", [&id], |r| r.get(0))?;
-        if old != payload {
-            return Err(invalid("shared protection identity collision"));
-        }
-        for manifest in &protection.manifests {
+        self.with_content_catalog(true, |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             tx.execute(
-                "INSERT INTO root_manifests VALUES(?1,?2) ON CONFLICT DO NOTHING",
-                params![id, manifest.id().as_str()],
+                "INSERT INTO roots VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
+                params![
+                    id,
+                    protection.owner.as_str(),
+                    protection.database_identity,
+                    operation,
+                    digest,
+                    payload
+                ],
             )?;
-        }
-        tx.commit()?;
-        Ok((id, digest))
+            let old: Vec<u8> =
+                tx.query_row("SELECT payload FROM roots WHERE id=?1", [&id], |r| r.get(0))?;
+            if old != payload {
+                return Err(invalid("shared protection identity collision"));
+            }
+            for manifest in &protection.manifests {
+                tx.execute(
+                    "INSERT INTO root_manifests VALUES(?1,?2) ON CONFLICT DO NOTHING",
+                    params![id, manifest.id().as_str()],
+                )?;
+            }
+            tx.commit()?;
+            Ok((id, digest))
+        })
     }
     pub(in crate::projection) fn verify_protection(
         &self,
@@ -472,44 +465,43 @@ impl Lease {
         id: &str,
         expected: &str,
     ) -> Result<Vec<FileManifest>> {
-        let catalog = self.catalog(false)?;
-        let (claimed, payload): (String, Vec<u8>) = catalog.connection.query_row(
-            "SELECT digest,payload FROM roots WHERE id=?1 AND length(payload)<=16777216",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let p: Protection = serde_json::from_slice(&payload).map_err(invalid)?;
-        let binding = marker
-            .shared
-            .as_ref()
-            .ok_or_else(|| invalid("missing protection binding"))?;
-        if claimed != expected
-            || claimed != id
-            || digest(&p)? != claimed
-            || canonical_json(&p).map_err(invalid)? != payload
-            || p.incarnation != binding.incarnation
-            || p.owner != marker.identity.worktree_id
-            || p.database_identity != binding.database_identity
-        {
-            return Err(invalid("shared protection owner or membership mismatch"));
-        }
-        let mut statement = catalog.connection.prepare(
-            "SELECT manifest_id FROM root_manifests WHERE root_id=?1 ORDER BY manifest_id",
-        )?;
-        let actual = statement
-            .query_map([id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if actual
-            != p.manifests
-                .iter()
-                .map(|m| m.id().to_string())
-                .collect::<Vec<_>>()
-        {
-            return Err(invalid("shared protection membership index mismatch"));
-        }
-        drop(statement);
-        drop(catalog);
-        Ok(p.manifests)
+        self.with_content_catalog(false, |c| {
+            let (claimed, payload): (String, Vec<u8>) = c.query_row(
+                "SELECT digest,payload FROM roots WHERE id=?1 AND length(payload)<=16777216",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let p: Protection = serde_json::from_slice(&payload).map_err(invalid)?;
+            let binding = marker
+                .shared
+                .as_ref()
+                .ok_or_else(|| invalid("missing protection binding"))?;
+            if claimed != expected
+                || claimed != id
+                || digest(&p)? != claimed
+                || canonical_json(&p).map_err(invalid)? != payload
+                || p.incarnation != binding.incarnation
+                || p.owner != marker.identity.worktree_id
+                || p.database_identity != binding.database_identity
+            {
+                return Err(invalid("shared protection owner or membership mismatch"));
+            }
+            let mut statement = c.prepare(
+                "SELECT manifest_id FROM root_manifests WHERE root_id=?1 ORDER BY manifest_id",
+            )?;
+            let actual = statement
+                .query_map([id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if actual
+                != p.manifests
+                    .iter()
+                    .map(|m| m.id().to_string())
+                    .collect::<Vec<_>>()
+            {
+                return Err(invalid("shared protection membership index mismatch"));
+            }
+            Ok(p.manifests)
+        })
     }
 }
 fn verify_input(input: &mut dyn Read, manifest: &FileManifest) -> Result<()> {

@@ -1,6 +1,11 @@
 //! Consuming activation writer. The retained owner and native READY proof are
 //! returned on every refusal, including uncertain SQL close or family commit.
 mod ranges;
+mod capture_image;
+mod capture;
+pub use capture::{ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep};
+mod capture_state;
+mod capture_sql;
 mod report;
 mod session;
 pub use ranges::ProviderActiveRangeFailure;
@@ -82,12 +87,7 @@ impl ProviderActive {
                     false,
                 )
                 .map_err(preparation_report::Failure::from)?;
-            let (mount, activation) = final_check(&self.held, &self.root, &self.record.prepared)?;
-            if mount != self.record || activation != self.activation {
-                return Err(preparation_report::Failure::private(invalid(
-                    "active provider changed",
-                )));
-            }
+            capture_state::require_exact(&self.held, &self.root, &self.record, &self.activation)?;
             Ok(())
         })();
         result.map_err(|error| context.failure(error))

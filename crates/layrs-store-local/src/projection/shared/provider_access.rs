@@ -7,6 +7,8 @@ use crate::projection::provider::{
     recovery::error::{Result as ProviderResult, invalid as provider_invalid},
 };
 use std::{ffi::OsStr, fs::File};
+#[path = "provider_capture.rs"]
+pub(in crate::projection) mod provider_capture;
 
 pub(in crate::projection) struct FamilyAccess {
     family: PartialStoreFamily,
@@ -173,7 +175,7 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
     ) -> ProviderResult<Registration> {
-        match self.validate_catalog_inner(c, a, cancel, false)? {
+        match self.validate_catalog_inner(c, a, cancel, false, None)? {
             CatalogRegistration::Absent => Ok(Registration::Absent),
             CatalogRegistration::Initializing => Ok(Registration::Initializing),
             CatalogRegistration::Ready => Err(provider_invalid(
@@ -192,11 +194,28 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
     ) -> ProviderResult<ActivationRegistration> {
-        match self.validate_catalog_inner(c, a, cancel, true)? {
+        match self.validate_catalog_inner(c, a, cancel, true, None)? {
             CatalogRegistration::Initializing => Ok(ActivationRegistration::Initializing),
             CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
             CatalogRegistration::Absent => Err(provider_invalid(
                 "activation requires the exact registered family owner",
+            )),
+        }
+    }
+
+    /// Capture interpretation requires the complete durable private proof
+    /// from the same caller-held lifecycle/owner/catalog gate epoch.
+    pub(in crate::projection) fn validate_capture_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        proof: &crate::projection::provider::validation::PrivateCaptureProof,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(c, a, cancel, true, Some(proof))? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "capture requires exact ready family owner",
             )),
         }
     }
@@ -207,6 +226,7 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
         allow_ready: bool,
+        capture: Option<&crate::projection::provider::validation::PrivateCaptureProof>,
     ) -> ProviderResult<CatalogRegistration> {
         crate::projection::provider::cancellation::check(cancel)?;
         let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -302,16 +322,20 @@ impl FamilyAccess {
                 ));
             }
         };
-        for sql in [
-            "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
-            "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
-            "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
-        ] {
-            let present: bool = c.query_row(sql, [owner], |r| r.get(0))?;
-            if present {
-                return Err(provider_invalid(
-                    "provider bootstrap owner has accepted roots/reservations/installations",
-                ));
+        if let Some(proof) = capture {
+            provider_capture::validate(self, c, a, proof, cancel)?;
+        } else {
+            for sql in [
+                "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+                "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
+                "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+            ] {
+                let present: bool = c.query_row(sql, [owner], |r| r.get(0))?;
+                if present {
+                    return Err(provider_invalid(
+                        "provider bootstrap owner has accepted roots/reservations/installations",
+                    ));
+                }
             }
         }
         let failure: bool = c.query_row(

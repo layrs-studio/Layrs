@@ -1,7 +1,7 @@
 //! Owned, in-memory SQLite interpretation of the post-bootstrap mount row.
 use super::*;
 use crate::projection::provider::{process_profile::tests::child, records::Receipt};
-use crate::projection::{provider::database_io::BareConnection, RecoveryBinding};
+use crate::projection::{RecoveryBinding, provider::database_io::BareConnection};
 use layrs_core::scm::FileId;
 use rusqlite::params;
 
@@ -122,14 +122,16 @@ fn exact_pending_prepared_and_legacy_mutual_refusal() {
             assert!(
                 matches!(private(c, &f.allocation, Some(&f.prepared)).unwrap(), PrivateValidation::Initialized(m) if m.phase == MountPhase::ControlPublished)
             );
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             install(c, &pending);
             check(c, &f, &pending);
             assert!(private(c, &f.allocation, Some(&f.prepared)).is_err());
@@ -144,14 +146,16 @@ fn exact_pending_prepared_and_legacy_mutual_refusal() {
             database.finish(Ok(())).unwrap();
 
             let empty = BareConnection::reference().unwrap();
-            assert!(private_preparation_with_source(
-                empty.connection(),
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    empty.connection(),
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             empty.finish(Ok(())).unwrap();
         },
     );
@@ -176,22 +180,20 @@ fn binding_phase_payload_digest_and_source_contradictions_refuse() {
             check(c, &f, &pending);
             let mut wrong = binding(&f);
             wrong.transaction_id = "00000000000000000000000000000002".into();
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &wrong,
-                [0x11; 16]
-            )
-            .is_err());
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x22; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(c, &f.allocation, &f.prepared, &wrong, [0x11; 16])
+                    .is_err()
+            );
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x22; 16]
+                )
+                .is_err()
+            );
 
             for (column, value) in [
                 ("phase", "'provider_prepared'"),
@@ -204,14 +206,16 @@ fn binding_phase_payload_digest_and_source_contradictions_refuse() {
                     "SAVEPOINT altered; UPDATE projection_provider_mounts SET {column}={value};"
                 ))
                 .unwrap();
-                assert!(private_preparation_with_source(
-                    c,
-                    &f.allocation,
-                    &f.prepared,
-                    &pending.binding,
-                    [0x11; 16]
-                )
-                .is_err());
+                assert!(
+                    private_preparation_with_source(
+                        c,
+                        &f.allocation,
+                        &f.prepared,
+                        &pending.binding,
+                        [0x11; 16]
+                    )
+                    .is_err()
+                );
                 c.execute_batch("ROLLBACK TO altered; RELEASE altered;")
                     .unwrap();
                 check(c, &f, &pending);
@@ -220,25 +224,29 @@ fn binding_phase_payload_digest_and_source_contradictions_refuse() {
                 "SAVEPOINT altered; UPDATE projection_provider_mounts SET payload=x'7b7d';",
             )
             .unwrap();
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO altered; RELEASE altered;")
                 .unwrap();
             c.execute_batch("SAVEPOINT altered; UPDATE projection_snapshots SET digest='0000000000000000000000000000000000000000000000000000000000000000';").unwrap();
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO altered; RELEASE altered;")
                 .unwrap();
             check(c, &f, &pending);
@@ -277,28 +285,32 @@ fn future_tables_and_bounds_refuse() {
                 .unwrap();
 
             c.execute_batch("SAVEPOINT altered; UPDATE projection_provider_mounts SET payload=zeroblob(131073);").unwrap();
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO altered; RELEASE altered;")
                 .unwrap();
             c.execute_batch(
                 "SAVEPOINT altered; UPDATE projection_provider_descriptors SET manifest=x'7b7d';",
             )
             .unwrap();
-            assert!(private_preparation_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &pending.binding,
-                [0x11; 16]
-            )
-            .is_err());
+            assert!(
+                private_preparation_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &pending.binding,
+                    [0x11; 16]
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO altered; RELEASE altered;")
                 .unwrap();
             check(c, &f, &pending);

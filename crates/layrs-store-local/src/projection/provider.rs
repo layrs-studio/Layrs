@@ -5,53 +5,47 @@ use super::*;
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
     ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
-    ProviderActiveOpenFailure, ProviderActiveReopened, ProviderActiveRangeFailure,
+    ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
-    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
-    ProviderBootstrapCatalog, ProviderCatalogDescriptor,
-    ProviderBootstrapAttempt,
-    ProviderBootstrapWriterOperation,
-    ProviderBootstrapWriteReportProvenance,
-    ProviderBootstrapReceipt,
-    ProviderBootstrapCreate,
-    ProviderBootstrapSqlWrite,
-    ProviderBootstrapWriteStep,
-    ProviderBootstrapWriteState,
-    ProviderBootstrapWriteEffect,
-    ProviderBootstrapWriteReport,
-    ProviderControlPublicationOutcome,
-    ProviderControlCommitDisposition,
-    ProviderControlPublished,
-    ProviderControlWithheld,
-    ProviderPreparationFailure, ProviderPreparationFailureKind,
-    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
-    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
-    ProviderPreparationWriteReport, ProviderPreparationWriteState,
-    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
-    ProviderPrepared,
+    ProviderBootstrapAttempt, ProviderBootstrapCatalog, ProviderBootstrapCreate,
+    ProviderBootstrapReceipt, ProviderBootstrapSqlWrite, ProviderBootstrapWriteEffect,
+    ProviderBootstrapWriteReport, ProviderBootstrapWriteReportProvenance,
+    ProviderBootstrapWriteState, ProviderBootstrapWriteStep, ProviderBootstrapWriterOperation,
+    ProviderCatalogDescriptor, ProviderControlCommitDisposition, ProviderControlPublicationOutcome,
+    ProviderControlPublished, ProviderControlWithheld, ProviderPreparationFailure,
+    ProviderPreparationFailureKind, ProviderPreparationOutcome, ProviderPreparationSqlPhase,
+    ProviderPreparationWithheld, ProviderPreparationWriteEffect, ProviderPreparationWriteReport,
+    ProviderPreparationWriteReportProvenance, ProviderPreparationWriteState,
+    ProviderPreparationWriteStep, ProviderPrepared, ProviderPreparedOpenFailure,
+    ProviderPreparedReopened, ProviderRangeFailure,
 };
 #[cfg(windows)]
 pub use records::{ProviderBootstrapSource, ProviderSourceDescriptor};
 #[cfg(windows)]
-mod journal;
-#[cfg(windows)]
-pub(super) mod records;
-#[cfg(windows)]
 mod artifacts;
 #[cfg(windows)]
-pub(super) mod database_io;
-#[cfg(windows)]
-mod process_profile;
+mod capture_lock;
 #[cfg(windows)]
 pub(in crate::projection) mod cancellation;
 #[cfg(windows)]
+pub(in crate::projection) mod content_catalog;
+#[cfg(windows)]
+pub(super) mod database_io;
+#[cfg(windows)]
+mod journal;
+#[cfg(windows)]
+mod process_profile;
+#[cfg(windows)]
+pub(super) mod records;
+#[cfg(windows)]
 pub(super) mod recovery;
 #[cfg(windows)]
-mod validation;
+pub(in crate::projection) mod validation;
 #[cfg(windows)]
 pub use journal::Refusal as ProviderJournalRefusal;
 #[cfg(windows)]
@@ -69,8 +63,8 @@ pub use recovery::{
     ProviderBootstrapCause, ProviderBootstrapFailure, ProviderBootstrapFailureKind,
     ProviderBootstrapInspection, ProviderBootstrapPhase, ProviderBootstrapRecovery,
     ProviderBootstrapState, ProviderControlLocation, ProviderDatabaseInspection,
-    ProviderDatabaseScope, ProviderDatabaseStatus, ProviderFormatState,
-    ProviderRecoveryEffect, ProviderRecoveryEffectState, ProviderRollbackTrigger,
+    ProviderDatabaseScope, ProviderDatabaseStatus, ProviderFormatState, ProviderRecoveryEffect,
+    ProviderRecoveryEffectState, ProviderRollbackTrigger,
 };
 pub(super) mod schema;
 

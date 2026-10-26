@@ -25,6 +25,7 @@ pub use provider::{
 };
 #[cfg(windows)]
 pub use provider::{
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
@@ -121,6 +122,8 @@ pub enum ProjectionStoreError {
     Stale { expected: u64, actual: u64 },
     #[cfg(windows)]
     ProviderBootstrap(Box<ProviderBootstrapFailure>),
+    #[cfg(windows)]
+    ProviderContent(Box<ProviderBootstrapCause>),
 }
 impl fmt::Display for ProjectionStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -134,6 +137,8 @@ impl fmt::Display for ProjectionStoreError {
             ),
             #[cfg(windows)]
             Self::ProviderBootstrap(e) => e.fmt(f),
+            #[cfg(windows)]
+            Self::ProviderContent(e) => e.fmt(f),
         }
     }
 }
@@ -142,6 +147,8 @@ impl std::error::Error for ProjectionStoreError {
         match self {
             #[cfg(windows)]
             Self::ProviderBootstrap(e) => Some(e.as_ref()),
+            #[cfg(windows)]
+            Self::ProviderContent(e) => Some(e.as_ref()),
             _ => None,
         }
     }
@@ -149,6 +156,12 @@ impl std::error::Error for ProjectionStoreError {
 impl From<io::Error> for ProjectionStoreError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
+    }
+}
+#[cfg(windows)]
+impl From<ProviderBootstrapCause> for ProjectionStoreError {
+    fn from(e: ProviderBootstrapCause) -> Self {
+        Self::ProviderContent(Box::new(e))
     }
 }
 impl From<rusqlite::Error> for ProjectionStoreError {

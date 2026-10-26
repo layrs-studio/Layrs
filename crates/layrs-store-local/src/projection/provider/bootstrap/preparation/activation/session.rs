@@ -66,16 +66,10 @@ impl LocalSource {
             .map_err(|e| {
                 ProviderActiveOpenFailure::from_failure("validate active callback source", e.into())
             })?;
-        let (mount, activation) = final_check(&self.held, &self.root, &self.record.prepared)
+        capture_state::require_exact(&self.held, &self.root, &self.record, &self.activation)
             .map_err(|e| {
                 ProviderActiveOpenFailure::from_failure("validate active callback source", e)
             })?;
-        if mount != self.record || activation != self.activation {
-            return Err(ProviderActiveOpenFailure::from_failure(
-                "validate active callback source",
-                preparation_report::Failure::private(invalid("active callback map changed")),
-            ));
-        }
         Ok(())
     }
 }
@@ -204,6 +198,91 @@ impl ProviderActiveSession {
     }
     pub fn checkpoint(&self) -> layrs_vfs::Result<layrs_vfs::Checkpoint<'_>> {
         self.session.checkpoint()
+    }
+    /// Capture a complete selected image. The caller keeps external namespace
+    /// mutation quiescent. The same transaction ID resumes or returns its
+    /// durable acknowledgement; a changed staged image is refused.
+    pub fn capture(
+        &mut self,
+        transaction_id: &str,
+        cancel: &Cancellation,
+    ) -> std::result::Result<ProviderCaptureAcknowledgement, ProviderCaptureFailure> {
+        let failure = |cause| ProviderCaptureFailure {
+            transaction_id: transaction_id.into(),
+            step: ProviderCaptureStep::Checkpoint,
+            cause,
+        };
+        if !self.is_connected() {
+            return Err(failure(invalid("capture requires a connected session")));
+        }
+        use crate::projection::provider::capture_lock::{
+            CaptureAttemptLock, CaptureAttemptLockError,
+        };
+        let attempt =
+            CaptureAttemptLock::acquire(&self.source.held.artifacts, &self.source.held.family)
+                .map_err(|error| {
+                    failure(match error {
+                        CaptureAttemptLockError::Contended => Cause::Io(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "another provider capture holds the allocation",
+                        )),
+                        CaptureAttemptLockError::Cause(cause) => cause,
+                    })
+                })?;
+        let mut checkpoint = self
+            .session
+            .checkpoint()
+            .map_err(|error| failure(error.into()))?;
+        capture::run(
+            &self.source.held,
+            &self.source.root,
+            &self.source.record,
+            &self.source.activation,
+            &mut checkpoint,
+            &attempt,
+            transaction_id,
+            cancel,
+        )
+    }
+
+    /// Durably abandon an unfinished attempt while retaining its staged
+    /// content and protection. Accepted patches cannot be cancelled.
+    pub fn cancel_capture(
+        &mut self,
+        transaction_id: &str,
+    ) -> std::result::Result<(), ProviderCaptureFailure> {
+        use crate::projection::provider::capture_lock::{
+            CaptureAttemptLock, CaptureAttemptLockError,
+        };
+        let failure = |cause| ProviderCaptureFailure {
+            transaction_id: transaction_id.into(),
+            step: ProviderCaptureStep::Cancellation,
+            cause,
+        };
+        let attempt =
+            CaptureAttemptLock::acquire(&self.source.held.artifacts, &self.source.held.family)
+                .map_err(|error| {
+                    failure(match error {
+                        CaptureAttemptLockError::Contended => Cause::Io(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "another provider capture holds the allocation",
+                        )),
+                        CaptureAttemptLockError::Cause(cause) => cause,
+                    })
+                })?;
+        let checkpoint = self
+            .session
+            .checkpoint()
+            .map_err(|error| failure(error.into()))?;
+        capture::cancel(
+            &self.source.held,
+            &self.source.root,
+            &self.source.record,
+            &self.source.activation,
+            &checkpoint,
+            &attempt,
+            transaction_id,
+        )
     }
 }
 

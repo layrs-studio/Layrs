@@ -10,8 +10,8 @@ use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
-pub(super) const TX: &str = "00000000000000000000000000000001";
-pub(super) struct Fixture {
+pub(in crate::projection::provider::bootstrap) const TX: &str = "00000000000000000000000000000001";
+pub(in crate::projection::provider::bootstrap) struct Fixture {
     pub outer: PathBuf,
     pub family: PartialStoreFamily,
     pub checkout: PathBuf,
@@ -125,6 +125,19 @@ impl Fixture {
     pub fn published(&self) -> ProviderControlPublished {
         match self
             .begin()
+            .unwrap_or_else(|e| panic!("writer begin failed: {e:?}"))
+        {
+            ProviderControlPublicationOutcome::Published(p) => p,
+            _ => panic!("writer did not return a Published capability"),
+        }
+    }
+    pub fn published_with_source(
+        &self,
+        source: ProviderBootstrapSource,
+    ) -> ProviderControlPublished {
+        match self
+            .family
+            .begin_provider_bootstrap(&self.checkout, &self.stages, &self.worktree, TX, source)
             .unwrap_or_else(|e| panic!("writer begin failed: {e:?}"))
         {
             ProviderControlPublicationOutcome::Published(p) => p,

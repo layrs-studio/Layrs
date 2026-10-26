@@ -1,5 +1,21 @@
 # État courant de Layrs
 
+## Capture provider du 26 octobre 2026
+
+La session Active capture maintenant une image sélectionnée, conserve un reçu
+durable, reprend une tentative Staging identique et permet son annulation
+explicite. Les captures acceptées libèrent leur quota réservé tout en gardant
+les protections du contenu. Les callbacks locaux restent utilisables pendant
+les préfixes de capture valides.
+
+**97 tests purs** et la compilation de tout le workspace passent. Les recettes
+natives qualifient séparément verrou interprocessus, SQL, installation,
+déduplication, reprise et annulation ; quatre régressions shared ordinary passent.
+Le [checkpoint de capture](plans/worktrees-partial-vfs-capture-checkpoint.md)
+conserve les résultats par binaire, les deux erreurs de fixtures corrigées et les
+limites de qualification. L’export, managed/companion, l’expansion de sélection et
+l’intégration CLI/Desktop restent à poursuivre.
+
 ## Activation et callbacks locaux du 26 octobre 2026
 
 L’activation écrit maintenant la génération 1 et sa correspondance exacte avec
@@ -17,9 +33,9 @@ distingue précisément ces preuves et les limites.
 
 La récupération shared privée chaude est désormais refusée sans modification
 quand le backend ne peut pas être prouvé en lecture seule. La récupération
-familiale avec privé ordinary lisible reste testée. La nouvelle fixture de
-récupération nonshared est en cours de correction/qualification. La capture
-provider est en développement ; les transitions managed/companion, l’expansion
+familiale avec privé ordinary lisible reste testée. La fixture de récupération
+nonshared corrigée passe dans activation r5. La capture provider dispose maintenant
+du checkpoint ci-dessus ; les transitions managed/companion, l’expansion
 de sélection et l’intégration produit restent à terminer. Le chantier continue.
 
 ## Réouverture et lectures locales du 26 octobre 2026

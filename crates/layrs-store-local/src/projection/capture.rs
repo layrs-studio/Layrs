@@ -57,7 +57,7 @@ pub struct CapturedPatch {
     pub digest: String,
 }
 impl CapturedPatch {
-    fn computed_digest(&self) -> Result<String> {
+    pub(in crate::projection) fn computed_digest(&self) -> Result<String> {
         let mut copy = self.clone();
         copy.digest.clear();
         let bytes = canonical_json(&copy).map_err(invalid)?;

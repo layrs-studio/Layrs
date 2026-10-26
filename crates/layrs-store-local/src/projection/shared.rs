@@ -1,17 +1,17 @@
 //! Format-4 content family. This catalog never admits native SCM graph objects.
 mod content;
 mod maintenance;
-mod staging;
 #[cfg(windows)]
 pub(super) mod provider_access;
 #[cfg(windows)]
 pub(super) mod provider_content;
+mod staging;
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
 #[cfg(test)]
 pub(in crate::projection) use content::InstallationPoint;
-use layrs_core::scm::{FileManifest, canonical_json};
-use rusqlite::{Connection, OptionalExtension, params};
+use layrs_core::scm::{canonical_json, FileManifest};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     fs,
     io::{Read, Write},
@@ -87,6 +87,77 @@ pub struct PartialStoreFamily {
 pub(super) struct Lease {
     family: PartialStoreFamily,
     _lock: StoreLock,
+    content_catalog: ContentCatalogPolicy,
+}
+enum ContentCatalogPolicy {
+    Ordinary,
+    #[cfg(windows)]
+    Provider(Box<crate::projection::provider::content_catalog::ProviderContext>),
+}
+#[cfg(windows)]
+pub(in crate::projection) struct ProviderLease(Lease);
+#[cfg(windows)]
+impl ProviderLease {
+    fn context(&self) -> &crate::projection::provider::content_catalog::ProviderContext {
+        let ContentCatalogPolicy::Provider(context) = &self.0.content_catalog else {
+            unreachable!("provider lease always has provider catalog policy");
+        };
+        context
+    }
+
+    pub(in crate::projection) fn reserve_exact(
+        &self,
+        id: &str,
+        owner: &WorktreeId,
+        operation: &str,
+        bytes: u64,
+    ) -> Result<()> {
+        self.context()
+            .authorize_reservation(id, owner, operation, bytes)?;
+        self.0.reserve_exact(id, owner, operation, bytes)
+    }
+
+    pub(in crate::projection) fn install_file(
+        &self,
+        input: &mut dyn std::io::Read,
+        expected: &CapturedFile,
+        reservation: &str,
+    ) -> Result<layrs_core::scm::FileManifest> {
+        self.context().authorize_install(expected, reservation)?;
+        self.0.install_file(input, expected, reservation)
+    }
+
+    pub(in crate::projection) fn release_accepted_reservation(
+        &self,
+        reservation: &str,
+        owner: &WorktreeId,
+        transaction_id: &str,
+    ) -> Result<()> {
+        self.context()
+            .authorize_accepted_release(reservation, owner, transaction_id)?;
+        self.0.release_reservation(reservation, owner)
+    }
+
+    pub(in crate::projection) fn protect(
+        &self,
+        marker: &format::Marker,
+        operation: &str,
+        manifests: &[layrs_core::scm::FileManifest],
+    ) -> Result<(String, String)> {
+        self.context()
+            .authorize_protection(marker, operation, manifests)?;
+        self.0.protect(marker, operation, manifests)
+    }
+
+    pub(in crate::projection) fn verify_protection(
+        &self,
+        marker: &format::Marker,
+        id: &str,
+        expected: &str,
+    ) -> Result<Vec<layrs_core::scm::FileManifest>> {
+        self.context().authorize_marker(marker)?;
+        self.0.verify_protection(marker, id, expected)
+    }
 }
 pub(super) struct Catalog {
     pub connection: Connection,
@@ -296,6 +367,7 @@ impl PartialStoreFamily {
         Ok(Lease {
             family: self.clone(),
             _lock: lock,
+            content_catalog: ContentCatalogPolicy::Ordinary,
         })
     }
     fn verify(&self) -> Result<()> {
@@ -352,7 +424,50 @@ pub(super) fn for_store_discovery(store: &ProjectionStore) -> Result<Option<Leas
     }
     Ok(Some(family.lease(SessionMode::Shared)?))
 }
+#[cfg(windows)]
+pub(in crate::projection) fn provider_content_lease(
+    family: provider_access::FamilyAccess,
+    allocation: crate::projection::provider::records::AllocationRecord,
+    proof: crate::projection::provider::validation::PrivateCaptureProof,
+) -> Result<ProviderLease> {
+    use crate::projection::provider::content_catalog::ProviderContext;
+    let lifecycle = family
+        .writer_lifecycle(false)
+        .map_err(|cause| ProjectionStoreError::ProviderContent(Box::new(cause)))?;
+    let root = PartialStoreFamily::read_bound(family.root())?;
+    let context = ProviderContext::new(family, allocation, proof)?;
+    let lease = Lease {
+        family: root,
+        _lock: lifecycle,
+        content_catalog: ContentCatalogPolicy::Provider(Box::new(context)),
+    };
+    lease.with_content_catalog(false, |_| Ok(()))?;
+    Ok(ProviderLease(lease))
+}
 impl Lease {
+    /// Content engine calls use one scoped catalog opener. Ordinary access is
+    /// unchanged; the provider policy never reaches the legacy recovery path.
+    pub(in crate::projection) fn with_content_catalog<T>(
+        &self,
+        write: bool,
+        operation: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        match &self.content_catalog {
+            ContentCatalogPolicy::Ordinary => {
+                let mut catalog = self.catalog(write)?;
+                let result = operation(&mut catalog.connection);
+                if result.is_ok() {
+                    catalog
+                        .pin
+                        .verify(&self.family.root.join("metadata/catalog.sqlite3"))?;
+                    self.family.verify()?;
+                }
+                result
+            }
+            #[cfg(windows)]
+            ContentCatalogPolicy::Provider(context) => context.with_catalog(write, operation),
+        }
+    }
     pub(super) fn recovery_marker_digest(&self) -> Result<String> {
         self.verify()?;
         let mut digest = blake3::Hasher::new();
@@ -385,6 +500,12 @@ impl Lease {
         usage(&self.catalog(false)?.connection)
     }
     pub(super) fn catalog(&self, write: bool) -> Result<Catalog> {
+        #[cfg(windows)]
+        if matches!(&self.content_catalog, ContentCatalogPolicy::Provider(_)) {
+            return Err(invalid(
+                "provider content cannot use ordinary catalog recovery",
+            ));
+        }
         match self.catalog_once(write) {
             Err(error) if !write && database::readonly_rollback(&error) => {
                 // catalog_once dropped its read connection and shared lock on
@@ -411,6 +532,10 @@ impl Lease {
         }
     }
     pub(super) fn catalog_once(&self, write: bool) -> Result<Catalog> {
+        #[cfg(windows)]
+        if matches!(&self.content_catalog, ContentCatalogPolicy::Provider(_)) {
+            return Err(invalid("provider content cannot open ordinary catalog"));
+        }
         let mode = if write {
             SessionMode::Exclusive
         } else {
@@ -488,26 +613,56 @@ impl Lease {
         operation: &str,
         bytes: u64,
     ) -> Result<String> {
-        let catalog = self.catalog(true)?;
-        let current = usage(&catalog.connection)?;
-        if current
-            .content_bytes
-            .checked_add(current.reserved_bytes)
-            .and_then(|n| n.checked_add(bytes))
-            .is_none_or(|n| n > current.limit_bytes)
-            || fs2::available_space(&self.family.root)?
-                < current.reserved_bytes.saturating_add(bytes)
-        {
-            return Err(invalid(
-                "partial_store_quota: insufficient unreserved capacity",
-            ));
-        }
         let id = unique_id()?;
-        catalog.connection.execute(
-            "INSERT INTO reservations VALUES(?1,?2,?3,?4)",
-            params![id, owner.as_str(), operation, bytes],
-        )?;
+        self.reserve_exact(&id, owner, operation, bytes)?;
         Ok(id)
+    }
+    pub(in crate::projection) fn reserve_exact(
+        &self,
+        id: &str,
+        owner: &WorktreeId,
+        operation: &str,
+        bytes: u64,
+    ) -> Result<()> {
+        if id.is_empty() || id.len() > 128 {
+            return Err(invalid("shared reservation identifier exceeds bound"));
+        }
+        self.with_content_catalog(true, |c| {
+            let existing: Option<(String, String, u64)> = c
+                .query_row(
+                    "SELECT owner,operation,remaining FROM reservations WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if let Some((actual_owner, actual_operation, remaining)) = existing {
+                if actual_owner != owner.as_str()
+                    || actual_operation != operation
+                    || remaining > bytes
+                {
+                    return Err(invalid("shared reservation identity or charge differs"));
+                }
+                return Ok(());
+            }
+            let current = usage(c)?;
+            if current
+                .content_bytes
+                .checked_add(current.reserved_bytes)
+                .and_then(|n| n.checked_add(bytes))
+                .is_none_or(|n| n > current.limit_bytes)
+                || fs2::available_space(&self.family.root)?
+                    < current.reserved_bytes.saturating_add(bytes)
+            {
+                return Err(invalid(
+                    "partial_store_quota: insufficient unreserved capacity",
+                ));
+            }
+            c.execute(
+                "INSERT INTO reservations VALUES(?1,?2,?3,?4)",
+                params![id, owner.as_str(), operation, bytes],
+            )?;
+            Ok(())
+        })
     }
     pub(in crate::projection) fn ensure_reservation_capacity(
         &self,
@@ -515,13 +670,14 @@ impl Lease {
         owner: &WorktreeId,
         minimum: u64,
     ) -> Result<()> {
-        let catalog = self.catalog(true)?;
-        let remaining: u64 = catalog.connection.query_row(
-            "SELECT remaining FROM reservations WHERE id=?1 AND owner=?2",
-            params![id, owner.as_str()],
-            |r| r.get(0),
-        )?;
-        self.grow_reservation(&catalog.connection, id, remaining, minimum)
+        self.with_content_catalog(true, |c| {
+            let remaining: u64 = c.query_row(
+                "SELECT remaining FROM reservations WHERE id=?1 AND owner=?2",
+                params![id, owner.as_str()],
+                |r| r.get(0),
+            )?;
+            self.grow_reservation(c, id, remaining, minimum)
+        })
     }
     fn grow_reservation(
         &self,
@@ -553,21 +709,22 @@ impl Lease {
         Ok(())
     }
     pub(super) fn release_reservation(&self, id: &str, owner: &WorktreeId) -> Result<()> {
-        let catalog = self.catalog(true)?;
-        if catalog.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM installations WHERE reservation=?1)",
-            [id],
-            |r| r.get::<_, bool>(0),
-        )? {
-            return Err(invalid(
-                "shared installation remains pending; reservation retained",
-            ));
-        }
-        catalog.connection.execute(
-            "DELETE FROM reservations WHERE id=?1 AND owner=?2",
-            params![id, owner.as_str()],
-        )?;
-        Ok(())
+        self.with_content_catalog(true, |c| {
+            if c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM installations WHERE reservation=?1)",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Err(invalid(
+                    "shared installation remains pending; reservation retained",
+                ));
+            }
+            c.execute(
+                "DELETE FROM reservations WHERE id=?1 AND owner=?2",
+                params![id, owner.as_str()],
+            )?;
+            Ok(())
+        })
     }
 }
 fn usage(c: &Connection) -> Result<SharedUsage> {

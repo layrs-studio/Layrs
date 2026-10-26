@@ -53,6 +53,27 @@ pub(super) enum RetainedControl {
 }
 
 impl Artifacts {
+    /// A clone of the already authenticated allocation receipt, for the
+    /// capture lane's native byte-range lock. No other receipt handle escapes.
+    pub(super) fn capture_lock_anchor(&self) -> Result<(File, String, Vec<u8>)> {
+        let (path, file, bytes) = self
+            .receipts
+            .first()
+            .ok_or_else(|| invalid("provider allocation handle absent"))?;
+        if path.file_name() != Some(OsStr::new("allocation.json"))
+            || bytes.len() > AllocationRecord::MAX_BYTES
+            || bytes != &self.allocation.encode()?
+            || file::identity(file)? != self.allocation.receipt_file_identity
+        {
+            return Err(invalid("provider allocation lock anchor differs"));
+        }
+        Ok((
+            file.try_clone()?,
+            self.allocation.receipt_file_identity.clone(),
+            bytes.clone(),
+        ))
+    }
+
     pub(super) fn open(
         family: &FamilyAccess,
         worktree: &WorktreeId,
