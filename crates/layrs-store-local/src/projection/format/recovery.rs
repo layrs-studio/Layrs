@@ -40,6 +40,10 @@ impl ProjectionStore {
     ) -> Result<ProjectionRecovery> {
         ProjectionRecovery::open(root.as_ref(), expected)
     }
+    /// Recovers a shared family journal only after the private database passes
+    /// complete ordinary validation on a read-only connection. A shared
+    /// private hot journal cannot supply that proof and is refused. Legacy
+    /// unshared worktrees retain explicit private database recovery.
     pub fn recover_databases(
         root: impl AsRef<Path>,
         expected: &RecoveryBinding,
@@ -117,6 +121,21 @@ fn inspect(
     // All filesystem boundaries, including both database inodes, precede any
     // SQLite query and therefore any classification of its typed error.
     verify()?;
+    if recover && family.is_some() {
+        // The family catalog opener below may settle a hot journal. First
+        // establish ordinary ownership from the complete private database on
+        // a strictly read-only connection, while the bound owner/lifecycle
+        // locks and both filesystem pins are held. A private hot journal cannot
+        // reveal its backend and must refuse before either writable fallback.
+        // Nonshared legacy worktrees have no provider backend and retain their
+        // explicit recovery path.
+        drop(database::read_owner_readonly(
+            &path.join(DATABASE),
+            &store.marker,
+            &pin,
+        )?);
+        verify()?;
+    }
     let mut reasons = Vec::new();
     if let Some(lease) = &family {
         let catalog = match lease.inspection_catalog(recover) {
@@ -148,7 +167,7 @@ fn inspect(
         }
     }
     let read = || -> Result<rusqlite::Connection> {
-        if recover {
+        if recover && family.is_none() {
             database::read_owner_with_recovery(&path.join(DATABASE), &store.marker, &pin)
         } else {
             let c = database::connect(&path.join(DATABASE), false)?;

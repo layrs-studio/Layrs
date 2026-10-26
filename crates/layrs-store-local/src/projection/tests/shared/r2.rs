@@ -464,6 +464,16 @@ fn sqlite_spill_child() {
             )
             .unwrap();
         }
+    } else if mode == "nonshared-owner" {
+        // Schema6 has neither claims nor observations. Spill through an
+        // existing legacy table; all these rows disappear on rollback.
+        for i in 0..128 {
+            c.execute(
+                "INSERT INTO projection_capture_files(file_id,bytes) VALUES(?1,?2)",
+                rusqlite::params![format!("blake3:{i:064x}"), vec![9u8; 65536]],
+            )
+            .unwrap();
+        }
     } else {
         c.execute("DELETE FROM projection_claims", []).unwrap();
         if mode == "provider-owner" {
@@ -549,7 +559,7 @@ fn killed_catalog_spill_recovers_once_under_bound_exclusive_catalog_lock() {
     store.fsck().unwrap();
 }
 #[test]
-fn killed_owner_spill_recovers_under_lifecycle_and_owner_locks_without_losing_claims() {
+fn killed_owner_spill_refuses_recovery_without_losing_claims() {
     let f = Fixture::new();
     let family = family(&f);
     let store = member(&f, &family, "a", true);
@@ -560,14 +570,17 @@ fn killed_owner_spill_recovers_under_lifecycle_and_owner_locks_without_losing_cl
         .join("projection.sqlite3");
     kill_spilled_writer(&path, "owner", &f.0.join("ready"));
     let spilled = fs::read(&path).unwrap();
+    let journal = PathBuf::from(format!("{}-journal", path.display()));
+    let spilled_journal = fs::read(&journal).unwrap();
     let discovery = ProjectionStore::inspect_recovery(store.checkout_root()).unwrap();
     assert_eq!(
         discovery.recovery,
         vec![ProjectionRecoveryReason::WorktreeRollback]
     );
     assert_unchanged_database(&fs::read(&path).unwrap(), &spilled);
-    family.reconcile_retention().unwrap();
-    family.evict_unretained().unwrap();
-    store.captured_patch(1).unwrap();
-    store.fsck().unwrap();
+    assert!(ProjectionStore::recover_databases(store.checkout_root(), &discovery.binding).is_err());
+    assert!(family.reconcile_retention().is_err());
+    assert!(family.evict_unretained().is_err());
+    assert_unchanged_database(&fs::read(&path).unwrap(), &spilled);
+    assert_unchanged_database(&fs::read(&journal).unwrap(), &spilled_journal);
 }

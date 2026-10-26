@@ -48,6 +48,10 @@ impl ProviderPreparedOpenFailure {
 }
 
 impl ProviderPreparedReopened {
+    /// Activates this durably reopened prepared owner under Store writer gates.
+    pub fn activate(self) -> ProviderActivationOutcome {
+        activation::activate(self.held, self.root, self.record, None)
+    }
     pub fn root(&self) -> &Path {
         self.root.root()
     }
@@ -127,7 +131,7 @@ fn open(
     let guard = match artifacts.retain_control().map_err(report::Failure::from)? {
         RetainedControl::Final(guard) => guard,
         RetainedControl::Stage(_) => {
-            return Err(invalid("reopen requires final control directory").into())
+            return Err(invalid("reopen requires final control directory").into());
         }
     };
     guard

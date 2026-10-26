@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 // Keep the exact v5 fingerprint for non-destructive legacy validation. Current
 // databases append selection::SQL and set user_version=6 in one transaction.
@@ -145,6 +145,20 @@ pub(super) fn read_owner_with_recovery(
         }
         result => result,
     }
+}
+
+/// Family maintenance cannot know whether an owner is ordinary until its full
+/// private validation succeeds. A hot journal therefore blocks reclamation;
+/// explicit ordinary recovery remains available through the existing opener.
+pub(super) fn read_owner_readonly(
+    path: &Path,
+    marker: &format::Marker,
+    pin: &super::file::DatabasePin,
+) -> Result<Connection> {
+    let c = connect(path, false)?;
+    validate(&c, marker)?;
+    pin.verify(path)?;
+    Ok(c)
 }
 pub(super) fn schema(c: &Connection) -> Result<Vec<(String, String, String)>> {
     let (count,bytes):(u64,u64)=c.query_row("SELECT COUNT(*),COALESCE(SUM(length(sql)),0) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",[],|r|Ok((r.get(0)?,r.get(1)?)))?;

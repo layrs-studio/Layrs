@@ -25,6 +25,12 @@ pub use provider::{
 };
 #[cfg(windows)]
 pub use provider::{
+    ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
+    ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
+    ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
+    ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
+    ProviderActiveOpenFailure, ProviderActiveReopened, ProviderActiveRangeFailure,
+    ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
     ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
     ProviderBootstrapSource, ProviderSourceDescriptor,
     ProviderBootstrapCatalog, ProviderCatalogDescriptor,

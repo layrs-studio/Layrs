@@ -76,22 +76,34 @@ fn inspected_binding_refuses_independently_valid_replacement_even_with_same_logi
         assert!(ProjectionStore::recover_databases(&root, &a_binding).is_err());
         assert!(ProjectionStore::resume_initialization(&root, &a_binding).is_err());
         r2::assert_unchanged_database(&fs::read(&db).unwrap(), &before);
-        let recovered = ProjectionStore::recover_databases(&root, &b.binding).unwrap();
-        assert_eq!(
-            recovered.recovery,
-            vec![ProjectionRecoveryReason::Initializing]
-        );
-        assert!(
-            ProjectionStore::resume_initialization(&root, &b.binding)
-                .unwrap()
-                .recovery
-                .is_empty()
-        );
+        // Even the correct identity cannot prove an ordinary backend through
+        // a hot shared private database. Preserve the interrupted replacement.
+        let journal = PathBuf::from(format!("{}-journal", db.display()));
+        let journal_before = fs::read(&journal).unwrap();
+        assert!(ProjectionStore::recover_databases(&root, &b.binding).is_err());
+        r2::assert_unchanged_database(&fs::read(&db).unwrap(), &before);
+        assert_eq!(fs::read(&journal).unwrap(), journal_before);
         assert_eq!(
             fs::read(retained.join("user-data")).unwrap(),
             b"original user data"
         );
     }
+}
+
+#[test]
+fn nonshared_ordinary_hot_private_retains_explicit_recovery() {
+    let f = Fixture::new();
+    let store = ProjectionStore::create(&f.0, identity(), snapshot()).unwrap();
+    let db = f.0.join(".layrs/metadata/projection.sqlite3");
+    r2::kill_spilled_writer(&db, "nonshared-owner", &f.0.join("ready"));
+    let before = fs::read(&db).unwrap();
+    let inspection = ProjectionStore::inspect_recovery(&f.0).unwrap();
+    assert!(!inspection.shared);
+    assert_eq!(inspection.recovery, vec![ProjectionRecoveryReason::WorktreeRollback]);
+    r2::assert_unchanged_database(&fs::read(&db).unwrap(), &before);
+    let recovered = ProjectionStore::recover_databases(&f.0, &inspection.binding).unwrap();
+    assert!(recovered.recovery.is_empty());
+    store.fsck().unwrap();
 }
 
 #[test]

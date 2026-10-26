@@ -5,6 +5,12 @@ use super::*;
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
+    ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
+    ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
+    ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
+    ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
+    ProviderActiveOpenFailure, ProviderActiveReopened, ProviderActiveRangeFailure,
+    ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
     ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
     ProviderBootstrapCatalog, ProviderCatalogDescriptor,
     ProviderBootstrapAttempt,

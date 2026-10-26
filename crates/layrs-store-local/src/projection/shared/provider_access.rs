@@ -4,7 +4,7 @@ use super::*;
 use crate::projection::provider::{
     database_io::{self, DatabaseFile},
     records::AllocationRecord,
-    recovery::error::{invalid as provider_invalid, Result as ProviderResult},
+    recovery::error::{Result as ProviderResult, invalid as provider_invalid},
 };
 use std::{ffi::OsStr, fs::File};
 
@@ -27,7 +27,29 @@ pub(in crate::projection) enum Registration {
     Initializing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum ActivationRegistration {
+    Initializing,
+    Ready,
+}
+
+enum CatalogRegistration {
+    Absent,
+    Initializing,
+    Ready,
+}
+
 impl FamilyAccess {
+    /// Hold a shared lifecycle gate for the entire native callback lifetime.
+    /// Short read operations may acquire another shared gate with it held.
+    pub(in crate::projection) fn lifecycle_lease(&self) -> ProviderResult<StoreLock> {
+        let lease = StoreLock::acquire_existing(
+            &self.root().join("metadata/lifecycle.lock"),
+            SessionMode::Shared,
+        )?;
+        self.verify()?;
+        Ok(lease)
+    }
     pub(in crate::projection) fn open(root: &Path) -> ProviderResult<Self> {
         let family = PartialStoreFamily::read_bound(root)?; // filesystem only
         let root_pin = PinnedDirectory::open(&family.root)?;
@@ -133,7 +155,7 @@ impl FamilyAccess {
         c: &Connection,
         a: &AllocationRecord,
     ) -> ProviderResult<Registration> {
-        self.validate_catalog_inner(c, a, None)
+        self.validate_bootstrap_catalog(c, a, None)
     }
 
     pub(in crate::projection) fn validate_catalog_cancellable(
@@ -142,7 +164,41 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: &layrs_vfs::Cancellation,
     ) -> ProviderResult<Registration> {
-        self.validate_catalog_inner(c, a, Some(cancel))
+        self.validate_bootstrap_catalog(c, a, Some(cancel))
+    }
+
+    fn validate_bootstrap_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<Registration> {
+        match self.validate_catalog_inner(c, a, cancel, false)? {
+            CatalogRegistration::Absent => Ok(Registration::Absent),
+            CatalogRegistration::Initializing => Ok(Registration::Initializing),
+            CatalogRegistration::Ready => Err(provider_invalid(
+                "bootstrap catalog cannot accept ready ownership",
+            )),
+        }
+    }
+
+    /// Complete family interpretation for activation, under the caller's one
+    /// catalog gate and SQL transaction. A ready registry row alone grants no
+    /// capability: the caller must also validate the exact private activation.
+    /// This initial active phase still excludes all target-owned content claims.
+    pub(in crate::projection) fn validate_activation_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(c, a, cancel, true)? {
+            CatalogRegistration::Initializing => Ok(ActivationRegistration::Initializing),
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            CatalogRegistration::Absent => Err(provider_invalid(
+                "activation requires the exact registered family owner",
+            )),
+        }
     }
 
     fn validate_catalog_inner(
@@ -150,7 +206,8 @@ impl FamilyAccess {
         c: &Connection,
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
-    ) -> ProviderResult<Registration> {
+        allow_ready: bool,
+    ) -> ProviderResult<CatalogRegistration> {
         crate::projection::provider::cancellation::check(cancel)?;
         let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version != 1 {
@@ -226,14 +283,18 @@ impl FamilyAccess {
             )
             .optional()?;
         let registration = match target {
-            None => Registration::Absent,
+            None => CatalogRegistration::Absent,
             Some((path, id, marker, state))
                 if path == a.private.metadata_path
                     && id == a.private.database_file_identity
                     && marker == a.format.bytes()?
-                    && state == "initializing" =>
+                    && (state == "initializing" || (allow_ready && state == "ready")) =>
             {
-                Registration::Initializing
+                if state == "ready" {
+                    CatalogRegistration::Ready
+                } else {
+                    CatalogRegistration::Initializing
+                }
             }
             Some(_) => {
                 return Err(provider_invalid(

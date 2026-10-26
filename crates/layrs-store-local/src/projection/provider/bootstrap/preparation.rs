@@ -1,5 +1,6 @@
 //! Consuming source-free provider preparation. A failed attempt retains the
 //! original Store pins and any completed native proof in a withheld holder.
+pub(super) mod activation;
 mod ranges;
 mod reopen;
 mod report;
@@ -13,6 +14,14 @@ use crate::projection::provider::records::preparation::{
 };
 use std::{path::Path, sync::Arc};
 
+pub use activation::{
+    ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
+    ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
+    ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
+    ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
+    ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
+    ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+};
 pub use ranges::ProviderRangeFailure;
 pub use reopen::{ProviderPreparedOpenFailure, ProviderPreparedReopened};
 pub use report::{
@@ -47,6 +56,10 @@ pub struct ProviderPreparationWithheld {
 }
 
 impl ProviderPrepared {
+    /// Consumes the prepared owner while advancing the fixed source to generation one.
+    pub fn activate(self) -> ProviderActivationOutcome {
+        activation::activate(self.held, self.root, self.record, None)
+    }
     pub fn root(&self) -> &Path {
         self.root.root()
     }
@@ -179,7 +192,7 @@ impl ProviderControlPublished {
                 _ => {
                     return Err(report::Failure::private(invalid(
                         "preparation requires published private mount",
-                    )))
+                    )));
                 }
             };
             source

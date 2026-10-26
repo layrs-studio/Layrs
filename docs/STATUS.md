@@ -1,5 +1,27 @@
 # État courant de Layrs
 
+## Activation et callbacks locaux du 26 octobre 2026
+
+L’activation écrit maintenant la génération 1 et sa correspondance exacte avec
+la source immuable, puis rend le membre familial Ready. Elle conserve les pins
+et les effets confirmés après refus. La réouverture Active et la reprise depuis
+le disque ne recréent aucun placeholder. Une session distincte sert le contenu
+local vérifié ; ses callbacks ne téléchargent rien.
+
+Les binaires conservés r1/r2/r3 passent respectivement **9, 13 et 9 recettes
+isolées**. Le dernier comprend deux vrais callbacks Windows avec lecteur externe
+et cinq régressions ordinaires ; **83 tests purs** passent sur ce binaire. Les
+13 tests SQL d’activation passent dans r1. Le
+[checkpoint d’activation](plans/worktrees-partial-vfs-activation-checkpoint.md)
+distingue précisément ces preuves et les limites.
+
+La récupération shared privée chaude est désormais refusée sans modification
+quand le backend ne peut pas être prouvé en lecture seule. La récupération
+familiale avec privé ordinary lisible reste testée. La nouvelle fixture de
+récupération nonshared est en cours de correction/qualification. La capture
+provider est en développement ; les transitions managed/companion, l’expansion
+de sélection et l’intégration produit restent à terminer. Le chantier continue.
+
 ## Réouverture et lectures locales du 26 octobre 2026
 
 Le détenteur préparé se rouvre maintenant en lecture seule sans recréer les

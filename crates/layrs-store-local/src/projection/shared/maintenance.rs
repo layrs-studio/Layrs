@@ -93,7 +93,7 @@ impl PartialStoreFamily {
     }
 }
 fn reconcile(lease: &Lease) -> Result<u64> {
-    let catalog = lease.catalog(false)?;
+    let catalog = lease.inspection_catalog(false)?;
     let mut query=catalog.connection.prepare("SELECT id,metadata_path,database_identity,marker,state FROM worktrees ORDER BY id LIMIT 16385")?;
     let owners = query
         .query_map([], |r| {
@@ -148,7 +148,7 @@ fn reconcile(lease: &Lease) -> Result<u64> {
             SessionMode::Exclusive,
         )
         .map_err(invalid)?;
-        let c = database::read_owner_with_recovery(
+        let c = database::read_owner_readonly(
             &binding.metadata_path.join("projection.sqlite3"),
             &marker,
             &pin,
@@ -189,7 +189,7 @@ fn reconcile(lease: &Lease) -> Result<u64> {
     // All owners were readable under the exclusive lifecycle. A reservation with
     // no private budget/preparation cannot still be acquiring. Recover only its
     // authenticated shared installation intents before releasing its charge.
-    let catalog = lease.catalog(false)?;
+    let catalog = lease.inspection_catalog(false)?;
     let mut q = catalog
         .connection
         .prepare("SELECT id,owner FROM reservations ORDER BY id LIMIT 16385")?;

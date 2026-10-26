@@ -441,7 +441,7 @@ impl Snapshot {
 }
 
 #[test]
-fn killed_upgrade_process_recovers_exact_schema_and_preserves_accepted_work() {
+fn killed_upgrade_process_recovers_readable_or_preserves_hot_private_work() {
     for point in [
         ProviderSchemaUpgradePoint::SchemaCreated,
         ProviderSchemaUpgradePoint::BeforeCommit,
@@ -511,6 +511,27 @@ fn killed_upgrade_process_recovers_exact_schema_and_preserves_accepted_work() {
             assert!(!journal.exists());
         }
         assert_eq!(inspection.binding, before.binding);
+        if inspection
+            .recovery
+            .contains(&ProjectionRecoveryReason::WorktreeRollback)
+        {
+            // A shared private hot journal has no validated backend yet.
+            // Explicit database recovery must leave both files untouched.
+            assert!(
+                ProjectionStore::recover_databases(store.checkout_root(), &inspection.binding)
+                    .is_err()
+            );
+            assert_bytes(&db(&store), &interrupted);
+            assert_bytes(
+                &journal,
+                journal_bytes.as_ref().expect("hot rollback journal"),
+            );
+            assert_eq!(
+                ProjectionStore::inspect_recovery(store.checkout_root()).unwrap(),
+                inspection
+            );
+            continue;
+        }
         if !inspection.recovery.is_empty() {
             assert!(inspection.recovery.iter().all(|reason| matches!(
                 reason,

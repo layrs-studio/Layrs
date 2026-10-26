@@ -183,18 +183,22 @@ owned!(
             == Step::NativePopulation
             && effect.state == State::Confirmed));
         for phase in [Phase::RegistrationPending, Phase::ProviderPrepared] {
-            assert!(prepared
-                .report()
-                .effects
-                .iter()
-                .any(|effect| effect.step == Step::SqlCommit(phase)
-                    && effect.state == State::Confirmed));
-            assert!(prepared
-                .report()
-                .effects
-                .iter()
-                .any(|effect| effect.step == Step::SqlClose(phase)
-                    && effect.state == State::Confirmed));
+            assert!(
+                prepared
+                    .report()
+                    .effects
+                    .iter()
+                    .any(|effect| effect.step == Step::SqlCommit(phase)
+                        && effect.state == State::Confirmed)
+            );
+            assert!(
+                prepared
+                    .report()
+                    .effects
+                    .iter()
+                    .any(|effect| effect.step == Step::SqlClose(phase)
+                        && effect.state == State::Confirmed)
+            );
         }
         assert!(fs::metadata(f.checkout.join("README.md")).unwrap().len() > 0);
         assert_eq!(resident_content_counts(&f), vec![0; 7]);
@@ -293,11 +297,13 @@ owned!(prepared_cas_refuses_changed_pending_row, 240, {
         Step::SqlOpen(Phase::ProviderPrepared),
         State::Confirmed
     ));
-    assert!(!failure
-        .write_report
-        .effects
-        .iter()
-        .any(|effect| effect.step == Step::SqlCommit(Phase::ProviderPrepared)));
+    assert!(
+        !failure
+            .write_report
+            .effects
+            .iter()
+            .any(|effect| effect.step == Step::SqlCommit(Phase::ProviderPrepared))
+    );
     assert_eq!(state(&f), "control_published");
 });
 

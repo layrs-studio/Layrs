@@ -79,9 +79,10 @@ fn assert_source(
             &row.manifest_id
         );
     }
-    assert!(view
-        .descriptor(&RepoPath::parse("absent.txt").unwrap())
-        .is_none());
+    assert!(
+        view.descriptor(&RepoPath::parse("absent.txt").unwrap())
+            .is_none()
+    );
 }
 
 fn invalid_message(cause: &Cause) -> Option<&str> {
@@ -241,13 +242,15 @@ owned_catalog!(published_catalog_exact_and_cold, 180, {
     let view = published.bootstrap_catalog().unwrap();
     assert_source(&view, &source);
     assert!(view.descriptors().next().unwrap().byte_length() > 0);
-    assert!(!view
-        .descriptors()
-        .next()
-        .unwrap()
-        .manifest()
-        .chunks()
-        .is_empty());
+    assert!(
+        !view
+            .descriptors()
+            .next()
+            .unwrap()
+            .manifest()
+            .chunks()
+            .is_empty()
+    );
     assert_eq!(
         view.binding().encode().unwrap(),
         published.binding().encode().unwrap()
@@ -278,13 +281,15 @@ owned_catalog!(resumed_catalog_is_same_without_reinitialization, 180, {
     assert_source(&view, &Fixture::source());
     assert_eq!(view.catalog_id(), catalog_id);
     assert_eq!(view.source_digest(), source_digest);
-    assert!(resumed
-        .inspection()
-        .write_report
-        .as_ref()
-        .unwrap()
-        .effects
-        .is_empty());
+    assert!(
+        resumed
+            .inspection()
+            .write_report
+            .as_ref()
+            .unwrap()
+            .effects
+            .is_empty()
+    );
     assert_eq!(before, f.witness());
     assert!(hooks::events().is_empty());
 });
@@ -364,36 +369,36 @@ owned_catalog!(
     240,
     {
         for (statement, expected) in [
-        (
-            "DELETE FROM projection_provider_descriptors",
-            "missing or unsupported selected source descriptor",
-        ),
-        (
-            "INSERT INTO projection_provider_descriptors SELECT catalog_id,'zzz.md',file_id,bytes,executable,manifest_id,manifest FROM projection_provider_descriptors",
-            "extra source descriptor",
-        ),
-        (
-            "UPDATE projection_provider_descriptors SET manifest_id='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
-            "provider descriptor row projection/order differs",
-        ),
-        (
-            "UPDATE projection_provider_catalogs SET selection_digest=lower(hex(zeroblob(32)))",
-            "provider catalog row projection differs",
-        ),
-    ] {
-        let f = Fixture::new();
-        let published = f.published();
-        let view = published.bootstrap_catalog().unwrap();
-        sql(&f.metadata.join("projection.sqlite3"), statement);
-        let before = f.witness();
-        hooks::reset();
-        let error = failure(published.bootstrap_catalog());
-        assert_retained_read_failure(&published, &error, expected);
-        let error = failure(view.revalidate());
-        assert_retained_read_failure(&published, &error, expected);
-        assert_eq!(before, f.witness());
-        assert!(hooks::events().is_empty());
-    }
+            (
+                "DELETE FROM projection_provider_descriptors",
+                "missing or unsupported selected source descriptor",
+            ),
+            (
+                "INSERT INTO projection_provider_descriptors SELECT catalog_id,'zzz.md',file_id,bytes,executable,manifest_id,manifest FROM projection_provider_descriptors",
+                "extra source descriptor",
+            ),
+            (
+                "UPDATE projection_provider_descriptors SET manifest_id='blake3:0000000000000000000000000000000000000000000000000000000000000000'",
+                "provider descriptor row projection/order differs",
+            ),
+            (
+                "UPDATE projection_provider_catalogs SET selection_digest=lower(hex(zeroblob(32)))",
+                "provider catalog row projection differs",
+            ),
+        ] {
+            let f = Fixture::new();
+            let published = f.published();
+            let view = published.bootstrap_catalog().unwrap();
+            sql(&f.metadata.join("projection.sqlite3"), statement);
+            let before = f.witness();
+            hooks::reset();
+            let error = failure(published.bootstrap_catalog());
+            assert_retained_read_failure(&published, &error, expected);
+            let error = failure(view.revalidate());
+            assert_retained_read_failure(&published, &error, expected);
+            assert_eq!(before, f.witness());
+            assert!(hooks::events().is_empty());
+        }
     }
 );
 
@@ -614,10 +619,12 @@ observed_catalog!(readonly_close_busy_preserves_cause_and_stops, 180, f, {
     let boundary = close_boundary
         .get()
         .expect("read-only connection reached close");
-    assert!(writer_observer::events()
-        .into_iter()
-        .skip(boundary)
-        .all(|(op, _, _)| op != "open"));
+    assert!(
+        writer_observer::events()
+            .into_iter()
+            .skip(boundary)
+            .all(|(op, _, _)| op != "open")
+    );
     let Cause::Cleanup { close, .. } = &error.cause else {
         panic!("observable close failure must preserve cleanup cause: {error:?}")
     };

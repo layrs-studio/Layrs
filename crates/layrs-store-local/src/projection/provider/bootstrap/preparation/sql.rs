@@ -1,7 +1,7 @@
 //! Two exact private metadata CAS transitions. Caller continuously owns the
 //! lifecycle/owner/catalog gates and the authenticated A/P/control pins.
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 #[derive(Clone, Copy)]
 pub(super) enum Predecessor<'a> {
@@ -125,7 +125,7 @@ pub(super) fn transition(
         _ => {
             return Err(report::Failure::private(invalid(
                 "invalid provider preparation transition",
-            )))
+            )));
         }
     };
     boundary(held, native).map_err(report::Failure::private)?;

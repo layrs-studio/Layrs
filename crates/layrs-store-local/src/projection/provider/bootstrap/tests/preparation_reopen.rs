@@ -199,8 +199,8 @@ owned!(
     240,
     {
         use super::super::super::records::{
-            preparation::{PreparationState, ProviderPreparationRecord},
             Receipt,
+            preparation::{PreparationState, ProviderPreparationRecord},
         };
         let f = Fixture::new();
         let (expected, prepared) = prepare(&f, false, 0x68);

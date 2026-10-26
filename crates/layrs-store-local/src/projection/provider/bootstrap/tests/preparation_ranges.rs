@@ -4,7 +4,7 @@ use super::*;
 use layrs_core::{
     projection::{AvailabilityRequest, OfflineOperation},
     scm::{
-        canonical_json, Chunk, ChunkingDescriptor, FileChunk, FileManifest, RepoPath, WorktreeId,
+        Chunk, ChunkingDescriptor, FileChunk, FileManifest, RepoPath, WorktreeId, canonical_json,
     },
 };
 use layrs_vfs::Cancellation;

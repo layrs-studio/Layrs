@@ -317,7 +317,7 @@ impl CreationFaults for StopCreation {
 }
 
 #[test]
-fn initializing_hot_owner_is_discovered_without_writes_and_resumes_from_private_bootstrap() {
+fn initializing_hot_owner_is_discovered_but_recovery_refuses_private_rollback() {
     let f = Fixture::new();
     let family = family(&f);
     let root = f.0.join("a");
@@ -337,6 +337,8 @@ fn initializing_hot_owner_is_discovered_without_writes_and_resumes_from_private_
     let db = family.member_metadata(&id).join("projection.sqlite3");
     r2::kill_spilled_writer(&db, "owner", &f.0.join("ready"));
     let spilled = fs::read(&db).unwrap();
+    let journal = PathBuf::from(format!("{}-journal", db.display()));
+    let spilled_journal = fs::read(&journal).unwrap();
     let inspection = ProjectionStore::inspect_recovery(&root).unwrap();
     assert_eq!(
         inspection.recovery,
@@ -347,33 +349,18 @@ fn initializing_hot_owner_is_discovered_without_writes_and_resumes_from_private_
     );
     assert!(ProjectionStore::resume_initialization(&root, &inspection.binding).is_err());
     r2::assert_unchanged_database(&fs::read(&db).unwrap(), &spilled);
-    let recovered = ProjectionStore::recover_databases(&root, &inspection.binding).unwrap();
+    assert!(ProjectionStore::recover_databases(&root, &inspection.binding).is_err());
+    assert!(ProjectionStore::resume_initialization(&root, &inspection.binding).is_err());
+    r2::assert_unchanged_database(&fs::read(&db).unwrap(), &spilled);
+    r2::assert_unchanged_database(&fs::read(&journal).unwrap(), &spilled_journal);
     assert_eq!(
-        recovered.recovery,
-        vec![ProjectionRecoveryReason::Initializing]
+        ProjectionStore::inspect_recovery(&root).unwrap(),
+        inspection
     );
-    let before_resume = fs::read(&db).unwrap();
-    assert_eq!(ProjectionStore::inspect_recovery(&root).unwrap(), recovered);
-    r2::assert_unchanged_database(&fs::read(&db).unwrap(), &before_resume);
-    assert!(
-        ProjectionStore::resume_initialization(&root, &inspection.binding)
-            .unwrap()
-            .recovery
-            .is_empty()
-    );
-    assert!(
-        ProjectionStore::resume_initialization(&root, &inspection.binding)
-            .unwrap()
-            .recovery
-            .is_empty()
-    );
-    let store = ProjectionStore::open(&root).unwrap();
-    assert_eq!(store.state().unwrap().generation, 0);
-    assert_eq!(store.state().unwrap().snapshot, hydration().0);
 }
 
 #[test]
-fn unready_conversion_hot_owner_is_readonly_discoverable_and_abandon_keeps_source_and_files() {
+fn unready_conversion_hot_owner_refuses_recovery_and_preserves_source_and_files() {
     let f = Fixture::new();
     let family = family(&f);
     let source_root = f.0.join("source");
@@ -399,6 +386,8 @@ fn unready_conversion_hot_owner_is_readonly_discoverable_and_abandon_keeps_sourc
     let db = family.member_metadata(&id).join("projection.sqlite3");
     r2::kill_spilled_writer(&db, "owner", &f.0.join("ready"));
     let spilled = fs::read(&db).unwrap();
+    let journal = PathBuf::from(format!("{}-journal", db.display()));
+    let spilled_journal = fs::read(&journal).unwrap();
     let inspection = ProjectionStore::inspect_recovery(&destination).unwrap();
     assert!(
         inspection
@@ -406,16 +395,14 @@ fn unready_conversion_hot_owner_is_readonly_discoverable_and_abandon_keeps_sourc
             .contains(&ProjectionRecoveryReason::WorktreeRollback)
     );
     r2::assert_unchanged_database(&fs::read(&db).unwrap(), &spilled);
-    let recovered = ProjectionStore::recover_databases(&destination, &inspection.binding).unwrap();
-    assert_eq!(
-        recovered.recovery,
-        vec![
-            ProjectionRecoveryReason::Initializing,
-            ProjectionRecoveryReason::Conversion
-        ]
-    );
+    assert!(ProjectionStore::recover_databases(&destination, &inspection.binding).is_err());
     assert!(ProjectionStore::resume_initialization(&destination, &inspection.binding).is_err());
-    family.abandon_conversion(&destination).unwrap();
+    r2::assert_unchanged_database(&fs::read(&db).unwrap(), &spilled);
+    r2::assert_unchanged_database(&fs::read(&journal).unwrap(), &spilled_journal);
+    assert_eq!(
+        ProjectionStore::inspect_recovery(&destination).unwrap(),
+        inspection
+    );
     r2::assert_unchanged_database(&fs::read(&source_db).unwrap(), &source_bytes);
     assert_eq!(fs::read(source_root.join("a.txt")).unwrap(), b"alpha");
     assert_eq!(fs::read(destination.join("a.txt")).unwrap(), b"alpha");

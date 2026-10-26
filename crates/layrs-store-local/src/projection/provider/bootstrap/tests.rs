@@ -1,15 +1,19 @@
 //! SOURCE RECIPES ONLY until ROOT compiles/reviews/releases a serial queue.
 use super::super::process_profile::tests::child;
 use super::*;
+mod activation;
+mod activation_maintenance;
+mod activation_reopen;
+mod activation_session;
 mod catalog;
 mod fixture;
-mod preparation;
-mod preparation_reopen;
-mod preparation_ranges;
 pub(super) mod hooks;
+mod preparation;
+mod preparation_ranges;
+mod preparation_reopen;
 pub(super) mod process;
 mod recipes;
-use fixture::{failure, has, Fixture};
+use fixture::{Fixture, failure, has};
 use std::path::PathBuf;
 
 fn attempt() -> ProviderBootstrapAttempt {
@@ -601,3 +605,5 @@ fn writer_adapters_preserve_nested_cleanup_history() {
     }
     assert!(started.elapsed() < std::time::Duration::from_secs(30));
 }
+
+mod activation_ranges;
