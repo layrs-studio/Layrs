@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Reprise de capture après arrêt brutal
+
+Deux recettes natives arrêtent réellement le processus de capture après Staging,
+puis après Accepted avant sa réponse. Un autre processus reprend avec le binding
+A/P fixé avant l’arrêt. Les deux passent : une capture, un reçu, une protection,
+quota libéré et octets du checkout conservés. Le
+[checkpoint de capture](plans/worktrees-partial-vfs-capture-checkpoint.md)
+conserve le binaire et les limites ; le cut intermédiaire installation/protection,
+les fermetures incertaines et la coupure électrique restent non qualifiés.
+
 ## Lecture d’historique importé et statut provider
 
 La lecture des captures et publications peut vérifier une origine héritée sans

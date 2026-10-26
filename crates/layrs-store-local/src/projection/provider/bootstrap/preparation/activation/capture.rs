@@ -197,6 +197,8 @@ pub(super) fn run(
                     held, root, mount, activation, &record, &next, checkpoint, &mut Close,
                 )?;
                 record = next;
+                #[cfg(test)]
+                tests::crash::barrier("staging", held, root, mount, activation, &record);
             }
             ProviderCaptureState::Staging { stage } if stage == &proposed => {}
             _ => {
@@ -337,6 +339,8 @@ fn finish(
         held, root, mount, activation, record, &accepted, &receipt, &root_id, checkpoint,
         &mut Close,
     )?;
+    #[cfg(test)]
+    tests::crash::barrier("accepted", held, root, mount, activation, &accepted);
     *step = ProviderCaptureStep::ReservationRelease;
     release_and_acknowledge(
         held, root, mount, activation, checkpoint, attempt, &accepted,

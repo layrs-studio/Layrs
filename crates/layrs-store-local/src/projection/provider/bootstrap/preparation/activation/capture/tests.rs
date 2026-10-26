@@ -14,6 +14,9 @@ use layrs_vfs::{Catalog, SnapshotSource};
 use rusqlite::{Connection, OpenFlags};
 use std::{fs, sync::Arc};
 
+#[path = "tests/crash.rs"]
+pub(super) mod crash;
+
 fn remove_placeholder(path: &std::path::Path) {
     if fs::remove_file(path).is_err() {
         let mut permissions = fs::metadata(path).unwrap().permissions();

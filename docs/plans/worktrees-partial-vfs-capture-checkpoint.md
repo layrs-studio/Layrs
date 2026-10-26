@@ -46,6 +46,7 @@ source snapshots retain the exact Rust inputs for each executable.
 | `…-r4` | Cross-owner reservation refusal; preauthorized content engine; public empty capture, same-ID retry and new-ID deduplication with reservation release; four ordinary shared-content regressions | Cancellation fixture failed before its action: its ordinary bootstrap witness tried to cross the registered CFAPI checkout reparse point. The guard correctly refused. Queue stopped; remaining recipes were run freshly in r5. EXE `d197a83c8235f2298b764cdb26165943f0d9a0beca663f63ce3fe1dce623ae12`, PDB age 25. |
 | `…-r5` | Cancellation before writing with both ordinary metadata DB witnesses unchanged; writable creation on selected absence with durable reopen; constructed Staging/reservation resume, cancellation and subsequent capture | Only the cancellation witness changed from r4. Three native recipes pass. EXE `7825d404e94cd044f5e9d9f8a238d61118d5bd60fc144ff0ca52ef70ccad922e`, PDB age 26. |
 | `provider-capture-coverage-20261026-r1` | Replacement of a known writable nonempty placeholder followed by reopen; deletion preserving its expected base; protected mutation refused without Accepted history | Three fresh native recipes pass. The callback catalogue still resolves the original cold base and rejects the replacement FileId. EXE `af886e5ff08713756d83d316dc54789d7ea67021da8826c2a814e0a7c142bb0b`, PDB age 27. Two uncabled recovery-export draft files were retained in this source snapshot but were not compiled or qualified by this queue. |
+| `provider-capture-crash-20261026-r1` | Real owned-process termination after durable Staging, and after durable Accepted before quota release/acknowledgement; each resumes in another process with the exact pre-crash A/P binding | Both recipes pass. Replay has one patch, receipt, claim and content mapping; reservation is released and checkout bytes remain intact. EXE `f98a53add97e1a5c87d558edf785a2b9ca4da1f770d79004f22834c7ad4b9edb`, PDB age 31, 426 source inputs retained. The compiled import reader is unfinished and not qualified by this queue. |
 
 `provider-capture-pure-r8.log`: **97 passed**, 277 native recipes intentionally
 ignored, 226 other tests filtered. `provider-capture-workspace-check-r2.log`:
@@ -62,8 +63,16 @@ and the earlier host-audit limits continue to apply.
 
 ## Remaining work
 
-The constructed Staging prefixes are not process-crash or uncertain-close fault
-injection. This checkpoint does not qualify cancellation during installation,
+The earlier constructed Staging prefixes were not process-crash injection. The
+new crash recipes terminate only their owned child handles after observable SQL
+close and a complete private/family reread. Their barrier acknowledgement is
+written and synced to a pending file, then renamed before the parent observes it.
+The request and expected A/P binding are fixed before the crash; recovery does
+not adopt a binding from post-crash state. `provider-capture-crash-pure-r1.log`
+also records 111 passing provider pure tests, with 291 native recipes ignored.
+
+These two cuts do not qualify an uncertain commit/close, the intermediate
+installation/protection prefix, or cancellation during installation. Nor do they prove
 power loss, arbitrary concurrent external namespace mutation, forced callback
 disconnect, or a production host. The source caller must keep external namespace
 mutation quiescent for the checkpoint/acknowledgement interval.
