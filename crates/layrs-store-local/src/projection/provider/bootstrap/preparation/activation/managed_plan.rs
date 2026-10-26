@@ -216,6 +216,35 @@ fn rowset<T: Serialize>(domain: &[u8], rows: &[T]) -> Result<TransitionRowset> {
     })
 }
 
+/// Bind the exact supplied representations to the immutable planned union.
+/// This verifies metadata only, not bytes, family availability or write rights.
+pub(super) fn require_manifest_union(
+    plan: &TransitionPlan,
+    supplied: &[FileManifest],
+) -> Result<()> {
+    plan.digest()?;
+    if supplied.len() > MAX_MANIFESTS || supplied.len() as u64 != plan.protected_manifests.count {
+        return Err(invalid("managed manifest union cardinality differs"));
+    }
+    let mut required = BTreeMap::new();
+    let mut lengths = BTreeMap::new();
+    let mut owners = BTreeMap::new();
+    for manifest in supplied {
+        let row = RequiredManifest::from_manifest(manifest);
+        if required.contains_key(&(row.file_id.clone(), row.manifest_id.clone())) {
+            return Err(invalid(
+                "managed manifest union contains duplicate representation",
+            ));
+        }
+        insert_required(&mut required, &mut lengths, &mut owners, row)?;
+    }
+    let rows: Vec<_> = required.into_values().collect();
+    if rowset(MANIFEST_DOMAIN, &rows)? != plan.protected_manifests {
+        return Err(invalid("managed manifest union differs from plan"));
+    }
+    Ok(())
+}
+
 /// Pure kernel for offline fixtures. No object in the output is an authority
 /// proof: source history, manifest bytes and destination ownership stay external.
 #[allow(clippy::too_many_arguments)]

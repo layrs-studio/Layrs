@@ -23,6 +23,13 @@ use rusqlite::Connection;
 
 pub(in crate::projection::provider) struct EmptyIngress;
 pub(in crate::projection::provider) struct CopiedPrefix;
+pub(in crate::projection::provider) struct CopiedPrefixStaging;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IngressPhase {
+    Copying,
+    Staging,
+}
 
 pub(super) fn require_inputs(
     marker: &format::Marker,
@@ -32,6 +39,29 @@ pub(super) fn require_inputs(
     activation: &ProviderActivationRecord,
     prefix: &ProviderImportPrefixRecord,
     intent: &ProviderTransitionIntentRecord,
+) -> Result<()> {
+    require_inputs_for_phase(
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        IngressPhase::Copying,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn require_inputs_for_phase(
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    phase: IngressPhase,
 ) -> Result<()> {
     marker.validate()?;
     let source_identity = &allocation.format.identity;
@@ -79,9 +109,13 @@ pub(super) fn require_inputs(
         || intent.plan.source_prefix != *prefix
         || intent.plan.source_prefix_id != prefix.digest()?
         || intent.role != TransitionRole::Destination
-        || intent.state != TransitionState::Copying
+        || intent.state
+            != match phase {
+                IngressPhase::Copying => TransitionState::Copying,
+                IngressPhase::Staging => TransitionState::Staging,
+            }
         || intent.local_generation != 0
-        || intent.reservation.is_some()
+        || intent.reservation.is_some() != (phase == IngressPhase::Staging)
         || intent.receipt_id.is_some()
         || intent.destination.as_ref().is_none_or(|proof| {
             proof.backend != TransitionBackendKind::Ordinary
@@ -92,7 +126,7 @@ pub(super) fn require_inputs(
         })
     {
         return Err(invalid(
-            "destination Copying intent or source boundary differs",
+            "destination ingress intent or source boundary differs",
         ));
     }
     intent.validate_fields()?;
@@ -117,7 +151,17 @@ pub(in crate::projection::provider) fn read_empty(
     cancel: Option<&Cancellation>,
 ) -> Result<EmptyIngress> {
     read_state(
-        c, marker, source, allocation, prepared, activation, prefix, intent, None, cancel,
+        c,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        None,
+        IngressPhase::Copying,
+        cancel,
     )?;
     Ok(EmptyIngress)
 }
@@ -147,9 +191,41 @@ pub(in crate::projection::provider) fn read_copied(
         prefix,
         intent,
         Some(proof),
+        IngressPhase::Copying,
         cancel,
     )?;
     Ok(CopiedPrefix)
+}
+
+/// Exact copied immutable SQL while the destination reservation is durably
+/// declared but neither installed nor Ready. This remains DATA only.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn read_staging(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    proof: &VerifiedImportClosure,
+    cancel: Option<&Cancellation>,
+) -> Result<CopiedPrefixStaging> {
+    read_state(
+        c,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        Some(proof),
+        IngressPhase::Staging,
+        cancel,
+    )?;
+    Ok(CopiedPrefixStaging)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,6 +239,7 @@ fn read_state(
     prefix: &ProviderImportPrefixRecord,
     intent: &ProviderTransitionIntentRecord,
     copied: Option<&VerifiedImportClosure>,
+    phase: IngressPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
     cancellation::check(cancel)?;
@@ -170,8 +247,8 @@ fn read_state(
         return Err(invalid("destination ingress requires retained transaction"));
     }
     import_validation::require_schema(c, marker, ImportDatabaseKind::Provider, cancel)?;
-    require_inputs(
-        marker, source, allocation, prepared, activation, prefix, intent,
+    require_inputs_for_phase(
+        marker, source, allocation, prepared, activation, prefix, intent, phase,
     )?;
     for (kind, name, _) in database_io::schema_inventory(c)? {
         cancellation::check(cancel)?;
@@ -309,7 +386,7 @@ fn read_state(
         digest: &digest,
     })?;
     if &observed != intent {
-        return Err(invalid("destination intent differs from expected Copying"));
+        return Err(invalid("destination intent differs from expected phase"));
     }
     if let Some(proof) = copied {
         import_validation::require_exact_copied_rows(c, marker, prefix, proof, cancel)?;

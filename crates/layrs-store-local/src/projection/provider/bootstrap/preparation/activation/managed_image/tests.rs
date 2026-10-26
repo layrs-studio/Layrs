@@ -1,4 +1,29 @@
 use super::*;
+
+#[test]
+fn native_reader_provenance_survives_consumer_propagation() {
+    use crate::projection::provider::recovery::error::ProviderBootstrapCause as Cause;
+    let path = RepoPath::parse("README.md").unwrap();
+    let result = finish_native_copy(
+        Err(layrs_vfs::Error::ExportRead {
+            path: path.clone(),
+            backing: None,
+            cause: Box::new(layrs_vfs::Error::Io(io::Error::from_raw_os_error(30))),
+        }),
+        Some(Cause::Io(io::Error::from_raw_os_error(30))),
+    );
+    assert!(
+        matches!(result, Err(Cause::Vfs(layrs_vfs::Error::ExportRead { path: actual, .. })) if actual == path)
+    );
+    let result = finish_native_copy(
+        Err(layrs_vfs::Error::ExportConsumer {
+            path,
+            cause: Box::new(layrs_vfs::Error::Io(io::Error::other("sentinel"))),
+        }),
+        Some(Cause::Io(io::Error::new(io::ErrorKind::WriteZero, "sink"))),
+    );
+    assert!(matches!(result, Err(Cause::Io(error)) if error.kind() == io::ErrorKind::WriteZero));
+}
 use crate::projection::provider::{
     records::ProviderSourceDescriptor, validation::tests::fixture::Fixture,
 };
@@ -48,6 +73,34 @@ fn manifest(bytes: &[u8]) -> FileManifest {
         &[Chunk::new(bytes.to_vec()).unwrap()],
     )
     .unwrap()
+}
+
+#[test]
+fn exact_file_selection_rejects_another_manifest_for_same_file_id() {
+    let authentic = manifest(b"same file identity");
+    let false_chunk = FileChunk::new(
+        ChunkId::parse(format!("blake3:{}", "0".repeat(64))).unwrap(),
+        0,
+        authentic.byte_length(),
+    )
+    .unwrap();
+    let forged = FileManifest::new(
+        authentic.file_id().clone(),
+        authentic.byte_length(),
+        authentic.chunking().clone(),
+        vec![false_chunk],
+    )
+    .unwrap();
+    let path = RepoPath::parse("README.md").unwrap();
+    let files = [ManagedFile {
+        path: path.clone(),
+        manifest: ManagedManifest::Native(authentic.clone()),
+        executable: false,
+        expected: None,
+    }];
+    assert!(exact_file(&files, &path, &authentic).is_ok());
+    assert!(exact_file(&files, &path, &forged).is_err());
+    assert!(exact_file(&files, &RepoPath::parse("other.txt").unwrap(), &authentic).is_err());
 }
 
 #[test]

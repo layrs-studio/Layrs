@@ -186,6 +186,40 @@ A nonzero SQLite header with version-zero empty schema after interrupted
 initialization remains refused in this slice. These recipes do not qualify
 restart recovery, hot-journal recovery or a genuine SQLite close failure.
 
+## Exact byte transfer and SQL Staging
+
+`VerifiedManagedImage::copy_exact_file` resolves only an exact path and manifest
+from its retained current image. It transfers at most 64 KiB per read, checks
+each chunk and the complete FileId, and revalidates the checkpoint namespace.
+Native readers remain inside the checkpoint closure; immutable reads retain
+the same SnapshotSource. A partial sink is possible on failure and must remain
+unpublished. Historical bytes absent from the image are not supplied by this
+API. Reader failures retain ExportRead path/backing provenance; checksum,
+cancellation and output failures keep their original consumer cause.
+
+`managed_plan::require_manifest_union` binds the exact supplied representations
+to the planned ordered count/digest, rejecting duplicates, omissions and
+substitutions while permitting distinct representations of one FileId.
+This is metadata validation only, not proof of bytes or authorization.
+
+Destination `stage_copied` now advances an exact CopiedPrefix Copying row to
+Staging with its derived reservation identifier, inside caller-owned SQL.
+It retains the source connection proof, compares all predecessor columns and
+reads the complete result. Exact replay writes nothing. The original Empty
+and Copied readers still require unreserved Copying; Staging has a separate
+typed reader. No actual family reservation or content effect is performed.
+
+All store-local targets compile (`provider-managed-staging-check-r1.log`).
+The final retained `provider-managed-staging-20261026-r2` artifact has 456
+source/input files, CodeView age 52 and EXE SHA256
+`30bf8009bc858fb83e610469cb01117d974e54d364a10ddc45bcb8c4b17b4191`.
+**134 pure tests pass, 314 ignored. Two exact recipes pass**: SQL Staging,
+no-write replay, rollback, forged plan/extra-row refusal; and actual Native
+80 KiB replacement copied under retained checkpoint, followed by namespace
+change refusing a second copy before any output. Independent source reviews
+released both recipes; SQL child 120 seconds, Native child 240 seconds,
+outer 300 seconds, fresh owned C: parent and serial stop-on-failure execution.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.

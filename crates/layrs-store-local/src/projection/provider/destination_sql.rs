@@ -199,6 +199,126 @@ pub(in crate::projection::provider) fn promote_or_replay_copied(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection::provider) enum CopiedStagingEffect {
+    Updated,
+    AlreadyPresent,
+}
+
+/// Copying -> Staging changes only the destination intent row. The twelve
+/// imported rowsets and head remain exact. The caller owns BEGIN/COMMIT,
+/// rollback, both retained connections and every physical authority.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn stage_copied(
+    source_connection: &Connection,
+    destination: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    copying: &ProviderTransitionIntentRecord,
+    staging: &ProviderTransitionIntentRecord,
+    proof: &VerifiedImportClosure,
+    cancel: Option<&Cancellation>,
+) -> Result<CopiedStagingEffect> {
+    cancellation::check(cancel)?;
+    if source_connection.is_autocommit()
+        || destination.is_autocommit()
+        || std::ptr::eq(source_connection, destination)
+    {
+        return Err(invalid(
+            "copied staging requires distinct retained source and destination transactions",
+        ));
+    }
+    proof.require_source_connection(source_connection)?;
+    staging.require_transition(copying)?;
+    if copying.role != super::records::transition::TransitionRole::Destination
+        || copying.state != super::records::transition::TransitionState::Copying
+        || copying.reservation.is_some()
+        || copying.receipt_id.is_some()
+        || staging.state != super::records::transition::TransitionState::Staging
+        || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
+        || staging.receipt_id.is_some()
+    {
+        return Err(invalid("copied staging predecessor or reservation differs"));
+    }
+    super::import_validation::require_schema(
+        destination,
+        marker,
+        super::import_validation::ImportDatabaseKind::Provider,
+        cancel,
+    )?;
+    let count: u64 = destination.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM projection_provider_transitions LIMIT 2)",
+        [],
+        |row| row.get(0),
+    )?;
+    if count != 1 {
+        return Err(invalid("copied staging intent cardinality differs"));
+    }
+    let (is_copying, is_staging): (bool, bool) = destination.query_row(
+        "SELECT state='copying',state='staging' FROM projection_provider_transitions",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if is_staging {
+        destination_validation::read_staging(
+            destination,
+            marker,
+            source,
+            allocation,
+            prepared,
+            activation,
+            prefix,
+            staging,
+            proof,
+            cancel,
+        )?;
+        return Ok(CopiedStagingEffect::AlreadyPresent);
+    }
+    if !is_copying {
+        return Err(invalid("copied staging intent phase differs"));
+    }
+    destination_validation::read_copied(
+        destination,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        copying,
+        proof,
+        cancel,
+    )?;
+    let updated = destination.execute(
+        "UPDATE projection_provider_transitions SET state='staging',reservation=?1,payload=?2,digest=?3 \
+         WHERE id=?4 AND role='destination' AND state='copying' AND local_generation=0 \
+         AND reservation IS NULL AND receipt_id IS NULL AND payload=?5 AND digest=?6",
+        params![staging.reservation, staging.encode()?, staging.digest()?,
+            copying.transaction_id, copying.encode()?, copying.digest()?],
+    )?;
+    if updated != 1 {
+        return Err(invalid("copied staging exact predecessor CAS differs"));
+    }
+    destination_validation::read_staging(
+        destination,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        staging,
+        proof,
+        cancel,
+    )?;
+    cancellation::check(cancel)?;
+    Ok(CopiedStagingEffect::Updated)
+}
+
 #[cfg(test)]
 #[path = "destination_sql/tests.rs"]
 mod tests;

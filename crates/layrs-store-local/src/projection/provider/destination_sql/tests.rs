@@ -528,3 +528,139 @@ fn copied_prefix_promotes_replays_and_refuses_tail_or_head_corruption() {
         },
     );
 }
+
+#[test]
+#[ignore = "owned audited Windows SQLite process; copied prefix staging CAS"]
+fn copied_prefix_staging_is_exact_replayable_and_rollback_safe() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::copied_prefix_staging_is_exact_replayable_and_rollback_safe"
+        ),
+        120,
+        || {
+            child::declare();
+            let source = BareConnection::reference().unwrap();
+            let source_c = source.connection();
+            let mut data = inputs(source_c);
+            source_c.execute_batch("BEGIN DEFERRED").unwrap();
+            let proof = verify_provider_prefix(source_c, &mut data);
+            let destination = BareConnection::reference().unwrap();
+            let c = destination.connection();
+            c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
+                .unwrap();
+            initialize(c, &data).unwrap();
+            promote_or_replay_copied(
+                source_c,
+                c,
+                &data.marker,
+                &data.fixture.source,
+                &data.fixture.allocation,
+                &data.fixture.prepared,
+                &data.activation,
+                &data.prefix,
+                &data.intent,
+                &proof,
+                None,
+            )
+            .unwrap();
+            let mut staging =
+                ProviderTransitionIntentRecord::decode(&data.intent.encode().unwrap()).unwrap();
+            staging.state = TransitionState::Staging;
+            staging.reservation = Some(staging.reservation_operation().unwrap());
+            staging.require_transition(&data.intent).unwrap();
+            let stage = |expected: &ProviderTransitionIntentRecord| {
+                stage_copied(
+                    source_c,
+                    c,
+                    &data.marker,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &data.intent,
+                    expected,
+                    &proof,
+                    None,
+                )
+            };
+            assert_eq!(stage(&staging).unwrap(), CopiedStagingEffect::Updated);
+            assert!(
+                destination_validation::read_copied(
+                    c,
+                    &data.marker,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &data.intent,
+                    &proof,
+                    None,
+                )
+                .is_err(),
+                "Copying reader must reject Staging"
+            );
+            let before_replay = c.total_changes();
+            assert_eq!(
+                stage(&staging).unwrap(),
+                CopiedStagingEffect::AlreadyPresent
+            );
+            assert_eq!(
+                c.total_changes(),
+                before_replay,
+                "staging replay must not write"
+            );
+            let mut forged =
+                ProviderTransitionIntentRecord::decode(&staging.encode().unwrap()).unwrap();
+            forged.plan.quota_bytes += 1;
+            assert!(stage(&forged).is_err());
+            assert_eq!(c.total_changes(), before_replay);
+            c.execute_batch("SAVEPOINT tail").unwrap();
+            c.execute(
+                "INSERT INTO projection_snapshots(generation,digest,parent_digest,payload) SELECT 2,?1,digest,payload FROM projection_snapshots WHERE generation=1",
+                ["9".repeat(64)],
+            ).unwrap();
+            assert!(stage(&staging).is_err());
+            c.execute_batch("ROLLBACK TO tail; RELEASE tail").unwrap();
+            c.execute_batch("ROLLBACK").unwrap();
+            assert!(database_io::schema_inventory(c).unwrap().is_empty());
+            c.execute_batch("BEGIN IMMEDIATE").unwrap();
+            initialize(c, &data).unwrap();
+            promote_or_replay_copied(
+                source_c,
+                c,
+                &data.marker,
+                &data.fixture.source,
+                &data.fixture.allocation,
+                &data.fixture.prepared,
+                &data.activation,
+                &data.prefix,
+                &data.intent,
+                &proof,
+                None,
+            )
+            .unwrap();
+            assert_eq!(stage(&staging).unwrap(), CopiedStagingEffect::Updated);
+            c.execute_batch("COMMIT; BEGIN DEFERRED").unwrap();
+            destination_validation::read_staging(
+                c,
+                &data.marker,
+                &data.fixture.source,
+                &data.fixture.allocation,
+                &data.fixture.prepared,
+                &data.activation,
+                &data.prefix,
+                &staging,
+                &proof,
+                None,
+            )
+            .unwrap();
+            c.execute_batch("COMMIT").unwrap();
+            source_c.execute_batch("COMMIT").unwrap();
+            destination.finish(Ok(())).unwrap();
+            source.finish(Ok(())).unwrap();
+        },
+    );
+}

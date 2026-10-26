@@ -180,6 +180,16 @@ fn empty_diff_still_appends_destination_capture_and_preserves_old_head() {
     assert_ne!(first.capture.digest, next.capture.digest);
     assert!(next.required_manifests.contains(&history[0]));
     assert_eq!(next.plan.protected_manifests.count, 2);
+    require_manifest_union(&next.plan, &protected).unwrap();
+    require_manifest_union(&next.plan, &[protected[1].clone(), protected[0].clone()]).unwrap();
+    assert!(require_manifest_union(&next.plan, &protected[..1]).is_err());
+    assert!(
+        require_manifest_union(&next.plan, &[protected[0].clone(), protected[0].clone()]).is_err()
+    );
+    assert!(
+        require_manifest_union(&next.plan, &[protected[0].clone(), manifest(b"substitute")])
+            .is_err()
+    );
 }
 
 #[test]

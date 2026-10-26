@@ -15,6 +15,9 @@ use recovery_export::{
     ReaderKind,
 };
 use std::collections::BTreeMap;
+use std::io::{self, Read, Write};
+
+mod stream;
 
 /// Immutable source manifests are borrowed rather than duplicating the fixed
 /// catalog. Only hashed native replacements own new manifest metadata.
@@ -122,6 +125,52 @@ impl VerifiedManagedImage<'_, '_> {
     pub(super) fn digest(&self) -> &str {
         &self.data.digest
     }
+    /// Copy only a file in this verified current image. The output may contain
+    /// a prefix on failure and must remain unpublished until this returns Ok.
+    /// Historical capture content needs a separate protected family reader.
+    pub(super) fn copy_exact_file(
+        &mut self,
+        path: &RepoPath,
+        manifest: &FileManifest,
+        output: &mut dyn Write,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        cancel.check()?;
+        let file = exact_file(&self.data.files, path, manifest)?;
+        self.checkpoint.revalidate_namespace()?;
+        match &file.manifest {
+            ManagedManifest::Source(_) => {
+                let mut offset = 0u64;
+                stream::copy_verified(manifest, output, cancel, |part| {
+                    self.bytes
+                        .read_exact_at(manifest.file_id(), offset, part, cancel)?;
+                    offset = offset
+                        .checked_add(part.len() as u64)
+                        .ok_or_else(|| invalid("managed image source offset overflow"))?;
+                    Ok(())
+                })?;
+            }
+            ManagedManifest::Native(_) => {
+                let mut consumer_error = None;
+                let native = self.checkpoint.with_reader(path, |reader| {
+                    let result = stream::copy_verified(manifest, output, cancel, |part| {
+                        reader.read_exact(part).map_err(Into::into)
+                    });
+                    if let Err(error) = result {
+                        consumer_error = Some(error);
+                        return Err(layrs_vfs::Error::Io(io::Error::other(
+                            "managed image copy consumer failed",
+                        )));
+                    }
+                    Ok(())
+                });
+                finish_native_copy(native, consumer_error)?;
+            }
+        }
+        self.checkpoint.revalidate_namespace()?;
+        cancel.check()?;
+        Ok(())
+    }
     pub(super) fn revalidate_and_match_digest(
         &mut self,
         expected: &str,
@@ -142,6 +191,37 @@ impl VerifiedManagedImage<'_, '_> {
         }
         Ok(())
     }
+}
+
+fn finish_native_copy(
+    native: layrs_vfs::Result<()>,
+    consumer_error: Option<crate::projection::provider::recovery::error::ProviderBootstrapCause>,
+) -> Result<()> {
+    // The checkpoint can identify an actual reader/proof failure even when the
+    // consumer propagated it. Preserve its path/backing provenance. Only unwrap
+    // our consumer sentinel for checksum, cancellation and output failures.
+    match native {
+        Err(error @ layrs_vfs::Error::ExportConsumer { .. }) => {
+            Err(consumer_error.unwrap_or_else(|| error.into()))
+        }
+        Err(error) => Err(error.into()),
+        Ok(()) => consumer_error.map_or(Ok(()), Err),
+    }
+}
+
+fn exact_file<'f, 'm>(
+    files: &'f [ManagedFile<'m>],
+    path: &RepoPath,
+    manifest: &FileManifest,
+) -> Result<&'f ManagedFile<'m>> {
+    let file = files
+        .iter()
+        .find(|file| &file.path == path)
+        .ok_or_else(|| invalid("managed image file path absent"))?;
+    if file.manifest.manifest() != manifest {
+        return Err(invalid("managed image file representation differs"));
+    }
+    Ok(file)
 }
 
 /// The source is local-only. An online caller must independently prove fresh
