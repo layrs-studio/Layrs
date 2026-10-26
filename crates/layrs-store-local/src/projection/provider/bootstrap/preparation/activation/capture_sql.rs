@@ -44,14 +44,15 @@ fn private(
         .prepared
         .as_ref()
         .ok_or_else(|| invalid("capture prepared receipt absent"))?;
-    let value = validation::private_active_capture_with_source(
+    let value = validation::private_active_readable_with_source(
         c,
         &held.artifacts.allocation,
         prepared,
         &held.binding,
         Some(root.registration().root_id()),
         None,
-    )?;
+    )?
+    .require_no_active_transition()?;
     if value.active.mount != *mount || value.active.activation != *activation {
         return Err(invalid("capture retained active map changed"));
     }

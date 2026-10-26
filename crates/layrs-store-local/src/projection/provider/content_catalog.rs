@@ -272,7 +272,7 @@ impl ProviderContext {
             .ok_or_else(|| store(invalid("provider content prepared receipt absent")))?;
         let binding = artifacts.binding().map_err(store)?;
         let proof = match database_io::read(&artifacts.database, |c| {
-            Ok(validation::private_active_capture_with_source(
+            Ok(validation::private_active_readable_with_source(
                 c,
                 &artifacts.allocation,
                 prepared,
@@ -280,6 +280,7 @@ impl ProviderContext {
                 None,
                 None,
             )?
+            .require_no_active_transition()?
             .capture)
         })
         .map_err(store)?

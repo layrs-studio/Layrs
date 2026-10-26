@@ -7,9 +7,9 @@ use super::{
         preparation::{MountRowData, ProviderPreparationRecord},
         *,
     },
-    recovery::error::{Result, invalid},
+    recovery::error::{invalid, Result},
 };
-use crate::projection::{VersionedProjection, database, retention, selection};
+use crate::projection::{database, retention, selection, VersionedProjection};
 use layrs_core::{
     projection::ProjectionSnapshot,
     scm::{FileManifest, RepoPath},
@@ -53,6 +53,24 @@ pub(super) struct PrivateActiveTransitionValidation {
     pub(super) active: PrivateActiveValidation,
     pub(super) capture: PrivateCaptureProof,
     pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
+}
+/// Complete readable Active DATA, including interpreted source intentions.
+/// It grants neither a capture write nor transition publication.
+pub(super) struct PrivateActiveReadableValidation {
+    pub(super) capture: PrivateActiveCaptureValidation,
+    pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
+}
+impl PrivateActiveReadableValidation {
+    pub(super) fn require_no_active_transition(self) -> Result<PrivateActiveCaptureValidation> {
+        if self
+            .transitions
+            .iter()
+            .any(|intent| intent.state != records::transition::TransitionState::Cancelled)
+        {
+            return Err(invalid("capture mutation has an active source transition"));
+        }
+        Ok(self.capture)
+    }
 }
 impl PrivateActiveCaptureValidation {
     /// Borrow only validated private SQL DATA for the import interpreter.
@@ -389,6 +407,54 @@ pub(super) fn private_active_transition_with_source(
         },
         capture,
         transitions,
+    })
+}
+
+/// Select readable Active admission only after the exact schema fingerprint
+/// and a bounded source-transition preflight. Every selected mode repeats the
+/// full private interpreter under the caller's retained SQL snapshot.
+pub(super) fn private_active_readable_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: Option<[u8; 16]>,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateActiveReadableValidation> {
+    super::cancellation::check(cancel)?;
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version != 8 {
+        return Err(invalid("readable Active requires exact private schema8"));
+    }
+    require_exact_schema(&database_io::schema_inventory(c)?)?;
+    let count = transition::preflight(c, cancel)?;
+    if count == 0 {
+        return Ok(PrivateActiveReadableValidation {
+            capture: private_active_capture_with_source(
+                c,
+                allocation,
+                prepared,
+                expected_binding,
+                expected_root_id,
+                cancel,
+            )?,
+            transitions: Vec::new(),
+        });
+    }
+    let interpreted = private_active_transition_with_source(
+        c,
+        allocation,
+        prepared,
+        expected_binding,
+        expected_root_id,
+        cancel,
+    )?;
+    Ok(PrivateActiveReadableValidation {
+        capture: PrivateActiveCaptureValidation {
+            active: interpreted.active,
+            capture: interpreted.capture,
+        },
+        transitions: interpreted.transitions,
     })
 }
 

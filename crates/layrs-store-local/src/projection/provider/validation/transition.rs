@@ -2,12 +2,12 @@
 //! authority are deliberately separate from this private row interpretation.
 use super::*;
 use crate::projection::provider::records::{
-    Record,
     capture::ProviderCaptureState,
     import::{ImportSource, ImportSourceReferences},
     transition::{
         ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
     },
+    Record,
 };
 
 const MAX_ROWS: u64 = 4096;
@@ -64,14 +64,12 @@ pub(super) fn validate(
     cancel: Option<&Cancellation>,
 ) -> Result<Vec<ProviderTransitionIntentRecord>> {
     let count = preflight(c, cancel)?;
-    if capture.transactions.iter().any(|tx| {
+    let pending_capture = capture.transactions.iter().any(|tx| {
         matches!(
             &tx.state,
             ProviderCaptureState::Hashing | ProviderCaptureState::Staging { .. }
         )
-    }) {
-        return Err(invalid("source transition has a pending provider capture"));
-    }
+    });
     let mut statement = c.prepare(
         "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest \
          FROM projection_provider_transitions ORDER BY id COLLATE BINARY",
@@ -141,9 +139,9 @@ pub(super) fn validate(
             ));
         }
         if intent.state != TransitionState::Cancelled {
-            if pending || version.capture_count != capture.patches.len() as u64 {
+            if pending_capture || pending || version.capture_count != capture.patches.len() as u64 {
                 return Err(invalid(
-                    "source transition pending head is stale or duplicated",
+                    "source transition pending head or capture state differs",
                 ));
             }
             pending = true;

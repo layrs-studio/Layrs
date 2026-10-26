@@ -1,5 +1,13 @@
 # État courant de Layrs
 
+## Capture après annulation d’une transition
+
+Le parcours natif complet passe : une intention Planned bloque la capture ;
+après Cancelled, les vrais octets sont capturés et protégés, la réservation est
+libérée et le provider se rouvre. Les lectures Active restent possibles pendant
+une intention source, avec un contrôle distinct pour les mutations. Voir le
+[checkpoint d’import](plans/worktrees-partial-vfs-import-seams-checkpoint.md).
+
 ## Écriture du journal source
 
 Le journal source dispose maintenant d’une primitive SQL de création, rejeu,

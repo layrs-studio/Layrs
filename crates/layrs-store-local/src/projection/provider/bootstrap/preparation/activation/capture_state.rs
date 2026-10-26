@@ -24,7 +24,7 @@ pub(super) fn read(
     };
     verify().map_err(preparation_report::Failure::from)?;
     let inspect_private = |c: &Connection| {
-        validation::private_active_capture_with_source(
+        validation::private_active_readable_with_source(
             c,
             &held.artifacts.allocation,
             held.artifacts
@@ -35,6 +35,7 @@ pub(super) fn read(
             native.map(|root| root.registration().root_id()),
             cancel,
         )
+        .map(|readable| readable.capture)
     };
     let state = match cancel {
         Some(cancel) => {

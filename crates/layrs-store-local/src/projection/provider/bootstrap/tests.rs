@@ -14,12 +14,13 @@ pub(super) mod hooks;
 mod preparation;
 mod preparation_ranges;
 mod preparation_reopen;
+pub(super) mod process;
+mod product_status;
+mod recipes;
 mod recovery_export;
 mod recovery_export_writer;
-mod product_status;
-pub(super) mod process;
-mod recipes;
-use fixture::{Fixture, failure, has};
+mod transition_capture;
+use fixture::{failure, has, Fixture};
 use std::path::PathBuf;
 
 fn attempt() -> ProviderBootstrapAttempt {

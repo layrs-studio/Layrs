@@ -3,12 +3,12 @@ use crate::projection::provider::{
     database_io::BareConnection,
     process_profile::tests::child,
     records::{
-        Receipt,
         import::{
             ImportClosure, ImportRowset, ImportVersion, ProviderImportKind,
             ProviderImportPrefixRecord,
         },
         transition::{TransitionObservation, TransitionPlan, TransitionRowset},
+        Receipt,
     },
 };
 use layrs_core::scm::{ObjectId, StepId, TreeId, WorktreeId};
@@ -157,17 +157,28 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
             assert_eq!(proof.transitions.len(), 1);
             assert_eq!(proof.active.activated.digest, activated.digest);
             assert!(proof.capture.patches.is_empty());
-            assert!(
-                super::super::private_active_capture_with_source(
-                    c,
-                    &f.allocation,
-                    &f.prepared,
-                    &mount.prepared.binding,
-                    None,
-                    None,
-                )
-                .is_err()
-            );
+            let readable = super::super::private_active_readable_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(readable.capture.active.activated.digest, activated.digest);
+            assert_eq!(readable.transitions.len(), 1);
+            assert_eq!(readable.transitions[0], intent);
+            assert!(readable.require_no_active_transition().is_err());
+            assert!(super::super::private_active_capture_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .is_err());
             let mut competing =
                 ProviderTransitionIntentRecord::decode(&intent.encode().unwrap()).unwrap();
             competing.transaction_id = "00000000000000000000000000000003".into();
@@ -198,17 +209,15 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
                 params![forged.encode().unwrap(), forged.digest().unwrap()],
             )
             .unwrap();
-            assert!(
-                super::super::private_active_transition_with_source(
-                    c,
-                    &f.allocation,
-                    &f.prepared,
-                    &mount.prepared.binding,
-                    None,
-                    None,
-                )
-                .is_err()
-            );
+            assert!(super::super::private_active_transition_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .is_err());
             c.execute(
                 "UPDATE projection_provider_transitions SET payload=?1,digest=?2",
                 params![intent.encode().unwrap(), intent.digest().unwrap()],
@@ -219,33 +228,80 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
                 [],
             )
             .unwrap();
-            assert!(
-                super::super::private_active_transition_with_source(
-                    c,
-                    &f.allocation,
-                    &f.prepared,
-                    &mount.prepared.binding,
-                    None,
-                    None,
-                )
-                .is_err()
-            );
+            assert!(super::super::private_active_transition_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .is_err());
             c.execute(
                 "UPDATE projection_provider_transitions SET role='source',digest=?1",
                 [TOKEN],
             )
             .unwrap();
-            assert!(
-                super::super::private_active_transition_with_source(
-                    c,
-                    &f.allocation,
-                    &f.prepared,
-                    &mount.prepared.binding,
-                    None,
-                    None,
-                )
-                .is_err()
-            );
+            assert!(super::super::private_active_transition_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .is_err());
+            database.finish(Ok(())).unwrap();
+        },
+    );
+}
+
+#[test]
+#[ignore = "owned audited Windows SQLite process; cancelled transition and new capture"]
+fn cancelled_source_allows_later_hashing_capture() {
+    use crate::projection::provider::records::capture::ProviderCaptureTransactionRecord;
+    child::run(
+        concat!(
+            module_path!(),
+            "::cancelled_source_allows_later_hashing_capture"
+        ),
+        120,
+        || {
+            child::declare();
+            let database = BareConnection::reference().unwrap();
+            let c = database.connection();
+            let (f, _, mount, activation, activated) = super::super::active_fixture(c, false);
+            let mut cancelled = planned(&f, &mount, &activation, &activated);
+            cancelled.state = TransitionState::Cancelled;
+            c.execute(
+                "INSERT INTO projection_provider_transitions(id,role,state,local_generation,reservation,receipt_id,payload,digest) VALUES(?1,'source','cancelled',?2,NULL,NULL,?3,?4)",
+                params![cancelled.transaction_id,cancelled.local_generation,cancelled.encode().unwrap(),cancelled.digest().unwrap()],
+            ).unwrap();
+            let hashing = ProviderCaptureTransactionRecord::begin(
+                &f.allocation,
+                &mount,
+                &activation,
+                "00000000000000000000000000000003".into(),
+                0,
+                None,
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO projection_provider_capture_transactions(id,mount_id,capture_generation,digest,expected_capture_sequence,expected_capture_digest,state,reservation,payload,record_digest) VALUES(?1,?2,?3,?4,?5,?6,'hashing',NULL,?7,?8)",
+                params![hashing.transaction_id,hashing.mount_id,hashing.capture_generation,hashing.capture_digest,hashing.expected_capture_sequence,hashing.expected_capture_digest,hashing.encode().unwrap(),hashing.digest().unwrap()],
+            ).unwrap();
+            let readable = super::super::private_active_readable_with_source(
+                c,
+                &f.allocation,
+                &f.prepared,
+                &mount.prepared.binding,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(readable.transitions, vec![cancelled]);
+            assert_eq!(readable.capture.capture.transactions, vec![hashing]);
+            readable.require_no_active_transition().unwrap();
             database.finish(Ok(())).unwrap();
         },
     );

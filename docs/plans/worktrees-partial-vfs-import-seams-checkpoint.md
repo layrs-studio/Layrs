@@ -1,5 +1,31 @@
 # Import metadata and provider status checkpoint — 26 October 2026
 
+## Readability during source transitions
+
+Active session/reopen/range reads now dispatch to a bounded typed transition
+reader when source journal rows exist. They can continue during Planned,
+Copying and Staging. Capture mutation and content-lease admission independently
+refuse an active transition before writable admission and again inside the
+transaction. Historical Cancelled rows permit subsequent capture work; strict
+`ActiveCapture` remains unchanged as a separate admission API.
+
+Two SQL recipes pass in `provider-active-readable-20261026-r1` (EXE
+`efb902d7cb72dffcc2b1b9b4905632d75e1fbb196dcbfc0efe8b553dbc3bf242`,
+PDB age 42): Planned remains readable while the mutation gate refuses, and a
+Cancelled transition coexists with later Hashing.
+
+The full owned native recipe
+`transition_capture::cancelled_source_intent_allows_real_capture_and_reopen`
+also passes: real A/P/native root, Planned capture refusal without private DB
+mutation, observed-close CAS to Cancelled, actual replacement/capture, accepted
+receipt, family protection, released reservation and successful reopen retaining
+the Cancelled row. `provider-transition-capture-20261026-r1` retains EXE
+`8f207d094076fcc7798320a972903aa421c37ca51d945dfa860f101a7963ff16`,
+PDB age 43 and 439 source inputs. `provider-managed-image-check-r3.log` passes
+all workspace targets; `provider-managed-image-pure-r2.log` records 123 passed,
+298 ignored. The extra pure tests concern the separately developing managed
+image helper; this native recipe does not qualify its adapter or a destination.
+
 ## Source intent SQL mutations
 
 `transition_sql::apply_source_intent` inserts Planned and performs exact
