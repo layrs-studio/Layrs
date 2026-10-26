@@ -1,5 +1,12 @@
 # Contrat de préparation post-bootstrap — 26 octobre 2026
 
+**Suite implémentée le même jour :** le validateur SQL complet, le transfert du
+détenteur et le writer natif sont désormais qualifiés ; voir le
+[checkpoint de préparation](worktrees-partial-vfs-preparation-checkpoint.md).
+La réouverture readonly de `providerPrepared` est également implémentée et
+testée, sans repeuplement ni promotion de pending. Les sections ci-dessous
+conservent le périmètre et les preuves de l'incrément initial du codec.
+
 ## Périmètre de cet incrément
 
 Après le [catalogue bootstrap](worktrees-partial-vfs-catalog-checkpoint.md), cette

@@ -25,6 +25,7 @@ pub use provider::{
 };
 #[cfg(windows)]
 pub use provider::{
+    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
     ProviderBootstrapSource, ProviderSourceDescriptor,
     ProviderBootstrapCatalog, ProviderCatalogDescriptor,
     ProviderBootstrapAttempt,
@@ -41,6 +42,12 @@ pub use provider::{
     ProviderControlCommitDisposition,
     ProviderControlPublished,
     ProviderControlWithheld,
+    ProviderPreparationFailure, ProviderPreparationFailureKind,
+    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
+    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
+    ProviderPreparationWriteReport, ProviderPreparationWriteState,
+    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
+    ProviderPrepared,
     PROVIDER_SQLITE_SOURCE_ID, ProviderBootstrapBinding, ProviderBootstrapCause,
     ProviderBootstrapFailure, ProviderBootstrapFailureKind, ProviderBootstrapInspection,
     ProviderBootstrapPhase, ProviderBootstrapRecovery, ProviderBootstrapState,

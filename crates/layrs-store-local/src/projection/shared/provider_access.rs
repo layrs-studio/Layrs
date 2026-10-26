@@ -4,7 +4,7 @@ use super::*;
 use crate::projection::provider::{
     database_io::{self, DatabaseFile},
     records::AllocationRecord,
-    recovery::error::{Result as ProviderResult, invalid as provider_invalid},
+    recovery::error::{invalid as provider_invalid, Result as ProviderResult},
 };
 use std::{ffi::OsStr, fs::File};
 
@@ -133,6 +133,25 @@ impl FamilyAccess {
         c: &Connection,
         a: &AllocationRecord,
     ) -> ProviderResult<Registration> {
+        self.validate_catalog_inner(c, a, None)
+    }
+
+    pub(in crate::projection) fn validate_catalog_cancellable(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: &layrs_vfs::Cancellation,
+    ) -> ProviderResult<Registration> {
+        self.validate_catalog_inner(c, a, Some(cancel))
+    }
+
+    fn validate_catalog_inner(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<Registration> {
+        crate::projection::provider::cancellation::check(cancel)?;
         let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version != 1 {
             return Err(provider_invalid(
@@ -148,6 +167,7 @@ impl FamilyAccess {
             }
             Ok(())
         })?;
+        crate::projection::provider::cancellation::check(cancel)?;
         let (count, length): (u64, u64) = c.query_row(
             "SELECT count(*),coalesce(max(length(marker)),0) FROM family",
             [],
@@ -241,6 +261,7 @@ impl FamilyAccess {
         if failure {
             return Err(provider_invalid("provider family foreign-key corruption"));
         }
+        crate::projection::provider::cancellation::check(cancel)?;
         // Other registered members and their protected content remain valid and
         // untouched; this is not GC or a demand that the whole family be empty.
         Ok(registration)

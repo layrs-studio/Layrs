@@ -1,11 +1,38 @@
-use super::{Record, Result, codec, invalid};
+use super::{codec, invalid, Record, Result};
 use crate::projection::{database, provider, selection};
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionSelection, ProjectionSnapshot},
     scm::{FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget},
 };
+use layrs_vfs::Cancellation;
 use layrs_vfs::{Catalog, CatalogEntry};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+struct SourceCancelled;
+impl std::fmt::Display for SourceCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("provider source validation cancelled")
+    }
+}
+impl std::error::Error for SourceCancelled {}
+
+pub(in crate::projection) fn is_source_cancelled(
+    error: &crate::projection::ProjectionStoreError,
+) -> bool {
+    matches!(error, crate::projection::ProjectionStoreError::Io(io)
+        if io.kind() == std::io::ErrorKind::Interrupted
+            && io.get_ref().is_some_and(|cause| cause.is::<SourceCancelled>()))
+}
+
+pub(in crate::projection) fn check_source(cancel: Option<&Cancellation>) -> Result<()> {
+    if cancel.is_some_and(Cancellation::is_cancelled) {
+        return Err(crate::projection::ProjectionStoreError::Io(
+            std::io::Error::new(std::io::ErrorKind::Interrupted, SourceCancelled),
+        ));
+    }
+    Ok(())
+}
 
 pub(super) const DESCRIPTORS_DOMAIN: &str = "layrs-projection-provider-descriptors-v1";
 pub(super) const CATALOG_DOMAIN: &str = "layrs-projection-provider-catalog-v1";
@@ -204,8 +231,27 @@ impl ProviderBootstrapSource {
     pub fn validate(
         initial: ProjectionSnapshot,
         selection: ProjectionSelection,
-        mut inputs: Vec<ProviderSourceDescriptor>,
+        inputs: Vec<ProviderSourceDescriptor>,
     ) -> std::result::Result<Self, crate::projection::ProjectionStoreError> {
+        Self::validate_inner(initial, selection, inputs, None)
+    }
+
+    pub(in crate::projection) fn validate_cancellable(
+        initial: ProjectionSnapshot,
+        selection: ProjectionSelection,
+        inputs: Vec<ProviderSourceDescriptor>,
+        cancel: &Cancellation,
+    ) -> std::result::Result<Self, crate::projection::ProjectionStoreError> {
+        Self::validate_inner(initial, selection, inputs, Some(cancel))
+    }
+
+    fn validate_inner(
+        initial: ProjectionSnapshot,
+        selection: ProjectionSelection,
+        mut inputs: Vec<ProviderSourceDescriptor>,
+        cancel: Option<&Cancellation>,
+    ) -> std::result::Result<Self, crate::projection::ProjectionStoreError> {
+        check_source(cancel)?;
         if inputs.len() as u64 > provider::PROVIDER_CATALOG_MAX_DESCRIPTORS
             || initial.entries.len() > 100_000
         {
@@ -226,6 +272,7 @@ impl ProviderBootstrapSource {
             ));
         }
         selection.validate_snapshot(&initial)?;
+        check_source(cancel)?;
         let snapshot_bytes = initial.canonical_bytes()?;
         // Check a typed-value-preserving canonical roundtrip as well as core's
         // existing snapshot structural/encoded-size checks.
@@ -240,7 +287,9 @@ impl ProviderBootstrapSource {
         let ed = database::digest(0, Some(&sd), &selection_bytes);
         let ep = blake3::hash(&selection_bytes).to_hex().to_string();
 
+        check_source(cancel)?;
         inputs.sort_by(|a, b| a.path.cmp(&b.path));
+        check_source(cancel)?;
         if inputs.windows(2).any(|pair| pair[0].path == pair[1].path) {
             return Err(invalid("duplicate source descriptor path"));
         }
@@ -253,6 +302,7 @@ impl ProviderBootstrapSource {
         let mut vfs_entries = Vec::with_capacity(inputs.len());
         let mut logical = 0;
         for input in inputs {
+            check_source(cancel)?;
             let entry = expected
                 .next()
                 .ok_or_else(|| invalid("extra source descriptor"))?;
@@ -288,9 +338,11 @@ impl ProviderBootstrapSource {
         if expected.next().is_some() {
             return Err(invalid("missing or unsupported selected source descriptor"));
         }
+        check_source(cancel)?;
         // Real constructor enforces its 32MiB/100k namespace/alias/range bounds;
         // no substitute identity function or copied VFS catalog validation.
         let vfs_catalog = Catalog::new(0, vfs_entries).map_err(invalid)?;
+        check_source(cancel)?;
         let mut h = blake3::Hasher::new();
         h.update(&layrs_core::scm::domain_separated_bytes(
             DESCRIPTORS_DOMAIN,
@@ -299,6 +351,7 @@ impl ProviderBootstrapSource {
         h.update(&(descriptors.len() as u64).to_le_bytes());
         let mut wire = 0;
         for row in &descriptors {
+            check_source(cancel)?;
             let encoded = row.encode()?;
             wire = codec::add(wire, encoded.len() as u64)?;
             h.update(&(encoded.len() as u64).to_le_bytes());
@@ -337,6 +390,7 @@ impl ProviderBootstrapSource {
             vfs_catalog_id: vfs_catalog.identity().clone(),
         };
         commitment.validate_fields()?;
+        check_source(cancel)?;
         Ok(Self {
             initial,
             selection,
@@ -364,7 +418,10 @@ impl ProviderBootstrapSource {
     pub(in crate::projection) fn commitment(&self) -> &SourceCommitment {
         &self.commitment
     }
-    pub(in crate::projection) fn require_commitment(&self, expected: &SourceCommitment) -> Result<()> {
+    pub(in crate::projection) fn require_commitment(
+        &self,
+        expected: &SourceCommitment,
+    ) -> Result<()> {
         if expected != &self.commitment {
             return Err(invalid("source commitment differs from recomputed rows"));
         }

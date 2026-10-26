@@ -1,5 +1,33 @@
 # État courant de Layrs
 
+## Réouverture et lectures locales du 26 octobre 2026
+
+Le détenteur préparé se rouvre maintenant en lecture seule sans recréer les
+placeholders ni ressusciter un fichier supprimé. Le lecteur de plages locales
+vérifie les identités de contenu et conserve son buffer intact en cas de manque,
+corruption ou annulation. Les requêtes SQLite longues et les comparaisons de
+descripteurs consultent le signal d'annulation.
+
+Le dernier binaire passe **82 tests purs, 10 recettes SQL et 8 recettes isolées** ;
+la compilation du workspace avec toutes ses cibles passe aussi. Les recettes
+de réouverture précédentes restent consignées dans le
+[checkpoint des lectures locales](plans/worktrees-partial-vfs-local-read-checkpoint.md).
+Le codec d'activation est prêt, mais son writer, la capture et l'intégration
+CLI/Desktop restent à poursuivre. Aucun hôte produit n'est activé par ce checkpoint.
+
+## Préparation native du 26 octobre 2026
+
+Le validateur SQL post-bootstrap et le writer du ticket sont implémentés.
+Le détenteur publié peut désormais créer les placeholders sans source de contenu,
+puis conserver une preuve native READY liée au Store. Les refus gardent les
+pins, les effets confirmés et les causes originales.
+
+**7 recettes natives, 79 tests purs et 9 recettes SQL passent** sur le binaire
+audité. Le [checkpoint de préparation](plans/worktrees-partial-vfs-preparation-checkpoint.md)
+consigne les preuves et limites. La reprise durable, les lectures locales,
+l'activation, la capture et l'intégration produit restent en cours ; le chantier
+continue au-delà de ce checkpoint.
+
 ## Contrat de préparation du 26 octobre 2026
 
 Le [contrat post-bootstrap](plans/worktrees-partial-vfs-preparation-contract.md)

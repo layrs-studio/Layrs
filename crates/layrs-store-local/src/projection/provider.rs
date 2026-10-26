@@ -5,6 +5,7 @@ use super::*;
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
+    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
     ProviderBootstrapCatalog, ProviderCatalogDescriptor,
     ProviderBootstrapAttempt,
     ProviderBootstrapWriterOperation,
@@ -20,6 +21,12 @@ pub use bootstrap::{
     ProviderControlCommitDisposition,
     ProviderControlPublished,
     ProviderControlWithheld,
+    ProviderPreparationFailure, ProviderPreparationFailureKind,
+    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
+    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
+    ProviderPreparationWriteReport, ProviderPreparationWriteState,
+    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
+    ProviderPrepared,
 };
 #[cfg(windows)]
 pub use records::{ProviderBootstrapSource, ProviderSourceDescriptor};
@@ -33,6 +40,8 @@ mod artifacts;
 pub(super) mod database_io;
 #[cfg(windows)]
 mod process_profile;
+#[cfg(windows)]
+pub(in crate::projection) mod cancellation;
 #[cfg(windows)]
 pub(super) mod recovery;
 #[cfg(windows)]

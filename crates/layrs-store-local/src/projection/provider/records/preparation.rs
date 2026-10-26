@@ -91,7 +91,7 @@ impl Record for ProviderPreparationRecord {
 }
 
 impl ProviderPreparationRecord {
-    fn root_id(&self) -> Result<[u8; 16]> {
+    pub(in crate::projection::provider) fn root_id(&self) -> Result<[u8; 16]> {
         if !codec::lower_hex(&self.root_id_hex, 32) {
             return Err(invalid("post-bootstrap root ID is not canonical"));
         }
@@ -105,7 +105,7 @@ impl ProviderPreparationRecord {
         Ok(id)
     }
 
-    fn registration(&self) -> Result<Registration> {
+    pub(in crate::projection::provider) fn registration(&self) -> Result<Registration> {
         let bytes = codec::decode_hex(&self.registration_ticket_hex, TICKET_MAX_BYTES)?;
         let ticket = Registration::decode_control_directory(&bytes).map_err(invalid)?;
         if ticket.encode() != bytes {
@@ -165,8 +165,13 @@ impl ProviderPreparationRecord {
         self.validate_fields()?;
         self.bootstrap
             .require_references(allocation, Some(prepared))?;
-        self.binding
-            .require_references(allocation, Some(prepared), None)?;
+        if self
+            .binding
+            .require_references(allocation, Some(prepared), None)?
+            != super::ReceiptBindingCheck::NoTerminal
+        {
+            return Err(invalid("post-bootstrap terminal binding is not eligible"));
+        }
         source.require_commitment(&self.source)?;
         source.require_commitment(&allocation.source)?;
         if self.root_id()? != expected_root_id {

@@ -3,12 +3,13 @@ mod bare;
 mod sidecars;
 use super::{
     journal,
-    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
+    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
 };
-pub(super) use bare::{BareConnection, WriterCloseObserver};
 #[cfg(test)]
-pub(super) use bare::{WriterOpenPoint, writer_close_result};
-use rusqlite::{Connection, ffi};
+pub(super) use bare::{writer_close_result, WriterOpenPoint};
+pub(super) use bare::{BareConnection, WriterCloseObserver};
+use layrs_vfs::Cancellation;
+use rusqlite::{ffi, Connection};
 pub(in crate::projection) use sidecars::DatabaseFile;
 use std::sync::Arc;
 
@@ -45,6 +46,25 @@ pub(super) fn read<T>(
     database: &DatabaseFile,
     validate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<ReadState<T>> {
+    read_inner(database, None, validate)
+}
+
+pub(super) fn read_cancellable<T>(
+    database: &DatabaseFile,
+    cancel: &Cancellation,
+    validate: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<ReadState<T>> {
+    read_inner(database, Some(cancel), validate)
+}
+
+fn read_inner<T>(
+    database: &DatabaseFile,
+    cancel: Option<&Cancellation>,
+    validate: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<ReadState<T>> {
+    if let Some(cancel) = cancel {
+        cancel.check().map_err(Cause::Vfs)?;
+    }
     let before = match database.snapshot() {
         Ok(v) => v,
         Err(e) => return Ok(ReadState::Unavailable(e)),
@@ -61,15 +81,19 @@ pub(super) fn read<T>(
         .geometry
         .ok_or_else(|| invalid("database replay geometry absent"));
     let mut pager_read = false;
-    let result = geometry.and_then(|geometry| {
-        bare.connection().execute_batch("BEGIN DEFERRED")?;
-        // First pager-forcing SQL; no setup PRAGMA can run before geometry.
-        let _: u64 =
-            bare.connection()
-                .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
-        pager_read = true;
-        Ok((validate(bare.connection())?, geometry))
-    });
+    let query = |c: &Connection| {
+        geometry.and_then(|geometry| {
+            c.execute_batch("BEGIN DEFERRED")?;
+            // First pager-forcing SQL; no setup PRAGMA can run before geometry.
+            let _: u64 = c.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
+            pager_read = true;
+            Ok((validate(c)?, geometry))
+        })
+    };
+    let result = match cancel {
+        Some(cancel) => super::cancellation::with_progress(bare.connection(), cancel, query),
+        None => query(bare.connection()),
+    };
     let mut observed_trigger = None;
     let result = match result {
         Err(Cause::Sqlite(trigger)) if is_rollback(&trigger) => {

@@ -3,6 +3,7 @@ mod abandon;
 mod allocation;
 mod catalog;
 mod outcome;
+mod preparation;
 mod publication;
 mod receipt_io;
 mod report;
@@ -30,6 +31,15 @@ pub use catalog::{ProviderBootstrapCatalog, ProviderCatalogDescriptor};
 pub use outcome::{
     ProviderControlCommitDisposition, ProviderControlPublicationOutcome, ProviderControlPublished,
     ProviderControlWithheld,
+};
+pub use preparation::{
+    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
+    ProviderPreparationFailure, ProviderPreparationFailureKind,
+    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
+    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
+    ProviderPreparationWriteReport, ProviderPreparationWriteState,
+    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
+    ProviderPrepared,
 };
 use report::WriteContext;
 pub use report::{

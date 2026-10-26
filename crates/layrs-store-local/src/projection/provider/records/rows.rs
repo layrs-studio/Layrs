@@ -60,6 +60,64 @@ pub(in crate::projection) fn require_bootstrap_row_data(
             "provider bootstrap requires one backend/catalog/mount row",
         ));
     }
+    require_source_row_data(backends, catalogs, descriptors, source, allocation)?;
+    let m = &mounts[0];
+    let s = source.commitment();
+    if m.id != allocation.transaction_id
+        || m.catalog_id != s.catalog_id
+        || m.id != m.record.transaction_id
+        || m.catalog_id != m.record.catalog_id
+        || m.phase != m.record.phase
+        || m.digest != m.record.digest()?
+    {
+        return Err(invalid("provider mount row projection differs"));
+    }
+    m.record.require_references(allocation, prepared)
+}
+
+/// Common bounded source projections for both mount versions. This receives
+/// complete rowsets only after the caller has validated the private schema,
+/// cardinalities, source history and metadata before materialization.
+pub(in crate::projection) fn require_source_row_data(
+    backends: &[BackendRow],
+    catalogs: &[CatalogRow<'_>],
+    descriptors: &[DescriptorRow<'_>],
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+) -> Result<()> {
+    require_source_row_data_inner(backends, catalogs, descriptors, source, allocation, None)
+}
+
+pub(in crate::projection) fn require_source_row_data_cancellable(
+    backends: &[BackendRow],
+    catalogs: &[CatalogRow<'_>],
+    descriptors: &[DescriptorRow<'_>],
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<()> {
+    require_source_row_data_inner(
+        backends,
+        catalogs,
+        descriptors,
+        source,
+        allocation,
+        Some(cancel),
+    )
+}
+
+fn require_source_row_data_inner(
+    backends: &[BackendRow],
+    catalogs: &[CatalogRow<'_>],
+    descriptors: &[DescriptorRow<'_>],
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    cancel: Option<&layrs_vfs::Cancellation>,
+) -> Result<()> {
+    super::source::check_source(cancel)?;
+    if backends.len() != 1 || catalogs.len() != 1 {
+        return Err(invalid("provider requires one backend/catalog row"));
+    }
     let backend = &backends[0];
     if backend.singleton != 1
         || backend.backend != BackendKind::Provider
@@ -81,6 +139,7 @@ pub(in crate::projection) fn require_bootstrap_row_data(
     // owned source already enforces aggregate accounting, and every projection
     // below must match that source exactly; no aggregate byte buffer is created.
     for row in descriptors {
+        super::source::check_source(cancel)?;
         if row.path.is_empty()
             || row.path.len() > codec::PATH_MAX
             || row.catalog_id.len() != 71
@@ -93,6 +152,7 @@ pub(in crate::projection) fn require_bootstrap_row_data(
         }
     }
     for (row, expected) in descriptors.iter().zip(source.descriptors()) {
+        super::source::check_source(cancel)?;
         if row.catalog_id != source.commitment().catalog_id
             || row.path != expected.path.as_str()
             || row.file_id != expected.file_id.as_str()
@@ -102,9 +162,11 @@ pub(in crate::projection) fn require_bootstrap_row_data(
         {
             return Err(invalid("provider descriptor row projection/order differs"));
         }
+        super::source::check_source(cancel)?;
         if row.manifest != expected.manifest_bytes()? {
             return Err(invalid("provider descriptor manifest bytes differ"));
         }
+        super::source::check_source(cancel)?;
     }
     let q = &catalogs[0];
     let s = source.commitment();
@@ -116,15 +178,6 @@ pub(in crate::projection) fn require_bootstrap_row_data(
     {
         return Err(invalid("provider catalog row projection differs"));
     }
-    let m = &mounts[0];
-    if m.id != allocation.transaction_id
-        || m.catalog_id != s.catalog_id
-        || m.id != m.record.transaction_id
-        || m.catalog_id != m.record.catalog_id
-        || m.phase != m.record.phase
-        || m.digest != m.record.digest()?
-    {
-        return Err(invalid("provider mount row projection differs"));
-    }
-    m.record.require_references(allocation, prepared)
+    super::source::check_source(cancel)?;
+    Ok(())
 }

@@ -1,7 +1,11 @@
 //! Complete bootstrap SQL interpretation. Pure row comparisons alone are not authority.
 use super::{
     database_io,
-    records::{self, *},
+    records::{
+        self,
+        preparation::{MountRowData, ProviderPreparationRecord},
+        *,
+    },
     recovery::error::{invalid, Result},
 };
 use crate::projection::{database, retention, selection};
@@ -9,6 +13,7 @@ use layrs_core::{
     projection::ProjectionSnapshot,
     scm::{FileManifest, RepoPath},
 };
+use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
 pub(super) enum PrivateValidation {
@@ -21,6 +26,24 @@ pub(super) enum PrivateSourceValidation {
         mount: MountRecord,
         source: ProviderBootstrapSource,
     },
+}
+pub(super) struct PrivatePreparationValidation {
+    pub(super) mount: ProviderPreparationRecord,
+    pub(super) source: ProviderBootstrapSource,
+}
+
+#[derive(Clone, Copy)]
+enum PrivateMode<'a> {
+    Bootstrap,
+    Preparation {
+        expected_binding: &'a ProviderBootstrapBinding,
+        expected_root_id: Option<[u8; 16]>,
+    },
+}
+
+enum ValidatedMount {
+    Bootstrap(MountRecord),
+    Preparation(ProviderPreparationRecord),
 }
 
 pub(super) const EMPTY_TABLES: [&str; 31] = [
@@ -84,10 +107,108 @@ pub(super) fn private_with_source(
     allocation: &AllocationRecord,
     prepared: Option<&PreparedRecord>,
 ) -> Result<PrivateSourceValidation> {
+    match private_interpret(c, allocation, prepared, PrivateMode::Bootstrap, None)? {
+        None => Ok(PrivateSourceValidation::Uninitialized),
+        Some((ValidatedMount::Bootstrap(mount), source)) => {
+            Ok(PrivateSourceValidation::Initialized { mount, source })
+        }
+        Some((ValidatedMount::Preparation(_), _)) => unreachable!("bootstrap mode is v1 only"),
+    }
+}
+
+/// Full schema8/source validation for an already authenticated post-bootstrap
+/// operation. No SQL-shaped DATA returned here establishes native READY.
+pub(super) fn private_preparation_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: [u8; 16],
+) -> Result<PrivatePreparationValidation> {
+    match private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::Preparation {
+            expected_binding,
+            expected_root_id: Some(expected_root_id),
+        },
+        None,
+    )? {
+        Some((ValidatedMount::Preparation(mount), source)) => {
+            Ok(PrivatePreparationValidation { mount, source })
+        }
+        _ => unreachable!("post-bootstrap mode is initialized v2 only"),
+    }
+}
+
+pub(super) fn private_preparation_with_source_cancellable(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: [u8; 16],
+    cancel: &Cancellation,
+) -> Result<PrivatePreparationValidation> {
+    match private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::Preparation {
+            expected_binding,
+            expected_root_id: Some(expected_root_id),
+        },
+        Some(cancel),
+    )? {
+        Some((ValidatedMount::Preparation(mount), source)) => {
+            Ok(PrivatePreparationValidation { mount, source })
+        }
+        _ => unreachable!("post-bootstrap mode is initialized v2 only"),
+    }
+}
+
+/// Derive the root ID from the bounded mount materialized by the full schema8
+/// interpreter, after its schema/cardinality/length fences and before native use.
+pub(super) fn private_preparation_reopen_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+) -> Result<PrivatePreparationValidation> {
+    match private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::Preparation {
+            expected_binding,
+            expected_root_id: None,
+        },
+        None,
+    )? {
+        Some((ValidatedMount::Preparation(mount), source)) => {
+            Ok(PrivatePreparationValidation { mount, source })
+        }
+        _ => unreachable!("post-bootstrap reopen mode is initialized v2 only"),
+    }
+}
+
+fn private_interpret(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: Option<&PreparedRecord>,
+    mode: PrivateMode<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<(ValidatedMount, ProviderBootstrapSource)>> {
+    super::cancellation::check(cancel)?;
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let observed = database_io::schema_inventory(c)?;
     if version == 0 && observed.is_empty() {
-        return Ok(PrivateSourceValidation::Uninitialized);
+        return match mode {
+            PrivateMode::Bootstrap => Ok(None),
+            PrivateMode::Preparation { .. } => {
+                Err(invalid("post-bootstrap private database is uninitialized"))
+            }
+        };
     }
     if version != 8 {
         return Err(invalid("provider bootstrap requires exact private schema8"));
@@ -105,8 +226,10 @@ pub(super) fn private_with_source(
         }
         Ok(())
     })?;
+    super::cancellation::check(cancel)?;
     // Account for every table before any potentially unbounded FK traversal.
     for table in EMPTY_TABLES {
+        super::cancellation::check(cancel)?;
         let nonempty: bool = c.query_row(
             &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
             [],
@@ -119,6 +242,7 @@ pub(super) fn private_with_source(
         }
     }
     for table in SINGLE_TABLES {
+        super::cancellation::check(cancel)?;
         let count: u64 = c.query_row(
             &format!("SELECT count(*) FROM (SELECT 1 FROM {table} LIMIT 2)"),
             [],
@@ -141,6 +265,10 @@ pub(super) fn private_with_source(
     // Exact DDL alone is not evidence that historical writes honored CHECKs.
     // Bound every materialized TEXT projection before fetching Rust Strings or
     // sorting descriptor rows; corrupt/ignore_check_constraints data is refused.
+    let mount_phase_bound = match mode {
+        PrivateMode::Bootstrap => "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('allocating','control_prepared','control_published')",
+        PrivateMode::Preparation { .. } => "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('control_published','provider_prepared')",
+    };
     for (table, predicate) in [
         (
             "projection_snapshots",
@@ -157,13 +285,14 @@ pub(super) fn private_with_source(
         ),
         (
             "projection_provider_mounts",
-            "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase NOT IN ('allocating','control_prepared','control_published')",
+            mount_phase_bound,
         ),
         (
             "projection_provider_descriptors",
             "length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(file_id AS BLOB))!=71 OR length(CAST(manifest_id AS BLOB))!=71 OR executable NOT IN (0,1) OR bytes<0",
         ),
     ] {
+        super::cancellation::check(cancel)?;
         let bad: bool = c.query_row(
             &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {predicate})"),
             [],
@@ -185,6 +314,10 @@ pub(super) fn private_with_source(
     {
         return Err(invalid("provider descriptor aggregate exceeds bound"));
     }
+    let mount_payload_bound = match mode {
+        PrivateMode::Bootstrap => 1024 * 1024,
+        PrivateMode::Preparation { .. } => ProviderPreparationRecord::MAX_BYTES as u64,
+    };
     for (table, column, bound) in [
         ("projection_meta", "identity", 65536u64),
         ("projection_snapshots", "payload", 64 * 1024 * 1024),
@@ -194,8 +327,9 @@ pub(super) fn private_with_source(
             "payload",
             super::PROVIDER_CATALOG_MAX_BYTES,
         ),
-        ("projection_provider_mounts", "payload", 1024 * 1024),
+        ("projection_provider_mounts", "payload", mount_payload_bound),
     ] {
+        super::cancellation::check(cancel)?;
         let bytes: u64 =
             c.query_row(&format!("SELECT length({column}) FROM {table}"), [], |r| {
                 r.get(0)
@@ -250,6 +384,7 @@ pub(super) fn private_with_source(
         ));
     }
     let selection = selection::at(c, 0)?;
+    super::cancellation::check(cancel)?;
     allocation.format.validate_initial_selection(&selection)?;
     let (backend_singleton, backend_name, backend_mount): (u64, String, Option<String>) = c
         .query_row(
@@ -271,6 +406,7 @@ pub(super) fn private_with_source(
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     )?;
     let catalog = CatalogRecord::decode(&catalog_payload)?;
+    super::cancellation::check(cancel)?;
     if logical
         .checked_add(catalog_payload.len() as u64)
         .is_none_or(|bytes| bytes > super::PROVIDER_CATALOG_AGGREGATE_MAX_BYTES)
@@ -293,6 +429,7 @@ pub(super) fn private_with_source(
     let mut owned = Vec::with_capacity(count as usize);
     let mut inputs = Vec::with_capacity(count as usize);
     while let Some(r) = rows.next()? {
+        super::cancellation::check(cancel)?;
         let row = OwnedRow {
             catalog: r.get(0)?,
             path: r.get(1)?,
@@ -310,7 +447,22 @@ pub(super) fn private_with_source(
     }
     drop(rows);
     drop(statement);
-    let source = ProviderBootstrapSource::validate(initial, selection, inputs)?;
+    let source = match cancel {
+        Some(cancel) => {
+            ProviderBootstrapSource::validate_cancellable(initial, selection, inputs, cancel)
+                .map_err(|error| {
+                    if cancel.is_cancelled() && records::source::is_source_cancelled(&error) {
+                        super::recovery::error::ProviderBootstrapCause::Vfs(
+                            layrs_vfs::Error::Cancelled,
+                        )
+                    } else {
+                        error.into()
+                    }
+                })?
+        }
+        None => ProviderBootstrapSource::validate(initial, selection, inputs)?,
+    };
+    super::cancellation::check(cancel)?;
     allocation.require_source_and_member(
         &source,
         std::path::Path::new(&allocation.private.metadata_path),
@@ -338,34 +490,90 @@ pub(super) fn private_with_source(
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
-    let phase = match phase.as_str() {
-        "allocating" => MountPhase::Allocating,
-        "control_prepared" => MountPhase::ControlPrepared,
-        "control_published" => MountPhase::ControlPublished,
-        _ => return Err(invalid("unsupported provider bootstrap mount phase")),
+    let catalogs = [CatalogRow {
+        id: &catalog_id,
+        source_generation,
+        source_digest: &source_digest,
+        selection_digest: &selection_digest,
+        record: &catalog,
+    }];
+    let mount = match mode {
+        PrivateMode::Bootstrap => {
+            let phase = match phase.as_str() {
+                "allocating" => MountPhase::Allocating,
+                "control_prepared" => MountPhase::ControlPrepared,
+                "control_published" => MountPhase::ControlPublished,
+                _ => return Err(invalid("unsupported provider bootstrap mount phase")),
+            };
+            let mount = MountRecord::decode(&mount_payload)?;
+            require_bootstrap_row_data(
+                &[backend],
+                &catalogs,
+                &descriptors,
+                &[MountRow {
+                    id: &mount_id,
+                    catalog_id: &mount_catalog,
+                    phase,
+                    digest: &mount_digest,
+                    record: &mount,
+                }],
+                &source,
+                allocation,
+                prepared,
+            )?;
+            ValidatedMount::Bootstrap(mount)
+        }
+        PrivateMode::Preparation {
+            expected_binding,
+            expected_root_id,
+        } => {
+            let prepared = prepared.ok_or_else(|| invalid("post-bootstrap P is absent"))?;
+            let mount = ProviderPreparationRecord::decode(&mount_payload)?;
+            let root_id = match expected_root_id {
+                Some(root_id) => root_id,
+                None => mount.root_id()?,
+            };
+            match cancel {
+                Some(cancel) => require_source_row_data_cancellable(
+                    &[backend],
+                    &catalogs,
+                    &descriptors,
+                    &source,
+                    allocation,
+                    cancel,
+                )
+                .map_err(|error| {
+                    if cancel.is_cancelled() && records::source::is_source_cancelled(&error) {
+                        super::recovery::error::ProviderBootstrapCause::Vfs(
+                            layrs_vfs::Error::Cancelled,
+                        )
+                    } else {
+                        error.into()
+                    }
+                })?,
+                None => require_source_row_data(
+                    &[backend],
+                    &catalogs,
+                    &descriptors,
+                    &source,
+                    allocation,
+                )?,
+            }
+            if &mount.binding != expected_binding {
+                return Err(invalid("post-bootstrap expected binding differs"));
+            }
+            mount.require_references(allocation, prepared, &source, root_id)?;
+            mount.require_row(MountRowData {
+                id: &mount_id,
+                catalog_id: &mount_catalog,
+                phase: &phase,
+                payload: &mount_payload,
+                digest: &mount_digest,
+            })?;
+            ValidatedMount::Preparation(mount)
+        }
     };
-    let mount = MountRecord::decode(&mount_payload)?;
-    require_bootstrap_row_data(
-        &[backend],
-        &[CatalogRow {
-            id: &catalog_id,
-            source_generation,
-            source_digest: &source_digest,
-            selection_digest: &selection_digest,
-            record: &catalog,
-        }],
-        &descriptors,
-        &[MountRow {
-            id: &mount_id,
-            catalog_id: &mount_catalog,
-            phase,
-            digest: &mount_digest,
-            record: &mount,
-        }],
-        &source,
-        allocation,
-        prepared,
-    )?;
+    super::cancellation::check(cancel)?;
     let failures: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
         [],
@@ -374,8 +582,12 @@ pub(super) fn private_with_source(
     if failures {
         return Err(invalid("provider private foreign-key corruption"));
     }
-    Ok(PrivateSourceValidation::Initialized { mount, source })
+    super::cancellation::check(cancel)?;
+    Ok(Some((mount, source)))
 }
 
+#[cfg(test)]
+#[path = "validation/preparation_tests.rs"]
+mod preparation_tests;
 #[cfg(test)]
 pub(super) mod tests;
