@@ -14,7 +14,7 @@ use crate::projection::provider::{
     transition_sql::SourceIntentEffect,
     validation,
 };
-use layrs_core::scm::FileManifest;
+use layrs_core::scm::{canonical_json, FileManifest};
 use rusqlite::{ffi, Connection, OpenFlags};
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -48,7 +48,7 @@ impl WriterCloseObserver for RefuseSourceAcknowledgement {
     }
 }
 
-fn manifests_for(
+pub(super) fn manifests_for(
     source: &crate::projection::provider::records::ProviderBootstrapSource,
     image: &super::super::managed_image::VerifiedManagedImage<'_, '_>,
 ) -> Vec<FileManifest> {
@@ -95,11 +95,65 @@ fn with_real_planned(
         &ProviderTransitionIntentRecord,
     ),
 ) {
+    with_planned_configuration(None, false, test);
+}
+
+/// The managed-content branch upgrades before retaining any session lifecycle
+/// or checkpoint. `false` deliberately makes a valid plan with no metadata
+/// envelope, so the later reservation reader must reject its measured floor.
+pub(super) fn with_content_planned(
+    sufficient_metadata: bool,
+    empty_union: bool,
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ),
+) {
+    with_planned_configuration(Some(sufficient_metadata), empty_union, test);
+}
+
+fn with_planned_configuration(
+    content_metadata: Option<bool>,
+    empty_union: bool,
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ),
+) {
     let (fixture, holder, allocation, prepared, binding) =
         capture_family::active_holder_with_writable_file_private();
-    let mut session = holder
+    let mut session = if content_metadata.is_some() {
+        drop(holder);
+        let effect = crate::projection::provider::family_upgrade::upgrade_source_family(
+            fixture.family.root(),
+            &fixture.worktree,
+            &allocation.transaction_id,
+            &mut Close::default(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            effect,
+            crate::projection::shared::schema_v2::MigrationEffect::Migrated
+        );
+        PartialStoreFamily::open_provider_active(
+            fixture.family.root(),
+            &fixture.worktree,
+            &binding.transaction_id,
+            &binding,
+        )
+        .unwrap()
         .into_disconnected_session()
-        .unwrap_or_else(|error| panic!("session withheld: {}", error.cause()));
+        .unwrap_or_else(|error| panic!("upgraded session withheld: {}", error.cause()))
+    } else {
+        holder
+            .into_disconnected_session()
+            .unwrap_or_else(|error| panic!("session withheld: {}", error.cause()))
+    };
     session.connect().unwrap();
     let path = fixture.checkout.join("README.md");
     remove_placeholder(&path);
@@ -129,9 +183,13 @@ fn with_real_planned(
     let parent_identity = parent.filesystem_identity();
     drop(parent);
     let supplied = manifests_for(&active.active.source, &image);
-    let metadata_bytes = fs::metadata(fixture.metadata.join("projection.sqlite3"))
-        .unwrap()
-        .len();
+    let legacy_metadata_bytes = if content_metadata.is_none() {
+        fs::metadata(fixture.metadata.join("projection.sqlite3"))
+            .unwrap()
+            .len()
+    } else {
+        0
+    };
     let derived = {
         let _locks = held
             .family
@@ -161,26 +219,68 @@ fn with_real_planned(
                     image.digest(),
                     Some(&cancel),
                 )?;
-                super::super::managed_plan::derive(
-                    &planned.plan.source_prefix,
-                    &closure,
-                    &image,
-                    &proof,
-                    proof.active.source.initial(),
-                    planned.plan.source_prefix.destination_identity.clone(),
-                    &parent_path,
-                    &parent_identity,
-                    &planned.plan.destination_leaf_nonce,
-                    &planned.transaction_id,
-                    &supplied,
-                    metadata_bytes,
-                )
+                let derive = |metadata| {
+                    super::super::managed_plan::derive(
+                        &planned.plan.source_prefix,
+                        &closure,
+                        &image,
+                        &proof,
+                        proof.active.source.initial(),
+                        planned.plan.source_prefix.destination_identity.clone(),
+                        &parent_path,
+                        &parent_identity,
+                        &planned.plan.destination_leaf_nonce,
+                        &planned.transaction_id,
+                        &supplied,
+                        metadata,
+                    )
+                };
+                let metadata = match content_metadata {
+                    None => legacy_metadata_bytes,
+                    Some(false) => 0,
+                    Some(true) => {
+                        let baseline = derive(0)?;
+                        let mut envelope = closure.metadata_bytes(
+                            c,
+                            &planned.plan.source_prefix,
+                            Some(&cancel),
+                        )?;
+                        for bytes in [
+                            baseline.observation.canonical_bytes().unwrap().len(),
+                            baseline.placement.canonical_bytes().unwrap().len(),
+                            canonical_json(&baseline.capture).unwrap().len(),
+                            planned.plan.source_prefix.encode()?.len(),
+                            ProviderTransitionIntentRecord::MAX_BYTES,
+                            ProviderTransitionIntentRecord::MAX_BYTES,
+                            65536,
+                        ] {
+                            envelope = envelope
+                                .checked_add(bytes as u64)
+                                .ok_or_else(|| invalid("owned metadata envelope overflow"))?;
+                        }
+                        envelope
+                    }
+                };
+                derive(metadata)
             })
             .unwrap(),
         )
         .unwrap()
     };
     planned.plan = derived.plan;
+    if empty_union {
+        // Deliberately incomplete DATA from the beginning, before allocation
+        // binds this exact plan. Private Staging consistency alone must not
+        // grant reservation authority for an omitted source/image union.
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"layrs-provider-managed-protected-manifests-v1\0");
+        hash.update(&0u64.to_be_bytes());
+        planned.plan.protected_manifests =
+            crate::projection::provider::records::transition::TransitionRowset {
+                count: 0,
+                digest: format!("blake3:{}", hash.finalize()),
+            };
+    }
     planned.encode().unwrap();
     let attempt = CaptureAttemptLock::acquire(&held.artifacts, &held.family).unwrap();
     let mut close = Close::default();

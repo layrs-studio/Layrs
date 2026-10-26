@@ -329,11 +329,70 @@ shared `recover_databases` entry is source-reviewed but not exercised by that
 native recipe. The extra managed-reservation code retained in this artifact's
 source snapshot is not qualified by these seven recipes.
 
+## Retained managed reservation (2026-10-27)
+
+`ManagedImportLease` borrows the source publication/root/attempt, destination
+allocation, fresh observation and mutable image checkpoint. Its closed API
+opens and reserves only the exact Staging plan. Image rehash occurs before
+owner/catalog gates. Each short SQL window retains the source read transaction,
+reconstructs the complete plan from source descriptors, capture history and
+current image, and verifies destination Staging plus family Initializing. The
+destination owner is already held by allocation and is never reacquired.
+
+The metadata budget is a bounded envelope: subtract the fully reconstructed
+zero-metadata charge from the durable quota, require at least the logical
+twelve-rowset and new-record byte floor, cap it at 1 GiB, then compare the whole
+rederived plan. It is not a physical SQLite allocation measurement. Manifest
+count, file/chunk sizes and reader limits precede serialization; the complete
+inline protection payload must fit its current 16 MiB envelope. Unsupported
+representations refuse before reservation rather than silently reducing the
+union. Physical capacity is checked separately at family and destination.
+
+The family predicate preserves source Ready and exact destination Initializing,
+requires matching private Staging intents and a complete canonical union, and
+allows only the exact derived reservation with its full original remaining
+charge. Roots, legacy destination installations and all exact installation rows
+are still refused by this reserve-only phase. The lower reader accepts FK OFF;
+the writer requires FK ON and a caller transaction. SQL quota insertion and
+readback are atomic; no automatic budget growth or content side effect occurs.
+
+The retained family-upgrade r2 binary also passes both independently released
+reserve-only SQL memory recipes (child 120 / outer 180 seconds). They establish
+exact insertion, no-write replay, rollback, quota and foreign-effect refusals;
+they do not establish the physical lease. Their source SHA256 is
+`3cfb0ab488906ff396326724bb6af4e2e1e4fb16466189c81867bdced191fc07`.
+The integrated physical lease compiles for all store-local targets
+(`provider-managed-reservation-check-r2.log`); final no-run build r3 exits zero.
+The retained `provider-managed-reservation-20261027-r2` artifact (471 inputs,
+CodeView age 60, EXE SHA256
+`37e8f55eae5d3acaf0ab722e59e118dbcc1e4c0e0f144f1f7132b02ff1cf6851`)
+passes **135 provider pure tests, 324 ignored**, and the two native recipes for
+exact reservation/no-write replay and acknowledgement refusal/retry. Its third
+recipe failed because its post-allocation forged plan was correctly rejected
+by the allocation holder before reaching the intended complete-union check.
+That fixture remains untouched; execution stopped before the fourth recipe.
+
+The corrected negative fixture commits its incomplete but self-consistent plan
+before SourcePlanned and allocation, and performs no later journal corruption.
+The final retained r3 artifact (471 inputs, CodeView age 61, EXE SHA256
+`5b4070957aeb4cf830c8994855b87cf07743cf0271e81886a78d418c5505e1d0`)
+passes **both remaining native recipes**: true complete-union/metadata-envelope
+refusals before reservation, and real source `sqlite3_close` BUSY after successful
+family COMMIT/close. The latter verifies the exact causal error and filesystem
+witnesses, catches assertion panics while holders remain borrowed outside the
+closure, and exits its owned child with success/failure before any finalizer or
+provider/SQLite re-entry. It qualifies stopping after uncertain source close,
+not subsequent restart or recovery. Final native source SHA256 is
+`1707f56e08cd8795ec7f6fe82c9ece85edc1551704f66d386ac654744923de9c`.
+All native executions use independently released sources, child 240 / outer
+300 seconds, fresh C: parents and serial stop-on-first-failure operation.
+
 ## Remaining boundaries
 
-The post-close injection is an acknowledgement refusal after successful close.
-It is not a genuine sqlite3_close failure, quarantined connection, interrupted
-commit or power-loss test. No content installation, claim, Ready receipt,
+The acknowledgement-refusal injections remain distinct from the separately
+qualified reservation source BUSY/quarantine recipe. Neither establishes an
+interrupted commit, restart after quarantine or power-loss guarantee.
+No content installation, claim, Ready receipt,
 family Ready publication, companion
 conversion or selection expansion is qualified by these recipes. Product routes
 and Desktop integration remain separate. The existing strict GC fence remains.

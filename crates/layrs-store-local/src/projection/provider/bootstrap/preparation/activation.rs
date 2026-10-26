@@ -3,6 +3,7 @@
 mod capture;
 mod capture_image;
 mod managed_allocation;
+mod managed_content;
 mod managed_destination;
 mod managed_image;
 mod managed_journal;

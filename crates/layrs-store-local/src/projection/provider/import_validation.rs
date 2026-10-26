@@ -62,6 +62,30 @@ impl VerifiedImportClosure {
     pub(in crate::projection) fn prefix_id(&self) -> &str {
         &self.metadata.prefix_id
     }
+    /// Logical byte floor of the twelve authenticated immutable rowsets. This
+    /// is not physical SQLite allocation or a transferable capacity proof.
+    /// Require the original retained source transaction and recheck its scope.
+    pub(in crate::projection::provider) fn metadata_bytes(
+        &self,
+        c: &Connection,
+        prefix: &ProviderImportPrefixRecord,
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<u64> {
+        self.require_source_connection(c)?;
+        scoped::with_scope(
+            c,
+            self.metadata.kind,
+            prefix,
+            &scoped::ScopeView::from_metadata(&self.metadata),
+            cancel,
+            |specs, closure| {
+                if closure != &self.closure || closure != &prefix.closure {
+                    return Err(invalid("managed metadata scope differs"));
+                }
+                Ok(rows::preflight(c, specs, cancel)?.metadata_bytes())
+            },
+        )
+    }
     /// Compare the exact private proof used to verify this SQL closure. A
     /// different, individually valid provider source cannot be substituted.
     pub(in crate::projection::provider) fn require_provider_inputs(

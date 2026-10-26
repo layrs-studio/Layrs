@@ -194,6 +194,124 @@ pub(super) fn derive(
     )
 }
 
+/// Reconstruct the complete durable plan before reserving any family space.
+/// Its metadata component is a bounded envelope, never a measurement inferred
+/// from a mutable SQLite file length. The source transaction remains retained.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rederive_reservation(
+    source_c: &rusqlite::Connection,
+    closure: &VerifiedImportClosure,
+    image: &VerifiedManagedImage<'_, '_>,
+    proof: &PrivateActiveCaptureValidation,
+    fresh: &ProjectionSnapshot,
+    intent: &crate::projection::provider::records::transition::ProviderTransitionIntentRecord,
+    manifests: &[FileManifest],
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<ManagedPlanData> {
+    require_catalog_representable(manifests, cancel)?;
+    let plan = &intent.plan;
+    let derive_with = |metadata| {
+        derive(
+            &plan.source_prefix,
+            closure,
+            image,
+            proof,
+            fresh,
+            plan.source_prefix.destination_identity.clone(),
+            &plan.destination_parent,
+            &plan.destination_parent_identity,
+            &plan.destination_leaf_nonce,
+            &intent.transaction_id,
+            manifests,
+            metadata,
+        )
+    };
+    cancel.check()?;
+    // This derives the union from source descriptors, capture history and the
+    // retained image. A caller-supplied rehashed subset cannot pass this step.
+    let baseline = derive_with(0)?;
+    let metadata = plan
+        .quota_bytes
+        .checked_sub(baseline.quota_bytes)
+        .filter(|bytes| *bytes <= MAX_METADATA_BYTES)
+        .ok_or_else(|| invalid("managed reserved metadata envelope invalid"))?;
+    let mut minimum = closure.metadata_bytes(source_c, &plan.source_prefix, Some(cancel))?;
+    for bytes in [
+        baseline
+            .observation
+            .canonical_bytes()
+            .map_err(|e| invalid(e.to_string()))?
+            .len(),
+        baseline
+            .placement
+            .canonical_bytes()
+            .map_err(|e| invalid(e.to_string()))?
+            .len(),
+        canonical_json(&baseline.capture)
+            .map_err(|e| invalid(e.to_string()))?
+            .len(),
+        plan.source_prefix.encode()?.len(),
+        intent.encode()?.len(),
+        super::managed_destination::destination_intent(intent)?
+            .encode()?
+            .len(),
+    ] {
+        minimum = minimum
+            .checked_add(bytes as u64)
+            .ok_or_else(|| invalid("managed metadata floor overflow"))?;
+    }
+    if metadata < minimum {
+        return Err(invalid(
+            "managed reservation metadata envelope insufficient",
+        ));
+    }
+    let derived = derive_with(metadata)?;
+    if derived.plan != *plan {
+        return Err(invalid(
+            "managed durable plan differs from retained source and image",
+        ));
+    }
+    Ok(derived)
+}
+
+fn require_catalog_representable(
+    manifests: &[FileManifest],
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<()> {
+    if manifests.len() > MAX_MANIFESTS {
+        return Err(invalid("managed manifest count exceeds catalog bound"));
+    }
+    // Current roots encode the complete union inline. Reserve no plan that
+    // this representation cannot protect; leave bounded framing room rather
+    // than silently dropping representations to fit the catalog.
+    let mut protection_bytes = 65536u64;
+    for manifest in manifests {
+        cancel.check()?;
+        if manifest.byte_length() > MAX_CAPTURE_FILE_BYTES
+            || manifest.chunks().len() > 1024
+            || manifest
+                .chunks()
+                .iter()
+                .any(|chunk| chunk.byte_length() == 0 || chunk.byte_length() > 1048576)
+        {
+            return Err(invalid(
+                "managed exact representation exceeds catalog bounds",
+            ));
+        }
+        let payload = canonical_json(manifest).map_err(|e| invalid(e.to_string()))?;
+        if payload.len() > 262144 {
+            return Err(invalid(
+                "managed exact manifest payload exceeds catalog bound",
+            ));
+        }
+        protection_bytes = protection_bytes
+            .checked_add(payload.len() as u64 + 1)
+            .filter(|bytes| *bytes <= 16 * 1024 * 1024)
+            .ok_or_else(|| invalid("managed protected union exceeds inline root bound"))?;
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OverlayRow<'a> {

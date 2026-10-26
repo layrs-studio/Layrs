@@ -11,6 +11,27 @@ const DIR: &str = "fs:v1:1111111111111111:2222222222222222";
 const NONCE: &str = "00000000000000000000000000000001";
 const TX: &str = "00000000000000000000000000000002";
 
+#[test]
+fn reservation_preflight_refuses_representations_current_readers_cannot_load() {
+    let cancel = layrs_vfs::Cancellation::default();
+    let chunks: Vec<_> = (0..1024).map(|_| Chunk::new(vec![7]).unwrap()).collect();
+    let supported =
+        FileManifest::from_chunks(ChunkingDescriptor::deterministic_fixed(1).unwrap(), &chunks)
+            .unwrap();
+    require_catalog_representable(&[supported], &cancel).unwrap();
+    let chunks: Vec<_> = (0..1025).map(|_| Chunk::new(vec![7]).unwrap()).collect();
+    let too_many =
+        FileManifest::from_chunks(ChunkingDescriptor::deterministic_fixed(1).unwrap(), &chunks)
+            .unwrap();
+    assert!(require_catalog_representable(&[too_many], &cancel).is_err());
+    let too_large = FileManifest::from_chunks(
+        ChunkingDescriptor::deterministic_fixed(2 * 1024 * 1024).unwrap(),
+        &[Chunk::new(vec![7; 1024 * 1024 + 1]).unwrap()],
+    )
+    .unwrap();
+    assert!(require_catalog_representable(&[too_large], &cancel).is_err());
+}
+
 fn row(count: u64) -> ImportRowset {
     ImportRowset {
         count,

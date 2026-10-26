@@ -1,11 +1,23 @@
 //! Real API SQLITE_BUSY close fixture; no production callback or order change.
 use std::cell::Cell;
 thread_local! { static BUSY_CLOSE:Cell<bool>=const{Cell::new(false)}; }
+thread_local! { static BUSY_READ_CLOSE:Cell<bool>=const{Cell::new(false)}; }
 pub(in crate::projection::provider) fn busy_next_writable_close() {
     BUSY_CLOSE.with(|v| v.set(true));
 }
+/// Arm only after the fixture's successful family writer close. The next
+/// non-writable close must be the retained source reader; reference readers
+/// also use this category, so the caller must establish that precise order.
+pub(in crate::projection::provider) fn busy_next_read_close() {
+    BUSY_READ_CLOSE.with(|v| v.set(true));
+}
 pub(super) fn before_close(connection: &rusqlite::Connection, writable: bool) {
-    if !writable || !BUSY_CLOSE.with(|v| v.replace(false)) {
+    let armed = if writable {
+        BUSY_CLOSE.with(|v| v.replace(false))
+    } else {
+        BUSY_READ_CLOSE.with(|v| v.replace(false))
+    };
+    if !armed {
         return;
     }
     let mut statement = std::ptr::null_mut();

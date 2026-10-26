@@ -1,7 +1,7 @@
 //! Bounded normalized SQL rowset commitments. This module has no path or
 //! content capability; callers first authenticate schema and rowset scope.
 use super::*;
-use rusqlite::{Connection, ToSql, types::ValueRef};
+use rusqlite::{types::ValueRef, Connection, ToSql};
 
 const MAX_CLOSURE_ROWS: u64 = 1_000_000;
 const MAX_CLOSURE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -55,6 +55,12 @@ pub(super) struct Spec<'a> {
 pub(super) struct Preflight {
     counts: Vec<u64>,
     bytes: Vec<u64>,
+}
+impl Preflight {
+    pub(super) fn metadata_bytes(&self) -> u64 {
+        // preflight checked the aggregate against MAX_CLOSURE_BYTES.
+        self.bytes.iter().sum()
+    }
 }
 
 pub(super) fn preflight(

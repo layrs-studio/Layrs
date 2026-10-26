@@ -18,6 +18,9 @@ use crate::projection::provider::{
 use layrs_vfs::Cancellation;
 use rusqlite::{params, Connection, OptionalExtension};
 
+#[path = "provider_import/content.rs"]
+pub(in crate::projection) mod content;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::projection) enum ImportRegistration {
     Absent,
@@ -66,6 +69,54 @@ fn validate_import_initializing(
 
 #[allow(clippy::too_many_arguments)]
 fn validate_unreserved(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    let registration = validate_import_base(
+        family,
+        c,
+        source_a,
+        source_p,
+        source_activation,
+        source_capture,
+        source_copying,
+        phase,
+        cancel,
+    )?;
+    let owner = source_copying
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("import destination absent"))?
+        .format
+        .identity
+        .worktree_id
+        .as_str();
+    for sql in [
+        "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+        "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
+        "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+    ] {
+        cancellation::check(cancel)?;
+        if c.query_row(sql, [owner], |row| row.get::<_, bool>(0))? {
+            return Err(invalid("import destination has a root/reservation/installation"));
+        }
+    }
+    family.verify()?;
+    cancellation::check(cancel)?;
+    Ok(registration)
+}
+
+/// Shared source/owner interpretation. Content effects are checked separately
+/// by the strict unreserved and reserve-only readers; neither may skip them.
+#[allow(clippy::too_many_arguments)]
+fn validate_import_base(
     family: &FamilyAccess,
     c: &Connection,
     source_a: &AllocationRecord,
@@ -193,17 +244,6 @@ fn validate_unreserved(
         return Err(invalid(
             "import Staging requires existing Initializing registration",
         ));
-    }
-    for sql in [
-        "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
-        "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
-        "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
-    ] {
-        cancellation::check(cancel)?;
-        let present: bool = c.query_row(sql, [owner], |row| row.get(0))?;
-        if present {
-            return Err(invalid("import destination has a root/reservation/installation"));
-        }
     }
     family.verify()?;
     cancellation::check(cancel)?;
