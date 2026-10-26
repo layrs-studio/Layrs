@@ -21,6 +21,8 @@ mod receipts;
 mod rows;
 #[path = "records/source.rs"]
 pub(in crate::projection) mod source;
+#[path = "records/transition.rs"]
+pub(in crate::projection) mod transition;
 
 use crate::projection::{Result, invalid};
 use layrs_core::scm::canonical_json;

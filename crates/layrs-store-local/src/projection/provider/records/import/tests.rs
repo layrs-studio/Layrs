@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection::{provider::validation::tests::fixture::Fixture as Pure, RecoveryBinding};
+use crate::projection::{RecoveryBinding, provider::validation::tests::fixture::Fixture as Pure};
 use layrs_core::scm::{SpaceId, StoreId, WorktreeId};
 
 const ID0: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
@@ -157,13 +157,15 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(forged
-        .require_references(ImportSourceReferences::Provider {
-            allocation: &f.allocation,
-            prepared: &f.prepared,
-            activation: &forged_map,
-        })
-        .is_err());
+    assert!(
+        forged
+            .require_references(ImportSourceReferences::Provider {
+                allocation: &f.allocation,
+                prepared: &f.prepared,
+                activation: &forged_map,
+            })
+            .is_err()
+    );
 
     let alternate = Pure::new("G0", false);
     assert_ne!(
@@ -185,13 +187,15 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(forged
-        .require_references(ImportSourceReferences::Provider {
-            allocation: &f.allocation,
-            prepared: &f.prepared,
-            activation: &forged_map,
-        })
-        .is_err());
+    assert!(
+        forged
+            .require_references(ImportSourceReferences::Provider {
+                allocation: &f.allocation,
+                prepared: &f.prepared,
+                activation: &forged_map,
+            })
+            .is_err()
+    );
 }
 fn segments_digest(segments: &[ImportedSegment]) -> String {
     let mut h = blake3::Hasher::new();
@@ -211,6 +215,8 @@ fn receipt_from(prefix: &ProviderImportPrefixRecord, tx: &str) -> ProviderTransi
         schema_version: RECEIPT_SCHEMA.into(),
         owner_identity_digest: ID0.into(),
         transaction_id: tx.into(),
+        transition_plan_digest: ID1.into(),
+        destination_proof_digest: ID1.into(),
         source_prefix_id: prefix.digest().unwrap(),
         source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
         parent_receipt_id: prefix.ancestry_root_receipt.clone(),
@@ -230,6 +236,59 @@ fn receipt_from(prefix: &ProviderImportPrefixRecord, tx: &str) -> ProviderTransi
         companion_files: rowset(0),
         companion_deletions: rowset(0),
     }
+}
+
+#[test]
+fn receipt_companion_commits_header_local_domains() {
+    let prefix = prefix();
+    let files_digest = ordered_companion_rowset(FILES_DOMAIN, &[]).unwrap();
+    let deletions_digest = ordered_companion_rowset(DELETIONS_DOMAIN, &[]).unwrap();
+    let header = ProviderCompanionHeaderRecord {
+        schema_version: COMPANION_SCHEMA.into(),
+        source_identity: prefix.source.identity().clone(),
+        source_private_schema: 8,
+        source_generation: prefix.source.version().generation,
+        source_capture_count: 0,
+        source_capture_head: None,
+        import_prefix_id: prefix.digest().unwrap(),
+        catalog_id: None,
+        content_mappings: prefix.closure.content_mappings.clone(),
+        file_count: 0,
+        deletion_count: 0,
+        files_digest: files_digest.clone(),
+        deletions_digest: deletions_digest.clone(),
+    };
+    header.validate_rows(&[], &[]).unwrap();
+    let mut receipt = receipt_from(&prefix, "companion");
+    receipt.companion_id = Some(header.digest().unwrap());
+    receipt.companion_files = ImportRowset {
+        count: 0,
+        digest: files_digest,
+    };
+    receipt.companion_deletions = ImportRowset {
+        count: 0,
+        digest: deletions_digest,
+    };
+    receipt.require_companion(&header).unwrap();
+    receipt.companion_files.digest = ID1.into();
+    assert!(receipt.require_companion(&header).is_err());
+}
+
+#[test]
+fn import_kind_names_destination_and_is_independent_of_source() {
+    let mut ordinary = prefix();
+    ordinary.kind = ProviderImportKind::ExpandedProvider;
+    ordinary.validate_fields().unwrap();
+    let (mut provider, fixture, activation) = provider_prefix();
+    provider.kind = ProviderImportKind::ManagedOrdinary;
+    provider.validate_fields().unwrap();
+    provider
+        .require_references(ImportSourceReferences::Provider {
+            allocation: &fixture.allocation,
+            prepared: &fixture.prepared,
+            activation: &activation,
+        })
+        .unwrap();
 }
 
 #[test]
@@ -389,8 +448,8 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
         digest: &file_digest,
     };
     file.require_row(ID0, projection).unwrap();
-    assert!(file
-        .require_row(
+    assert!(
+        file.require_row(
             ID0,
             CompanionFileRowData {
                 companion_id: ID0,
@@ -405,7 +464,8 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
                 digest: &file_digest,
             }
         )
-        .is_err());
+        .is_err()
+    );
     deletion
         .require_row(
             ID0,
@@ -446,20 +506,24 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
     header
         .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
         .unwrap();
-    assert!(header
-        .require_row(CompanionHeaderRowData {
-            id: &header.digest().unwrap(),
-            file_count: 1,
-            deletion_count: 1,
-            files_digest: &header.files_digest,
-            deletions_digest: &header.deletions_digest,
-            payload: &header.encode().unwrap(),
-        })
-        .is_ok());
+    assert!(
+        header
+            .require_row(CompanionHeaderRowData {
+                id: &header.digest().unwrap(),
+                file_count: 1,
+                deletion_count: 1,
+                files_digest: &header.files_digest,
+                deletions_digest: &header.deletions_digest,
+                payload: &header.encode().unwrap(),
+            })
+            .is_ok()
+    );
     deletion.path = RepoPath::parse("a.txt").unwrap();
-    assert!(header
-        .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
-        .is_err());
+    assert!(
+        header
+            .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
+            .is_err()
+    );
     header.files_digest = RAW.into(); // raw64 is never a schema8 rowset digest
     assert!(header.validate_fields().is_err());
     assert!(
@@ -476,6 +540,8 @@ fn receipt_binds_prefix_and_new_destination_generation() {
         schema_version: RECEIPT_SCHEMA.into(),
         owner_identity_digest: ID0.into(),
         transaction_id: "transition-one".into(),
+        transition_plan_digest: ID1.into(),
+        destination_proof_digest: ID1.into(),
         source_prefix_id: prefix.digest().unwrap(),
         source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
         parent_receipt_id: None,

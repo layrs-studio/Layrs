@@ -1,5 +1,37 @@
 # Import metadata and provider status checkpoint — 26 October 2026
 
+## Full SQL source closure and transition intent
+
+The bounded import reader now checks the exact schema and FORMAT ingress,
+reconstructs the receipt ancestry, verifies each historical terminal version,
+and rehashes twelve explicitly scoped immutable rowsets. Capture origins and
+destination boundaries are resolved from that ancestry. Historical activation
+maps are checked against reconstructed catalogues and their source/placement
+snapshots. Captured content mappings bind lengths; companion preimages bind the
+effective file at the exact path. This is SQL metadata evidence only.
+
+The schema-8 transition intent codec binds a compact source prefix and full
+immutable plan before destination creation. The final receipt separately binds
+the full plan and the actual postcreation destination proof. The owner digest
+is computed after creation; reservation operations include destination, prefix
+and transaction. Cancellation retains acquired facts and grants no cleanup.
+
+`provider-import-reader-check-r7.log` records a successful workspace/all-targets
+check. After the final negative-fixture correction,
+`provider-import-reader-pure-r3.log` records **117 passed, 292 ignored**.
+`provider-import-reader-20261026-r1` retains 430 source inputs and EXE/PDB:
+SHA-256 `434091c70dd544c111152bdf72391d4ebabae80a98ce32cb408ca32ba4a68e4e`,
+PDB age 34. Three independently source-reviewed, bounded in-memory SQLite child
+recipes pass: scoped high-water/hash checks, exact Active source/map validation,
+and two successive imports with historical closure, FORMAT, terminal version,
+receipt boundary and map falsifications. Each negative asserts its intended
+refusal. Their database handles close observably; the fixture parent is fresh.
+
+The SQL recipes do not yet exercise nonempty content captures or companion SQL
+rows. The companion exact-path/preimage behavior has a focused pure test.
+Family protection, content bytes, destination creation/writer/restart, ordinary
+admission, expansion and product-host qualification remain separate work.
+
 Capture and completed-publication readers now accept an origin supplied by a
 separately verified lineage index. They reuse the existing canonical SQL,
 history, snapshot, selection, permission and size checks without recursively

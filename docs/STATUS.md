@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Fermeture SQL d’import et journal de transition
+
+Le lecteur vérifie maintenant le préfixe immuable complet, les origines après
+plusieurs imports, leurs frontières et les maps d’activation historiques. Le
+journal lie son reçu au plan complet et aux identités physiques obtenues après
+création. La compilation workspace, **117 tests purs** et **trois recettes SQL**
+passent. Le [checkpoint d’import](plans/worktrees-partial-vfs-import-seams-checkpoint.md)
+conserve les preuves et leurs limites. La création de destination gérée et son
+writer reprenable restent l’étape en cours.
+
 ## Reprise de capture après arrêt brutal
 
 Deux recettes natives arrêtent réellement le processus de capture après Staging,

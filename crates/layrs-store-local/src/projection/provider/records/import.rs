@@ -1,12 +1,13 @@
 //! Immutable import/companion DATA for the existing private schema 8.
 //! These codecs authenticate no SQL rowset, source store, native root or claim.
 use super::{
-    activation::{owner_identity_digest, ProviderActivationRecord},
-    codec, invalid, AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt,
-    ReceiptBindingCheck, ReceiptRef, Record,
+    AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt, ReceiptBindingCheck,
+    ReceiptRef, Record,
+    activation::{ProviderActivationRecord, owner_identity_digest},
+    codec, invalid,
 };
-use crate::projection::{format, ProjectionIdentity, Result};
-use layrs_core::scm::{canonical_json, FileId, FileManifestId, RepoPath};
+use crate::projection::{ProjectionIdentity, Result, format};
+use layrs_core::scm::{FileId, FileManifestId, RepoPath, canonical_json};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -64,6 +65,7 @@ pub(in crate::projection) struct ImportClosure {
     pub activation_maps: ImportRowset,
     pub transition_receipts: ImportRowset,
     pub companions: ImportRowset,
+    /// Global normalized SQL rows over every inherited companion.
     pub companion_files: ImportRowset,
     pub companion_deletions: ImportRowset,
     pub content_mappings: ImportRowset,
@@ -183,12 +185,14 @@ impl ImportSource {
             binding,
             activation_map_id,
             private_schema,
+            identity,
             ..
         } = self
         {
             if *private_schema != 8
                 || binding.prepared.as_ref().map(|p| &p.receipt) != Some(prepared)
                 || &binding.allocation != allocation
+                || &binding.recovery.identity != identity
             {
                 return Err(invalid("import provider receipt references differ"));
             }
@@ -621,6 +625,10 @@ pub(in crate::projection) struct ProviderTransitionReceiptRecord {
     pub schema_version: String,
     pub owner_identity_digest: String,
     pub transaction_id: String,
+    /// Digest of the complete canonical transition plan, independent of this receipt.
+    pub transition_plan_digest: String,
+    /// Digest of the verified destination proof at the import boundary.
+    pub destination_proof_digest: String,
     pub source_prefix_id: String,
     pub source_prefix: ProviderImportPrefixRecord,
     pub parent_receipt_id: Option<String>,
@@ -637,6 +645,8 @@ pub(in crate::projection) struct ProviderTransitionReceiptRecord {
     pub protected_manifests: ImportRowset,
     pub content_mappings: ImportRowset,
     pub companion_id: Option<String>,
+    /// This companion's ordered path+row-digest commitments, identical to
+    /// `ProviderCompanionHeaderRecord.files_digest/deletions_digest`.
     pub companion_files: ImportRowset,
     pub companion_deletions: ImportRowset,
 }
@@ -645,6 +655,8 @@ impl Record for ProviderTransitionReceiptRecord {
     fn validate_fields(&self) -> Result<()> {
         codec::schema(&self.schema_version, RECEIPT_SCHEMA)?;
         codec::digest_token(&self.owner_identity_digest)?;
+        codec::digest_token(&self.transition_plan_digest)?;
+        codec::digest_token(&self.destination_proof_digest)?;
         format::validate_identity(&self.source_identity)?;
         format::validate_identity(&self.destination_identity)?;
         if self.transaction_id.is_empty()
@@ -728,6 +740,21 @@ impl ProviderTransitionReceiptRecord {
             || self.content_mappings != prefix.closure.content_mappings
         {
             return Err(invalid("transition receipt imported prefix differs"));
+        }
+        Ok(())
+    }
+
+    pub fn require_companion(&self, header: &ProviderCompanionHeaderRecord) -> Result<()> {
+        self.validate_fields()?;
+        header.validate_fields()?;
+        let header_id = header.digest()?;
+        if self.companion_id.as_deref() != Some(header_id.as_str())
+            || self.companion_files.count != header.file_count
+            || self.companion_files.digest != header.files_digest
+            || self.companion_deletions.count != header.deletion_count
+            || self.companion_deletions.digest != header.deletions_digest
+        {
+            return Err(invalid("transition receipt companion rowsets differ"));
         }
         Ok(())
     }

@@ -18,7 +18,7 @@ use crate::projection::{
 use layrs_core::scm::{FileId, RepoPath};
 use rusqlite::params;
 
-fn active_fixture(
+pub(in crate::projection::provider) fn active_fixture(
     c: &Connection,
     writable: bool,
 ) -> (

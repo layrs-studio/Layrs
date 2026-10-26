@@ -17,6 +17,8 @@ use layrs_core::{
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 mod capture;
+#[cfg(test)]
+pub(in crate::projection::provider) use capture::tests::active_fixture;
 pub(in crate::projection) use capture::{CaptureContentProof, PrivateCaptureProof};
 
 pub(super) enum PrivateValidation {
@@ -43,6 +45,27 @@ pub(super) struct PrivateActiveValidation {
 pub(super) struct PrivateActiveCaptureValidation {
     pub(super) active: PrivateActiveValidation,
     pub(super) capture: PrivateCaptureProof,
+}
+impl PrivateActiveCaptureValidation {
+    /// Borrow only validated private SQL DATA for the import interpreter.
+    /// Family ownership and native READY remain separate caller obligations.
+    pub(in crate::projection::provider) fn import_parts(
+        &self,
+    ) -> (
+        &ProviderActiveMountRecord,
+        &ProviderActivationRecord,
+        &ProviderBootstrapSource,
+        &VersionedProjection,
+        &PrivateCaptureProof,
+    ) {
+        (
+            &self.active.mount,
+            &self.active.activation,
+            &self.active.source,
+            &self.active.activated,
+            &self.capture,
+        )
+    }
 }
 pub(super) enum PrivateActivationStateValidation {
     Prepared(PrivatePreparationValidation),

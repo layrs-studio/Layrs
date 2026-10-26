@@ -458,4 +458,4 @@ pub(super) fn validate(
 
 #[cfg(test)]
 #[path = "capture/tests.rs"]
-mod tests;
+pub(in crate::projection::provider) mod tests;

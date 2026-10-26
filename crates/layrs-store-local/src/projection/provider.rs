@@ -42,6 +42,8 @@ pub(super) mod database_io;
 #[cfg(windows)]
 mod journal;
 #[cfg(windows)]
+pub(in crate::projection) mod import_validation;
+#[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]
 pub use ticket_input::read_provider_ticket_document;
