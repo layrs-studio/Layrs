@@ -3,7 +3,7 @@
 //! remain caller obligations. It grants neither ordinary admission nor Ready.
 use super::{
     cancellation, database_io,
-    import_validation::{self, ImportDatabaseKind},
+    import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
     records::{
         activation::ProviderActivationRecord,
         import::{
@@ -22,6 +22,7 @@ use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
 pub(in crate::projection::provider) struct EmptyIngress;
+pub(in crate::projection::provider) struct CopiedPrefix;
 
 pub(super) fn require_inputs(
     marker: &format::Marker,
@@ -115,6 +116,55 @@ pub(in crate::projection::provider) fn read_empty(
     intent: &ProviderTransitionIntentRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<EmptyIngress> {
+    read_state(
+        c, marker, source, allocation, prepared, activation, prefix, intent, None, cancel,
+    )?;
+    Ok(EmptyIngress)
+}
+
+/// A copied prefix is still Destination Copying, with its immutable tables
+/// equal to the retained source proof. No Ready or ordinary admission follows.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn read_copied(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    proof: &VerifiedImportClosure,
+    cancel: Option<&Cancellation>,
+) -> Result<CopiedPrefix> {
+    read_state(
+        c,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        Some(proof),
+        cancel,
+    )?;
+    Ok(CopiedPrefix)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_state(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    copied: Option<&VerifiedImportClosure>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("destination ingress requires retained transaction"));
@@ -136,15 +186,29 @@ pub(in crate::projection::provider) fn read_empty(
         )?;
         let expected = match name.as_str() {
             "projection_meta"
-            | "projection_snapshots"
             | "projection_head"
-            | "projection_selections"
             | "projection_backend"
             | "projection_imports"
-            | "projection_provider_transitions" => 1,
-            _ => 0,
+            | "projection_provider_transitions" => Some(1),
+            "projection_snapshots" | "projection_selections" if copied.is_some() => None,
+            "projection_snapshots" | "projection_selections" => Some(1),
+            "projection_captures"
+            | "projection_publications"
+            | "projection_provider_catalogs"
+            | "projection_provider_descriptors"
+            | "projection_provider_activations"
+            | "projection_provider_transition_receipts"
+            | "projection_provider_companions"
+            | "projection_provider_companion_files"
+            | "projection_provider_companion_deletions"
+            | "projection_content"
+                if copied.is_some() =>
+            {
+                None
+            }
+            _ => Some(0),
         };
-        if observed != expected {
+        if expected.is_some_and(|expected| observed != expected) {
             return Err(invalid(
                 "destination EmptyIngress table cardinality differs",
             ));
@@ -152,7 +216,7 @@ pub(in crate::projection::provider) fn read_empty(
     }
     cancellation::check(cancel)?;
     let (generation, digest_len, parent_null, payload_len): (u64, u64, bool, u64) =
-        c.query_row("SELECT generation,length(CAST(digest AS BLOB)),parent_digest IS NULL,length(payload) FROM projection_snapshots", [],
+        c.query_row("SELECT generation,length(CAST(digest AS BLOB)),parent_digest IS NULL,length(payload) FROM projection_snapshots WHERE generation=0", [],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
     if generation != 0 || digest_len != 64 || !parent_null || payload_len > 64 * 1024 * 1024 {
         return Err(invalid("destination initial snapshot shape differs"));
@@ -179,11 +243,15 @@ pub(in crate::projection::provider) fn read_empty(
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    if head != (1, 0) {
+    let source_generation = match &prefix.source {
+        ImportSource::Provider { version, .. } => version.generation,
+        _ => return Err(invalid("destination copied source is not provider")),
+    };
+    if head != (1, copied.map_or(0, |_| source_generation)) {
         return Err(invalid("destination EmptyIngress head differs"));
     }
     let (selection_generation, digest_len, selection_payload_len): (u64, u64, u64) = c.query_row(
-        "SELECT generation,length(CAST(digest AS BLOB)),length(payload) FROM projection_selections",
+            "SELECT generation,length(CAST(digest AS BLOB)),length(payload) FROM projection_selections WHERE generation=0",
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
@@ -243,6 +311,9 @@ pub(in crate::projection::provider) fn read_empty(
     if &observed != intent {
         return Err(invalid("destination intent differs from expected Copying"));
     }
+    if let Some(proof) = copied {
+        import_validation::require_exact_copied_rows(c, marker, prefix, proof, cancel)?;
+    }
     cancellation::check(cancel)?;
-    Ok(EmptyIngress)
+    Ok(())
 }

@@ -381,5 +381,9 @@ mod tests {
 mod managed_image_tests;
 
 #[cfg(test)]
+#[path = "session/managed_allocation_tests.rs"]
+mod managed_allocation_tests;
+
+#[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]
 mod managed_journal_tests;

@@ -1,11 +1,12 @@
 use super::*;
 use crate::projection::provider::{
     database_io::BareConnection,
+    import_validation::{self, ImportDatabaseKind},
     process_profile::tests::child,
     records::{
         import::{
-            ImportClosure, ImportRowset, ImportSource, ImportVersion, ProviderImportKind,
-            ProviderImportPrefixRecord,
+            ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
+            ProviderImportKind, ProviderImportPrefixRecord,
         },
         transition::{
             ProviderTransitionIntentRecord, TransitionBackendKind, TransitionDestinationProof,
@@ -14,7 +15,7 @@ use crate::projection::provider::{
         },
         Receipt,
     },
-    validation::active_fixture,
+    validation::{active_fixture, private_active_capture_with_source},
 };
 use layrs_core::scm::WorktreeId;
 
@@ -106,6 +107,7 @@ fn inputs(source: &Connection) -> Inputs {
         format: marker.clone(),
         private_database_identity: "1:0:123".into(),
         family_marker_digest: fixture.allocation.family.marker_digest.clone(),
+        format_file_identity: "1:0:124".into(),
         native_control_identity_hex: None,
         native_root_identity: None,
     };
@@ -180,6 +182,65 @@ fn inspect(c: &Connection, data: &Inputs) -> Result<destination_validation::Empt
         &data.intent,
         None,
     )
+}
+
+fn verify_provider_prefix<'a>(
+    source_connection: &'a Connection,
+    data: &mut Inputs,
+) -> import_validation::VerifiedImportClosure {
+    let marker = &data.fixture.allocation.format;
+    let metadata = import_validation::read_source_metadata(
+        source_connection,
+        marker,
+        ImportDatabaseKind::Provider,
+        &data.prefix,
+        ImportSourceReferences::Provider {
+            allocation: &data.fixture.allocation,
+            prepared: &data.fixture.prepared,
+            activation: &data.activation,
+        },
+        RAW,
+        None,
+    )
+    .unwrap();
+    data.prefix.closure = import_validation::compute_scoped_closure(
+        source_connection,
+        ImportDatabaseKind::Provider,
+        &data.prefix,
+        &metadata,
+        None,
+    )
+    .unwrap();
+    data.marker.import_digest = Some(data.prefix.digest().unwrap());
+    data.intent.plan.source_prefix =
+        ProviderImportPrefixRecord::decode(&data.prefix.encode().unwrap()).unwrap();
+    data.intent.plan.source_prefix_id = data.prefix.digest().unwrap();
+    data.intent.destination.as_mut().unwrap().format = data.marker.clone();
+    data.intent.validate_fields().unwrap();
+    let active = private_active_capture_with_source(
+        source_connection,
+        &data.fixture.allocation,
+        &data.fixture.prepared,
+        &data.activation.binding,
+        Some([0x41; 16]),
+        None,
+    )
+    .unwrap();
+    import_validation::verify_source(
+        source_connection,
+        marker,
+        ImportDatabaseKind::Provider,
+        &data.prefix,
+        ImportSourceReferences::Provider {
+            allocation: &data.fixture.allocation,
+            prepared: &data.fixture.prepared,
+            activation: &data.activation,
+        },
+        Some(&active),
+        RAW,
+        None,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -353,6 +414,115 @@ fn empty_ingress_refuses_oversized_parent_and_mount_before_text_read() {
             c.execute_batch("ROLLBACK TO mount; RELEASE mount").unwrap();
             inspect(c, &data).unwrap();
             c.execute_batch("COMMIT").unwrap();
+            destination.finish(Ok(())).unwrap();
+            source.finish(Ok(())).unwrap();
+        },
+    );
+}
+
+#[test]
+#[ignore = "owned audited Windows SQLite process; copied provider prefix promotion"]
+fn copied_prefix_promotes_replays_and_refuses_tail_or_head_corruption() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::copied_prefix_promotes_replays_and_refuses_tail_or_head_corruption"
+        ),
+        120,
+        || {
+            child::declare();
+            let source = BareConnection::reference().unwrap();
+            let source_c = source.connection();
+            let mut data = inputs(source_c);
+            source_c.execute_batch("BEGIN DEFERRED").unwrap();
+            let proof = verify_provider_prefix(source_c, &mut data);
+            let destination = BareConnection::reference().unwrap();
+            let c = destination.connection();
+            c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
+                .unwrap();
+            initialize(c, &data).unwrap();
+            let wrong_source = BareConnection::reference().unwrap();
+            wrong_source
+                .connection()
+                .execute_batch("BEGIN DEFERRED")
+                .unwrap();
+            assert!(promote_or_replay_copied(
+                wrong_source.connection(),
+                c,
+                &data.marker,
+                &data.fixture.source,
+                &data.fixture.allocation,
+                &data.fixture.prepared,
+                &data.activation,
+                &data.prefix,
+                &data.intent,
+                &proof,
+                None,
+            )
+            .is_err());
+            inspect(c, &data).unwrap();
+            wrong_source.connection().execute_batch("COMMIT").unwrap();
+            wrong_source.finish(Ok(())).unwrap();
+            let promote = || {
+                promote_or_replay_copied(
+                    source_c,
+                    c,
+                    &data.marker,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &data.intent,
+                    &proof,
+                    None,
+                )
+            };
+            promote().unwrap();
+            let before_replay = c.total_changes();
+            promote().unwrap();
+            assert_eq!(
+                c.total_changes(),
+                before_replay,
+                "copied replay must not write"
+            );
+            let head: u64 = c
+                .query_row("SELECT generation FROM projection_head", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(head, 1);
+            c.execute_batch("SAVEPOINT tail").unwrap();
+            c.execute(
+                "INSERT INTO projection_snapshots(generation,digest,parent_digest,payload) SELECT 2,?1,digest,payload FROM projection_snapshots WHERE generation=1",
+                ["9".repeat(64)],
+            ).unwrap();
+            assert!(promote().is_err());
+            c.execute_batch("ROLLBACK TO tail; RELEASE tail").unwrap();
+            c.execute_batch("SAVEPOINT head").unwrap();
+            c.execute("UPDATE projection_head SET generation=0", [])
+                .unwrap();
+            assert!(promote().is_err());
+            c.execute_batch("ROLLBACK TO head; RELEASE head").unwrap();
+            c.execute_batch("ROLLBACK").unwrap();
+            assert!(database_io::schema_inventory(c).unwrap().is_empty());
+            c.execute_batch("BEGIN IMMEDIATE").unwrap();
+            initialize(c, &data).unwrap();
+            promote().unwrap();
+            c.execute_batch("COMMIT; BEGIN DEFERRED").unwrap();
+            destination_validation::read_copied(
+                c,
+                &data.marker,
+                &data.fixture.source,
+                &data.fixture.allocation,
+                &data.fixture.prepared,
+                &data.activation,
+                &data.prefix,
+                &data.intent,
+                &proof,
+                None,
+            )
+            .unwrap();
+            c.execute_batch("COMMIT").unwrap();
+            source_c.execute_batch("COMMIT").unwrap();
             destination.finish(Ok(())).unwrap();
             source.finish(Ok(())).unwrap();
         },

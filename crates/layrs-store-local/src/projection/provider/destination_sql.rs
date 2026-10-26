@@ -2,6 +2,7 @@
 //! exclusive family/member locks, transaction, COMMIT and observable close.
 use super::{
     cancellation, database_io, destination_validation,
+    import_validation::{copy_verified_prefix, VerifiedImportClosure},
     records::{
         activation::ProviderActivationRecord, import::ProviderImportPrefixRecord,
         transition::ProviderTransitionIntentRecord, AllocationRecord, PreparedRecord,
@@ -89,6 +90,113 @@ pub(in crate::projection::provider) fn initialize_empty(
     )?;
     cancellation::check(cancel)?;
     Ok(())
+}
+
+/// Promote the exact EmptyIngress to CopiedPrefix in the caller's destination
+/// transaction. A complete replay reads the same state without writing. The
+/// source read transaction and its VerifiedImportClosure remain held through
+/// copy and readback. Any error after an insert requires caller rollback.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn promote_or_replay_copied(
+    source_connection: &Connection,
+    destination: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    proof: &VerifiedImportClosure,
+    cancel: Option<&Cancellation>,
+) -> Result<destination_validation::CopiedPrefix> {
+    cancellation::check(cancel)?;
+    if source_connection.is_autocommit() || destination.is_autocommit() {
+        return Err(invalid(
+            "copied prefix requires retained source and destination transactions",
+        ));
+    }
+    proof.require_source_connection(source_connection)?;
+    // A typed reader can fail because of SQLite or an uncertain reference
+    // close, not just because this is the other state. Never swallow its error.
+    super::import_validation::require_schema(
+        destination,
+        marker,
+        super::import_validation::ImportDatabaseKind::Provider,
+        cancel,
+    )?;
+    let count: u64 = destination.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM projection_head LIMIT 2)",
+        [],
+        |row| row.get(0),
+    )?;
+    if count != 1 {
+        return Err(invalid("copied prefix head cardinality differs"));
+    }
+    let head: u64 = destination.query_row(
+        "SELECT generation FROM projection_head WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
+    let source_generation = match &prefix.source {
+        super::records::import::ImportSource::Provider { version, .. } => version.generation,
+        _ => return Err(invalid("copied prefix source differs")),
+    };
+    if head == source_generation {
+        return destination_validation::read_copied(
+            destination,
+            marker,
+            source,
+            allocation,
+            prepared,
+            activation,
+            prefix,
+            intent,
+            proof,
+            cancel,
+        );
+    }
+    if head != 0 {
+        return Err(invalid("copied prefix head is outside transition boundary"));
+    }
+    destination_validation::read_empty(
+        destination,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        cancel,
+    )?;
+    copy_verified_prefix(
+        source_connection,
+        destination,
+        marker,
+        prefix,
+        proof,
+        cancel,
+    )?;
+    let updated = destination.execute(
+        "UPDATE projection_head SET generation=?1 WHERE singleton=1 AND generation=0",
+        [source_generation],
+    )?;
+    if updated != 1 {
+        return Err(invalid("copied prefix head CAS differs"));
+    }
+    destination_validation::read_copied(
+        destination,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        proof,
+        cancel,
+    )
 }
 
 #[cfg(test)]

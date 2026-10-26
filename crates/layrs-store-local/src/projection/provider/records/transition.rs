@@ -232,6 +232,9 @@ pub(in crate::projection) enum TransitionBackendKind {
 pub(in crate::projection) struct TransitionDestinationProof {
     pub backend: TransitionBackendKind,
     pub format: format::Marker,
+    /// Identity of the exclusively allocated FORMAT file, retained across its
+    /// temporary-name publication. Required before resuming a partial write.
+    pub format_file_identity: String,
     pub private_database_identity: String,
     pub family_marker_digest: String,
     pub native_control_identity_hex: Option<String>,
@@ -245,6 +248,7 @@ impl TransitionDestinationProof {
         self.validate(plan)?;
         let data = (
             &self.format,
+            &self.format_file_identity,
             &self.private_database_identity,
             &self.family_marker_digest,
             &self.native_control_identity_hex,
@@ -286,11 +290,17 @@ impl TransitionDestinationProof {
             return Err(invalid("transition destination FORMAT differs"));
         }
         codec::file_identity(&self.private_database_identity)?;
+        codec::file_identity(&self.format_file_identity)?;
+        if self.format_file_identity == self.private_database_identity {
+            return Err(invalid("transition FORMAT aliases private database"));
+        }
         codec::digest_token(&self.family_marker_digest)?;
         if let Some(hex) = &self.native_control_identity_hex {
             let bytes = codec::decode_hex(hex, layrs_vfs::CONTROL_DIRECTORY_MAX_ENCODED_BYTES)?;
             let control = layrs_vfs::ControlDirectoryIdentity::decode(&bytes).map_err(invalid)?;
-            if control.encode() != bytes {
+            if control.encode() != bytes
+                || control.stage_identity().format_binding_identity() != self.format_file_identity
+            {
                 return Err(invalid("transition destination control identity differs"));
             }
         }

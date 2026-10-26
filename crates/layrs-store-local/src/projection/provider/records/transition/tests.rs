@@ -128,6 +128,7 @@ fn proof(record: &ProviderTransitionIntentRecord) -> TransitionDestinationProof 
     TransitionDestinationProof {
         backend: TransitionBackendKind::Ordinary,
         format,
+        format_file_identity: "1:2:4".into(),
         private_database_identity: "1:2:3".into(),
         family_marker_digest: ID.into(),
         native_control_identity_hex: None,
@@ -205,6 +206,84 @@ fn phase_progression_preserves_plan_and_real_destination_binding() {
     let mut fake_ready = copy(&staging);
     fake_ready.state = TransitionState::Ready;
     assert!(fake_ready.encode().is_err());
+}
+
+#[test]
+fn destination_format_file_identity_is_required_and_immutable() {
+    let mut copying = intent();
+    copying.state = TransitionState::Copying;
+    copying.destination = Some(proof(&copying));
+    let original = copying
+        .destination
+        .as_ref()
+        .unwrap()
+        .owner_digest(&copying.plan)
+        .unwrap();
+    let mut changed = copy(&copying);
+    changed.destination.as_mut().unwrap().format_file_identity = "1:2:5".into();
+    assert_ne!(
+        changed
+            .destination
+            .as_ref()
+            .unwrap()
+            .owner_digest(&changed.plan)
+            .unwrap(),
+        original
+    );
+    assert!(changed.require_transition(&copying).is_err());
+    changed.destination.as_mut().unwrap().format_file_identity = "1:2:3".into();
+    assert!(
+        changed.encode().is_err(),
+        "FORMAT must not alias the SQL database"
+    );
+    let mut encoded = serde_json::to_value(&copying).unwrap();
+    encoded["destination"]
+        .as_object_mut()
+        .unwrap()
+        .remove("formatFileIdentity");
+    assert!(ProviderTransitionIntentRecord::decode(
+        &layrs_core::scm::canonical_json(&encoded).unwrap()
+    )
+    .is_err());
+}
+
+#[test]
+fn expanded_destination_format_identity_matches_control_identity() {
+    let mut record = intent();
+    record.plan.kind = ProviderImportKind::ExpandedProvider;
+    record.plan.source_prefix.kind = ProviderImportKind::ExpandedProvider;
+    record.plan.source_prefix_id = record.plan.source_prefix.digest().unwrap();
+    record.state = TransitionState::Copying;
+    let mut destination = proof(&record);
+    destination.backend = TransitionBackendKind::Provider;
+    destination.format_file_identity = "305419896:10:11".into();
+    destination.native_root_identity = Some("fixture-native-root".into());
+    // Canonical comparison DATA, not a native allocation/registration claim.
+    let stage = [
+        b"LYRCSTG1\x78\x56\x34\x12".as_slice(),
+        b"\x02\0\0\0\x01\0\0\0\x03\0\0\0\0\0\0\0",
+        b"\x04\0\0\0\0\0\0\0\x0b\0\0\0\x0a\0\0\0",
+        b"\x04\0\0\0C:\\r\x04\0\0\0C:\\p\x06\0\0\0C:\\p\\s",
+    ]
+    .concat();
+    let control = [
+        b"LYRCDIR1\x46\0\0\0".as_slice(),
+        stage.as_slice(),
+        b"\x07\0\0\0",
+        b"blake3:0000000000000000000000000000000000000000000000000000000000000000",
+    ]
+    .concat();
+    let decoded = layrs_vfs::ControlDirectoryIdentity::decode(&control).unwrap();
+    assert_eq!(
+        decoded.stage_identity().format_binding_identity(),
+        destination.format_file_identity
+    );
+    destination.native_control_identity_hex =
+        Some(control.iter().map(|byte| format!("{byte:02x}")).collect());
+    record.destination = Some(destination);
+    record.encode().unwrap();
+    record.destination.as_mut().unwrap().format_file_identity = "305419896:10:12".into();
+    assert!(record.encode().is_err());
 }
 
 #[test]
@@ -292,11 +371,18 @@ fn bounds_and_roles_reject_impossible_destination_history() {
     planned.state = TransitionState::Copying;
     planned.destination = Some(proof(&planned));
     let bytes = planned.encode().unwrap();
-    planned.require_row(TransitionRowData {
-        id: TX, role: "destination", state: "copying", local_generation: 0,
-        reservation: None, receipt_id: None, payload: &bytes,
-        digest: &planned.digest().unwrap(),
-    }).unwrap();
+    planned
+        .require_row(TransitionRowData {
+            id: TX,
+            role: "destination",
+            state: "copying",
+            local_generation: 0,
+            reservation: None,
+            receipt_id: None,
+            payload: &bytes,
+            digest: &planned.digest().unwrap(),
+        })
+        .unwrap();
     let mut overflow = intent();
     overflow.plan.quota_bytes = i64::MAX as u64 + 1;
     assert!(overflow.encode().is_err());

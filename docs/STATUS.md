@@ -1,5 +1,15 @@
 # État courant de Layrs
 
+## Allocation physique et copie transactionnelle
+
+La destination est allouée exclusivement sous une intention source vérifiée,
+puis ses identités réelles sont inscrites dans Copying. Un dossier occupé est
+refusé sans perte de contenu. La copie SQL avance le head dans sa transaction
+et son rejeu n’écrit rien. **130 tests purs, une recette SQL et deux recettes
+natives passent**, avec preuves dans le
+[checkpoint géré](plans/worktrees-partial-vfs-managed-source-checkpoint.md).
+FORMAT, l’initialisation SQL physique et Ready restent à publier dans l’ordre.
+
 ## Initialisation SQL de la destination gérée
 
 L’initialiseur crée uniquement l’ingress vide schema8, dans la transaction de

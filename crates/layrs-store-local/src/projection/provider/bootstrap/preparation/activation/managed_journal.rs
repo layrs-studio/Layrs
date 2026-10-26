@@ -79,6 +79,102 @@ fn family(
     Ok(())
 }
 
+/// Read-only allocation admission. Call before and between fresh filesystem
+/// effects; the returned unit retains no locks and grants no destination pins.
+pub(super) fn observe_planned(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    planned: &ProviderTransitionIntentRecord,
+    cancel: &Cancellation,
+) -> CauseResult<()> {
+    if planned.role != TransitionRole::Source
+        || planned.state != TransitionState::Planned
+        || planned.destination.is_some()
+        || planned.reservation.is_some()
+        || planned.receipt_id.is_some()
+    {
+        return Err(invalid(
+            "fresh allocation requires exact unreserved source Planned",
+        ));
+    }
+    let _locks = held.family.locks(
+        &held.artifacts.allocation.format.identity.worktree_id,
+        false,
+    )?;
+    cancel.check()?;
+    attempt.verify(&held.artifacts, &held.family)?;
+    boundary(held, root)?;
+    let state = valid(database_io::read_cancellable(
+        &held.artifacts.database,
+        cancel,
+        |c| {
+            let state = private(c, held, root, mount, activation, cancel)?;
+            require_next(&state, planned)?;
+            let proof = validation::PrivateActiveCaptureValidation {
+                active: state.active,
+                capture: state.capture,
+            };
+            let ImportSource::Provider { version, .. } = &planned.plan.source_prefix.source else {
+                return Err(invalid("source allocation requires provider prefix"));
+            };
+            crate::projection::provider::import_validation::verify_source(
+                c,
+                &held.artifacts.allocation.format,
+                crate::projection::provider::import_validation::ImportDatabaseKind::Provider,
+                &planned.plan.source_prefix,
+                crate::projection::provider::records::import::ImportSourceReferences::Provider {
+                    allocation: &held.artifacts.allocation,
+                    prepared: held
+                        .artifacts
+                        .prepared
+                        .as_ref()
+                        .ok_or_else(|| invalid("source allocation P absent"))?,
+                    activation: &proof.active.activation,
+                },
+                Some(&proof),
+                &version.effective_image_digest,
+                Some(cancel),
+            )?;
+            Ok(PrivateActiveTransitionValidation {
+                active: proof.active,
+                capture: proof.capture,
+                transitions: state.transitions,
+            })
+        },
+    )?)?;
+    require_next(&state, planned)?;
+    family(held, &state, cancel)?;
+    let registered = valid(database_io::read_cancellable(
+        &held.family.catalog,
+        cancel,
+        |c| {
+            let present: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1)",
+                [planned
+                    .plan
+                    .source_prefix
+                    .destination_identity
+                    .worktree_id
+                    .as_str()],
+                |row| row.get(0),
+            )?;
+            Ok(present)
+        },
+    )?)?;
+    if registered {
+        return Err(invalid(
+            "fresh managed destination worktree is already registered",
+        ));
+    }
+    attempt.verify(&held.artifacts, &held.family)?;
+    boundary(held, root)?;
+    cancel.check()?;
+    Ok(())
+}
+
 /// Hash before taking the exclusive owner/catalog locks: immutable reads may
 /// acquire those gates through LocalSource. The persisted image digest is a
 /// declaration at this boundary, never permission for subsequent byte effects.
@@ -118,6 +214,7 @@ pub(super) fn begin(
         None,
         next,
         Some(image),
+        None,
         close,
         cancel,
     )
@@ -149,6 +246,52 @@ pub(super) fn cancel(
         Some(previous),
         next,
         None,
+        None,
+        close,
+        cancel,
+    )
+}
+
+/// Persist actual fresh destination identities before FORMAT publication or
+/// SQL initialization. This does not register, reserve, protect or publish it.
+pub(super) fn bind_allocation(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    previous: &ProviderTransitionIntentRecord,
+    next: &ProviderTransitionIntentRecord,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<SourceIntentEffect> {
+    if previous.role != TransitionRole::Source
+        || previous.state != TransitionState::Planned
+        || previous.destination.is_some()
+        || previous.reservation.is_some()
+        || next.role != TransitionRole::Source
+        || next.state != TransitionState::Copying
+        || next.reservation.is_some()
+        || next.receipt_id.is_some()
+        || next.destination.as_ref() != Some(destination.proof())
+    {
+        return Err(invalid(
+            "managed allocation binding requires exact fresh destination",
+        ));
+    }
+    next.require_transition(previous)?;
+    destination.verify(&next.plan)?;
+    write(
+        held,
+        root,
+        mount,
+        activation,
+        attempt,
+        Some(previous),
+        next,
+        None,
+        Some(destination),
         close,
         cancel,
     )
@@ -163,6 +306,7 @@ fn write(
     previous: Option<&ProviderTransitionIntentRecord>,
     next: &ProviderTransitionIntentRecord,
     image: Option<&managed_image::VerifiedManagedImage<'_, '_>>,
+    destination: Option<&managed_allocation::ManagedDestinationAllocation<'_>>,
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<SourceIntentEffect> {
@@ -175,6 +319,12 @@ fn write(
         super::boundary(held, root)?;
         if let Some(image) = image {
             image.require_owner(root, &state.active.source, &state.active.activated.snapshot)?;
+        }
+        if let Some(destination) = destination {
+            destination.verify(&next.plan)?;
+            if next.destination.as_ref() != Some(destination.proof()) {
+                return Err(invalid("managed allocation proof changed"));
+            }
         }
         Ok(())
     };

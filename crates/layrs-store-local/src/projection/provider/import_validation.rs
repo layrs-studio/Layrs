@@ -16,8 +16,8 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 
 mod ancestry;
-mod copy;
 mod copied;
+mod copy;
 mod rows;
 mod scoped;
 mod source;
@@ -42,6 +42,20 @@ struct ProviderInputBinding {
     content_digest: String,
 }
 impl VerifiedImportClosure {
+    /// This only binds the retained connection and active transaction. It does
+    /// not replace source revalidation before external effects or prove bytes.
+    pub(in crate::projection::provider) fn require_source_connection(
+        &self,
+        c: &Connection,
+    ) -> CauseResult<()> {
+        if c.is_autocommit() || !std::ptr::eq(c, self.source_connection) {
+            return Err(invalid(
+                "verified import source connection differs or transaction ended",
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::projection) fn closure(&self) -> &ImportClosure {
         &self.closure
     }
@@ -227,8 +241,8 @@ fn bind_provider_inputs(
     })
 }
 
-pub(in crate::projection) use copy::copy_verified_prefix;
 pub(in crate::projection::provider) use copied::require_exact_copied_rows;
+pub(in crate::projection) use copy::copy_verified_prefix;
 
 /// Evidence-bearing family of the connection supplied to `require_schema`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

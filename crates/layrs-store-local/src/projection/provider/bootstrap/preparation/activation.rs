@@ -2,6 +2,7 @@
 //! returned on every refusal, including uncertain SQL close or family commit.
 mod capture;
 mod capture_image;
+mod managed_allocation;
 mod managed_image;
 mod managed_journal;
 mod managed_plan;

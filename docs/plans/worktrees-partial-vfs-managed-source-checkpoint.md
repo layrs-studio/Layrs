@@ -93,11 +93,54 @@ selection digest refusal; and exact copy/replay/collision/tail refusal.
 Source review authorizes only these memory SQLite recipes, with 120-second
 owned child / 180-second outer bounds. They create no real destination owner.
 
+## Copied prefix and fresh physical allocation
+
+`promote_or_replay_copied` now copies the verified immutable prefix and advances
+head zero to the source generation in the same caller-owned transaction.
+The exact CopiedPrefix reader also checks ingress, head and absence of live
+destination state. A replay performs no writes. Dispatch uses the exact head;
+reader errors, including uncertain reference-close errors, are never swallowed
+as a reason to try another state. The source proof must belong to the supplied
+connection with an active transaction; continuous transaction retention remains
+the caller's responsibility.
+
+Fresh allocation verifies the durable source Planned row and recomputes its
+complete SQL closure before filesystem effects. The destination Worktree must
+be absent from the family registry. It creates the root, private control/member
+directories, lock, empty database and temporary FORMAT exclusively. Existing
+entries are never adopted. Failures retain attempted/confirmed effects and
+available pins; they perform no cleanup. Physical verification uses actual
+parent/root/control/metadata/database/file identities.
+
+The destination proof now requires `formatFileIdentity`, distinct from the DB
+identity and included in the owner commitment. Expanded-provider DATA must also
+agree with the FORMAT identity decoded from the native control record. Source
+Planned without a destination is unchanged. The source Copying writer binds the
+actual allocation before any FORMAT bytes or destination SQL are published.
+
+`provider-managed-allocation-check-r2.log` passes all layrs-store-local targets.
+The retained `provider-managed-allocation-20261026-r1` artifact has 450 inputs,
+CodeView age 47 and EXE SHA256
+`81d90479a038e81f87519f16457230cf54871fb5b963d626b200d7ed1f62def8`.
+**130 pure tests pass, 307 ignored. Three exact recipes pass**: transactional
+copy/promotion/replay with unchanged SQLite total_changes on replay and rollback;
+fresh allocation followed by durable source Copying with FORMAT/DB still empty
+and no family registration; and refusal of an occupied root with valuable bytes
+and source Planned preserved. The SQL child uses 120 seconds; native children
+240 seconds, outer wrapper 300 seconds, fresh C: parent, serial stop on failure.
+
+Before a physical destination writer, the retained lock creator must be closed
+and the destination owner lock acquired. Physical identity verification alone
+does not establish empty content, registry state or SQL writer admission. A
+crash before the source Copying receipt leaves unproven objects: retain and
+refuse them; never infer ownership from the nonce. No restart recipe for that
+window or for FORMAT publication has run yet.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.
 It is not a genuine sqlite3_close failure, quarantined connection, interrupted
-commit or power-loss test. No physical destination initializer, copied-prefix admission,
+commit or power-loss test. No physical destination SQL initializer,
 content installation, claim, Ready receipt, family Ready publication, companion
 conversion or selection expansion is qualified by these recipes. Product routes
 and Desktop integration remain separate. The existing strict GC fence remains.
