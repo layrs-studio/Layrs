@@ -55,6 +55,15 @@ pub(super) mod transition_sql;
 pub use ticket_input::read_provider_ticket_document;
 #[cfg(windows)]
 mod process_profile;
+#[cfg(all(test, windows))]
+pub(in crate::projection) mod owned_test {
+    pub(in crate::projection) fn run(name: &str, seconds: u64, body: impl FnOnce()) {
+        super::process_profile::tests::child::run(name, seconds, body);
+    }
+    pub(in crate::projection) fn declare() {
+        super::process_profile::tests::child::declare();
+    }
+}
 #[cfg(windows)]
 pub(super) mod records;
 #[cfg(windows)]

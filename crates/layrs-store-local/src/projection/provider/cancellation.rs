@@ -29,7 +29,7 @@ impl Drop for Progress<'_> {
     }
 }
 
-pub(super) fn with_progress<T>(
+pub(in crate::projection) fn with_progress<T>(
     connection: &Connection,
     cancel: &Cancellation,
     action: impl FnOnce(&Connection) -> Result<T>,

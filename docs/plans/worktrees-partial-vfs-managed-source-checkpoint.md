@@ -248,6 +248,42 @@ the complete SQL closure and retained image under scoped source/catalog gates.
 No production validation was relaxed. These tests do not simulate a genuine
 SQLite close failure, process crash or power loss.
 
+## Family schema-2 SQL and exact representation readers
+
+The isolated caller-transaction migration in `shared/schema_v2.rs` preserves
+legacy rows and installation intents, removes FileId uniqueness from manifests,
+adds a file/length consistency relation and introduces a separate exact
+installation journal keyed by reservation/ManifestId. Its reference fingerprint
+is constructed through the same DDL transformation. Schema, copied-key bounds,
+foreign keys, cancellation and post-transform fingerprint are checked. COMMIT,
+physical admission, lifecycle locking and observable writer close remain the
+future caller's responsibility. Exact v2 replay performs no writes.
+
+Existing readers now distinguish an exact private/trusted ManifestId from a
+FileId-only candidate. Private mappings and capture protections resolve the
+exact representation; a missing protected representation remains an error.
+FileId-only selection is deterministic. Provider range reads prefer a present
+trusted ID and refuse its corruption; a valid alternative still requires the
+existing complete FileId hash before returning bytes.
+
+All store-local targets compile (`provider-family-schema2-check-r1.log`). The
+retained `provider-family-schema2-20261026-r1` artifact has 463 inputs, CodeView
+age 56 and EXE SHA256
+`7e27a091eff7733eb948e17ece6f6876bc8eab48ec84c98946e78c54f957ba0d`.
+**134 provider pure tests and one exact retention pure test pass. Four owned
+SQLite memory recipes pass**: populated migration, two representations and
+no-write replay; rollback, foreign schema, cancellation and FK-valid 1 MiB key
+refusal before DDL; exact shared reader/corruption refusal; and preferred trusted
+representation/fallback metadata selection. Independent source reviews released
+all four, child 120 / outer 180 seconds, serial stop on failure, fresh C: parent.
+
+The migration is not yet wired into physical family admission. Active sessions
+and checkpoints retain shared lifecycle gates, so an actual upgrade must happen
+before a new managed run, with those guards released, using a dedicated clean
+admission path and exclusive lifecycle gate. Ordinary/provider schema dispatch,
+v2 writers, exact installation, physical reopen and GC handling still need
+integration. No legacy GC fence was relaxed by this slice.
+
 ## Remaining boundaries
 
 The post-close injection is an acknowledgement refusal after successful close.

@@ -4,7 +4,7 @@ use super::*;
 mod staging;
 use crate::secure_fs::PinnedFile;
 use layrs_core::scm::{FileId, FileManifest, FileManifestId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 pub(super) use staging::{accept_staging, require_no_staging, track_directory, track_file};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,6 +21,10 @@ CREATE TABLE projection_observations(digest TEXT PRIMARY KEY,payload BLOB NOT NU
 CREATE TABLE projection_imports(singleton INTEGER PRIMARY KEY CHECK(singleton=1),digest TEXT NOT NULL,payload BLOB NOT NULL CHECK(length(payload)<=16777216)) STRICT;
 CREATE TABLE projection_conversion(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL CHECK(length(payload)<=16777216),ready INTEGER NOT NULL CHECK(ready IN (0,1))) STRICT;
 "#;
+
+#[cfg(test)]
+#[path = "retention/exact_tests.rs"]
+mod exact_tests;
 
 pub(super) fn budget_for(files: &[CapturedFile], extra: u64) -> Result<u64> {
     let mut ids = BTreeSet::new();
@@ -232,31 +236,66 @@ pub(super) fn lookup_with_roots(
     file: &FileId,
     roots: &BTreeMap<FileManifestId, FileManifest>,
 ) -> Result<Option<FileManifest>> {
-    let id: Option<String> = c
+    let bounds: Option<(u64, u64)> = c
         .query_row(
-            "SELECT manifest_id FROM projection_content WHERE file_id=?1",
+            "SELECT length(CAST(manifest_id AS BLOB)),bytes FROM projection_content WHERE file_id=?1",
             [file.as_str()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let Some(id) = id else {
+    let Some((id_bytes, declared_bytes)) = bounds else {
         if roots.values().any(|m| m.file_id() == file) {
             return Err(invalid("protected file lost its private representation"));
         }
         return Ok(None);
     };
-    let Some(manifest) = lease.manifest_for(file)? else {
-        if roots.keys().any(|m| m.as_str() == id) {
+    if id_bytes != 71 || declared_bytes > MAX_CAPTURE_FILE_BYTES {
+        return Err(invalid("private representation exceeds bound"));
+    }
+    let id: String = c.query_row(
+        "SELECT manifest_id FROM projection_content WHERE file_id=?1",
+        [file.as_str()],
+        |r| r.get(0),
+    )?;
+    let id = FileManifestId::parse(id).map_err(invalid)?;
+    let manifest = resolve_private_manifest(
+        file,
+        &id,
+        declared_bytes,
+        roots,
+        lease.manifest_optional(&id)?,
+    )?;
+    if let Some(manifest) = &manifest {
+        lease.check_manifest_resident(manifest)?;
+    }
+    Ok(manifest)
+}
+
+fn resolve_private_manifest(
+    file: &FileId,
+    id: &FileManifestId,
+    declared_bytes: u64,
+    roots: &BTreeMap<FileManifestId, FileManifest>,
+    manifest: Option<FileManifest>,
+) -> Result<Option<FileManifest>> {
+    let Some(manifest) = manifest else {
+        if roots.contains_key(id) {
             return Err(invalid(
                 "protected representation missing from shared index",
             ));
         }
         return Ok(None);
     };
-    if manifest.id().as_str() != id {
+    if manifest.id() != id || manifest.file_id() != file || manifest.byte_length() != declared_bytes
+    {
         return Err(invalid("private representation changed after resolution"));
     }
-    lease.check_manifest_resident(&manifest)?;
+    if roots
+        .get(id)
+        .is_some_and(|protected| protected != &manifest)
+    {
+        return Err(invalid("private representation differs from protection"));
+    }
     Ok(Some(manifest))
 }
 pub(super) fn root_metadata(

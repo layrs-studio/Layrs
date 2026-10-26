@@ -256,58 +256,17 @@ impl Lease {
         Ok(manifest)
     }
     pub(in crate::projection) fn manifest_for(&self, id: &FileId) -> Result<Option<FileManifest>> {
-        let bytes: Option<Vec<u8>> = self.with_content_catalog(false, |c| {
-            Ok(c.query_row(
-                "SELECT payload FROM manifests WHERE file_id=?1 AND length(payload)<=262144",
-                [id.as_str()],
-                |r| r.get(0),
-            )
-            .optional()?)
-        })?;
-        let decoded = bytes.map(|bytes| decode_manifest(&bytes)).transpose()?;
-        decoded
-            .map(|m| {
-                if m.file_id() != id {
-                    return Err(invalid("shared FileId index mismatch"));
-                }
-                self.manifest(m.id())
-            })
-            .transpose()
+        self.with_content_catalog(false, |c| read_manifest_for(c, id))
     }
     pub(in crate::projection) fn manifest(&self, id: &FileManifestId) -> Result<FileManifest> {
-        self.with_content_catalog(false, |c| {
-        let bytes: Vec<u8> = c.query_row(
-            "SELECT payload FROM manifests WHERE id=?1 AND length(payload)<=262144",
-            [id.as_str()],
-            |r| r.get(0),
-        )?;
-        let value = decode_manifest(&bytes)?;
-        if value.id() != id {
-            return Err(invalid("shared manifest index mismatch"));
-        }
-        let mut query = c.prepare("SELECT mc.ordinal,mc.chunk_id,c.bytes FROM manifest_chunks mc JOIN chunks c ON c.id=mc.chunk_id WHERE mc.manifest_id=?1 ORDER BY mc.ordinal LIMIT 1025")?;
-        let actual = query
-            .query_map([id.as_str()], |r| {
-                Ok((
-                    r.get::<_, usize>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, u64>(2)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if actual.len() != value.chunks().len()
-            || actual.iter().zip(value.chunks()).enumerate().any(
-                |(n, ((ordinal, chunk, len), expected))| {
-                    n != *ordinal
-                        || chunk != expected.chunk_id().as_str()
-                        || *len != expected.byte_length()
-                },
-            )
-        {
-            return Err(invalid("shared manifest chunk index mismatch"));
-        }
-        Ok(value)
-        })
+        self.manifest_optional(id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.into())
+    }
+    pub(in crate::projection) fn manifest_optional(
+        &self,
+        id: &FileManifestId,
+    ) -> Result<Option<FileManifest>> {
+        self.with_content_catalog(false, |c| read_manifest_optional(c, id))
     }
     pub(in crate::projection) fn verify_manifest(&self, manifest: &FileManifest) -> Result<()> {
         self.stream(manifest, &mut io::sink())
@@ -504,6 +463,88 @@ impl Lease {
         })
     }
 }
+fn read_manifest_for(c: &Connection, file: &FileId) -> Result<Option<FileManifest>> {
+    let key_bytes: Option<u64> = c
+        .query_row(
+            "SELECT length(CAST(id AS BLOB)) FROM manifests WHERE file_id=?1 ORDER BY id COLLATE BINARY LIMIT 1",
+            [file.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(key_bytes) = key_bytes else {
+        return Ok(None);
+    };
+    if key_bytes != 71 {
+        return Err(invalid("shared FileId index key exceeds bound"));
+    }
+    let id: String = c.query_row(
+        "SELECT id FROM manifests WHERE file_id=?1 ORDER BY id COLLATE BINARY LIMIT 1",
+        [file.as_str()],
+        |r| r.get(0),
+    )?;
+    let id = FileManifestId::parse(id).map_err(invalid)?;
+    let manifest = read_manifest_optional(c, &id)?
+        .ok_or_else(|| invalid("shared FileId index lost its representation"))?;
+    if manifest.file_id() != file {
+        return Err(invalid("shared FileId index mismatch"));
+    }
+    Ok(Some(manifest))
+}
+
+fn read_manifest_optional(c: &Connection, id: &FileManifestId) -> Result<Option<FileManifest>> {
+    let bounds: Option<(u64, u64, u64)> = c
+        .query_row(
+            "SELECT length(CAST(file_id AS BLOB)),length(payload),bytes FROM manifests WHERE id=?1",
+            [id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((file_bytes, payload_bytes, declared_bytes)) = bounds else {
+        return Ok(None);
+    };
+    if file_bytes != 71 || payload_bytes > 262144 || declared_bytes > MAX_CAPTURE_FILE_BYTES {
+        return Err(invalid("shared manifest catalog bounds differ"));
+    }
+    let (file, bytes): (String, Vec<u8>) = c.query_row(
+        "SELECT file_id,payload FROM manifests WHERE id=?1",
+        [id.as_str()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let value = decode_manifest(&bytes)?;
+    if value.id() != id || value.file_id().as_str() != file || value.byte_length() != declared_bytes
+    {
+        return Err(invalid("shared manifest index mismatch"));
+    }
+    let (count, key_bytes): (u64, u64) = c.query_row(
+        "SELECT count(*),coalesce(max(length(CAST(chunk_id AS BLOB))),0) FROM (SELECT chunk_id FROM manifest_chunks WHERE manifest_id=?1 LIMIT 1025)",
+        [id.as_str()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if count != value.chunks().len() as u64 || key_bytes > 71 {
+        return Err(invalid("shared manifest chunk index bound differs"));
+    }
+    let mut query = c.prepare("SELECT mc.ordinal,mc.chunk_id,c.bytes FROM manifest_chunks mc LEFT JOIN chunks c ON c.id=mc.chunk_id WHERE mc.manifest_id=?1 ORDER BY mc.ordinal LIMIT 1025")?;
+    let mut rows = query.query([id.as_str()])?;
+    for (ordinal, part) in value.chunks().iter().enumerate() {
+        let row = rows
+            .next()?
+            .ok_or_else(|| invalid("shared manifest chunk index short"))?;
+        let actual_ordinal: u64 = row.get(0)?;
+        let actual_id: String = row.get(1)?;
+        let actual_bytes: Option<u64> = row.get(2)?;
+        if actual_ordinal != ordinal as u64
+            || actual_id != part.chunk_id().as_str()
+            || actual_bytes != Some(part.byte_length())
+        {
+            return Err(invalid("shared manifest chunk index mismatch"));
+        }
+    }
+    if rows.next()?.is_some() {
+        return Err(invalid("shared manifest chunk index has extra rows"));
+    }
+    Ok(Some(value))
+}
+
 fn verify_input(input: &mut dyn Read, manifest: &FileManifest) -> Result<()> {
     let mut verifier = manifest.verifier();
     for part in manifest.chunks() {
@@ -558,3 +599,7 @@ fn decode_manifest(bytes: &[u8]) -> Result<FileManifest> {
     }
     Ok(manifest)
 }
+
+#[cfg(all(test, windows))]
+#[path = "content/exact_tests.rs"]
+mod exact_tests;

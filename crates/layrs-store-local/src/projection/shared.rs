@@ -5,6 +5,8 @@ mod maintenance;
 pub(super) mod provider_access;
 #[cfg(windows)]
 pub(super) mod provider_content;
+#[cfg(windows)]
+pub(in crate::projection) mod schema_v2;
 mod staging;
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};

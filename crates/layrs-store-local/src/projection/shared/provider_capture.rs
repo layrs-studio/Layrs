@@ -570,7 +570,7 @@ fn catalog_manifest(
     cancellation: Option<&Cancellation>,
 ) -> Result<FileManifest> {
     cancel(cancellation)?;
-    let bounds: Option<(u64, u64, u64, u64)> = c.query_row("SELECT length(CAST(id AS BLOB)),length(CAST(file_id AS BLOB)),length(payload),bytes FROM manifests WHERE file_id=?1", [file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
+    let bounds: Option<(u64, u64, u64, u64)> = c.query_row("SELECT length(CAST(id AS BLOB)),length(CAST(file_id AS BLOB)),length(payload),bytes FROM manifests WHERE id=?1 AND file_id=?2", [expected_id, file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
     let Some((id_len, file_len, payload_len, declared)) = bounds else {
         return Err(invalid(
             "provider capture private content lacks family manifest",
@@ -580,8 +580,8 @@ fn catalog_manifest(
         return Err(invalid("provider capture family manifest bound differs"));
     }
     let (id, payload): (String, Vec<u8>) = c.query_row(
-        "SELECT id,payload FROM manifests WHERE file_id=?1",
-        [file_id],
+        "SELECT id,payload FROM manifests WHERE id=?1 AND file_id=?2",
+        [expected_id, file_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let manifest: FileManifest = serde_json::from_slice(&payload).map_err(converted)?;

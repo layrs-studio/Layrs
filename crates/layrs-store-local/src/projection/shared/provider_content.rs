@@ -50,7 +50,14 @@ pub(in crate::projection) fn resident_range(
         return Err(invalid("provider range exceeds file length"));
     }
     family.verify()?;
-    let Some(manifest) = read_manifest(catalog, file_id, expected_bytes, cancel)? else {
+    let Some(manifest) = read_manifest(
+        catalog,
+        file_id,
+        trusted_manifest_id,
+        expected_bytes,
+        cancel,
+    )?
+    else {
         family.verify()?;
         cancel.check()?;
         return Ok(None);
@@ -141,19 +148,23 @@ pub(in crate::projection) fn resident_range(
 fn read_manifest(
     catalog: &Connection,
     file_id: &FileId,
+    trusted_manifest_id: Option<&FileManifestId>,
     expected_bytes: u64,
     cancel: &Cancellation,
 ) -> error::Result<Option<FileManifest>> {
     cancel.check()?;
+    let Some(id) = select_manifest_id(catalog, file_id, trusted_manifest_id)? else {
+        return Ok(None);
+    };
     let bounds: Option<(u64, u64, u64, u64)> = catalog
         .query_row(
-            "SELECT length(CAST(id AS BLOB)),length(CAST(file_id AS BLOB)),length(payload),bytes FROM manifests WHERE file_id=?1",
-            [file_id.as_str()],
+            "SELECT length(CAST(id AS BLOB)),length(CAST(file_id AS BLOB)),length(payload),bytes FROM manifests WHERE id=?1",
+            [id.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
     let Some((id_length, file_length, payload_length, declared_bytes)) = bounds else {
-        return Ok(None);
+        return Err(invalid("provider selected manifest disappeared"));
     };
     if id_length != 71
         || file_length != 71
@@ -162,15 +173,16 @@ fn read_manifest(
     {
         return Err(invalid("provider manifest catalog bounds or length differ"));
     }
-    let (id, payload): (String, Vec<u8>) = catalog.query_row(
-        "SELECT id,payload FROM manifests WHERE file_id=?1",
-        [file_id.as_str()],
+    let (catalog_file, payload): (String, Vec<u8>) = catalog.query_row(
+        "SELECT file_id,payload FROM manifests WHERE id=?1",
+        [id.as_str()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    object_name(&id)?;
+    object_name(id.as_str())?;
     let manifest: FileManifest = serde_json::from_slice(&payload).map_err(invalid_message)?;
     if canonical_json(&manifest).map_err(invalid_message)? != payload
-        || manifest.id().as_str() != id
+        || manifest.id() != &id
+        || catalog_file != file_id.as_str()
         || manifest.file_id() != file_id
         || manifest.byte_length() != expected_bytes
         || manifest.chunks().len() > MAX_CHUNKS
@@ -179,7 +191,7 @@ fn read_manifest(
     }
     let index: (u64, u64) = catalog.query_row(
         "SELECT count(*),coalesce(max(length(CAST(chunk_id AS BLOB))),0) FROM (SELECT chunk_id FROM manifest_chunks WHERE manifest_id=?1 LIMIT 1025)",
-        [&id],
+        [id.as_str()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     if index.0 != manifest.chunks().len() as u64 || index.0 > MAX_CHUNKS as u64 || index.1 > 71 {
@@ -190,7 +202,7 @@ fn read_manifest(
     let mut query = catalog.prepare(
         "SELECT mc.ordinal,mc.chunk_id,c.bytes FROM manifest_chunks mc LEFT JOIN chunks c ON c.id=mc.chunk_id WHERE mc.manifest_id=?1 ORDER BY mc.ordinal LIMIT 1025",
     )?;
-    let mut rows = query.query([&id])?;
+    let mut rows = query.query([id.as_str()])?;
     for (ordinal, part) in manifest.chunks().iter().enumerate() {
         cancel.check()?;
         let Some(row) = rows.next()? else {
@@ -214,6 +226,46 @@ fn read_manifest(
     cancel.check()?;
     Ok(Some(manifest))
 }
+
+fn select_manifest_id(
+    catalog: &Connection,
+    file_id: &FileId,
+    trusted_manifest_id: Option<&FileManifestId>,
+) -> error::Result<Option<FileManifestId>> {
+    if let Some(trusted) = trusted_manifest_id {
+        let present: bool = catalog.query_row(
+            "SELECT EXISTS(SELECT 1 FROM manifests WHERE id=?1)",
+            [trusted.as_str()],
+            |r| r.get(0),
+        )?;
+        if present {
+            return Ok(Some(trusted.clone()));
+        }
+    }
+    let key_bytes: Option<u64> = catalog
+        .query_row(
+            "SELECT length(CAST(id AS BLOB)) FROM manifests WHERE file_id=?1 ORDER BY id COLLATE BINARY LIMIT 1",
+            [file_id.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(key_bytes) = key_bytes else {
+        return Ok(None);
+    };
+    if key_bytes != 71 {
+        return Err(invalid("provider manifest candidate key exceeds bound"));
+    }
+    let id: String = catalog.query_row(
+        "SELECT id FROM manifests WHERE file_id=?1 ORDER BY id COLLATE BINARY LIMIT 1",
+        [file_id.as_str()],
+        |r| r.get(0),
+    )?;
+    Ok(Some(FileManifestId::parse(id).map_err(invalid_message)?))
+}
+
+#[cfg(test)]
+#[path = "provider_content/exact_tests.rs"]
+mod exact_tests;
 
 fn object_name(id: &str) -> error::Result<&str> {
     let Some(name) = id.strip_prefix("blake3:") else {
