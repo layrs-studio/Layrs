@@ -1,5 +1,13 @@
 # État courant de Layrs
 
+## Écriture du journal source
+
+Le journal source dispose maintenant d’une primitive SQL de création, rejeu,
+avance exacte et annulation. Sa recette vérifie aussi le refus d’un préfixe
+falsifié puis rehashé. La compilation et les tests passent ; le
+[checkpoint d’import](plans/worktrees-partial-vfs-import-seams-checkpoint.md)
+distingue cette preuve SQL du driver physique encore à raccorder.
+
 ## Statut provider dans le CLI produit
 
 La commande Windows `layrs partial provider status --ticket FILE` fonctionne

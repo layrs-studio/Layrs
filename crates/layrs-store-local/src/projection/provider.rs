@@ -46,6 +46,8 @@ pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]
+pub(super) mod transition_sql;
+#[cfg(windows)]
 pub use ticket_input::read_provider_ticket_document;
 #[cfg(windows)]
 mod process_profile;

@@ -1,5 +1,25 @@
 # Import metadata and provider status checkpoint — 26 October 2026
 
+## Source intent SQL mutations
+
+`transition_sql::apply_source_intent` inserts Planned and performs exact
+compare-and-swap advances/cancellation inside the caller's transaction. It
+checks the complete import SQL closure before every new mutation and every
+nonterminal exact replay. Historical Cancelled replay is explicitly limited to
+the typed historical-row check and grants no further effects. The primitive
+does not commit, recover, create a directory or grant family/native authority.
+The caller must roll back after failure and authenticate the image and external
+ownership separately before performing effects.
+
+`provider-transition-sql-check-r2.log` passes all workspace targets;
+`provider-transition-sql-pure-r3.log` records **117 passed, 296 ignored**.
+The independently reviewed exact child recipe passes begin/replay, predecessor
+refusal, canonical rehashed-closure refusal, reservation CAS, cancellation and
+caller rollback. Its retained `provider-transition-sql-20261026-r1` EXE is
+`3558d4588cd6a5166e8f817e0e0bb59bef72d3f3f05da026dab1ba60b25b7754`,
+PDB age 40, with 436 source inputs. This qualifies the SQL primitive, not the
+physical managed destination driver or terminal Ready/Published states.
+
 ## Immutable SQL copy and source journal reader
 
 `copy_verified_prefix` reuses the exact twelve scoped SQL selectors, checks all
