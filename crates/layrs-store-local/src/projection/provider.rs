@@ -45,6 +45,8 @@ mod destination_ready;
 #[cfg(windows)]
 mod managed_budget;
 #[cfg(windows)]
+mod managed_ready_reopen;
+#[cfg(windows)]
 mod destination_sql;
 #[cfg(windows)]
 mod destination_validation;
@@ -54,6 +56,8 @@ mod family_upgrade;
 pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod journal;
+#[cfg(windows)]
+mod published_handoff;
 #[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]

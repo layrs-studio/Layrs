@@ -29,7 +29,9 @@ mod autonomous;
 mod data;
 mod family;
 mod read;
-pub(in crate::projection::provider) use autonomous::{read_managed_ready, VerifiedManagedReady};
+pub(in crate::projection::provider) use autonomous::{
+    read_managed_ready, OwnedReadySnapshot, VerifiedManagedReady,
+};
 
 pub(in crate::projection::provider) struct ManagedReadyOverlay {
     pub path: RepoPath,

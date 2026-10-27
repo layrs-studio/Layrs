@@ -23,7 +23,52 @@ pub(in crate::projection::provider) struct VerifiedManagedReady<'d, 'f> {
     binding: ExactBinding,
     installation: ExactInstallState,
 }
+
+/// Detached bounded SQL DATA. This owns no transaction, filesystem object or
+/// byte authority. A physical consumer must re-read and compare it after I/O.
+pub(in crate::projection::provider) struct OwnedReadySnapshot {
+    pub(in crate::projection::provider) marker: format::Marker,
+    pub(in crate::projection::provider) ready: ProviderTransitionIntentRecord,
+    pub(in crate::projection::provider) receipt: ProviderTransitionReceiptRecord,
+    pub(in crate::projection::provider) expected: ExpectedCheckout,
+    pub(in crate::projection::provider) journal: CheckoutJournal,
+    pub(in crate::projection::provider) required: Vec<FileManifest>,
+    pub(in crate::projection::provider) binding: ExactBinding,
+    pub(in crate::projection::provider) installation: ExactInstallState,
+}
+impl OwnedReadySnapshot {
+    pub(in crate::projection::provider) fn require_same(&self, current: &Self) -> Result<()> {
+        if self.marker != current.marker
+            || self.ready != current.ready
+            || self.receipt != current.receipt
+            || self.expected.header() != current.expected.header()
+            || self.journal.rows() != current.journal.rows()
+            || self.required != current.required
+            || self.binding != current.binding
+            || self.installation != current.installation
+        {
+            return Err(invalid("detached managed Ready SQL snapshot changed"));
+        }
+        Ok(())
+    }
+}
 impl VerifiedManagedReady<'_, '_> {
+    /// Move large inventories out of the retained SQL interpretation; only the
+    /// two bounded canonical records are reconstructed. No authority escapes.
+    pub(in crate::projection::provider) fn into_snapshot(self) -> Result<OwnedReadySnapshot> {
+        let ready = ProviderTransitionIntentRecord::decode(&self.ready().encode()?)?;
+        let receipt = ProviderTransitionReceiptRecord::decode(&self.receipt().encode()?)?;
+        Ok(OwnedReadySnapshot {
+            marker: self.marker,
+            ready,
+            receipt,
+            expected: self.expected,
+            journal: self.journal,
+            required: self.required,
+            binding: self.binding,
+            installation: self.installation,
+        })
+    }
     /// These getters expose interpreted DATA, not physical authority.
     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
         self.prefix.receipt()

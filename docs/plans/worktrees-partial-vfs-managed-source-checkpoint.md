@@ -4,6 +4,9 @@
 installation/protection, physical checkout, private/family Ready and source
 terminal publication are qualified below. Complete autonomous admission and
 the later product stages remain open.
+Read-only physical reopening and the historical publication handoff interpreter
+now have bounded r8 evidence in the
+[admission contract](worktrees-partial-vfs-managed-admission-contract.md).
 The [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md) preserves
 the earlier stop point; it is no longer the current working state.
 
@@ -21,8 +24,9 @@ deletions and namespace, rather than relying on file identity or length alone.
 an empty capture when appropriate. The complete diff is relative to the fresh
 observation. This first slice requires the fresh canonical observation and
 selection to equal the original source; it rejects inherited companions.
-Protected requirements retain source descriptors, all accepted capture
-representations and current image manifests. Multiple representations of one
+Protected requirements retain source descriptors, the copied content mappings
+referenced by accepted capture history, and current image manifests. This is
+not every representation ever used by a historical capture. Multiple representations of one
 FileId are allowed only with equal length. Exact supplied manifest coverage and
 checked metadata/content/staging budgets are required.
 

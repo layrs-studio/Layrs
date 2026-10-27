@@ -2,6 +2,7 @@
 //! they do not claim physical destination or ordinary admission qualification.
 use super::*;
 use crate::projection::provider::{
+    published_handoff::{read_published_for_ready, PublicationSource},
     records::{
         activation::{ProviderActivationRecord, ProviderActiveMountRecord},
         capture::{
@@ -271,6 +272,17 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
                 .unwrap();
             let (staging, receipt) = staged(c, &f, &activation, &activated);
             let ready = ready(&staging, &receipt);
+            // Target DATA only: this source handoff interpreter does not claim
+            // destination SQL/physical authority from a synthesized fixture.
+            let mut destination_ready = copy(&ready);
+            destination_ready.role = TransitionRole::Destination;
+            destination_ready.local_generation = 0;
+            let publication_source = PublicationSource {
+                allocation: &f.allocation,
+                prepared: &f.prepared,
+                binding: &activation.binding,
+                root_id: [0x41; 16],
+            };
             c.execute_batch("COMMIT; BEGIN IMMEDIATE").unwrap();
             let verify_import = |proof: &validation::PrivateActivePublicationValidation| {
                 import_validation::verify_source_publication(
@@ -297,6 +309,11 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
                 SourceIntentEffect::Updated
             );
             let proof = publication(c, &f, &activation);
+            assert!(
+                read_published_for_ready(c, publication_source, &destination_ready, &receipt, None)
+                    .is_err(),
+                "a receipt in SourceReady is not a Published acknowledgement"
+            );
             assert!(
                 validation::private_active_capture_mutation_with_source(
                     c,
@@ -374,7 +391,60 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
             )
             .unwrap();
             assert!(published_gate.capture().patches.is_empty());
+            let handoff =
+                read_published_for_ready(c, publication_source, &destination_ready, &receipt, None)
+                    .unwrap();
+            assert_eq!(handoff.published(), &published);
+            assert_eq!(handoff.receipt(), &receipt);
+            handoff.require(c, None).unwrap();
+            assert!(
+                read_published_for_ready(c, publication_source, &ready, &receipt, None).is_err(),
+                "a source intent is not destination Ready DATA"
+            );
+            let mut wrong_destination = copy(&destination_ready);
+            wrong_destination.transaction_id = "different-destination".into();
+            assert!(read_published_for_ready(
+                c,
+                publication_source,
+                &wrong_destination,
+                &receipt,
+                None
+            )
+            .is_err());
+            let mut different_plan = copy(&destination_ready);
+            different_plan.plan.quota_bytes += 1;
+            let mut different_receipt =
+                ProviderTransitionReceiptRecord::decode(&receipt.encode().unwrap()).unwrap();
+            different_receipt.transition_plan_digest = different_plan.plan.digest().unwrap();
+            let destination = different_plan.destination.as_ref().unwrap();
+            different_receipt.destination_proof_digest =
+                destination.digest(&different_plan.plan).unwrap();
+            different_receipt.owner_identity_digest =
+                destination.owner_digest(&different_plan.plan).unwrap();
+            different_plan.receipt_id = Some(different_receipt.digest().unwrap());
+            different_plan.require_receipt(&different_receipt).unwrap();
+            let error = read_published_for_ready(
+                c,
+                publication_source,
+                &different_plan,
+                &different_receipt,
+                None,
+            )
+            .err()
+            .expect("internally coherent target cannot substitute a different plan");
+            assert!(
+                error.to_string().contains("source and destination differ"),
+                "{error}"
+            );
             accepted_empty_capture(c, &f, &mount, &activation, &activated);
+            handoff.require(c, None).unwrap();
+            assert_eq!(
+                read_published_for_ready(c, publication_source, &destination_ready, &receipt, None)
+                    .unwrap()
+                    .published(),
+                &published,
+                "later captures do not revoke historical Published"
+            );
             let captured_gate = validation::private_active_capture_mutation_with_source(
                 c,
                 &f.allocation,
@@ -417,6 +487,8 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
             );
             assert_eq!(c.total_changes(), changes);
             c.execute_batch("ROLLBACK").unwrap();
+            assert!(handoff.require(c, None).is_err());
+            drop(handoff);
             bare.finish(Ok(())).unwrap();
         },
     );

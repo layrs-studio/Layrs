@@ -4,6 +4,9 @@ mod capture;
 mod capture_image;
 mod managed_allocation;
 mod managed_checkout_fs;
+pub(in crate::projection::provider) use managed_checkout_fs::{
+    verify_managed_ready_checkout, VerifiedCheckout,
+};
 mod managed_content;
 mod managed_destination;
 mod managed_image;

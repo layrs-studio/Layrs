@@ -16,22 +16,23 @@ mod windows;
 pub use catalog::{Cancellation, Catalog, CatalogEntry, SnapshotSource};
 pub use control::{ControlFileIdentity, ControlPublishFaults, NoControlPublishFaults};
 pub use control_directory::{
-    CONTROL_DIRECTORY_MAX_ENCODED_BYTES, CONTROL_DIRECTORY_MAX_FORMAT_BYTES,
-    CONTROL_DIRECTORY_MAX_PATH_UTF8_BYTES, CONTROL_DIRECTORY_STAGE_MAX_ENCODED_BYTES,
     ControlDirectoryFailure, ControlDirectoryIdentity, ControlDirectoryPublishFaults,
     ControlDirectoryPublishPoint, ControlDirectoryStageIdentity, NoControlDirectoryPublishFaults,
     ObservedControlDirectory, ObservedControlDirectoryIdentity,
+    CONTROL_DIRECTORY_MAX_ENCODED_BYTES, CONTROL_DIRECTORY_MAX_FORMAT_BYTES,
+    CONTROL_DIRECTORY_MAX_PATH_UTF8_BYTES, CONTROL_DIRECTORY_STAGE_MAX_ENCODED_BYTES,
 };
-pub use evidence::{CaptureEvidence, Inspection, PlaceholderEvidence, classify_placeholder};
-pub use range::{HydrationRange, READ_BUFFER_SIZE, checked_range};
+pub use evidence::{classify_placeholder, CaptureEvidence, Inspection, PlaceholderEvidence};
+pub use range::{checked_range, HydrationRange, READ_BUFFER_SIZE};
 pub use registration::Registration;
 #[cfg(windows)]
 pub use windows::{
-    CallbackFailure, Checkpoint, ControlDirectoryGuard, ControlRootPreflight, ExportCheckpoint,
-    ExportParentGuard, HydrationRequest, ObservedAllocatedControlStage,
-    ObservedAllocatedControlStageIdentity, ObservedRootNamespace, ProviderRootGuard, Session,
     capability, discover_control_directory, observe_allocated_control_stage,
     observe_control_directory_stage, publish_control_directory_recoverable, read_control_file,
+    CallbackFailure, Checkpoint, ControlDirectoryGuard, ControlRootPreflight, ExportCheckpoint,
+    ExportParentGuard, HydrationRequest, ObservedAllocatedControlStage,
+    ObservedAllocatedControlStageIdentity, ObservedRootNamespace, OrdinaryRootGuard,
+    ProviderRootGuard, Session,
 };
 
 use std::fmt;

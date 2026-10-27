@@ -10,6 +10,7 @@ mod control_directory_publish;
 mod control_stage_observation;
 mod export;
 mod fs;
+mod ordinary_root;
 mod population;
 mod provider_root;
 mod publication;
@@ -22,25 +23,26 @@ mod stage2_tests;
 mod visibility;
 
 use crate::{
-    Capability, CaptureEvidence, Error, Inspection, PlaceholderEvidence, Registration, Result,
-    SnapshotSource, classify_placeholder,
+    classify_placeholder, Capability, CaptureEvidence, Error, Inspection, PlaceholderEvidence,
+    Registration, Result, SnapshotSource,
 };
-use api::{Api, check};
+use api::{check, Api};
 use attached::AttachedControl;
 pub use callback::{CallbackFailure, HydrationRequest};
 pub use checkpoint::Checkpoint;
 pub use control::read_control_file;
 pub use control_directory::{
-    ControlDirectoryGuard, ControlRootPreflight, discover_control_directory,
-    observe_control_directory_stage,
+    discover_control_directory, observe_control_directory_stage, ControlDirectoryGuard,
+    ControlRootPreflight,
 };
 pub use control_directory_publish::publish_control_directory_recoverable;
 pub use control_stage_observation::{
-    ObservedAllocatedControlStage, ObservedAllocatedControlStageIdentity, ObservedRootNamespace,
-    observe_allocated_control_stage,
+    observe_allocated_control_stage, ObservedAllocatedControlStage,
+    ObservedAllocatedControlStageIdentity, ObservedRootNamespace,
 };
 pub use export::ExportCheckpoint;
 use layrs_core::scm::RepoPath;
+pub use ordinary_root::OrdinaryRootGuard;
 pub use provider_root::ProviderRootGuard;
 pub use root_probe::ExportParentGuard;
 use std::{
@@ -51,11 +53,11 @@ use std::{
     sync::Arc,
 };
 use windows_sys::{
+    core::GUID,
     Win32::{
         Foundation::ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT,
         Storage::{CloudFilters::*, FileSystem::*},
     },
-    core::GUID,
 };
 
 // One policy for both registration and reconnect verification. Existing

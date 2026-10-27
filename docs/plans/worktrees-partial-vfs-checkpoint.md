@@ -9,9 +9,11 @@ immutable CAS handles. The r6 continuation additionally qualifies all three
 autonomous historical-prefix SQL recipes and the publication-aware capture
 mutation gate in SQL. A real post-Published capture also passes the r6 native
 recipe. The complete autonomous Ready SQL DATA reader passes its two r7
-recipes, including source removal and corruption refusals. Physical reopening
-and ordinary autonomous admission remain open. See the managed checkpoint for
-preserved failures and current evidence.
+recipes, including source removal and corruption refusals. Read-only physical
+reopening without original holders/source connection passes the r8 native
+recipe. Ordinary mutable admission remains open; its reviewed handoff contract
+and r8 evidence are in the [admission contract](worktrees-partial-vfs-managed-admission-contract.md).
+See the managed checkpoint for preserved failures and earlier evidence.
 
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.

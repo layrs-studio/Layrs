@@ -33,9 +33,23 @@ pub(super) struct OwnedCheckoutFile {
     inode: String,
     pin: PinnedFile,
 }
-pub(super) struct VerifiedCheckout {
+pub(in crate::projection::provider) struct VerifiedCheckout {
     storage: CheckoutStorage,
     files: Vec<(u32, PinnedFile)>,
+}
+
+/// Inspection-only facade. All journal ownership is caller-validated DATA;
+/// this opens existing objects, checks every byte/inode and retains immutable
+/// final pins. It cannot create, publish, adopt, repair or clean any object.
+pub(in crate::projection::provider) fn verify_managed_ready_checkout(
+    root: PinnedDirectory,
+    control: PinnedDirectory,
+    expected: &ExpectedCheckout,
+    journal: &CheckoutJournal,
+    cancel: &Cancellation,
+) -> Result<VerifiedCheckout> {
+    CheckoutStorage::new(root, control, expected, cancel)?
+        .verify_complete(expected, journal, cancel)
 }
 
 impl CheckoutStorage {
@@ -641,7 +655,7 @@ impl CheckoutStorage {
 impl VerifiedCheckout {
     /// No byte hash is needed again: retained immutable handles exclude normal
     /// write/delete opens. Namespace pins are still checked before and after.
-    pub(super) fn require(
+    pub(in crate::projection::provider) fn require(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,

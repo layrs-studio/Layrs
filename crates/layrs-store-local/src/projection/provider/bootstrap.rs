@@ -4,6 +4,9 @@ mod allocation;
 mod catalog;
 mod outcome;
 mod preparation;
+pub(in crate::projection::provider) use preparation::activation::{
+    verify_managed_ready_checkout, VerifiedCheckout,
+};
 mod publication;
 mod receipt_io;
 mod report;
@@ -11,7 +14,7 @@ mod sql;
 #[cfg(test)]
 mod tests;
 
-use super::recovery::error::{Result as CauseResult, invalid};
+use super::recovery::error::{invalid, Result as CauseResult};
 use super::recovery::{
     ProviderBootstrapCause, ProviderBootstrapCause as Cause, ProviderBootstrapFailure,
     ProviderBootstrapInspection, ProviderBootstrapPhase, ProviderBootstrapRecovery,
@@ -26,31 +29,29 @@ use super::{
 };
 use crate::projection::shared::provider_access::{FamilyAccess, Registration};
 use crate::projection::{PartialStoreFamily, ProjectionStoreError, Result};
-use layrs_core::scm::WorktreeId;
 pub use catalog::{ProviderBootstrapCatalog, ProviderCatalogDescriptor};
+use layrs_core::scm::WorktreeId;
 pub use outcome::{
     ProviderControlCommitDisposition, ProviderControlPublicationOutcome, ProviderControlPublished,
     ProviderControlWithheld,
 };
 pub use preparation::{
-    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
     ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
-    ProviderActiveOpenFailure, ProviderActiveReopened, ProviderActiveRangeFailure,
+    ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
+    ProviderPreparationFailure, ProviderPreparationFailureKind, ProviderPreparationOutcome,
+    ProviderPreparationSqlPhase, ProviderPreparationWithheld, ProviderPreparationWriteEffect,
+    ProviderPreparationWriteReport, ProviderPreparationWriteReportProvenance,
+    ProviderPreparationWriteState, ProviderPreparationWriteStep, ProviderPrepared,
+    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
     ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
     ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
     ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
     ProviderRecoveryExportStep,
-    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
-    ProviderPreparationFailure, ProviderPreparationFailureKind,
-    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
-    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
-    ProviderPreparationWriteReport, ProviderPreparationWriteState,
-    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
-    ProviderPrepared,
 };
 use report::WriteContext;
 pub use report::{
