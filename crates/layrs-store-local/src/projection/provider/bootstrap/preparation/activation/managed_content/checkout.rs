@@ -23,6 +23,17 @@ impl ManagedCheckoutProof {
     ) -> &ExpectedCheckout {
         &self.expected
     }
+    /// SQL ownership must still be the exact journal whose physical files
+    /// were verified and retained. A canonical but substituted inode is not
+    /// accepted merely because the inventory/header commitments match.
+    pub(super) fn require_journal(&self, observed: &CheckoutJournal) -> CauseResult<()> {
+        if observed.rows() != self.journal.rows() {
+            return Err(invalid(
+                "checkout SQL ownership differs from retained physical proof",
+            ));
+        }
+        Ok(())
+    }
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn require_physical(
         &self,
         lease: &ManagedImportLease<'_, '_, '_, '_>,
@@ -239,6 +250,12 @@ impl ManagedImportLease<'_, '_, '_, '_> {
         expected: &ExpectedCheckout,
         cancel: &Cancellation,
     ) -> CauseResult<Option<CheckoutJournal>> {
+        crate::projection::provider::import_validation::require_schema(
+            c,
+            &self.destination.proof().format,
+            crate::projection::provider::import_validation::ImportDatabaseKind::Provider,
+            Some(cancel),
+        )?;
         let prepared = self
             .held
             .artifacts

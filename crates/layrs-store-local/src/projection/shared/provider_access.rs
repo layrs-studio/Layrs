@@ -207,6 +207,11 @@ impl FamilyAccess {
         h.update(&self.marker_bytes);
         format!("blake3:{}", h.finalize())
     }
+    /// Canonical bytes already bound to the retained family marker pin.
+    /// The caller still verifies this holder before interpreting catalog DATA.
+    pub(in crate::projection) fn marker_bytes(&self) -> &[u8] {
+        &self.marker_bytes
+    }
     /// Caller owns the one catalog gate and a read transaction. No lock/open here.
     pub(in crate::projection) fn validate_catalog(
         &self,

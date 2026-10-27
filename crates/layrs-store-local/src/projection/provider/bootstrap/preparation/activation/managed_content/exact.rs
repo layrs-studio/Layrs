@@ -25,6 +25,15 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             &self.held.family.catalog,
             cancel,
             |c| {
+                if crate::projection::shared::provider_access::require_provider_catalog_schema(
+                    c,
+                    Some(cancel),
+                )? != crate::projection::shared::CatalogSchema::V2
+                {
+                    return Err(invalid(
+                        "managed content admission requires exact family schema2",
+                    ));
+                }
                 let installing: bool = c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM exact_installations)",
                     [],

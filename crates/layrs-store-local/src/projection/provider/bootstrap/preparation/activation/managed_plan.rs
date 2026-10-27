@@ -237,6 +237,31 @@ pub(super) fn rederive_reservation(
         .checked_sub(baseline.quota_bytes)
         .filter(|bytes| *bytes <= MAX_METADATA_BYTES)
         .ok_or_else(|| invalid("managed reserved metadata envelope invalid"))?;
+    let destination_intent = super::managed_destination::destination_intent(intent)?;
+    // Logical normalized SQL column bytes, matching import row preflights:
+    // INTEGER=8, NULL=0, UTF-8 TEXT/BLOB=length. This is not SQLite page,
+    // journal, index or allocation geometry. Those remain physical preflight.
+    let add = |sum: u64, bytes: u64| {
+        sum.checked_add(bytes)
+            .filter(|n| *n <= MAX_METADATA_BYTES)
+            .ok_or_else(|| invalid("managed metadata floor overflow or exceeds 1GiB"))
+    };
+    let intent_scalars=|intent:&crate::projection::provider::records::transition::ProviderTransitionIntentRecord|->Result<u64>{
+        use crate::projection::provider::records::transition::{TransitionRole,TransitionState};
+        let role=match intent.role {TransitionRole::Source=>"source",TransitionRole::Destination=>"destination"};
+        let state=match intent.state {TransitionState::Planned=>"planned",TransitionState::Copying=>"copying",TransitionState::Staging=>"staging",TransitionState::Ready=>"ready",TransitionState::Published=>"published",TransitionState::Cancelled=>"cancelled"};
+        [intent.transaction_id.len() as u64,role.len() as u64,state.len() as u64,8,
+            intent.reservation.as_ref().map_or(0,|v|v.len() as u64),
+            intent.receipt_id.as_ref().map_or(0,|v|v.len() as u64),71]
+            .into_iter().try_fold(0,add)
+    };
+    let version = match &plan.source_prefix.source {
+        ImportSource::Provider { version, .. } | ImportSource::Ordinary { version, .. } => version,
+    };
+    // Ready inserts the real source selection at BOTH local generations. A
+    // large selection can coexist with an empty image (e.g. absent paths), so
+    // image bytes and manifest overhead cannot stand in for these payloads.
+    let selection_rows = selection_rows_metadata(proof.active.source.selection())?;
     let mut minimum = closure.metadata_bytes(source_c, &plan.source_prefix, Some(cancel))?;
     for bytes in [
         baseline
@@ -254,13 +279,24 @@ pub(super) fn rederive_reservation(
             .len(),
         plan.source_prefix.encode()?.len(),
         intent.encode()?.len(),
-        super::managed_destination::destination_intent(intent)?
-            .encode()?
-            .len(),
+        destination_intent.encode()?.len(),
     ] {
-        minimum = minimum
-            .checked_add(bytes as u64)
-            .ok_or_else(|| invalid("managed metadata floor overflow"))?;
+        minimum = add(minimum, bytes as u64)?;
+    }
+    for bytes in [
+        selection_rows,
+        // Two snapshots: generation, own digest and non-NULL parent digest.
+        8 + baseline.observation_digest.len() as u64 + version.snapshot_digest.len() as u64,
+        8 + baseline.placement_digest.len() as u64 + baseline.observation_digest.len() as u64,
+        // Capture sequence/generation plus its domain-prefixed digest.
+        8 + 8 + baseline.capture.digest.len() as u64,
+        // Head singleton+generation and imported-prefix singleton+digest.
+        8 + 8,
+        8 + plan.source_prefix_id.len() as u64,
+        intent_scalars(intent)?,
+        intent_scalars(&destination_intent)?,
+    ] {
+        minimum = add(minimum, bytes)?;
     }
     if metadata < minimum {
         return Err(invalid(
@@ -275,6 +311,21 @@ pub(super) fn rederive_reservation(
     }
     derived.validated_metadata_floor = Some(minimum);
     Ok(derived)
+}
+
+/// Both destination local generations persist the actual immutable source
+/// selection. Count their normalized SQL columns independently of image size:
+/// two BLOB payloads, two 8-byte generations and two raw 64-byte digests.
+/// This bounds logical values only, not SQLite page/index/journal geometry.
+pub(super) fn selection_rows_metadata(
+    selection: &layrs_core::projection::ProjectionSelection,
+) -> Result<u64> {
+    let payload = crate::projection::selection::encode(selection)?.len() as u64;
+    payload
+        .checked_add(8 + 64)
+        .and_then(|row| row.checked_mul(2))
+        .filter(|bytes| *bytes <= MAX_METADATA_BYTES)
+        .ok_or_else(|| invalid("managed selection metadata floor overflow or exceeds 1GiB"))
 }
 
 fn require_catalog_representable(

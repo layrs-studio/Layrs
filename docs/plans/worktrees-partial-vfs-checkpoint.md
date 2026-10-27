@@ -4,8 +4,8 @@
 [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md). The
 [managed checkpoint](worktrees-partial-vfs-managed-source-checkpoint.md) records
 passing exact installation/protection, physical checkout and retained-provenance
-Ready SQL recipes, including Accepted-capture reads under immutable CAS handles.
-Physical Ready, final family publication and autonomous admission remain open.
+private Ready recipes, including Accepted-capture reads under immutable CAS handles.
+Final family/source publication and autonomous admission remain open.
 
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.

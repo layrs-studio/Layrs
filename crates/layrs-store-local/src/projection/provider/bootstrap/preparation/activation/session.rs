@@ -411,6 +411,8 @@ mod managed_content_tests;
 mod managed_exact_tests;
 #[cfg(test)]
 mod managed_protection_tests;
+#[cfg(test)]
+mod managed_ready_tests;
 
 #[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]

@@ -5,6 +5,8 @@ use super::*;
 mod checkout;
 mod exact;
 mod protection;
+mod ready;
+mod ready_data;
 use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,
@@ -311,6 +313,11 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                     cancel,
                     |c| {
                         if let Some(expected) = checkout {
+                            crate::projection::provider::import_validation::require_schema(
+                                c, &self.destination.proof().format,
+                                crate::projection::provider::import_validation::ImportDatabaseKind::Provider,
+                                Some(cancel),
+                            )?;
                             let present: bool = c.query_row(
                                 "SELECT EXISTS(SELECT 1 FROM projection_prejournal)",
                                 [],

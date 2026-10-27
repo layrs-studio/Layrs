@@ -1,12 +1,14 @@
 # Managed source checkpoint — 26 October 2026
 
-**27 October night stop:** the latest integrated installer WIP, unmodulated
-DestinationReady draft and exact resume order are recorded in the
-[night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md).
-The chronological qualification records below do not qualify that WIP.
+**27 October continuation:** work resumed at the user's request. Exact content
+installation/protection, physical checkout and private Ready are qualified below.
+Family/source terminal
+publication, autonomous admission and the later product stages remain open.
+The [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md) preserves
+the earlier stop point; it is no longer the current working state.
 
-This slice implements and qualifies the source side of a strict managed import.
-It does not create or publish a managed destination.
+The initial slice described next implemented the source side of a strict managed
+import. Later chronological sections record destination work and its evidence.
 
 `managed_image` retains the real ExportCheckpoint. It bounds path inventory
 before cloning, rejects unknown/excluded/relocated/protected edits, and verifies
@@ -635,12 +637,58 @@ Test SHA256 `54232a7b15d9fda7482fd22d7fdb9169073cfd27471f878b6682d751019b9cd2`;
 finalizer `e918a366749d511357ba413f3d9f76a198bc5a711931349740af295b2b96678c`;
 reader `732dbb161577c7579a666a2c2e1211a263ad0068f9fc218dd0683b47447ef1e4`.
 
+## Private Ready adapter (2026-10-27)
+
+The private Ready adapter now derives owned suffix DATA from the actual source
+transaction and retained image, and borrows both exact CAS and physical checkout
+proofs. It compares the complete SQL checkout journal with the retained physical
+proof before admission, under the writer, after DML and on fresh readback.
+Canonical but substituted inode DATA cannot replace the retained ownership.
+Schema fingerprints precede phase-dispatch reads in the touched adapters.
+
+The destination append is acknowledged only after destination COMMIT and positive
+destination, family and source closes, followed by fresh complete validation.
+Already-Ready replay uses no writer. Source Staging, family Initializing, quota,
+exact installation journals and complete checkout provenance are retained.
+The returned proof borrows its physical holders and exposes only receipt DATA;
+it does not grant ordinary admission or family publication.
+
+Independent review closed an omitted selection-budget charge: rederivation now
+counts both actual selection payloads and scalar columns. The Ready floor adds
+the complete receipt, claim, Ready intent and unique FileId content mappings.
+Checked sums enforce the 1GiB metadata bound; protection and checkout-journal
+envelopes are checked separately. These are normalized logical column bytes,
+not a claim about SQLite page, index or rollback-journal geometry.
+
+All-target check r2 and no-run build r1 pass. The retained
+`provider-private-ready-20261027-r1` artifact (509 inputs, CodeView age 73,
+EXE SHA256 `cb9fd4f845547f0a77bd7e4be798d25789ab94856af492dc73b6aaf34c025280`)
+passes four independently released pure DATA recipes: exact overlay path and
+representation, deletion preimages/uniqueness, 4096 selected absent paths with
+no content mapping, and unique FileId accounting with cap/overflow refusals.
+They do not exercise the complete constructor or SQL finalizer. Source SHA256:
+`cd30214c1f7cfd06fd98b7d1674587d0ab9b2e52ef502c073338ecdcdc509e58`;
+managed plan `b19bc518fa8595240685017f1a2104a12b46b576b3d8a2bc665b7efeb494ef24`.
+Both separately released native Ready recipes also pass on this same artifact,
+serially with a fresh C: parent and child 240 / outer 300 second bounds. The
+normal recipe finalizes Ready then replays without a writer. The second refuses
+the acknowledgement after a physically successful committed writer close;
+the retry reads the durable Ready and returns its exact receipt with zero writer
+opens/closes. Source/family and output-file witnesses remain unchanged, and
+all five complete checkout journal rows remain byte-identical. Canonical inode
+substitution is tested before Ready in the first recipe and after Ready in the
+second: the SQL DATA reader accepts it, but the physical adapter refuses before
+any writer. Only the owned fixture then restores the original columns by exact
+CAS. This is not a product repair, real close failure, BUSY or crash restart.
+Test SHA256 `78738d0e277119b014c52aa1f1b8570c0deaaca6a5bd0bfa16d35979a3f241b2`.
+
 ## Remaining qualification boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately
 qualified reservation source BUSY/quarantine recipe. Neither establishes an
 interrupted commit, restart after quarantine or power-loss guarantee.
 The two physical recipes above qualify their exact installation scope only.
-Family protection and physical checkout have the bounded evidence above. Physical
-Ready/family publication, companion conversion and selection expansion are not yet qualified. Product routes and Desktop
+Family protection, physical checkout and private Ready have the bounded evidence
+above. Family/source terminal publication, autonomous admission, companion
+conversion and selection expansion are not yet qualified. Product routes and Desktop
 integration remain separate. The existing strict GC fence remains.
