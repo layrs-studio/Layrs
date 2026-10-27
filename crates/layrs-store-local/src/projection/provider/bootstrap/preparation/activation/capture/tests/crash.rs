@@ -131,7 +131,7 @@ pub(in crate::projection::provider::bootstrap::preparation::activation::capture)
     assert_eq!(record.transaction_id, TRANSACTION);
     let observed = capture_sql::observe(held, root, mount, activation).unwrap();
     let exact = observed
-        .capture
+        .capture()
         .transactions
         .iter()
         .find(|row| row.transaction_id == TRANSACTION)
@@ -140,27 +140,27 @@ pub(in crate::projection::provider::bootstrap::preparation::activation::capture)
     match request.cut {
         Cut::Staging => {
             assert!(matches!(record.state, ProviderCaptureState::Staging { .. }));
-            assert!(observed.capture.patches.is_empty());
-            assert!(observed.capture.receipts.is_empty());
-            assert!(observed.capture.claims.is_empty());
-            assert!(observed.capture.content.is_empty());
+            assert!(observed.capture().patches.is_empty());
+            assert!(observed.capture().receipts.is_empty());
+            assert!(observed.capture().claims.is_empty());
+            assert!(observed.capture().content.is_empty());
         }
         Cut::Accepted => {
             assert!(matches!(
                 record.state,
                 ProviderCaptureState::Accepted { .. }
             ));
-            assert_eq!(observed.capture.patches.len(), 1);
-            assert_eq!(observed.capture.receipts.len(), 1);
-            assert_eq!(observed.capture.claims.len(), 1);
-            assert_eq!(observed.capture.content.len(), 1);
+            assert_eq!(observed.capture().patches.len(), 1);
+            assert_eq!(observed.capture().receipts.len(), 1);
+            assert_eq!(observed.capture().claims.len(), 1);
+            assert_eq!(observed.capture().content.len(), 1);
         }
     }
     let ack = Ack {
         nonce: request.nonce.clone(),
         pid: std::process::id(),
         cut: request.cut,
-        source_catalog_id: observed.active.source.commitment().catalog_id.clone(),
+        source_catalog_id: observed.active().source.commitment().catalog_id.clone(),
         transaction_digest: record.digest().unwrap(),
     };
     let ack_path = outer.join(format!("capture-cut-{}.json", request.nonce));

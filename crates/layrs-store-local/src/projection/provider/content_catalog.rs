@@ -10,7 +10,7 @@ use super::{
     },
     recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
     validation,
-    validation::PrivateCaptureProof,
+    validation::{PrivateCaptureMutationValidation, PrivateCaptureProof},
 };
 use crate::{
     lock::StoreLock,
@@ -30,9 +30,26 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(in crate::projection) struct ProviderContext {
     family: FamilyAccess,
     allocation: AllocationRecord,
-    proof: PrivateCaptureProof,
+    proof: ContextProof,
     artifacts: Artifacts,
     _owner: StoreLock,
+}
+
+enum ContextProof {
+    Strict(PrivateCaptureProof),
+    Publication(PrivateCaptureMutationValidation),
+}
+impl ContextProof {
+    fn capture(&self) -> &PrivateCaptureProof {
+        match self {
+            Self::Strict(proof) => proof,
+            Self::Publication(proof) => proof.capture(),
+        }
+    }
+}
+enum ContextAdmission {
+    Strict,
+    Publication(PrivateCaptureMutationValidation),
 }
 
 struct ObserveClose;
@@ -65,7 +82,7 @@ impl ProviderContext {
         expected_operation: Option<&str>,
     ) -> Result<&ProviderCaptureStage> {
         let mut found = None;
-        for transaction in &self.proof.transactions {
+        for transaction in &self.proof.capture().transactions {
             let ProviderCaptureState::Staging { stage } = &transaction.state else {
                 continue;
             };
@@ -145,7 +162,7 @@ impl ProviderContext {
         transaction_id: &str,
     ) -> Result<()> {
         if owner != &self.allocation.format.identity.worktree_id
-            || !self.proof.transactions.iter().any(|record| {
+            || !self.proof.capture().transactions.iter().any(|record| {
                 record.transaction_id == transaction_id
                     && matches!(&record.state, ProviderCaptureState::Accepted { stage, .. } if stage.reservation == reservation)
             })
@@ -164,6 +181,7 @@ impl ProviderContext {
         self.authorize_marker(marker)?;
         let matches = self
             .proof
+            .capture()
             .transactions
             .iter()
             .filter_map(|transaction| {
@@ -196,11 +214,12 @@ impl ProviderContext {
         }
         let content = self
             .proof
+            .capture()
             .content
             .iter()
             .map(|row| (row.file_id.as_str(), row))
             .collect::<BTreeMap<_, _>>();
-        if content.len() != self.proof.content.len() || manifests.len() > expected.len() {
+        if content.len() != self.proof.capture().content.len() || manifests.len() > expected.len() {
             return Err(store(invalid(
                 "provider content protection set exceeds stage",
             )));
@@ -246,6 +265,24 @@ impl ProviderContext {
         allocation: AllocationRecord,
         _proof: PrivateCaptureProof,
     ) -> Result<Self> {
+        Self::new_mode(family, allocation, ContextAdmission::Strict)
+    }
+
+    /// Explicit capture context retaining the COMPLETE publication-aware gate.
+    /// Re-read after acquiring ownerShared, and reject stale/substituted state.
+    pub(in crate::projection) fn new_publication(
+        family: FamilyAccess,
+        allocation: AllocationRecord,
+        proof: PrivateCaptureMutationValidation,
+    ) -> Result<Self> {
+        Self::new_mode(family, allocation, ContextAdmission::Publication(proof))
+    }
+
+    fn new_mode(
+        family: FamilyAccess,
+        allocation: AllocationRecord,
+        admission: ContextAdmission,
+    ) -> Result<Self> {
         family.require_allocation(&allocation).map_err(store)?;
         let owner = StoreLock::acquire_existing(
             &family
@@ -271,17 +308,31 @@ impl ProviderContext {
             .as_ref()
             .ok_or_else(|| store(invalid("provider content prepared receipt absent")))?;
         let binding = artifacts.binding().map_err(store)?;
-        let proof = match database_io::read(&artifacts.database, |c| {
-            Ok(validation::private_active_readable_with_source(
-                c,
-                &artifacts.allocation,
-                prepared,
-                &binding,
-                None,
-                None,
-            )?
-            .require_no_active_transition()?
-            .capture)
+        let proof = match database_io::read(&artifacts.database, |c| match &admission {
+            ContextAdmission::Strict => Ok(ContextProof::Strict(
+                validation::private_active_readable_with_source(
+                    c,
+                    &artifacts.allocation,
+                    prepared,
+                    &binding,
+                    None,
+                    None,
+                )?
+                .require_no_active_transition()?
+                .capture,
+            )),
+            ContextAdmission::Publication(expected) => {
+                let current = validation::private_active_capture_mutation_with_source(
+                    c,
+                    &artifacts.allocation,
+                    prepared,
+                    &binding,
+                    None,
+                    None,
+                )?;
+                current.require_same_state(expected)?;
+                Ok(ContextProof::Publication(current))
+            }
         })
         .map_err(store)?
         {
@@ -317,7 +368,7 @@ impl ProviderContext {
         self.artifacts.verify(&self.family)?;
         if self
             .family
-            .validate_capture_catalog(c, &self.allocation, &self.proof, None)?
+            .validate_capture_catalog(c, &self.allocation, self.proof.capture(), None)?
             != ActivationRegistration::Ready
         {
             return Err(invalid(

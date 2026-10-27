@@ -18,26 +18,61 @@ pub(super) struct FamilyMarker {
     pub metadata_identity: String,
     pub database_identity: String,
 }
+
+#[derive(Clone, Copy)]
+pub(super) enum MemberPhase {
+    Initializing,
+    Ready,
+}
+impl MemberPhase {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::Ready => "ready",
+        }
+    }
+}
 pub(super) fn protection(inputs: &ManagedReadyInputs<'_>) -> Result<(String, Vec<u8>)> {
-    let binding = inputs
-        .marker
+    protection_data(
+        inputs.marker,
+        &inputs.staging.transaction_id,
+        inputs.data.required,
+        None,
+    )
+}
+
+pub(super) fn protection_data(
+    marker: &format::Marker,
+    transaction_id: &str,
+    required: &[FileManifest],
+    cancel: Option<&Cancellation>,
+) -> Result<(String, Vec<u8>)> {
+    let binding = marker
         .shared
         .as_ref()
         .ok_or_else(|| invalid("Ready family binding absent"))?;
     let protection = shared::exact_protection::ExactProtection::new(
         &binding.incarnation,
-        &inputs.marker.identity.worktree_id,
+        &marker.identity.worktree_id,
         &binding.database_identity,
-        &inputs.staging.transaction_id,
-        inputs.data.required,
-        None,
+        transaction_id,
+        required,
+        cancel,
     )?;
     Ok((protection.id().to_owned(), protection.payload().to_vec()))
 }
-
 pub(super) fn require(
     c: &Connection,
     inputs: &ManagedReadyInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    require_at_member(c, inputs, MemberPhase::Initializing, cancel)
+}
+
+pub(super) fn require_at_member(
+    c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    member_phase: MemberPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
     if require_provider_catalog_schema(c, cancel)? != CatalogSchema::V2 {
@@ -83,7 +118,7 @@ pub(super) fn require(
     {
         return Err(invalid("destination Ready family SQL marker differs"));
     }
-    for (format, state) in [(&a.format, "ready"), (inputs.marker, "initializing")] {
+    for (format, state) in [(&a.format, "ready"), (inputs.marker, member_phase.sql())] {
         cancellation::check(cancel)?;
         let binding = format
             .shared
@@ -99,21 +134,39 @@ pub(super) fn require(
             return Err(invalid("destination Ready family member differs"));
         }
     }
-    if inputs.data.claims.len() != 1 {
+    require_protection(
+        c,
+        inputs.marker,
+        &inputs.staging.transaction_id,
+        inputs.data.required,
+        inputs.data.claims,
+        cancel,
+    )
+}
+
+pub(super) fn require_protection(
+    c: &Connection,
+    marker: &format::Marker,
+    transaction_id: &str,
+    required: &[FileManifest],
+    claims: &[ManagedReadyClaim],
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    if claims.len() != 1 {
         return Err(invalid(
             "destination Ready durable import claim cardinality differs",
         ));
     }
-    let (id, payload) = protection(inputs)?;
-    let claim = &inputs.data.claims[0];
+    let (id, payload) = protection_data(marker, transaction_id, required, cancel)?;
+    let claim = &claims[0];
     if claim.root_id != id
         || claim.digest != id
         || claim.kind != "provider-import"
-        || claim.owner != inputs.staging.transaction_id
+        || claim.owner != transaction_id
     {
         return Err(invalid("destination Ready durable import claim differs"));
     }
-    let owner = inputs.marker.identity.worktree_id.as_str();
+    let owner = marker.identity.worktree_id.as_str();
     let count: u64 = c.query_row(
         "SELECT count(*) FROM (SELECT 1 FROM roots WHERE owner=?1 LIMIT 2)",
         [owner],
@@ -121,18 +174,13 @@ pub(super) fn require(
     )?;
     let valid: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM roots WHERE id=?1 AND owner=?2 AND database_identity=?3 AND operation=?4 AND digest=?1 AND payload=?5)",
-        params![id,owner,inputs.marker.shared.as_ref().unwrap().database_identity,
-            format!("provider-import:{}",inputs.staging.transaction_id),payload], |r| r.get(0),
+        params![id,owner,marker.shared.as_ref().unwrap().database_identity,
+            format!("provider-import:{}",transaction_id),payload], |r| r.get(0),
     )?;
     if count != 1 || !valid {
         return Err(invalid("destination Ready exact family protection differs"));
     }
-    let mut ids: Vec<_> = inputs
-        .data
-        .required
-        .iter()
-        .map(|m| m.id().as_str())
-        .collect();
+    let mut ids: Vec<_> = required.iter().map(|m| m.id().as_str()).collect();
     ids.sort_unstable();
     // root_manifests has no text-length constraint. Check both cardinality and
     // byte shape before query_map can allocate any observed String, even when
@@ -160,7 +208,7 @@ pub(super) fn require(
     if actual.iter().map(String::as_str).collect::<Vec<_>>() != ids {
         return Err(invalid("destination Ready protection membership differs"));
     }
-    for manifest in inputs.data.required {
+    for manifest in required {
         cancellation::check(cancel)?;
         if c.query_row(
             "SELECT EXISTS(SELECT 1 FROM sweep WHERE kind='manifests' AND id=?1)",

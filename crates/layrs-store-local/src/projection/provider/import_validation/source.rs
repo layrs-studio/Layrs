@@ -1,8 +1,8 @@
 //! Full bounded source history metadata, with imported origin resolved before
 //! the existing capture/publication interpreters read each row.
 use super::super::records::{
-    Record,
     import::{ImportSource, ImportSourceReferences},
+    Record,
 };
 use super::*;
 use crate::projection::{capture, publication};
@@ -20,6 +20,45 @@ pub(in crate::projection) struct SourceMetadata {
     pub(super) activation_ids: BTreeSet<String>,
     pub(super) receipt_ids: BTreeSet<String>,
     pub(super) companion_ids: BTreeSet<String>,
+}
+
+/// Explicit historical anchor. A destination commits the inherited generation
+/// zero in its own genuine FORMAT and commits the incoming prefix via receipt.
+/// This never manufactures the old source FORMAT or its physical authority.
+pub(super) struct HistoryAnchor<'a> {
+    marker: &'a format::Marker,
+    incoming: Option<(
+        &'a ProviderImportPrefixRecord,
+        &'a ProviderTransitionReceiptRecord,
+    )>,
+}
+impl<'a> HistoryAnchor<'a> {
+    pub(super) fn destination(
+        marker: &'a format::Marker,
+        prefix: &'a ProviderImportPrefixRecord,
+        receipt: &'a ProviderTransitionReceiptRecord,
+    ) -> CauseResult<Self> {
+        receipt.require_prefix(prefix)?;
+        if marker.identity != prefix.destination_identity
+            || marker.import_digest.as_deref() != Some(prefix.digest()?.as_str())
+        {
+            return Err(invalid("historical destination anchor differs"));
+        }
+        Ok(Self {
+            marker,
+            incoming: Some((prefix, receipt)),
+        })
+    }
+
+    fn require_prefix(&self, prefix: &ProviderImportPrefixRecord) -> CauseResult<()> {
+        if let Some((incoming, receipt)) = self.incoming {
+            if incoming != prefix {
+                return Err(invalid("historical destination prefix changed"));
+            }
+            receipt.require_prefix(prefix)?;
+        }
+        Ok(())
+    }
 }
 
 /// Caller supplies a previously authenticated FORMAT and source references.
@@ -115,6 +154,41 @@ pub(in crate::projection) fn read_source_metadata(
     if head_count != 1 || head_generation != Some(version.generation) {
         return Err(invalid("import source head differs from prefix"));
     }
+    let anchor = HistoryAnchor {
+        marker,
+        incoming: None,
+    };
+    let metadata = read_historical_metadata(
+        c,
+        &anchor,
+        kind,
+        prefix,
+        lineage,
+        current_catalog_id,
+        cancel,
+    )?;
+    if source_identity != &marker.identity {
+        return Err(invalid("import source identity differs from FORMAT"));
+    }
+    Ok(metadata)
+}
+
+/// Common immutable high-water interpreter. Live-source backend, current head,
+/// references and quiescence remain exclusively in `read_source_metadata`.
+pub(super) fn read_historical_metadata(
+    c: &Connection,
+    anchor: &HistoryAnchor<'_>,
+    kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
+    lineage: ProvenanceIndex,
+    current_catalog_id: Option<String>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<SourceMetadata> {
+    anchor.require_prefix(prefix)?;
+    let marker = anchor.marker;
+    let version = match &prefix.source {
+        ImportSource::Provider { version, .. } | ImportSource::Ordinary { version, .. } => version,
+    };
     let (snapshot_count, max_generation, snapshot_bytes, max_digest_bytes, max_parent_bytes):
         (u64, Option<u64>, u64, u64, u64) = c.query_row(
         "SELECT count(*),max(generation),coalesce(sum(length(payload)+length(CAST(digest AS BLOB))+coalesce(length(CAST(parent_digest AS BLOB)),0)),0),coalesce(max(length(CAST(digest AS BLOB))),0),coalesce(max(length(CAST(parent_digest AS BLOB))),0) FROM projection_snapshots WHERE generation<=?1",
@@ -306,9 +380,6 @@ pub(in crate::projection) fn read_source_metadata(
             |r| r.get(0),
         )
         .optional()?;
-    if source_identity != &marker.identity {
-        return Err(invalid("import source identity differs from FORMAT"));
-    }
     let mut catalog_ids = BTreeSet::new();
     let mut activation_ids = BTreeSet::new();
     let mut receipt_ids = BTreeSet::new();

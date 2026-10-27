@@ -86,11 +86,13 @@ fn validate(
     expected: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
     cancel: &Cancellation,
-) -> std::result::Result<validation::PrivateActiveCaptureValidation, ProviderActiveRangeFailure> {
+) -> std::result::Result<validation::PrivateActivePublicationValidation, ProviderActiveRangeFailure>
+{
     cancel
         .check()
         .map_err(|_| ProviderActiveRangeFailure::Cancelled)?;
-    let inspected = capture_state::read(held, Some(native), Some(cancel)).map_err(unavailable)?;
+    let inspected =
+        capture_state::read_live(held, Some(native), Some(cancel)).map_err(unavailable)?;
     if inspected.active.mount != *expected || inspected.active.activation != *activation {
         return Err(unavailable(preparation_report::Failure::private(invalid(
             "active range activation map changed",

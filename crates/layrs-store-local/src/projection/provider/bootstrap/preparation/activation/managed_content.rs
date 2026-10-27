@@ -5,8 +5,10 @@ use super::*;
 mod checkout;
 mod exact;
 mod protection;
+mod publication;
 mod ready;
 mod ready_data;
+mod source_publication;
 use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,

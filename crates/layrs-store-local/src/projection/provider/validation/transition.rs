@@ -13,9 +13,22 @@ use crate::projection::provider::records::{
 const MAX_ROWS: u64 = 4096;
 const MAX_PAYLOAD_TOTAL: u64 = 16 * 1024 * 1024;
 
+mod publication;
+pub(super) use publication::{preflight_publication, validate_publication};
+
+#[derive(Clone, Copy)]
+enum View {
+    Intent,
+    Publication,
+}
+
 /// Fence this table before capture validation performs its global FK scan.
 /// The full reader repeats the fence before materializing any row.
 pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> Result<u64> {
+    preflight_view(c, View::Intent, cancel)
+}
+
+fn preflight_view(c: &Connection, view: View, cancel: Option<&Cancellation>) -> Result<u64> {
     super::super::cancellation::check(cancel)?;
     let count: u64 = c.query_row(
         "SELECT count(*) FROM (SELECT 1 FROM projection_provider_transitions LIMIT 4097)",
@@ -29,14 +42,20 @@ pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> Result
     // Check TEXT and phase projections before sorting or materializing rows.
     // Terminal rows need receipt and destination proof interpretation, which is
     // not part of this source-only mode.
+    let phase = match view {
+        View::Intent => "state NOT IN ('planned','copying','staging','cancelled') OR receipt_id IS NOT NULL",
+        View::Publication => "state NOT IN ('planned','copying','staging','ready','published','cancelled') OR \
+            (state IN ('ready','published') AND (receipt_id IS NULL OR typeof(receipt_id)!='text' OR length(CAST(receipt_id AS BLOB))!=71)) OR \
+            (state NOT IN ('ready','published') AND receipt_id IS NOT NULL)",
+    };
     let bad: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE \
+        &format!("SELECT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE \
          typeof(id)!='text' OR length(CAST(id AS BLOB))=0 OR length(CAST(id AS BLOB))>128 \
-         OR role!='source' OR state NOT IN ('planned','copying','staging','cancelled') \
+         OR role!='source' OR ({phase}) \
          OR typeof(local_generation)!='integer' OR local_generation<0 \
          OR (reservation IS NOT NULL AND (typeof(reservation)!='text' OR length(CAST(reservation AS BLOB))>128)) \
-         OR receipt_id IS NOT NULL OR typeof(payload)!='blob' \
-         OR typeof(digest)!='text' OR length(CAST(digest AS BLOB))!=71)",
+         OR typeof(payload)!='blob' \
+         OR typeof(digest)!='text' OR length(CAST(digest AS BLOB))!=71)"),
         [], |row| row.get(0),
     )?;
     if bad {
@@ -63,7 +82,31 @@ pub(super) fn validate(
     capture: &PrivateCaptureProof,
     cancel: Option<&Cancellation>,
 ) -> Result<Vec<ProviderTransitionIntentRecord>> {
-    let count = preflight(c, cancel)?;
+    validate_view(
+        c,
+        allocation,
+        prepared,
+        activation,
+        activated,
+        source,
+        capture,
+        View::Intent,
+        cancel,
+    )
+}
+
+fn validate_view(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    activated: &VersionedProjection,
+    source: &ProviderBootstrapSource,
+    capture: &PrivateCaptureProof,
+    view: View,
+    cancel: Option<&Cancellation>,
+) -> Result<Vec<ProviderTransitionIntentRecord>> {
+    let count = preflight_view(c, view, cancel)?;
     let pending_capture = capture.transactions.iter().any(|tx| {
         matches!(
             &tx.state,
@@ -99,13 +142,17 @@ pub(super) fn validate(
             digest: &digest,
         })?;
         if intent.role != TransitionRole::Source
-            || !matches!(
+            || !(matches!(
                 intent.state,
                 TransitionState::Planned
                     | TransitionState::Copying
                     | TransitionState::Staging
                     | TransitionState::Cancelled
-            )
+            ) || matches!(view, View::Publication)
+                && matches!(
+                    intent.state,
+                    TransitionState::Ready | TransitionState::Published
+                ))
         {
             return Err(invalid("source transition phase or role differs"));
         }
@@ -138,7 +185,10 @@ pub(super) fn validate(
                 "source transition version differs from active capture history",
             ));
         }
-        if intent.state != TransitionState::Cancelled {
+        if !matches!(
+            intent.state,
+            TransitionState::Cancelled | TransitionState::Published
+        ) {
             if pending_capture || pending || version.capture_count != capture.patches.len() as u64 {
                 return Err(invalid(
                     "source transition pending head or capture state differs",

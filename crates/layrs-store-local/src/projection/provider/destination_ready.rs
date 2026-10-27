@@ -2,8 +2,9 @@
 //! checkout and durable exact family content/protection, retains all pins and
 //! gates, and owns transactions, rollback, COMMIT and positive closes. This
 //! module grants no ordinary admission and never opens a business database.
-//! The family member remains Initializing through this SQL-only step, including
-//! Ready replay. A later physical publication requires its own typed protocol.
+//! Existing writers/readers require an Initializing family member, including
+//! Ready replay. A separate read-only entry interprets the exact Ready member
+//! after external family publication; neither entry grants ordinary admission.
 use super::{
     cancellation, database_io, destination_validation,
     import_validation::VerifiedImportClosure,
@@ -24,9 +25,11 @@ use layrs_vfs::Cancellation;
 use rusqlite::{params, Connection};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod autonomous;
 mod data;
 mod family;
 mod read;
+pub(in crate::projection::provider) use autonomous::{read_managed_ready, VerifiedManagedReady};
 
 pub(in crate::projection::provider) struct ManagedReadyOverlay {
     pub path: RepoPath,
@@ -61,6 +64,25 @@ pub(in crate::projection::provider) struct ManagedReadyInputs<'a> {
     pub closure: &'a VerifiedImportClosure,
     pub family_marker_bytes: &'a [u8],
     pub data: &'a ManagedReadyData<'a>,
+}
+
+/// Private suffix DATA, independent of the provenance-specific entry wrapper.
+/// Construction never authenticates a source or promotes a protocol phase.
+struct ReadyView<'a> {
+    marker: &'a format::Marker,
+    source: &'a ProviderBootstrapSource,
+    prefix: &'a ProviderImportPrefixRecord,
+    data: &'a ManagedReadyData<'a>,
+}
+impl ManagedReadyInputs<'_> {
+    fn view(&self) -> ReadyView<'_> {
+        ReadyView {
+            marker: self.marker,
+            source: self.source,
+            prefix: self.prefix,
+            data: self.data,
+        }
+    }
 }
 pub(in crate::projection::provider) struct DestinationReady;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +323,37 @@ pub(in crate::projection::provider) fn read_checkout_ready(
     Ok(DestinationReady)
 }
 
+/// Dedicated post-family-publication DATA reader. All private prefix/suffix,
+/// receipt, root, membership and complete checkout journal checks are shared
+/// with read_checkout_ready; the family destination must now be exactly Ready.
+/// This is not autonomous ordinary admission or a physical ownership proof.
+pub(in crate::projection::provider) fn read_checkout_family_ready(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<DestinationReady> {
+    let prepared = data::prepare_at_member(
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        family::MemberPhase::Ready,
+        cancel,
+    )?;
+    read::ready(
+        source_c,
+        destination,
+        inputs,
+        &prepared,
+        Some(expected),
+        cancel,
+    )?;
+    Ok(DestinationReady)
+}
+
 fn require_checkout_expected(
     inputs: &ManagedReadyInputs<'_>,
     expected: &super::checkout_journal::ExpectedCheckout,
@@ -316,15 +369,33 @@ fn require_checkout_expected(
     if rebound.header() != expected.header() || expected.marker() != inputs.marker {
         return Err(invalid("checkout journal destination binding differs"));
     }
-    require_checkout_inventory(inputs, expected, cancel)
+    require_checkout_inventory(&inputs.view(), expected, cancel)
 }
 
 /// Bind every current leaf and explicit deletion to the base-relative Ready
 /// patch. Unchanged files may use any required exact representation of those
 /// same bytes; changed files must use the committed overlay representation.
 /// This compares metadata, not the caller's actual retained image or bytes.
+fn require_checkout_ready_expected(
+    inputs: &ReadyView<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    let rebound = super::checkout_journal::ExpectedCheckout::from_ready(
+        inputs.data.ready,
+        expected.files(),
+        expected.deletions(),
+        &expected.header().image_digest,
+        cancel,
+    )?;
+    if rebound.header() != expected.header() || expected.marker() != inputs.marker {
+        return Err(invalid("checkout journal destination binding differs"));
+    }
+    require_checkout_inventory(inputs, expected, cancel)
+}
+
 fn require_checkout_inventory(
-    inputs: &ManagedReadyInputs<'_>,
+    inputs: &ReadyView<'_>,
     expected: &super::checkout_journal::ExpectedCheckout,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {

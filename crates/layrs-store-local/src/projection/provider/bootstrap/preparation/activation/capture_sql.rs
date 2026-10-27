@@ -10,7 +10,7 @@ use crate::projection::provider::{
         },
         Record,
     },
-    validation::{CaptureContentProof, PrivateActiveCaptureValidation, PrivateCaptureProof},
+    validation::{CaptureContentProof, PrivateCaptureMutationValidation, PrivateCaptureProof},
 };
 use crate::projection::shared::provider_access::ActivationRegistration;
 use layrs_core::scm::canonical_json;
@@ -38,22 +38,21 @@ fn private(
     root: &layrs_vfs::ProviderRootGuard,
     mount: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
-) -> CauseResult<PrivateActiveCaptureValidation> {
+) -> CauseResult<PrivateCaptureMutationValidation> {
     let prepared = held
         .artifacts
         .prepared
         .as_ref()
         .ok_or_else(|| invalid("capture prepared receipt absent"))?;
-    let value = validation::private_active_readable_with_source(
+    let value = validation::private_active_capture_mutation_with_source(
         c,
         &held.artifacts.allocation,
         prepared,
         &held.binding,
         Some(root.registration().root_id()),
         None,
-    )?
-    .require_no_active_transition()?;
-    if value.active.mount != *mount || value.active.activation != *activation {
+    )?;
+    if value.active().mount != *mount || value.active().activation != *activation {
         return Err(invalid("capture retained active map changed"));
     }
     Ok(value)
@@ -77,7 +76,7 @@ pub(super) fn observe(
     root: &layrs_vfs::ProviderRootGuard,
     mount: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
-) -> CauseResult<PrivateActiveCaptureValidation> {
+) -> CauseResult<PrivateCaptureMutationValidation> {
     let _locks = held
         .family
         .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
@@ -89,13 +88,13 @@ fn observe_locked(
     root: &layrs_vfs::ProviderRootGuard,
     mount: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
-) -> CauseResult<PrivateActiveCaptureValidation> {
+) -> CauseResult<PrivateCaptureMutationValidation> {
     boundary(held, root)?;
     let state = database_io::read(&held.artifacts.database, |c| {
         private(c, held, root, mount, activation)
     })?;
     let value = valid_read(state)?;
-    family(held, &value.capture)?;
+    family(held, value.capture())?;
     boundary(held, root)?;
     Ok(value)
 }
@@ -151,7 +150,7 @@ fn write(
     let predecessor = observe_locked(held, root, mount, activation)?;
     let database = &held.artifacts.database;
     let admission = database_io::clean_admission(database, false, |c| {
-        private(c, held, root, mount, activation).map(|_| ())
+        private(c, held, root, mount, activation)?.require_same_state(&predecessor)
     })?;
     boundary(held, root)?;
     let bare = admission.open(database, observed)?;
@@ -162,19 +161,14 @@ fn write(
         let current = private(c, held, root, mount, activation)?;
         // The exclusive owner lock prevents a lawful concurrent writer; the
         // complete predecessor is still reinterpreted after writable open.
-        if current.capture.transactions.len() != predecessor.capture.transactions.len()
-            || current.capture.patches.len() != predecessor.capture.patches.len()
-            || current.capture.content.len() != predecessor.capture.content.len()
-            || current.capture.claims.len() != predecessor.capture.claims.len()
-        {
-            return Err(invalid("capture state changed after clean admission"));
-        }
-        mutate(c, &current.capture)?;
+        current.require_same_state(&predecessor)?;
+        mutate(c, current.capture())?;
         let successor = private(c, held, root, mount, activation)?;
-        verify(&successor.capture)?;
+        successor.require_same_publications(&predecessor)?;
+        verify(successor.capture())?;
         // This prospective family check also proves an installed mapping or
         // already durable protection before the private COMMIT is attempted.
-        family(held, &successor.capture)?;
+        family(held, successor.capture())?;
         if let Some(checkpoint) = checkpoint {
             checkpoint_boundary(checkpoint, held, root)?;
         }
@@ -187,7 +181,8 @@ fn write(
         checkpoint_boundary(checkpoint, held, root)?;
     }
     let durable = observe_locked(held, root, mount, activation)?;
-    verify(&durable.capture)
+    durable.require_same_publications(&predecessor)?;
+    verify(durable.capture())
 }
 
 /// Inserts one Hashing intent at the exact durable capture head.

@@ -402,8 +402,8 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
     .unwrap();
     let image = capture_image::plan(
         &mut checkpoint,
-        &initial.active.source,
-        &initial.active.activated.snapshot,
+        &initial.active().source,
+        &initial.active().activated.snapshot,
         &Cancellation::default(),
     )
     .unwrap();
@@ -456,8 +456,7 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
         &holder.record,
         &holder.activation,
     )
-    .unwrap()
-    .capture;
+    .unwrap();
     let content = lease(&holder.held, proof).unwrap();
     let operation = format!(
         "provider-capture:{}",
@@ -472,7 +471,7 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
         )
         .unwrap();
     drop(content);
-    let base = &initial.active.source.descriptors()[0].file_id;
+    let base = &initial.active().source.descriptors()[0].file_id;
     holder
         .read_resident_range(base, 0, &mut [], &Cancellation::default())
         .unwrap();
@@ -517,8 +516,8 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
     .unwrap();
     let image = capture_image::plan(
         &mut checkpoint,
-        &observed.active.source,
-        &observed.active.activated.snapshot,
+        &observed.active().source,
+        &observed.active().activated.snapshot,
         &Cancellation::default(),
     )
     .unwrap();
@@ -529,9 +528,9 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
         &second.record,
         &second.activation,
         cancelled_id.into(),
-        observed.capture.patches.len() as u64,
+        observed.capture().patches.len() as u64,
         observed
-            .capture
+            .capture()
             .patches
             .last()
             .map(|patch| patch.digest.clone()),
@@ -573,8 +572,7 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
         &second.record,
         &second.activation,
     )
-    .unwrap()
-    .capture;
+    .unwrap();
     let content = lease(&second.held, proof).unwrap();
     let operation = format!(
         "provider-capture:{}",

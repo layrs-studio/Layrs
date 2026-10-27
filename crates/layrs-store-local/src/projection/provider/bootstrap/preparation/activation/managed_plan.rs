@@ -16,7 +16,7 @@ use crate::projection::{
             ProviderBootstrapSource, Record,
         },
         recovery::error::{invalid, Result},
-        validation::PrivateActiveCaptureValidation,
+        validation::{PrivateActiveCaptureValidation, PrivateActivePublicationValidation},
     },
     ProjectionIdentity,
 };
@@ -78,6 +78,33 @@ pub(super) struct ManagedPlanData {
     pub validated_metadata_floor: Option<u64>,
 }
 
+#[derive(Clone, Copy)]
+enum ManagedProviderProof<'a> {
+    Capture(&'a PrivateActiveCaptureValidation),
+    Publication(&'a PrivateActivePublicationValidation),
+}
+impl ManagedProviderProof<'_> {
+    fn require(self, closure: &VerifiedImportClosure) -> Result<()> {
+        match self {
+            Self::Capture(proof) => closure.require_provider_inputs(proof),
+            Self::Publication(proof) => closure.require_publication_inputs(proof),
+        }
+    }
+    fn parts(
+        &self,
+    ) -> (
+        &ProviderBootstrapSource,
+        &crate::projection::VersionedProjection,
+        &crate::projection::provider::validation::PrivateCaptureProof,
+    ) {
+        let (_, _, source, activated, captures) = match self {
+            Self::Capture(proof) => proof.import_parts(),
+            Self::Publication(proof) => proof.import_parts(),
+        };
+        (source, activated, captures)
+    }
+}
+
 /// Adapter from retained witnesses. The caller supplies complete canonical
 /// manifests matching the exact union, including historical capture mappings.
 /// The caller independently proves historical bytes/protection and measures
@@ -87,6 +114,68 @@ pub(super) fn derive(
     closure: &VerifiedImportClosure,
     image: &VerifiedManagedImage<'_, '_>,
     provider_proof: &PrivateActiveCaptureValidation,
+    fresh: &ProjectionSnapshot,
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    supplied: &[FileManifest],
+    metadata_bytes: u64,
+) -> Result<ManagedPlanData> {
+    derive_parts(
+        prefix,
+        closure,
+        image,
+        ManagedProviderProof::Capture(provider_proof),
+        fresh,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        supplied,
+        metadata_bytes,
+    )
+}
+
+/// Publication-aware counterpart retaining the entire proof and its distinct
+/// SQL binding. Like `derive`, this requires the CURRENT retained image/head.
+pub(super) fn derive_publication(
+    prefix: &ProviderImportPrefixRecord,
+    closure: &VerifiedImportClosure,
+    image: &VerifiedManagedImage<'_, '_>,
+    proof: &PrivateActivePublicationValidation,
+    fresh: &ProjectionSnapshot,
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    supplied: &[FileManifest],
+    metadata_bytes: u64,
+) -> Result<ManagedPlanData> {
+    derive_parts(
+        prefix,
+        closure,
+        image,
+        ManagedProviderProof::Publication(proof),
+        fresh,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        supplied,
+        metadata_bytes,
+    )
+}
+
+fn derive_parts(
+    prefix: &ProviderImportPrefixRecord,
+    closure: &VerifiedImportClosure,
+    image: &VerifiedManagedImage<'_, '_>,
+    provider_proof: ManagedProviderProof<'_>,
     fresh: &ProjectionSnapshot,
     destination: ProjectionIdentity,
     parent: &str,
@@ -106,8 +195,8 @@ pub(super) fn derive(
         } => (identity, version),
         _ => return Err(invalid("managed plan requires an Active provider source")),
     };
-    closure.require_provider_inputs(provider_proof)?;
-    let (_, _, source, activated_version, captures) = provider_proof.import_parts();
+    provider_proof.require(closure)?;
+    let (source, activated_version, captures) = provider_proof.parts();
     let activated = &activated_version.snapshot;
     image.require_source(source, activated)?;
     if image.digest() != version.effective_image_digest
@@ -210,10 +299,56 @@ pub(super) fn rederive_reservation(
     manifests: &[FileManifest],
     cancel: &layrs_vfs::Cancellation,
 ) -> Result<ManagedPlanData> {
+    rederive_parts(
+        source_c,
+        closure,
+        image,
+        ManagedProviderProof::Capture(proof),
+        fresh,
+        intent,
+        manifests,
+        cancel,
+    )
+}
+
+/// Revalidate a managed plan using the explicit publication-aware SQL closure.
+/// No capture-proof object or physical authority is manufactured from it.
+pub(super) fn rederive_publication_reservation(
+    source_c: &rusqlite::Connection,
+    closure: &VerifiedImportClosure,
+    image: &VerifiedManagedImage<'_, '_>,
+    proof: &PrivateActivePublicationValidation,
+    fresh: &ProjectionSnapshot,
+    intent: &crate::projection::provider::records::transition::ProviderTransitionIntentRecord,
+    manifests: &[FileManifest],
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<ManagedPlanData> {
+    rederive_parts(
+        source_c,
+        closure,
+        image,
+        ManagedProviderProof::Publication(proof),
+        fresh,
+        intent,
+        manifests,
+        cancel,
+    )
+}
+
+fn rederive_parts(
+    source_c: &rusqlite::Connection,
+    closure: &VerifiedImportClosure,
+    image: &VerifiedManagedImage<'_, '_>,
+    proof: ManagedProviderProof<'_>,
+    fresh: &ProjectionSnapshot,
+    intent: &crate::projection::provider::records::transition::ProviderTransitionIntentRecord,
+    manifests: &[FileManifest],
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<ManagedPlanData> {
     require_catalog_representable(manifests, cancel)?;
     let plan = &intent.plan;
     let derive_with = |metadata| {
-        derive(
+        derive_parts(
             &plan.source_prefix,
             closure,
             image,
@@ -238,66 +373,17 @@ pub(super) fn rederive_reservation(
         .filter(|bytes| *bytes <= MAX_METADATA_BYTES)
         .ok_or_else(|| invalid("managed reserved metadata envelope invalid"))?;
     let destination_intent = super::managed_destination::destination_intent(intent)?;
-    // Logical normalized SQL column bytes, matching import row preflights:
-    // INTEGER=8, NULL=0, UTF-8 TEXT/BLOB=length. This is not SQLite page,
-    // journal, index or allocation geometry. Those remain physical preflight.
-    let add = |sum: u64, bytes: u64| {
-        sum.checked_add(bytes)
-            .filter(|n| *n <= MAX_METADATA_BYTES)
-            .ok_or_else(|| invalid("managed metadata floor overflow or exceeds 1GiB"))
-    };
-    let intent_scalars=|intent:&crate::projection::provider::records::transition::ProviderTransitionIntentRecord|->Result<u64>{
-        use crate::projection::provider::records::transition::{TransitionRole,TransitionState};
-        let role=match intent.role {TransitionRole::Source=>"source",TransitionRole::Destination=>"destination"};
-        let state=match intent.state {TransitionState::Planned=>"planned",TransitionState::Copying=>"copying",TransitionState::Staging=>"staging",TransitionState::Ready=>"ready",TransitionState::Published=>"published",TransitionState::Cancelled=>"cancelled"};
-        [intent.transaction_id.len() as u64,role.len() as u64,state.len() as u64,8,
-            intent.reservation.as_ref().map_or(0,|v|v.len() as u64),
-            intent.receipt_id.as_ref().map_or(0,|v|v.len() as u64),71]
-            .into_iter().try_fold(0,add)
-    };
-    let version = match &plan.source_prefix.source {
-        ImportSource::Provider { version, .. } | ImportSource::Ordinary { version, .. } => version,
-    };
-    // Ready inserts the real source selection at BOTH local generations. A
-    // large selection can coexist with an empty image (e.g. absent paths), so
-    // image bytes and manifest overhead cannot stand in for these payloads.
-    let selection_rows = selection_rows_metadata(proof.active.source.selection())?;
-    let mut minimum = closure.metadata_bytes(source_c, &plan.source_prefix, Some(cancel))?;
-    for bytes in [
-        baseline
-            .observation
-            .canonical_bytes()
-            .map_err(|e| invalid(e.to_string()))?
-            .len(),
-        baseline
-            .placement
-            .canonical_bytes()
-            .map_err(|e| invalid(e.to_string()))?
-            .len(),
-        canonical_json(&baseline.capture)
-            .map_err(|e| invalid(e.to_string()))?
-            .len(),
-        plan.source_prefix.encode()?.len(),
-        intent.encode()?.len(),
-        destination_intent.encode()?.len(),
-    ] {
-        minimum = add(minimum, bytes as u64)?;
-    }
-    for bytes in [
-        selection_rows,
-        // Two snapshots: generation, own digest and non-NULL parent digest.
-        8 + baseline.observation_digest.len() as u64 + version.snapshot_digest.len() as u64,
-        8 + baseline.placement_digest.len() as u64 + baseline.observation_digest.len() as u64,
-        // Capture sequence/generation plus its domain-prefixed digest.
-        8 + 8 + baseline.capture.digest.len() as u64,
-        // Head singleton+generation and imported-prefix singleton+digest.
-        8 + 8,
-        8 + plan.source_prefix_id.len() as u64,
-        intent_scalars(intent)?,
-        intent_scalars(&destination_intent)?,
-    ] {
-        minimum = add(minimum, bytes)?;
-    }
+    let (source, _, _) = proof.parts();
+    let minimum = crate::projection::provider::managed_budget::base_metadata_floor(
+        closure.metadata_bytes(source_c, &plan.source_prefix, Some(cancel))?,
+        &baseline.observation,
+        &baseline.placement,
+        &baseline.capture,
+        plan,
+        source.selection(),
+        crate::projection::provider::managed_budget::intent_size(intent)?,
+        crate::projection::provider::managed_budget::intent_size(&destination_intent)?,
+    )?;
     if metadata < minimum {
         return Err(invalid(
             "managed reservation metadata envelope insufficient",
@@ -320,12 +406,7 @@ pub(super) fn rederive_reservation(
 pub(super) fn selection_rows_metadata(
     selection: &layrs_core::projection::ProjectionSelection,
 ) -> Result<u64> {
-    let payload = crate::projection::selection::encode(selection)?.len() as u64;
-    payload
-        .checked_add(8 + 64)
-        .and_then(|row| row.checked_mul(2))
-        .filter(|bytes| *bytes <= MAX_METADATA_BYTES)
-        .ok_or_else(|| invalid("managed selection metadata floor overflow or exceeds 1GiB"))
+    crate::projection::provider::managed_budget::selection_rows_metadata(selection)
 }
 
 fn require_catalog_representable(
@@ -741,42 +822,11 @@ fn insert_required(
 }
 
 fn quota(manifests: &[FileManifest], image: &[ImageFile<'_>], metadata: u64) -> Result<u64> {
-    if metadata > MAX_METADATA_BYTES {
-        return Err(invalid("managed metadata budget exceeds bound"));
-    }
-    let mut total = metadata
-        .checked_add(65536)
-        .ok_or_else(|| invalid("managed quota overflow"))?;
-    for manifest in manifests {
-        let payload = canonical_json(manifest)
-            .map_err(|e| invalid(e.to_string()))?
-            .len() as u64;
-        let estimate = (manifest.chunks().len() as u64)
-            .checked_mul(256)
-            .and_then(|n| n.checked_add(2048))
-            .ok_or_else(|| invalid("managed quota overflow"))?;
-        // The exact installer keeps its bounded journal and canonical manifest
-        // until protection, alongside the published CAS metadata. Reserve both
-        // copies up front; publication may never grow the durable plan budget.
-        let overhead = payload
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(8192))
-            .and_then(|n| n.checked_add(estimate))
-            .ok_or_else(|| invalid("managed quota overflow"))?;
-        total = total
-            .checked_add(manifest.byte_length())
-            .and_then(|n| n.checked_add(overhead))
-            .ok_or_else(|| invalid("managed quota overflow"))?;
-    }
-    for file in image {
-        total = total
-            .checked_add(file.manifest.byte_length())
-            .ok_or_else(|| invalid("managed quota overflow"))?;
-    }
-    if total > i64::MAX as u64 {
-        return Err(invalid("managed quota exceeds SQLite range"));
-    }
-    Ok(total)
+    crate::projection::provider::managed_budget::quota(
+        manifests,
+        image.iter().map(|file| file.manifest.byte_length()),
+        metadata,
+    )
 }
 
 #[cfg(test)]

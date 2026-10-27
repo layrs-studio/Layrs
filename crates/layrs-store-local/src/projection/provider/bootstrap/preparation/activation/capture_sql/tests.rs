@@ -11,7 +11,7 @@ use crate::projection::{
     },
     shared::{
         provider_access::{provider_capture::operation, FamilyAccess},
-        provider_content_lease,
+        provider_publication_content_lease,
     },
 };
 use layrs_core::scm::{canonical_json, FileId};
@@ -83,8 +83,8 @@ fn owned_empty_image_capture_sql_cycle() {
             let mut checkpoint = session.checkpoint().unwrap();
             let image = super::super::capture_image::plan(
                 &mut checkpoint,
-                &active.active.source,
-                &active.active.activated.snapshot,
+                &active.active().source,
+                &active.active().activated.snapshot,
                 &Cancellation::default(),
             )
             .unwrap();
@@ -117,7 +117,7 @@ fn owned_empty_image_capture_sql_cycle() {
                 &holder.activation,
             )
             .unwrap();
-            assert_eq!(observed.capture.transactions, vec![tx.clone()]);
+            assert_eq!(observed.capture().transactions, vec![tx.clone()]);
             let stage = ProviderCaptureStage {
                 image_digest: image.image_digest,
                 image_path_count: image.image_path_count,
@@ -147,13 +147,13 @@ fn owned_empty_image_capture_sql_cycle() {
             )
             .unwrap();
             let family = FamilyAccess::open(f.family.root()).unwrap();
-            let lease = provider_content_lease(
+            let lease = provider_publication_content_lease(
                 family,
                 crate::projection::provider::records::AllocationRecord::decode(
                     &allocation.encode().unwrap(),
                 )
                 .unwrap(),
-                observed.capture,
+                observed,
             )
             .unwrap();
             let op = operation(&staged.transaction_id);
@@ -185,13 +185,13 @@ fn owned_empty_image_capture_sql_cycle() {
             )
             .unwrap();
             let family = FamilyAccess::open(f.family.root()).unwrap();
-            let lease = provider_content_lease(
+            let lease = provider_publication_content_lease(
                 family,
                 crate::projection::provider::records::AllocationRecord::decode(
                     &allocation.encode().unwrap(),
                 )
                 .unwrap(),
-                observed.capture,
+                observed,
             )
             .unwrap();
             let (root_id, digest) = lease.protect(&allocation.format, &op, &[]).unwrap();
@@ -234,11 +234,11 @@ fn owned_empty_image_capture_sql_cycle() {
                 &holder.activation,
             )
             .unwrap();
-            assert_eq!(final_state.capture.transactions, vec![accepted]);
-            assert_eq!(final_state.capture.receipts, vec![receipt]);
-            assert_eq!(final_state.capture.patches, vec![patch]);
-            assert!(final_state.capture.content.is_empty());
-            assert_eq!(final_state.capture.claims.len(), 1);
+            assert_eq!(final_state.capture().transactions, vec![accepted]);
+            assert_eq!(final_state.capture().receipts, vec![receipt]);
+            assert_eq!(final_state.capture().patches, vec![patch]);
+            assert!(final_state.capture().content.is_empty());
+            assert_eq!(final_state.capture().claims.len(), 1);
         },
     );
 }

@@ -3,11 +3,55 @@
 use super::*;
 use layrs_vfs::Cancellation;
 
+enum ReadMode {
+    Strict,
+    Live,
+}
+enum ReadProof {
+    Strict(validation::PrivateActiveCaptureValidation),
+    Live(validation::PrivateActivePublicationValidation),
+}
+impl ReadProof {
+    fn capture(&self) -> &validation::PrivateCaptureProof {
+        match self {
+            Self::Strict(proof) => &proof.capture,
+            Self::Live(proof) => &proof.capture,
+        }
+    }
+}
+
 pub(super) fn read(
     held: &outcome::PublicationPins,
     native: Option<&layrs_vfs::ProviderRootGuard>,
     cancel: Option<&Cancellation>,
 ) -> std::result::Result<validation::PrivateActiveCaptureValidation, preparation_report::Failure> {
+    match read_mode(held, native, cancel, ReadMode::Strict)? {
+        ReadProof::Strict(proof) => Ok(proof),
+        ReadProof::Live(_) => unreachable!("strict reader dispatch"),
+    }
+}
+
+/// Explicit runtime READ interpretation. Ready is readable but remains a
+/// pending source transition; Published is historical. The complete outgoing
+/// intent/receipt set is retained, and no capture mutation permission follows.
+pub(super) fn read_live(
+    held: &outcome::PublicationPins,
+    native: Option<&layrs_vfs::ProviderRootGuard>,
+    cancel: Option<&Cancellation>,
+) -> std::result::Result<validation::PrivateActivePublicationValidation, preparation_report::Failure>
+{
+    match read_mode(held, native, cancel, ReadMode::Live)? {
+        ReadProof::Live(proof) => Ok(proof),
+        ReadProof::Strict(_) => unreachable!("live reader dispatch"),
+    }
+}
+
+fn read_mode(
+    held: &outcome::PublicationPins,
+    native: Option<&layrs_vfs::ProviderRootGuard>,
+    cancel: Option<&Cancellation>,
+    mode: ReadMode,
+) -> std::result::Result<ReadProof, preparation_report::Failure> {
     let verify = || -> CauseResult<()> {
         crate::projection::provider::cancellation::check(cancel)?;
         held.family.verify()?;
@@ -24,18 +68,31 @@ pub(super) fn read(
     };
     verify().map_err(preparation_report::Failure::from)?;
     let inspect_private = |c: &Connection| {
-        validation::private_active_readable_with_source(
-            c,
-            &held.artifacts.allocation,
-            held.artifacts
-                .prepared
-                .as_ref()
-                .ok_or_else(|| invalid("capture reader P absent"))?,
-            &held.binding,
-            native.map(|root| root.registration().root_id()),
-            cancel,
-        )
-        .map(|readable| readable.capture)
+        let prepared = held
+            .artifacts
+            .prepared
+            .as_ref()
+            .ok_or_else(|| invalid("capture reader P absent"))?;
+        match mode {
+            ReadMode::Strict => validation::private_active_readable_with_source(
+                c,
+                &held.artifacts.allocation,
+                prepared,
+                &held.binding,
+                native.map(|root| root.registration().root_id()),
+                cancel,
+            )
+            .map(|readable| ReadProof::Strict(readable.capture)),
+            ReadMode::Live => validation::private_active_publication_with_source(
+                c,
+                &held.artifacts.allocation,
+                prepared,
+                &held.binding,
+                native.map(|root| root.registration().root_id()),
+                cancel,
+            )
+            .map(ReadProof::Live),
+        }
     };
     let state = match cancel {
         Some(cancel) => {
@@ -49,7 +106,7 @@ pub(super) fn read(
         held.family.validate_capture_catalog(
             c,
             &held.artifacts.allocation,
-            &private.capture,
+            private.capture(),
             cancel,
         )
     };
@@ -68,6 +125,24 @@ pub(super) fn read(
     }
     verify().map_err(preparation_report::Failure::from)?;
     Ok(private)
+}
+
+/// Match the retained Active owner while keeping its complete publication
+/// proof. This is read-only and deliberately does not require no pending row.
+pub(super) fn require_exact_live(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+) -> std::result::Result<validation::PrivateActivePublicationValidation, preparation_report::Failure>
+{
+    let state = read_live(held, Some(root), None)?;
+    if state.active.mount != *mount || state.active.activation != *activation {
+        return Err(preparation_report::Failure::private(invalid(
+            "capture reader active map changed",
+        )));
+    }
+    Ok(state)
 }
 
 pub(super) fn require_exact(

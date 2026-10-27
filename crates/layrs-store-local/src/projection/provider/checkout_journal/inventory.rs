@@ -31,6 +31,38 @@ pub(super) fn expected(
             "checkout expected inventory requires exact managed Staging",
         ));
     }
+    expected_parts(staging, files, deletions, image_digest, cancel)
+}
+
+pub(super) fn expected_ready(
+    ready: &ProviderTransitionIntentRecord,
+    files: &[CheckoutFile],
+    deletions: &[RepoPath],
+    image_digest: &str,
+    cancel: Option<&Cancellation>,
+) -> Result<ExpectedCheckout> {
+    cancellation::check(cancel)?;
+    ready.validate_fields()?;
+    if ready.role != super::super::records::transition::TransitionRole::Destination
+        || ready.state != TransitionState::Ready
+        || ready.plan.kind != ProviderImportKind::ManagedOrdinary
+        || ready.receipt_id.is_none()
+        || ready.reservation.as_deref() != Some(ready.reservation_operation()?.as_str())
+    {
+        return Err(invalid(
+            "checkout terminal inventory requires destination Ready",
+        ));
+    }
+    expected_parts(ready, files, deletions, image_digest, cancel)
+}
+
+fn expected_parts(
+    staging: &ProviderTransitionIntentRecord,
+    files: &[CheckoutFile],
+    deletions: &[RepoPath],
+    image_digest: &str,
+    cancel: Option<&Cancellation>,
+) -> Result<ExpectedCheckout> {
     let ImportSource::Provider { version, .. } = &staging.plan.source_prefix.source else {
         return Err(invalid("checkout requires provider source prefix"));
     };
@@ -212,6 +244,72 @@ pub(super) fn expected(
     expected.declared_encoded_bytes = declared as u64;
     expected.maximum_encoded_bytes = maximum as u64;
     Ok(expected)
+}
+
+pub(super) fn read_ready(
+    c: &Connection,
+    ready: &ProviderTransitionIntentRecord,
+    deletions: &[RepoPath],
+    cancel: Option<&Cancellation>,
+) -> Result<(ExpectedCheckout, CheckoutJournal)> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit() {
+        return Err(invalid(
+            "checkout terminal reader requires retained transaction",
+        ));
+    }
+    ready.validate_fields()?;
+    let marker = &ready
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("checkout Ready destination absent"))?
+        .format;
+    import_validation::require_schema(c, marker, ImportDatabaseKind::Provider, cancel)?;
+    let operation = format!("provider-checkout:{}", ready.transaction_id);
+    let count: u64 = c.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM projection_prejournal LIMIT 200003)",
+        [],
+        |r| r.get(0),
+    )?;
+    if count > MAX_ROWS as u64 {
+        return Err(invalid("checkout terminal row bound exceeded"));
+    }
+    if c.query_row("SELECT EXISTS(SELECT 1 FROM projection_prejournal WHERE length(CAST(path AS BLOB))>128 OR length(CAST(operation AS BLOB))>64 OR length(CAST(digest AS BLOB))!=71 OR length(payload)>8192 OR length(payload)=0 OR state!='owned' OR operation!=?1)",[&operation],|r|r.get::<_,bool>(0))? {
+        return Err(invalid("checkout terminal SQL scalar or operation differs"));
+    }
+    let bytes:u64=c.query_row("SELECT coalesce(sum(length(CAST(path AS BLOB))+length(CAST(operation AS BLOB))+length(CAST(digest AS BLOB))+length(payload)+length(CAST(state AS BLOB))),0) FROM projection_prejournal",[],|r|r.get(0))?;
+    if bytes > MAX_JOURNAL_BYTES as u64 {
+        return Err(invalid("checkout terminal aggregate bytes exceed bound"));
+    }
+    let mut statement =
+        c.prepare("SELECT digest,payload FROM projection_prejournal ORDER BY path COLLATE BINARY")?;
+    let mut rows = statement.query([])?;
+    let mut files = Vec::new();
+    while let Some(row) = rows.next()? {
+        cancellation::check(cancel)?;
+        let digest: String = row.get(0)?;
+        let payload: Vec<u8> = row.get(1)?;
+        let record = CheckoutRow::decode(&payload)?;
+        if record.digest()? != digest {
+            return Err(invalid("checkout terminal row digest differs"));
+        }
+        if let CheckoutEntry::File { file, .. } = record.entry {
+            if files.len() >= MAX_FILES {
+                return Err(invalid("checkout terminal files exceed bound"));
+            }
+            files.push(file);
+        }
+    }
+    let image = match &ready.plan.source_prefix.source {
+        ImportSource::Provider { version, .. } => &version.effective_image_digest,
+        _ => return Err(invalid("checkout Ready requires provider prefix")),
+    };
+    let expected = expected_ready(ready, &files, deletions, image, cancel)?;
+    let journal = super::sql::read(c, &expected, cancel)?;
+    if !journal.is_complete() {
+        return Err(invalid("checkout terminal journal is incomplete"));
+    }
+    Ok((expected, journal))
 }
 fn add_path_bytes(sum: usize, bytes: usize) -> Result<usize> {
     sum.checked_add(bytes)

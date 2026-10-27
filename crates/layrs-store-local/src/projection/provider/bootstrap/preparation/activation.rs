@@ -102,7 +102,12 @@ impl ProviderActive {
                     false,
                 )
                 .map_err(preparation_report::Failure::from)?;
-            capture_state::require_exact(&self.held, &self.root, &self.record, &self.activation)?;
+            capture_state::require_exact_live(
+                &self.held,
+                &self.root,
+                &self.record,
+                &self.activation,
+            )?;
             Ok(())
         })();
         result.map_err(|error| context.failure(error))

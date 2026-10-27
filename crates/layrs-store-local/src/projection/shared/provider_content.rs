@@ -66,7 +66,7 @@ pub(in crate::projection) fn resident_range(
     let objects = root.open_child_for_traversal(OsStr::new("objects"))?;
     let manifests = objects.open_child_for_traversal(OsStr::new("manifests"))?;
     let manifest_name = object_name(manifest.id().as_str())?;
-    let pin = manifests.open_file(OsStr::new(manifest_name))?;
+    let pin = manifests.open_readonly_file(OsStr::new(manifest_name))?;
     if pin.file().metadata()?.len() > MAX_MANIFEST {
         return Err(invalid("provider manifest file exceeds bound"));
     }
@@ -75,7 +75,7 @@ pub(in crate::projection) fn resident_range(
         return Err(invalid("provider manifest file differs from catalog"));
     }
     pin.verify_parent()?;
-    if !pin.same_file(&manifests.open_file(OsStr::new(manifest_name))?) {
+    if !pin.same_file(&manifests.open_readonly_file(OsStr::new(manifest_name))?) {
         return Err(invalid("provider manifest path changed during read"));
     }
     let chunks = objects.open_child_for_traversal(OsStr::new("chunks"))?;
@@ -102,7 +102,7 @@ pub(in crate::projection) fn resident_range(
         }
         cancel.check()?;
         let name = object_name(part.chunk_id().as_str())?;
-        let pin = chunks.open_file(OsStr::new(name))?;
+        let pin = chunks.open_readonly_file(OsStr::new(name))?;
         let chunk_start = if intersects {
             offset.max(part_start) - part_start
         } else {
@@ -124,7 +124,7 @@ pub(in crate::projection) fn resident_range(
             cancel,
         )?;
         pin.verify_parent()?;
-        if !pin.same_file(&chunks.open_file(OsStr::new(name))?) {
+        if !pin.same_file(&chunks.open_readonly_file(OsStr::new(name))?) {
             return Err(invalid("provider chunk path changed during read"));
         }
         #[cfg(test)]

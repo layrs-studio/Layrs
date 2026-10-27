@@ -1,7 +1,7 @@
 //! Canonical, non-recursive source provenance. A receipt row is decoded only
 //! after a matching schema fingerprint and its bounded SQL length/count probe.
-use super::super::records::{Record, import::ImportSource};
-use super::scoped::{ScopeView, compute_from_scope};
+use super::super::records::{import::ImportSource, Record};
+use super::scoped::{compute_from_scope, ScopeView};
 use super::*;
 use crate::projection::capture;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +18,17 @@ pub(in crate::projection) fn read_ancestry(
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ProvenanceIndex> {
     require_schema(c, marker, kind, cancel)?;
+    read_ancestry_rows(c, kind, prefix, cancel)
+}
+
+/// The destination-local reader fences its genuine destination schema first.
+/// Receipt origins remain the prefix's logical historical source identity.
+pub(super) fn read_ancestry_rows(
+    c: &Connection,
+    kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<ProvenanceIndex> {
     prefix.validate_fields()?;
     if prefix.ancestry_root_receipt.is_some() && kind != ImportDatabaseKind::Provider {
         return Err(invalid(

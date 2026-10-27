@@ -509,6 +509,28 @@ pub(in crate::projection) fn provider_content_lease(
     lease.with_content_catalog(false, |_| Ok(()))?;
     Ok(ProviderLease(lease))
 }
+/// Explicit publication-aware provider capture context. The opaque complete
+/// gate stays owned by ProviderContext through all content engine operations.
+#[cfg(windows)]
+pub(in crate::projection) fn provider_publication_content_lease(
+    family: provider_access::FamilyAccess,
+    allocation: crate::projection::provider::records::AllocationRecord,
+    proof: crate::projection::provider::validation::PrivateCaptureMutationValidation,
+) -> Result<ProviderLease> {
+    use crate::projection::provider::content_catalog::ProviderContext;
+    let lifecycle = family
+        .writer_lifecycle(false)
+        .map_err(|cause| ProjectionStoreError::ProviderContent(Box::new(cause)))?;
+    let root = PartialStoreFamily::read_bound(family.root())?;
+    let context = ProviderContext::new_publication(family, allocation, proof)?;
+    let lease = Lease {
+        family: root,
+        _lock: lifecycle,
+        content_catalog: ContentCatalogPolicy::Provider(Box::new(context)),
+    };
+    lease.with_content_catalog(false, |_| Ok(()))?;
+    Ok(ProviderLease(lease))
+}
 impl Lease {
     /// Content engine calls use one scoped catalog opener. Ordinary access
     /// requires readable admission; the provider policy has its own opener.

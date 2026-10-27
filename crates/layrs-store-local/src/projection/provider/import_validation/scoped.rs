@@ -2,13 +2,13 @@
 //! canonical IDs derived from the verified source/ancestor records, never a
 //! whole mutable provider table.
 use super::super::records::{
-    Record,
     activation::{ActivationRowData, ProviderActivationRecord},
     import::{
         CompanionDeletionRowData, CompanionFileRowData, CompanionHeaderRowData, CompanionReason,
         ImportSource, ProviderCompanionDeletionRecord, ProviderCompanionFileRecord,
         ProviderCompanionHeaderRecord,
     },
+    Record,
 };
 use super::rows::{Kind, Spec};
 use super::*;
@@ -17,7 +17,7 @@ use layrs_core::scm::{FileId, FileManifestId, RepoPath};
 use rusqlite::ToSql;
 use std::collections::{BTreeMap, BTreeSet};
 mod base;
-mod catalogs;
+pub(super) mod catalogs;
 
 const EMPTY_COUNT: &str = "SELECT 0,0";
 const EMPTY_ROWS: &str = "SELECT 0 WHERE 0";

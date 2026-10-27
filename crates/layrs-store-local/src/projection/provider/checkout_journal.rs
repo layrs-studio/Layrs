@@ -286,6 +286,26 @@ impl ExpectedCheckout {
     pub fn header(&self) -> &CheckoutHeader {
         &self.header
     }
+    /// Terminal DATA entry. This does not manufacture an earlier Staging row.
+    pub fn from_ready(
+        ready: &ProviderTransitionIntentRecord,
+        files: &[CheckoutFile],
+        deletions: &[RepoPath],
+        image_digest: &str,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        inventory::expected_ready(ready, files, deletions, image_digest, cancel)
+    }
+    /// Bootstrap only bounded current SQL inventory, then run the unchanged
+    /// exact journal interpreter against its reconstructed terminal header.
+    pub fn read_ready(
+        c: &Connection,
+        ready: &ProviderTransitionIntentRecord,
+        deletions: &[RepoPath],
+        cancel: Option<&Cancellation>,
+    ) -> Result<(Self, CheckoutJournal)> {
+        inventory::read_ready(c, ready, deletions, cancel)
+    }
     pub fn marker(&self) -> &format::Marker {
         &self.marker
     }

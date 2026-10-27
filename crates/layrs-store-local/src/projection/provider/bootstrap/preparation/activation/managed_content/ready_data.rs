@@ -268,18 +268,7 @@ impl OwnedReadyData {
     }
 }
 
-fn add_metadata(sum: u64, bytes: u64) -> Result<u64> {
-    sum.checked_add(bytes)
-        .filter(|n| *n <= 1073741824)
-        .ok_or_else(|| invalid("Ready metadata floor overflow or exceeds 1GiB"))
-}
-
-/// Continue the source-rederived floor's normalized-column accounting:
-/// INTEGER=8, NULL=0, TEXT/BLOB=UTF-8 length. That base already includes the
-/// two snapshot/selection rows, capture, head/import scalars and BOTH Staging
-/// intents. Charge an entire Ready intent conservatively instead of assuming
-/// its growth fits the old Staging row. Protection/root membership and retained
-/// checkout journal have their own separately enforced envelopes.
+// Preserve the live constructor's exact accounting and test-facing helpers.
 fn complete_metadata_floor(
     base: u64,
     ready: &ProviderTransitionIntentRecord,
@@ -288,70 +277,23 @@ fn complete_metadata_floor(
     required: &[FileManifest],
     cancel: &Cancellation,
 ) -> Result<u64> {
-    cancel.check()?;
-    if ready.role != TransitionRole::Destination || ready.state != TransitionState::Ready {
-        return Err(invalid(
-            "Ready metadata requires destination Ready projection",
-        ));
-    }
-    let mut floor = add_metadata(base, 0)?;
-    let receipt_payload = receipt.encode()?;
-    let ready_payload = ready.encode()?;
-    for bytes in [
-        // projection_provider_transition_receipts: all five columns.
-        receipt_payload.len() as u64,
-        receipt.digest()?.len() as u64,
-        receipt.owner_identity_digest.len() as u64,
-        receipt.transaction_id.len() as u64,
-        receipt.companion_id.as_ref().map_or(0, |v| v.len() as u64),
-        // projection_claims: root_id,digest,kind,owner, all actual byte lengths.
-        claim.root_id.len() as u64,
-        claim.digest.len() as u64,
-        claim.kind.len() as u64,
-        claim.owner.len() as u64,
-        // projection_provider_transitions: all eight Ready column values.
-        ready_payload.len() as u64,
-        ready.transaction_id.len() as u64,
-        "destination".len() as u64,
-        "ready".len() as u64,
-        8,
-        ready.reservation.as_ref().map_or(0, |v| v.len() as u64),
-        ready.receipt_id.as_ref().map_or(0, |v| v.len() as u64),
-        ready.digest()?.len() as u64,
-        content_mapping_metadata(required, cancel)?,
-    ] {
-        floor = add_metadata(floor, bytes)?;
-    }
-    Ok(floor)
+    crate::projection::provider::managed_budget::complete_metadata_floor(
+        base,
+        ready,
+        receipt,
+        claim,
+        required,
+        Some(cancel),
+    )
 }
-
-/// The writer inserts at most one projection_content row per previously
-/// absent FileId. Counting ALL unique required FileIds is conservative, even
-/// when an imported historical mapping already exists. Different ManifestIds
-/// for one FileId never multiply the PK row. No manifest BLOB lives here.
+#[cfg(test)]
+fn add_metadata(sum: u64, bytes: u64) -> Result<u64> {
+    crate::projection::provider::managed_budget::add_metadata(sum, bytes)
+}
+#[cfg(test)]
 fn content_mapping_metadata(required: &[FileManifest], cancel: &Cancellation) -> Result<u64> {
-    if required.len() > 100_000 {
-        return Err(invalid("Ready content metadata count exceeds bound"));
-    }
-    let mut files = BTreeMap::new();
-    for manifest in required {
-        cancel.check()?;
-        let length = manifest.id().as_str().len() as u64;
-        files
-            .entry(manifest.file_id())
-            .and_modify(|bytes: &mut u64| *bytes = (*bytes).max(length))
-            .or_insert(length);
-    }
-    let mut bytes = 0;
-    for (file, manifest_length) in files {
-        cancel.check()?;
-        bytes = add_metadata(bytes, file.as_str().len() as u64)?;
-        bytes = add_metadata(bytes, manifest_length)?;
-        bytes = add_metadata(bytes, 8)?;
-    }
-    Ok(bytes)
+    crate::projection::provider::managed_budget::content_mapping_metadata(required, Some(cancel))
 }
-
 fn require_derived_union(
     derived: &ManagedPlanData,
     required: &[FileManifest],

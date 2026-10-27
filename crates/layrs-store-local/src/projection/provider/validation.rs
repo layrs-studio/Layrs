@@ -54,6 +54,145 @@ pub(super) struct PrivateActiveTransitionValidation {
     pub(super) capture: PrivateCaptureProof,
     pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
 }
+/// Explicit outgoing publication DATA. Terminal receipts remain visible and
+/// are not silently presented as the source's incoming import ancestry.
+pub(super) struct PrivateActivePublicationValidation {
+    pub(super) active: PrivateActiveValidation,
+    pub(super) capture: PrivateCaptureProof,
+    pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
+    pub(super) receipts: Vec<records::import::ProviderTransitionReceiptRecord>,
+}
+impl PrivateActivePublicationValidation {
+    /// Borrow from the complete publication proof for an explicitly terminal-
+    /// aware import verifier. This does not erase its outgoing receipts or
+    /// convert it into ordinary admission or capture mutation authority.
+    pub(in crate::projection::provider) fn import_parts(
+        &self,
+    ) -> (
+        &ProviderActiveMountRecord,
+        &ProviderActivationRecord,
+        &ProviderBootstrapSource,
+        &VersionedProjection,
+        &PrivateCaptureProof,
+    ) {
+        (
+            &self.active.mount,
+            &self.active.activation,
+            &self.active.source,
+            &self.active.activated,
+            &self.capture,
+        )
+    }
+
+    /// Published is historical; Ready remains pending until source publication.
+    /// The returned complete proof retains every outgoing receipt.
+    pub(super) fn require_no_pending_transition(self) -> Result<Self> {
+        if self.transitions.iter().any(|intent| {
+            !matches!(
+                intent.state,
+                records::transition::TransitionState::Cancelled
+                    | records::transition::TransitionState::Published
+            )
+        }) {
+            return Err(invalid("capture mutation has a pending source publication"));
+        }
+        Ok(self)
+    }
+}
+
+/// Explicit capture-mutation gate. Construction requires the complete bounded
+/// private interpretation and absence of a pending source publication. The
+/// outgoing receipts remain owned here throughout SQL and content operations.
+pub(in crate::projection) struct PrivateCaptureMutationValidation {
+    full: PrivateActivePublicationValidation,
+}
+impl PrivateCaptureMutationValidation {
+    pub(super) fn active(&self) -> &PrivateActiveValidation {
+        &self.full.active
+    }
+    pub(in crate::projection) fn capture(&self) -> &PrivateCaptureProof {
+        &self.full.capture
+    }
+
+    pub(super) fn outgoing(
+        &self,
+    ) -> (
+        &[records::transition::ProviderTransitionIntentRecord],
+        &[records::import::ProviderTransitionReceiptRecord],
+    ) {
+        (&self.full.transitions, &self.full.receipts)
+    }
+
+    pub(super) fn require_same_publications(&self, other: &Self) -> Result<()> {
+        if self.full.transitions != other.full.transitions
+            || self.full.receipts != other.full.receipts
+        {
+            return Err(invalid(
+                "capture mutation changed source publication history",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A content context rereads after acquiring its owner lease; an earlier
+    /// independently valid capture or terminal scope cannot be substituted.
+    pub(super) fn require_same_state(&self, other: &Self) -> Result<()> {
+        self.require_same_publications(other)?;
+        let a = self.active();
+        let b = other.active();
+        let x = self.capture();
+        let y = other.capture();
+        if a.mount != b.mount
+            || a.activation != b.activation
+            || a.source.commitment() != b.source.commitment()
+            || a.activated.generation != b.activated.generation
+            || a.activated.digest != b.activated.digest
+            || a.activated.snapshot != b.activated.snapshot
+            || x.transactions != y.transactions
+            || x.receipts != y.receipts
+            || x.patches != y.patches
+            || !x
+                .content
+                .iter()
+                .map(|r| (&r.file_id, &r.manifest_id, r.bytes))
+                .eq(y
+                    .content
+                    .iter()
+                    .map(|r| (&r.file_id, &r.manifest_id, r.bytes)))
+            || !x
+                .claims
+                .iter()
+                .map(|r| (&r.root_id, &r.digest, &r.kind, &r.owner))
+                .eq(y
+                    .claims
+                    .iter()
+                    .map(|r| (&r.root_id, &r.digest, &r.kind, &r.owner)))
+        {
+            return Err(invalid("capture mutation complete predecessor differs"));
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn private_active_capture_mutation_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: Option<[u8; 16]>,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateCaptureMutationValidation> {
+    let full = private_active_publication_with_source(
+        c,
+        allocation,
+        prepared,
+        expected_binding,
+        expected_root_id,
+        cancel,
+    )?
+    .require_no_pending_transition()?;
+    Ok(PrivateCaptureMutationValidation { full })
+}
 /// Complete readable Active DATA, including interpreted source intentions.
 /// It grants neither a capture write nor transition publication.
 pub(super) struct PrivateActiveReadableValidation {
@@ -117,23 +256,38 @@ enum PrivateMode<'a> {
         expected_binding: &'a ProviderBootstrapBinding,
         expected_root_id: Option<[u8; 16]>,
     },
+    ActivePublication {
+        expected_binding: &'a ProviderBootstrapBinding,
+        expected_root_id: Option<[u8; 16]>,
+    },
 }
 
 impl PrivateMode<'_> {
     fn active(self) -> bool {
         matches!(
             self,
-            Self::Active { .. } | Self::ActiveCapture { .. } | Self::ActiveTransition { .. }
+            Self::Active { .. }
+                | Self::ActiveCapture { .. }
+                | Self::ActiveTransition { .. }
+                | Self::ActivePublication { .. }
         )
     }
     fn capture(self) -> bool {
         matches!(
             self,
-            Self::ActiveCapture { .. } | Self::ActiveTransition { .. }
+            Self::ActiveCapture { .. }
+                | Self::ActiveTransition { .. }
+                | Self::ActivePublication { .. }
         )
     }
+    fn publication(self) -> bool {
+        matches!(self, Self::ActivePublication { .. })
+    }
     fn transition(self) -> bool {
-        matches!(self, Self::ActiveTransition { .. })
+        matches!(
+            self,
+            Self::ActiveTransition { .. } | Self::ActivePublication { .. }
+        )
     }
 }
 
@@ -410,6 +564,56 @@ pub(super) fn private_active_transition_with_source(
     })
 }
 
+/// Complete bounded Active SQL DATA including outgoing Ready/Published rows.
+/// This is an explicit protocol reader, not ordinary admission or proof of
+/// the destination's filesystem, protected family, or private Ready state.
+pub(super) fn private_active_publication_with_source(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    expected_binding: &ProviderBootstrapBinding,
+    expected_root_id: Option<[u8; 16]>,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateActivePublicationValidation> {
+    let Some((ValidatedMount::Active(mount, activation, activated), source)) = private_interpret(
+        c,
+        allocation,
+        Some(prepared),
+        PrivateMode::ActivePublication {
+            expected_binding,
+            expected_root_id,
+        },
+        cancel,
+    )?
+    else {
+        unreachable!("publication mode is initialized Active only")
+    };
+    // This must precede capture::validate's global FK traversal.
+    transition::preflight_publication(c, cancel)?;
+    let capture = capture::validate(c, allocation, &mount, &activation, &activated, cancel)?;
+    let (transitions, receipts) = transition::validate_publication(
+        c,
+        allocation,
+        prepared,
+        &activation,
+        &activated,
+        &source,
+        &capture,
+        cancel,
+    )?;
+    Ok(PrivateActivePublicationValidation {
+        active: PrivateActiveValidation {
+            mount,
+            activation,
+            source,
+            activated,
+        },
+        capture,
+        transitions,
+        receipts,
+    })
+}
+
 /// Select readable Active admission only after the exact schema fingerprint
 /// and a bounded source-transition preflight. Every selected mode repeats the
 /// full private interpreter under the caller's retained SQL snapshot.
@@ -553,7 +757,8 @@ fn private_interpret(
             PrivateMode::Preparation { .. }
             | PrivateMode::Active { .. }
             | PrivateMode::ActiveCapture { .. }
-            | PrivateMode::ActiveTransition { .. } => {
+            | PrivateMode::ActiveTransition { .. }
+            | PrivateMode::ActivePublication { .. } => {
                 Err(invalid("post-bootstrap private database is uninitialized"))
             }
         };
@@ -567,6 +772,7 @@ fn private_interpret(
     for table in EMPTY_TABLES {
         if (mode.active() && table == "projection_provider_activations")
             || (mode.transition() && table == "projection_provider_transitions")
+            || (mode.publication() && table == "projection_provider_transition_receipts")
             || (mode.capture()
                 && matches!(
                     table,
@@ -637,14 +843,16 @@ fn private_interpret(
         }
         PrivateMode::Active { .. }
         | PrivateMode::ActiveCapture { .. }
-        | PrivateMode::ActiveTransition { .. } => {
+        | PrivateMode::ActiveTransition { .. }
+            | PrivateMode::ActivePublication { .. } => {
             "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase!='active'"
         }
     };
     let snapshot_projection_bound = match mode {
         PrivateMode::Active { .. }
         | PrivateMode::ActiveCapture { .. }
-        | PrivateMode::ActiveTransition { .. } => {
+        | PrivateMode::ActiveTransition { .. }
+            | PrivateMode::ActivePublication { .. } => {
             "generation NOT IN (0,1) OR length(CAST(digest AS BLOB))!=64 OR (generation=0 AND parent_digest IS NOT NULL) OR (generation=1 AND (parent_digest IS NULL OR length(CAST(parent_digest AS BLOB))!=64))"
         }
         _ => "length(CAST(digest AS BLOB))!=64 OR parent_digest IS NOT NULL",
@@ -705,7 +913,8 @@ fn private_interpret(
         PrivateMode::Preparation { .. } => ProviderPreparationRecord::MAX_BYTES as u64,
         PrivateMode::Active { .. }
         | PrivateMode::ActiveCapture { .. }
-        | PrivateMode::ActiveTransition { .. } => ProviderActiveMountRecord::MAX_BYTES as u64,
+        | PrivateMode::ActiveTransition { .. }
+        | PrivateMode::ActivePublication { .. } => ProviderActiveMountRecord::MAX_BYTES as u64,
     };
     for (table, column, bound) in [
         ("projection_meta", "identity", 65536u64),
@@ -962,6 +1171,10 @@ fn private_interpret(
             expected_root_id,
         }
         | PrivateMode::ActiveTransition {
+            expected_binding,
+            expected_root_id,
+        }
+        | PrivateMode::ActivePublication {
             expected_binding,
             expected_root_id,
         } => {

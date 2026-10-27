@@ -4,8 +4,14 @@
 [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md). The
 [managed checkpoint](worktrees-partial-vfs-managed-source-checkpoint.md) records
 passing exact installation/protection, physical checkout and retained-provenance
-private Ready recipes, including Accepted-capture reads under immutable CAS handles.
-Final family/source publication and autonomous admission remain open.
+private/family Ready and source Published recipes, including live reads under
+immutable CAS handles. The r6 continuation additionally qualifies all three
+autonomous historical-prefix SQL recipes and the publication-aware capture
+mutation gate in SQL. A real post-Published capture also passes the r6 native
+recipe. The complete autonomous Ready SQL DATA reader passes its two r7
+recipes, including source removal and corruption refusals. Physical reopening
+and ordinary autonomous admission remain open. See the managed checkpoint for
+preserved failures and current evidence.
 
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.

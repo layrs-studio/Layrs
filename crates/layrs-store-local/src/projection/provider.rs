@@ -43,6 +43,8 @@ pub(super) mod database_io;
 #[cfg(windows)]
 mod destination_ready;
 #[cfg(windows)]
+mod managed_budget;
+#[cfg(windows)]
 mod destination_sql;
 #[cfg(windows)]
 mod destination_validation;

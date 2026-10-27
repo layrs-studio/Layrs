@@ -219,7 +219,10 @@ fn open(
         guard,
     };
     let (observed_family, interpreted) = if required == RequiredFamily::Ready {
-        let capture = capture_state::read(&held, None, None)?;
+        let capture = capture_state::read_live(&held, None, None)?;
+        // Both complete SQL reads and positive closes precede projecting plain
+        // mount/activation DATA into the holder. Every runtime use below calls
+        // the explicit live reader again; no capture permission is constructed.
         (ActivationRegistration::Ready, capture.active)
     } else {
         // Activation recovery remains strict: capture starts only after READY.
@@ -270,7 +273,7 @@ fn require_exact_state(
     family: ActivationRegistration,
 ) -> std::result::Result<(), preparation_report::Failure> {
     if family == ActivationRegistration::Ready {
-        return capture_state::require_exact(held, root, record, activation);
+        return capture_state::require_exact_live(held, root, record, activation).map(|_| ());
     }
     super::boundary(held, root).map_err(preparation_report::Failure::from)?;
     if super::family_state(held)? != family {

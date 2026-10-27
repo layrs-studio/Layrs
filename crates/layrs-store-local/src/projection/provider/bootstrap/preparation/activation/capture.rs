@@ -86,11 +86,13 @@ fn acknowledgement(
 }
 fn lease(
     held: &outcome::PublicationPins,
-    proof: validation::PrivateCaptureProof,
+    proof: validation::PrivateCaptureMutationValidation,
 ) -> CauseResult<shared::ProviderLease> {
     let family = FamilyAccess::open(held.family.root())?;
     let allocation = records::AllocationRecord::decode(&held.artifacts.allocation.encode()?)?;
-    Ok(shared::provider_content_lease(family, allocation, proof)?)
+    Ok(shared::provider_publication_content_lease(
+        family, allocation, proof,
+    )?)
 }
 
 fn reservation(record: &ProviderCaptureTransactionRecord) -> String {
@@ -134,7 +136,7 @@ pub(super) fn run(
         checkpoint.revalidate_namespace()?;
         let initial = capture_sql::observe(held, root, mount, activation)?;
         let existing = initial
-            .capture
+            .capture()
             .transactions
             .iter()
             .find(|record| record.transaction_id == transaction_id)
@@ -161,9 +163,9 @@ pub(super) fn run(
                 mount,
                 activation,
                 transaction_id.into(),
-                initial.capture.patches.len() as u64,
+                initial.capture().patches.len() as u64,
                 initial
-                    .capture
+                    .capture()
                     .patches
                     .last()
                     .map(|patch| patch.digest.clone()),
@@ -175,8 +177,8 @@ pub(super) fn run(
         step = ProviderCaptureStep::Hashing;
         let image = capture_image::plan(
             checkpoint,
-            &initial.active.source,
-            &initial.active.activated.snapshot,
+            &initial.active().source,
+            &initial.active().activated.snapshot,
             cancel,
         )?;
         let proposed = ProviderCaptureStage {
@@ -241,7 +243,7 @@ fn finish(
         .filter_map(|change| change.replacement.clone())
         .collect::<Vec<_>>();
     *step = ProviderCaptureStep::Content;
-    let proof = capture_sql::observe(held, root, mount, activation)?.capture;
+    let proof = capture_sql::observe(held, root, mount, activation)?;
     let content = lease(held, proof)?;
     content.reserve_exact(
         &stage.reservation,
@@ -306,7 +308,7 @@ fn finish(
         held, root, mount, activation, record, &rows, checkpoint, &mut Close,
     )?;
     *step = ProviderCaptureStep::Protection;
-    let proof = capture_sql::observe(held, root, mount, activation)?.capture;
+    let proof = capture_sql::observe(held, root, mount, activation)?;
     let content = lease(held, proof)?;
     let (root_id, _) =
         content.protect(&held.artifacts.allocation.format, &operation, &installed)?;
@@ -314,13 +316,13 @@ fn finish(
     attempt.verify(&held.artifacts, &held.family)?;
     cancel.check()?;
     *step = ProviderCaptureStep::Acceptance;
-    let proof = capture_sql::observe(held, root, mount, activation)?.capture;
-    let patch = match proof.patches.last() {
+    let proof = capture_sql::observe(held, root, mount, activation)?;
+    let patch = match proof.capture().patches.last() {
         Some(previous) if previous.changes == stage.changes => previous.clone(),
         previous => {
             let mut patch = CapturedPatch {
                 schema_version: "layrs.projection-capture.v1".into(),
-                sequence: proof.patches.len() as u64 + 1,
+                sequence: proof.capture().patches.len() as u64 + 1,
                 previous_patch_digest: previous.map(|patch| patch.digest.clone()),
                 projection_generation: activation.activated_generation,
                 projection_digest: activation.activated_digest.clone(),
@@ -359,7 +361,7 @@ fn release_and_acknowledge(
     let ProviderCaptureState::Accepted { stage, .. } = &accepted.state else {
         return Err(invalid("capture reservation release requires Accepted"));
     };
-    let proof = capture_sql::observe(held, root, mount, activation)?.capture;
+    let proof = capture_sql::observe(held, root, mount, activation)?;
     let content = lease(held, proof)?;
     content.release_accepted_reservation(
         &stage.reservation,
@@ -387,7 +389,7 @@ pub(super) fn cancel(
         attempt.verify(&held.artifacts, &held.family)?;
         let state = capture_sql::observe(held, root, mount, activation)?;
         let prior = state
-            .capture
+            .capture()
             .transactions
             .iter()
             .find(|row| row.transaction_id == transaction_id)

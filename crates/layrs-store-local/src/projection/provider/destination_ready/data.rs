@@ -36,6 +36,24 @@ pub(super) fn prepare(
     inputs: &ManagedReadyInputs<'_>,
     cancel: Option<&Cancellation>,
 ) -> Result<PreparedData> {
+    prepare_at_member(
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        family::MemberPhase::Initializing,
+        cancel,
+    )
+}
+
+pub(super) fn prepare_at_member(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    member_phase: family::MemberPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<PreparedData> {
     cancellation::check(cancel)?;
     if source_c.is_autocommit()
         || destination.is_autocommit()
@@ -92,10 +110,45 @@ pub(super) fn prepare(
         return Err(invalid("destination Ready source closure differs"));
     }
     ready.require_receipt(inputs.data.receipt)?;
+    let copied = inputs
+        .closure
+        .copied_content_mappings(source_c, inputs.prefix, cancel)?;
+    let prepared = prepare_suffix(&inputs.view(), &copied, cancel)?;
+    match member_phase {
+        family::MemberPhase::Initializing => family::require(family_c, inputs, cancel)?,
+        family::MemberPhase::Ready => {
+            family::require_at_member(family_c, inputs, member_phase, cancel)?
+        }
+    }
+    Ok(prepared)
+}
+
+pub(super) fn prepare_suffix(
+    inputs: &ReadyView<'_>,
+    copied: &BTreeMap<FileId, (FileManifestId, u64)>,
+    cancel: Option<&Cancellation>,
+) -> Result<PreparedData> {
+    cancellation::check(cancel)?;
+    let ready = inputs.data.ready;
+    ready.require_prefix(inputs.prefix)?;
+    ready.require_receipt(inputs.data.receipt)?;
+    if ready.role != TransitionRole::Destination
+        || ready.state != TransitionState::Ready
+        || ready.plan.kind != ProviderImportKind::ManagedOrdinary
+        || ready.plan.companion_id.is_some()
+        || ready.plan.companion_files.count != 0
+        || ready.plan.companion_deletions.count != 0
+        || ready
+            .destination
+            .as_ref()
+            .is_none_or(|proof| &proof.format != inputs.marker)
+    {
+        return Err(invalid("destination Ready suffix binding differs"));
+    }
     let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
         return Err(invalid("destination Ready requires provider source"));
     };
-    let plan = &staging.plan;
+    let plan = &inputs.data.ready.plan;
     if version.generation.checked_add(1) != Some(plan.observation.generation)
         || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
         || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
@@ -240,10 +293,7 @@ pub(super) fn prepare(
     {
         return Err(invalid("destination Ready overlay commitment differs"));
     }
-    let copied = inputs
-        .closure
-        .copied_content_mappings(source_c, inputs.prefix, cancel)?;
-    for (file, (manifest, bytes)) in &copied {
+    for (file, (manifest, bytes)) in copied {
         if !required
             .get(&(file, manifest))
             .is_some_and(|m| m.byte_length() == *bytes)
@@ -264,7 +314,6 @@ pub(super) fn prepare(
             ));
         }
     }
-    family::require(family_c, inputs, cancel)?;
     cancellation::check(cancel)?;
     Ok(PreparedData {
         observation,

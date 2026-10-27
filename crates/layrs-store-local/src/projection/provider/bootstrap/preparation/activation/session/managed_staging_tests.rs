@@ -140,6 +140,21 @@ pub(super) fn with_content_planned_bytes(
     with_planned_configuration(Some(true), false, replacement, false, test);
 }
 
+/// Run an owned follow-up only after releasing the original capture lane.
+/// Its result cannot borrow the callback's temporary proofs or session view.
+pub(super) fn with_content_planned_bytes_then<T>(
+    replacement: &[u8],
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ) -> T,
+    after: impl FnOnce(&Fixture, &mut ProviderActiveSession, T),
+) {
+    with_planned_configuration_then(Some(true), false, replacement, false, test, after);
+}
+
 /// Native checkout coverage adds a nested ordinary file before the first
 /// retained image and durable plan are derived. Existing recipes are unchanged.
 pub(super) fn with_content_planned_checkout(
@@ -164,6 +179,29 @@ fn with_planned_configuration(
         &CaptureAttemptLock,
         &ProviderTransitionIntentRecord,
     ),
+) {
+    with_planned_configuration_then(
+        content_metadata,
+        empty_union,
+        replacement,
+        nested_checkout,
+        test,
+        |_, _, ()| {},
+    );
+}
+
+fn with_planned_configuration_then<T>(
+    content_metadata: Option<bool>,
+    empty_union: bool,
+    replacement: &[u8],
+    nested_checkout: bool,
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ) -> T,
+    after: impl FnOnce(&Fixture, &mut ProviderActiveSession, T),
 ) {
     let (fixture, holder, allocation, prepared, binding) = if nested_checkout {
         // The nested creation is authorized by an explicit writable Absent
@@ -384,8 +422,9 @@ fn with_planned_configuration(
     assert_eq!(close.calls, 1);
     drop(image);
     drop(checkpoint);
-    test(&fixture, &session, &attempt, &planned);
+    let result = test(&fixture, &session, &attempt, &planned);
     drop(attempt);
+    after(&fixture, &mut session, result);
     session.disconnect().unwrap();
 }
 

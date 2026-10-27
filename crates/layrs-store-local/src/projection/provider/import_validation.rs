@@ -7,7 +7,7 @@ use super::{
         ProviderImportPrefixRecord, ProviderTransitionReceiptRecord, TransitionReceiptRowData,
     },
     recovery::error::{invalid, Result as CauseResult},
-    validation::PrivateActiveCaptureValidation,
+    validation::{PrivateActiveCaptureValidation, PrivateActivePublicationValidation},
 };
 use crate::projection::{database, format, retention, selection};
 use layrs_core::scm::canonical_json;
@@ -18,9 +18,18 @@ use std::collections::BTreeMap;
 mod ancestry;
 mod copied;
 mod copy;
+mod destination_prefix;
+#[cfg(test)]
+mod destination_prefix_tests;
+pub(in crate::projection::provider) use destination_prefix::{read_destination_prefix, VerifiedDestinationPrefix};
+mod provider_proof;
+#[cfg(test)]
+#[path = "import_validation/publication_tests.rs"]
+mod publication_tests;
 mod rows;
 mod scoped;
 mod source;
+use provider_proof::{ProviderModeBinding, ProviderProof};
 pub(in crate::projection::provider) use scoped::compute_scoped_closure;
 pub(in crate::projection) use scoped::read_scoped_closure;
 pub(in crate::projection) use source::{read_source_metadata, SourceMetadata};
@@ -35,6 +44,7 @@ pub(in crate::projection) struct VerifiedImportClosure {
     provider_inputs: Option<ProviderInputBinding>,
 }
 struct ProviderInputBinding {
+    mode: ProviderModeBinding,
     activation_id: String,
     source_digest: String,
     capture_count: u64,
@@ -175,11 +185,25 @@ impl VerifiedImportClosure {
         &self,
         proof: &PrivateActiveCaptureValidation,
     ) -> CauseResult<()> {
+        self.require_inputs(ProviderProof::Capture(proof))
+    }
+
+    /// A publication closure requires its complete terminal-aware proof. It
+    /// cannot be substituted for the strict capture-proof binding above.
+    pub(in crate::projection::provider) fn require_publication_inputs(
+        &self,
+        proof: &PrivateActivePublicationValidation,
+    ) -> CauseResult<()> {
+        self.require_inputs(ProviderProof::Publication(proof))
+    }
+
+    fn require_inputs(&self, proof: ProviderProof<'_>) -> CauseResult<()> {
         let Some(expected) = &self.provider_inputs else {
             return Err(invalid("import closure has no provider source binding"));
         };
-        let (_, activation, source, _, captures) = proof.import_parts();
-        if activation.digest()? != expected.activation_id
+        let (_, activation, source, _, captures) = proof.parts();
+        if proof.mode_binding(None)? != expected.mode
+            || activation.digest()? != expected.activation_id
             || source_commitment_digest(source)? != expected.source_digest
             || captures.patches.len() as u64 != expected.capture_count
             || captures.patches.last().map(|patch| patch.digest.as_str())
@@ -214,6 +238,55 @@ pub(in crate::projection) fn verify_source(
     image_digest: &str,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<VerifiedImportClosure> {
+    verify_source_parts(
+        c,
+        marker,
+        kind,
+        prefix,
+        references,
+        provider_proof.map(ProviderProof::Capture),
+        image_digest,
+        cancel,
+    )
+}
+
+/// Explicit complete publication proof, with the same CURRENT source head
+/// requirement as `verify_source`. Outgoing receipts are validated and bound,
+/// while the copied closure still contains only its engaged incoming ancestry.
+/// No old image is reconstructed and no physical destination authority follows.
+pub(in crate::projection::provider) fn verify_source_publication(
+    c: &Connection,
+    marker: &format::Marker,
+    prefix: &ProviderImportPrefixRecord,
+    references: ImportSourceReferences<'_>,
+    proof: &PrivateActivePublicationValidation,
+    image_digest: &str,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<VerifiedImportClosure> {
+    let proof = ProviderProof::Publication(proof);
+    proof.require_current_publication(c, &references, cancel)?;
+    verify_source_parts(
+        c,
+        marker,
+        ImportDatabaseKind::Provider,
+        prefix,
+        references,
+        Some(proof),
+        image_digest,
+        cancel,
+    )
+}
+
+fn verify_source_parts(
+    c: &Connection,
+    marker: &format::Marker,
+    kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
+    references: ImportSourceReferences<'_>,
+    provider_proof: Option<ProviderProof<'_>>,
+    image_digest: &str,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<VerifiedImportClosure> {
     if c.is_autocommit() {
         return Err(invalid("import reader requires a retained SQL snapshot"));
     }
@@ -229,7 +302,7 @@ pub(in crate::projection) fn verify_source(
             },
             Some(proof),
         ) => {
-            let (mount, activation, source, activated, captures) = proof.import_parts();
+            let (mount, activation, source, activated, captures) = proof.parts();
             if mount.activation_digest != *activation_map_id
                 || activation.digest()? != *activation_map_id
                 || activation.binding != *binding
@@ -316,10 +389,10 @@ fn scoped_content_digest(
 fn bind_provider_inputs(
     c: &Connection,
     metadata: &SourceMetadata,
-    proof: &PrivateActiveCaptureValidation,
+    proof: ProviderProof<'_>,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ProviderInputBinding> {
-    let (_, activation, source, _, captures) = proof.import_parts();
+    let (_, activation, source, _, captures) = proof.parts();
     let content_digest = scoped_content_digest(metadata, captures)?;
     let proof_content: BTreeMap<_, _> = captures
         .content
@@ -340,6 +413,7 @@ fn bind_provider_inputs(
         }
     }
     Ok(ProviderInputBinding {
+        mode: proof.mode_binding(cancel)?,
         activation_id: activation.digest()?,
         source_digest: source_commitment_digest(source)?,
         capture_count: captures.patches.len() as u64,

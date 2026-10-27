@@ -20,6 +20,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 #[path = "provider_import/content.rs"]
 pub(in crate::projection) mod content;
+#[path = "provider_import/publication.rs"]
+pub(in crate::projection) mod publication;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::projection) enum ImportRegistration {
@@ -37,6 +39,22 @@ pub(in crate::projection) enum ImportRegistrationEffect {
 enum UnreservedPhase {
     Copying,
     Staging,
+}
+
+/// Private phase selection. Existing entry points always select Initializing;
+/// only the dedicated publication reader may select the exact Ready member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportMemberPhase {
+    Initializing,
+    Ready,
+}
+impl ImportMemberPhase {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::Ready => "ready",
+        }
+    }
 }
 
 /// Require the source's Ready family row and all of its capture protections,
@@ -127,6 +145,37 @@ fn validate_import_base(
     phase: UnreservedPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<ImportRegistration> {
+    match validate_import_base_at_member(
+        family,
+        c,
+        source_a,
+        source_p,
+        source_activation,
+        source_capture,
+        source_copying,
+        phase,
+        ImportMemberPhase::Initializing,
+        cancel,
+    )? {
+        None => Ok(ImportRegistration::Absent),
+        Some(ImportMemberPhase::Initializing) => Ok(ImportRegistration::Initializing),
+        Some(ImportMemberPhase::Ready) => Err(invalid("import base unexpectedly admitted Ready")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_import_base_at_member(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    member_phase: ImportMemberPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<ImportMemberPhase>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("import family read requires retained transaction"));
@@ -225,24 +274,26 @@ fn validate_import_base(
         )
         .optional()?;
     let registration = match target {
-        None => ImportRegistration::Absent,
+        None => None,
         Some((path, id, bytes, state))
             if path == member_path
                 && id == destination.private_database_identity
                 && bytes == marker_bytes
-                && state == "initializing" =>
+                && state == member_phase.sql() =>
         {
-            ImportRegistration::Initializing
+            Some(member_phase)
         }
         Some(_) => {
             return Err(invalid(
-                "import target registry row differs from Initializing",
+                "import target registry row differs from expected member phase",
             ))
         }
     };
-    if phase == UnreservedPhase::Staging && registration != ImportRegistration::Initializing {
+    if (phase == UnreservedPhase::Staging || member_phase == ImportMemberPhase::Ready)
+        && registration != Some(member_phase)
+    {
         return Err(invalid(
-            "import Staging requires existing Initializing registration",
+            "import phase requires existing exact member registration",
         ));
     }
     family.verify()?;

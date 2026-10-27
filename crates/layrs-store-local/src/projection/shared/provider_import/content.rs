@@ -400,6 +400,27 @@ impl FamilyAccess {
         private_metadata_floor: u64,
         cancel: Option<&Cancellation>,
     ) -> Result<ImportProtectionState> {
+        self.validate_import_protection_at_member(
+            c,
+            inputs,
+            binding,
+            protection,
+            private_metadata_floor,
+            ImportMemberPhase::Initializing,
+            cancel,
+        )
+    }
+
+    pub(super) fn validate_import_protection_at_member(
+        &self,
+        c: &Connection,
+        inputs: &ImportContentInputs<'_>,
+        binding: &crate::projection::shared::exact_content::ExactBinding,
+        protection: &crate::projection::shared::exact_protection::ExactProtection,
+        private_metadata_floor: u64,
+        member_phase: ImportMemberPhase,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportProtectionState> {
         require_transaction(c, false, cancel)?;
         require_staging_pair(inputs, cancel)?;
         if installation_binding(inputs)? != *binding {
@@ -407,7 +428,7 @@ impl FamilyAccess {
                 "exact protection binding differs from managed import",
             ));
         }
-        if validate_import_base(
+        if validate_import_base_at_member(
             self,
             c,
             inputs.allocation,
@@ -416,10 +437,13 @@ impl FamilyAccess {
             inputs.capture,
             inputs.source_staging,
             UnreservedPhase::Staging,
+            member_phase,
             cancel,
-        )? != ImportRegistration::Initializing
+        )? != Some(member_phase)
         {
-            return Err(invalid("exact protection owner is not Initializing"));
+            return Err(invalid(
+                "exact protection owner differs from expected member phase",
+            ));
         }
         let installation =
             crate::projection::shared::exact_content::validate_protected_installations(

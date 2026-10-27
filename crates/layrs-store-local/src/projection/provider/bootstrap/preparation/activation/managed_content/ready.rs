@@ -19,6 +19,9 @@ pub(in crate::projection::provider::bootstrap::preparation::activation) struct M
 }
 
 impl ManagedPrivateReady<'_> {
+    pub(super) fn physical_parts(&self) -> (&ManagedImportProtection, &ManagedCheckoutProof) {
+        (self.protected, self.checkout)
+    }
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn ready_intent(
         &self,
     ) -> &ProviderTransitionIntentRecord {

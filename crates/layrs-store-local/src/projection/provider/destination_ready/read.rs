@@ -18,10 +18,20 @@ pub(super) fn ready(
         inputs.prefix,
         cancel,
     )?;
+    ready_suffix(c, &inputs.view(), prepared, checkout, cancel)
+}
+
+pub(super) fn ready_suffix(
+    c: &Connection,
+    inputs: &ReadyView<'_>,
+    prepared: &PreparedData,
+    checkout: Option<&super::super::checkout_journal::ExpectedCheckout>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
     let checkout_rows = match checkout {
         None => 0,
         Some(expected) => {
-            require_checkout_expected(inputs, expected, cancel)?;
+            require_checkout_ready_expected(inputs, expected, cancel)?;
             let journal = super::super::checkout_journal::read(c, expected, cancel)?;
             if !journal.is_complete() {
                 return Err(invalid(
@@ -90,7 +100,7 @@ pub(super) fn ready(
             return Err(invalid("destination Ready table has missing or extra rows"));
         }
     }
-    let plan = &inputs.staging.plan;
+    let plan = &inputs.data.ready.plan;
     let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
         return Err(invalid("destination Ready requires provider source"));
     };

@@ -1,13 +1,13 @@
 //! Reconstruct every referenced immutable catalog against snapshot/selection0.
 use super::super::super::records::{
-    ProviderBootstrapSource, ProviderSourceDescriptor, activation::activation_snapshot,
-    source::CatalogRecord,
+    activation::activation_snapshot, source::CatalogRecord, ProviderBootstrapSource,
+    ProviderSourceDescriptor,
 };
 use super::*;
 use crate::projection::{database, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{FileManifest, canonical_json},
+    scm::{canonical_json, FileManifest},
 };
 
 const MAX_ALL_DESCRIPTOR_BYTES: u64 = 1024 * 1024 * 1024;
@@ -28,11 +28,36 @@ pub(super) fn validate_catalogs(
     ids: &BTreeSet<String>,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<CatalogValidation> {
+    Ok(validate_catalogs_inner(c, ids, None, cancel)?.0)
+}
+
+/// Reuse the complete catalog/descriptor interpreter while retaining only the
+/// requested current source, rather than every historical catalog's inputs.
+pub(in crate::projection::provider::import_validation) fn reconstruct_catalog(
+    c: &Connection,
+    id: &str,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<ProviderBootstrapSource> {
+    let ids = BTreeSet::from([id.to_owned()]);
+    validate_catalogs_inner(c, &ids, Some(id), cancel)?
+        .1
+        .ok_or_else(|| invalid("import reconstructed catalog missing"))
+}
+
+fn validate_catalogs_inner(
+    c: &Connection,
+    ids: &BTreeSet<String>,
+    retain: Option<&str>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<(CatalogValidation, Option<ProviderBootstrapSource>)> {
     if ids.is_empty() {
-        return Ok(CatalogValidation {
-            descriptor_count: 0,
-            by_id: BTreeMap::new(),
-        });
+        return Ok((
+            CatalogValidation {
+                descriptor_count: 0,
+                by_id: BTreeMap::new(),
+            },
+            None,
+        ));
     }
     let (snapshot_length,): (u64,) = c.query_row(
         "SELECT length(payload) FROM projection_snapshots WHERE generation=0",
@@ -60,6 +85,7 @@ pub(super) fn validate_catalogs(
     let mut total_rows = 0u64;
     let mut total_bytes = 0u64;
     let mut by_id = BTreeMap::new();
+    let mut retained = None;
     for id in ids {
         super::super::super::cancellation::check(cancel)?;
         let (count, bytes): (u64,u64) = c.query_row(
@@ -100,6 +126,12 @@ pub(super) fn validate_catalogs(
             || wire_bytes > 256 * 1024 * 1024
         {
             return Err(invalid("import descriptor rowset count or bytes differs"));
+        }
+        if c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projection_provider_descriptors WHERE catalog_id=?1 AND (length(CAST(path AS BLOB))>4096 OR length(CAST(file_id AS BLOB))!=71 OR length(CAST(manifest_id AS BLOB))!=71 OR length(manifest)>262144))",
+            [id], |r| r.get::<_, bool>(0),
+        )? {
+            return Err(invalid("import descriptor SQL scalar exceeds bound"));
         }
         let mut statement = c.prepare("SELECT path,file_id,bytes,executable,manifest_id,manifest FROM projection_provider_descriptors WHERE catalog_id=?1 ORDER BY path COLLATE BINARY")?;
         let mut rows = statement.query([id])?;
@@ -178,9 +210,15 @@ pub(super) fn validate_catalogs(
                 activated_digest: database::digest(1, Some(&source_digest), &activated_bytes),
             },
         );
+        if retain == Some(id.as_str()) {
+            retained = Some(validated);
+        }
     }
-    Ok(CatalogValidation {
-        descriptor_count: total_rows,
-        by_id,
-    })
+    Ok((
+        CatalogValidation {
+            descriptor_count: total_rows,
+            by_id,
+        },
+        retained,
+    ))
 }

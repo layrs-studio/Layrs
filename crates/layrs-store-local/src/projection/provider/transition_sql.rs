@@ -5,15 +5,18 @@ use super::{
     cancellation,
     import_validation::{self, ImportDatabaseKind},
     records::{
-        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Record,
         import::ImportSourceReferences,
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
+        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Record,
     },
-    recovery::error::{Result, invalid},
+    recovery::error::{invalid, Result},
     validation::{self, PrivateActiveCaptureValidation},
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
+
+mod publication;
+pub(super) use publication::apply_source_publication;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceIntentEffect {

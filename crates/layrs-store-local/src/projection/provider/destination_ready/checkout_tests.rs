@@ -17,6 +17,9 @@ mod fixture;
 mod source;
 use fixture::Fixture;
 
+#[path = "publication_tests.rs"]
+mod publication_tests;
+
 fn with_fixture(
     body: impl FnOnce(
         &Connection,

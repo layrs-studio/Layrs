@@ -66,10 +66,10 @@ impl LocalSource {
             .map_err(|e| {
                 ProviderActiveOpenFailure::from_failure("validate active callback source", e.into())
             })?;
-        capture_state::require_exact(&self.held, &self.root, &self.record, &self.activation)
+        capture_state::require_exact_live(&self.held, &self.root, &self.record, &self.activation)
             .map_err(|e| {
-                ProviderActiveOpenFailure::from_failure("validate active callback source", e)
-            })?;
+            ProviderActiveOpenFailure::from_failure("validate active callback source", e)
+        })?;
         Ok(())
     }
 }
@@ -410,9 +410,17 @@ mod managed_content_tests;
 #[cfg(test)]
 mod managed_exact_tests;
 #[cfg(test)]
+mod managed_family_publication_tests;
+#[cfg(test)]
+mod managed_live_read_tests;
+#[cfg(test)]
+mod managed_post_publication_capture_tests;
+#[cfg(test)]
 mod managed_protection_tests;
 #[cfg(test)]
 mod managed_ready_tests;
+#[cfg(test)]
+mod managed_source_publication_tests;
 
 #[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]

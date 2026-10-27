@@ -456,10 +456,12 @@ fn hash_source(
 }
 
 fn same_capture_state(
-    a: &validation::PrivateActiveCaptureValidation,
-    b: &validation::PrivateActiveCaptureValidation,
+    a: &validation::PrivateActivePublicationValidation,
+    b: &validation::PrivateActivePublicationValidation,
 ) -> bool {
     a.active.mount == b.active.mount
+        && a.transitions == b.transitions
+        && a.receipts == b.receipts
         && a.active.activation == b.active.activation
         && a.active.source.commitment() == b.active.source.commitment()
         && a.active.activated.snapshot == b.active.activated.snapshot
@@ -493,14 +495,15 @@ fn admitted(
     activation: &ProviderActivationRecord,
     attempt: &CaptureAttemptLock,
     cancel: &Cancellation,
-) -> std::result::Result<validation::PrivateActiveCaptureValidation, ProviderRecoveryExportCause> {
+) -> std::result::Result<validation::PrivateActivePublicationValidation, ProviderRecoveryExportCause>
+{
     cancel.check().map_err(Cause::Vfs)?;
     let _locks = held.family.locks(
         &held.artifacts.allocation.format.identity.worktree_id,
         false,
     )?;
     attempt.verify(&held.artifacts, &held.family)?;
-    let state = capture_state::read(held, Some(native), Some(cancel)).map_err(|e| {
+    let state = capture_state::read_live(held, Some(native), Some(cancel)).map_err(|e| {
         ProviderRecoveryExportCause::ActiveValidation(ProviderActiveOpenFailure::from_failure(
             "validate active capture for recovery export",
             e,

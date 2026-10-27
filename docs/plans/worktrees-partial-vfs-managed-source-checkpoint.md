@@ -1,9 +1,9 @@
 # Managed source checkpoint — 26 October 2026
 
 **27 October continuation:** work resumed at the user's request. Exact content
-installation/protection, physical checkout and private Ready are qualified below.
-Family/source terminal
-publication, autonomous admission and the later product stages remain open.
+installation/protection, physical checkout, private/family Ready and source
+terminal publication are qualified below. Complete autonomous admission and
+the later product stages remain open.
 The [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md) preserves
 the earlier stop point; it is no longer the current working state.
 
@@ -682,6 +682,184 @@ any writer. Only the owned fixture then restores the original columns by exact
 CAS. This is not a product repair, real close failure, BUSY or crash restart.
 Test SHA256 `78738d0e277119b014c52aa1f1b8570c0deaaca6a5bd0bfa16d35979a3f241b2`.
 
+## Family and source publication SQL (2026-10-27)
+
+Dedicated publication readers preserve the old Initializing/Staging APIs.
+The family kernel validates complete retained accounting and changes only the
+exact destination worktree row from Initializing to Ready. The destination
+has a separate full Ready reader for that family phase. Source publication has
+a distinct terminal reader with bounded transition/receipt preflights before
+FK checks, a bijection between outgoing receipts and terminal intentions, and
+full-row CAS for Staging -> Ready -> Published. Ready remains pending;
+Published is historical. None of these kernels commits or grants admission.
+
+All-target check r2 and no-run build r1 pass. Retained artifact
+`provider-family-publication-20261027-r1` (516 inputs, CodeView age 74,
+EXE SHA256 `a77a195c471b8cb51a1beeac4cb0abbb760c80ae9459ca1da94f9b8add9cd02d`)
+passes six separately reviewed SQL-memory recipes, serially with fresh C:
+parents and child 120 / outer 180 second bounds. Two family tests cover the
+lower CAS/fingerprint helpers, not full FamilyAccess pins; a third checks the
+complete distinct destination Ready reader and strict legacy-reader refusal.
+Three source recipes cover both phase changes, rollback, query-only replay,
+forged/orphan/competing receipt refusals, FK OFF and 4097-row preflight refusal.
+An Accepted-capture fixture is added after Published and interpreted before
+historical replay; it does not execute the physical capture API.
+
+Test SHA256: family `65292dc236cb20b11a02edf38e00e66d81d0e06aef755744af27864b1b2970eb`,
+destination `27e9ebe92a4f038b0003650cbe8a47f6f73a393eb220d8e11841698acee29a86`,
+source `5994f5e14fcc2b438960ecba335b6cae5a999a6c9fd3d7f139cf7a8bff2da85d`.
+The integrated family driver retains source and destination read transactions
+through the family COMMIT, then closes positively and rereads. All-target check
+r4 and no-run build r2 pass. The r2 artifact (519 inputs, CodeView age 75,
+EXE SHA256 `76d2122837e441fcf0d8b64d4b0c148f35735d76f598542f71c5018664be6979`)
+passes its separately released native recipe, child 240 / outer 300 with a
+fresh C: parent. A single README fixture has two representations of one FileId.
+The writer commits family Ready, closes physically, then its observer refuses
+the acknowledgement. All thirteen family tables are compared: only the exact
+destination worktree state changes. Source Staging, private Ready, receipt,
+three checkout rows, output bytes, reservations and protection remain intact.
+The retry validates freshly with zero writer opens/closes and unchanged witnesses.
+Test SHA256 `77aacc781327d1f3c4baa195104e17fdedb47b9b1919ebe74c736dedfebd7445`.
+This does not establish actual close failure, BUSY, process restart or admission.
+
+The same r2 artifact passes a separately reviewed publication-aware import
+closure SQL recipe (child 120 / outer 180, another fresh C: parent). Capture
+and Publication proofs are mode-separated; the publication wrapper rereads the
+full current SQL proof before import/FK interpretation, binds its intentions
+and receipts and keeps the original strict current capture head. An added
+Planned intent invalidates the old proof without changing incoming ancestry.
+That recipe does not yet exercise a Ready receipt or changed capture head.
+Test SHA256 `67a97344d439e3acbb28922ac4e672cff67fd12343ab1452a29ecec5261badfb`.
+The strengthened source-publication recipe then passes on r3 (520 inputs,
+CodeView age 76, EXE SHA256
+`47ce70223c0142014c5abb3c9b3b76b17188ef6eb2b3252460953d65bbe1d173`),
+after all-target source check r2 and no-run build r1. It now reads publication
+closures at real Staging, Ready-with-receipt and Published, verifies the same
+incoming closure while rejecting prior full-proof bindings, then adds the
+Accepted capture and verifies rejection of both the old proof and the old
+prefix under a fresh proof without writes. It uses the same separately reviewed
+120/180-second SQL-memory recipe bounds and a fresh C: parent. Updated test
+SHA256 `01d4eadba391c53d6183490981fa370451ae013c023616734db854c8901c9b33`.
+The first physical source-publication recipe failed on r4 (523 inputs,
+CodeView age 77, EXE SHA256
+`7042773ed655c53070dbcd1381bb0f3dbb1697274bcddd88e777da752fa974be`),
+before calling the source publisher. Its generic no-follow file witness tried
+to traverse the live ProjFS checkout root to read source `.layrs/FORMAT`, and
+correctly refused the reparse point. The failed C: fixture and log remain
+preserved. The fixture now leaves this path out of generic witnesses; source
+FORMAT remains checked by the existing native-owner boundary and retained pins.
+Product filesystem checks were not weakened.
+
+The corrected recipe passes on r5 (525 inputs, CodeView age 78, EXE SHA256
+`65599817d34c65c3f8584b33ba1c9e52cfaf8f187eca833788907d3443f161ee`),
+after all-target check r7 and no-run build r3. It runs in a fresh C: parent,
+child 240 / outer 300 seconds, finishing in 138.66 seconds. Source Ready commits
+and closes before an injected ACK refusal; retry writes Published exactly once,
+then Published replay opens no writer. Source tables other than transitions and
+receipts, all schemas, family and destination tables, checkout journals, quota
+and output witnesses remain exact. Both outgoing receipt and normalized source
+projections are checked after each phase. This remains retained-owner,
+same-process/checkpoint qualification, not crash restart or actual close failure.
+Test SHA256 `829caad150840641bd8d83f1ad84899e44cb965e732fb8c9ff3d89744056e3ce`.
+
+The same recipe exercises LocalSource validation and real 21-byte README
+callbacks after Ready/Published, including cancellation with untouched output.
+Explicit live readers retain the full publication proof; export also compares
+transitions and receipts. The old protocol readers and capture mutation still
+refuse terminal states in this tranche. Review found four read-only CAS opens
+requesting DELETE, incompatible with retained immutable READ-sharing pins;
+they now use open_readonly_file while retaining identity/hash/length checks.
+Helper SHA256 `5dedd2c1828610422791ba50ddf884f0df967f23208f25a8160f9bca9a94a4db`;
+provider content `34ca331ef9e29251b6409666d0d0b9c674725f5e1ba47463dd90534cf179d487`.
+No native reconnect or export recipe was run for these explicit live routes.
+
+## Autonomous historical prefix (2026-10-27, qualification in progress)
+
+The new prefix reader uses the actual destination FORMAT/SQL and a distinct
+transaction-bound DATA type. Source and family connections are closed in its
+recipes. It reconstructs copied source catalog/activation and validates incoming
+history/scopes, without fabricating source FORMAT, A/P records or a live source
+closure. It explicitly does not validate the local Ready suffix or admission.
+
+Critical review found SQL TEXT digests with NUL tails could reach String
+allocation before byte-length checks. A dedicated twelve-table preflight now
+bounds all historical TEXT/BLOB fields in bytes before semantic loaders, with
+bounded row scans and a 2GiB aggregate ceiling. Seventeen small NUL-tail probes
+are source-released but not yet executed successfully.
+
+On r5 the first autonomous prefix recipe passes. The second failed in fixture
+setup while assigning a nonexistent receipt_id: immediate FK enforcement
+rejected the deliberate corruption before the reader ran. The queue stopped;
+the third recipe was not executed. The correction uses deferred FKs only inside
+that owned savepoint, rolls the corruption back, then restores immediate FK
+checking. A fresh artifact and parent are required; the failed log is retained.
+
+## Post-publication capture and autonomous Ready continuation (2026-10-27)
+
+All-target check `provider-post-publication-check-r2.log` and no-run libtest
+build `provider-post-publication-build-r1.log` pass. The r6 artifact has 531
+source inputs, CodeView age 79, EXE SHA256
+`d7beea710c8145c93b9395aa256e3585687b99cfe273c4b27e78e4082032e478`.
+Its source closure and startup/native-input audit are retained under
+`.layrs-local/validation/provider-family-publication-20261027-r6`.
+
+The strengthened source-publication SQL recipe passes on r6, child120/outer180
+with a fresh C: parent. It additionally verifies that the opaque mutation gate
+refuses pending Ready, admits historical Published, preserves outgoing
+publications after a subsequent Accepted capture fixture, and rejects stale
+full state. Test SHA256
+`12cb71decf92ef82c2785f787e06804db4d5745b9458eba26a6063d87adad879`.
+This SQL fixture alone is not a real capture API execution.
+
+All three historical-prefix SQL recipes pass on r6, including the corrected
+receipt-substitution fixture and all seventeen NUL-tail bounds probes. Tests
+SHA256 `948c156fa17c5ed8117190297ed3f9b0b05565b431f052f4cbe9afc72b0a1427`.
+The r5 failure remains preserved; it is not overwritten by this fresh run.
+
+The complete autonomous Ready DATA reader is integrated and independently
+reviewed. It uses actual destination and family transactions, reconstructs the
+local suffix and exact manifest union, and validates retained checkout and
+installation journals, protection, reservations and budgets without consulting
+the current source member. Its first r6 recipe fails BEFORE reader execution:
+the synthetic journal setup assumes every manifest has one chunk, but the
+fixture includes an empty manifest. The second recipe was not run. Correcting
+that fixture and rerunning on a fresh artifact remain pending. Neither code
+review nor compilation qualifies the complete reader at runtime.
+
+The real post-Published capture helper is integrated through an owned-result
+fixture hook: all transfer proofs and the original attempt lock are dropped
+before the mutable session callback, then the ordinary final disconnect runs.
+The source-reviewed native recipe passes on frozen r6 in 221.31 seconds
+(child240/outer300, fresh C: parent). After Ready/Published ACK/replay and live
+read assertions, it makes a real 51-byte authorized README edit and calls
+`session.capture`. The result reaches Accepted with a new patch and capture
+receipt, retains its claim, releases its own reservation, and reads the exact
+resident manifest bytes after positive catalog close. Historical source
+Published intent and outgoing receipt remain byte-exact. Source revalidation
+and final state/publication comparisons pass before disconnect.
+Recipe SHA256 `f280888e4b2c0b031b9ab225959ff9fcb28794c4e3384a654faf147973de1eb4`;
+capture helper `0f3375a50ba385f756010b17fccd4b617b4fa01593f967144e912c245e7d9874`;
+fixture `3b0d6380da5ba372235889f4c574cf9c7da0b0e86cc23f5e4ccb4a235852a63b`.
+This qualifies one real post-Published capture in the same connected source
+session, not native reconnect, multiple successive imports or ordinary
+destination admission.
+
+The corrected complete autonomous Ready recipes both pass on r7, after
+all-target check r3 and no-run build r2. Artifact EXE SHA256
+`d4bce7b243233b0fd610aa3bf29415321663847725fc9bd4f93c3c82294b94ee`,
+CodeView age 80, 531 source inputs; tests SHA256
+`1d993376ddee3d0238f9537d7ac3b77179aa3777cd9126ba4ec3c9ed81af798d`.
+The independently reviewed correction derives journal cursors and resident
+bits from each actual manifest's chunk count, including zero; assertions and
+production readers are unchanged. Both recipes use child120/outer180 and a
+fresh C: parent. Positive coverage closes the source, removes only its fixture
+family membership, reads query-only destination/family DATA and rejects a
+proof after its transaction ends. Negative coverage rejects changed suffix
+head, journal representation, family phase and reservation debit. Identities
+remain synthetic SQL fixture values; no physical reopen or ordinary admission
+is claimed. The existing exact-installation reader also still refuses other
+reservation journals in the family, so multi-import admission remains open.
+
 ## Remaining qualification boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately
@@ -689,6 +867,7 @@ qualified reservation source BUSY/quarantine recipe. Neither establishes an
 interrupted commit, restart after quarantine or power-loss guarantee.
 The two physical recipes above qualify their exact installation scope only.
 Family protection, physical checkout and private Ready have the bounded evidence
-above. Family/source terminal publication, autonomous admission, companion
-conversion and selection expansion are not yet qualified. Product routes and Desktop
+above, with one real capture after Published now qualified on r6. Complete
+autonomous admission, companion conversion and selection expansion are not yet
+qualified. Product routes and Desktop
 integration remain separate. The existing strict GC fence remains.
