@@ -2,8 +2,8 @@
 //! checkout and durable exact family content/protection, retains all pins and
 //! gates, and owns transactions, rollback, COMMIT and positive closes. This
 //! module grants no ordinary admission and never opens a business database.
-//! WIP: deliberately not wired into provider; compilation, independent source
-//! review and the planned owned memory-SQL recipes remain outstanding.
+//! The family member remains Initializing through this SQL-only step, including
+//! Ready replay. A later physical publication requires its own typed protocol.
 use super::{
     cancellation, database_io, destination_validation,
     import_validation::VerifiedImportClosure,
@@ -204,8 +204,8 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
         "UPDATE projection_provider_transitions SET state='ready',receipt_id=?1,payload=?2,digest=?3 \
          WHERE id=?4 AND role=?5 AND state=?6 AND local_generation=?7 \
          AND reservation IS ?8 AND receipt_id IS ?9 AND payload=?10 AND digest=?11",
-        params![new.receipt_id,new.encode()?,new.digest()?,old.transaction_id,old.role.sql(),
-            old.state.sql(),old.local_generation,old.reservation,old.receipt_id,old.encode()?,old.digest()?],
+        params![new.receipt_id,new.encode()?,new.digest()?,old.transaction_id,"destination",
+            "staging",old.local_generation,old.reservation,old.receipt_id,old.encode()?,old.digest()?],
     )? != 1 {
         return Err(invalid("destination Ready exact intent CAS differs"));
     }
@@ -213,3 +213,6 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
     cancellation::check(cancel)?;
     Ok(ReadyEffect::Finalized)
 }
+
+#[cfg(test)]
+mod tests;

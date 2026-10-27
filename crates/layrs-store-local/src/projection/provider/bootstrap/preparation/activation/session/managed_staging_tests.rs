@@ -95,7 +95,12 @@ fn with_real_planned(
         &ProviderTransitionIntentRecord,
     ),
 ) {
-    with_planned_configuration(None, false, test);
+    with_planned_configuration(
+        None,
+        false,
+        b"ordinary managed destination replacement",
+        test,
+    );
 }
 
 /// The managed-content branch upgrades before retaining any session lifecycle
@@ -111,12 +116,32 @@ pub(super) fn with_content_planned(
         &ProviderTransitionIntentRecord,
     ),
 ) {
-    with_planned_configuration(Some(sufficient_metadata), empty_union, test);
+    with_planned_configuration(
+        Some(sufficient_metadata),
+        empty_union,
+        b"ordinary managed destination replacement",
+        test,
+    );
+}
+
+/// Keeps the same native owners and genuine plan derivation, with caller bytes
+/// written before the first checkpoint and protected manifest union are formed.
+pub(super) fn with_content_planned_bytes(
+    replacement: &[u8],
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ),
+) {
+    with_planned_configuration(Some(true), false, replacement, test);
 }
 
 fn with_planned_configuration(
     content_metadata: Option<bool>,
     empty_union: bool,
+    replacement: &[u8],
     test: impl FnOnce(
         &Fixture,
         &ProviderActiveSession,
@@ -157,7 +182,7 @@ fn with_planned_configuration(
     session.connect().unwrap();
     let path = fixture.checkout.join("README.md");
     remove_placeholder(&path);
-    fs::write(&path, b"ordinary managed destination replacement").unwrap();
+    fs::write(&path, replacement).unwrap();
     let held = &session.source.held;
     let cancel = Cancellation::default();
     let active = {

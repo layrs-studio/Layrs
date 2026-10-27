@@ -57,6 +57,12 @@ pub(super) fn initialize_reference(c: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Provider test fixtures keep the same fresh-memory-only preconditions.
+#[cfg(test)]
+pub(in crate::projection) fn initialize_test_reference(c: &Connection) -> Result<()> {
+    initialize_reference(c)
+}
+
 /// Caller retains a fresh, FK-enabled connection and its already-open SQL
 /// transaction. Caller alone decides COMMIT/ROLLBACK and observable close.
 /// The caller must hold the family's exclusive lifecycle/catalog gates and

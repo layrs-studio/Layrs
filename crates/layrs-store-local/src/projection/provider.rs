@@ -42,6 +42,8 @@ pub(super) mod database_io;
 #[cfg(windows)]
 mod destination_sql;
 #[cfg(windows)]
+mod destination_ready;
+#[cfg(windows)]
 mod destination_validation;
 #[cfg(windows)]
 mod family_upgrade;

@@ -155,6 +155,23 @@ pub(super) fn require(
         .map(|m| m.id().as_str())
         .collect();
     ids.sort_unstable();
+    // root_manifests has no text-length constraint. Check both cardinality and
+    // byte shape before query_map can allocate any observed String, even when
+    // a previously corrupted catalog was written with foreign keys disabled.
+    let membership_count: usize = c.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM root_manifests WHERE root_id=?1 LIMIT ?2)",
+        params![id, ids.len() + 1],
+        |r| r.get(0),
+    )?;
+    if membership_count != ids.len() {
+        return Err(invalid("destination Ready protection membership differs"));
+    }
+    if c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM root_manifests WHERE root_id=?1 AND length(CAST(manifest_id AS BLOB))!=71)",
+        [&id], |r| r.get::<_, bool>(0),
+    )? {
+        return Err(invalid("destination Ready protection membership identity exceeds bound"));
+    }
     let mut statement = c.prepare(
         "SELECT manifest_id FROM root_manifests WHERE root_id=?1 ORDER BY manifest_id LIMIT ?2",
     )?;
@@ -166,6 +183,13 @@ pub(super) fn require(
     }
     for manifest in inputs.data.required {
         cancellation::check(cancel)?;
+        if c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sweep WHERE kind='manifests' AND id=?1)",
+            [manifest.id().as_str()],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Err(invalid("destination Ready protected manifest is swept"));
+        }
         let valid: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM manifests m JOIN files f USING(file_id) WHERE m.id=?1 AND m.file_id=?2 AND m.bytes=?3 AND f.bytes=?3 AND m.payload=?4)",
             params![manifest.id().as_str(),manifest.file_id().as_str(),manifest.byte_length(),
@@ -188,6 +212,13 @@ pub(super) fn require(
         }
         for (ordinal, chunk) in manifest.chunks().iter().enumerate() {
             cancellation::check(cancel)?;
+            if c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sweep WHERE kind='chunks' AND id=?1)",
+                [chunk.chunk_id().as_str()],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Err(invalid("destination Ready protected chunk is swept"));
+            }
             let valid: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM manifest_chunks m JOIN chunks c ON c.id=m.chunk_id WHERE m.manifest_id=?1 AND m.ordinal=?2 AND m.chunk_id=?3 AND c.bytes=?4)",
                 params![manifest.id().as_str(),ordinal,chunk.chunk_id().as_str(),chunk.byte_length()], |r| r.get(0),

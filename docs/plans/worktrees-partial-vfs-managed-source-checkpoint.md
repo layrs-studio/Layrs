@@ -419,12 +419,83 @@ hydration. Child 240 / outer 300 seconds, fresh C: parent, serial execution.
 Unmodulated exact-installer drafts retained in the source snapshot are outside
 this qualification.
 
-## Remaining boundaries
+## Resumed exact installer: SQL and pure qualification (2026-10-27)
+
+Work resumed explicitly after the night checkpoint `62b9971`. The exact engine
+and retained managed adapter compile. DestinationReady is now part of the module
+tree; its first integration exposed two private enum SQL accessors, corrected
+using the exact already-validated destination/Staging literals. All store-local
+targets and the test binary build pass (`provider-ready-integration-check-r2.log`
+and `provider-exact-install-build-r1.log`). DestinationReady is not yet qualified.
+
+Independent source review releases two pure recipes and two owned SQL-memory
+recipes. All four pass on the retained `provider-exact-install-20261027-r1`
+artifact (486 source/input files, CodeView age 64, EXE SHA256
+`ebd8bdbf3dc90998c6e72c098026219b98a894619b140bc3bd2e45d2f4dce828`).
+The codec binds exact representations and state; the bounded sink refuses tail,
+short writes and cancellation without retrying Interrupted indefinitely. SQL
+recipes establish journal transitions, duplicate-chunk charging, both manifest
+charges, ordinary/exact usage agreement, conservation of fixed quota, no-write
+replay, rollback, insufficient charge and wrong union/remaining refusals.
+The test named foreign_rows does not insert a competing foreign journal row;
+its other-reservation assertion is only an absent lookup.
+
+Reviewed test SHA256 values:
+`405fe303366b5813a578ab5d3ba18ab5dfb8f8dd8997e9c29b9da99999c81034`
+(`tests.rs`) and
+`07d806416fed5fc04f019f2ab658326beceb1cd3cd7fb7d0577fbbee78db4f8b`
+(`spool_tests.rs`). SQL children are bounded at 120 seconds, outer processes at
+180 seconds, under a fresh C: parent, serial stop on first failure. These tests
+do not prove physical inode ownership, filesystem publication, enclosing-close
+faults, crash recovery or DestinationReady. Native installation fixtures are
+being integrated and require their own review and execution.
+
+## Physical exact installation and private Ready SQL (2026-10-27)
+
+The retained `provider-exact-install-20261027-r2` artifact passes two independently
+released physical recipes and all four independently released Ready SQL recipes.
+All-target check r3 and no-run build r2 pass. EXE SHA256:
+`48ab751a20396b05829e33920731237921dcc458d1dd16a84e01213a6c3df9e0`,
+CodeView age 65, 488 source/input files. Runs are serialized with fresh C:
+parents, child 240 / outer 300 seconds for physical recipes, 120 / 180 for SQL.
+
+Physical tests install a retained ordinary replacement of 2 MiB + 17 bytes:
+three ordinals, two distinct chunks, the repeated chunk debited once, fixed
+journal charge and both manifest charges accounted, full CAS reconstruction
+equal to the source. The destination remains Initializing without protection.
+The second recipe drops and reopens the ManagedImportLease with the same
+process, checkpoint and physical holders. Published replay opens no writer and
+preserves database and CAS/staging file identity/length/hash witnesses. Directory
+names are compared, not directory identities. This is not crash-restart evidence.
+Test SHA256: `dc864c7dc7313fc9dbb2d95781ef83915291b8d98d1b50e13a54f1166d070686`;
+helper SHA256: `591106d9a17a63c25c63ceecd86face663f970fd7fb7114173bc2943c3989a2c`.
+
+Ready SQL appends exactly observation G+1, placement G+2, capture C+1, durable
+provider-import claim and transition receipt. Its complete reader validates
+the immutable prefix and exact suffix separately, preserving the historical
+FileId mapping when the current image uses another ManifestId for the same
+bytes. Replay runs query-only with FK OFF and zero changes; mutation requires
+FK ON. Rollback, forged inputs, prefix/suffix/mapping/claim/tail corruption are
+refused. Independent review found and corrected missing sweep exclusions and
+unbounded relationship IDs before String allocation; tests include both fixes
+and acceptance of unrelated sweep rows. Family state remains Initializing in
+this private Ready phase. Sources: tests
+`58299255cb3f39820a952a8d5b740cb4395e6b4cba87a164f78af7215949cbe8`, fixture
+`f4cea9435b33a2af920ee739720a45cdb2772a155afbc080f96c0e43b4cde1cc`, source fixture
+`75f937eeff11ee8fa75d94a08284c15c83b59599ad1ad491cd086efae38959fe`, family reader
+`ca36adaaf31ab74b2ec34c62842cf20f13a5e93a989f990ad368688ac2afb721`.
+
+These SQL recipes use three memory databases. They do not prove a physically
+protected checkout, durable Ready publication, close-fault recovery or ordinary
+admission. Active-piece recovery, real producer cancellation and installation
+of two historical representations still require separate runtime evidence.
+
+## Remaining qualification boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately
 qualified reservation source BUSY/quarantine recipe. Neither establishes an
 interrupted commit, restart after quarantine or power-loss guarantee.
-No content installation, claim, Ready receipt,
-family Ready publication, companion
-conversion or selection expansion is qualified by these recipes. Product routes
-and Desktop integration remain separate. The existing strict GC fence remains.
+The two physical recipes above qualify their exact installation scope only.
+Family protection, physical checkout/Ready publication, companion conversion
+and selection expansion are not yet qualified. Product routes and Desktop
+integration remain separate. The existing strict GC fence remains.
