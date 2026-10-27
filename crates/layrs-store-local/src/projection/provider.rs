@@ -43,10 +43,6 @@ pub(super) mod database_io;
 #[cfg(windows)]
 mod destination_ready;
 #[cfg(windows)]
-mod managed_budget;
-#[cfg(windows)]
-mod managed_ready_reopen;
-#[cfg(windows)]
 mod destination_sql;
 #[cfg(windows)]
 mod destination_validation;
@@ -57,9 +53,19 @@ pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod journal;
 #[cfg(windows)]
+mod managed_budget;
+#[cfg(windows)]
+mod managed_ready_reopen;
+#[cfg(windows)]
 mod published_handoff;
 #[cfg(windows)]
+mod managed_admission;
+#[cfg(windows)]
 mod ticket_input;
+#[cfg(windows)]
+mod transition_observation;
+#[cfg(windows)]
+mod transition_reconcile;
 #[cfg(windows)]
 pub(super) mod transition_sql;
 #[cfg(windows)]
@@ -113,6 +119,7 @@ pub use recovery::{
 pub(super) mod schema;
 
 pub const PROJECTION_PROVIDER_SCHEMA_VERSION: u32 = 8;
+pub const PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION: u32 = 9;
 pub const PROVIDER_CATALOG_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const PROVIDER_DESCRIPTOR_MAX_BYTES: u64 = 256 * 1024;
 pub const PROVIDER_CATALOG_AGGREGATE_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -125,6 +132,11 @@ pub const PROVIDER_COMPANION_AGGREGATE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// documents as authorization, readiness, or a reason to reclaim their content.
 pub(super) fn require_ordinary(c: &rusqlite::Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION {
+        return Err(invalid(
+            "managed admission requires its typed ordinary interpreter",
+        ));
+    }
     if version != PROJECTION_PROVIDER_SCHEMA_VERSION {
         return Ok(());
     }
@@ -148,6 +160,11 @@ pub(super) fn require_ordinary(c: &rusqlite::Connection) -> Result<()> {
 /// reservations or companion dependencies invisible to the ordinary sweeper.
 pub(super) fn require_reclamation_safe(c: &rusqlite::Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version == PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION {
+        return Err(invalid(
+            "managed admission retains import provenance and reclamation fences",
+        ));
+    }
     if version != PROJECTION_PROVIDER_SCHEMA_VERSION {
         return Ok(());
     }

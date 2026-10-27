@@ -1,7 +1,11 @@
 //! Bounded normalized SQL rowset commitments. This module has no path or
 //! content capability; callers first authenticate schema and rowset scope.
 use super::*;
+use layrs_core::scm::{FileId, FileManifestId};
 use rusqlite::{types::ValueRef, Connection, ToSql};
+#[cfg(test)]
+#[path = "rows_tests.rs"]
+mod tests;
 
 const MAX_CLOSURE_ROWS: u64 = 1_000_000;
 const MAX_CLOSURE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -165,46 +169,88 @@ fn digest_one(
         }
         hash.update(&(columns as u32).to_be_bytes());
         for column in 0..columns {
-            match row.get_ref(column)? {
-                ValueRef::Null => {
-                    hash.update(&[0]);
-                }
-                ValueRef::Integer(value) => {
-                    hash.update(&[1]);
-                    hash.update(&value.to_be_bytes());
-                    bytes = bytes
-                        .checked_add(8)
-                        .ok_or_else(|| invalid("import row bytes overflow"))?;
-                }
-                ValueRef::Text(value) => {
-                    std::str::from_utf8(value)
-                        .map_err(|_| invalid("import row text is not UTF-8"))?;
-                    hash.update(&[2]);
-                    hash.update(&(value.len() as u64).to_be_bytes());
-                    hash.update(value);
-                    bytes = bytes
-                        .checked_add(value.len() as u64)
-                        .ok_or_else(|| invalid("import row bytes overflow"))?;
-                }
-                ValueRef::Blob(value) => {
-                    hash.update(&[3]);
-                    hash.update(&(value.len() as u64).to_be_bytes());
-                    hash.update(value);
-                    bytes = bytes
-                        .checked_add(value.len() as u64)
-                        .ok_or_else(|| invalid("import row bytes overflow"))?;
-                }
-                ValueRef::Real(_) => {
-                    return Err(invalid("import normalized row has REAL value"));
-                }
-            }
-            if bytes > spec.max_bytes {
-                return Err(invalid("import rowset bytes changed after preflight"));
-            }
+            hash_value(&mut hash, row.get_ref(column)?, &mut bytes, spec.max_bytes)?;
         }
     }
     if count != expected || bytes != expected_bytes {
         return Err(invalid("import rowset changed after preflight"));
+    }
+    Ok(ImportRowset {
+        count,
+        digest: format!("blake3:{}", hash.finalize()),
+    })
+}
+
+/// One normalized field encoder shared by SQL streaming and detached DATA.
+/// Tags, byte lengths and signed integer encoding are the import contract.
+fn hash_value(
+    hash: &mut blake3::Hasher,
+    value: ValueRef<'_>,
+    bytes: &mut u64,
+    max_bytes: u64,
+) -> CauseResult<()> {
+    let length = match value {
+        ValueRef::Null => {
+            hash.update(&[0]);
+            0
+        }
+        ValueRef::Integer(value) => {
+            hash.update(&[1]);
+            hash.update(&value.to_be_bytes());
+            8
+        }
+        ValueRef::Text(value) => {
+            std::str::from_utf8(value).map_err(|_| invalid("import row text is not UTF-8"))?;
+            hash.update(&[2]);
+            hash.update(&(value.len() as u64).to_be_bytes());
+            hash.update(value);
+            value.len() as u64
+        }
+        ValueRef::Blob(value) => {
+            hash.update(&[3]);
+            hash.update(&(value.len() as u64).to_be_bytes());
+            hash.update(value);
+            value.len() as u64
+        }
+        ValueRef::Real(_) => return Err(invalid("import normalized row has REAL value")),
+    };
+    *bytes = bytes
+        .checked_add(length)
+        .ok_or_else(|| invalid("import row bytes overflow"))?;
+    if *bytes > max_bytes {
+        return Err(invalid("import rowset bytes changed after preflight"));
+    }
+    Ok(())
+}
+
+/// Commit the complete normalized mapping DATA with the same encoder and
+/// ordering as its scoped SQL rowset. This opens nothing and proves no scope,
+/// provenance, residency or authority; the caller compares a verified prefix.
+pub(in crate::projection::provider) fn content_mapping_rowset_data(
+    mappings: &BTreeMap<FileId, (FileManifestId, u64)>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<ImportRowset> {
+    crate::projection::provider::cancellation::check(cancel)?;
+    let count = u64::try_from(mappings.len()).map_err(|_| invalid("import row count overflow"))?;
+    if count > MAX_CLOSURE_ROWS {
+        return Err(invalid("import closure row count exceeds bound"));
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(Kind::ContentMappings.domain());
+    hash.update(&count.to_be_bytes());
+    let mut bytes = 0u64;
+    for (file, (manifest, length)) in mappings {
+        crate::projection::provider::cancellation::check(cancel)?;
+        let length = i64::try_from(*length)
+            .map_err(|_| invalid("import mapping length exceeds SQL INTEGER"))?;
+        hash.update(&3u32.to_be_bytes());
+        for value in [
+            ValueRef::Text(file.as_str().as_bytes()),
+            ValueRef::Text(manifest.as_str().as_bytes()),
+            ValueRef::Integer(length),
+        ] {
+            hash_value(&mut hash, value, &mut bytes, MAX_CLOSURE_BYTES)?;
+        }
     }
     Ok(ImportRowset {
         count,

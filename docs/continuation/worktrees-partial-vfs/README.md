@@ -1,5 +1,31 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément admission et réconciliation — r11 à r13
+
+Le lecteur de provenance schema9, le writer transactionnel d'admission, les
+budgets et les noyaux DATA d'observation/réconciliation sont qualifiés dans les
+périmètres décrits au [checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md).
+L'admission physique durable et l'ouverture ordinaire modifiable restent à
+raccorder ; le [contrat](../../plans/worktrees-partial-vfs-managed-admission-contract.md)
+précise les six raccordements nécessaires.
+
+`admission-evidence-20261027-r11-r13.tar.gz` contient 1 720 fichiers : sources
+figées, manifestes, recettes et journaux, y compris les échecs conservés.
+Chaque membre a été relu et vérifié contre son empreinte dans
+`admission-inventory-20261027-r11-r13.json`.
+Archive : 4 757 898 octets ; SHA-256
+`8b5476fe031db222eda6a3384e2e53a5c8e911c14e699ca22cd48010be000c9e`.
+
+Sur un poste où ces preuves sont absentes :
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/admission-evidence-20261027-r11-r13.tar.gz
+```
+
+Les restrictions de restauration ci-dessous s'appliquent. Les binaires/PDB,
+bases SQLite et fixtures natives restent hors archive. Ces résultats ne valent
+pas qualification de l'hôte d'un autre poste.
+
 ## Complément du 27 octobre 2026
 
 Les commits locaux `ddf31d3` et `0afbcc0` ajoutent les publications familiale et

@@ -5,7 +5,7 @@ mod catalog;
 mod outcome;
 mod preparation;
 pub(in crate::projection::provider) use preparation::activation::{
-    verify_managed_ready_checkout, VerifiedCheckout,
+    recovery_image_digest, verify_managed_ready_checkout, VerifiedCheckout,
 };
 mod publication;
 mod receipt_io;

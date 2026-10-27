@@ -9,7 +9,7 @@ use super::*;
 use crate::projection::shared::exact_content::{self, ExactBinding, ExactInstallState};
 
 mod family_read;
-mod inventory;
+pub(super) mod inventory;
 #[cfg(test)]
 mod tests;
 

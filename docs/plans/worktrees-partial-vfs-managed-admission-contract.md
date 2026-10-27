@@ -133,3 +133,88 @@ Frozen source/evidence directory:
 `.layrs-local/validation/provider-family-publication-20261027-r8`.
 Unmodulated transition-observation drafts are included in its source inventory;
 they were not compiled and receive no qualification from this artifact.
+
+## 27 October continuation: private schema9 reader qualification
+
+The two private historical-reader SQL-memory recipes passed on the audited r11
+binary (`989dde773830ba69ab6ac880f54c6df9c3fd6d0a5b7bbd97469cac6c944f2ec0`).
+The tests cover immutable imported provenance coexisting with later local
+captures, publications, claims, head generations and operational prejournal
+rows; ACK/archive/schema substitution refuses without writes. A separate SQL
+recipe confirms the shared detached mapping commitment matches SQLite encoding
+and rejects representation/type substitution. Runs use bounded owned children,
+a fresh disposable parent and stop-first-failure execution; all three passed.
+
+These are DATA reader results only. Schema9 remains explicitly fenced from
+ordinary mutable access and reclamation. The migration writer, independent
+read-only source handoff retained through destination commit/positive closes,
+physical admission, budgets, family policy and ordinary dispatch remain open.
+The new admission budget helper passed independent source review and all seven
+pure r12 recipes. It accounts for `F_ready + 2J_bound + Amax`, refuses an
+insufficient existing reservation, and preserves the separate family margin.
+This is logical column accounting, not a measurement of SQLite pages or physical
+space. The transactional writer is implemented and under review; the production
+planner and physical admission driver are still open.
+
+## Transactional admission writer qualified in r13
+
+`managed_admission::admit_ready` takes real retained opaque Ready and historical
+Published SQL proofs. It reinterprets them and reconstructs the metadata floor,
+baseline Q0, fixed M and net remaining family capacity before effects. It copies
+the exact checkout journal into its permanent archive, writes the actual
+SourcePublished body and ACK record, removes the operational journal, sets
+schema9 and invokes the complete private historical reader. The caller owns
+COMMIT/rollback/positive closes; an error after effects requires rollback.
+Already-admitted replay reads schema9 without touching source/family connections.
+
+Independent review found no remaining blocker after fixing a representation
+comparison: family protection orders by ManifestId, while provenance orders by
+(FileId, ManifestId). The writer now compares sorted exact triples with unchanged
+cardinality. Its pure regression and all four owned SQL-memory recipes pass on
+r13 (EXE `16f86c9e9f577a296c193b42e05746d4383887e77d4a85e0bbbdda19b26ecac7`,
+CodeView age 88). The recipes cover exact copy/replay, caller rollback to8,
+changed journal or historical ACK refusal before effects, and inadequate legacy
+budget without resizing. They are not physical or durable-source qualification.
+
+## Remaining ordinary-access integration, mapped against current code
+
+1. Private interpreter: recognize true schema9 and permanent provenance in short
+   transaction scopes. `VerifiedAdmittedImport` must not outlive its transaction.
+   Keep `require_ordinary` closed where no typed context exists, and keep the
+   independent reclamation fence closed for9.
+2. Physical access: lifecycle -> owner -> FORMAT/private DB pins -> typed RO
+   private interpretation -> typed family gate -> requested private handle.
+   `format::access/verify/open` and the `marker.import_digest` branches currently
+   assume ordinary conversion receipts. Do not require immutable initial checkout
+   files forever: legitimate user edits must remain openable after admission.
+3. Family policy: a distinct admitted context must validate its imported root,
+   exact union, journals and reservation alongside new ordinary roots/claims.
+   Existing exact protection requires a unique root per owner; existing exact
+   installation reader refuses other reservation groups. Multiple retained
+   imports need group-aware validation, rejecting unknown/corrupt groups.
+4. Context propagation: `retention`, `capture/storage` and `offline` recreate
+   Ordinary leases through `shared::for_store`; `usage` and `registered_state`
+   call the catalog directly. Carry the existing owner-scoped admitted context
+   through these paths. Never acquire owner again beneath a catalog gate or
+   recurse from private validation through family opening back to private DB.
+5. Capture/publication provenance: dispatch conversion and admitted history
+   separately. Imported captures use actual segment origins and both generation
+   bounds; C_ready and later local captures use destination identity. Imported
+   captures remain non-publishable; C_ready follows ordinary publication checks.
+   The origin-specific low-level loaders must remain independent of dispatch.
+6. Exact content mapping: recapture must prefer the existing private protected
+   ManifestId. Choosing the first family manifest for a FileId can conflict with
+   a different imported representation. Do not rewrite the imported mapping.
+
+Required integrated scenarios include source-independent reopen9, edit/capture/
+drop/reopen/restore; inherited origins over several segments; C_ready publication;
+two representations of one FileId; ordinary claims alongside imported protection;
+two retained imports; corruption/refusal without repair; owner/catalog contention,
+identity replacement, cancellation and close failures. Ready8/provider/reclamation
+and unsupported recovery must remain fenced until their own routes are qualified.
+
+Future B->C export additionally needs explicit schema9 handling in
+`records/import`, `import_validation::{source,ancestry,scoped,copy}`. Anchor on B's
+admitted incoming receipt, never an arbitrary outgoing receipt A->D. Ordinary
+restore/refresh/rebase history is still refused by source closure until explicitly
+represented; accepting a version number alone must not bypass that limitation.

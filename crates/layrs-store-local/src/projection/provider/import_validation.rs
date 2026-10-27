@@ -19,14 +19,18 @@ mod ancestry;
 mod copied;
 mod copy;
 mod destination_prefix;
+pub(in crate::projection::provider) use destination_prefix::read_admitted_destination_prefix;
 #[cfg(test)]
 mod destination_prefix_tests;
-pub(in crate::projection::provider) use destination_prefix::{read_destination_prefix, VerifiedDestinationPrefix};
+pub(in crate::projection::provider) use destination_prefix::{
+    read_destination_prefix, VerifiedDestinationPrefix,
+};
 mod provider_proof;
 #[cfg(test)]
 #[path = "import_validation/publication_tests.rs"]
 mod publication_tests;
 mod rows;
+pub(in crate::projection::provider) use rows::content_mapping_rowset_data;
 mod scoped;
 mod source;
 use provider_proof::{ProviderModeBinding, ProviderProof};

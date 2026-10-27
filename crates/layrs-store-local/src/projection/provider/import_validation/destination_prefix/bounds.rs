@@ -26,6 +26,34 @@ const fn bounded(name: &'static str, bytes: u64) -> Column {
 }
 
 pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> CauseResult<()> {
+    preflight_rows(c, None, cancel)
+}
+
+pub(super) fn preflight_admitted(
+    c: &Connection,
+    imported_generation: u64,
+    ready_generation: u64,
+    imported_captures: u64,
+    ready_capture: u64,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<()> {
+    // Publication interpreters load their referenced snapshot before loading
+    // the paired capture. Refuse an escaped reference before those loaders.
+    if c.query_row("SELECT EXISTS(SELECT 1 FROM projection_publications WHERE sequence<=?1 AND projection_generation>?2)",rusqlite::params![imported_captures,imported_generation],|r|r.get::<_,bool>(0))? {
+        return Err(invalid("admitted historical publication escaped prefix generation"));
+    }
+    preflight_rows(
+        c,
+        Some((ready_generation, ready_capture, imported_captures)),
+        cancel,
+    )
+}
+
+fn preflight_rows(
+    c: &Connection,
+    admitted: Option<(u64, u64, u64)>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<()> {
     let tables: &[(&str, &[Column])] = &[
         (
             "projection_snapshots",
@@ -135,10 +163,25 @@ pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> CauseR
     let mut aggregate = 0u64;
     for (table, columns) in tables {
         super::super::super::cancellation::check(cancel)?;
+        // Mutable ordinary tails are not source provenance. Scoped content
+        // mapping probes already fence their exact manifest ID before reads.
+        if admitted.is_some() && *table == "projection_content" {
+            continue;
+        }
+        let predicate = match (admitted, *table) {
+            (Some((generation, _, _)), "projection_snapshots" | "projection_selections") => {
+                format!(" WHERE generation<={generation}")
+            }
+            (Some((_, capture, _)), "projection_captures") => format!(" WHERE sequence<={capture}"),
+            (Some((_, _, capture)), "projection_publications") => {
+                format!(" WHERE sequence<={capture}")
+            }
+            _ => String::new(),
+        };
         // The schema is fingerprinted by our sole caller before entry. These
         // identifiers come exclusively from the static list above.
         let count: u64 = c.query_row(
-            &format!("SELECT count(*) FROM (SELECT 1 FROM {table} LIMIT 1000001)"),
+            &format!("SELECT count(*) FROM (SELECT 1 FROM {table}{predicate} LIMIT 1000001)"),
             [],
             |r| r.get(0),
         )?;
@@ -156,7 +199,14 @@ pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> CauseR
             .collect::<Vec<_>>()
             .join(" OR ");
         if c.query_row(
-            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {bad})"),
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {table}{predicate}{}({bad}))",
+                if predicate.is_empty() {
+                    " WHERE "
+                } else {
+                    " AND "
+                }
+            ),
             [],
             |r| r.get::<_, bool>(0),
         )? {
@@ -172,7 +222,7 @@ pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> CauseR
             .collect::<Vec<_>>()
             .join("+");
         let bytes: u64 = c.query_row(
-            &format!("SELECT coalesce(sum(64+{projected}),0) FROM {table}"),
+            &format!("SELECT coalesce(sum(64+{projected}),0) FROM {table}{predicate}"),
             [],
             |r| r.get(0),
         )?;

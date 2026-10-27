@@ -15,6 +15,39 @@ recipe. Ordinary mutable admission remains open; its reviewed handoff contract
 and r8 evidence are in the [admission contract](worktrees-partial-vfs-managed-admission-contract.md).
 See the managed checkpoint for preserved failures and earlier evidence.
 
+**27 October, r11 continuation:** the remaining three pure observation recipes
+now pass after two fixture-only corrections retained in the r9/r10 evidence.
+Together with the first six unchanged r9 recipes, this qualifies the bounded
+observation DATA slice; live authority, expansion persistence and content import
+remain open. The shared SQL/DATA content-mapping commitment recipe and both
+private schema9 historical-reader recipes pass on r11. The latter preserve
+import provenance while permitting later local capture/publication/claim and
+operational-journal DATA, and reject ACK/archive/schema corruption without
+repair. They do not qualify an admission writer or ordinary mutable opening.
+Independent review identified and ROOT corrected missing checkpoint-owner and
+effective-image bindings in the reconcile kernel. Eight original pure recipes
+pass on r12; the two new production-helper recipes pass on r13 after correcting
+fixture enum-field names. This qualifies the DATA slice, not a real checkpoint
+constructor, physical byte hashing/quiescence, full SQL closure or durable
+companions. Seven admission-sizing recipes also pass on r12. The transactional
+admission writer passes its independent review, exact-union pure recipe and all
+four SQL-memory recipes on r13: exact archive/ACK/replay, rollback to private8,
+changed journal/historical ACK refusal, and fixed legacy-budget refusal.
+Physical durable admission and ordinary mutable access remain open.
+
+r11 exact host evidence: `.layrs-local/validation/provider-family-publication-20261027-r11`;
+EXE SHA-256 `989dde773830ba69ab6ac880f54c6df9c3fd6d0a5b7bbd97469cac6c944f2ec0`,
+CodeView age 85, 551 retained source inputs. Results are in
+`transition-observation-pure-results.json` and `managed-admission-sql-results.json`.
+This newer evidence is in the separate portable
+`admission-evidence-20261027-r11-r13.tar.gz` supplement; the r1–r10 archive is unchanged.
+
+r12: EXE `9bee68b21aeef48bbb7a26ceafb0a26dc1d89db62f2af8a59a9ae0e73f932cdb`,
+CodeView age 86, 555 inputs. r13: EXE
+`16f86c9e9f577a296c193b42e05746d4383887e77d4a85e0bbbdda19b26ecac7`,
+age 88, 557 inputs. The failed r12 fixture recipe is preserved; the eight
+unchanged passing bodies were not rerun merely to obtain one green revision.
+
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.
 No new full-suite run was performed for the checkpoint commit.

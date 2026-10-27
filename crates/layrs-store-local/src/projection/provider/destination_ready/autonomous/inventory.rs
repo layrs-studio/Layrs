@@ -85,7 +85,7 @@ pub(super) fn overlay(
 /// Same canonical recovery image commitment as the producer (class and exact
 /// chunking are intentionally excluded by that format). Journal/overlay above
 /// separately retain the current exact representations.
-pub(super) fn require_image(
+pub(in crate::projection::provider::destination_ready) fn require_image(
     capture: &CapturedPatch,
     expected: &ExpectedCheckout,
     image: &str,

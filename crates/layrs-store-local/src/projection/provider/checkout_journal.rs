@@ -22,9 +22,11 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod archive;
 mod codec;
 mod inventory;
 mod sql;
+pub(in crate::projection::provider) use archive::read_archived;
 pub(in crate::projection::provider) use sql::{
     advance, declare, read, AdvanceEffect, DeclareEffect,
 };

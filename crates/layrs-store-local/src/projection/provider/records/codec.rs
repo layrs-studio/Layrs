@@ -2,10 +2,10 @@
 use super::*;
 use std::io::{self, Write};
 
-pub(super) const SNAPSHOT_MAX: usize = 64 * 1024 * 1024;
-pub(super) const SELECTION_MAX: usize = 16 * 1024 * 1024;
+pub(in crate::projection::provider) const SNAPSHOT_MAX: usize = 64 * 1024 * 1024;
+pub(in crate::projection::provider) const SELECTION_MAX: usize = 16 * 1024 * 1024;
 pub(super) const FORMAT_MAX: usize = 64 * 1024;
-pub(super) const PATH_MAX: usize = 4096;
+pub(in crate::projection::provider) const PATH_MAX: usize = 4096;
 
 struct Count {
     bytes: usize,
@@ -28,11 +28,14 @@ impl Write for Count {
 
 /// Bound traversal before `canonical_json` constructs its temporary Value/Vec.
 /// A count is not a canonical encoding; canonical length is checked separately.
-pub(super) fn preflight<T: Serialize + ?Sized>(value: &T, max: usize) -> Result<()> {
+pub(in crate::projection::provider) fn preflight<T: Serialize + ?Sized>(
+    value: &T,
+    max: usize,
+) -> Result<()> {
     serde_json::to_writer(Count { bytes: 0, max }, value).map_err(invalid)
 }
 
-pub(super) fn encode<T: Serialize + DeserializeOwned + PartialEq>(
+pub(in crate::projection::provider) fn encode<T: Serialize + DeserializeOwned + PartialEq>(
     value: &T,
     max: usize,
 ) -> Result<Vec<u8>> {
@@ -92,7 +95,7 @@ pub(in crate::projection::provider) fn transaction(value: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn raw_digest(value: &str) -> Result<()> {
+pub(in crate::projection::provider) fn raw_digest(value: &str) -> Result<()> {
     if !lower_hex(value, 64) {
         return Err(invalid("raw digest must be 64 lowercase hex characters"));
     }

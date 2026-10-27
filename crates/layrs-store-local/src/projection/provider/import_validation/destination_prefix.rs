@@ -23,6 +23,13 @@ pub(in crate::projection::provider) struct VerifiedDestinationPrefix<'a> {
     metadata: SourceMetadata,
     source: ProviderBootstrapSource,
     activation: ProviderActivationRecord,
+    schema: DestinationSchema,
+}
+
+#[derive(Clone, Copy)]
+enum DestinationSchema {
+    Ready8,
+    Admitted9,
 }
 
 impl VerifiedDestinationPrefix<'_> {
@@ -62,7 +69,17 @@ impl VerifiedDestinationPrefix<'_> {
         cancel: Option<&Cancellation>,
     ) -> CauseResult<()> {
         self.require_destination_connection(c)?;
-        let current = read_destination_prefix(c, &self.marker, cancel)?;
+        let current = match self.schema {
+            DestinationSchema::Ready8 => read_destination_prefix(c, &self.marker, cancel)?,
+            DestinationSchema::Admitted9 => {
+                let permit = super::super::managed_admission::schema::require_schema(
+                    c,
+                    &self.marker,
+                    cancel,
+                )?;
+                read_admitted_destination_prefix(c, &self.marker, &permit, cancel)?
+            }
+        };
         if current.prefix != self.prefix
             || current.receipt != self.receipt
             || current.ready != self.ready
@@ -140,6 +157,18 @@ impl VerifiedDestinationPrefix<'_> {
             },
         )
     }
+
+    /// Historical identity DATA only. Current destination captures are outside
+    /// this immutable source prefix and need the admitted destination boundary.
+    pub(in crate::projection::provider) fn capture_origin(
+        &self,
+        sequence: u64,
+        maximum_generation: u64,
+    ) -> CauseResult<(&crate::projection::ProjectionIdentity, u64, u64)> {
+        self.metadata
+            .lineage
+            .capture_source(sequence, maximum_generation)
+    }
 }
 
 /// Read links from the actual destination, never from a caller-selected prefix.
@@ -158,6 +187,27 @@ pub(in crate::projection::provider) fn read_destination_prefix<'a>(
     // Scope derivation itself reaches selection/capture/publication and copied
     // provider semantic loaders. Fence their SQL columns before any allocation.
     bounds::preflight(c, cancel)?;
+    read_prefix_rows(c, marker, DestinationSchema::Ready8, cancel)
+}
+
+/// Actual schema9 only. The permit is issued by the distinct exact fingerprint
+/// reader, never by changing SQLite's version or inventing a source marker.
+pub(in crate::projection::provider) fn read_admitted_destination_prefix<'a>(
+    c: &'a Connection,
+    marker: &format::Marker,
+    permit: &super::super::managed_admission::schema::Schema9Permit<'_>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<VerifiedDestinationPrefix<'a>> {
+    permit.require(c, marker, cancel)?;
+    read_prefix_rows(c, marker, DestinationSchema::Admitted9, cancel)
+}
+
+fn read_prefix_rows<'a>(
+    c: &'a Connection,
+    marker: &format::Marker,
+    schema: DestinationSchema,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<VerifiedDestinationPrefix<'a>> {
     let (count, bytes, digest_bytes): (u64,u64,u64) = c.query_row(
         "SELECT count(*),coalesce(max(length(payload)),0),coalesce(max(length(CAST(digest AS BLOB))),0) FROM projection_imports", [],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -201,6 +251,26 @@ pub(in crate::projection::provider) fn read_destination_prefix<'a>(
             .ok_or_else(|| invalid("destination prefix receipt missing"))?,
     )?;
     ready.require_receipt(&receipt)?;
+    if matches!(schema, DestinationSchema::Admitted9) {
+        let ImportSource::Provider { version, .. } = &prefix.source else {
+            return Err(invalid("admitted prefix requires provider source"));
+        };
+        if version.generation.checked_add(1) != Some(ready.plan.observation.generation)
+            || ready.plan.observation.generation.checked_add(1)
+                != Some(ready.plan.placement_generation)
+            || version.capture_count.checked_add(1) != Some(ready.plan.capture_sequence)
+        {
+            return Err(invalid("admitted prefix Ready boundaries differ"));
+        }
+        bounds::preflight_admitted(
+            c,
+            version.generation,
+            ready.plan.placement_generation,
+            version.capture_count,
+            ready.plan.capture_sequence,
+            cancel,
+        )?;
+    }
     let anchor = source::HistoryAnchor::destination(marker, &prefix, &receipt)?;
     let lineage = ancestry::read_ancestry_rows(c, ImportDatabaseKind::Provider, &prefix, cancel)?;
     let metadata = source::read_historical_metadata(
@@ -242,6 +312,7 @@ pub(in crate::projection::provider) fn read_destination_prefix<'a>(
         metadata,
         source,
         activation,
+        schema,
     })
 }
 

@@ -246,7 +246,7 @@ fn parent_identity<'a>(
         }
     }
 }
-fn relationships(
+pub(super) fn relationships(
     expected: &ExpectedCheckout,
     journal: &CheckoutJournal,
     cancel: Option<&Cancellation>,

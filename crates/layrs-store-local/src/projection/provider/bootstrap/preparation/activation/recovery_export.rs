@@ -549,7 +549,7 @@ struct Manifest<'a> {
     gaps: Vec<ManifestGap<'a>>,
 }
 
-pub(super) fn image_digest(
+pub(in crate::projection::provider) fn image_digest(
     files: &[ProviderRecoveryExportFile],
     deletions: &[ProviderRecoveryExportDeletion],
     gaps: &[ProviderRecoveryExportGap],

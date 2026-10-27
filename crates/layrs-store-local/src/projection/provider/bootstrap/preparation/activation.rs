@@ -16,6 +16,7 @@ mod managed_staging;
 mod ranges;
 mod recovery_export;
 pub use capture::{ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep};
+pub(in crate::projection::provider) use recovery_export::image_digest as recovery_image_digest;
 mod capture_sql;
 mod capture_state;
 mod report;

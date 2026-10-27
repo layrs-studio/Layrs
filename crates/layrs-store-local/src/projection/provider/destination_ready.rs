@@ -28,6 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod autonomous;
 mod data;
 mod family;
+mod historical;
+pub(in crate::projection::provider) use historical::{read_frozen_ready_rows, FrozenReadyRows};
 mod read;
 pub(in crate::projection::provider) use autonomous::{
     read_managed_ready, OwnedReadySnapshot, VerifiedManagedReady,
