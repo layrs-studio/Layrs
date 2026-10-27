@@ -3,10 +3,12 @@
 //! Dedicated child adapters retain allocation pins and journal Copying; content
 //! transfer, destination readiness and autonomous admission remain separate.
 pub(super) mod allocation;
+mod budget;
 mod copy;
 mod destination;
 mod image;
 mod preallocation;
+mod staging;
 #[cfg(test)]
 pub(super) mod verification_cancellation;
 
@@ -355,9 +357,9 @@ impl OrdinaryManagedExport<'_> {
         Ok(())
     }
 
-    /// DATA plan only. A later reservation writer must derive the complete
-    /// metadata envelope from its actual source/destination intents before any
-    /// family reservation; validated_metadata_floor deliberately remains None.
+    /// Fund the complete future metadata envelope before persisting Planned.
+    /// Later reservation writers must still rederive the complete source/image
+    /// plan and actual Staging floor; validated_metadata_floor remains None.
     pub(in crate::projection::provider) fn derive_plan(
         &mut self,
         parent: &str,
@@ -429,23 +431,36 @@ impl OrdinaryManagedExport<'_> {
                 );
             }
             let supplied = union.into_values().collect::<Vec<_>>();
-            Ok(bootstrap::derive_ordinary_data(
-                prefix,
-                &current.snapshot,
+            let derive = |metadata| {
+                bootstrap::derive_ordinary_data(
+                    prefix,
+                    &current.snapshot,
+                    &selected,
+                    &prefix.source.version().selection_digest,
+                    &bases,
+                    &files,
+                    &deletions,
+                    prefix.destination_identity.clone(),
+                    parent,
+                    parent_identity,
+                    leaf_nonce,
+                    transaction_id,
+                    &historical,
+                    &supplied,
+                    metadata,
+                )
+            };
+            let baseline = derive(0)?;
+            let envelope = budget::planning_envelope(
+                &baseline,
                 &selected,
-                &prefix.source.version().selection_digest,
-                &bases,
+                &supplied,
                 &files,
                 &deletions,
-                prefix.destination_identity.clone(),
-                parent,
-                parent_identity,
-                leaf_nonce,
-                transaction_id,
-                &historical,
-                &supplied,
                 proof.metadata_bytes(c, prefix, Some(cancel))?,
-            )?)
+                cancel,
+            )?;
+            Ok(derive(envelope.metadata_bytes())?)
         })
     }
 

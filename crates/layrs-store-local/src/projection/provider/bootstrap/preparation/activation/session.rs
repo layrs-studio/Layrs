@@ -486,6 +486,8 @@ mod managed_ordinary_export_owner_tests;
 #[cfg(test)]
 mod managed_ordinary_metadata_tests;
 #[cfg(test)]
+mod managed_ordinary_staging_tests;
+#[cfg(test)]
 mod managed_ordinary_source_intent_tests;
 #[cfg(test)]
 mod managed_post_publication_capture_tests;

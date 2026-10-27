@@ -60,7 +60,7 @@ pub(in crate::projection::provider) fn apply_planned(
     }
     cancellation::check(cancel)?;
     let changed = c.execute(
-        "INSERT INTO projection_provider_transitions(id,role,state,local_generation,reservation,receipt_id,payload,digest) SELECT ?1,'source','planned',?2,NULL,NULL,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE role='source' AND state IN ('planned','copying'))",
+        "INSERT INTO projection_provider_transitions(id,role,state,local_generation,reservation,receipt_id,payload,digest) SELECT ?1,'source','planned',?2,NULL,NULL,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE role='source' AND state IN ('planned','copying','staging'))",
         params![next.transaction_id, next.local_generation, payload, digest],
     )?;
     if changed != 1 {
@@ -108,8 +108,19 @@ pub(super) fn normalized_bytes(
     digest: &str,
 ) -> u64 {
     8 + record.transaction_id.len() as u64
-        + "source".len() as u64
+        + match record.role {
+            TransitionRole::Source => "source".len() as u64,
+            TransitionRole::Destination => "destination".len() as u64,
+        }
         + state.len() as u64
+        + record
+            .reservation
+            .as_ref()
+            .map_or(0, |value| value.len() as u64)
+        + record
+            .receipt_id
+            .as_ref()
+            .map_or(0, |value| value.len() as u64)
         + payload.len() as u64
         + digest.len() as u64
 }

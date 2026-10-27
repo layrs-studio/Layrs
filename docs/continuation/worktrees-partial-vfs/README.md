@@ -1,5 +1,36 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément budget complet et Staging — r34 à r35
+
+Les neuf tests purs de budget/capacité passent sur r34. Après correction du
+chemin du module de tests, les six recettes SQL passent sur r35, puis le scénario
+natif en 694,993 s. Le plan finance les métadonnées des phases suivantes avant
+allocation ; la capacité des journaux inclut leurs états terminaux.
+
+B puis C passent durablement à Staging. Un refus d'ouverture du writer de C
+laisse B Staging/C Copying et se reprend ; un acquittement volontairement refusé
+après fermeture physique réussie laisse C Staging et se rejoue sans nouveau
+writer. Admission de B, historique copié et témoins des fichiers sont préservés.
+Les mutations ordinaires restent bloquées. C n'a toujours aucune réservation ni
+admission ordinaire. Les erreurs réelles de fermeture, interruptions d'écriture
+et pertes des propriétaires restent à qualifier.
+
+r34 s'est arrêté sur « zéro test exécuté » au premier nom SQL : le module
+implicite pointait vers le code de production. Aucun SQL ni natif n'a tourné sur
+cette version. L'échec et les sources sont conservés ; la revue r35 a vérifié les
+sept noms exacts dans le binaire avant exécution.
+
+Archive `ordinary-staging-evidence-20261027-r34-r35.tar.gz` : 1 264 fichiers
+vérifiés, 3 495 506 octets, SHA-256
+`024959c4c0a5e6c748c9ad3ff04561378d9b1503525ad7fc4f0a1e9b1e8206b4`.
+Inventaire : `ordinary-staging-inventory-20261027-r34-r35.json`.
+
+Suite : réservation exacte de C et rejeu avec le même propriétaire, puis
+installation/transfert et admission autonome. Le validateur ReserveOnly et les
+brouillons du pilote sont un lot distinct encore non compilé/non qualifié.
+Le [plan de contenu](../../plans/worktrees-partial-vfs-ordinary-content.md)
+précise l'ordre des contrôles et les limites ; le programme complet reste actif.
+
 ## Complément copie des métadonnées de C — r31 à r33
 
 Les trois recettes SQL passent sur r32 ; la recette native corrigée passe sur

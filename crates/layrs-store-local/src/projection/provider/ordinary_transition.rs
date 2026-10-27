@@ -19,8 +19,10 @@ use rusqlite::Connection;
 
 mod allocation;
 mod frontier;
+mod staging;
 mod write;
 pub(super) use allocation::{apply_copying, require_allocation_capacity};
+pub(super) use staging::{apply_staging, proposed as proposed_staging};
 pub(super) use write::{apply_planned, cancel_planned};
 
 const MAX_TRANSITIONS: u64 = 4096;
@@ -59,7 +61,10 @@ pub(super) fn read_outgoing(
                 admission: &binding,
             })?;
         frontier::require_version(c, marker, admission, record, &current, cancel)?;
-        if record.state == TransitionState::Copying {
+        if matches!(
+            record.state,
+            TransitionState::Copying | TransitionState::Staging
+        ) {
             allocation::require_destination(c, marker, admission, record)?;
         }
         if is_live(record.state) {
@@ -137,7 +142,10 @@ fn actual_binding(
 }
 
 fn is_live(state: TransitionState) -> bool {
-    matches!(state, TransitionState::Planned | TransitionState::Copying)
+    matches!(
+        state,
+        TransitionState::Planned | TransitionState::Copying | TransitionState::Staging
+    )
 }
 
 fn require_shape(record: &ProviderTransitionIntentRecord) -> CauseResult<()> {
@@ -146,10 +154,17 @@ fn require_shape(record: &ProviderTransitionIntentRecord) -> CauseResult<()> {
     if record.role != TransitionRole::Source
         || !matches!(
             record.state,
-            TransitionState::Planned | TransitionState::Copying | TransitionState::Cancelled
+            TransitionState::Planned
+                | TransitionState::Copying
+                | TransitionState::Staging
+                | TransitionState::Cancelled
         )
-        || record.destination.is_some() != (record.state == TransitionState::Copying)
-        || record.reservation.is_some()
+        || record.destination.is_some()
+            != matches!(
+                record.state,
+                TransitionState::Copying | TransitionState::Staging
+            )
+        || record.reservation.is_some() != (record.state == TransitionState::Staging)
         || record.receipt_id.is_some()
         || record.plan.kind != ProviderImportKind::ManagedOrdinary
         || !prefix.supports_restore_history()

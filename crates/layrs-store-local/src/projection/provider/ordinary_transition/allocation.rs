@@ -15,9 +15,27 @@ use rusqlite::params;
 #[cfg(test)]
 mod tests;
 
+// Relative to SourcePlanned with the same immutable plan. Published adds
+// reservation JSON (84+2-4), receipt JSON (71+2-4), and two state characters.
+const SOURCE_TERMINAL_PAYLOAD_GROWTH: usize = 82 + 69 + 2;
+const SOURCE_TERMINAL_COLUMN_GROWTH: usize = 84 + 71 + 2;
+// Destination adds five role characters in both JSON and SQL. Its generation
+// is always zero, while every Source phase keeps the immutable source anchor,
+// so numeric serialization never grows relative to SourcePlanned.
+const DESTINATION_ROLE_GROWTH: usize = 5;
+const LIFECYCLE_PAYLOAD_GROWTH: usize = SOURCE_TERMINAL_PAYLOAD_GROWTH + DESTINATION_ROLE_GROWTH;
+// 153 JSON +157 SQL +5 JSON role +5 SQL role =320. Retain fourteen additional
+// normalized bytes as conservative headroom (334 total). The old destination
+// null is deliberately not subtracted, providing another four safe bytes.
+const LIFECYCLE_NORMALIZED_GROWTH: usize = SOURCE_TERMINAL_PAYLOAD_GROWTH
+    + SOURCE_TERMINAL_COLUMN_GROWTH
+    + 2 * DESTINATION_ROLE_GROWTH
+    + 14;
+
 /// Refuse before any filesystem effect unless every valid ordinary destination
-/// proof fits this record and the complete transition inventory. No authority
-/// is inferred from the synthetic values used solely to measure JSON overhead.
+/// proof and later lifecycle bodies fit their record/inventory bounds. This
+/// covers serialization capacity, not permission to interpret later phases.
+/// No authority follows from DATA used solely to measure JSON overhead.
 pub(in crate::projection::provider) fn require_allocation_capacity(
     c: &Connection,
     marker: &format::Marker,
@@ -53,22 +71,22 @@ pub(in crate::projection::provider) fn require_allocation_capacity(
 }
 
 fn require_capacity(payload_bytes: usize, overhead: usize, bytes: u64) -> CauseResult<()> {
-    // Planned and Copying are equally long. Keeping the old `null` length in
-    // this upper bound deliberately reserves four extra bytes.
     let upper = payload_bytes
         .checked_add(overhead)
-        .ok_or_else(|| invalid("ordinary Copying size overflow"))?;
+        .and_then(|size| size.checked_add(LIFECYCLE_PAYLOAD_GROWTH))
+        .ok_or_else(|| invalid("ordinary lifecycle payload size overflow"))?;
     if upper > ProviderTransitionIntentRecord::MAX_BYTES {
         return Err(invalid(
-            "ordinary allocation lacks per-record Copying capacity",
+            "ordinary allocation lacks per-record lifecycle capacity",
         ));
     }
     if bytes
         .checked_add(overhead as u64)
+        .and_then(|size| size.checked_add(LIFECYCLE_NORMALIZED_GROWTH as u64))
         .is_none_or(|size| size > MAX_TRANSITION_BYTES)
     {
         return Err(invalid(
-            "ordinary allocation lacks aggregate Copying capacity",
+            "ordinary allocation lacks aggregate lifecycle capacity",
         ));
     }
     Ok(())

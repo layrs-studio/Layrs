@@ -2,6 +2,7 @@
 //! fixture; declared image/manifests and synthetic C identities grant no bytes,
 //! physical destination ownership, family authorization or ordinary admission.
 use super::*;
+
 use crate::projection::{
     capture::{CapturedFile, CapturedPatch},
     offline,
@@ -44,6 +45,9 @@ macro_rules! owned {
         }
     };
 }
+
+#[path = "tests/staging.rs"]
+mod staging;
 
 fn append_restore(
     c: &Connection,

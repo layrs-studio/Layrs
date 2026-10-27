@@ -417,6 +417,25 @@ impl FamilyAccess {
         )
     }
 
+    /// Authenticate a durable ordinary SourceStaging with no C reservation,
+    /// installation or protection yet. Retained B groups remain fully checked.
+    pub(in crate::projection) fn validate_ordinary_import_unreserved_staging(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_staging: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistration> {
+        validate_unreserved_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )
+    }
+
     /// Exact Initializing insert/readback or no-write replay under the caller's
     /// held catalog gate. No source lease, C reservation or commit is granted.
     pub(in crate::projection) fn register_ordinary_import_initializing(

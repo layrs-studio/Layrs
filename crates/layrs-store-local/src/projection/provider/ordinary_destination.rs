@@ -24,6 +24,8 @@ use crate::projection::{database, format, retention, selection};
 use layrs_vfs::Cancellation;
 use rusqlite::{params, Connection};
 
+pub(super) mod staging;
+
 /// Borrow only from the actual ordinary owner callback. The source closure
 /// binds this exact live source connection, while its actual durable Copying
 /// row names C. The caller independently retains source image and C pins.
@@ -59,6 +61,18 @@ impl<'a> OrdinaryCopyInputs<'a> {
         marker: &format::Marker,
         cancel: Option<&Cancellation>,
     ) -> Result<ProviderTransitionIntentRecord> {
+        self.require_phase(destination, marker, TransitionState::Copying, cancel)
+    }
+
+    // The expected phase must match the actual durable source row. A proposal
+    // alone cannot authorize inspection of C, including during a phase gap.
+    fn require_phase(
+        &self,
+        destination: &Connection,
+        marker: &format::Marker,
+        phase: TransitionState,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ProviderTransitionIntentRecord> {
         cancellation::check(cancel)?;
         if self.connection.is_autocommit()
             || destination.is_autocommit()
@@ -86,9 +100,10 @@ impl<'a> OrdinaryCopyInputs<'a> {
             || !prefix.supports_restore_history()
             || version.generation == 0
             || self.copying.role != TransitionRole::Source
-            || self.copying.state != TransitionState::Copying
+            || !matches!(phase, TransitionState::Copying | TransitionState::Staging)
+            || self.copying.state != phase
             || self.copying.local_generation != version.generation
-            || self.copying.reservation.is_some()
+            || self.copying.reservation.is_some() != (phase == TransitionState::Staging)
             || self.copying.receipt_id.is_some()
             || self.closure.prefix_id() != prefix.digest()?
             || self.closure.closure() != &prefix.closure
@@ -97,9 +112,7 @@ impl<'a> OrdinaryCopyInputs<'a> {
         }
         let admitted = read_admitted_import(self.connection, self.marker, cancel)?;
         if !admitted.outgoing().iter().any(|row| row == self.copying) {
-            return Err(invalid(
-                "ordinary destination source Copying is not durable",
-            ));
+            return Err(invalid("ordinary destination source phase is not durable"));
         }
         let shared = self
             .marker
@@ -260,6 +273,18 @@ pub(in crate::projection::provider) fn read_copied(
     cancel: Option<&Cancellation>,
 ) -> Result<CopiedPrefix> {
     let incoming = source.require(destination, marker, cancel)?;
+    read_copied_parts(destination, marker, source, &incoming, cancel)
+}
+
+// Callers authenticate the actual source phase before supplying the expected
+// destination row. This also validates C Copying after B commits Staging.
+fn read_copied_parts(
+    destination: &Connection,
+    marker: &format::Marker,
+    source: &OrdinaryCopyInputs<'_>,
+    incoming: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<CopiedPrefix> {
     import_validation::require_schema(destination, marker, ImportDatabaseKind::Provider, cancel)?;
     require_inventory(destination, cancel)?;
     let head: (u64, u64) = destination.query_row(
@@ -288,7 +313,7 @@ pub(in crate::projection::provider) fn read_copied(
     }
     marker.validate_initial_selection(&selection::at(destination, 0)?)?;
     require_prefix_row(destination, source.prefix())?;
-    require_intent_row(destination, &incoming)?;
+    require_intent_row(destination, incoming)?;
     // Includes exact counts and closure hashes for all thirteen v2 rowsets,
     // including restore history, and refuses any tail outside the copied scope.
     import_validation::require_exact_copied_rows(

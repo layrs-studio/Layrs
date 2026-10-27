@@ -5,7 +5,57 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
-## Current implementation checkpoint
+## Qualified Staging checkpoint — r34/r35
+
+After metadata commit `959e363`, the ordinary destination interpreter now has
+an explicit expected source phase. Both Copying and Staging require the actual
+durable source row; a proposed Staging row grants no destination access. The
+shared copied-row validator accepts the legitimate SourceStaging /
+DestinationCopying gap without reconstructing historical source authority.
+The family wrapper still requires exact Initializing and no C reservation.
+
+Source gates, full planning funding, preallocation lifecycle capacity and the
+physical two-commit driver are integrated with three SQL recipes and one
+native phase-gap recipe. Workspace all-targets check passes (33.03 s), and the
+normal initial libtest build passes (1m16s). The
+first check exposed a missing proposal re-export; its canonical construction
+was restored before the passing check. Critical review also corrected both
+error-path family postchecks: failed updates or close acknowledgements now
+permit physical pin checks only, never an automatic additional SQL probe.
+No reservation, content installation or autonomous C claim is added by this
+Staging increment. The later ReserveOnly catalog draft is now connected in the
+working tree separately from the qualified Staging sources, with physical
+reservation/plan/CAS drafts still outside the module tree and no build or runtime
+qualification of those later changes.
+
+r34 passed all nine pure budget/capacity recipes, then stopped at the exact-test
+guard: the first Staging SQL name ran zero tests. An implicit child module path
+had compiled the production Staging module twice instead of the SQL test file.
+The explicit `#[path = "tests/staging.rs"]` correction builds successfully in
+1m15s on r35; the three SQL bodies are now compiled. No SQL/native r34 recipe
+executed. r34 logs, source release and runner remain preserved; its pure passes
+retain their provenance. This wiring gap escaped initial source review and
+integration; r35 review checks all seven exact recipe names in the executable.
+
+All six SQL recipes pass on r35: the three new Stage cases (11.258, 11.359,
+8.136 s) and three copied-metadata regressions (6.074, 10.396, 4.054 s). The
+native case passes in 694.90 s child / 694.97 s parent / 694.993 s outer. Four
+actual B owners exercise SourceStaging/C Copying after a refused C writer open,
+durable C Staging after withheld successful-close ACK, then exact no-writer
+replay. All thirteen copied rowsets, B admission and byte witnesses pass. C is
+still Initializing/unadmitted without any family reservation. These results do
+not establish real OS close failure, midwrite cancellation or owner-loss/crash
+recovery.
+
+r35 audit: EXE `e57361ef0487a9a7751305f2fe76e1dc65c5f46d18abdbbf6995cbf72e838acd`,
+CodeView age113, 615 retained inputs and nine startup checks. Independent release
+`29d772439c27fff76a1fe5ee9cc09c5f158b9d878d4de408d390635163c99c18`
+matches all 119 reviewed live/retained files before execution. The portable
+`ordinary-staging-evidence-20261027-r34-r35.tar.gz` contains 1,264 verified files,
+3,495,506 bytes, SHA-256
+`024959c4c0a5e6c748c9ad3ff04561378d9b1503525ad7fc4f0a1e9b1e8206b4`.
+
+## Current qualified metadata checkpoint
 
 The ordinary C8 adapter and physical driver are connected and qualified on the
 three r32 SQL recipes and the corrected r33 native recipe. The workspace
@@ -123,6 +173,33 @@ Staging remains live in all ordinary gates; no-resource cancellation cannot
 handle it. Capacity, recovery and uncertain-close requirements apply separately.
 
 ## Dedicated retained-B plus active-C family policy
+
+The ReserveOnly integration has two coupled parts. Factor the complete
+`AdmittedFamilyContext::validate_catalog` walk behind an optional active target,
+leaving its ordinary entry point on the unchanged `None` path. Classify that
+target only after checking all retained Published groups and required roots,
+before the final all-reservation inventory. The export writer requires FK ON
+and a caller transaction, with complete validation before and after its exact
+insert/replay. Unknown groups and any C installation/root remain forbidden.
+
+An export-only source callback must bootstrap from actual SourceStaging,
+actual complete DestinationStaging, retained private mappings, cached canonical
+manifests and the pinned current image. This DATA can nominate a ReserveOnly
+target, but grants no physical content access. Under the dedicated validated
+catalog gate, resolve historical/base representations by exact FileManifestId,
+verify their indices and CAS bytes, then rederive the complete immutable plan,
+Q/M and actual pair metadata floor before reservation. Current-image manifests
+may legitimately not be installed yet; their bytes stay handle-backed.
+
+Both ordinary lookups must be bypassed through this explicit export policy:
+the pre-action `with_source_transaction` manifest read and the second manifest
+read inside `derive_plan`. Otherwise an exact already-existing C reservation
+prevents the retry from reaching its action. `Access::with_content`, scope
+validation and readonly image scanning can retain their actual private/pin
+checks; generic Lease and ContentScope authorization must not be widened.
+Later retained file/chunk copying also needs the export-specific reader rather
+than its present ordinary lease stream. This only covers the original owner's
+retained access; reopening after owner/pin loss remains explicit recovery work.
 
 Keep ordinary `Lease`, `ContentScope` and strict Provider wrappers unchanged.
 Introduce an export-only context combining B's authenticated retained groups

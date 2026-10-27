@@ -1,5 +1,29 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r34-r35 ordinary Staging:** immutable planning now funds the
+complete future metadata envelope; preallocation capacity covers terminal
+intent growth. Actual B and C metadata transition to Staging with exact CAS,
+live mutation fences and complete copied-prefix validation during the legitimate
+B Staging/C Copying gap. Both family postchecks are success-gated: failed SQL
+or close acknowledgement permits physical revalidation only, not another probe.
+
+Nine pure recipes pass on r34. Its first SQL dispatch ran zero tests because an
+implicit module path pointed to production code; the runner rejected this and
+stopped. The explicit path correction compiles on r35; independent review checks
+the exact recipe names in that executable. Six SQL recipes and the native case
+pass on r35 (694.993 s outer). Four B owners exercise refused destination open,
+withheld ACK after actual successful C close, then exact no-writer replay.
+Incoming admission, copied history and complete byte witnesses pass. C remains
+Initializing without reservation or ordinary admission. No owner-loss/crash or
+real OS close-failure claim follows.
+
+Archive `ordinary-staging-evidence-20261027-r34-r35.tar.gz`: 1,264 verified files,
+3,495,506 bytes, SHA-256
+`024959c4c0a5e6c748c9ad3ff04561378d9b1503525ad7fc4f0a1e9b1e8206b4`.
+Next: exact C reservation plus same-owner retry, content installation, autonomous
+C, then the remaining programme. ReserveOnly catalog and physical callback drafts
+are a separate uncompiled/unqualified lot in the working tree.
+
 **27 October, r32-r33 ordinary C8 metadata copy:** the actual retained B9 owner
 and independent C pins now copy the complete committed prefix atomically into
 C8, including restore-only history. Exact schema, head/G0, all thirteen rowsets,
