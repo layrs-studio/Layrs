@@ -1,5 +1,7 @@
 //! Format-4 content family. This catalog never admits native SCM graph objects.
 mod content;
+#[cfg(windows)]
+pub(in crate::projection) mod exact_content;
 mod maintenance;
 #[cfg(windows)]
 pub(super) mod provider_access;
@@ -775,7 +777,20 @@ impl Lease {
     }
 }
 fn usage(c: &Connection) -> Result<SharedUsage> {
-    let content_bytes = c.query_row("SELECT COALESCE((SELECT SUM(bytes) FROM chunks),0)+COALESCE((SELECT SUM(length(payload)) FROM manifests),0)+COALESCE((SELECT SUM(bytes) FROM sweep),0)", [], |r| r.get(0))?;
+    let content_bytes: u64 = c.query_row("SELECT COALESCE((SELECT SUM(bytes) FROM chunks),0)+COALESCE((SELECT SUM(length(payload)) FROM manifests),0)+COALESCE((SELECT SUM(bytes) FROM sweep),0)", [], |r| r.get(0))?;
+    #[cfg(windows)]
+    let content_bytes = if catalog_schema_version(c)? == CatalogSchema::V2 {
+        let journal_bytes: u64 = c.query_row(
+            "SELECT COUNT(*) * 8192 + COALESCE(SUM(length(manifest)),0) FROM exact_installations",
+            [],
+            |r| r.get(0),
+        )?;
+        content_bytes
+            .checked_add(journal_bytes)
+            .ok_or_else(|| invalid("exact installation usage exceeds bound"))?
+    } else {
+        content_bytes
+    };
     Ok(SharedUsage {
         content_bytes,
         reserved_bytes: c.query_row(

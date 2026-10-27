@@ -1,5 +1,10 @@
 # Managed source checkpoint — 26 October 2026
 
+**27 October night stop:** the latest integrated installer WIP, unmodulated
+DestinationReady draft and exact resume order are recorded in the
+[night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md).
+The chronological qualification records below do not qualify that WIP.
+
 This slice implements and qualifies the source side of a strict managed import.
 It does not create or publish a managed destination.
 

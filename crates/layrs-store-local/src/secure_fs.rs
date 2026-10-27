@@ -185,6 +185,18 @@ impl PinnedDirectory {
         self.wrap_file(name, file)
     }
 
+    /// Reopen an existing file with the access required by FlushFileBuffers.
+    /// No creation or truncation is allowed. The caller must bind the returned
+    /// inode to its durable intent and verify complete bytes before syncing;
+    /// this opener alone grants no authority to resume or rewrite a stage.
+    #[cfg(windows)]
+    pub(crate) fn open_file_for_sync(&self, name: &OsStr) -> io::Result<PinnedFile> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        let file = platform::open_file_for_sync_at(&self.file, name)?;
+        self.wrap_file(name, file)
+    }
+
     /// Read-only input does not need the DELETE right used by CAS mutations.
     #[cfg(windows)]
     pub(crate) fn open_readonly_file(&self, name: &OsStr) -> io::Result<PinnedFile> {

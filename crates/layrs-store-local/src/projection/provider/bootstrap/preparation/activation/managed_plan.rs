@@ -700,7 +700,14 @@ fn quota(manifests: &[FileManifest], image: &[ImageFile<'_>], metadata: u64) -> 
             .checked_mul(256)
             .and_then(|n| n.checked_add(2048))
             .ok_or_else(|| invalid("managed quota overflow"))?;
-        let overhead = payload.max(estimate);
+        // The exact installer keeps its bounded journal and canonical manifest
+        // until protection, alongside the published CAS metadata. Reserve both
+        // copies up front; publication may never grow the durable plan budget.
+        let overhead = payload
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(8192))
+            .and_then(|n| n.checked_add(estimate))
+            .ok_or_else(|| invalid("managed quota overflow"))?;
         total = total
             .checked_add(manifest.byte_length())
             .and_then(|n| n.checked_add(overhead))

@@ -62,6 +62,89 @@ impl VerifiedImportClosure {
     pub(in crate::projection) fn prefix_id(&self) -> &str {
         &self.metadata.prefix_id
     }
+    /// Verify only the immutable imported scope after a local Ready suffix was
+    /// appended. The caller must independently validate that entire suffix.
+    pub(in crate::projection::provider) fn require_copied_prefix_scope(
+        &self,
+        source_c: &Connection,
+        destination_c: &Connection,
+        marker: &format::Marker,
+        prefix: &ProviderImportPrefixRecord,
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<()> {
+        use super::records::Record;
+        self.require_source_connection(source_c)?;
+        if destination_c.is_autocommit() || std::ptr::eq(source_c, destination_c) {
+            return Err(invalid(
+                "copied prefix requires a distinct retained destination",
+            ));
+        }
+        require_schema(destination_c, marker, ImportDatabaseKind::Provider, cancel)?;
+        if marker.identity != prefix.destination_identity
+            || self.prefix_id() != prefix.digest()?
+            || self.closure() != &prefix.closure
+        {
+            return Err(invalid("copied prefix identity or proof differs"));
+        }
+        scoped::read_scoped_closure(
+            destination_c,
+            self.metadata.kind,
+            prefix,
+            &self.metadata,
+            cancel,
+        )?;
+        super::cancellation::check(cancel)
+    }
+    /// Return the exact imported content mappings, including companion scope.
+    /// Unrelated rows in the source database never become imported mappings.
+    pub(in crate::projection::provider) fn copied_content_mappings(
+        &self,
+        source_c: &Connection,
+        prefix: &ProviderImportPrefixRecord,
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<BTreeMap<layrs_core::scm::FileId, (layrs_core::scm::FileManifestId, u64)>>
+    {
+        use layrs_core::scm::{FileId, FileManifestId};
+        self.require_source_connection(source_c)?;
+        scoped::with_scope(
+            source_c,
+            self.metadata.kind,
+            prefix,
+            &scoped::ScopeView::from_metadata(&self.metadata),
+            cancel,
+            |specs, closure| {
+                if closure != &self.closure || closure != &prefix.closure {
+                    return Err(invalid("copied content mapping scope differs"));
+                }
+                let spec = specs
+                    .iter()
+                    .find(|spec| spec.kind == rows::Kind::ContentMappings)
+                    .ok_or_else(|| invalid("copied content mapping scope missing"))?;
+                let mut stmt = source_c.prepare(spec.rows_sql)?;
+                let mut rows = stmt.query(spec.params)?;
+                let mut result = BTreeMap::new();
+                while let Some(row) = rows.next()? {
+                    super::cancellation::check(cancel)?;
+                    let file: String = row.get(0)?;
+                    let manifest: String = row.get(1)?;
+                    let bytes: u64 = row.get(2)?;
+                    if file.len() != 71
+                        || manifest.len() != 71
+                        || bytes > crate::projection::capture::MAX_CAPTURE_FILE_BYTES
+                    {
+                        return Err(invalid("copied content mapping exceeds bounds"));
+                    }
+                    let file = FileId::parse(&file).map_err(|e| invalid(e.to_string()))?;
+                    let manifest =
+                        FileManifestId::parse(&manifest).map_err(|e| invalid(e.to_string()))?;
+                    if result.insert(file, (manifest, bytes)).is_some() {
+                        return Err(invalid("copied content mapping is duplicated"));
+                    }
+                }
+                Ok(result)
+            },
+        )
+    }
     /// Logical byte floor of the twelve authenticated immutable rowsets. This
     /// is not physical SQLite allocation or a transferable capacity proof.
     /// Require the original retained source transaction and recheck its scope.

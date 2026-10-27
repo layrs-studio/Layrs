@@ -1,0 +1,275 @@
+//! Bounded immutable expected DATA for the one managed Ready suffix.
+use super::super::records::{activation::activation_snapshot, import::ProviderImportKind};
+use super::*;
+use serde::Serialize;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequiredRow<'a> {
+    file_id: &'a FileId,
+    manifest_id: &'a FileManifestId,
+    bytes: u64,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlayRow<'a> {
+    change: &'a crate::projection::capture::CapturedChange,
+    manifest_id: Option<&'a FileManifestId>,
+}
+
+fn rowset<T: Serialize>(domain: &[u8], values: &[T]) -> Result<String> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&(values.len() as u64).to_be_bytes());
+    for value in values {
+        let bytes = canonical_json(value).map_err(|e| invalid(e.to_string()))?;
+        hash.update(&(bytes.len() as u64).to_be_bytes());
+        hash.update(&bytes);
+    }
+    Ok(format!("blake3:{}", hash.finalize()))
+}
+
+pub(super) fn prepare(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<PreparedData> {
+    cancellation::check(cancel)?;
+    if source_c.is_autocommit()
+        || destination.is_autocommit()
+        || family_c.is_autocommit()
+        || std::ptr::eq(source_c, destination)
+        || std::ptr::eq(source_c, family_c)
+        || std::ptr::eq(destination, family_c)
+    {
+        return Err(invalid(
+            "destination Ready requires three distinct retained transactions",
+        ));
+    }
+    inputs.closure.require_source_connection(source_c)?;
+    super::super::import_validation::require_schema(
+        destination,
+        inputs.marker,
+        super::super::import_validation::ImportDatabaseKind::Provider,
+        cancel,
+    )?;
+    let staging = inputs.staging;
+    let ready = inputs.data.ready;
+    staging.validate_fields()?;
+    ready.require_transition(staging)?;
+    if staging.role != TransitionRole::Destination
+        || staging.state != TransitionState::Staging
+        || ready.state != TransitionState::Ready
+        || staging.receipt_id.is_some()
+        || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
+        || staging.plan.kind != ProviderImportKind::ManagedOrdinary
+        || staging.plan.source_prefix != *inputs.prefix
+        || staging.plan.companion_id.is_some()
+        || staging.plan.companion_files.count != 0
+        || staging.plan.companion_deletions.count != 0
+    {
+        return Err(invalid("destination Ready staged plan differs"));
+    }
+    // Reuse the strict FORMAT/source binding kernel without relaxing the
+    // Staging reader or querying this destination as an earlier phase.
+    let mut copying = ProviderTransitionIntentRecord::decode(&staging.encode()?)?;
+    copying.state = TransitionState::Copying;
+    copying.reservation = None;
+    destination_validation::require_inputs(
+        inputs.marker,
+        inputs.source,
+        inputs.allocation,
+        inputs.prepared,
+        inputs.activation,
+        inputs.prefix,
+        &copying,
+    )?;
+    if inputs.closure.prefix_id() != inputs.prefix.digest()?
+        || inputs.closure.closure() != &inputs.prefix.closure
+    {
+        return Err(invalid("destination Ready source closure differs"));
+    }
+    ready.require_receipt(inputs.data.receipt)?;
+    let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
+        return Err(invalid("destination Ready requires provider source"));
+    };
+    let plan = &staging.plan;
+    if version.generation.checked_add(1) != Some(plan.observation.generation)
+        || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
+        || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
+        || inputs.data.observation != inputs.source.initial()
+        || inputs.data.placement != &activation_snapshot(inputs.source)?
+        || plan.observation.step_id != inputs.data.observation.base_step_id
+        || plan.observation.root_tree_id != inputs.data.observation.base_root_tree_id
+        || plan.observation.policy_set_id != inputs.data.observation.observed_policy_set_id
+        || plan.observation.authorization_epoch
+            != inputs.data.observation.observed_authorization_epoch
+        || plan.observation.selection_digest != inputs.source.commitment().selection_digest
+    {
+        return Err(invalid(
+            "destination Ready local boundaries or snapshots differ",
+        ));
+    }
+    let observation = inputs
+        .data
+        .observation
+        .canonical_bytes()
+        .map_err(|e| invalid(e.to_string()))?;
+    let placement = inputs
+        .data
+        .placement
+        .canonical_bytes()
+        .map_err(|e| invalid(e.to_string()))?;
+    if observation.len() > 64 * 1024 * 1024
+        || placement.len() > 64 * 1024 * 1024
+        || database::digest(
+            plan.observation.generation,
+            Some(&version.snapshot_digest),
+            &observation,
+        ) != plan.observation.snapshot_digest
+        || database::digest(
+            plan.placement_generation,
+            Some(&plan.observation.snapshot_digest),
+            &placement,
+        ) != plan.placement_digest
+    {
+        return Err(invalid("destination Ready snapshot commitments differ"));
+    }
+    inputs
+        .source
+        .selection()
+        .validate_snapshot(inputs.data.observation)
+        .map_err(|e| invalid(e.to_string()))?;
+    inputs
+        .source
+        .selection()
+        .validate_snapshot(inputs.data.placement)
+        .map_err(|e| invalid(e.to_string()))?;
+    let patch = inputs.data.capture;
+    if patch.schema_version != "layrs.projection-capture.v1"
+        || patch.changes.len() > 1024
+        || patch.sequence != plan.capture_sequence
+        || patch.previous_patch_digest != version.capture_head
+        || patch.projection_generation != plan.placement_generation
+        || patch.projection_digest != plan.placement_digest
+        || patch.identity != inputs.marker.identity
+        || patch.digest != plan.capture_digest
+        || patch.computed_digest()? != patch.digest
+        || inputs.data.overlay.len() != patch.changes.len()
+    {
+        return Err(invalid("destination Ready capture commitment differs"));
+    }
+    let capture = canonical_json(patch).map_err(|e| invalid(e.to_string()))?;
+    if capture.len() > 8 * 1024 * 1024 || inputs.data.required.len() > 100_000 {
+        return Err(invalid("destination Ready DATA exceeds bound"));
+    }
+    let mut required = BTreeMap::new();
+    let mut lengths = BTreeMap::new();
+    let mut encoded_total = 65536usize;
+    for manifest in inputs.data.required {
+        cancellation::check(cancel)?;
+        let payload = canonical_json(manifest).map_err(|e| invalid(e.to_string()))?;
+        encoded_total = encoded_total
+            .checked_add(payload.len() + 1)
+            .filter(|n| *n <= 16 * 1024 * 1024)
+            .ok_or_else(|| invalid("destination Ready protected union exceeds bound"))?;
+        if payload.len() > 262144
+            || manifest.byte_length() > 1073741824
+            || manifest.chunks().len() > 1024
+            || manifest.chunks().iter().any(|c| c.byte_length() > 1048576)
+            || lengths
+                .insert(manifest.file_id().clone(), manifest.byte_length())
+                .is_some_and(|old| old != manifest.byte_length())
+            || required
+                .insert((manifest.file_id(), manifest.id()), manifest)
+                .is_some()
+        {
+            return Err(invalid("destination Ready manifest representation differs"));
+        }
+    }
+    let rows: Vec<_> = required
+        .values()
+        .map(|m| RequiredRow {
+            file_id: m.file_id(),
+            manifest_id: m.id(),
+            bytes: m.byte_length(),
+        })
+        .collect();
+    if plan.protected_manifests.count != rows.len() as u64
+        || plan.protected_manifests.digest
+            != rowset(b"layrs-provider-managed-protected-manifests-v1\0", &rows)?
+    {
+        return Err(invalid("destination Ready protected union differs"));
+    }
+    for descriptor in inputs.source.descriptors() {
+        cancellation::check(cancel)?;
+        if required
+            .get(&(&descriptor.file_id, descriptor.manifest.id()))
+            .copied()
+            != Some(&descriptor.manifest)
+        {
+            return Err(invalid("destination Ready source representation absent"));
+        }
+    }
+    let mut overlay = Vec::with_capacity(patch.changes.len());
+    let mut prior = None;
+    for (change, supplied) in patch.changes.iter().zip(inputs.data.overlay) {
+        cancellation::check(cancel)?;
+        if change.path != supplied.path || prior.is_some_and(|path: &RepoPath| path >= &change.path)
+        {
+            return Err(invalid("destination Ready overlay paths differ"));
+        }
+        prior = Some(&change.path);
+        match (&change.replacement, &supplied.manifest_id) {
+            (Some(file), Some(id))
+                if required
+                    .get(&(&file.file_id, id))
+                    .is_some_and(|manifest| manifest.byte_length() == file.bytes) => {}
+            (None, None) => {}
+            _ => return Err(invalid("destination Ready overlay representation absent")),
+        }
+        overlay.push(OverlayRow {
+            change,
+            manifest_id: supplied.manifest_id.as_ref(),
+        });
+    }
+    if plan.working_overlay.count != overlay.len() as u64
+        || plan.working_overlay.digest != rowset(b"layrs-provider-managed-overlay-v1\0", &overlay)?
+    {
+        return Err(invalid("destination Ready overlay commitment differs"));
+    }
+    let copied = inputs
+        .closure
+        .copied_content_mappings(source_c, inputs.prefix, cancel)?;
+    for (file, (manifest, bytes)) in &copied {
+        if !required
+            .get(&(file, manifest))
+            .is_some_and(|m| m.byte_length() == *bytes)
+        {
+            return Err(invalid(
+                "destination Ready imported content representation absent",
+            ));
+        }
+    }
+    let mut new_content = Vec::new();
+    let mut mapped = BTreeSet::new();
+    for manifest in required.values() {
+        if !copied.contains_key(manifest.file_id()) && mapped.insert(manifest.file_id()) {
+            new_content.push((
+                manifest.file_id().to_string(),
+                manifest.id().to_string(),
+                manifest.byte_length(),
+            ));
+        }
+    }
+    family::require(family_c, inputs, cancel)?;
+    cancellation::check(cancel)?;
+    Ok(PreparedData {
+        observation,
+        placement,
+        capture,
+        new_content,
+    })
+}

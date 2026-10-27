@@ -168,8 +168,13 @@ fn require_union(inputs: &ImportContentInputs<'_>, cancel: Option<&Cancellation>
         let overhead = (manifest.chunks().len() as u64)
             .checked_mul(256)
             .and_then(|bytes| bytes.checked_add(2048))
-            .ok_or_else(|| invalid("managed content minimum charge overflow"))?
-            .max(payload.len() as u64);
+            .and_then(|bytes| bytes.checked_add(8192))
+            .and_then(|bytes| {
+                (payload.len() as u64)
+                    .checked_mul(2)
+                    .and_then(|payload| bytes.checked_add(payload))
+            })
+            .ok_or_else(|| invalid("managed content minimum charge overflow"))?;
         minimum_charge = minimum_charge
             .checked_add(manifest.byte_length())
             .and_then(|bytes| bytes.checked_add(overhead))
@@ -382,6 +387,49 @@ fn insert_or_replay_reservation(
 }
 
 impl FamilyAccess {
+    /// Installation admission is separate from the strict reserve-only reader.
+    /// Private proofs, complete-plan rederivation and physical pins stay with
+    /// the caller. Typed rows and durable debits are interpreted in this one
+    /// catalog transaction; no byte I/O, opener, commit or cleanup is granted.
+    pub(in crate::projection) fn validate_import_installation(
+        &self,
+        c: &Connection,
+        inputs: &ImportContentInputs<'_>,
+        binding: &crate::projection::shared::exact_content::ExactBinding,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::exact_content::ExactInstallState> {
+        require_transaction(c, false, cancel)?;
+        require_staging_pair(inputs, cancel)?;
+        if installation_binding(inputs)? != *binding {
+            return Err(invalid(
+                "exact installation binding differs from managed import",
+            ));
+        }
+        if validate_import_base(
+            self,
+            c,
+            inputs.allocation,
+            inputs.prepared,
+            inputs.activation,
+            inputs.capture,
+            inputs.source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )? != ImportRegistration::Initializing
+        {
+            return Err(invalid("exact installation owner is not Initializing"));
+        }
+        let state = crate::projection::shared::exact_content::validate_installations(
+            c,
+            binding,
+            inputs.required,
+            cancel,
+        )?;
+        self.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
     pub(in crate::projection) fn validate_import_content(
         &self,
         c: &Connection,
@@ -460,6 +508,35 @@ impl FamilyAccess {
         self.validate_import_content(c, inputs, cancel)?;
         Ok(effect)
     }
+}
+
+pub(in crate::projection) fn installation_binding(
+    inputs: &ImportContentInputs<'_>,
+) -> Result<crate::projection::shared::exact_content::ExactBinding> {
+    let source = inputs.source_staging;
+    let destination = source
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("exact installation destination absent"))?;
+    let family = &inputs.allocation.family;
+    let operation = source.reservation_operation()?;
+    let binding = crate::projection::shared::exact_content::ExactBinding {
+        family_incarnation: family.incarnation.clone(),
+        family_root_identity: family.root_identity.clone(),
+        family_marker_digest: family.marker_digest.clone(),
+        family_catalog_identity: family.catalog_file_identity.clone(),
+        plan_digest: source.plan.digest()?,
+        prefix_id: source.plan.source_prefix_id.clone(),
+        destination_proof_digest: destination.digest(&source.plan)?,
+        transaction_id: source.transaction_id.clone(),
+        owner: destination.format.identity.worktree_id.clone(),
+        database_identity: destination.private_database_identity.clone(),
+        reservation: operation.clone(),
+        operation,
+        quota_bytes: source.plan.quota_bytes,
+    };
+    binding.validate()?;
+    Ok(binding)
 }
 
 #[cfg(test)]

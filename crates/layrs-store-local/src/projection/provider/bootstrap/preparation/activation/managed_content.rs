@@ -2,6 +2,7 @@
 //! The source attempt, checkpoint and both physical owners stay with the caller.
 //! This lease exposes no general catalog, cleanup, installation or protection API.
 use super::*;
+mod exact;
 use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,
@@ -66,7 +67,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         };
         lease.rehash(cancel)?;
         lease.with_authority(cancel, |proof, destination_staging| {
-            lease.read_family(proof, destination_staging, cancel)?;
+            lease.read_admission(proof, destination_staging, cancel)?;
             Ok(())
         })?;
         Ok(lease)

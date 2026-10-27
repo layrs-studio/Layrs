@@ -1,5 +1,10 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**Latest stop: 27 October 2026.** Read the
+[night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md) first.
+The user requested a pause; the exact installer is compiled WIP, not qualified,
+and the unmodulated DestinationReady draft is not compiled or tested.
+
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.
 No new full-suite run was performed for the checkpoint commit.

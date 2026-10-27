@@ -214,6 +214,16 @@ pub(super) fn open_readonly_file_at(parent: &File, name: &OsStr) -> io::Result<F
     )
 }
 
+pub(super) fn open_file_for_sync_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_at(
+        parent,
+        name,
+        FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )
+}
+
 pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -> io::Result<bool> {
     let name: Vec<u16> = name.encode_wide().collect();
     let name_bytes = name
