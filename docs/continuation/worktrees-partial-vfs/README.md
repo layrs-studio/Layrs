@@ -1,5 +1,37 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément du 27 octobre 2026
+
+Les commits locaux `ddf31d3` et `0afbcc0` ajoutent les publications familiale et
+source, la capture après Published, les lecteurs Ready autonomes et la
+réouverture physique en lecture. Leur état courant est décrit par le
+[checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md) et le
+[contrat d'admission](../../plans/worktrees-partial-vfs-managed-admission-contract.md).
+L'admission ordinaire mutable, les companions, l'expansion et les parcours
+produit ne sont pas terminés.
+
+Le complément `managed-evidence-20261027.tar.gz` transporte 12 346 fichiers
+de sources figées, manifestes et journaux du 27 octobre, jusqu'à l'artefact r10.
+Chaque fichier a été relu depuis l'archive et comparé à son SHA-256.
+`managed-inventory-20261027.json` donne les chemins, tailles et empreintes.
+Archive : 33 556 498 octets ; SHA-256
+`8da87e87a87f379f03b7c7f7140495c22b30a9b48eb465c10bb92be35697c3e5`.
+
+Sur un poste où ces preuves sont absentes :
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/managed-evidence-20261027.tar.gz
+```
+
+Les mêmes restrictions de restauration et d'hôte ci-dessous s'appliquent.
+Les échecs r4/r5/r6/r9/r10 restent conservés ; leur présence dans l'archive
+n'est pas une acceptation. Les sources non modulées présentes dans certains
+inventaires sont des brouillons, sans qualification. L'archive ne contient
+ni exécutables/PDB, ni bases SQLite, ni fixtures natives. Elle ne remplace
+pas `evidence.tar.gz`, qui conserve le jalon historique writer R7.
+
+## Paquet historique writer R7
+
 Le commit `0eba2e5` contient les sources, tests et scripts du programme. Son
 premier push omettait les contrats et dossiers de revue conservés dans le
 répertoire ignoré `.layrs-local/validation`. Ce complément transporte ces
