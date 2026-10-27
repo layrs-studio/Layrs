@@ -218,3 +218,76 @@ Future B->C export additionally needs explicit schema9 handling in
 admitted incoming receipt, never an arbitrary outgoing receipt A->D. Ordinary
 restore/refresh/rebase history is still refused by source closure until explicitly
 represented; accepting a version number alone must not bypass that limitation.
+
+## 27 October continuation: admitted contexts and physical driver
+
+The r14 audited artifact is `adb6c91ca94a186f2391e476c54ab536dceba6b3452e157ba2c8bfc18bd21da8`
+(CodeView age 89, 569 retained source inputs). All seven owned SQL-memory
+recipes passed: three private ordinary-admission readers and four retained
+family catalog readers. They cover caller-transaction preservation, actual
+imported/local origin bounds, ACK/archive corruption refusal, ordinary claims
+alongside imports, multiple owners sharing representations without duplicate
+debits, exact reservation accounting and extra context for empty foreign roots.
+Positive inherited publication across multiple import segments remains untested.
+
+The physical Ready8-to-Admitted9 driver independently opens the actual source
+inode read-only and retains the source/family snapshots through destination
+COMMIT and positive writer close. Failure retains destination owner, checkout
+and CAS pins. Its `resolve` route uses only destination/family evidence, reads
+twice with positive closes and opens no writer. Review required complete family
+schema/member/root revalidation and exact binding/root linkage between the
+private ACK and retained physical evidence; those findings are corrected.
+Resolution currently requires the retained holder: process-restart opening of
+Admitted9 is still part of the pending ordinary-access integration.
+
+The first r14 native recipe failed after 137.27 seconds in its fixture witness:
+it attempted to hash the exclusively held destination `layrs.lock`, and Windows
+refused the byte read (error 33). This is not a passing physical-admission result.
+The fixture and logs remain retained. The r15 fixture records only inode and
+length for that exact owner-lock path; every content/database/other file still
+uses the existing bounded byte witness, and the earlier read-only recipe is
+unchanged. A fresh parent and newly audited binary are required for the rerun.
+
+The separate admitted content policy is implemented and source-reviewed but
+not yet wired to `format::access`. Its catalog adapter performs clean RO
+admission before RW, validates before/after operations and closes observably.
+Reservation/protection guards precede effects; ordinary staging cannot alias
+an exact retained directory by either name or physical identity. The latter
+guard has a dedicated SQL regression passing on r15. An aggregate one-million
+charged-chunk limit bounds the retained catalog reader's deduplication memory.
+Recapture now prefers an existing private exact manifest instead of selecting
+another family representation with the same FileId.
+
+Next integration must retain durable private admission and owner scope across
+the ordinary handle, propagate the admitted policy through retention, capture
+storage and offline operations, and preserve clean-open/close guarantees.
+Contextless ordinary access, Ready8 admission bypass, recovery and GC remain
+closed. Foreign empty-import contexts need a caller-side collection path outside
+the catalog gate. A source-independent edit/capture/reopen/restore cycle remains
+required before claiming a usable ordinary destination.
+
+### r15 results and next handle boundary
+
+The corrected native recipe passed on r15 in 138.74 seconds (owned child),
+138.79 seconds including its parent. It covers pre-admission cancellation with
+zero writers, real migration followed by a deliberately refused positive-close
+acknowledgement, resolution after source disconnection/destruction of all setup
+holders, and a real `inspect9 -> AdmittedFamilyContext::new -> validate_catalog`
+chain preserving two ManifestIds for one FileId. Bounded witnesses remain exact;
+only the exclusively held owner lock uses inode/length rather than byte hashing.
+The ordinary/exact staging-directory alias SQL regression also passed on r15.
+
+The r15 EXE is `e96bd8b4e336b361a783b568d331ccf73bdd5c164359297b7f1ffffa7a0f69c2`,
+CodeView age 90, 569 source inputs. Both revisions, including the r14 failure,
+are preserved in the portable r14-r15 supplement. Neither run proves process
+restart, source deletion, ordinary editing, native staging cleanup or GC.
+
+The next private-handle adapter must mint opaque durable admission only after a
+positively closed clean RO preflight. `inspect(c)` can deliberately interpret an
+existing caller transaction; therefore it cannot establish durability by itself.
+The owner-scoped token and exact immutable import commitment must accompany
+ordinary content accesses. A `Deref` connection wrapper alone is insufficient:
+all success/error returns must reach a consuming finalizer that reports close
+errors. Implicit Drop cannot acknowledge a successful capture while silently
+quarantining its connection. Keep existing provider-only BareConnection internals
+behind a narrow adapter and preserve the ordinary/recovery distinction.

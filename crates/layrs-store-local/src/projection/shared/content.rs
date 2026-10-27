@@ -24,6 +24,27 @@ pub(in crate::projection) struct Protection {
     pub manifests: Vec<FileManifest>,
 }
 impl Lease {
+    /// Reuse the private owner's exact representation rather than choosing a
+    /// different family manifest with the same FileId. The live input still
+    /// has to match every chunk of the retained representation.
+    pub(in crate::projection) fn retain_existing_representation(
+        &self,
+        input: &mut dyn Read,
+        expected: &CapturedFile,
+        reservation: &str,
+        manifest: &FileManifest,
+    ) -> Result<FileManifest> {
+        if manifest.file_id() != &expected.file_id || manifest.byte_length() != expected.bytes {
+            return Err(invalid(
+                "retained private representation differs from input",
+            ));
+        }
+        self.verify_manifest(manifest)?;
+        verify_input(input, manifest)?;
+        staging::Stage::finish_existing(self, reservation, expected)?;
+        Ok(manifest.clone())
+    }
+
     /// Caller holds this lifecycle lease until publication and private acceptance.
     /// Local fixed chunking deliberately does not preserve a remote manifest ID.
     pub(in crate::projection) fn install_file(
@@ -116,6 +137,7 @@ impl Lease {
         let staging = attempt.directory(self)?;
         let payload = canonical_json(&manifest).map_err(invalid)?;
         self.with_content_catalog(true, |c| {
+        self.authorize_content_reservation(c, &reservation)?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut cost = 0u64;
         let mut unique = BTreeSet::new();
@@ -356,6 +378,7 @@ impl Lease {
         operation: &str,
         manifests: &[FileManifest],
     ) -> Result<(String, String)> {
+        self.authorize_content_protection(marker, operation)?;
         let binding = marker
             .shared
             .as_ref()

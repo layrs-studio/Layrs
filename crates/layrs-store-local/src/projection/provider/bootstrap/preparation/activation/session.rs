@@ -173,6 +173,68 @@ pub struct ProviderActiveSession {
     source: Arc<LocalSource>,
 }
 impl ProviderActiveSession {
+    /// Internal durable handoff adapter. The ordinary opener is a separate
+    /// operation after this consumes the destination's exclusive Ready pins.
+    pub(in crate::projection::provider) fn admit_ready_destination(
+        &self,
+        destination: crate::projection::provider::managed_ready_reopen::ManagedReadyAdmission,
+        close: &mut impl crate::projection::provider::database_io::WriterCloseObserver,
+        cancel: &Cancellation,
+    ) -> std::result::Result<
+        String,
+        crate::projection::provider::managed_ready_reopen::AdmissionFailure,
+    > {
+        use crate::projection::provider::{
+            managed_ready_reopen::{AdmissionFailure, AdmissionStep},
+            published_handoff::PublicationSource,
+        };
+        let held = &self.source.held;
+        let prepare = (|| -> CauseResult<_> {
+            cancel.check()?;
+            let lifecycle = held.family.writer_lifecycle(false)?;
+            let owner = crate::lock::StoreLock::acquire_existing(
+                &held
+                    .family
+                    .member(&held.artifacts.allocation.format.identity.worktree_id)
+                    .join("layrs.lock"),
+                crate::projection::SessionMode::Shared,
+            )?;
+            let prepared = held
+                .artifacts
+                .prepared
+                .as_ref()
+                .ok_or_else(|| invalid("admission source prepared receipt absent"))?;
+            Ok((lifecycle, owner, prepared))
+        })();
+        let (_source_lifecycle, _source_owner, prepared) = match prepare {
+            Ok(value) => value,
+            Err(cause) => {
+                return Err(AdmissionFailure {
+                    step: AdmissionStep::Validating,
+                    cause,
+                    held: destination,
+                })
+            }
+        };
+        destination.commit(
+            &held.artifacts.database,
+            PublicationSource {
+                allocation: &held.artifacts.allocation,
+                prepared,
+                binding: &held.binding,
+                root_id: self.source.root.registration().root_id(),
+            },
+            || {
+                cancel.check()?;
+                held.artifacts.verify(&held.family)?;
+                self.source.root.revalidate()?;
+                Ok(())
+            },
+            close,
+            cancel,
+        )
+    }
+
     pub fn root(&self) -> &Path {
         self.source.root.root()
     }
@@ -403,6 +465,8 @@ mod managed_staging_tests;
 #[cfg(test)]
 mod capture_immutable_tests;
 #[cfg(test)]
+mod managed_admission_tests;
+#[cfg(test)]
 mod managed_checkout_tests;
 #[cfg(test)]
 #[path = "session/managed_content_tests.rs"]
@@ -418,9 +482,9 @@ mod managed_post_publication_capture_tests;
 #[cfg(test)]
 mod managed_protection_tests;
 #[cfg(test)]
-mod managed_ready_tests;
-#[cfg(test)]
 mod managed_ready_reopen_tests;
+#[cfg(test)]
+mod managed_ready_tests;
 #[cfg(test)]
 mod managed_source_publication_tests;
 

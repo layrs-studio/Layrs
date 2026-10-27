@@ -85,6 +85,22 @@ historiques. Les chemins externes au dépôt désignent l'ancien environnement.
 
 ## Ordre de lecture
 
+Le supplément `admitted-context-evidence-20261027-r14-r15.tar.gz` contient les
+sources figées et résultats des lecteurs admis, du contrôle d'aliasing des
+répertoires temporaires et de l'admission physique avec reprise après perte
+d'accusé. Il conserve aussi le premier échec de fixture natif r14. Inventaire :
+`admitted-context-inventory-20261027-r14-r15.json`, 1 167 fichiers vérifiés.
+Archive : 3 214 056 octets ; SHA-256
+`c6dbc24e33988cd69c977ee7fd079303385c4c322d7197a1de4599aa4f54181d`.
+Les exécutables, PDB, bases et fixtures natives restent exclus. Ce supplément ne
+qualifie pas l'ouverture ordinaire modifiable ni le programme complet.
+
+Depuis la racine du dépôt, extraction des preuves historiques :
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/admitted-context-evidence-20261027-r14-r15.tar.gz
+```
+
 1. [Point d'étape](../../plans/worktrees-partial-vfs-checkpoint.md), puis
    [programme](../../plans/worktrees-partial-vfs.md),
    [storage](../../plans/worktrees-partial-vfs-storage.md) et

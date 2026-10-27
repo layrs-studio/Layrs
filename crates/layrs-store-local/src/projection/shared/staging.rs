@@ -28,6 +28,7 @@ impl Stage {
     }
     pub fn begin(lease: &Lease, reservation: &str, expected: &CapturedFile) -> Result<Self> {
         lease.with_content_catalog(true, |c| {
+        lease.authorize_content_reservation(c, reservation)?;
         let (owner, operation, database_identity): (String, String, String) = c.query_row(
             "SELECT r.owner,r.operation,w.database_identity FROM reservations r JOIN worktrees w ON w.id=r.owner WHERE r.id=?1",
             [reservation], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -91,6 +92,16 @@ impl Stage {
         })
     }
     pub fn directory(&self, lease: &Lease) -> Result<PinnedDirectory> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)?;
+                lease.authorize_content_directory(
+                    c,
+                    &self.intent.directory,
+                    &self.intent.directory_identity,
+                )
+            })?;
+        }
         if self.intent.directory.is_empty()
             || self.intent.directory.len() > 128
             || !self
@@ -115,6 +126,11 @@ impl Stage {
         self.clean_files(lease)
     }
     fn clean_files(&self, lease: &Lease) -> Result<()> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)
+            })?;
+        }
         let directory = self.directory(lease)?;
         let path = lease
             .family
@@ -157,7 +173,10 @@ impl Stage {
         {
             return Err(invalid("verified installation identity mismatch"));
         }
-        let changed = lease.with_content_catalog(true, |c| Ok(c.execute("UPDATE installations SET manifest=?1 WHERE reservation=?2 AND file_id=?3 AND payload=?4 AND published=0", params![payload, self.intent.reservation, self.intent.file_id.as_str(), self.payload])?))?;
+        let changed = lease.with_content_catalog(true, |c| {
+            lease.authorize_content_reservation(c, &self.intent.reservation)?;
+            Ok(c.execute("UPDATE installations SET manifest=?1 WHERE reservation=?2 AND file_id=?3 AND payload=?4 AND published=0", params![payload, self.intent.reservation, self.intent.file_id.as_str(), self.payload])?)
+        })?;
         if changed != 1 {
             return Err(invalid("installation intent changed"));
         }
@@ -171,6 +190,11 @@ impl Stage {
         Ok(())
     }
     pub fn finish(&self, lease: &Lease) -> Result<()> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)
+            })?;
+        }
         // Fully admitted content is verified before caller permits this cleanup.
         match self.directory(lease) {
             Ok(directory) => {
@@ -188,6 +212,7 @@ impl Stage {
             Err(e) => return Err(e),
         }
         if lease.with_content_catalog(true, |c| {
+            lease.authorize_content_reservation(c, &self.intent.reservation)?;
             Ok(c.execute(
                 "DELETE FROM installations WHERE reservation=?1 AND file_id=?2 AND payload=?3",
                 params![
@@ -208,6 +233,7 @@ impl Stage {
         expected: &CapturedFile,
     ) -> Result<()> {
         let exists = lease.with_content_catalog(false, |c| {
+            lease.authorize_content_reservation(c, reservation)?;
             Ok(load(c, reservation, &expected.file_id)?.is_some())
         })?;
         if exists {

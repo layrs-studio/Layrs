@@ -92,7 +92,7 @@ impl Record for ManagedAdmissionRecord {
 }
 
 impl ManagedAdmissionRecord {
-    pub(super) fn digest(&self) -> Result<String> {
+    pub(in crate::projection::provider) fn digest(&self) -> Result<String> {
         Ok(codec::hash("layrs-managed-admission-v1", &self.encode()?))
     }
 

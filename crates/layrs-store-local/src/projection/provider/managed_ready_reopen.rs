@@ -23,6 +23,10 @@ use std::path::Path;
 
 mod pins;
 use pins::ManagedReadyPins;
+mod admission;
+pub(in crate::projection::provider) use admission::{
+    AdmissionFailure, AdmissionStep, ManagedReadyAdmission,
+};
 
 /// Owns fresh physical capabilities. The working files and CAS objects remain
 /// immutably pinned; inspection must be dropped before normal working edits.
@@ -43,13 +47,14 @@ impl ManagedReadyInspection {
         root: &Path,
         cancel: &Cancellation,
     ) -> Result<Self> {
+        Self::open_with_mode(root, SessionMode::Shared, cancel)
+    }
+
+    fn open_with_mode(root: &Path, mode: SessionMode, cancel: &Cancellation) -> Result<Self> {
         cancel.check()?;
         let pins = ManagedReadyPins::open(root, cancel)?;
         let lifecycle = pins.family.lifecycle_lease()?;
-        let owner = StoreLock::acquire_existing(
-            &pins.metadata_path().join("layrs.lock"),
-            SessionMode::Shared,
-        )?;
+        let owner = StoreLock::acquire_existing(&pins.metadata_path().join("layrs.lock"), mode)?;
         pins.verify(cancel)?;
         let data = read_snapshot(&pins, cancel)?;
         pins.require_data(&data, cancel)?;

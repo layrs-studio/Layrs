@@ -2,6 +2,10 @@
 //! Neither route grants provider population, source serving or readiness.
 use super::*;
 #[cfg(windows)]
+pub(in crate::projection) mod admitted_catalog_io;
+#[cfg(windows)]
+pub(in crate::projection) mod admitted_ordinary;
+#[cfg(windows)]
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{
@@ -53,13 +57,13 @@ pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod journal;
 #[cfg(windows)]
+mod managed_admission;
+#[cfg(windows)]
 mod managed_budget;
 #[cfg(windows)]
 mod managed_ready_reopen;
 #[cfg(windows)]
 mod published_handoff;
-#[cfg(windows)]
-mod managed_admission;
 #[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]

@@ -191,13 +191,33 @@ impl ExactProtection {
         c: &Connection,
         cancel: Option<&Cancellation>,
     ) -> Result<ProtectionPresence> {
+        self.inspect_mode(c, cancel, true)
+    }
+
+    /// Read only one retained import root. Additional ordinary roots, including
+    /// roots of this same owner, do not change this immutable root's identity.
+    /// The admitted family reader independently accounts for every import group.
+    pub(in crate::projection) fn inspect_retained(
+        &self,
+        c: &Connection,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ProtectionPresence> {
+        self.inspect_mode(c, cancel, false)
+    }
+
+    fn inspect_mode(
+        &self,
+        c: &Connection,
+        cancel: Option<&Cancellation>,
+        unique_owner: bool,
+    ) -> Result<ProtectionPresence> {
         if c.is_autocommit() {
             return Err(invalid("exact protection requires caller transaction"));
         }
         cancellation::check(cancel)?;
         let count: u64 = c.query_row(
-            "SELECT count(*) FROM (SELECT 1 FROM roots WHERE owner=?1 OR id=?2 LIMIT 2)",
-            params![self.owner.as_str(), self.id],
+            "SELECT count(*) FROM (SELECT 1 FROM roots WHERE (?3 AND owner=?1) OR id=?2 LIMIT 2)",
+            params![self.owner.as_str(), self.id, unique_owner],
             |r| r.get(0),
         )?;
         if count == 0 {
@@ -207,8 +227,8 @@ impl ExactProtection {
             return Err(invalid("exact protection owner has additional roots"));
         }
         let bad: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM roots WHERE (owner=?1 OR id=?2) AND (length(CAST(id AS BLOB))>128 OR length(CAST(owner AS BLOB))>512 OR length(CAST(database_identity AS BLOB))>512 OR length(CAST(operation AS BLOB))>128 OR length(CAST(digest AS BLOB))>128 OR length(payload)>16777216))",
-            params![self.owner.as_str(),self.id], |r| r.get(0),
+            "SELECT EXISTS(SELECT 1 FROM roots WHERE ((?3 AND owner=?1) OR id=?2) AND (length(CAST(id AS BLOB))>128 OR length(CAST(owner AS BLOB))>512 OR length(CAST(database_identity AS BLOB))>512 OR length(CAST(operation AS BLOB))>128 OR length(CAST(digest AS BLOB))>128 OR length(payload)>16777216))",
+            params![self.owner.as_str(),self.id,unique_owner], |r| r.get(0),
         )?;
         if bad {
             return Err(invalid("exact protection root metadata exceeds bound"));

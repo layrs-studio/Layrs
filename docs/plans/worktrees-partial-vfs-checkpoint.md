@@ -35,6 +35,24 @@ four SQL-memory recipes on r13: exact archive/ACK/replay, rollback to private8,
 changed journal/historical ACK refusal, and fixed legacy-budget refusal.
 Physical durable admission and ordinary mutable access remain open.
 
+**27 October, r14-r15 continuation:** the private admitted-origin adapter and
+retained family catalog policy are integrated and compile. The three private
+reader and four family-reader SQL-memory recipes pass on r14; the staging
+directory alias regression passes on r15. Independent review closed findings
+on aggregate charged-chunk memory and on preventing ordinary staging from
+aliasing an exact retained directory before physical effects. The separate
+content policy, catalog I/O adapter, and exact private-representation reuse are
+implemented and reviewed, but the public ordinary opener is not yet connected.
+The physical admission driver and source-independent resolution of a retained
+failure holder are implemented and reviewed. The first r14 native attempt
+failed in a fixture byte witness of the exclusively held owner lock (Windows
+error 33); it is preserved. The r15 corrected native run is recorded separately
+in the [admission contract](worktrees-partial-vfs-managed-admission-contract.md).
+It passed in 138.74 seconds: real admission, refused close ACK, destination-only
+resolution after source disconnect, and real private9-to-family context linkage.
+No source deletion, process restart, ordinary edit/capture/restore, or GC
+qualification is inferred from the SQL reader results.
+
 r11 exact host evidence: `.layrs-local/validation/provider-family-publication-20261027-r11`;
 EXE SHA-256 `989dde773830ba69ab6ac880f54c6df9c3fd6d0a5b7bbd97469cac6c944f2ec0`,
 CodeView age 85, 551 retained source inputs. Results are in

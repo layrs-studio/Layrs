@@ -357,6 +357,131 @@ pub(in crate::projection) fn validate_protected_installations(
     Ok(state)
 }
 
+impl ExactBinding {
+    /// Complete immutable Published group, for the typed admitted-family gate.
+    /// Unlike the installation/replay reader this permits other groups and an
+    /// ordinary suffix. It grants neither installation nor release authority.
+    pub(in crate::projection) fn validate_retained_installations(
+        &self,
+        c: &Connection,
+        required: &[FileManifest],
+        protection: &crate::projection::shared::exact_protection::ExactProtection,
+        charged: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExactInstallState> {
+        transaction(c, false)?;
+        self.validate()?;
+        protection.require_binding(self, required, cancel)?;
+        if protection.inspect_retained(c, cancel)?
+            != crate::projection::shared::exact_protection::ProtectionPresence::Present
+        {
+            return Err(invalid("retained exact protection root absent"));
+        }
+        let count: u64 = c.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM exact_installations WHERE reservation=?1 LIMIT 100001)",
+            [&self.reservation], |r| r.get(0),
+        )?;
+        if required.len() > 100_000
+            || count != required.len() as u64
+            || required
+                .iter()
+                .map(|m| m.id())
+                .collect::<BTreeSet<_>>()
+                .len()
+                != required.len()
+            || c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM installations WHERE reservation=?1)",
+                [&self.reservation],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            return Err(invalid("retained exact group membership differs"));
+        }
+        let mut debit_bytes = 0u64;
+        for manifest in required {
+            crate::projection::provider::cancellation::check(cancel)?;
+            let record =
+                load(c, self, manifest)?.ok_or_else(|| invalid("retained exact journal absent"))?;
+            if record.phase != Phase::Published
+                || !manifest_indexed(c, manifest)?
+                || !c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?1 AND bytes=?2)",
+                    params![manifest.file_id().as_str(), manifest.byte_length()],
+                    |r| r.get::<_, bool>(0),
+                )?
+            {
+                return Err(invalid("retained exact journal is not fully Published"));
+            }
+            if record.charged_manifest && !charged_manifests.insert(manifest.id().to_string()) {
+                return Err(invalid("retained exact manifest has duplicate debit"));
+            }
+            for (n, chunk) in manifest.chunks().iter().enumerate() {
+                crate::projection::provider::cancellation::check(cancel)?;
+                if record.charged_chunk(n) {
+                    // Bound aggregate memory across all retained groups before
+                    // allocating another identifier. Per-manifest bounds alone
+                    // permit 100000 * 1024 charged chunks across a family.
+                    if charged.len() >= 1_000_000 {
+                        return Err(invalid("retained exact charged chunk union exceeds bound"));
+                    }
+                    if !charged.insert(chunk.chunk_id().to_string()) {
+                        return Err(invalid("retained exact chunk has duplicate debit"));
+                    }
+                }
+            }
+            debit_bytes = debit_bytes
+                .checked_add(record.debit_bytes)
+                .ok_or_else(|| invalid("retained exact debit overflow"))?;
+        }
+        let remaining = remaining(c, self)?;
+        if self.quota_bytes.checked_sub(debit_bytes) != Some(remaining) {
+            return Err(invalid(
+                "retained exact reservation differs from durable debit",
+            ));
+        }
+        // Include ALL groups in the family's usage; charging just this group's
+        // journals would incorrectly create capacity when groups coexist.
+        let base: u64 = c.query_row("SELECT coalesce((SELECT sum(bytes) FROM chunks),0)+coalesce((SELECT sum(length(payload)) FROM manifests),0)+coalesce((SELECT sum(bytes) FROM sweep),0)", [], |r| r.get(0))?;
+        let (records, journal_bytes): (u64, u64) = c.query_row(
+            "SELECT count(*),coalesce(sum(length(manifest)),0) FROM exact_installations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let content_bytes = records
+            .checked_mul(PREPARE_CHARGE)
+            .and_then(|n| n.checked_add(journal_bytes))
+            .and_then(|n| n.checked_add(base))
+            .ok_or_else(|| invalid("retained exact content charge overflow"))?;
+        let reserved_bytes: u64 = c.query_row(
+            "SELECT coalesce(sum(remaining),0) FROM reservations",
+            [],
+            |r| r.get(0),
+        )?;
+        let limit_bytes: u64 =
+            c.query_row("SELECT bytes FROM quota WHERE singleton=1", [], |r| {
+                r.get(0)
+            })?;
+        if content_bytes
+            .checked_add(reserved_bytes)
+            .is_none_or(|n| n > limit_bytes)
+        {
+            return Err(invalid(
+                "partial_store_quota: retained exact family is overcommitted",
+            ));
+        }
+        Ok(ExactInstallState {
+            remaining,
+            debit_bytes,
+            records: count,
+            published: count,
+            content_bytes,
+            reserved_bytes,
+            limit_bytes,
+        })
+    }
+}
+
 fn validate_installations_inner(
     c: &Connection,
     binding: &ExactBinding,

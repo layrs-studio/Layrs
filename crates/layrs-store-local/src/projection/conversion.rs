@@ -1,8 +1,8 @@
 //! Explicit copy conversion. No source SQL, marker, history, or checkout is rewritten.
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
-use layrs_core::scm::{FileId, canonical_json};
-use rusqlite::{Connection, params};
+use layrs_core::scm::{canonical_json, FileId};
+use rusqlite::{params, Connection};
 use std::{
     io::{Read, Seek, SeekFrom},
     time::Duration,
@@ -117,6 +117,11 @@ pub(super) fn provenance(
     c: &Connection,
     store: &ProjectionStore,
 ) -> Result<Option<ConversionReceipt>> {
+    if admitted_schema(c)? {
+        return Err(invalid(
+            "managed schema9 provenance requires the typed admitted-import reader",
+        ));
+    }
     let Some(expected) = &store.marker.import_digest else {
         return Ok(None);
     };
@@ -203,6 +208,20 @@ pub(super) fn validate_capture_identity(
     store: &ProjectionStore,
     patch: &CapturedPatch,
 ) -> Result<()> {
+    if admitted_schema(c)? {
+        #[cfg(windows)]
+        return provider::admitted_ordinary::validate_capture_identity(
+            c,
+            &store.marker,
+            patch,
+            None,
+        )
+        .map_err(Into::into);
+        #[cfg(not(windows))]
+        return Err(invalid(
+            "managed schema9 capture origin requires Windows support",
+        ));
+    }
     if let Some(import) = provenance(c, store)? {
         if patch.sequence <= import.imported_capture_count {
             if patch.identity != import.source_identity
@@ -219,7 +238,49 @@ pub(super) fn validate_capture_identity(
     Ok(())
 }
 pub(super) fn imported(c: &Connection, store: &ProjectionStore, sequence: u64) -> Result<bool> {
+    if admitted_schema(c)? {
+        #[cfg(windows)]
+        return provider::admitted_ordinary::imported(c, &store.marker, sequence, None)
+            .map_err(Into::into);
+        #[cfg(not(windows))]
+        return Err(invalid(
+            "managed schema9 capture origin requires Windows support",
+        ));
+    }
     Ok(provenance(c, store)?.is_some_and(|p| sequence > 0 && sequence <= p.imported_capture_count))
+}
+
+fn admitted_schema(c: &Connection) -> Result<bool> {
+    Ok(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?
+            == provider::PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION,
+    )
+}
+
+/// Connection-local dispatch also used by bounded SQL qualification. Physical
+/// access remains the caller's responsibility, including ordinary family gates.
+pub(super) fn imported_publication_record(
+    c: &Connection,
+    store: &ProjectionStore,
+    sequence: u64,
+) -> Result<Option<(ProjectionIdentity, CompletedPublication)>> {
+    if admitted_schema(c)? {
+        #[cfg(windows)]
+        return provider::admitted_ordinary::imported_publication(c, &store.marker, sequence, None)
+            .map_err(Into::into);
+        #[cfg(not(windows))]
+        return Err(invalid(
+            "managed schema9 publication origin requires Windows support",
+        ));
+    }
+    let Some(p) = provenance(c, store)? else {
+        return Ok(None);
+    };
+    if sequence == 0 || sequence > p.imported_capture_count {
+        return Ok(None);
+    }
+    Ok(publication::storage::completed_record(c, store, sequence)?
+        .map(|(v, _)| (p.source_identity, v)))
 }
 
 impl ProjectionStore {
@@ -254,16 +315,7 @@ impl ProjectionStore {
         sequence: u64,
     ) -> Result<Option<(ProjectionIdentity, CompletedPublication)>> {
         let access = format::access(self, SessionMode::Shared)?;
-        let Some(p) = provenance(&access.connection, self)? else {
-            return Ok(None);
-        };
-        if sequence == 0 || sequence > p.imported_capture_count {
-            return Ok(None);
-        }
-        Ok(
-            publication::storage::completed_record(&access.connection, self, sequence)?
-                .map(|(v, _)| (p.source_identity, v)),
-        )
+        imported_publication_record(&access.connection, self, sequence)
     }
     pub fn convert_into_family(
         &self,

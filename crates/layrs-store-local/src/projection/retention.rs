@@ -197,7 +197,12 @@ pub(super) fn retain_pinned(
     {
         return Err(invalid("shared source size or mode changed"));
     }
-    let manifest = lease.install_file(&mut input, file, &active_budget(c)?)?;
+    let reservation = active_budget(c)?;
+    let manifest = if let Some(retained) = lookup(c, store, &lease, &file.file_id)? {
+        lease.retain_existing_representation(&mut input, file, &reservation, &retained)?
+    } else {
+        lease.install_file(&mut input, file, &reservation)?
+    };
     pinned.verify_parent()?;
     accept_claim(c, store, &lease, kind, owner, &[manifest])?;
     Ok(())

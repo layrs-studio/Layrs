@@ -1,4 +1,8 @@
 //! Format-4 content family. This catalog never admits native SCM graph objects.
+#[cfg(windows)]
+mod admitted_access;
+#[cfg(windows)]
+pub(in crate::projection) mod admitted_catalog;
 mod content;
 #[cfg(windows)]
 pub(in crate::projection) mod exact_content;
@@ -156,6 +160,8 @@ pub(super) struct Lease {
 }
 enum ContentCatalogPolicy {
     Ordinary,
+    #[cfg(windows)]
+    Admitted(Box<admitted_access::AdmittedContext>),
     #[cfg(windows)]
     Provider(Box<crate::projection::provider::content_catalog::ProviderContext>),
 }
@@ -532,6 +538,102 @@ pub(in crate::projection) fn provider_publication_content_lease(
     Ok(ProviderLease(lease))
 }
 impl Lease {
+    /// The physical caller already retains owner/lifecycle/private identities.
+    /// This transition acquires no owner lock and opens no private database.
+    #[cfg(windows)]
+    pub(super) fn admit(
+        &mut self,
+        data: &crate::projection::provider::admitted_ordinary::AdmittedOrdinaryData,
+    ) -> Result<()> {
+        match &self.content_catalog {
+            ContentCatalogPolicy::Ordinary => {}
+            ContentCatalogPolicy::Admitted(context) => {
+                return context.require_same_admission(data);
+            }
+            ContentCatalogPolicy::Provider(_) => {
+                return Err(invalid(
+                    "provider lease cannot become admitted ordinary content",
+                ));
+            }
+        }
+        let context = admitted_access::AdmittedContext::new(&self.family, data)?;
+        self.content_catalog = ContentCatalogPolicy::Admitted(Box::new(context));
+        Ok(())
+    }
+
+    pub(super) fn is_admitted(&self) -> bool {
+        match &self.content_catalog {
+            #[cfg(windows)]
+            ContentCatalogPolicy::Admitted(_) => true,
+            _ => false,
+        }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn require_same_admission(
+        &self,
+        data: &crate::projection::provider::admitted_ordinary::AdmittedOrdinaryData,
+    ) -> Result<()> {
+        let ContentCatalogPolicy::Admitted(context) = &self.content_catalog else {
+            return Err(invalid("content lease has no admitted ordinary policy"));
+        };
+        context.require_same_admission(data)
+    }
+
+    /// An ordinary operation must authorize its existing reservation before
+    /// any SQL or filesystem effect. The admitted gate's later readback is not
+    /// a substitute for this fence against modifying immutable import DATA.
+    pub(in crate::projection) fn authorize_content_reservation(
+        &self,
+        c: &Connection,
+        id: &str,
+    ) -> Result<()> {
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            return context.authorize_reservation(c, id);
+        }
+        let _ = (c, id);
+        Ok(())
+    }
+
+    /// New roots are bound to the admitted owner and cannot use an import
+    /// operation. Content callers invoke this before publishing any root.
+    pub(in crate::projection) fn authorize_content_protection(
+        &self,
+        marker: &format::Marker,
+        operation: &str,
+    ) -> Result<()> {
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            return context.authorize_protection(marker, operation);
+        }
+        let _ = (marker, operation);
+        Ok(())
+    }
+
+    pub(in crate::projection) fn authorize_content_directory(
+        &self,
+        c: &Connection,
+        directory: &str,
+        identity: &str,
+    ) -> Result<()> {
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            return context.authorize_directory(c, directory, identity);
+        }
+        let _ = (c, directory, identity);
+        Ok(())
+    }
+
+    fn authorize_content_owner(&self, owner: &WorktreeId) -> Result<()> {
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            return context.authorize_owner(owner);
+        }
+        let _ = owner;
+        Ok(())
+    }
+
     /// Content engine calls use one scoped catalog opener. Ordinary access
     /// requires readable admission; the provider policy has its own opener.
     pub(in crate::projection) fn with_content_catalog<T>(
@@ -553,6 +655,8 @@ impl Lease {
             }
             #[cfg(windows)]
             ContentCatalogPolicy::Provider(context) => context.with_catalog(write, operation),
+            #[cfg(windows)]
+            ContentCatalogPolicy::Admitted(context) => context.with_catalog(write, operation),
         }
     }
     pub(super) fn recovery_marker_digest(&self) -> Result<String> {
@@ -575,13 +679,13 @@ impl Lease {
         &self.family.root
     }
     pub(super) fn usage(&self) -> Result<SharedUsage> {
-        usage(&self.catalog(false)?.connection)
+        self.with_content_catalog(false, |c| usage(c))
     }
     pub(super) fn catalog(&self, write: bool) -> Result<Catalog> {
         #[cfg(windows)]
         if !matches!(&self.content_catalog, ContentCatalogPolicy::Ordinary) {
             return Err(invalid(
-                "provider content cannot use ordinary catalog recovery",
+                "typed content policy cannot use ordinary catalog recovery",
             ));
         }
         // A rollback error cannot identify the catalog version or its staged
@@ -591,7 +695,7 @@ impl Lease {
     pub(super) fn catalog_once(&self, write: bool) -> Result<Catalog> {
         #[cfg(windows)]
         if !matches!(&self.content_catalog, ContentCatalogPolicy::Ordinary) {
-            return Err(invalid("provider content cannot open ordinary catalog"));
+            return Err(invalid("typed content policy cannot open ordinary catalog"));
         }
         let mode = if write {
             SessionMode::Exclusive
@@ -639,7 +743,12 @@ impl Lease {
         Ok(())
     }
     pub(super) fn verify(&self) -> Result<()> {
-        self.family.verify()
+        self.family.verify()?;
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            context.verify()?;
+        }
+        Ok(())
     }
     pub(super) fn register(&self, marker: &format::Marker, ready: bool) -> Result<()> {
         let binding = marker
@@ -669,16 +778,17 @@ impl Lease {
         Ok(())
     }
     pub(super) fn registered_state(&self, marker: &format::Marker) -> Result<String> {
-        let catalog = self.catalog(false)?;
-        let (payload, state): (Vec<u8>, String) = catalog.connection.query_row(
-            "SELECT marker,state FROM worktrees WHERE id=?1 AND length(marker)<=65536",
-            [marker.identity.worktree_id.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        if payload != marker.bytes()? {
-            return Err(invalid("Worktree registration differs from locator"));
-        }
-        Ok(state)
+        self.with_content_catalog(false, |c| {
+            let (payload, state): (Vec<u8>, String) = c.query_row(
+                "SELECT marker,state FROM worktrees WHERE id=?1 AND length(marker)<=65536",
+                [marker.identity.worktree_id.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if payload != marker.bytes()? {
+                return Err(invalid("Worktree registration differs from locator"));
+            }
+            Ok(state)
+        })
     }
     pub(super) fn reserve(
         &self,
@@ -700,7 +810,12 @@ impl Lease {
         if id.is_empty() || id.len() > 128 {
             return Err(invalid("shared reservation identifier exceeds bound"));
         }
+        #[cfg(windows)]
+        if let ContentCatalogPolicy::Admitted(context) = &self.content_catalog {
+            context.authorize_reservation_request(id, owner, operation)?;
+        }
         self.with_content_catalog(true, |c| {
+            self.authorize_content_reservation(c, id)?;
             let existing: Option<(String, String, u64)> = c
                 .query_row(
                     "SELECT owner,operation,remaining FROM reservations WHERE id=?1",
@@ -743,7 +858,9 @@ impl Lease {
         owner: &WorktreeId,
         minimum: u64,
     ) -> Result<()> {
+        self.authorize_content_owner(owner)?;
         self.with_content_catalog(true, |c| {
+            self.authorize_content_reservation(c, id)?;
             let remaining: u64 = c.query_row(
                 "SELECT remaining FROM reservations WHERE id=?1 AND owner=?2",
                 params![id, owner.as_str()],
@@ -759,6 +876,7 @@ impl Lease {
         remaining: u64,
         minimum: u64,
     ) -> Result<()> {
+        self.authorize_content_reservation(c, id)?;
         let delta = minimum.saturating_sub(remaining);
         if delta == 0 {
             return Ok(());
@@ -782,7 +900,9 @@ impl Lease {
         Ok(())
     }
     pub(super) fn release_reservation(&self, id: &str, owner: &WorktreeId) -> Result<()> {
+        self.authorize_content_owner(owner)?;
         self.with_content_catalog(true, |c| {
+            self.authorize_content_reservation(c, id)?;
             if c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM installations WHERE reservation=?1)",
                 [id],
