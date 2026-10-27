@@ -45,6 +45,20 @@ impl AdmittedPrivateHandle {
             .validate(self.connection(), self.data().marker())
     }
 
+    /// Read DATA in the same snapshot that revalidates this durable import.
+    /// Transaction ownership and rollback-failure poisoning remain internal.
+    pub(in crate::projection) fn with_validation<T>(
+        &self,
+        callback: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
+        validation::validate_with(
+            &self.admission,
+            self.connection(),
+            self.data().marker(),
+            callback,
+        )
+    }
+
     /// Success requires an autocommit connection, immutable private9 provenance
     /// and a positive native close. No COMMIT occurs here. An unfinished caller
     /// transaction is refused and rolled back once; rollback errors invalidate

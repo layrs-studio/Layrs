@@ -1,5 +1,42 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r20-r21 admitted restore recovery:** the clean schema9 inspection
+and dedicated restore opener are implemented and independently reviewed. They
+validate the bounded pending journal in the same genuine private RO snapshot
+as immutable admission, positively close it, admit/validate the exact family
+reservation and protection, then open the bound private writer and compare
+fresh detached evidence. Other recovery operations and SQLite rollback remain
+fenced. Review fixes cover digest representation, protection-operation binding,
+current selection, and bounded protection-index loading.
+
+The SQL-memory protection-index refusal recipe passes on r20. Its native attempt
+stopped at secure parent-directory opening (sandbox access denied), before any
+checkout was created; that failure is retained. The identical source and binary
+then ran with the required host access in a fresh C: parent on r21 and passed:
+`managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection`
+in 393.88 s child / 393.95 s libtest parent (394.492 s outer runner). It covers
+JournalDurable, PathQuarantined, PathInstalled and BeforeCommit, alternating the
+bound/direct resume APIs; read-only inspection; wrong binding and other-route
+refusals; malformed journal refusal without byte changes; DATA refusal of an
+unrelated protection operation, excluded selection and wrong budget; receipt
+replay, destination-owned inverse, historical content and immutable import.
+
+r21 EXE SHA-256 `ed2bb01c15d5276bf38dfae63df69d70a8bbe09dd31fd3a113078c2d83b17643`,
+CodeView age 97, 577 retained inputs, child720/outer780. r19 was superseded
+without execution after a comment correction about retained owner/GC scopes.
+The verified portable `restore-recovery-evidence-20261027-r19-r21.tar.gz`
+contains 1,758 files, 4,848,141 bytes, SHA-256
+`ad224df8beaf7c83c64c51f0f1595a2649cef23f53a6996973879b36e1a89ec7`.
+
+This is explicit error-return recovery, not process-crash, hot-journal or
+whole-programme qualification. Remaining restore work includes prejournal
+cancellation/inspection, AfterCommit fault replay, further binding/geometry and
+close-failure negatives, and inherited inverse history. The next implementation
+plan covers the **whole** prejournal preservation window, including partially
+installed CAS content: [restore staging recovery](worktrees-partial-vfs-restore-staging-recovery.md).
+Transitions, companions, expansion, lifecycle/GC and product-host integration
+remain required.
+
 **27 October, r16 ordinary reopening:** the public schema9 route now uses a
 physically bound, independently closed RO preflight before admitting its family
 and opening the requested private handle. Owned ordinary operations explicitly
@@ -32,8 +69,8 @@ acquisition; two edits are captured, deduplicated, read in full and by verified
 chunks, compared and reopened; capture restore, destination-owned inverse and
 generation restore succeed; immutable version bytes, retained-content fsck and
 the original admission survive the complete cycle. No process crash or deletion
-of source bytes is claimed. Interrupted schema9 restore recovery and inherited
-inverse history remain explicitly unqualified and fenced. Other transitions, companions,
+of source bytes is claimed. Interrupted schema9 restore recovery is qualified
+separately in r21 above; inherited inverse history remains unqualified and fenced. Other transitions, companions,
 expansion, lifecycle/GC and product-host qualification are still outstanding.
 
 r18: EXE `1ae6a72b052be6ee9bd070985e6e1d1af6187422c98880c734a04ef8f7c578b6`,

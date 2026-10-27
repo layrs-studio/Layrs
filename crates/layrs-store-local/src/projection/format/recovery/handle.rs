@@ -106,7 +106,11 @@ impl ProjectionRecovery {
         namespace::resume_with_access(&self.store, self.access(false)?)
     }
     pub fn resume_restore(&self) -> Result<RestoreReceipt> {
-        restore::resume_with_access(&self.store, self.access(false)?)
+        self.caller.verify_path_identity()?;
+        restore::resume_with_access(
+            &self.store,
+            restore_access(&self.store, Some(&self.binding))?,
+        )
     }
     pub fn resume_rebase(&self) -> Result<CapturedPatch> {
         rebase::resume_with_access(&self.store, self.access(false)?)
@@ -138,6 +142,24 @@ pub(in crate::projection) fn access(
     expected: Option<&RecoveryBinding>,
     initializing: bool,
 ) -> Result<Access> {
+    access_mode(store, expected, initializing, false)
+}
+
+/// Only restore's pending journal may cross the admitted schema9 boundary.
+/// Legacy worktrees use the unchanged common route under the same owner lock.
+pub(in crate::projection) fn restore_access(
+    store: &ProjectionStore,
+    expected: Option<&RecoveryBinding>,
+) -> Result<Access> {
+    access_mode(store, expected, false, true)
+}
+
+fn access_mode(
+    store: &ProjectionStore,
+    expected: Option<&RecoveryBinding>,
+    initializing: bool,
+    restore_specific: bool,
+) -> Result<Access> {
     if let Some(expected) = expected {
         expected.validate()?;
     }
@@ -164,6 +186,19 @@ pub(in crate::projection) fn access(
         family.as_ref(),
         expected.unwrap_or(&actual),
     )?;
+    #[cfg(windows)]
+    if has_admitted_header(&pin)? {
+        if !restore_specific {
+            return Err(invalid(
+                "admitted pending operations require a dedicated recovery route",
+            ));
+        }
+        return super::admitted::restore_access(
+            store, family, lock, metadata, pin, boundaries, actual,
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = restore_specific;
     if let Some(lease) = &family {
         let catalog = lease.inspection_catalog(false)?;
         let (bytes, state, registered_path, identity): (Vec<u8>, String, String, String) = catalog.connection.query_row(

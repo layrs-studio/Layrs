@@ -2,6 +2,8 @@
 //! permissions never roll back; every overwritten byte remains recoverable.
 mod engine;
 pub(super) use engine::resume_with_access;
+#[cfg(windows)]
+pub(in crate::projection) use engine::{recovery_preflight, RestoreRecoveryData};
 mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;

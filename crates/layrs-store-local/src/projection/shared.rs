@@ -4,6 +4,7 @@ mod admitted_access;
 #[cfg(windows)]
 pub(in crate::projection) mod admitted_catalog;
 mod content;
+pub(in crate::projection) use content::Protection;
 #[cfg(windows)]
 pub(in crate::projection) mod exact_content;
 #[cfg(windows)]

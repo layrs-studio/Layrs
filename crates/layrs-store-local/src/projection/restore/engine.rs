@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(windows)]
+mod recovery;
+#[cfg(windows)]
+pub(in crate::projection) use recovery::{recovery_preflight, RestoreRecoveryData};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -238,9 +242,7 @@ pub(super) fn apply(
     })
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<RestoreReceipt> {
-    // Recovery stays on the legacy admission path. Scoped content calls below
-    // do not authorize interrupted schema9 journals through this entry point.
-    resume_with_access(store, format::recovery_access(store, None, false)?)
+    resume_with_access(store, format::restore_recovery_access(store, None)?)
 }
 pub(in crate::projection) fn resume_with_access(
     store: &ProjectionStore,

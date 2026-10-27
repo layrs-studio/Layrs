@@ -33,6 +33,18 @@ pub(super) fn validate(
     c: &Connection,
     marker: &format::Marker,
 ) -> Result<()> {
+    validate_with(admission, c, marker, |_| Ok(()))
+}
+
+/// Reinterpret immutable admission before running a read-only DATA callback
+/// in the same existing or owned snapshot. Only an owned snapshot ends here;
+/// failed explicit rollback poisons every clone of the durable authority.
+pub(super) fn validate_with<T>(
+    admission: &DurableAdmission,
+    c: &Connection,
+    marker: &format::Marker,
+    callback: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
     admission.require_usable()?;
     require_filename(c, admission.inner.database.path())?;
     if marker != admission.data().marker() {
@@ -40,11 +52,22 @@ pub(super) fn validate(
             "admitted private connection FORMAT differs from preflight",
         ));
     }
+    let active = |c: &Connection| {
+        validate_active(admission, c, marker)?;
+        let value = callback(c)?;
+        if c.is_autocommit() {
+            return Err(invalid(
+                "admitted validation callback ended its read transaction",
+            ));
+        }
+        admission.inner.database.verify()?;
+        Ok(value)
+    };
     if !c.is_autocommit() {
-        return validate_active(admission, c, marker);
+        return active(c);
     }
     c.execute_batch("BEGIN DEFERRED")?;
-    let result = validate_active(admission, c, marker);
+    let result = active(c);
     let rollback = c.execute_batch("ROLLBACK").map_err(Cause::from);
     if rollback.is_err() {
         admission

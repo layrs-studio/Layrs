@@ -1,9 +1,11 @@
 //! Nonmutating discovery and explicit, typed SQLite rollback recovery.
 use super::*;
 use rusqlite::OptionalExtension;
+#[cfg(windows)]
+mod admitted;
 mod handle;
-pub(in crate::projection) use handle::access;
 pub(super) use handle::verify_binding;
+pub(in crate::projection) use handle::{access, restore_access};
 pub use handle::{ProjectionRecovery, RecoveryBinding};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +122,36 @@ fn inspect(
     // All filesystem boundaries, including both database inodes, precede any
     // SQLite query and therefore any classification of its typed error.
     verify()?;
+    #[cfg(windows)]
+    if has_admitted_header(&pin)? {
+        if recover {
+            return Err(invalid(
+                "admitted recovery does not grant SQLite rollback recovery",
+            ));
+        }
+        let access = admitted::inspection_access(
+            &store,
+            family,
+            _lock,
+            metadata,
+            pin,
+            boundaries,
+            binding.clone(),
+        )?;
+        return access.run(|access| {
+            requested_pin.verify_path_identity()?;
+            if read_marker(&requested)? != store.marker || read_marker(&store.root)? != store.marker
+            {
+                return Err(invalid(
+                    "projection identity changed during admitted inspection",
+                ));
+            }
+            let reasons = admitted::inspection_reasons(access)?;
+            access.verify()?;
+            requested_pin.verify_path_identity()?;
+            Ok(result(&store, binding, reasons))
+        });
+    }
     if recover && family.is_some() {
         // Establish ordinary ownership from the complete private database on
         // a strictly read-only connection, while the bound owner/lifecycle

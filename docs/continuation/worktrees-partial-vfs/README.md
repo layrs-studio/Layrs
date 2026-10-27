@@ -1,5 +1,32 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément reprise des restaurations admises — r19 à r21
+
+Le scénario natif r21 réussit les quatre interruptions après journal durable,
+après quarantaine, après installation et avant commit, avec reprise bound/direct,
+inspection nonmutante, refus ciblés, rejeu, inverse et conservation de l’import.
+Le test SQL de bornage passe sur r20. La tentative native r20 a été refusée par
+le sandbox avant création du checkout ; r21 utilise une fixture neuve avec
+l’accès hôte nécessaire. r19 est conservé sans exécution. Limites détaillées
+dans le [checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md).
+
+`restore-recovery-evidence-20261027-r19-r21.tar.gz` contient 1 758 fichiers
+vérifiés (4 848 141 octets), SHA-256
+`ad224df8beaf7c83c64c51f0f1595a2649cef23f53a6996973879b36e1a89ec7`.
+L’inventaire est `restore-recovery-inventory-20261027-r19-r21.json`. Sources,
+revues, scripts et journaux sont inclus ; binaires, bases et fixtures restent
+locaux. Cette preuve ne vaut pas qualification d’un autre hôte.
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/restore-recovery-evidence-20261027-r19-r21.tar.gz
+```
+
+La suite porte sur l’annulation de toute la fenêtre avant journal, y compris
+la préservation CAS partielle, puis les autres cas limites de récupération :
+[plan de reprise du staging](../../plans/worktrees-partial-vfs-restore-staging-recovery.md).
+Crashes de processus, journaux SQLite chauds, filiation inverse importée,
+transitions, companions, expansion, nettoyage et parcours produit restent ouverts.
+
 ## Complément ouverture ordinaire et cycle modifiable — r16 à r18
 
 Le jalon r16 qualifie la réouverture publique du schéma 9 et la fermeture
@@ -8,9 +35,10 @@ natif r18 qualifie préparation hors ligne, modifications, captures, lectures,
 comparaison, réouverture et restaurations avec le chemin source indisponible.
 Les détails et limites sont dans le [checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md)
 et le [contrat](../../plans/worktrees-partial-vfs-managed-admission-contract.md).
-La reprise des restaurations interrompues, les historiques inverses importés,
-les autres transitions, companions, expansion, nettoyage et parcours produit
-restent à terminer. Les sections plus anciennes ci-dessous conservent l'état
+La reprise des restaurations interrompues est qualifiée séparément sur les
+quatre points r21 ci-dessus ; les autres chemins de récupération, historiques
+inverses importés, transitions, companions, expansion, nettoyage et parcours
+produit restent à terminer. Les sections plus anciennes ci-dessous conservent l'état
 historique de chaque jalon.
 
 `ordinary-evidence-20261027-r16-r18.tar.gz` contient 1 744 fichiers vérifiés :

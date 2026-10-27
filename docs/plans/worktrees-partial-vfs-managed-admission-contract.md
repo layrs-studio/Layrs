@@ -337,36 +337,54 @@ The exact review receipt and r16/r18 results are preserved in the portable
 finalizer migrations also received a separate static review; no full ordinary
 operation suite, product-host or other-platform qualification is inferred.
 
-### Next boundary: restore-specific admitted recovery
+### Implemented boundary: restore-specific admitted recovery
 
-Read-only investigation identifies two public paths: `ProjectionStore::resume_restore`
+There are two public paths: `ProjectionStore::resume_restore`
 and `ProjectionRecovery::resume_restore`, plus `inspect_recovery` for bound
-recovery. Their common opener is legacy-only and must not be widened to admit
-installation/refresh/namespace/rebase/cancellation implicitly.
+recovery. The common recovery opener remains legacy-only; the dedicated restore
+opener admits schema9 without enabling installation/refresh/namespace/rebase or
+cancellation implicitly.
 
-Implement a restore-specific route under the same exclusive owner lock, with
+The implemented restore-specific route uses the same exclusive owner lock, with
 physical pins and expected `RecoveryBinding`. Before any generic SQLite open,
-dispatch schema9 to a clean, independently closed RO preflight. Validate a
+it dispatches schema9 to a clean, independently closed RO preflight. It validates a
 bounded canonical pending restore journal, exact destination, generation/digest,
 permissions, conflicting pending operations and restore-budget ownership in that
-preflight. Admit the family only after positive close; validate its exact ready
+preflight, including current selection. It admits the family only after positive close and validates its exact ready
 registration via `with_content_catalog(false, ...)`, not `inspection_catalog`.
-Recheck native/binding evidence before consuming the clean writer admission.
+Native/binding evidence is rechecked before consuming the clean writer admission.
 No settlement, migration, reservation cancellation or SQLite rollback recovery
-belongs to this route. Revalidate detached journal evidence before filesystem
-effects; use the existing scoped restore finisher and consuming finalizer.
+belongs to this route. Detached journal evidence is revalidated before filesystem
+effects; it uses the existing scoped restore finisher and consuming finalizer.
+The family reservation and exact protection are checked for matching owner and
+operation; the protection index is bounded before materialization. Retained
+exclusive owner, root authorization and family GC exclusion stabilize this root
+between catalog read gates; a shared family lease does not exclude all writers.
 
-Inspection needs its own read-only schema9 branch, returning pending-state DATA
+Inspection now has its own read-only schema9 branch, returning pending-state DATA
 after positive close without changing bytes or budgets. Hot and nonhot SQLite
 rollback journals remain refused. Never classify an admission/close Cleanup
 failure as a benign recovery reason. Inherited inverse history still requires a
 separate typed ancestry/checkout binding instead of a legacy conversion receipt.
 
-Required focused qualification: interrupted restore at JournalDurable,
-PathQuarantined, PathInstalled and BeforeCommit through both resume APIs;
-separate Staged/AfterCommit replay; read-only inspection witnesses; wrong binding,
-inode, marker or registration; malformed/noncanonical/oversized journal; wrong
-base/budget or conflicting operation; replaced quarantine/stage and destination
-collision; journal/geometry/close failures without implicit repair. Provider8 and
-other admitted recovery entry points must remain fenced. This paragraph records
-the next design boundary, not implementation or acceptance of recovery9.
+r21 qualifies JournalDurable, PathQuarantined, PathInstalled and BeforeCommit
+through alternating bound/direct APIs, read-only inspection witnesses, wrong
+binding and other-mode refusals, malformed public journal refusal with unchanged
+bytes, DATA refusals for operation/selection/budget, successful resume, receipt
+replay, destination-owned inverse and preserved admission. The native recipe
+passes in 393.88 s child / 393.95 s parent on the exact r21 binary
+`ed2bb01c15d5276bf38dfae63df69d70a8bbe09dd31fd3a113078c2d83b17643`
+(CodeView age 97, 577 inputs; child720/outer780). A separate r20 SQL-memory
+recipe passes excess/missing membership and oversized key/digest refusals.
+r20's native sandbox refusal occurred before checkout creation and is retained;
+r19 is superseded without execution. See the checkpoint and portable r19-r21
+archive for exact sources, reviews, logs and scope.
+
+Required remaining qualification: prejournal cancellation and AfterCommit fault
+replay; replaced inode/marker/registration; noncanonical/oversized journal;
+wrong base or conflicting operation; replaced quarantine/stage and destination
+collision; journal/geometry/close failures without implicit repair. The
+[prejournal plan](worktrees-partial-vfs-restore-staging-recovery.md) covers partial
+CAS preservation as well as the Staged callback. Provider8 and other admitted
+recovery entry points remain fenced. These error-return tests do not qualify
+process crashes, hot SQLite journals, inherited inverse history or GC.

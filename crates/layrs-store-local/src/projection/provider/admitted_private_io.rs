@@ -75,6 +75,18 @@ impl AdmittedPreflight {
         identity: &str,
         marker: &format::Marker,
     ) -> Result<Self> {
+        Self::open_validated(path, identity, marker, |_| Ok(())).map(|(preflight, ())| preflight)
+    }
+
+    /// Run the operation-specific preflight in the SAME genuine clean RO
+    /// transaction, after private9 provenance has been interpreted. Neither
+    /// the admission token nor callback DATA escapes before positive close.
+    pub(in crate::projection) fn open_validated<T>(
+        path: &Path,
+        identity: &str,
+        marker: &format::Marker,
+        validate: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<(Self, T)> {
         database_io::validate_writer_filename(path)?;
         marker.validate()?;
         let shared = marker
@@ -92,25 +104,35 @@ impl AdmittedPreflight {
             ));
         }
         let database = DatabaseFile::open(path.to_owned(), identity)?;
-        let mut data = None;
+        let mut verified = None;
         let clean = database_io::clean_admission(&database, false, |c| {
             validation::require_filename(c, database.path())?;
-            data = Some(admitted_ordinary::inspect(c, marker, None)?);
+            let data = admitted_ordinary::inspect(c, marker, None)?;
+            let value = validate(c)?;
+            if c.is_autocommit() {
+                return Err(invalid(
+                    "admitted preflight callback ended its read transaction",
+                ));
+            }
+            verified = Some((data, value));
             Ok(())
         })?; // Includes the one real RO connection's positive close.
-        let data =
-            data.ok_or_else(|| invalid("admitted private preflight did not interpret private9"))?;
+        let (data, value) = verified
+            .ok_or_else(|| invalid("admitted private preflight did not interpret private9"))?;
         database.verify()?;
-        Ok(Self {
-            admission: DurableAdmission {
-                inner: Arc::new(DurableInner {
-                    database,
-                    data,
-                    rollback_failed: AtomicBool::new(false),
-                }),
+        Ok((
+            Self {
+                admission: DurableAdmission {
+                    inner: Arc::new(DurableInner {
+                        database,
+                        data,
+                        rollback_failed: AtomicBool::new(false),
+                    }),
+                },
+                clean,
             },
-            clean,
-        })
+            value,
+        ))
     }
 
     pub(in crate::projection) fn data(&self) -> &AdmittedOrdinaryData {
