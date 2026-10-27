@@ -224,6 +224,13 @@ pub(super) fn open_file_for_sync_at(parent: &File, name: &OsStr) -> io::Result<F
     )
 }
 
+pub(super) fn open_immutable_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    open_at_with_security_and_share(
+        parent, name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN, FILE_NON_DIRECTORY_FILE, ptr::null_mut(), 0x0000_0001,
+    )
+}
+
 pub(super) fn rename_at(source: &PinnedFile, destination: &File, name: &OsStr) -> io::Result<bool> {
     let name: Vec<u16> = name.encode_wide().collect();
     let name_bytes = name
@@ -413,6 +420,18 @@ fn open_at_with_security(
     kind: u32,
     security_descriptor: *mut c_void,
 ) -> io::Result<File> {
+    open_at_with_security_and_share(parent, name, access, disposition, kind, security_descriptor, FILE_SHARE_ALL)
+}
+
+fn open_at_with_security_and_share(
+    parent: &File,
+    name: &OsStr,
+    access: u32,
+    disposition: u32,
+    kind: u32,
+    security_descriptor: *mut c_void,
+    share_access: u32,
+) -> io::Result<File> {
     let mut name: Vec<u16> = name.encode_wide().collect();
     let byte_length = name
         .len()
@@ -446,7 +465,7 @@ fn open_at_with_security(
             &mut status_block,
             ptr::null_mut(),
             FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_ALL,
+            share_access,
             disposition,
             kind | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
             ptr::null_mut(),

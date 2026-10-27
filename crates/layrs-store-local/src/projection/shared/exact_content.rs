@@ -19,6 +19,7 @@ use std::{
 
 mod journal;
 mod publish;
+mod published_cas;
 mod spool;
 mod sql;
 #[cfg(test)]
@@ -26,8 +27,15 @@ mod tests;
 
 pub(in crate::projection) use journal::{ExactRecord, Phase};
 pub(in crate::projection) use publish::publish;
+pub(in crate::projection) use published_cas::{verify_published_cas, PublishedCasProof};
 pub(in crate::projection) use spool::{finish_piece, prepare_piece, verify_staged, OwnedPiece};
-pub(in crate::projection) use sql::{validate_installations, ExactInstallState};
+pub(in crate::projection) use sql::{
+    validate_installations, validate_protected_installations, ExactInstallState,
+};
+
+pub(in crate::projection) fn canonical_manifest_bytes(manifest: &FileManifest) -> Result<Vec<u8>> {
+    journal::manifest_bytes(manifest)
+}
 
 pub(in crate::projection) const PREPARE_CHARGE: u64 = 8192;
 

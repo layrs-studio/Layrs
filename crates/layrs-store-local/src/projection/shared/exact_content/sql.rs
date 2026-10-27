@@ -326,6 +326,44 @@ pub(in crate::projection) fn validate_installations(
     required: &[FileManifest],
     cancel: Option<&Cancellation>,
 ) -> Result<ExactInstallState> {
+    validate_installations_inner(c, binding, required, None, cancel)
+}
+
+/// Separate complete-Published reader for the protection phase. The ordinary
+/// installation reader still requires absence of every destination root.
+pub(in crate::projection) fn validate_protected_installations(
+    c: &Connection,
+    binding: &ExactBinding,
+    required: &[FileManifest],
+    protection: &crate::projection::shared::exact_protection::ExactProtection,
+    cancel: Option<&Cancellation>,
+) -> Result<ExactInstallState> {
+    let state = validate_installations_inner(c, binding, required, Some(protection), cancel)?;
+    if state.records != required.len() as u64 || state.published != required.len() as u64 {
+        return Err(invalid(
+            "exact protection requires complete Published manifest union",
+        ));
+    }
+    for manifest in required {
+        crate::projection::provider::cancellation::check(cancel)?;
+        if !c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?1 AND bytes=?2)",
+            params![manifest.file_id().as_str(), manifest.byte_length()],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Err(invalid("exact protection FileId length metadata differs"));
+        }
+    }
+    Ok(state)
+}
+
+fn validate_installations_inner(
+    c: &Connection,
+    binding: &ExactBinding,
+    required: &[FileManifest],
+    protection: Option<&crate::projection::shared::exact_protection::ExactProtection>,
+    cancel: Option<&Cancellation>,
+) -> Result<ExactInstallState> {
     transaction(c, false)?;
     binding.validate()?;
     if required.len() > 100_000 {
@@ -338,8 +376,19 @@ pub(in crate::projection) fn validate_installations(
     if by_id.len() != required.len() {
         return Err(invalid("exact manifest union contains duplicate ID"));
     }
+    if let Some(protection) = protection {
+        protection.require_binding(binding, required, cancel)?;
+        protection.inspect(c, cancel)?;
+    } else if c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+        [binding.owner.as_str()],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(invalid(
+            "exact family contains unsupported owner effect or foreign attempt",
+        ));
+    }
     for (sql, args) in [
-        ("SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)", binding.owner.as_str()),
         ("SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)", binding.owner.as_str()),
         ("SELECT EXISTS(SELECT 1 FROM exact_installations WHERE reservation!=?1)", binding.reservation.as_str()),
     ] {

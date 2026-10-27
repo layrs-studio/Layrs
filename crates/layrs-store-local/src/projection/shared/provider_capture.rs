@@ -321,7 +321,7 @@ fn validate_installations(
                 }
                 if !published {
                     if let Some(expected) = &manifest {
-                        match directory.open_file(OsStr::new("manifest")) {
+                        match directory.open_readonly_file(OsStr::new("manifest")) {
                             Ok(staged) => verify_manifest_pin(
                                 &staged,
                                 &directory,
@@ -341,7 +341,7 @@ fn validate_installations(
                                 let decoded: FileManifest =
                                     serde_json::from_slice(expected).map_err(converted)?;
                                 let name = OsStr::new(object_name(decoded.id().as_str())?);
-                                let moved = manifests.open_file(name)?;
+                                let moved = manifests.open_readonly_file(name)?;
                                 verify_manifest_pin(
                                     &moved,
                                     &manifests,
@@ -385,7 +385,7 @@ fn verify_manifest_pin(
         ));
     }
     pin.verify_parent()?;
-    if !pin.same_file(&parent.open_file(name)?) {
+    if !pin.same_file(&parent.open_readonly_file(name)?) {
         return Err(invalid(
             "provider capture installation manifest path changed",
         ));
@@ -618,14 +618,14 @@ fn catalog_manifest(
     let manifests = objects.open_child_for_traversal(OsStr::new("manifests"))?;
     let chunks = objects.open_child_for_traversal(OsStr::new("chunks"))?;
     let name = object_name(&id)?;
-    let pin = manifests.open_file(OsStr::new(name))?;
+    let pin = manifests.open_readonly_file(OsStr::new(name))?;
     if pin.file().metadata()?.len() != payload.len() as u64
         || read_bounded(pin.file(), MAX_MANIFEST as usize, cancellation)? != payload
     {
         return Err(invalid("provider capture family manifest file differs"));
     }
     pin.verify_parent()?;
-    if !pin.same_file(&manifests.open_file(OsStr::new(name))?) {
+    if !pin.same_file(&manifests.open_readonly_file(OsStr::new(name))?) {
         return Err(invalid("provider capture family manifest path changed"));
     }
     for (ordinal, part) in manifest.chunks().iter().enumerate() {
@@ -644,12 +644,12 @@ fn catalog_manifest(
         {
             return Err(invalid("provider capture family chunk index differs"));
         }
-        let chunk = chunks.open_file(OsStr::new(object_name(&chunk_id)?))?;
+        let chunk = chunks.open_readonly_file(OsStr::new(object_name(&chunk_id)?))?;
         if chunk.file().metadata()?.len() != part.byte_length() {
             return Err(invalid("provider capture family chunk file length differs"));
         }
         chunk.verify_parent()?;
-        if !chunk.same_file(&chunks.open_file(OsStr::new(object_name(&chunk_id)?))?) {
+        if !chunk.same_file(&chunks.open_readonly_file(OsStr::new(object_name(&chunk_id)?))?) {
             return Err(invalid("provider capture family chunk path changed"));
         }
     }

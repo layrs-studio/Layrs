@@ -205,6 +205,16 @@ impl PinnedDirectory {
         self.wrap_file(name, file)
     }
 
+    /// Hold existing bytes against ordinary Windows write/delete opens until
+    /// the returned handle is dropped. Conflicting existing handles refuse.
+    #[cfg(windows)]
+    pub(crate) fn open_immutable_file(&self, name: &OsStr) -> io::Result<PinnedFile> {
+        validate_name(name)?;
+        self.verify_path_identity()?;
+        let file = platform::open_immutable_file_at(&self.file, name)?;
+        self.wrap_file(name, file)
+    }
+
     pub(crate) fn unlink_file(&self, name: &OsStr) -> io::Result<()> {
         validate_name(name)?;
         platform::unlink_name_at(&self.file, name)

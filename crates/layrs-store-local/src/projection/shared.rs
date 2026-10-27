@@ -2,6 +2,8 @@
 mod content;
 #[cfg(windows)]
 pub(in crate::projection) mod exact_content;
+#[cfg(windows)]
+pub(in crate::projection) mod exact_protection;
 mod maintenance;
 #[cfg(windows)]
 pub(super) mod provider_access;

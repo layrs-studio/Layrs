@@ -18,42 +18,21 @@ pub(super) struct FamilyMarker {
     pub metadata_identity: String,
     pub database_identity: String,
 }
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Protection<'a> {
-    incarnation: &'a str,
-    owner: &'a layrs_core::scm::WorktreeId,
-    database_identity: &'a str,
-    operation: &'a str,
-    manifests: Vec<&'a FileManifest>,
-}
-
 pub(super) fn protection(inputs: &ManagedReadyInputs<'_>) -> Result<(String, Vec<u8>)> {
     let binding = inputs
         .marker
         .shared
         .as_ref()
         .ok_or_else(|| invalid("Ready family binding absent"))?;
-    let mut manifests: Vec<_> = inputs.data.required.iter().collect();
-    manifests.sort_by(|a, b| a.id().cmp(b.id()));
-    let operation = format!("provider-import:{}", inputs.staging.transaction_id);
-    let value = Protection {
-        incarnation: &binding.incarnation,
-        owner: &inputs.marker.identity.worktree_id,
-        database_identity: &binding.database_identity,
-        operation: &operation,
-        manifests,
-    };
-    let payload = canonical_json(&value).map_err(|e| invalid(e.to_string()))?;
-    if payload.len() > 16 * 1024 * 1024 {
-        return Err(invalid(
-            "destination Ready protection payload exceeds bound",
-        ));
-    }
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"layrs-partial-retention-v1\0");
-    hash.update(&payload);
-    Ok((hash.finalize().to_hex().to_string(), payload))
+    let protection = shared::exact_protection::ExactProtection::new(
+        &binding.incarnation,
+        &inputs.marker.identity.worktree_id,
+        &binding.database_identity,
+        &inputs.staging.transaction_id,
+        inputs.data.required,
+        None,
+    )?;
+    Ok((protection.id().to_owned(), protection.payload().to_vec()))
 }
 
 pub(super) fn require(

@@ -3,6 +3,7 @@
 //! This lease exposes no general catalog, cleanup, installation or protection API.
 use super::*;
 mod exact;
+mod protection;
 use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,
@@ -66,8 +67,8 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             fresh,
         };
         lease.rehash(cancel)?;
-        lease.with_authority(cancel, |proof, destination_staging| {
-            lease.read_admission(proof, destination_staging, cancel)?;
+        lease.with_authority_metadata(cancel, |proof, destination_staging, metadata_floor| {
+            lease.read_admission(proof, destination_staging, metadata_floor, cancel)?;
             Ok(())
         })?;
         Ok(lease)
@@ -163,6 +164,18 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             &ProviderTransitionIntentRecord,
         ) -> CauseResult<T>,
     ) -> CauseResult<T> {
+        self.with_authority_metadata(cancel, |proof, destination, _| action(proof, destination))
+    }
+
+    fn with_authority_metadata<T>(
+        &self,
+        cancel: &Cancellation,
+        action: impl FnOnce(
+            &PrivateActiveCaptureValidation,
+            &ProviderTransitionIntentRecord,
+            u64,
+        ) -> CauseResult<T>,
+    ) -> CauseResult<T> {
         self.require_intent()?;
         // The allocation already retains the destination owner. Reacquiring
         // that lock here would be a reentrant error, not additional authority.
@@ -188,7 +201,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                 )?;
                 // Do not treat a matching union digest as proof that the
                 // caller supplied the whole source/history/current-image set.
-                managed_plan::rederive_reservation(
+                let derived = managed_plan::rederive_reservation(
                     source_c,
                     closure,
                     self.image,
@@ -224,7 +237,10 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                     },
                 )?)?;
                 self.boundary(cancel)?;
-                let value = action(proof, &destination_staging)?;
+                let metadata_floor = derived
+                    .validated_metadata_floor
+                    .ok_or_else(|| invalid("managed metadata floor not rederived"))?;
+                let value = action(proof, &destination_staging, metadata_floor)?;
                 self.image.require_owner(
                     self.root,
                     &proof.active.source,

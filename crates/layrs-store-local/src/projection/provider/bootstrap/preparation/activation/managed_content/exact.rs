@@ -16,6 +16,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         &self,
         proof: &PrivateActiveCaptureValidation,
         destination_staging: &ProviderTransitionIntentRecord,
+        metadata_floor: u64,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
         let inputs = self.inputs(proof, destination_staging)?;
@@ -29,7 +30,22 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                     [],
                     |r| r.get(0),
                 )?;
-                if installing {
+                let protected: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+                    [binding.owner.as_str()],
+                    |r| r.get(0),
+                )?;
+                if protected {
+                    let expected = self.expected_protection(cancel)?;
+                    self.held.family.validate_import_protection(
+                        c,
+                        &inputs,
+                        &binding,
+                        &expected,
+                        metadata_floor,
+                        Some(cancel),
+                    )?;
+                } else if installing {
                     self.held.family.validate_import_installation(
                         c,
                         &inputs,
@@ -46,7 +62,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         )?)
     }
 
-    fn exact_binding(&self) -> CauseResult<ExactBinding> {
+    pub(super) fn exact_binding(&self) -> CauseResult<ExactBinding> {
         self.require_intent()?;
         let family = &self.held.artifacts.allocation.family;
         let destination = self.destination.proof();
@@ -73,6 +89,19 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         };
         binding.validate()?;
         Ok(binding)
+    }
+
+    pub(super) fn pin_exact_storage(&self) -> CauseResult<ExactStorage> {
+        let family = &self.held.family;
+        family.require_allocation(&self.held.artifacts.allocation)?;
+        let binding = self.exact_binding()?;
+        let storage = ExactStorage::open(
+            family.root(),
+            &binding.family_root_identity,
+            family.writer_lifecycle(false)?,
+        )?;
+        family.verify()?;
+        Ok(storage)
     }
 
     /// The returned manifest is DATA, not a destination protection or Ready
@@ -151,16 +180,7 @@ impl<O: WriterCloseObserver> ExactCatalog for Catalog<'_, '_, '_, '_, '_, O> {
     }
 
     fn pin_storage(&self) -> CauseResult<ExactStorage> {
-        let family = &self.lease.held.family;
-        family.require_allocation(&self.lease.held.artifacts.allocation)?;
-        let binding = self.binding()?;
-        let storage = ExactStorage::open(
-            family.root(),
-            &binding.family_root_identity,
-            family.writer_lifecycle(false)?,
-        )?;
-        family.verify()?;
-        Ok(storage)
+        self.lease.pin_exact_storage()
     }
 
     fn boundary(&self, cancel: &Cancellation) -> CauseResult<()> {

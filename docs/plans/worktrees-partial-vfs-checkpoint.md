@@ -3,8 +3,9 @@
 **Latest continuation: 27 October 2026.** The user explicitly resumed after the
 [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md). The
 [managed checkpoint](worktrees-partial-vfs-managed-source-checkpoint.md) records
-two passing physical exact-installation recipes and four private Ready SQL
-recipes. Family protection, physical checkout and final publication remain open.
+passing physical exact-installation, private Ready SQL and family-protection
+recipes, including real Accepted-capture reads under immutable CAS handles.
+Physical checkout and final publication remain open.
 
 This branch is a work-in-progress checkpoint, not whole-programme or product
 acceptance. It saves the existing source, tests, scripts and programme documents.

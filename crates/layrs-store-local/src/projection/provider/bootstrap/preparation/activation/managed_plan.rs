@@ -74,6 +74,8 @@ pub(super) struct ManagedPlanData {
     pub required_manifests: Vec<RequiredManifest>,
     pub quota_bytes: u64,
     pub transaction_id: String,
+    // Populated only by rederivation against the original retained source SQL.
+    pub validated_metadata_floor: Option<u64>,
 }
 
 /// Adapter from retained witnesses. The caller supplies complete canonical
@@ -265,12 +267,13 @@ pub(super) fn rederive_reservation(
             "managed reservation metadata envelope insufficient",
         ));
     }
-    let derived = derive_with(metadata)?;
+    let mut derived = derive_with(metadata)?;
     if derived.plan != *plan {
         return Err(invalid(
             "managed durable plan differs from retained source and image",
         ));
     }
+    derived.validated_metadata_floor = Some(minimum);
     Ok(derived)
 }
 
@@ -656,6 +659,7 @@ pub(super) fn derive_data(
         required_manifests,
         quota_bytes,
         transaction_id: transaction_id.to_owned(),
+        validated_metadata_floor: None,
     })
 }
 

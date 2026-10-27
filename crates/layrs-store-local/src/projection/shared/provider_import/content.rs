@@ -387,6 +387,95 @@ fn insert_or_replay_reservation(
 }
 
 impl FamilyAccess {
+    /// Protection admission is another metadata-only phase. The caller must
+    /// first verify the complete CAS outside gates and retain its proof/pins.
+    /// private_metadata_floor is DATA rederived from the immutable whole plan
+    /// by that caller, not a measurement or an authorization supplied by SQL.
+    pub(in crate::projection) fn validate_import_protection(
+        &self,
+        c: &Connection,
+        inputs: &ImportContentInputs<'_>,
+        binding: &crate::projection::shared::exact_content::ExactBinding,
+        protection: &crate::projection::shared::exact_protection::ExactProtection,
+        private_metadata_floor: u64,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportProtectionState> {
+        require_transaction(c, false, cancel)?;
+        require_staging_pair(inputs, cancel)?;
+        if installation_binding(inputs)? != *binding {
+            return Err(invalid(
+                "exact protection binding differs from managed import",
+            ));
+        }
+        if validate_import_base(
+            self,
+            c,
+            inputs.allocation,
+            inputs.prepared,
+            inputs.activation,
+            inputs.capture,
+            inputs.source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )? != ImportRegistration::Initializing
+        {
+            return Err(invalid("exact protection owner is not Initializing"));
+        }
+        let installation =
+            crate::projection::shared::exact_content::validate_protected_installations(
+                c,
+                binding,
+                inputs.required,
+                protection,
+                cancel,
+            )?;
+        protection.require_envelope(installation.remaining, private_metadata_floor)?;
+        let root = protection.inspect(c, cancel)?;
+        self.verify()?;
+        cancellation::check(cancel)?;
+        Ok(ImportProtectionState { installation, root })
+    }
+
+    /// Atomic family SQL effect only. No bytes are verified here and this does
+    /// not grant Ready. Caller owns FK ON, rollback, COMMIT and positive closes;
+    /// it revalidates its retained PublishedCasProof immediately around scope.
+    pub(in crate::projection) fn protect_import(
+        &self,
+        c: &Connection,
+        inputs: &ImportContentInputs<'_>,
+        binding: &crate::projection::shared::exact_content::ExactBinding,
+        protection: &crate::projection::shared::exact_protection::ExactProtection,
+        private_metadata_floor: u64,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::exact_protection::ProtectionEffect> {
+        require_transaction(c, true, cancel)?;
+        let before = self.validate_import_protection(
+            c,
+            inputs,
+            binding,
+            protection,
+            private_metadata_floor,
+            cancel,
+        )?;
+        let effect = protection.insert_or_replay(c, cancel)?;
+        let after = self.validate_import_protection(
+            c,
+            inputs,
+            binding,
+            protection,
+            private_metadata_floor,
+            cancel,
+        )?;
+        if after.root != crate::projection::shared::exact_protection::ProtectionPresence::Present
+            || before.installation != after.installation
+        {
+            return Err(invalid(
+                "exact protection changed installation accounting or readback differs",
+            ));
+        }
+        Ok(effect)
+    }
+
     /// Installation admission is separate from the strict reserve-only reader.
     /// Private proofs, complete-plan rederivation and physical pins stay with
     /// the caller. Typed rows and durable debits are interpreted in this one
@@ -508,6 +597,12 @@ impl FamilyAccess {
         self.validate_import_content(c, inputs, cancel)?;
         Ok(effect)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) struct ImportProtectionState {
+    pub installation: crate::projection::shared::exact_content::ExactInstallState,
+    pub root: crate::projection::shared::exact_protection::ProtectionPresence,
 }
 
 pub(in crate::projection) fn installation_binding(

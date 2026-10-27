@@ -67,6 +67,15 @@ pub(in crate::projection) mod owned_test {
     pub(in crate::projection) fn declare() {
         super::process_profile::tests::child::declare();
     }
+    pub(in crate::projection) fn owned_root(label: &str) -> std::path::PathBuf {
+        super::database_io::tests::support::owned_root(label)
+    }
+    pub(in crate::projection) fn create(path: &std::path::Path, bytes: &[u8]) {
+        super::database_io::tests::support::create(path, bytes)
+    }
+    pub(in crate::projection) fn witness(path: &std::path::Path) -> (String, u64, String) {
+        super::database_io::tests::support::witness(path)
+    }
 }
 #[cfg(windows)]
 pub(super) mod records;

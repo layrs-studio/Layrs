@@ -490,12 +490,68 @@ protected checkout, durable Ready publication, close-fault recovery or ordinary
 admission. Active-piece recovery, real producer cancellation and installation
 of two historical representations still require separate runtime evidence.
 
+## Exact family protection and immutable CAS retention (2026-10-27)
+
+The managed lease now derives the canonical ordinary protection root from the
+complete exact manifest union. Publication requires every exact journal to be
+Published, canonical indexes, no overlapping sweeps, and the rederived remaining
+metadata envelope. It changes neither reservation remaining bytes nor journal
+accounting. The destination remains Initializing and both private intents remain
+Staging. Exact replay reads without opening a writer. Ready SQL now uses the same
+canonical root constructor.
+
+Before the family writer, the adapter checks all manifest bytes, chunk hashes,
+full FileIds, lengths and EOF outside catalog gates. It retains one immutable
+Windows handle per unique CAS object through COMMIT, all enclosing closes and
+fresh SQL readback, then returns those handles in the protection proof. Independent
+review found and fixed an initial gap where handles were dropped after hashing.
+The final handles share READ only; ordinary concurrent write/delete opens are
+refused. This does not claim protection from preexisting writable memory maps,
+raw volume access or privileged writes. Resource exhaustion refuses before the
+writer. No Ready or cleanup capability follows from this proof alone.
+
+All-target checks r2/r3 and no-run build r2 pass. The retained artifact
+`provider-exact-protection-20261027-r2` (494 source/input files, CodeView age 67,
+EXE SHA256 `6451155f6cd1dd406e9251b512d356d99b82181174996f571b0fff68f374b1f2`)
+passes eight kernel/regression recipes and two integrated native recipes.
+The first group contains one pure codec test, two protection SQL tests, one
+isolated CAS filesystem test and all four Ready SQL regressions. The CAS test
+proves live write/remove sharing violations (Windows 32), rename refusal,
+existing-writer refusal and hash refusal after deliberately corrupting a released
+file. Four retained handles cover two manifests and two unique chunks.
+
+The two native recipes install two different representations of the same FileId,
+charge their shared chunk once, publish exact root membership, and reopen the
+lease under retained same-process owners with zero replay writers. Database and
+CAS witnesses and remaining quota are unchanged. The second injects an observer
+acknowledgement refusal after a successful physical family close; retry reads the
+committed root. This is not genuine BUSY, cancellation or crash restart. Their
+source SHA256 is `6c867ba973f07e0d8e2d4f39572dc5f70bd75a2b2d49464a6a2365c6f2c41644`.
+Kernel SQL and CAS children are bounded at 120/180 seconds, native children at
+240/300 seconds, pure test at 60 seconds, with fresh C: parents and serial
+stop-on-first-failure operation. Independent source release precedes execution.
+
+Review also found legacy read-only source-capture opens requesting DELETE,
+which conflicted with the retained immutable handles. Seven read/recheck sites
+now use the read-only opener. All-target check r4 and no-run build r3 pass.
+The retained r3 artifact (498 inputs, CodeView age 68, EXE SHA256
+`1fdeaae4a603182b29776d4367ade2b1b9132fb2f69630e74b29000c344e5d7c`) passes
+the independently released real Accepted-capture regression (child 240 / outer
+300, fresh C: parent). The fixture has nonempty accepted content, demonstrates
+the old DELETE opener's actual error 32, and validates the historical catalog in
+a retained read transaction under live immutable manifest/chunk pins with
+positive close and unchanged witnesses. Source SHA256:
+`4200182700fc0de833f3ff30c2afb7a812d63ce4df7e1e63aafdce146d18ac87`.
+It covers accepted catalog reads, not the entire managed import with accepted
+history or the unfinished source-installation fallback paths. The unmodulated
+checkout-journal drafts in the source snapshot are outside this qualification.
+
 ## Remaining qualification boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately
 qualified reservation source BUSY/quarantine recipe. Neither establishes an
 interrupted commit, restart after quarantine or power-loss guarantee.
 The two physical recipes above qualify their exact installation scope only.
-Family protection, physical checkout/Ready publication, companion conversion
-and selection expansion are not yet qualified. Product routes and Desktop
+Family protection has the bounded evidence above. Physical checkout/Ready
+publication, companion conversion and selection expansion are not yet qualified. Product routes and Desktop
 integration remain separate. The existing strict GC fence remains.
