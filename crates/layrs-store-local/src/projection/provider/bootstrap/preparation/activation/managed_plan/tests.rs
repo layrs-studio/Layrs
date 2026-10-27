@@ -89,6 +89,7 @@ fn prefix(
         schema_version: "layrs.projection-provider-import-prefix.v1".into(),
         kind: ProviderImportKind::ManagedOrdinary,
         source: ImportSource::Ordinary {
+            admission: None,
             checkout_identity: None,
             identity: identity.clone(),
             format_digest: TOKEN.into(),

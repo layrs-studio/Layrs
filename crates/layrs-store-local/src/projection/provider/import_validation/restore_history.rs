@@ -138,6 +138,7 @@ mod tests {
             schema_version: "layrs.projection-provider-import-prefix.v2".into(),
             kind: ProviderImportKind::ManagedOrdinary,
             source: ImportSource::Ordinary {
+                admission: None,
                 identity: identity.clone(),
                 format_digest: TOKEN.into(),
                 private_schema: 7,

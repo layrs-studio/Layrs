@@ -48,6 +48,7 @@ fn prefix() -> ProviderImportPrefixRecord {
             format_digest: ID0.into(),
             private_schema: 8,
             checkout_identity: None,
+            admission: None,
             version: ImportVersion {
                 generation: 2,
                 snapshot_digest: RAW.into(),
@@ -193,11 +194,22 @@ fn prefix_v1_preserves_legacy_bytes_and_omits_restore_extensions() {
     assert_eq!(prefix.digest().unwrap(), codec::hash(PREFIX_DOMAIN, &bytes));
     assert!(!prefix.supports_restore_history());
     assert_eq!(prefix.authenticated_checkout_identity().unwrap(), None);
+    assert_eq!(prefix.source_admission(), None);
+
+    let mut legacy_v2 = legacy.clone();
+    legacy_v2["schemaVersion"] = PREFIX_SCHEMA_V2.into();
+    legacy_v2["closure"]["restoreHistory"] = serde_json::to_value(rowset(0)).unwrap();
+    legacy_v2["source"]["checkout_identity"] = "fs:v1:0000000000000001:0000000000000002".into();
+    assert_eq!(
+        prefix_v2().encode().unwrap(),
+        canonical_json(&legacy_v2).unwrap()
+    );
 
     // Canonical decoding rejects explicit nulls as well as populated v1 extensions.
     for (section, field) in [
         ("closure", "restoreHistory"),
         ("source", "checkout_identity"),
+        ("source", "admission"),
     ] {
         let mut extended = legacy.clone();
         extended[section][field] = serde_json::Value::Null;
@@ -464,6 +476,271 @@ fn receipt_from(prefix: &ProviderImportPrefixRecord, tx: &str) -> ProviderTransi
     }
 }
 
+/// Detached codec DATA: no admission row, SQL store or native identity is
+/// authenticated by constructing this fixture.
+fn admitted_prefix() -> (
+    ProviderImportPrefixRecord,
+    format::Marker,
+    ProviderTransitionReceiptRecord,
+) {
+    let pure = Pure::new("G1", false);
+    let mut marker = pure.allocation.format.clone();
+    let mut incoming = prefix();
+    if let ImportSource::Ordinary {
+        identity: source, ..
+    } = &mut incoming.source
+    {
+        *source = identity("original");
+    }
+    incoming.destination_identity = marker.identity.clone();
+    let parent = receipt_from(&incoming, "incoming-admission");
+    let segment = ImportedSegment::from_receipt(&parent, None).unwrap();
+    let parent_id = parent.digest().unwrap();
+    marker.import_digest = Some(parent.source_prefix_id.clone());
+    marker.validate().unwrap();
+    let admission = AdmittedSourceBinding {
+        admission_digest: ID2.into(),
+        incoming_prefix_id: parent.source_prefix_id.clone(),
+        incoming_receipt_id: parent_id.clone(),
+        database_identity: marker.shared.as_ref().unwrap().database_identity.clone(),
+    };
+    let mut prefix = prefix_v2();
+    prefix.source = ImportSource::Ordinary {
+        identity: marker.identity.clone(),
+        format_digest: codec::hash(
+            "layrs-projection-provider-import-format-v1",
+            &marker.bytes().unwrap(),
+        ),
+        private_schema: 9,
+        version: ImportVersion {
+            generation: parent.destination_placement_generation,
+            snapshot_digest: parent.destination_placement_digest.clone(),
+            selection_digest: RAW.into(),
+            capture_count: parent.destination_capture_sequence,
+            capture_head: Some(parent.destination_capture_digest.clone()),
+            effective_image_digest: RAW.into(),
+        },
+        checkout_identity: Some(marker.checkout_identity().into()),
+        admission: Some(admission),
+    };
+    prefix.inherited_segments = ImportRowset {
+        count: 1,
+        digest: segments_digest(std::slice::from_ref(&segment)),
+    };
+    prefix.ancestry_root_receipt = Some(parent_id);
+    prefix.closure.snapshots.count = parent.destination_placement_generation + 1;
+    prefix.closure.captures.count = parent.destination_capture_sequence;
+    prefix.closure.transition_receipts.count = 1;
+    prefix.validate_segments(&[segment]).unwrap();
+    (prefix, marker, parent)
+}
+
+fn set_format_digest(prefix: &mut ProviderImportPrefixRecord, marker: &format::Marker) {
+    let ImportSource::Ordinary { format_digest, .. } = &mut prefix.source else {
+        unreachable!()
+    };
+    *format_digest = codec::hash(
+        "layrs-projection-provider-import-format-v1",
+        &marker.bytes().unwrap(),
+    );
+}
+
+#[test]
+fn admitted_source_binding_roundtrips_with_canonical_bounded_fields() {
+    let (prefix, marker, parent) = admitted_prefix();
+    let bytes = prefix.encode().unwrap();
+    assert_eq!(ProviderImportPrefixRecord::decode(&bytes).unwrap(), prefix);
+    let binding = prefix.source_admission().unwrap();
+    let fields = serde_json::to_value(binding).unwrap();
+    assert_eq!(fields["admissionDigest"], ID2);
+    assert_eq!(fields["incomingPrefixId"], parent.source_prefix_id);
+    assert_eq!(fields["incomingReceiptId"], parent.digest().unwrap());
+    assert_eq!(
+        fields["databaseIdentity"],
+        marker.shared.as_ref().unwrap().database_identity
+    );
+    let mut unknown = fields;
+    unknown["unexpected"] = true.into();
+    assert!(serde_json::from_value::<AdmittedSourceBinding>(unknown).is_err());
+    let mut changed = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    if let ImportSource::Ordinary {
+        admission: Some(admission),
+        ..
+    } = &mut changed.source
+    {
+        admission.admission_digest = ID1.into();
+    }
+    assert_ne!(changed.digest().unwrap(), prefix.digest().unwrap());
+
+    for name in ["admissionDigest", "incomingPrefixId", "incomingReceiptId"] {
+        let mut malformed = serde_json::to_value(&prefix).unwrap();
+        malformed["source"]["admission"][name] = RAW.into();
+        assert!(ProviderImportPrefixRecord::decode(&canonical_json(&malformed).unwrap()).is_err());
+    }
+    for database in [
+        "",
+        "1:2",
+        "01:0:1",
+        "1:0:4294967296",
+        "fs:v1:0000000000000001:0000000000000002",
+        &"1".repeat(513),
+    ] {
+        let mut malformed = serde_json::to_value(&prefix).unwrap();
+        malformed["source"]["admission"]["databaseIdentity"] = database.into();
+        assert!(ProviderImportPrefixRecord::decode(&canonical_json(&malformed).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn admitted_source_requires_v2_schema9_checkout_and_incoming_ancestry() {
+    let (prefix, _, _) = admitted_prefix();
+    let bytes = prefix.encode().unwrap();
+    for schema in [6, 7, 8, 10] {
+        let mut wrong = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+        if let ImportSource::Ordinary { private_schema, .. } = &mut wrong.source {
+            *private_schema = schema;
+        }
+        assert!(wrong.encode().is_err());
+    }
+    let mut no_admission = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    if let ImportSource::Ordinary { admission, .. } = &mut no_admission.source {
+        *admission = None;
+    }
+    assert!(no_admission.encode().is_err());
+    let mut no_checkout = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    if let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut no_checkout.source
+    {
+        *checkout_identity = None;
+    }
+    assert!(no_checkout.encode().is_err());
+    let mut legacy = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    legacy.schema_version = PREFIX_SCHEMA.into();
+    assert!(legacy.encode().is_err());
+    legacy.closure.restore_history = None;
+    if let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut legacy.source
+    {
+        *checkout_identity = None;
+    }
+    assert!(legacy.encode().is_err());
+    let mut wrong_root = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    wrong_root.ancestry_root_receipt = Some(ID1.into());
+    assert!(wrong_root.encode().is_err());
+    let mut no_ancestry = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    no_ancestry.inherited_segments.count = 0;
+    no_ancestry.ancestry_root_receipt = None;
+    assert!(no_ancestry.encode().is_err());
+    let (mut provider, _, _) = provider_prefix();
+    if let ImportSource::Provider { private_schema, .. } = &mut provider.source {
+        *private_schema = 9;
+    }
+    assert!(provider.encode().is_err());
+}
+
+#[test]
+fn admitted_source_references_require_exact_marker_database_checkout_and_binding() {
+    let (mut prefix, marker, _) = admitted_prefix();
+    let binding = prefix.source_admission().unwrap().clone();
+    prefix
+        .require_references(ImportSourceReferences::AdmittedOrdinary {
+            marker: &marker,
+            admission: &binding,
+        })
+        .unwrap();
+    assert!(prefix
+        .require_references(ImportSourceReferences::Ordinary(&marker))
+        .is_err());
+    let mut wrong_binding = binding.clone();
+    wrong_binding.admission_digest = ID1.into();
+    assert!(prefix
+        .require_references(ImportSourceReferences::AdmittedOrdinary {
+            marker: &marker,
+            admission: &wrong_binding
+        })
+        .is_err());
+    let original = prefix.encode().unwrap();
+    for field in ["database", "incoming", "identity", "checkout", "format"] {
+        prefix = ProviderImportPrefixRecord::decode(&original).unwrap();
+        let mut wrong_marker = marker.clone();
+        match field {
+            "database" => {
+                wrong_marker.shared.as_mut().unwrap().database_identity = "1:0:123".into()
+            }
+            "incoming" => wrong_marker.import_digest = Some(ID1.into()),
+            "identity" => {
+                wrong_marker.identity.worktree_id = WorktreeId::parse("worktree:wrong").unwrap()
+            }
+            "checkout" => {
+                if let ImportSource::Ordinary {
+                    checkout_identity, ..
+                } = &mut prefix.source
+                {
+                    *checkout_identity = Some("fs:v1:ffffffffffffffff:ffffffffffffffff".into());
+                }
+            }
+            "format" => {}
+            _ => unreachable!(),
+        }
+        if field != "format" {
+            set_format_digest(&mut prefix, &wrong_marker);
+        } else if let ImportSource::Ordinary { format_digest, .. } = &mut prefix.source {
+            *format_digest = ID1.into();
+        }
+        assert!(
+            prefix
+                .require_references(ImportSourceReferences::AdmittedOrdinary {
+                    marker: &wrong_marker,
+                    admission: &binding
+                })
+                .is_err(),
+            "{field}"
+        );
+    }
+    assert!(prefix_v2()
+        .require_references(ImportSourceReferences::AdmittedOrdinary {
+            marker: &marker,
+            admission: &binding
+        })
+        .is_err());
+}
+
+#[test]
+fn admitted_source_parent_requires_exact_receipt_prefix_and_destination() {
+    let (prefix, _, parent) = admitted_prefix();
+    prefix.require_admission_parent(Some(&parent)).unwrap();
+    assert!(prefix.require_admission_parent(None).is_err());
+    let mut other = ProviderTransitionReceiptRecord::decode(&parent.encode().unwrap()).unwrap();
+    other.transaction_id = "other-incoming".into();
+    other.validate_fields().unwrap();
+    assert!(prefix.require_admission_parent(Some(&other)).is_err());
+    let bytes = prefix.encode().unwrap();
+    let mut wrong_prefix = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    if let ImportSource::Ordinary {
+        admission: Some(admission),
+        ..
+    } = &mut wrong_prefix.source
+    {
+        admission.incoming_prefix_id = ID1.into();
+    }
+    wrong_prefix.validate_fields().unwrap();
+    assert!(wrong_prefix
+        .require_admission_parent(Some(&parent))
+        .is_err());
+    let mut wrong_origin = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+    if let ImportSource::Ordinary { identity, .. } = &mut wrong_origin.source {
+        identity.worktree_id = WorktreeId::parse("worktree:unrelated").unwrap();
+    }
+    wrong_origin.validate_fields().unwrap();
+    assert!(wrong_origin
+        .require_admission_parent(Some(&parent))
+        .is_err());
+    prefix_v2().require_admission_parent(None).unwrap();
+    prefix_v2().require_admission_parent(Some(&other)).unwrap();
+}
+
 #[test]
 fn receipt_companion_commits_header_local_domains() {
     let prefix = prefix();
@@ -628,6 +905,7 @@ fn prefix_cumulative_rows_and_compactness_are_fenced() {
         format_digest: ID0.into(),
         private_schema: 8,
         checkout_identity: None,
+        admission: None,
         version: ImportVersion {
             generation: 2,
             snapshot_digest: RAW.into(),

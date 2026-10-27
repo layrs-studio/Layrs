@@ -39,6 +39,21 @@ impl VerifiedDestinationPrefix<'_> {
     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
         &self.receipt
     }
+    /// Detached ancestry DATA for a subsequent export, including this import.
+    /// This does not establish live source or physical content authority.
+    pub(in crate::projection::provider) fn export_segments(
+        &self,
+    ) -> CauseResult<Vec<ImportedSegment>> {
+        if self.metadata.lineage.segments().len() >= 4096 {
+            return Err(invalid("export ancestry exceeds segment bound"));
+        }
+        let mut segments = self.metadata.lineage.segments().to_vec();
+        segments.push(ImportedSegment::from_receipt(
+            &self.receipt,
+            self.metadata.lineage.receipts().last(),
+        )?);
+        Ok(segments)
+    }
     pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
         &self.ready
     }

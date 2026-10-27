@@ -35,6 +35,7 @@ fn prefix() -> ProviderImportPrefixRecord {
         schema_version: "layrs.projection-provider-import-prefix.v1".into(),
         kind: ProviderImportKind::ManagedOrdinary,
         source: ImportSource::Ordinary {
+            admission: None,
             checkout_identity: None,
             identity: identity("source"),
             format_digest: ID.into(),

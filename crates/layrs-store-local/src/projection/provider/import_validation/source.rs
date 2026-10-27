@@ -27,10 +27,19 @@ pub(in crate::projection) struct SourceMetadata {
 /// This never manufactures the old source FORMAT or its physical authority.
 pub(super) struct HistoryAnchor<'a> {
     marker: &'a format::Marker,
-    incoming: Option<(
-        &'a ProviderImportPrefixRecord,
-        &'a ProviderTransitionReceiptRecord,
-    )>,
+    binding: HistoryBinding<'a>,
+}
+enum HistoryBinding<'a> {
+    Live,
+    Destination {
+        prefix: &'a ProviderImportPrefixRecord,
+        receipt: &'a ProviderTransitionReceiptRecord,
+    },
+    AdmittedSource {
+        outgoing_digest: String,
+        incoming_prefix: &'a ProviderImportPrefixRecord,
+        incoming_receipt: &'a ProviderTransitionReceiptRecord,
+    },
 }
 impl<'a> HistoryAnchor<'a> {
     pub(super) fn destination(
@@ -46,16 +55,63 @@ impl<'a> HistoryAnchor<'a> {
         }
         Ok(Self {
             marker,
-            incoming: Some((prefix, receipt)),
+            binding: HistoryBinding::Destination { prefix, receipt },
         })
     }
 
+    /// The current FORMAT names its incoming prefix, while this export commits
+    /// a distinct outgoing prefix. Keep both links explicit and independently
+    /// checked rather than weakening the destination anchor's exact equality.
+    fn admitted_source(
+        marker: &'a format::Marker,
+        outgoing: &ProviderImportPrefixRecord,
+        incoming_prefix: &'a ProviderImportPrefixRecord,
+        incoming_receipt: &'a ProviderTransitionReceiptRecord,
+    ) -> CauseResult<Self> {
+        let anchor = Self {
+            marker,
+            binding: HistoryBinding::AdmittedSource {
+                outgoing_digest: outgoing.digest()?,
+                incoming_prefix,
+                incoming_receipt,
+            },
+        };
+        anchor.require_prefix(outgoing)?;
+        Ok(anchor)
+    }
+
     fn require_prefix(&self, prefix: &ProviderImportPrefixRecord) -> CauseResult<()> {
-        if let Some((incoming, receipt)) = self.incoming {
-            if incoming != prefix {
-                return Err(invalid("historical destination prefix changed"));
+        match &self.binding {
+            HistoryBinding::Live => {}
+            HistoryBinding::Destination {
+                prefix: incoming,
+                receipt,
+            } => {
+                if *incoming != prefix {
+                    return Err(invalid("historical destination prefix changed"));
+                }
+                receipt.require_prefix(prefix)?;
             }
-            receipt.require_prefix(prefix)?;
+            HistoryBinding::AdmittedSource {
+                outgoing_digest,
+                incoming_prefix,
+                incoming_receipt,
+            } => {
+                let binding = prefix
+                    .source_admission()
+                    .ok_or_else(|| invalid("admitted source binding absent"))?;
+                incoming_receipt.require_prefix(incoming_prefix)?;
+                prefix.require_admission_parent(Some(incoming_receipt))?;
+                if prefix.digest()? != *outgoing_digest
+                    || incoming_prefix.digest()? != binding.incoming_prefix_id
+                    || incoming_receipt.digest()? != binding.incoming_receipt_id
+                    || self.marker.identity != incoming_prefix.destination_identity
+                    || self.marker.import_digest.as_deref()
+                        != Some(binding.incoming_prefix_id.as_str())
+                {
+                    return Err(invalid("historical admitted source anchor differs"));
+                }
+            }
         }
         Ok(())
     }
@@ -75,7 +131,9 @@ pub(in crate::projection) fn read_source_metadata(
 ) -> CauseResult<SourceMetadata> {
     let lineage = ancestry::read_ancestry(c, marker, kind, prefix, cancel)?;
     let current_catalog_id = match &references {
-        ImportSourceReferences::Ordinary(_) => None,
+        ImportSourceReferences::Ordinary(_) | ImportSourceReferences::AdmittedOrdinary { .. } => {
+            None
+        }
         ImportSourceReferences::Provider { allocation, .. } => {
             Some(allocation.source.catalog_id.clone())
         }
@@ -100,6 +158,7 @@ pub(in crate::projection) fn read_source_metadata(
             ImportDatabaseKind::Ordinary => 6,
             ImportDatabaseKind::SharedOrdinary => 7,
             ImportDatabaseKind::Provider => 8,
+            ImportDatabaseKind::AdmittedOrdinary => 9,
         }
         || image_digest != version.effective_image_digest
     {
@@ -107,7 +166,32 @@ pub(in crate::projection) fn read_source_metadata(
             "import source schema or independently witnessed image differs",
         ));
     }
-    if kind == ImportDatabaseKind::Provider {
+    // This is the actual incoming admission from this same retained snapshot.
+    // Detached reference DATA alone cannot establish a schema9 source.
+    let admitted = if kind == ImportDatabaseKind::AdmittedOrdinary {
+        let admitted = super::super::managed_admission::read_admitted_import(c, marker, cancel)?;
+        let binding = prefix
+            .source_admission()
+            .ok_or_else(|| invalid("admitted source binding absent"))?;
+        if admitted.record().digest()? != binding.admission_digest
+            || admitted.prefix().digest()? != binding.incoming_prefix_id
+            || admitted.receipt().digest()? != binding.incoming_receipt_id
+            || marker
+                .shared
+                .as_ref()
+                .map(|shared| shared.database_identity.as_str())
+                != Some(binding.database_identity.as_str())
+            || prefix.ancestry_root_receipt.as_deref() != Some(binding.incoming_receipt_id.as_str())
+        {
+            return Err(invalid(
+                "import source genuine admission differs from prefix",
+            ));
+        }
+        Some(admitted)
+    } else {
+        None
+    };
+    if kind.has_provider_history() {
         let (count, max_backend_bytes, max_mount_bytes): (u64, u64, u64) = c.query_row(
             "SELECT count(*),coalesce(max(length(backend)),0),coalesce(max(length(mount_id)),0) FROM projection_backend",
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -126,7 +210,6 @@ pub(in crate::projection) fn read_source_metadata(
                     "projection_provider_mounts",
                     "projection_provider_capture_transactions",
                     "projection_provider_capture_receipts",
-                    "projection_provider_transitions",
                 ] {
                     super::super::cancellation::check(cancel)?;
                     if c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table})"), [], |r| {
@@ -136,6 +219,19 @@ pub(in crate::projection) fn read_source_metadata(
                             "import ordinary source retains live provider state",
                         ));
                     }
+                }
+                // Schema9 retains its incoming DestinationReady entry, whose
+                // exact row and links were validated by read_admitted_import.
+                if admitted.is_none()
+                    && c.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM projection_provider_transitions)",
+                        [],
+                        |r| r.get::<_, bool>(0),
+                    )?
+                {
+                    return Err(invalid(
+                        "import ordinary source retains live provider state",
+                    ));
                 }
             }
             (ImportSource::Provider { binding, .. }, "provider", Some(id))
@@ -154,9 +250,14 @@ pub(in crate::projection) fn read_source_metadata(
     if head_count != 1 || head_generation != Some(version.generation) {
         return Err(invalid("import source head differs from prefix"));
     }
-    let anchor = HistoryAnchor {
-        marker,
-        incoming: None,
+    let anchor = match &admitted {
+        Some(admitted) => {
+            HistoryAnchor::admitted_source(marker, prefix, admitted.prefix(), admitted.receipt())?
+        }
+        None => HistoryAnchor {
+            marker,
+            binding: HistoryBinding::Live,
+        },
     };
     let metadata = read_historical_metadata(
         c,

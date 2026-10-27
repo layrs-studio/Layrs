@@ -135,6 +135,28 @@ multi-segment publication is claimed. Exact evidence is in the checkpoint and
 
 ## Next physical integration: genuine admitted ordinary export
 
+The current source adapter and producer are implemented: the ordinary source9
+binding commits the actual `ManagedAdmissionRecord::digest()`, incoming prefix,
+incoming receipt and private database identity. `plan_admitted_import` requires
+the retained source transaction and independent effective-image digest, derives
+the exact closure, then returns only the result of complete source validation.
+The distinct historical anchor preserves the difference between the incoming
+admission and the outgoing prefix. Historical schema9 in a copied database is
+interpreted from committed ancestry DATA, without reopening it as a live source9.
+This producer alone is not a physical export owner or a destination admission.
+
+Independent review found a transport omission in the previous restore-history
+increment: the v2 rowset reader had a thirteenth RestoreHistory spec, but the
+copy insertion order visited only the original twelve. The exact final check
+therefore refused a populated restore import after partial transaction writes.
+The corrected copy visits optional RestoreHistory immediately after Captures,
+while retaining collision checks for every rowset before any insert. Its SQL
+regression exercises normal source verification and complete copying, exact
+retry, a late restore collision while earlier rows need insertion, savepoint
+and transaction rollback, and the legacy twelve-rowset route. Runtime results
+are recorded in the main checkpoint; this source description does not infer
+physical B-to-C delivery from SQL copying.
+
 Source investigation confirms that the current managed planner/allocation/staging
 drivers are reached by native fixtures, not an orchestrated public export API.
 `ProviderActiveSession` is not an appropriate owner for an admitted ordinary
@@ -172,3 +194,39 @@ the new driver. Acceptance must reach C9 reopened with A and B unavailable, incl
 inherited history and unchanged B admission; stopping at copied C8 would miss the
 remaining handoff and admission requirements. This is implementation work still
 outstanding, not runtime evidence from the current metadata tests.
+
+### Ordinary export owner and image lifetime
+
+The next physical adapter should borrow `&ProjectionStore` and own
+`Option<format::Access>` plus an owned image. Acquire Exclusive access so
+cooperative Layrs writers cannot advance the source. Do not store a borrowed
+`ContentScope`, a transaction, or `VerifiedImportClosure` inside the holder:
+reconstruct them in `Access::with_content`, keep the SQL snapshot through the
+operation callback, and return detached DATA only. Constructor failures after
+Access acquisition and terminal outcomes must consume `Access::run`, preserving
+both the primary error and an observable close failure. A silent Drop is not a
+successful close or a transition acknowledgement.
+
+The image retains the root and selected-file pins, canonical manifests, modes,
+base preconditions, deletions and its effective-image digest. Use
+`PinnedDirectory::open_immutable_file` for selected present files, validate
+single-link identity/size/mode and hash via the retained handles. Compare the
+complete image with the initial scoped scan and recheck the namespace and
+absences before destination effects. Historical content uses exact scoped
+manifest/stream readers under the retained owner/family access.
+
+There is a concrete Windows integration constraint: the current capture scanner
+uses `open_file`, requesting DELETE access. It cannot rescan while immutable
+file pins deny write/delete sharing. Introduce a readonly scanner adapter using
+`open_readonly_file`, or reuse a namespace-only check while hashing retained
+handles. Do not remove immutable pins to make the old scanner succeed. These
+pins block ordinary incompatible Windows opens, but do not freeze absent names
+or the whole namespace; external writers must remain quiescent and rechecks
+remain necessary.
+
+Keep the Provider `derive`/`derive_publication` adapters and their activation
+proof checks intact. Add a separate ordinary adapter and extract only the
+common DATA derivation over observation, placement, selection, current image
+and historical manifest union. Do not introduce an interchangeable image proof
+that lets ordinary DATA satisfy Provider native authority. This is a design
+decision from source inspection, not implementation or runtime qualification.

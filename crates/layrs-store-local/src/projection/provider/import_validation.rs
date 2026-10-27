@@ -15,6 +15,8 @@ use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
+mod admitted_plan;
+pub(in crate::projection) use admitted_plan::plan_admitted_import;
 mod ancestry;
 mod copied;
 mod copy;
@@ -29,6 +31,8 @@ mod provider_proof;
 #[cfg(test)]
 #[path = "import_validation/publication_tests.rs"]
 mod publication_tests;
+#[cfg(test)]
+mod restore_copy_tests;
 mod restore_history;
 mod rows;
 pub(in crate::projection::provider) use rows::content_mapping_rowset_data;
@@ -436,6 +440,14 @@ pub(in crate::projection) enum ImportDatabaseKind {
     Ordinary,
     SharedOrdinary,
     Provider,
+    AdmittedOrdinary,
+}
+impl ImportDatabaseKind {
+    /// Historical provider catalogs and receipts survive ordinary admission.
+    /// This does not identify the physical schema of a copied destination.
+    pub(super) fn has_provider_history(self) -> bool {
+        matches!(self, Self::Provider | Self::AdmittedOrdinary)
+    }
 }
 
 /// Fence the exact schema before querying any application table, including
@@ -448,10 +460,15 @@ pub(in crate::projection) fn require_schema(
 ) -> CauseResult<()> {
     super::cancellation::check(cancel)?;
     marker.validate()?;
+    if kind == ImportDatabaseKind::AdmittedOrdinary {
+        super::managed_admission::schema::require_schema(c, marker, cancel)?;
+        return Ok(());
+    }
     let expected_version = match kind {
         ImportDatabaseKind::Ordinary => 6,
         ImportDatabaseKind::SharedOrdinary => 7,
         ImportDatabaseKind::Provider => 8,
+        ImportDatabaseKind::AdmittedOrdinary => unreachable!("schema9 handled by its exact permit"),
     };
     if marker.shared.is_some() != (kind != ImportDatabaseKind::Ordinary) {
         return Err(invalid("import FORMAT/shared schema family differs"));

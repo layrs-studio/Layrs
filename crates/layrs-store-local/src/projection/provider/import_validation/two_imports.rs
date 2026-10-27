@@ -5,18 +5,18 @@ use crate::projection::{
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
-            ProviderBootstrapBinding, Receipt, Record,
             activation::ProviderActivationRecord,
             import::{
                 ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
                 ImportedSegment, ProviderImportKind, ProviderImportPrefixRecord,
                 ProviderTransitionReceiptRecord,
             },
+            ProviderBootstrapBinding, Receipt, Record,
         },
         validation::active_fixture,
     },
 };
-use layrs_core::scm::{WorktreeId, canonical_json};
+use layrs_core::scm::{canonical_json, WorktreeId};
 use rusqlite::params;
 
 const ZERO: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
@@ -279,6 +279,7 @@ fn two_imports_preserve_historical_closures() {
                 schema_version: "layrs.projection-provider-import-prefix.v1".into(),
                 kind: ProviderImportKind::ManagedOrdinary,
                 source: ImportSource::Ordinary {
+                    admission: None,
                     checkout_identity: None,
                     identity: intermediate_identity,
                     format_digest: super::super::records::codec::hash(
@@ -354,6 +355,7 @@ fn two_imports_preserve_historical_closures() {
                 schema_version: "layrs.projection-provider-import-prefix.v1".into(),
                 kind: ProviderImportKind::ManagedOrdinary,
                 source: ImportSource::Ordinary {
+                    admission: None,
                     checkout_identity: None,
                     identity: final_identity,
                     format_digest: super::super::records::codec::hash(

@@ -1,5 +1,34 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément planification depuis une source admise — r24 à r25
+
+Le planificateur d’export authentifie maintenant l’admission entrante réelle du
+worktree, son reçu et sa base. Les 19 tests de format et le test SQL de copie
+passent sur r24 ; ce dernier vérifie aussi le rejeu, le refus de collision avant
+écriture et les rollbacks. La revue a corrigé l’omission des reçus de restauration
+dans la boucle de copie v2.
+
+Le test natif passe sur r25 en environ 204 secondes : véritable destination
+admise, capture/restauration, octets conservés uniquement pour l’inverse présents
+dans le plan, refus de fausses admissions, planification sans écritures et résultat
+identique après réouverture. L’échec r24 est conservé : son témoin englobait aussi
+la réouverture, qui libère normalement le budget de restauration terminé. Le
+test corrigé garde les témoins complets des bases autour de chaque planification
+et vérifie explicitement cette libération. Le code de production est identique
+sur r24 et r25 ; les vingt tests inchangés ne sont pas réexécutés.
+
+`admitted-export-evidence-20261027-r24-r25.tar.gz` contient 1 213 fichiers vérifiés
+(3 337 651 octets), SHA-256
+`1793de094957a8dcf93d200cbcb3b2856f125b4ae2a07ec63e996acd91495e98`.
+Inventaire : `admitted-export-inventory-20261027-r24-r25.json`. Sources, revues,
+scripts, résultats et échec analysé sont inclus ; binaires, bases et fixtures
+restent locaux. Aucune fixture échouée n’a été réouverte.
+
+La prochaine étape construit le propriétaire physique et le pilote d’export
+ordinaire jusqu’à C admis : [plan détaillé](../../plans/worktrees-partial-vfs-imported-restore-history.md).
+Le transfert physique B → C, les inverses hérités et les publications successives
+restent à qualifier ; les autres étapes du programme sont toujours ouvertes.
+
 ## Complément historique de restauration v2 — r23
 
 Les 11 recettes r23 passent : 7 codecs compatibles v1/v2, 3 tests SQL de

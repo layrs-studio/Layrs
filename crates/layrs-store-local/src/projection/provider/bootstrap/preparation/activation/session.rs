@@ -467,6 +467,8 @@ mod capture_immutable_tests;
 #[cfg(test)]
 mod managed_admission_tests;
 #[cfg(test)]
+mod managed_admitted_export_tests;
+#[cfg(test)]
 mod managed_checkout_tests;
 #[cfg(test)]
 #[path = "session/managed_content_tests.rs"]

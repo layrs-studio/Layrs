@@ -126,7 +126,7 @@ pub(super) fn with_scope<T>(
         }
     };
     let mut all_catalog_ids = scope.catalog_ids.clone();
-    let activation_records = if kind == ImportDatabaseKind::Provider {
+    let activation_records = if kind.has_provider_history() {
         derive_catalog_scope(c, scope.activation_ids, &mut all_catalog_ids, cancel)?
     } else {
         Vec::new()
@@ -138,11 +138,11 @@ pub(super) fn with_scope<T>(
             require_content_mapping(c, file_id, None, Some(*bytes))?;
         }
     }
-    if kind == ImportDatabaseKind::Provider {
+    if kind.has_provider_history() {
         derive_companion_scope(c, scope, &mut all_catalog_ids, &mut all_content_ids, cancel)?;
     }
     let catalog_ids = ids_json(&all_catalog_ids)?;
-    let catalog_validation = if kind == ImportDatabaseKind::Provider {
+    let catalog_validation = if kind.has_provider_history() {
         catalogs::validate_catalogs(c, &all_catalog_ids, cancel)?
     } else {
         catalogs::CatalogValidation {
@@ -247,7 +247,7 @@ pub(super) fn with_scope<T>(
         "SELECT sequence,request_digest,receipt_digest,receipt_bytes,next_snapshot,projection_generation,projection_digest,after_state FROM projection_publications WHERE sequence<=?1 ORDER BY sequence",
         &captures
     );
-    if kind != ImportDatabaseKind::Provider {
+    if !kind.has_provider_history() {
         for row_kind in [
             Kind::Catalogs,
             Kind::Descriptors,

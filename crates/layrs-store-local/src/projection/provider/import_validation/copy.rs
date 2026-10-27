@@ -279,6 +279,15 @@ pub(in crate::projection) fn copy_verified_prefix(
             // must exist before the receipts that reference them.
             for index in [0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 7, 11] {
                 visit(source, destination, &specs[index], true, false, cancel)?;
+                if specs[index].kind == Kind::Captures {
+                    // Restore rows reference captures and are absent from the
+                    // twelve-rowset legacy format.
+                    if let Some(restore) =
+                        specs.iter().find(|spec| spec.kind == Kind::RestoreHistory)
+                    {
+                        visit(source, destination, restore, true, false, cancel)?;
+                    }
+                }
             }
             let preflight = rows::preflight(destination, specs, cancel)?;
             if rows::stream(destination, specs, &preflight, cancel)? != *closure {

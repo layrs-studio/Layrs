@@ -35,6 +35,11 @@ impl VerifiedAdmittedImport<'_> {
     pub(in crate::projection::provider) fn prefix(&self) -> &ProviderImportPrefixRecord {
         self.prefix.prefix()
     }
+    pub(in crate::projection::provider) fn export_segments(
+        &self,
+    ) -> Result<Vec<super::super::records::import::ImportedSegment>> {
+        self.prefix.export_segments()
+    }
     pub(in crate::projection::provider) fn required(&self) -> &[RequiredRepresentation] {
         &self.frozen.required
     }

@@ -1,4 +1,4 @@
-//! Immutable import/companion DATA for the existing private schema 8.
+//! Immutable import/companion DATA with versioned source bindings.
 //! These codecs authenticate no SQL rowset, source store, native root or claim.
 use super::{
     activation::{owner_identity_digest, ProviderActivationRecord},
@@ -130,6 +130,25 @@ impl ImportVersion {
     }
 }
 
+/// Detached DATA naming an incoming admission. The live reader must separately
+/// authenticate that admission and its database, prefix and receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::projection) struct AdmittedSourceBinding {
+    pub admission_digest: String,
+    pub incoming_prefix_id: String,
+    pub incoming_receipt_id: String,
+    pub database_identity: String,
+}
+impl AdmittedSourceBinding {
+    fn validate(&self) -> Result<()> {
+        codec::digest_token(&self.admission_digest)?;
+        codec::digest_token(&self.incoming_prefix_id)?;
+        codec::digest_token(&self.incoming_receipt_id)?;
+        codec::file_identity(&self.database_identity)
+    }
+}
+
 /// Provider variant carries explicit A/P/map DATA references; the future
 /// interpreter must still read their canonical source receipts and FORMAT.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +161,8 @@ pub(in crate::projection) enum ImportSource {
         version: ImportVersion,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkout_identity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admission: Option<AdmittedSourceBinding>,
     },
     Provider {
         identity: ProjectionIdentity,
@@ -180,8 +201,18 @@ impl ImportSource {
             } => (format_digest, private_schema),
         };
         codec::digest_token(format_digest)?;
-        if !matches!(schema, 6 | 7 | 8) {
-            return Err(invalid("import source private schema unsupported"));
+        match self {
+            Self::Ordinary {
+                admission,
+                checkout_identity,
+                ..
+            } => match (*schema, admission) {
+                (6 | 7 | 8, None) => {}
+                (9, Some(binding)) if checkout_identity.is_some() => binding.validate()?,
+                _ => return Err(invalid("import ordinary schema/admission binding differs")),
+            },
+            Self::Provider { .. } if *schema == 8 => {}
+            _ => return Err(invalid("import source private schema unsupported")),
         }
         self.version().validate()?;
         if let Self::Ordinary {
@@ -229,6 +260,10 @@ pub(in crate::projection) struct ProviderImportPrefixRecord {
 
 pub(in crate::projection) enum ImportSourceReferences<'a> {
     Ordinary(&'a format::Marker),
+    AdmittedOrdinary {
+        marker: &'a format::Marker,
+        admission: &'a AdmittedSourceBinding,
+    },
     Provider {
         allocation: &'a AllocationRecord,
         prepared: &'a PreparedRecord,
@@ -255,6 +290,13 @@ impl Record for ProviderImportPrefixRecord {
             }
         }
         self.source.validate()?;
+        if let Some(admission) = self.source_admission() {
+            if self.ancestry_root_receipt.as_deref() != Some(admission.incoming_receipt_id.as_str())
+                || self.inherited_segments.count == 0
+            {
+                return Err(invalid("import admission parent/root boundary differs"));
+            }
+        }
         format::validate_identity(&self.destination_identity)?;
         self.closure.validate()?;
         self.inherited_segments.validate()?;
@@ -274,6 +316,28 @@ impl Record for ProviderImportPrefixRecord {
     }
 }
 impl ProviderImportPrefixRecord {
+    pub fn source_admission(&self) -> Option<&AdmittedSourceBinding> {
+        match &self.source {
+            ImportSource::Ordinary { admission, .. } => admission.as_ref(),
+            ImportSource::Provider { .. } => None,
+        }
+    }
+    pub fn require_admission_parent(
+        &self,
+        parent: Option<&ProviderTransitionReceiptRecord>,
+    ) -> Result<()> {
+        self.validate_fields()?;
+        if let Some(admission) = self.source_admission() {
+            let parent = parent.ok_or_else(|| invalid("import admitted source parent missing"))?;
+            if parent.digest()? != admission.incoming_receipt_id
+                || parent.source_prefix_id != admission.incoming_prefix_id
+                || &parent.destination_identity != self.source.identity()
+            {
+                return Err(invalid("import admitted source parent differs"));
+            }
+        }
+        Ok(())
+    }
     /// Old prefixes cannot authorize restore rows, including provider origins
     /// whose bootstrap binding already contains a checkout identity.
     pub fn supports_restore_history(&self) -> bool {
@@ -316,12 +380,14 @@ impl ProviderImportPrefixRecord {
                     identity,
                     format_digest,
                     checkout_identity,
+                    admission,
                     ..
                 },
                 ImportSourceReferences::Ordinary(marker),
             ) => {
                 marker.validate()?;
-                if identity != &marker.identity
+                if admission.is_some()
+                    || identity != &marker.identity
                     || checkout_identity
                         .as_deref()
                         .is_some_and(|checkout| checkout != marker.checkout_identity())
@@ -332,6 +398,37 @@ impl ProviderImportPrefixRecord {
                         )
                 {
                     return Err(invalid("import ordinary source FORMAT differs"));
+                }
+            }
+            (
+                ImportSource::Ordinary {
+                    identity,
+                    format_digest,
+                    checkout_identity,
+                    admission: Some(binding),
+                    ..
+                },
+                ImportSourceReferences::AdmittedOrdinary { marker, admission },
+            ) => {
+                marker.validate()?;
+                if binding != admission
+                    || identity != &marker.identity
+                    || checkout_identity.as_deref() != Some(marker.checkout_identity())
+                    || format_digest
+                        != &codec::hash(
+                            "layrs-projection-provider-import-format-v1",
+                            &marker.bytes()?,
+                        )
+                    || marker
+                        .shared
+                        .as_ref()
+                        .map(|shared| &shared.database_identity)
+                        != Some(&binding.database_identity)
+                    || marker.import_digest.as_deref() != Some(binding.incoming_prefix_id.as_str())
+                {
+                    return Err(invalid(
+                        "import admitted ordinary source FORMAT/binding differs",
+                    ));
                 }
             }
             (
@@ -895,50 +992,67 @@ impl ProviderImportPrefixRecord {
         if segments.len() > MAX_SEGMENTS || segments.len() as u64 != self.inherited_segments.count {
             return Err(invalid("import ancestry count differs"));
         }
-        let mut seen = BTreeSet::new();
-        let mut previous_generation: Option<u64> = None;
-        let mut previous_capture: Option<u64> = None;
-        let mut parent = None;
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(SEGMENTS_DOMAIN.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(&(segments.len() as u64).to_be_bytes());
-        let mut metadata_bytes = 0u64;
-        for segment in segments {
-            format::validate_identity(&segment.source_identity)?;
-            codec::digest_token(&segment.receipt_id)?;
-            if segment.parent_receipt_id.as_ref() != parent
-                || !seen.insert(segment.receipt_id.as_str())
-                || segment.first_generation > segment.last_generation
-                || segment.capture_count_before > segment.capture_count_through
-                || previous_generation.map_or(segment.first_generation != 0, |end| {
-                    end.checked_add(1) != Some(segment.first_generation)
-                })
-                || previous_capture.map_or(segment.capture_count_before != 0, |through| {
-                    through != segment.capture_count_before
-                })
-            {
-                return Err(invalid("import ancestry cycle, order or interval overlap"));
-            }
-            codec::preflight(segment, 4096)?;
-            let bytes = canonical_json(segment).map_err(invalid)?;
-            metadata_bytes = codec::add(metadata_bytes, bytes.len() as u64 + 8)?;
-            if bytes.len() > 4096 || metadata_bytes > 16 * 1024 * 1024 {
-                return Err(invalid("import ancestry segment exceeds bound"));
-            }
-            hasher.update(&(bytes.len() as u64).to_be_bytes());
-            hasher.update(&bytes);
-            parent = Some(&segment.receipt_id);
-            previous_generation = Some(segment.last_generation);
-            previous_capture = Some(segment.capture_count_through);
-        }
-        if previous_generation.is_some_and(|end| end > self.source.version().generation)
-            || previous_capture.is_some_and(|end| end > self.source.version().capture_count)
-            || parent != self.ancestry_root_receipt.as_ref()
-            || format!("blake3:{}", hasher.finalize()) != self.inherited_segments.digest
+        let rowset = imported_segments_rowset(segments)?;
+        if segments.last().is_some_and(|segment| {
+            segment.last_generation > self.source.version().generation
+                || segment.capture_count_through > self.source.version().capture_count
+        }) || segments.last().map(|segment| &segment.receipt_id)
+            != self.ancestry_root_receipt.as_ref()
+            || rowset != self.inherited_segments
         {
             return Err(invalid("import ancestry commitment differs"));
         }
         Ok(())
     }
+}
+
+/// Canonical bounded ancestry commitment shared by producers and readers.
+/// The result is DATA; exact receipt provenance is verified separately.
+pub(in crate::projection) fn imported_segments_rowset(
+    segments: &[ImportedSegment],
+) -> Result<ImportRowset> {
+    if segments.len() > MAX_SEGMENTS {
+        return Err(invalid("import ancestry exceeds segment bound"));
+    }
+    let mut seen = BTreeSet::new();
+    let mut previous_generation: Option<u64> = None;
+    let mut previous_capture: Option<u64> = None;
+    let mut parent = None;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(SEGMENTS_DOMAIN.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(&(segments.len() as u64).to_be_bytes());
+    let mut metadata_bytes = 0u64;
+    for segment in segments {
+        format::validate_identity(&segment.source_identity)?;
+        codec::digest_token(&segment.receipt_id)?;
+        if segment.parent_receipt_id.as_ref() != parent
+            || !seen.insert(segment.receipt_id.as_str())
+            || segment.first_generation > segment.last_generation
+            || segment.capture_count_before > segment.capture_count_through
+            || previous_generation.map_or(segment.first_generation != 0, |end| {
+                end.checked_add(1) != Some(segment.first_generation)
+            })
+            || previous_capture.map_or(segment.capture_count_before != 0, |through| {
+                through != segment.capture_count_before
+            })
+        {
+            return Err(invalid("import ancestry cycle, order or interval overlap"));
+        }
+        codec::preflight(segment, 4096)?;
+        let bytes = canonical_json(segment).map_err(invalid)?;
+        metadata_bytes = codec::add(metadata_bytes, bytes.len() as u64 + 8)?;
+        if bytes.len() > 4096 || metadata_bytes > 16 * 1024 * 1024 {
+            return Err(invalid("import ancestry segment exceeds bound"));
+        }
+        hasher.update(&(bytes.len() as u64).to_be_bytes());
+        hasher.update(&bytes);
+        parent = Some(&segment.receipt_id);
+        previous_generation = Some(segment.last_generation);
+        previous_capture = Some(segment.capture_count_through);
+    }
+    Ok(ImportRowset {
+        count: segments.len() as u64,
+        digest: format!("blake3:{}", hasher.finalize()),
+    })
 }

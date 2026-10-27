@@ -12,6 +12,17 @@ Earlier statements below about the absent transport describe the previous v1
 boundary. Genuine ordinary-source re-export, physical inherited inverse and
 multi-segment publication remain open; see the [updated history plan](worktrees-partial-vfs-imported-restore-history.md).
 
+The subsequent ordinary-source adapter now authenticates the actual incoming
+admission before planning a source9 export. Its binding commits admission digest,
+incoming prefix/receipt and source database identity; a detached reference cannot
+substitute for the live transaction's admission. The outgoing prefix is distinct
+from that incoming ancestry. The SQL copying path also includes the optional v2
+restore-history rowset after captures, preserving collision preflight and the
+legacy twelve-rowset path. Exact runtime dispositions are in the main checkpoint.
+The physical owner, source publication handoff, ordinary-source destination
+reconstruction and C admission still require their own integration. They must not
+manufacture Provider activation or reuse B's admission as C's family authority.
+
 ## Required outcome
 
 A managed destination becomes an ordinary format-4 Worktree that can reopen

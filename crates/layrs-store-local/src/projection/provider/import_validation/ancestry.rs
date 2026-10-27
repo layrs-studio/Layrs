@@ -30,7 +30,19 @@ pub(super) fn read_ancestry_rows(
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ProvenanceIndex> {
     prefix.validate_fields()?;
-    if prefix.ancestry_root_receipt.is_some() && kind != ImportDatabaseKind::Provider {
+    if kind == ImportDatabaseKind::AdmittedOrdinary
+        && !matches!(
+            &prefix.source,
+            ImportSource::Ordinary {
+                private_schema: 9,
+                admission: Some(_),
+                ..
+            }
+        )
+    {
+        return Err(invalid("admitted source requires ordinary schema9 binding"));
+    }
+    if prefix.ancestry_root_receipt.is_some() && !kind.has_provider_history() {
         return Err(invalid(
             "ordinary source cannot contain provider receipt ancestry",
         ));
@@ -84,8 +96,10 @@ pub(super) fn read_ancestry_rows(
     for (index, receipt) in reversed.iter().enumerate() {
         super::super::cancellation::check(cancel)?;
         let parent = index.checked_sub(1).map(|previous| &reversed[previous]);
+        receipt.source_prefix.require_admission_parent(parent)?;
         segments.push(ImportedSegment::from_receipt(receipt, parent)?);
     }
+    prefix.require_admission_parent(reversed.last())?;
     prefix.validate_segments(&segments)?;
     let (identity, capture_count) = match &prefix.source {
         ImportSource::Ordinary {
@@ -156,13 +170,30 @@ pub(super) fn verify_historical_closures(
             6 => ImportDatabaseKind::Ordinary,
             7 => ImportDatabaseKind::SharedOrdinary,
             8 => ImportDatabaseKind::Provider,
+            9 if matches!(
+                &previous_prefix.source,
+                ImportSource::Ordinary {
+                    admission: Some(_),
+                    ..
+                }
+            ) =>
+            {
+                ImportDatabaseKind::AdmittedOrdinary
+            }
             _ => return Err(invalid("import ancestor schema unsupported")),
         };
-        if (schema != 8 && !receipt_ids.is_empty())
+        if (!kind.has_provider_history() && !receipt_ids.is_empty())
             || matches!(&previous_prefix.source, ImportSource::Provider { .. }) && schema != 8
         {
             return Err(invalid("import ancestor kind/schema boundary differs"));
         }
+        // Historical schema9 is commitment DATA on the current database, never
+        // an instruction to treat that database as the old live admission.
+        previous_prefix.require_admission_parent(
+            index
+                .checked_sub(1)
+                .map(|parent| &lineage.receipts()[parent]),
+        )?;
         let snapshot_digest: String = c.query_row(
             "SELECT digest FROM projection_snapshots WHERE generation=?1",
             [version.generation],

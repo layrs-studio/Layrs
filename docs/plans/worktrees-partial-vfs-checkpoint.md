@@ -1,5 +1,63 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r24-r25 admitted-source planning and restore copying:** ordinary
+schema9 export DATA now commits the actual incoming admission digest, prefix,
+receipt and database identity. The source reader reauthenticates that admission
+under the retained transaction; its historical anchor separates the outgoing
+prefix from incoming ancestry. `plan_admitted_import` derives and fully verifies
+the current closure using an independently supplied image digest. Historical9
+interpretation remains DATA-only on a copied destination; Provider proof checks
+and the physical destination8 schema fence remain unchanged.
+
+Independent critical review found and corrected a P1 omission from r23: the
+copy loop inserted only twelve rowsets, omitting v2 RestoreHistory. Its final
+closure comparison refused populated restore imports after partial transaction
+writes. Optional restore rows are now inserted after captures, with all collision
+checks still preceding every insert. The complete schema8 SQL recipe passes
+exact populated copying, no-write retry, late restore collision with earlier
+rows missing, savepoint/full rollback and the legacy v1 twelve-rowset path.
+All nineteen codec recipes also pass on r24.
+
+The first r24 native recipe failed its final byte-tree assertion after ordinary
+reopen (211.21 s child / 211.25 s parent / 211.271 s outer). The planner and its
+refusals had preserved all bytes; reopening legitimately settled the restore's
+committed budget, releasing its family reservation and deleting the private
+budget. Source investigation and the retained assertion diff identify precisely
+those two database hashes. The fixture was not reopened. The test-only correction
+checks budget count one before reopen and zero after, retains complete byte
+witnesses around each planner, and compares checkout bytes, admission and the
+encoded prefix/image/mappings across reopen. No database is excluded.
+
+That corrected native recipe passes on fresh r25:
+`managed_admitted_export_plans_restore_preimage_without_mutating_admission`,
+203.92 s child / 203.96 s parent / 204.349 s outer (child600/outer660). It starts
+from genuine B9 admission, captures A, restores A over uncaptured B, proves B is
+absent from captures/current scan but present in exact export mappings, reads
+its retained bytes, rejects forged admission and image/reference DATA, and
+reopens to the identical plan. This does not allocate C or physically export.
+
+Workspace all-targets check and final test builds pass. r24's twenty passing
+test bodies and production code are unchanged on r25; only the corrected native
+recipe reruns. r25 EXE SHA-256
+`1c5cb0b2c954ee3f348581546d1ec7bcde994e248132d28637e52bbcb40f2f2a`,
+CodeView age103, 586 retained inputs and nine startup checksums. Source releases
+cover 70 paths, matched against live and retained sources before execution.
+The r25 native-only release SHA-256 is
+`cee4c83c38a867572c2287cae02312dad5c4742c0e12286c3079617b30e7acbe`.
+The portable `admitted-export-evidence-20261027-r24-r25.tar.gz` contains 1,213
+verified files, 3,337,651 bytes, SHA-256
+`1793de094957a8dcf93d200cbcb3b2856f125b4ae2a07ec63e996acd91495e98`.
+It retains r24's failure as well as r25's pass, sources, reviews and logs.
+
+Next is the owned ordinary physical image and export driver, as detailed in the
+[history plan](worktrees-partial-vfs-imported-restore-history.md): genuine Access,
+immutable file pins and compatible readonly rescanning, exact historical content,
+ordinary source intents/allocation, dedicated C family authority, publication
+handoff and C admission. Acceptance still requires C9 reopened with A/B
+unavailable, inherited inverses and positive multi-segment publications. Other
+recovery, companions, expansion, lifecycle/GC, performance and CLI/Desktop
+qualification remain required by the full active goal.
+
 **27 October, r23 imported restore DATA and append-stable history:** prefix v2
 adds a committed restore rowset and ordinary checkout-origin evidence while
 preserving v1 canonical bytes/domain. Source, scoped/ancestor and copied readers
