@@ -35,7 +35,7 @@ pub(super) fn exact_chunk(
 
 /// Verify exactly one chunk using absolute file offsets, without claiming a
 /// full-file digest or reading any bytes outside the selected chunk.
-pub(super) fn copy_verified_chunk(
+pub(in crate::projection::provider) fn copy_verified_chunk(
     manifest: &FileManifest,
     ordinal: usize,
     output: &mut dyn Write,
@@ -69,7 +69,7 @@ pub(super) fn copy_verified_chunk(
     Ok(())
 }
 
-pub(super) fn copy_verified(
+pub(in crate::projection::provider) fn copy_verified(
     manifest: &FileManifest,
     output: &mut dyn Write,
     cancel: &Cancellation,

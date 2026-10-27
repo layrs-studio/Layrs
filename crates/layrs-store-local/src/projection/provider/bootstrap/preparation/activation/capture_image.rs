@@ -302,7 +302,7 @@ fn check(cancel: &Cancellation) -> CauseResult<()> {
     }
 }
 
-pub(super) fn hash_reader(
+pub(in crate::projection::provider) fn hash_reader(
     reader: &mut dyn Read,
     size: u64,
     cancel: &Cancellation,

@@ -25,6 +25,7 @@ pub use provider::{
 };
 #[cfg(windows)]
 pub use provider::{
+    OrdinaryManagedExport,
     ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,

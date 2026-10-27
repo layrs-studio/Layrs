@@ -181,7 +181,7 @@ impl ImportSource {
             Self::Ordinary { identity, .. } | Self::Provider { identity, .. } => identity,
         }
     }
-    fn version(&self) -> &ImportVersion {
+    pub(in crate::projection::provider) fn version(&self) -> &ImportVersion {
         match self {
             Self::Ordinary { version, .. } | Self::Provider { version, .. } => version,
         }

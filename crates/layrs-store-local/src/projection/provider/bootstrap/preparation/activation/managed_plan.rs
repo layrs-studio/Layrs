@@ -21,7 +21,7 @@ use crate::projection::{
     ProjectionIdentity,
 };
 use layrs_core::{
-    projection::{EntryState, ProjectionSnapshot},
+    projection::{EntryState, ProjectionSelection, ProjectionSnapshot},
     scm::{canonical_json, FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget},
 };
 use serde::Serialize;
@@ -35,10 +35,10 @@ const MAX_METADATA_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RequiredManifest {
-    pub file_id: FileId,
-    pub manifest_id: FileManifestId,
-    pub bytes: u64,
+pub(in crate::projection::provider) struct RequiredManifest {
+    pub(in crate::projection::provider) file_id: FileId,
+    pub(in crate::projection::provider) manifest_id: FileManifestId,
+    pub(in crate::projection::provider) bytes: u64,
 }
 impl RequiredManifest {
     fn from_manifest(manifest: &FileManifest) -> Self {
@@ -50,32 +50,32 @@ impl RequiredManifest {
     }
 }
 
-pub(super) struct ImageFile<'a> {
-    pub path: &'a RepoPath,
-    pub manifest: &'a FileManifest,
-    pub executable: bool,
-    pub expected: Option<(FileId, bool)>,
+pub(in crate::projection::provider) struct ImageFile<'a> {
+    pub(in crate::projection::provider) path: &'a RepoPath,
+    pub(in crate::projection::provider) manifest: &'a FileManifest,
+    pub(in crate::projection::provider) executable: bool,
+    pub(in crate::projection::provider) expected: Option<(FileId, bool)>,
 }
-pub(super) struct ImageDeletion<'a> {
-    pub path: &'a RepoPath,
-    pub base: &'a FileId,
-    pub executable: bool,
+pub(in crate::projection::provider) struct ImageDeletion<'a> {
+    pub(in crate::projection::provider) path: &'a RepoPath,
+    pub(in crate::projection::provider) base: &'a FileId,
+    pub(in crate::projection::provider) executable: bool,
 }
 
 /// Factual upper budget from this exact image and manifest set. It is not a
 /// reservation, capacity proof, or permission to mark a destination Ready.
-pub(super) struct ManagedPlanData {
-    pub observation: ProjectionSnapshot,
-    pub observation_digest: String,
-    pub placement: ProjectionSnapshot,
-    pub placement_digest: String,
-    pub capture: CapturedPatch,
-    pub plan: TransitionPlan,
-    pub required_manifests: Vec<RequiredManifest>,
-    pub quota_bytes: u64,
-    pub transaction_id: String,
+pub(in crate::projection::provider) struct ManagedPlanData {
+    pub(in crate::projection::provider) observation: ProjectionSnapshot,
+    pub(in crate::projection::provider) observation_digest: String,
+    pub(in crate::projection::provider) placement: ProjectionSnapshot,
+    pub(in crate::projection::provider) placement_digest: String,
+    pub(in crate::projection::provider) capture: CapturedPatch,
+    pub(in crate::projection::provider) plan: TransitionPlan,
+    pub(in crate::projection::provider) required_manifests: Vec<RequiredManifest>,
+    pub(in crate::projection::provider) quota_bytes: u64,
+    pub(in crate::projection::provider) transaction_id: String,
     // Populated only by rederivation against the original retained source SQL.
-    pub validated_metadata_floor: Option<u64>,
+    pub(in crate::projection::provider) validated_metadata_floor: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -518,6 +518,164 @@ pub(super) fn derive_data(
     supplied: &[FileManifest],
     metadata_bytes: u64,
 ) -> Result<ManagedPlanData> {
+    let version = match &prefix.source {
+        ImportSource::Ordinary { version, .. } | ImportSource::Provider { version, .. } => version,
+    };
+    if fresh != source.initial() || activated != &activation_snapshot(source)? {
+        return Err(invalid(
+            "managed plan fresh observation or identity differs",
+        ));
+    }
+    if version.selection_digest != source.commitment().selection_digest {
+        return Err(invalid(
+            "managed plan selection or capture boundary differs",
+        ));
+    }
+    let base_manifests: Vec<_> = source
+        .descriptors()
+        .iter()
+        .map(|descriptor| &descriptor.manifest)
+        .collect();
+    derive_kernel(
+        prefix,
+        source_identity,
+        fresh,
+        activated,
+        source.selection(),
+        &source.commitment().selection_digest,
+        &base_manifests,
+        image_files,
+        image_deletions,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        historical,
+        supplied,
+        metadata_bytes,
+    )
+}
+
+/// Ordinary admission DATA only. The owner separately binds the current
+/// snapshot, selection, manifests and image to its retained live SQL scope.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn derive_ordinary_data(
+    prefix: &ProviderImportPrefixRecord,
+    current: &ProjectionSnapshot,
+    selection: &ProjectionSelection,
+    selection_digest: &str,
+    base_manifests: &[&FileManifest],
+    image_files: &[ImageFile<'_>],
+    image_deletions: &[ImageDeletion<'_>],
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    historical: &[RequiredManifest],
+    supplied: &[FileManifest],
+    metadata_bytes: u64,
+) -> Result<ManagedPlanData> {
+    prefix.validate_fields()?;
+    let source_identity = match &prefix.source {
+        ImportSource::Ordinary {
+            identity,
+            private_schema: 9,
+            admission: Some(_),
+            ..
+        } if prefix.supports_restore_history() => identity,
+        _ => {
+            return Err(invalid(
+                "managed ordinary plan requires admitted schema9 source",
+            ))
+        }
+    };
+    selection
+        .validate_snapshot(current)
+        .map_err(|e| invalid(e.to_string()))?;
+    if base_manifests.len() > MAX_MANIFESTS || historical.len() > MAX_MANIFESTS {
+        return Err(invalid(
+            "managed ordinary base or history exceeds manifest bound",
+        ));
+    }
+    let expected: BTreeSet<_> = current
+        .entries
+        .iter()
+        .filter(|entry| selection.includes(&entry.path))
+        .filter_map(|entry| match &entry.target {
+            Some(TreeEntryTarget::File { file_id }) => Some(file_id),
+            _ => None,
+        })
+        .collect();
+    let mut actual = BTreeSet::new();
+    for manifest in base_manifests {
+        if !expected.contains(manifest.file_id()) || !actual.insert(manifest.file_id()) {
+            return Err(invalid(
+                "managed ordinary base manifest is extra or duplicated",
+            ));
+        }
+    }
+    if actual != expected {
+        return Err(invalid("managed ordinary base manifest coverage differs"));
+    }
+    let mut history = BTreeMap::new();
+    for row in historical {
+        if history
+            .insert(row.file_id.clone(), (row.manifest_id.clone(), row.bytes))
+            .is_some()
+        {
+            return Err(invalid("managed ordinary historical mapping is duplicated"));
+        }
+    }
+    if crate::projection::provider::import_validation::content_mapping_rowset_data(&history, None)?
+        != prefix.closure.content_mappings
+    {
+        return Err(invalid(
+            "managed ordinary historical mapping commitment differs",
+        ));
+    }
+    derive_kernel(
+        prefix,
+        source_identity,
+        current,
+        current,
+        selection,
+        selection_digest,
+        base_manifests,
+        image_files,
+        image_deletions,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        historical,
+        supplied,
+        metadata_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_kernel(
+    prefix: &ProviderImportPrefixRecord,
+    source_identity: &ProjectionIdentity,
+    fresh: &ProjectionSnapshot,
+    activated: &ProjectionSnapshot,
+    selection: &ProjectionSelection,
+    selection_digest: &str,
+    base_manifests: &[&FileManifest],
+    image_files: &[ImageFile<'_>],
+    image_deletions: &[ImageDeletion<'_>],
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    historical: &[RequiredManifest],
+    supplied: &[FileManifest],
+    metadata_bytes: u64,
+) -> Result<ManagedPlanData> {
     format::validate_identity(source_identity)?;
     format::validate_identity(&destination)?;
     let source_prefix_id = prefix.digest()?;
@@ -537,8 +695,6 @@ pub(super) fn derive_data(
         || destination.space_id != source_identity.space_id
         || destination.origin != source_identity.origin
         || destination.principal_id != source_identity.principal_id
-        || fresh != source.initial()
-        || activated != &activation_snapshot(source)?
         || version.effective_image_digest.len() != 64
         || prefix.closure.companions.count != 0
         || prefix.closure.companion_files.count != 0
@@ -551,11 +707,13 @@ pub(super) fn derive_data(
             "managed plan fresh observation or identity differs",
         ));
     }
-    source
-        .selection()
+    selection
         .validate_snapshot(fresh)
         .map_err(|e| invalid(e.to_string()))?;
-    if version.selection_digest != source.commitment().selection_digest
+    selection
+        .validate_snapshot(activated)
+        .map_err(|e| invalid(e.to_string()))?;
+    if version.selection_digest != selection_digest
         || version.capture_head.is_some() != (version.capture_count > 0)
         || version.capture_count > 4096
     {
@@ -616,7 +774,7 @@ pub(super) fn derive_data(
     for entry in &placement.entries {
         let file = files.remove(&entry.path);
         let deletion = deletions.remove(&entry.path);
-        if !source.selection().includes(&entry.path) {
+        if !selection.includes(&entry.path) {
             if file.is_some() || deletion.is_some() {
                 return Err(invalid("managed image includes excluded path"));
             }
@@ -709,12 +867,12 @@ pub(super) fn derive_data(
     let mut required = BTreeMap::<(FileId, FileManifestId), RequiredManifest>::new();
     let mut lengths = BTreeMap::<FileId, u64>::new();
     let mut manifest_owners = BTreeMap::<FileManifestId, FileId>::new();
-    for descriptor in source.descriptors() {
+    for manifest in base_manifests {
         insert_required(
             &mut required,
             &mut lengths,
             &mut manifest_owners,
-            RequiredManifest::from_manifest(&descriptor.manifest),
+            RequiredManifest::from_manifest(manifest),
         )?;
     }
     for historical in historical {
@@ -832,3 +990,7 @@ fn quota(manifests: &[FileManifest], image: &[ImageFile<'_>], metadata: u64) -> 
 #[cfg(test)]
 #[path = "managed_plan/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "managed_plan/ordinary_tests.rs"]
+mod ordinary_tests;

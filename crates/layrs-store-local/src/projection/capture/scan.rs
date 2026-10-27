@@ -1,5 +1,5 @@
 use super::*;
-use crate::secure_fs::PinnedDirectory;
+use crate::secure_fs::{PinnedDirectory, PinnedFile};
 use layrs_core::{
     projection::{EntryState, ProjectionEntry},
     scm::TreeEntryTarget,
@@ -7,8 +7,22 @@ use layrs_core::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Read,
+    io::{self, Read},
 };
+
+#[cfg(test)]
+mod tests;
+
+// Ordinary scans have no token. The Windows readonly adapter borrows its token
+// through this callback for this call only, keeping VFS out of other platforms.
+type CancellationCheck<'a> = Option<&'a dyn Fn() -> Result<()>>;
+
+fn check_cancel(cancel: CancellationCheck<'_>) -> Result<()> {
+    match cancel {
+        Some(check) => check(),
+        None => Ok(()),
+    }
+}
 
 pub(in crate::projection) struct Scan {
     pub files: BTreeMap<String, Option<CapturedFile>>,
@@ -31,6 +45,55 @@ pub(in crate::projection) fn scan_with_scope(
     _retain: bool,
     scope: Option<&format::ContentScope<'_>>,
 ) -> Result<Scan> {
+    scan_with_mode(store, c, snapshot, scope, LeafOpen::Capture, None)
+}
+
+/// A retained immutable export handle shares only read access. Every scanner
+/// leaf open, including namespace checks and identity reopens, must therefore
+/// avoid the DELETE right requested by the ordinary capture opener.
+#[cfg(windows)]
+pub(in crate::projection) fn scan_readonly_with_scope(
+    store: &ProjectionStore,
+    c: &rusqlite::Connection,
+    snapshot: &ProjectionSnapshot,
+    _retain: bool,
+    scope: Option<&format::ContentScope<'_>>,
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<Scan> {
+    let check = || {
+        cancel
+            .check()
+            .map_err(super::super::provider::recovery::ProviderBootstrapCause::from)
+            .map_err(Into::into)
+    };
+    scan_with_mode(store, c, snapshot, scope, LeafOpen::Readonly, Some(&check))
+}
+
+#[derive(Clone, Copy)]
+enum LeafOpen {
+    Capture,
+    #[cfg(windows)]
+    Readonly,
+}
+impl LeafOpen {
+    fn open(self, parent: &PinnedDirectory, name: &std::ffi::OsStr) -> io::Result<PinnedFile> {
+        match self {
+            Self::Capture => parent.open_file(name),
+            #[cfg(windows)]
+            Self::Readonly => parent.open_readonly_file(name),
+        }
+    }
+}
+
+fn scan_with_mode(
+    store: &ProjectionStore,
+    c: &rusqlite::Connection,
+    snapshot: &ProjectionSnapshot,
+    scope: Option<&format::ContentScope<'_>>,
+    mode: LeafOpen,
+    cancel: CancellationCheck<'_>,
+) -> Result<Scan> {
+    check_cancel(cancel)?;
     if let Some(scope) = scope {
         scope.validate(c, store)?;
     } else {
@@ -38,7 +101,7 @@ pub(in crate::projection) fn scan_with_scope(
     }
     let selection = super::super::selection::for_scan(c, snapshot)?;
     let root = PinnedDirectory::open(&store.root)?;
-    let present = namespace(&root, &store.root, snapshot, &selection)?;
+    let present = namespace(&root, &store.root, snapshot, &selection, mode, cancel)?;
     let mut result = Scan {
         files: BTreeMap::new(),
         changes: Vec::new(),
@@ -46,6 +109,7 @@ pub(in crate::projection) fn scan_with_scope(
     let mut total = 0u64;
     let reserved = snapshot.reserved_paths()?;
     for entry in &snapshot.entries {
+        check_cancel(cancel)?;
         if !selection.includes(&entry.path) {
             continue;
         }
@@ -67,7 +131,7 @@ pub(in crate::projection) fn scan_with_scope(
         let path = entry.path.as_str();
         let actual = if present.contains(path) {
             let (parent, name) = root.existing_parent(Path::new(path))?;
-            let pinned = parent.open_file(&name)?;
+            let pinned = mode.open(&parent, &name)?;
             let mut input = pinned.file();
             let meta = input.metadata()?;
             if meta.len() > MAX_CAPTURE_FILE_BYTES {
@@ -78,29 +142,11 @@ pub(in crate::projection) fn scan_with_scope(
                 .filter(|n| *n <= MAX_CAPTURE_BYTES)
                 .ok_or_else(|| invalid("partial capture exceeds4GiB"))?;
             let executable = executable(&meta);
-            let mut hash = blake3::Hasher::new();
-            hash.update(b"layrs-file-v1\0");
-            let mut buffer = [0u8; 64 * 1024];
-            let mut count = 0u64;
-            loop {
-                let n = input.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                count += n as u64;
-                if count > meta.len() {
-                    return Err(invalid("file changed during capture"));
-                }
-                hash.update(&buffer[..n]);
-            }
-            if count != meta.len() {
-                return Err(invalid("file changed during capture"));
-            }
-            let file_id = FileId::parse(format!("blake3:{}", hash.finalize())).map_err(invalid)?;
+            let file_id = hash_file(&mut input, meta.len(), cancel)?;
             let descriptor = CapturedFile {
                 file_id,
                 executable,
-                bytes: count,
+                bytes: meta.len(),
             };
             if expected != Some((&descriptor.file_id, descriptor.executable)) && !entry.writable {
                 return Err(invalid("read-only projection file was modified"));
@@ -109,7 +155,7 @@ pub(in crate::projection) fn scan_with_scope(
             // written to SQL in bounded chunks after both scans agree.
             pinned.verify_parent()?;
             parent.verify_path_identity()?;
-            if !pinned.same_file(&parent.open_file(&name)?) {
+            if !pinned.same_file(&mode.open(&parent, &name)?) {
                 return Err(invalid("file replaced during capture"));
             }
             Some(descriptor)
@@ -136,26 +182,56 @@ pub(in crate::projection) fn scan_with_scope(
         }
         result.files.insert(path.to_owned(), actual);
     }
-    if namespace(&root, &store.root, snapshot, &selection)? != present {
+    if namespace(&root, &store.root, snapshot, &selection, mode, cancel)? != present {
         return Err(invalid("checkout namespace changed during capture"));
     }
     root.verify_path_identity()?;
+    check_cancel(cancel)?;
     Ok(result)
 }
+
+fn hash_file(input: &mut dyn Read, size: u64, cancel: CancellationCheck<'_>) -> Result<FileId> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"layrs-file-v1\0");
+    let mut buffer = [0u8; 64 * 1024];
+    let mut count = 0u64;
+    loop {
+        check_cancel(cancel)?;
+        let n = input.read(&mut buffer)?;
+        // Cancellation during either a data read or EOF must not yield a
+        // successful descriptor or proceed to another chunk.
+        check_cancel(cancel)?;
+        if n == 0 {
+            break;
+        }
+        count += n as u64;
+        if count > size {
+            return Err(invalid("file changed during capture"));
+        }
+        hash.update(&buffer[..n]);
+    }
+    if count != size {
+        return Err(invalid("file changed during capture"));
+    }
+    check_cancel(cancel)?;
+    FileId::parse(format!("blake3:{}", hash.finalize())).map_err(invalid)
+}
+
 fn namespace(
     root: &PinnedDirectory,
     base: &Path,
     snapshot: &ProjectionSnapshot,
     selection: &layrs_core::projection::ProjectionSelection,
+    mode: LeafOpen,
+    cancel: CancellationCheck<'_>,
 ) -> Result<BTreeSet<String>> {
+    check_cancel(cancel)?;
     let traversal = selection.traversal(snapshot.path_semantics)?;
-    let entries: BTreeMap<&str, &ProjectionEntry> = snapshot
-        .entries
-        .iter()
-        .map(|e| (e.path.as_str(), e))
-        .collect();
+    let mut entries = BTreeMap::<&str, &ProjectionEntry>::new();
     let mut directories = BTreeSet::new();
     for e in &snapshot.entries {
+        check_cancel(cancel)?;
+        entries.insert(e.path.as_str(), e);
         for (i, _) in e.path.as_str().match_indices('/') {
             directories.insert(&e.path.as_str()[..i]);
         }
@@ -169,8 +245,10 @@ fn namespace(
     let mut seen = BTreeSet::new();
     let mut count = 0;
     while let Some((relative, directory)) = pending.pop() {
+        check_cancel(cancel)?;
         directory.verify_path_identity()?;
         for item in fs::read_dir(base.join(&relative))? {
+            check_cancel(cancel)?;
             let item = item?;
             let name = item
                 .file_name()
@@ -210,13 +288,15 @@ fn namespace(
                     )));
                 }
                 // Pinned open rejects symlinks, reparse points and directories.
-                directory.open_file(name.as_ref())?;
+                mode.open(&directory, name.as_ref())?;
                 seen.insert(path);
             }
         }
+        check_cancel(cancel)?;
         directory.verify_path_identity()?;
     }
     root.verify_path_identity()?;
+    check_cancel(cancel)?;
     Ok(seen)
 }
 pub(in crate::projection) fn executable(metadata: &fs::Metadata) -> bool {

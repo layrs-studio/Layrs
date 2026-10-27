@@ -1,5 +1,57 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r27 owned ordinary export source:** `begin_managed_export` now
+retains genuine exclusive ordinary Access, the selected physical image and
+immutable Windows leaf handles. Current file/chunk copies and exact retained
+base/history copies reauthenticate their actual admission, private mappings and
+SQL scope; no detached evidence grants content authority. The common DATA planner
+keeps Provider fixed-observation/activation/selection checks and adds an ordinary
+adapter. Its reservation metadata floor deliberately remains unset.
+
+Independent critical review found and closed two P2 gaps: unchanged selected
+bases were incorrectly resolved only through historical capture mappings, and
+readonly scans/retained manifest verification did not poll cancellation during
+byte work. Bases now resolve independently from the exact scoped private mapping
+without modifying the historical commitment. Metadata bounds precede retained
+byte verification; cancellation polls every shared chunk (at most 1 MiB) and
+every 64 KiB checkout hash read, plus namespace traversal. External namespace
+writers still require quiescence; synchronous OS/SQLite operations are not
+forcibly interrupted.
+
+All 17 released r27 recipes pass: seven ordinary planner cases, six existing
+Provider/common planner regressions, three scanner memory tests and one native
+owner recipe. The native recipe first proves an unchanged base with an actually
+empty historical mapping; then captures A, retains restore-only B and copies
+unrecorded C. It verifies write/delete sharing refusal, exact full/chunk copies,
+base/A/B/C union, wrong-scope/ordinal/pre-cancel refusal before sink writes,
+partial sink failure, deterministic cancellation during real retained-content
+verification, positive close/reopen/reacquisition, complete unchanged checkout
+and family byte witnesses, and ordinary capture after handle release.
+Runtime: 285.10 s child / 285.16 s parent / 285.171 s outer, child900/outer960.
+
+The r26 binary was built/audited but never released or executed: source review
+caught a test assertion using `ProjectionStoreError::source` for an Io variant,
+which exposes its typed cancellation through `io::Error::get_ref` instead.
+Only that assertion changed for r27. Both source/artifact records are retained;
+r26 is not a runtime failure. Workspace all-targets check passes (17.51 s), and
+the corrected final libtest build passes (12.91 s).
+
+r27 EXE SHA-256
+`5902c72587aa4f5d735fb32c116a9e5ecba4566c6c1eb4adb4498fd895666019`,
+CodeView age105, 592 retained inputs and nine startup checks. Independent release
+covers 87 current/retained source paths, SHA-256
+`6e94704a19ddd1b22e3bd18c5be136649f06e5352c984389ce0a5789a91c186e`.
+Portable `ordinary-export-owner-evidence-20261027-r26-r27.tar.gz` contains 1,217
+verified files, 3,376,422 bytes, SHA-256
+`5bb1690789598e5343f2488e6094c33572e179823603d73cd0faac934c873d3b`.
+
+This qualifies the [source owner](worktrees-partial-vfs-ordinary-export-owner.md),
+not C allocation/publication/admission. The next [driver integration](worktrees-partial-vfs-ordinary-export-driver.md)
+must separate B's immutable incoming Ready from bounded outgoing intents, enforce
+live-transfer mutation gates, acquire dedicated C family authority, copy/publish,
+and independently admit C. Inherited inverses, multi-segment publications and all
+remaining programme stages retain their own acceptance requirements.
+
 **27 October, r24-r25 admitted-source planning and restore copying:** ordinary
 schema9 export DATA now commits the actual incoming admission digest, prefix,
 receipt and database identity. The source reader reauthenticates that admission

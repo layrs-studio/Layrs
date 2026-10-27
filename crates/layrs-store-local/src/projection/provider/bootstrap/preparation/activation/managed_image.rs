@@ -17,7 +17,7 @@ use recovery_export::{
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
-mod stream;
+pub(in crate::projection::provider) mod stream;
 
 /// Immutable source manifests are borrowed rather than duplicating the fixed
 /// catalog. Only hashed native replacements own new manifest metadata.

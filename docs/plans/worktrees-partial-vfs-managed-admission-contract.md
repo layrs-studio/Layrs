@@ -19,9 +19,12 @@ substitute for the live transaction's admission. The outgoing prefix is distinct
 from that incoming ancestry. The SQL copying path also includes the optional v2
 restore-history rowset after captures, preserving collision preflight and the
 legacy twelve-rowset path. Exact runtime dispositions are in the main checkpoint.
-The physical owner, source publication handoff, ordinary-source destination
-reconstruction and C admission still require their own integration. They must not
-manufacture Provider activation or reuse B's admission as C's family authority.
+The physical ordinary owner is now qualified on r27 for scoped source reads and
+DATA planning, including independent unchanged bases and cooperative cancellation.
+Source intent/publication handoff, ordinary-source destination reconstruction and
+C admission still require integration. They must not manufacture Provider
+activation or reuse B's admission as C's family authority. The exact remaining
+fences are recorded in the [driver plan](worktrees-partial-vfs-ordinary-export-driver.md).
 
 ## Required outcome
 

@@ -12,6 +12,13 @@ mod managed_destination;
 mod managed_image;
 mod managed_journal;
 mod managed_plan;
+pub(in crate::projection::provider) use capture_image::hash_reader as hash_managed_file;
+pub(in crate::projection::provider) use managed_image::stream::{
+    copy_verified as copy_managed_file, copy_verified_chunk as copy_managed_chunk,
+};
+pub(in crate::projection::provider) use managed_plan::{
+    derive_ordinary_data, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest,
+};
 mod managed_staging;
 mod ranges;
 mod recovery_export;

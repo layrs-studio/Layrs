@@ -1,5 +1,31 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément exporteur ordinaire protégé — r26 à r27
+
+L’exporteur conserve maintenant l’accès exclusif, l’image physique et les handles
+des fichiers. Il copie les contenus courants, les bases sélectionnées et les
+contenus historiques exacts, sans créer C. La revue a corrigé la résolution des
+bases absentes de l’historique et l’annulation pendant les longues lectures.
+
+Les 17 tests r27 passent : sept tests du plan ordinaire, six régressions du
+planificateur existant, trois tests du scanner et une recette native de 285 s.
+Cette dernière vérifie notamment une base sans historique, un contenu conservé
+uniquement pour l’inverse, les copies complètes/par morceau, les refus d’écriture,
+l’annulation pendant une vraie vérification, les témoins complets inchangés et
+la libération des accès après fermeture. Compilation du workspace passée.
+
+r26 est un artefact compilé/audité non exécuté : une assertion de test a été
+corrigée avant lancement. L’archive conserve les deux versions et les preuves
+r27 : `ordinary-export-owner-evidence-20261027-r26-r27.tar.gz`, 1 217 fichiers,
+3 376 422 octets, SHA-256
+`5bb1690789598e5343f2488e6094c33572e179823603d73cd0faac934c873d3b`.
+Inventaire : `ordinary-export-owner-inventory-20261027-r26-r27.json`.
+
+Suite : [pilote B → C](../../plans/worktrees-partial-vfs-ordinary-export-driver.md).
+Le journal sortant doit coexister avec l’admission entrante de B ; C doit obtenir
+ses propres réservations, protections, publication et admission autonome. Les
+inverses hérités, publications successives et autres étapes restent ouverts.
+
 ## Complément planification depuis une source admise — r24 à r25
 
 Le planificateur d’export authentifie maintenant l’admission entrante réelle du

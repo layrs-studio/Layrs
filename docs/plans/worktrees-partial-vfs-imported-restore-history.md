@@ -6,6 +6,12 @@ This remains part of the Worktrees / partial VFS programme, alongside re-export
 of admitted schema9 destinations. A local inverse on schema9 is already a
 different, qualified path; it does not prove an imported ancestor inverse.
 
+Latest source milestone: r27 qualifies the genuine ordinary owner, immutable
+current image, independent selected bases, retained history streams and detached
+plans. All 17 released tests pass; source transfer itself does not allocate or
+admit C. See the [owner contract](worktrees-partial-vfs-ordinary-export-owner.md)
+and [remaining physical driver integration](worktrees-partial-vfs-ordinary-export-driver.md).
+
 ## Transport gap identified before r23
 
 `restore::targets(Inverse)` loads `engine::history_with_scope` and takes the
