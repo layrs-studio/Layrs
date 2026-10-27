@@ -89,6 +89,7 @@ fn prefix(
         schema_version: "layrs.projection-provider-import-prefix.v1".into(),
         kind: ProviderImportKind::ManagedOrdinary,
         source: ImportSource::Ordinary {
+            checkout_identity: None,
             identity: identity.clone(),
             format_digest: TOKEN.into(),
             private_schema: 8,
@@ -98,6 +99,7 @@ fn prefix(
         inherited_segments: row(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: row(2),
             selections: row(1),
             captures: row(count),

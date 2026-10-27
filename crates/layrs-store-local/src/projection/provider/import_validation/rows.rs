@@ -24,6 +24,7 @@ pub(super) enum Kind {
     CompanionFiles,
     CompanionDeletions,
     ContentMappings,
+    RestoreHistory,
 }
 impl Kind {
     fn domain(self) -> &'static [u8] {
@@ -40,6 +41,7 @@ impl Kind {
             Self::CompanionFiles => b"layrs-provider-import-companion-files-v1\0",
             Self::CompanionDeletions => b"layrs-provider-import-companion-deletions-v1\0",
             Self::ContentMappings => b"layrs-provider-import-content-mappings-v1\0",
+            Self::RestoreHistory => b"layrs-provider-import-restore-history-v1\0",
         }
     }
 }
@@ -72,16 +74,18 @@ pub(super) fn preflight(
     specs: &[Spec<'_>],
     cancel: Option<&Cancellation>,
 ) -> CauseResult<Preflight> {
-    if specs.len() != 12 {
-        return Err(invalid("import requires twelve exact rowsets"));
+    if !matches!(specs.len(), 12 | 13) {
+        return Err(invalid(
+            "import requires twelve legacy or thirteen extended rowsets",
+        ));
     }
-    let mut counts = Vec::with_capacity(12);
-    let mut sizes = Vec::with_capacity(12);
+    let mut counts = Vec::with_capacity(specs.len());
+    let mut sizes = Vec::with_capacity(specs.len());
     let mut total_rows = 0u64;
     let mut total_bytes = 0u64;
     for (index, spec) in specs.iter().enumerate() {
         crate::projection::provider::cancellation::check(cancel)?;
-        if index > 0 && specs[index - 1].kind as u8 >= spec.kind as u8 {
+        if spec.kind as usize != index {
             return Err(invalid("import rowset order or duplicate kind differs"));
         }
         let (count, bytes): (u64, u64) = c.query_row(spec.preflight_sql, spec.params, |r| {
@@ -113,10 +117,17 @@ pub(super) fn stream(
     preflight: &Preflight,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ImportClosure> {
-    if specs.len() != 12 || preflight.counts.len() != 12 || preflight.bytes.len() != 12 {
+    if !matches!(specs.len(), 12 | 13)
+        || preflight.counts.len() != specs.len()
+        || preflight.bytes.len() != specs.len()
+        || specs
+            .iter()
+            .enumerate()
+            .any(|(index, spec)| spec.kind as usize != index)
+    {
         return Err(invalid("import rowset preflight shape differs"));
     }
-    let mut output = Vec::with_capacity(12);
+    let mut output = Vec::with_capacity(specs.len());
     for (index, spec) in specs.iter().enumerate() {
         output.push(digest_one(
             c,
@@ -139,6 +150,7 @@ pub(super) fn stream(
         companion_files: output.remove(0),
         companion_deletions: output.remove(0),
         content_mappings: output.remove(0),
+        restore_history: output.pop(),
     })
 }
 

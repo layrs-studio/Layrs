@@ -1,5 +1,25 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément historique de restauration v2 — r23
+
+Les 11 recettes r23 passent : 7 codecs compatibles v1/v2, 3 tests SQL de
+métadonnées et un scénario natif sur destination admise. Une nouvelle restauration
+crée désormais une nouvelle capture même à changements identiques ; l’historique
+déjà engagé reste stable. Déduplication ordinaire, rejeu, réouverture, inverse local
+et fsck réussissent. Le parcours natif dure environ 260 secondes.
+
+`imported-history-evidence-20261027-r23.tar.gz` contient 607 fichiers vérifiés
+(1 723 345 octets), SHA-256
+`e5be607df8aacf7b66e407843dc311bd6e806dd183b2878835072c2b2ceb29d0`.
+Inventaire : `imported-history-inventory-20261027-r23.json`. Sources, revue et
+journaux inclus ; binaires, bases et fixtures restent locaux.
+
+La lecture typée des origines est implémentée et relue, mais l’inverse importé réel,
+le réexport d’une source9 et les publications positives multi-segments ne sont pas
+encore qualifiés. La prochaine étape ajoute le véritable propriétaire et pilote
+d’export ordinaire : [plan détaillé](../../plans/worktrees-partial-vfs-imported-restore-history.md).
+Les autres étapes du programme restent actives.
+
 ## Complément annulation avant journal — r22
 
 La recette native r22 réussit dix cas d’annulation/reprise sur une destination

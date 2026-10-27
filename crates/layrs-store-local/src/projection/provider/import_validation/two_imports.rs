@@ -42,6 +42,7 @@ fn segments_digest(segments: &[ImportedSegment]) -> String {
 
 fn closure(generation: u64, captures: u64, receipts: u64) -> ImportClosure {
     ImportClosure {
+        restore_history: None,
         snapshots: row(generation + 1),
         selections: row(1),
         captures: row(captures),
@@ -278,6 +279,7 @@ fn two_imports_preserve_historical_closures() {
                 schema_version: "layrs.projection-provider-import-prefix.v1".into(),
                 kind: ProviderImportKind::ManagedOrdinary,
                 source: ImportSource::Ordinary {
+                    checkout_identity: None,
                     identity: intermediate_identity,
                     format_digest: super::super::records::codec::hash(
                         "layrs-projection-provider-import-format-v1",
@@ -352,6 +354,7 @@ fn two_imports_preserve_historical_closures() {
                 schema_version: "layrs.projection-provider-import-prefix.v1".into(),
                 kind: ProviderImportKind::ManagedOrdinary,
                 source: ImportSource::Ordinary {
+                    checkout_identity: None,
                     identity: final_identity,
                     format_digest: super::super::records::codec::hash(
                         "layrs-projection-provider-import-format-v1",

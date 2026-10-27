@@ -125,3 +125,17 @@ pub(in crate::projection) fn imported_publication(
         Ok(completed.map(|(publication, _)| (origin.identity, publication)))
     })
 }
+
+pub(in crate::projection) fn restore_history_origin(
+    c: &Connection,
+    marker: &format::Marker,
+    operation_id: &str,
+    sequence: u64,
+    payload: &[u8],
+    cancel: Option<&Cancellation>,
+) -> Result<super::super::import_validation::RestoreHistoryOrigin> {
+    snapshot::with_snapshot(c, cancel, || {
+        let proof = read_admitted_import(c, marker, cancel)?;
+        proof.restore_origin(c, operation_id, sequence, payload, cancel)
+    })
+}

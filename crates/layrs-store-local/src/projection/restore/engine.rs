@@ -371,7 +371,7 @@ fn finish(
     access.verify()?;
     let capture = access.with_content(|c, scope| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let capture = capture::storage::persist_in_transaction_with_scope(
+        let capture = capture::storage::persist_restore_in_transaction_with_scope(
             &tx,
             store,
             &state,
@@ -455,12 +455,45 @@ pub(super) fn history_with_scope(
     )?;
     let journal = decode(&bytes)?;
     let capture = capture::storage::load_with_scope(c, store, sequence, scope)?;
-    if let Some(bound) = &journal.preview.destination {
-        // Imported histories retain the source's exact reviewed destination.
-        // Legacy imports are readable/invertible, while apply refuses to replay
-        // a source approval against this destination. Schema9 imported history
-        // remains unsupported by provenance() until an exact ancestor marker
-        // can be resolved through the typed admitted lineage.
+    let private9 = c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 9;
+    // A later checkout can reuse an ancestor's logical identity. Only the
+    // authenticated incoming capture boundary distinguishes that history from
+    // this destination's local suffix.
+    #[cfg(windows)]
+    let admitted_import =
+        private9 && provider::admitted_ordinary::imported(c, &store.marker, sequence, None)?;
+    #[cfg(not(windows))]
+    let admitted_import = private9;
+    if admitted_import {
+        #[cfg(windows)]
+        {
+            let origin = provider::admitted_ordinary::restore_history_origin(
+                c,
+                &store.marker,
+                id,
+                sequence,
+                &bytes,
+                None,
+            )?;
+            let bound = journal
+                .preview
+                .destination
+                .as_ref()
+                .ok_or_else(|| invalid("imported restore history destination is unbound"))?;
+            if bound.identity != capture.identity
+                || bound.identity != origin.identity
+                || bound.checkout_identity != origin.checkout_identity
+                || capture.projection_generation < origin.minimum_generation
+                || capture.projection_generation > origin.maximum_generation
+            {
+                return Err(invalid("restore history differs from admitted origin"));
+            }
+        }
+        #[cfg(not(windows))]
+        return Err(invalid("managed restore history requires Windows support"));
+    } else if let Some(bound) = &journal.preview.destination {
+        // Legacy imports retain their original destination. Application still
+        // requires a newly reviewed preview bound to the current checkout.
         let marker = if capture.identity == *store.identity() {
             store.marker.clone()
         } else {
@@ -477,18 +510,63 @@ pub(super) fn history_with_scope(
             ));
         }
     }
-    if journal.preview.operation_id != id
-        || capture.projection_generation != journal.preview.projection_generation
-        || capture.projection_digest != journal.preview.projection_digest
-    {
-        return Err(invalid("restore history capture mismatch"));
-    }
     let bytes: Vec<u8> = c.query_row(
         "SELECT payload FROM projection_snapshots WHERE generation=?1",
         [capture.projection_generation],
         |r| r.get(0),
     )?;
     let base: ProjectionSnapshot = serde_json::from_slice(&bytes).map_err(invalid)?;
+    validate_history_preview(&journal, id, &capture, &base)?;
+    for file in journal
+        .preview
+        .before
+        .values()
+        .chain(journal.preview.after.values())
+        .flatten()
+    {
+        capture::storage::file_manifest_with_scope(c, store, file, scope)?;
+    }
+    Ok(Some((journal, capture)))
+}
+
+/// Interpret canonical historical DATA against an independently authenticated
+/// capture, snapshot and origin checkout. This does not authorize content I/O,
+/// open historical filesystem witnesses, or approve a restore at a new root.
+pub(in crate::projection) fn imported_history_preview(
+    bytes: &[u8],
+    id: &str,
+    capture: &CapturedPatch,
+    base: &ProjectionSnapshot,
+    origin_checkout: &str,
+) -> Result<RestorePreview> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(invalid("restore history exceeds8MiB"));
+    }
+    let journal = decode(bytes)?;
+    let bound = journal
+        .preview
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("imported restore history destination is unbound"))?;
+    if bound.identity != capture.identity || bound.checkout_identity != origin_checkout {
+        return Err(invalid("imported restore history origin differs"));
+    }
+    validate_history_preview(&journal, id, capture, base)?;
+    Ok(journal.preview)
+}
+
+fn validate_history_preview(
+    journal: &Journal,
+    id: &str,
+    capture: &CapturedPatch,
+    base: &ProjectionSnapshot,
+) -> Result<()> {
+    if journal.preview.operation_id != id
+        || capture.projection_generation != journal.preview.projection_generation
+        || capture.projection_digest != journal.preview.projection_digest
+    {
+        return Err(invalid("restore history capture mismatch"));
+    }
     validate_paths(&base, &journal.preview.before)?;
     validate_paths(&base, &journal.preview.after)?;
     for (path, expected) in &journal.preview.after {
@@ -514,16 +592,7 @@ pub(super) fn history_with_scope(
             return Err(invalid("restore capture result mismatch"));
         }
     }
-    for file in journal
-        .preview
-        .before
-        .values()
-        .chain(journal.preview.after.values())
-        .flatten()
-    {
-        capture::storage::file_manifest_with_scope(c, store, file, scope)?;
-    }
-    Ok(Some((journal, capture)))
+    Ok(())
 }
 pub(in crate::projection) fn verify_history(
     c: &Connection,

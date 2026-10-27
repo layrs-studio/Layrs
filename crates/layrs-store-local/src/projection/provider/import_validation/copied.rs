@@ -4,7 +4,7 @@
 use super::super::records::Record;
 use super::*;
 
-/// Requires the twelve entire destination tables to equal the verified source
+/// Requires the entire imported destination tables to equal the verified source
 /// scope, including absence of a tail outside that scope. The source proof is
 /// retained DATA; this routine does not reacquire a source or content authority.
 pub(in crate::projection::provider) fn require_exact_copied_rows(
@@ -72,6 +72,19 @@ pub(in crate::projection::provider) fn require_exact_copied_rows(
         if count != expected.count {
             return Err(invalid("copied prefix table has missing or extra rows"));
         }
+    }
+    let expected_history = prefix
+        .closure
+        .restore_history
+        .as_ref()
+        .map_or(0, |rows| rows.count);
+    let actual_history: u64 = c.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM projection_restore_history LIMIT ?1)",
+        [expected_history + 1],
+        |row| row.get(0),
+    )?;
+    if actual_history != expected_history {
+        return Err(invalid("copied restore history has missing or extra rows"));
     }
     scoped::read_scoped_closure(c, proof.metadata.kind, prefix, &proof.metadata, cancel)?;
     super::super::cancellation::check(cancel)?;

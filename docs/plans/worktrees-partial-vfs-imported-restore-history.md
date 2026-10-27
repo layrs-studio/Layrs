@@ -1,31 +1,32 @@
 # Imported restore history and multi-segment publications
 
-27 October 2026. Read-only source investigation; **not implemented or qualified**.
+27 October 2026. V2 codec, bounded SQL DATA and fresh restore frontier qualified
+on r23; **physical imported inverse and schema9 re-export still outstanding**.
 This remains part of the Worktrees / partial VFS programme, alongside re-export
 of admitted schema9 destinations. A local inverse on schema9 is already a
 different, qualified path; it does not prove an imported ancestor inverse.
 
-## Current transport gap
+## Transport gap identified before r23
 
 `restore::targets(Inverse)` loads `engine::history_with_scope` and takes the
 historical preview's `before`. If the associated capture belongs to another
-identity, history currently uses `conversion::provenance` to recover the source
+identity, history previously used `conversion::provenance` to recover the source
 Marker and compare the receipt's checkout identity. That legacy interpreter
-explicitly refuses schema9.
+still refuses schema9; the new typed route is described below.
 
 Replacing only that call would not establish legitimate imported history:
-`provider/import_validation/source.rs::require_quiescent_history` currently
-forbids `projection_restore_history`. The twelve committed rowsets in
-`ImportClosure`, `rows::Kind`, scoped readers and copy layouts do not represent
-or copy restore receipts. No existing legitimate managed ingress can deliver
-the ancestor receipt required by a successful inverse test.
+`provider/import_validation/source.rs::require_quiescent_history` previously
+forbade `projection_restore_history`. The twelve v1 committed rowsets did not
+represent or copy restore receipts. V2 adds this DATA transport; the genuine
+ordinary-source physical driver needed to deliver an ancestor receipt remains
+outstanding.
 
 Provider origins carry `ImportSource::Provider.binding.recovery`, including the
 original identity and checkout identity, with activation bindings checked by
-the scoped readers. Ordinary origins carry identity and `format_digest` but no
-recoverable Marker or checkout identity. Both the receipt rowset and the missing
-ordinary checkout proof need authenticated transport, rather than destination
-SQL injection or a lookup by matching identity alone.
+the scoped readers. Ordinary v1 origins carry identity and `format_digest` but no
+recoverable Marker or checkout identity. R23 adds both the receipt rowset and the
+ordinary checkout commitment with authenticated source-reference comparison,
+rather than destination SQL injection or a lookup by matching identity alone.
 
 ## Required proof chain
 
@@ -94,5 +95,80 @@ destination captures and the later local suffix use their ordinary path.
 - Preserve old prefix codecs/closures, legacy inverses and local schema9
   inverses. Keep unsupported re-export paths explicitly refused until integrated.
 
-No native or SQL execution was performed for this investigation. These are
-requirements for the next implementation, not accepted behavior.
+## Current implementation and append stability
+
+The working tree adds prefix v2 with a distinct digest domain, an optional-on-wire
+restore-history rowset that is mandatory in v2, and an ordinary-origin checkout
+identity compared against the source Marker. V1 omits both extensions and keeps
+its original bytes/domain. V1 never authorizes restore rows, even when a provider
+binding already carries a checkout identity. Source schema9 remains refused until
+the separate genuine re-export contract is implemented.
+
+V2 normalizes `operation_id,capture_sequence,payload` in binary operation-ID order,
+scoped by the prefix's capture frontier. The source, historical ancestor, copied
+destination and admitted-origin readers must all check that same scope. Preimages
+and results contribute their FileId/length requirements before deriving exact
+content mappings; each ancestor uses only its own historical frontier.
+
+A newly completed restore now requires a fresh capture sequence, even when its
+changes equal the previous capture. Ordinary capture deduplication and content
+deduplication remain unchanged. Existing-operation replay returns its old receipt.
+This is necessary: without a fresh sequence, a later restore could add a row below
+an already committed frontier. Historical receipts that already share a sequence
+remain valid; restore-row count must not be constrained by capture count.
+
+This append-stability guarantee is a current-writer contract. Concurrent use of
+older writers against a schema6/7 source is not qualified: those writers could
+still reuse a capture sequence. Supporting such downgrade coexistence would need
+explicit historical membership or a durable ordinal, not an inferred SQL rowid or
+lexicographic operation timestamp.
+
+All-targets checks and the final test build pass. Independent review closed the
+local/imported dispatch finding: schema9 uses its admitted capture boundary,
+not identity inequality, since an ancestor can share the current logical identity.
+All 11 released r23 recipes pass: seven codecs, three SQL-memory metadata tests,
+and the real admitted fresh-sequence/replay/reopen/local-inverse recipe (260.31 s
+child). The SQL tests use detached synthetic metadata and mappings, not physical
+content authority. No successful inherited inverse, physical re-export9 or complete
+multi-segment publication is claimed. Exact evidence is in the checkpoint and
+`imported-history-evidence-20261027-r23.tar.gz` portable supplement.
+
+## Next physical integration: genuine admitted ordinary export
+
+Source investigation confirms that the current managed planner/allocation/staging
+drivers are reached by native fixtures, not an orchestrated public export API.
+`ProviderActiveSession` is not an appropriate owner for an admitted ordinary
+source. Add an ordinary managed-export holder entered from `ProjectionStore`,
+owning its genuine `format::Access`, rather than synthesizing provider activation.
+
+Required dependency order:
+
+1. Add a source9 DATA adapter using `read_admitted_import`, anchored on its actual
+   incoming receipt. Outgoing transfers must not become incoming ancestry. Update
+   source/schema/ancestry/copy interpretation without labelling a source9 as 8 or
+   interpreting the destination8 using the source9 physical schema.
+2. Capture an ordinary export image under `Access::with_content`: current snapshot,
+   selection and scan, pinned checkout files, verified manifests/chunks, repeated
+   image validation before effects and during copying. Retain exact historical
+   private mappings through scoped manifest/stream readers. No `ContentScope`
+   escapes its callback; the holder keeps Access and reconstructs scopes.
+3. Extract the common planner from the provider-only Active/initial/activation
+   assumptions. Provider checks remain on its adapter; the ordinary adapter supplies
+   its authenticated observation, placement, files/deletions and historical union.
+4. Add ordinary source-intent validation and physical allocation through the same
+   planned/copying/staging/ready/published protocol. Current SQL and parent/root
+   ownership paths depend on A/P/activation and require genuine ordinary equivalents.
+5. Extend family import authority, content production, Ready inputs and autonomous
+   destination-prefix reconstruction. B's admitted lease authorizes B only; C's
+   reservation/protection must still use dedicated import authority and exact C pins.
+6. Extend publication handoff and C admission. Ordinary v2's checkout identity alone
+   cannot replace the source Provider recovery binding: the handoff also requires
+   the actual source database identity and an authenticated incoming-admission link.
+   Add a dedicated admitted-source reference/variant instead of relaxing equality.
+
+The existing real-admission fixture provides B9 after all A holders have closed.
+Modify/capture/restore B through production ordinary APIs, then export B to C using
+the new driver. Acceptance must reach C9 reopened with A and B unavailable, including
+inherited history and unchanged B admission; stopping at copied C8 would miss the
+remaining handoff and admission requirements. This is implementation work still
+outstanding, not runtime evidence from the current metadata tests.

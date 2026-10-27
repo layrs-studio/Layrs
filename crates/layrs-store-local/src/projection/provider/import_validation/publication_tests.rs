@@ -68,6 +68,7 @@ fn prefix(
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: row(2),
             selections: row(1),
             captures: row(0),

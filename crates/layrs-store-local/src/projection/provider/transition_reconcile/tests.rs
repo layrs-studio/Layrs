@@ -117,6 +117,7 @@ impl Data {
             schema_version: "layrs.projection-provider-import-prefix.v1".into(),
             kind: ProviderImportKind::ExpandedProvider,
             source: ImportSource::Ordinary {
+                checkout_identity: None,
                 identity: identity.clone(),
                 format_digest: TOKEN.into(),
                 private_schema: 6,
@@ -136,6 +137,7 @@ impl Data {
                 digest: format!("blake3:{}", segments.finalize()),
             },
             closure: ImportClosure {
+                restore_history: None,
                 snapshots: row(8),
                 selections: row(1),
                 captures: row(1),

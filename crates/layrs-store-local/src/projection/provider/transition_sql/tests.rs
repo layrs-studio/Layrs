@@ -80,6 +80,7 @@ fn planned(
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: rowset(2),
             selections: rowset(1),
             captures: rowset(0),

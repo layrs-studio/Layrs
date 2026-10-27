@@ -224,6 +224,18 @@ pub(super) fn verify_historical_closures(
             activation_ids.insert(activation_map_id.clone());
         }
         let prefix_id = previous_prefix.digest()?;
+        // Keep the monotonic capture scope separate: later restore preimages
+        // must not become authority for an earlier ancestor's mapping closure.
+        let mut historical_content_ids = content_file_ids.clone();
+        let mut historical_lengths = capture_lengths.clone();
+        super::restore_history::extend_content(
+            c,
+            previous_prefix,
+            lineage,
+            &mut historical_content_ids,
+            &mut historical_lengths,
+            cancel,
+        )?;
         let scope = ScopeView {
             kind,
             prefix_id: &prefix_id,
@@ -231,8 +243,8 @@ pub(super) fn verify_historical_closures(
             activation_ids: &activation_ids,
             receipt_ids: &receipt_ids,
             companion_ids: &companion_ids,
-            content_file_ids: &content_file_ids,
-            capture_lengths: &capture_lengths,
+            content_file_ids: &historical_content_ids,
+            capture_lengths: &historical_lengths,
             receipts: &lineage.receipts()[..index],
             lineage,
         };

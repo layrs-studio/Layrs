@@ -69,6 +69,31 @@ pub(in crate::projection) fn persist_in_transaction_with_scope(
     scan: scan::Scan,
     scope: Option<&format::ContentScope<'_>>,
 ) -> Result<CapturedPatch> {
+    persist_transaction(c, store, state, scan, scope, true)
+}
+
+/// A new restore operation must advance the capture frontier even when its
+/// file changes match the previous capture. Otherwise appending its receipt
+/// could change an already committed import's historical rowset. Content
+/// storage still deduplicates; replay of an existing restore returns earlier.
+pub(in crate::projection) fn persist_restore_in_transaction_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    state: &VersionedProjection,
+    scan: scan::Scan,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<CapturedPatch> {
+    persist_transaction(c, store, state, scan, scope, false)
+}
+
+fn persist_transaction(
+    c: &Connection,
+    store: &ProjectionStore,
+    state: &VersionedProjection,
+    scan: scan::Scan,
+    scope: Option<&format::ContentScope<'_>>,
+    reuse_previous: bool,
+) -> Result<CapturedPatch> {
     validate_content_scope(c, store, scope)?;
     let previous: Option<u64> =
         c.query_row("SELECT MAX(sequence) FROM projection_captures", [], |r| {
@@ -78,7 +103,8 @@ pub(in crate::projection) fn persist_in_transaction_with_scope(
         .map(|n| load_with_scope(c, store, n, scope))
         .transpose()?;
     if let Some(previous) = &parent {
-        if previous.identity == *store.identity()
+        if reuse_previous
+            && previous.identity == *store.identity()
             && previous.projection_digest == state.digest
             && previous.changes == scan.changes
         {

@@ -67,6 +67,7 @@ fn planned(
         inherited_segments: rowset(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: rowset(2),
             selections: rowset(1),
             captures: rowset(0),

@@ -35,6 +35,7 @@ fn prefix() -> ProviderImportPrefixRecord {
         schema_version: "layrs.projection-provider-import-prefix.v1".into(),
         kind: ProviderImportKind::ManagedOrdinary,
         source: ImportSource::Ordinary {
+            checkout_identity: None,
             identity: identity("source"),
             format_digest: ID.into(),
             private_schema: 8,
@@ -51,6 +52,7 @@ fn prefix() -> ProviderImportPrefixRecord {
         inherited_segments: imported(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: imported(3),
             selections: imported(1),
             captures: imported(0),

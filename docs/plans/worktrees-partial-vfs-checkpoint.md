@@ -1,5 +1,47 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r23 imported restore DATA and append-stable history:** prefix v2
+adds a committed restore rowset and ordinary checkout-origin evidence while
+preserving v1 canonical bytes/domain. Source, scoped/ancestor and copied readers
+carry exact `operation_id,capture_sequence,payload` rows; before/after content
+requirements participate in exact mappings. Schema9 inverse consumption now has
+a typed incoming-admission origin route. Independent review corrected dispatch
+to use the imported capture boundary, not logical identity inequality: an old
+checkout can have the same logical identity as a later destination.
+
+New restore operations always append a fresh capture, so a later restore cannot
+add a receipt below an already committed capture frontier. Ordinary capture and
+content deduplication remain; existing-operation replay adds no history. Seven
+codec tests and three SQL-memory DATA recipes pass on r23. The SQL fixtures
+prove canonical metadata/mapping commitments and refusals, not content residence
+or a genuine physical multi-segment import.
+
+The released native recipe
+`managed_restore_advances_frontier_without_disabling_capture_deduplication`
+passes on a real admitted destination: A capture/dedup, dirty B restore A, dirty C
+restore A, distinct fresh captures with identical changes, unchanged earlier
+history, ordinary dedup, old-operation replay, reopen, inverse to C and retained
+content fsck. Runtime 260.31 s child / 260.38 s parent / 260.394 s outer,
+child480/outer540. No inherited inverse or new source export is exercised.
+
+r23 EXE SHA-256
+`a63195260d1059f44f381845771c190d597cc075f7d12d39919c770a4877024f`,
+CodeView age101, 583 retained inputs and nine startup checksums. Independent
+source release covers 65 files and exactly 11 recipes; hashes matched current
+sources before execution. All-targets checks and final test build pass. The
+portable `imported-history-evidence-20261027-r23.tar.gz` contains 607 verified
+files, 1,723,345 bytes, SHA-256
+`e5be607df8aacf7b66e407843dc311bd6e806dd183b2878835072c2b2ceb29d0`.
+
+Next is genuine admitted ordinary export, not just allowing schema9 in the
+source enum. Current planner/allocation/Ready/publication/admission inputs still
+depend on provider activation; the [updated implementation plan](worktrees-partial-vfs-imported-restore-history.md)
+records the ordinary owner, source admission/database evidence and public-driver
+work. Acceptance must reach C9 reopened without A/B, then inherited inverses and
+positive multi-segment publications. Remaining recovery, companions, expansion,
+lifecycle/GC and CLI/Desktop acceptance remain in the active programme. Older
+writers against exported sources and process crashes/hot journals are unqualified.
+
 **27 October, r22 prejournal cancellation:** admitted schema9 now has a dedicated
 bound/direct restore-cancellation route, with clean private RO preflight,
 positive close, complete family/physical validation, fresh writer comparison,

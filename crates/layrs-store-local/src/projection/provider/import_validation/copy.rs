@@ -6,8 +6,9 @@ use super::{
     *,
 };
 use rusqlite::{
-    OptionalExtension, params, params_from_iter,
+    params, params_from_iter,
     types::{Value, ValueRef},
+    OptionalExtension,
 };
 
 struct Layout {
@@ -78,6 +79,11 @@ fn layout(kind: Kind) -> Layout {
             select_key: "SELECT file_id,manifest_id,bytes FROM projection_content WHERE file_id=?1",
             key_columns: 1,
         },
+        Kind::RestoreHistory => Layout {
+            insert: "INSERT INTO projection_restore_history(operation_id,capture_sequence,payload) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
+            select_key: "SELECT operation_id,capture_sequence,payload FROM projection_restore_history WHERE operation_id=?1",
+            key_columns: 1,
+        },
     }
 }
 
@@ -132,7 +138,7 @@ fn require_reference(
     Ok(())
 }
 
-/// Exact schema8 declares this complete FK graph for the twelve copied
+/// Exact schema8 declares this complete FK graph for the copied
 /// rowsets. Each query is an indexed point lookup from one bounded source row.
 fn require_copied_references(
     destination: &Connection,
@@ -156,6 +162,7 @@ fn require_copied_references(
             require_reference(destination, CAPTURE_SEQUENCE, &row[0])?;
             require_reference(destination, SNAPSHOT_GENERATION, &row[5])?;
         }
+        Kind::RestoreHistory => require_reference(destination, CAPTURE_SEQUENCE, &row[1])?,
         Kind::Catalogs => require_reference(destination, SNAPSHOT_GENERATION, &row[1])?,
         Kind::Descriptors => require_reference(destination, CATALOG_ID, &row[0])?,
         Kind::ActivationMaps => {

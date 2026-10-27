@@ -169,6 +169,37 @@ impl VerifiedDestinationPrefix<'_> {
             .lineage
             .capture_source(sequence, maximum_generation)
     }
+
+    pub(in crate::projection::provider) fn restore_origin(
+        &self,
+        c: &Connection,
+        operation_id: &str,
+        sequence: u64,
+        payload: &[u8],
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<RestoreHistoryOrigin> {
+        self.require_prefix_scope(c, cancel)?;
+        if operation_id.is_empty() || operation_id.len() > 96 || payload.len() > 8 * 1024 * 1024 {
+            return Err(invalid("restore origin row exceeds bound"));
+        }
+        let origin = self
+            .metadata
+            .lineage
+            .restore_origin(&self.prefix, sequence)?;
+        // Compare the caller's previously read row with this same admitted
+        // snapshot, whose full historical closure was just reinterpreted.
+        let matches: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projection_restore_history WHERE operation_id=?1 AND capture_sequence=?2 AND payload=?3)",
+            rusqlite::params![operation_id, sequence, payload],
+            |row| row.get(0),
+        )?;
+        if !matches {
+            return Err(invalid(
+                "restore origin row changed outside admitted snapshot",
+            ));
+        }
+        Ok(origin)
+    }
 }
 
 /// Read links from the actual destination, never from a caller-selected prefix.

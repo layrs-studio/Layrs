@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection::{RecoveryBinding, provider::validation::tests::fixture::Fixture as Pure};
+use crate::projection::{provider::validation::tests::fixture::Fixture as Pure, RecoveryBinding};
 use layrs_core::scm::{SpaceId, StoreId, WorktreeId};
 
 const ID0: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
@@ -36,6 +36,7 @@ fn closure() -> ImportClosure {
         companion_files: rowset(0),
         companion_deletions: rowset(0),
         content_mappings: rowset(0),
+        restore_history: None,
     }
 }
 fn prefix() -> ProviderImportPrefixRecord {
@@ -46,6 +47,7 @@ fn prefix() -> ProviderImportPrefixRecord {
             identity: identity("source"),
             format_digest: ID0.into(),
             private_schema: 8,
+            checkout_identity: None,
             version: ImportVersion {
                 generation: 2,
                 snapshot_digest: RAW.into(),
@@ -132,6 +134,234 @@ fn provider_prefix() -> (ProviderImportPrefixRecord, Pure, ProviderActivationRec
     (prefix, f, activation)
 }
 
+fn prefix_v2() -> ProviderImportPrefixRecord {
+    let mut prefix = prefix();
+    prefix.schema_version = PREFIX_SCHEMA_V2.into();
+    prefix.closure.restore_history = Some(rowset(0));
+    let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut prefix.source
+    else {
+        unreachable!();
+    };
+    *checkout_identity = Some("fs:v1:0000000000000001:0000000000000002".into());
+    prefix
+}
+
+#[test]
+fn prefix_v1_preserves_legacy_bytes_and_omits_restore_extensions() {
+    let prefix = prefix();
+    let empty = serde_json::json!({ "count": 0, "digest": ID0 });
+    let legacy = serde_json::json!({
+        "schemaVersion": "layrs.projection-provider-import-prefix.v1",
+        "kind": "managedOrdinary",
+        "source": {
+            "kind": "ordinary",
+            "identity": identity("source"),
+            "format_digest": ID0,
+            "private_schema": 8,
+            "version": {
+                "generation": 2,
+                "snapshotDigest": RAW,
+                "selectionDigest": RAW,
+                "captureCount": 0,
+                "captureHead": null,
+                "effectiveImageDigest": RAW
+            }
+        },
+        "destinationIdentity": identity("destination"),
+        "inheritedSegments": empty,
+        "ancestryRootReceipt": null,
+        "closure": {
+            "snapshots": { "count": 3, "digest": ID0 },
+            "selections": { "count": 3, "digest": ID0 },
+            "captures": empty,
+            "publications": empty,
+            "catalogs": empty,
+            "descriptors": empty,
+            "activationMaps": empty,
+            "transitionReceipts": empty,
+            "companions": empty,
+            "companionFiles": empty,
+            "companionDeletions": empty,
+            "contentMappings": empty
+        }
+    });
+    let bytes = canonical_json(&legacy).unwrap();
+    assert_eq!(prefix.encode().unwrap(), bytes);
+    assert_eq!(ProviderImportPrefixRecord::decode(&bytes).unwrap(), prefix);
+    assert_eq!(prefix.digest().unwrap(), codec::hash(PREFIX_DOMAIN, &bytes));
+    assert!(!prefix.supports_restore_history());
+    assert_eq!(prefix.authenticated_checkout_identity().unwrap(), None);
+
+    // Canonical decoding rejects explicit nulls as well as populated v1 extensions.
+    for (section, field) in [
+        ("closure", "restoreHistory"),
+        ("source", "checkout_identity"),
+    ] {
+        let mut extended = legacy.clone();
+        extended[section][field] = serde_json::Value::Null;
+        assert!(ProviderImportPrefixRecord::decode(&canonical_json(&extended).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn prefix_v2_roundtrips_and_commits_restore_history_and_checkout() {
+    let mut prefix = prefix_v2();
+    let bytes = prefix.encode().unwrap();
+    assert_eq!(ProviderImportPrefixRecord::decode(&bytes).unwrap(), prefix);
+    assert!(prefix.supports_restore_history());
+    assert_eq!(
+        prefix.authenticated_checkout_identity().unwrap(),
+        Some("fs:v1:0000000000000001:0000000000000002")
+    );
+    let digest = prefix.digest().unwrap();
+    assert_eq!(digest, codec::hash(PREFIX_DOMAIN_V2, &bytes));
+    assert_ne!(digest, codec::hash(PREFIX_DOMAIN, &bytes));
+    prefix.closure.restore_history.as_mut().unwrap().digest = ID1.into();
+    assert_ne!(prefix.digest().unwrap(), digest);
+    prefix.closure.restore_history.as_mut().unwrap().digest = ID0.into();
+    if let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut prefix.source
+    {
+        *checkout_identity = Some("fs:v1:0000000000000001:0000000000000003".into());
+    }
+    assert_ne!(prefix.digest().unwrap(), digest);
+}
+
+#[test]
+fn prefix_versions_reject_missing_mixed_and_unknown_extensions() {
+    let mut missing_history = prefix_v2();
+    missing_history.closure.restore_history = None;
+    assert!(missing_history.encode().is_err());
+    assert!(missing_history.authenticated_checkout_identity().is_err());
+    let mut missing_checkout = prefix_v2();
+    if let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut missing_checkout.source
+    {
+        *checkout_identity = None;
+    }
+    assert!(missing_checkout.encode().is_err());
+    let mut mixed = prefix_v2();
+    mixed.schema_version = PREFIX_SCHEMA.into();
+    assert!(mixed.encode().is_err());
+    mixed.closure.restore_history = None;
+    assert!(mixed.encode().is_err());
+    let mut history_only = prefix();
+    history_only.closure.restore_history = Some(rowset(0));
+    assert!(history_only.encode().is_err());
+    let mut unknown = prefix_v2();
+    unknown.schema_version = "layrs.projection-provider-import-prefix.v3".into();
+    assert!(unknown.encode().is_err());
+    assert!(unknown.digest().is_err());
+
+    let mut bytes: serde_json::Value =
+        serde_json::from_slice(&prefix_v2().encode().unwrap()).unwrap();
+    bytes["source"]["private_schema"] = 9.into();
+    assert!(ProviderImportPrefixRecord::decode(&canonical_json(&bytes).unwrap()).is_err());
+}
+
+#[test]
+fn prefix_v2_restore_rows_share_total_bound_and_validate_commitment() {
+    let mut prefix = prefix_v2();
+    prefix.closure.restore_history = Some(rowset(MAX_ROWS - 6));
+    prefix.encode().unwrap();
+    prefix.closure.restore_history.as_mut().unwrap().count += 1;
+    assert!(prefix.encode().is_err());
+    prefix.closure.restore_history.as_mut().unwrap().count = MAX_ROWS + 1;
+    assert!(prefix.encode().is_err());
+    prefix.closure.restore_history = Some(ImportRowset {
+        count: 0,
+        digest: RAW.into(),
+    });
+    assert!(prefix.encode().is_err());
+}
+
+#[test]
+fn prefix_v2_checkout_requires_canonical_native_directory_identity() {
+    for checkout in [
+        "",
+        "1:2:3",
+        "fs:v1:0000000000000001:000000000000000A",
+        "fs:v1:1:2",
+        &"x".repeat(513),
+    ] {
+        let mut prefix = prefix_v2();
+        if let ImportSource::Ordinary {
+            checkout_identity, ..
+        } = &mut prefix.source
+        {
+            *checkout_identity = Some(checkout.into());
+        }
+        assert!(prefix.encode().is_err());
+    }
+}
+
+#[test]
+fn prefix_v2_ordinary_checkout_must_match_exact_source_marker() {
+    let fixture = Pure::new("G1", false);
+    let marker = &fixture.allocation.format;
+    let mut prefix = prefix_v2();
+    if let ImportSource::Ordinary {
+        identity,
+        format_digest,
+        checkout_identity,
+        ..
+    } = &mut prefix.source
+    {
+        *identity = marker.identity.clone();
+        *format_digest = codec::hash(
+            "layrs-projection-provider-import-format-v1",
+            &marker.bytes().unwrap(),
+        );
+        *checkout_identity = Some(marker.checkout_identity().into());
+    }
+    prefix
+        .require_references(ImportSourceReferences::Ordinary(marker))
+        .unwrap();
+    if let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut prefix.source
+    {
+        *checkout_identity = Some("fs:v1:ffffffffffffffff:ffffffffffffffff".into());
+        assert_ne!(
+            checkout_identity.as_deref(),
+            Some(marker.checkout_identity())
+        );
+    }
+    prefix.validate_fields().unwrap();
+    assert!(prefix
+        .require_references(ImportSourceReferences::Ordinary(marker))
+        .is_err());
+}
+
+#[test]
+fn prefix_v2_provider_uses_binding_checkout_and_v1_has_no_restore_authority() {
+    let (mut prefix, fixture, activation) = provider_prefix();
+    assert_eq!(prefix.authenticated_checkout_identity().unwrap(), None);
+    prefix.schema_version = PREFIX_SCHEMA_V2.into();
+    assert!(prefix.encode().is_err());
+    prefix.closure.restore_history = Some(rowset(0));
+    assert_eq!(
+        prefix.authenticated_checkout_identity().unwrap(),
+        Some(fixture.allocation.format.checkout_identity())
+    );
+    prefix
+        .require_references(ImportSourceReferences::Provider {
+            allocation: &fixture.allocation,
+            prepared: &fixture.prepared,
+            activation: &activation,
+        })
+        .unwrap();
+    let bytes = prefix.encode().unwrap();
+    assert_eq!(ProviderImportPrefixRecord::decode(&bytes).unwrap(), prefix);
+    let mut mixed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    mixed["source"]["checkout_identity"] = fixture.allocation.format.checkout_identity().into();
+    assert!(ProviderImportPrefixRecord::decode(&canonical_json(&mixed).unwrap()).is_err());
+}
+
 #[test]
 fn provider_import_rejects_rehashed_family_and_control_forgery() {
     let (prefix, f, activation) = provider_prefix();
@@ -157,15 +387,13 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(
-        forged
-            .require_references(ImportSourceReferences::Provider {
-                allocation: &f.allocation,
-                prepared: &f.prepared,
-                activation: &forged_map,
-            })
-            .is_err()
-    );
+    assert!(forged
+        .require_references(ImportSourceReferences::Provider {
+            allocation: &f.allocation,
+            prepared: &f.prepared,
+            activation: &forged_map,
+        })
+        .is_err());
 
     let alternate = Pure::new("G0", false);
     assert_ne!(
@@ -187,15 +415,13 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(
-        forged
-            .require_references(ImportSourceReferences::Provider {
-                allocation: &f.allocation,
-                prepared: &f.prepared,
-                activation: &forged_map,
-            })
-            .is_err()
-    );
+    assert!(forged
+        .require_references(ImportSourceReferences::Provider {
+            allocation: &f.allocation,
+            prepared: &f.prepared,
+            activation: &forged_map,
+        })
+        .is_err());
 }
 fn segments_digest(segments: &[ImportedSegment]) -> String {
     let mut h = blake3::Hasher::new();
@@ -401,6 +627,7 @@ fn prefix_cumulative_rows_and_compactness_are_fenced() {
         identity: identity("destination"),
         format_digest: ID0.into(),
         private_schema: 8,
+        checkout_identity: None,
         version: ImportVersion {
             generation: 2,
             snapshot_digest: RAW.into(),
@@ -448,8 +675,8 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
         digest: &file_digest,
     };
     file.require_row(ID0, projection).unwrap();
-    assert!(
-        file.require_row(
+    assert!(file
+        .require_row(
             ID0,
             CompanionFileRowData {
                 companion_id: ID0,
@@ -464,8 +691,7 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
                 digest: &file_digest,
             }
         )
-        .is_err()
-    );
+        .is_err());
     deletion
         .require_row(
             ID0,
@@ -506,24 +732,20 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
     header
         .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
         .unwrap();
-    assert!(
-        header
-            .require_row(CompanionHeaderRowData {
-                id: &header.digest().unwrap(),
-                file_count: 1,
-                deletion_count: 1,
-                files_digest: &header.files_digest,
-                deletions_digest: &header.deletions_digest,
-                payload: &header.encode().unwrap(),
-            })
-            .is_ok()
-    );
+    assert!(header
+        .require_row(CompanionHeaderRowData {
+            id: &header.digest().unwrap(),
+            file_count: 1,
+            deletion_count: 1,
+            files_digest: &header.files_digest,
+            deletions_digest: &header.deletions_digest,
+            payload: &header.encode().unwrap(),
+        })
+        .is_ok());
     deletion.path = RepoPath::parse("a.txt").unwrap();
-    assert!(
-        header
-            .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
-            .is_err()
-    );
+    assert!(header
+        .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
+        .is_err());
     header.files_digest = RAW.into(); // raw64 is never a schema8 rowset digest
     assert!(header.validate_fields().is_err());
     assert!(

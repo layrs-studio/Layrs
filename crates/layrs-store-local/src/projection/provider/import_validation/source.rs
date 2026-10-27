@@ -145,7 +145,7 @@ pub(in crate::projection) fn read_source_metadata(
     } else if matches!(&prefix.source, ImportSource::Provider { .. }) {
         return Err(invalid("provider source requires schema8 backend"));
     }
-    require_quiescent_history(c, marker, kind, &lineage, cancel)?;
+    require_quiescent_history(c, marker, kind, prefix, &lineage, cancel)?;
     let (head_count, head_generation): (u64, Option<u64>) = c.query_row(
         "SELECT count(*),max(generation) FROM projection_head",
         [],
@@ -321,6 +321,14 @@ pub(super) fn read_historical_metadata(
     if version.capture_count == 0 && version.capture_head.is_some() {
         return Err(invalid("import zero-capture head differs"));
     }
+    super::restore_history::extend_content(
+        c,
+        prefix,
+        &lineage,
+        &mut content_file_ids,
+        &mut capture_lengths,
+        cancel,
+    )?;
     for (index, receipt) in lineage.receipts().iter().enumerate() {
         super::super::cancellation::check(cancel)?;
         let (next_generation, next_capture_count) = match lineage.receipts().get(index + 1) {
@@ -423,6 +431,7 @@ fn require_quiescent_history(
     c: &Connection,
     marker: &format::Marker,
     kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
     lineage: &ProvenanceIndex,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<()> {
@@ -434,6 +443,22 @@ fn require_quiescent_history(
         return Err(invalid(
             "import FORMAT digest differs from final ancestor prefix",
         ));
+    }
+    if prefix.supports_restore_history() {
+        let version = match &prefix.source {
+            ImportSource::Ordinary { version, .. } | ImportSource::Provider { version, .. } => {
+                version
+            }
+        };
+        if c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projection_restore_history WHERE capture_sequence>?1)",
+            [version.capture_count],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Err(invalid(
+                "live import restore history exceeds source capture frontier",
+            ));
+        }
     }
     for table in [
         "projection_install",
@@ -449,6 +474,9 @@ fn require_quiescent_history(
         "projection_rebase_previews",
     ] {
         super::super::cancellation::check(cancel)?;
+        if table == "projection_restore_history" && prefix.supports_restore_history() {
+            continue;
+        }
         let query = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
         if c.query_row(&query, [], |r| r.get::<_, bool>(0))? {
             return Err(invalid(format!(

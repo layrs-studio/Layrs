@@ -7,6 +7,7 @@ pub(in crate::projection) use engine::{recovery_preflight, RestoreRecoveryData};
 mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
+pub(in crate::projection) use engine::imported_history_preview;
 pub(super) use engine::{verify_history, verify_history_with_scope};
 use layrs_core::{
     projection::EntryState,

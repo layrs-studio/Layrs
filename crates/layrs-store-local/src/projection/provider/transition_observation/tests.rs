@@ -62,6 +62,7 @@ impl Source {
                 schema_version: "layrs.projection-provider-import-prefix.v1".into(),
                 kind: ProviderImportKind::ManagedOrdinary,
                 source: ImportSource::Ordinary {
+                    checkout_identity: None,
                     identity: self.identity.clone(),
                     format_digest: TOKEN.into(),
                     private_schema: 6,
@@ -81,6 +82,7 @@ impl Source {
                 },
                 ancestry_root_receipt: None,
                 closure: ImportClosure {
+                    restore_history: None,
                     snapshots: row(8),
                     selections: row(1),
                     captures: row(0),

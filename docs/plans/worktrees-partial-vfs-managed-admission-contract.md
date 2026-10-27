@@ -5,6 +5,13 @@ implementation in progress, not globally qualified. The baseline is local commit
 `ddf31d3` and its bounded publication, capture and autonomous SQL evidence in
 [the managed checkpoint](worktrees-partial-vfs-managed-source-checkpoint.md).
 
+Latest r23 supplement: imported restore history now has a versioned codec,
+bounded SQL transport and typed admitted-origin interpretation. New restores
+advance the capture frontier; the native append/replay/local-inverse test passes.
+Earlier statements below about the absent transport describe the previous v1
+boundary. Genuine ordinary-source re-export, physical inherited inverse and
+multi-segment publication remain open; see the [updated history plan](worktrees-partial-vfs-imported-restore-history.md).
+
 ## Required outcome
 
 A managed destination becomes an ordinary format-4 Worktree that can reopen

@@ -103,6 +103,22 @@ impl VerifiedAdmittedImport<'_> {
         }
         Ok((&self.marker.identity, boundaries.ready_generation, head))
     }
+
+    pub(in crate::projection::provider) fn restore_origin(
+        &self,
+        c: &Connection,
+        operation_id: &str,
+        sequence: u64,
+        payload: &[u8],
+        cancel: Option<&Cancellation>,
+    ) -> Result<super::super::import_validation::RestoreHistoryOrigin> {
+        self.require(c, cancel)?;
+        if sequence == 0 || sequence > self.record.boundaries.imported_capture_count {
+            return Err(invalid("restore history escaped admitted import boundary"));
+        }
+        self.prefix
+            .restore_origin(c, operation_id, sequence, payload, cancel)
+    }
 }
 
 pub(in crate::projection::provider) fn read_admitted_import<'a>(

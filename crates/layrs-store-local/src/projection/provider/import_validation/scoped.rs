@@ -115,6 +115,7 @@ pub(super) fn with_scope<T>(
     cancel: Option<&Cancellation>,
     after: impl FnOnce(&[Spec<'_>], &ImportClosure) -> CauseResult<T>,
 ) -> CauseResult<T> {
+    super::restore_history::require_supported_scope(c, prefix, cancel)?;
     if kind != scope.kind || prefix.digest()? != scope.prefix_id {
         return Err(invalid("import source metadata/prefix binding changed"));
     }
@@ -209,7 +210,7 @@ pub(super) fn with_scope<T>(
     let companions: [&dyn ToSql; 1] = [&companion_ids];
     let content: [&dyn ToSql; 1] = [&content_ids];
     let empty: [&dyn ToSql; 0] = [];
-    let mut specs = Vec::with_capacity(12);
+    let mut specs = Vec::with_capacity(13);
     macro_rules! add {
         ($kind:expr, $preflight:expr, $rows:expr, $params:expr) => {
             specs.push(Spec {
@@ -311,6 +312,16 @@ pub(super) fn with_scope<T>(
             "SELECT file_id,manifest_id,bytes FROM projection_content WHERE file_id IN (SELECT value FROM json_each(?1)) ORDER BY file_id COLLATE BINARY",
             &content
         );
+    }
+    if prefix.supports_restore_history() {
+        specs.push(Spec {
+            kind: Kind::RestoreHistory,
+            preflight_sql: "SELECT count(*),coalesce(sum(8+length(CAST(operation_id AS BLOB))+length(payload)),0) FROM projection_restore_history WHERE capture_sequence<=?1",
+            rows_sql: "SELECT operation_id,capture_sequence,payload FROM projection_restore_history WHERE capture_sequence<=?1 ORDER BY operation_id COLLATE BINARY",
+            params: &captures,
+            max_rows: ROW_LIMIT,
+            max_bytes: 512 * 1024 * 1024,
+        });
     }
     let preflight = rows::preflight(c, &specs, cancel)?;
     let closure = rows::stream(c, &specs, &preflight, cancel)?;

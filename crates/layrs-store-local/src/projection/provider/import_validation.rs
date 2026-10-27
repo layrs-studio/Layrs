@@ -29,6 +29,7 @@ mod provider_proof;
 #[cfg(test)]
 #[path = "import_validation/publication_tests.rs"]
 mod publication_tests;
+mod restore_history;
 mod rows;
 pub(in crate::projection::provider) use rows::content_mapping_rowset_data;
 mod scoped;
@@ -502,12 +503,64 @@ pub(in crate::projection) struct ProvenanceIndex {
     capture_count: u64,
     local_min_generation: u64,
 }
+
+/// Detached origin of a restore row in a validated incoming closure. These
+/// identifiers describe historical evidence, never a current filesystem pin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::projection) struct RestoreHistoryOrigin {
+    pub(in crate::projection) identity: crate::projection::ProjectionIdentity,
+    pub(in crate::projection) checkout_identity: String,
+    pub(in crate::projection) minimum_generation: u64,
+    pub(in crate::projection) maximum_generation: u64,
+    pub(in crate::projection) prefix_id: String,
+}
 impl ProvenanceIndex {
     pub(in crate::projection) fn segments(&self) -> &[ImportedSegment] {
         &self.segments
     }
     pub(in crate::projection) fn receipts(&self) -> &[ProviderTransitionReceiptRecord] {
         &self.receipts
+    }
+
+    fn restore_origin(
+        &self,
+        current: &ProviderImportPrefixRecord,
+        sequence: u64,
+    ) -> CauseResult<RestoreHistoryOrigin> {
+        let current_generation = match &current.source {
+            ImportSource::Ordinary { version, .. } | ImportSource::Provider { version, .. } => {
+                version.generation
+            }
+        };
+        let (identity, minimum_generation, maximum_generation) =
+            self.capture_source(sequence, current_generation)?;
+        let at = self
+            .segments
+            .partition_point(|part| part.capture_count_through < sequence);
+        let prefix = match self
+            .segments
+            .get(at)
+            .filter(|part| sequence > part.capture_count_before)
+        {
+            Some(_) => {
+                &self
+                    .receipts
+                    .get(at)
+                    .ok_or_else(|| invalid("restore origin receipt missing"))?
+                    .source_prefix
+            }
+            None => current,
+        };
+        let checkout_identity = prefix
+            .authenticated_checkout_identity()?
+            .ok_or_else(|| invalid("restore origin has no committed history authority"))?;
+        Ok(RestoreHistoryOrigin {
+            identity: identity.clone(),
+            checkout_identity: checkout_identity.to_owned(),
+            minimum_generation,
+            maximum_generation,
+            prefix_id: prefix.digest()?,
+        })
     }
 
     /// Resolve a capture sequence using a binary search over non-overlapping

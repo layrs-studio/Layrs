@@ -28,7 +28,8 @@ pub(in crate::projection) use data::{
     AdmittedRepresentation,
 };
 pub(in crate::projection) use origins::{
-    capture_origin, imported, imported_publication, validate_capture_identity, CaptureOrigin,
+    capture_origin, imported, imported_publication, restore_history_origin,
+    validate_capture_identity, CaptureOrigin,
 };
 
 /// Interpret true private9 in a retained caller transaction or a short owned

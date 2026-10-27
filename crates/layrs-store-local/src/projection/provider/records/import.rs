@@ -1,18 +1,19 @@
 //! Immutable import/companion DATA for the existing private schema 8.
 //! These codecs authenticate no SQL rowset, source store, native root or claim.
 use super::{
-    AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt, ReceiptBindingCheck,
-    ReceiptRef, Record,
-    activation::{ProviderActivationRecord, owner_identity_digest},
-    codec, invalid,
+    activation::{owner_identity_digest, ProviderActivationRecord},
+    codec, invalid, AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt,
+    ReceiptBindingCheck, ReceiptRef, Record,
 };
-use crate::projection::{ProjectionIdentity, Result, format};
-use layrs_core::scm::{FileId, FileManifestId, RepoPath, canonical_json};
+use crate::projection::{format, ProjectionIdentity, Result};
+use layrs_core::scm::{canonical_json, FileId, FileManifestId, RepoPath};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 const PREFIX_SCHEMA: &str = "layrs.projection-provider-import-prefix.v1";
 const PREFIX_DOMAIN: &str = "layrs-projection-provider-import-prefix-v1";
+const PREFIX_SCHEMA_V2: &str = "layrs.projection-provider-import-prefix.v2";
+const PREFIX_DOMAIN_V2: &str = "layrs-projection-provider-import-prefix-v2";
 const COMPANION_SCHEMA: &str = "layrs.projection-provider-companion.v1";
 const COMPANION_DOMAIN: &str = "layrs-projection-provider-companion-v1";
 const FILE_SCHEMA: &str = "layrs.projection-provider-companion-file.v1";
@@ -69,6 +70,8 @@ pub(in crate::projection) struct ImportClosure {
     pub companion_files: ImportRowset,
     pub companion_deletions: ImportRowset,
     pub content_mappings: ImportRowset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_history: Option<ImportRowset>,
 }
 impl ImportClosure {
     fn validate(&self) -> Result<()> {
@@ -87,7 +90,7 @@ impl ImportClosure {
             &self.content_mappings,
         ];
         let mut total = 0u64;
-        for rowset in rowsets {
+        for rowset in rowsets.into_iter().chain(self.restore_history.iter()) {
             rowset.validate()?;
             total = codec::add(total, rowset.count)?;
         }
@@ -137,6 +140,8 @@ pub(in crate::projection) enum ImportSource {
         format_digest: String,
         private_schema: u32,
         version: ImportVersion,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout_identity: Option<String>,
     },
     Provider {
         identity: ProjectionIdentity,
@@ -179,6 +184,13 @@ impl ImportSource {
             return Err(invalid("import source private schema unsupported"));
         }
         self.version().validate()?;
+        if let Self::Ordinary {
+            checkout_identity: Some(checkout_identity),
+            ..
+        } = self
+        {
+            codec::directory_identity(checkout_identity)?;
+        }
         if let Self::Provider {
             allocation,
             prepared,
@@ -227,7 +239,21 @@ pub(in crate::projection) enum ImportSourceReferences<'a> {
 impl Record for ProviderImportPrefixRecord {
     const MAX_BYTES: usize = 16 * 1024 * 1024;
     fn validate_fields(&self) -> Result<()> {
-        codec::schema(&self.schema_version, PREFIX_SCHEMA)?;
+        let has_checkout = match &self.source {
+            ImportSource::Ordinary {
+                checkout_identity, ..
+            } => checkout_identity.is_some(),
+            ImportSource::Provider { .. } => self.supports_restore_history(),
+        };
+        match self.schema_version.as_str() {
+            PREFIX_SCHEMA if self.closure.restore_history.is_none() && !has_checkout => {}
+            PREFIX_SCHEMA_V2 if self.closure.restore_history.is_some() && has_checkout => {}
+            _ => {
+                return Err(invalid(
+                    "import prefix version/restore history fields differ",
+                ))
+            }
+        }
         self.source.validate()?;
         format::validate_identity(&self.destination_identity)?;
         self.closure.validate()?;
@@ -248,8 +274,33 @@ impl Record for ProviderImportPrefixRecord {
     }
 }
 impl ProviderImportPrefixRecord {
+    /// Old prefixes cannot authorize restore rows, including provider origins
+    /// whose bootstrap binding already contains a checkout identity.
+    pub fn supports_restore_history(&self) -> bool {
+        self.schema_version == PREFIX_SCHEMA_V2
+    }
+    pub fn authenticated_checkout_identity(&self) -> Result<Option<&str>> {
+        self.validate_fields()?;
+        if !self.supports_restore_history() {
+            return Ok(None);
+        }
+        Ok(match &self.source {
+            ImportSource::Ordinary {
+                checkout_identity, ..
+            } => checkout_identity.as_deref(),
+            ImportSource::Provider { binding, .. } => {
+                Some(binding.recovery.checkout_identity.as_str())
+            }
+        })
+    }
     pub fn digest(&self) -> Result<String> {
-        Ok(codec::hash(PREFIX_DOMAIN, &self.encode()?))
+        let bytes = self.encode()?;
+        let domain = match self.schema_version.as_str() {
+            PREFIX_SCHEMA => PREFIX_DOMAIN,
+            PREFIX_SCHEMA_V2 => PREFIX_DOMAIN_V2,
+            _ => return Err(invalid("import prefix schemaVersion mismatch")),
+        };
+        Ok(codec::hash(domain, &bytes))
     }
     pub fn require_row(&self, digest: &str, payload: &[u8]) -> Result<()> {
         if digest != self.digest()? || payload != self.encode()? {
@@ -264,12 +315,16 @@ impl ProviderImportPrefixRecord {
                 ImportSource::Ordinary {
                     identity,
                     format_digest,
+                    checkout_identity,
                     ..
                 },
                 ImportSourceReferences::Ordinary(marker),
             ) => {
                 marker.validate()?;
                 if identity != &marker.identity
+                    || checkout_identity
+                        .as_deref()
+                        .is_some_and(|checkout| checkout != marker.checkout_identity())
                     || format_digest
                         != &codec::hash(
                             "layrs-projection-provider-import-format-v1",

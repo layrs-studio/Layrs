@@ -137,6 +137,7 @@ pub(in crate::projection::provider::bootstrap) fn planned_for_image(
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            restore_history: None,
             snapshots: empty(2),
             selections: empty(1),
             captures: empty(0),
