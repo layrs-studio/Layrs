@@ -35,7 +35,7 @@ pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
 pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: file remains live and info is writable for the duration of call.
@@ -53,4 +53,26 @@ pub(in crate::projection) fn identity(_: &File) -> io::Result<String> {
         io::ErrorKind::Unsupported,
         "projection requires stable file identities",
     ))
+}
+
+/// A stable inode alone does not exclude a hardlink outside the owned checkout.
+/// Query the live handle before writing and again before/after publication.
+#[cfg(windows)]
+pub(in crate::projection) fn require_single_link(file: &File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: file stays live and the complete output structure is writable.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if info.nNumberOfLinks != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "managed checkout requires a single-link file",
+        ));
+    }
+    Ok(())
 }

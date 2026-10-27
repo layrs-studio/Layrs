@@ -95,7 +95,7 @@ pub(in crate::projection::provider::bootstrap) fn planned_for_image(
     )
     .unwrap();
     assert!(active.capture.patches.is_empty());
-    let source = super::fixture::Fixture::writable_file_source();
+    let source = &active.active.source;
     assert_eq!(source.commitment().catalog_id, allocation.source.catalog_id);
     let activation = &active.active.activation;
     let activated = &active.active.activated;

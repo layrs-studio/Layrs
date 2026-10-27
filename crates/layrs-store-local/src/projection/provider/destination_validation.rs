@@ -2,7 +2,7 @@
 //! validates DATA only; pinned files, family Initializing and source ownership
 //! remain caller obligations. It grants neither ordinary admission nor Ready.
 use super::{
-    cancellation, database_io,
+    cancellation, checkout_journal, database_io,
     import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
     records::{
         activation::ProviderActivationRecord,
@@ -25,10 +25,11 @@ pub(in crate::projection::provider) struct EmptyIngress;
 pub(in crate::projection::provider) struct CopiedPrefix;
 pub(in crate::projection::provider) struct CopiedPrefixStaging;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum IngressPhase {
+#[derive(Clone, Copy)]
+enum IngressPhase<'a> {
     Copying,
     Staging,
+    CheckoutStaging(&'a checkout_journal::ExpectedCheckout),
 }
 
 pub(super) fn require_inputs(
@@ -61,7 +62,7 @@ fn require_inputs_for_phase(
     activation: &ProviderActivationRecord,
     prefix: &ProviderImportPrefixRecord,
     intent: &ProviderTransitionIntentRecord,
-    phase: IngressPhase,
+    phase: IngressPhase<'_>,
 ) -> Result<()> {
     marker.validate()?;
     let source_identity = &allocation.format.identity;
@@ -112,10 +113,12 @@ fn require_inputs_for_phase(
         || intent.state
             != match phase {
                 IngressPhase::Copying => TransitionState::Copying,
-                IngressPhase::Staging => TransitionState::Staging,
+                IngressPhase::Staging | IngressPhase::CheckoutStaging(_) => {
+                    TransitionState::Staging
+                }
             }
         || intent.local_generation != 0
-        || intent.reservation.is_some() != (phase == IngressPhase::Staging)
+        || intent.reservation.is_some() != !matches!(phase, IngressPhase::Copying)
         || intent.receipt_id.is_some()
         || intent.destination.as_ref().is_none_or(|proof| {
             proof.backend != TransitionBackendKind::Ordinary
@@ -228,6 +231,53 @@ pub(in crate::projection::provider) fn read_staging(
     Ok(CopiedPrefixStaging)
 }
 
+/// The same immutable Staging prefix with a complete, exactly bound checkout
+/// journal. The ordinary Staging reader still requires an empty prejournal.
+/// Returned rows are DATA; native ownership and positive close remain caller
+/// obligations. An absent or foreign journal is not admitted by this route.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn read_checkout_staging(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    proof: &VerifiedImportClosure,
+    expected: &checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<checkout_journal::CheckoutJournal> {
+    // Do not accept a journal for a different transition merely because its
+    // rows are internally canonical. Reconstruct the expectation from the
+    // independently checked destination intent and its complete inventory.
+    let rebound = checkout_journal::ExpectedCheckout::new(
+        intent,
+        expected.files(),
+        expected.deletions(),
+        &expected.header().image_digest,
+        cancel,
+    )?;
+    if rebound.header() != expected.header() {
+        return Err(invalid("checkout journal destination binding differs"));
+    }
+    read_state(
+        c,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        Some(proof),
+        IngressPhase::CheckoutStaging(expected),
+        cancel,
+    )?
+    .ok_or_else(|| invalid("checkout Staging journal absent"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn read_state(
     c: &Connection,
@@ -239,9 +289,9 @@ fn read_state(
     prefix: &ProviderImportPrefixRecord,
     intent: &ProviderTransitionIntentRecord,
     copied: Option<&VerifiedImportClosure>,
-    phase: IngressPhase,
+    phase: IngressPhase<'_>,
     cancel: Option<&Cancellation>,
-) -> Result<()> {
+) -> Result<Option<checkout_journal::CheckoutJournal>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("destination ingress requires retained transaction"));
@@ -262,6 +312,7 @@ fn read_state(
             |r| r.get(0),
         )?;
         let expected = match name.as_str() {
+            "projection_prejournal" if matches!(phase, IngressPhase::CheckoutStaging(_)) => None,
             "projection_meta"
             | "projection_head"
             | "projection_backend"
@@ -392,5 +443,10 @@ fn read_state(
         import_validation::require_exact_copied_rows(c, marker, prefix, proof, cancel)?;
     }
     cancellation::check(cancel)?;
-    Ok(())
+    match phase {
+        IngressPhase::CheckoutStaging(expected) => {
+            Ok(Some(checkout_journal::read(c, expected, cancel)?))
+        }
+        IngressPhase::Copying | IngressPhase::Staging => Ok(None),
+    }
 }

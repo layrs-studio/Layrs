@@ -401,14 +401,16 @@ mod managed_destination_tests;
 mod managed_staging_tests;
 
 #[cfg(test)]
+mod capture_immutable_tests;
+#[cfg(test)]
+mod managed_checkout_tests;
+#[cfg(test)]
 #[path = "session/managed_content_tests.rs"]
 mod managed_content_tests;
 #[cfg(test)]
 mod managed_exact_tests;
 #[cfg(test)]
 mod managed_protection_tests;
-#[cfg(test)]
-mod capture_immutable_tests;
 
 #[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]

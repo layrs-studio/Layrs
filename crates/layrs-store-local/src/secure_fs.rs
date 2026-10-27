@@ -331,7 +331,7 @@ impl PinnedDirectory {
         ))
     }
 
-    fn try_clone(&self) -> io::Result<Self> {
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             file: self.file.try_clone()?,
             identity: self.identity,

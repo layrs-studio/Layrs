@@ -99,6 +99,7 @@ fn with_real_planned(
         None,
         false,
         b"ordinary managed destination replacement",
+        false,
         test,
     );
 }
@@ -120,6 +121,7 @@ pub(super) fn with_content_planned(
         Some(sufficient_metadata),
         empty_union,
         b"ordinary managed destination replacement",
+        false,
         test,
     );
 }
@@ -135,13 +137,12 @@ pub(super) fn with_content_planned_bytes(
         &ProviderTransitionIntentRecord,
     ),
 ) {
-    with_planned_configuration(Some(true), false, replacement, test);
+    with_planned_configuration(Some(true), false, replacement, false, test);
 }
 
-fn with_planned_configuration(
-    content_metadata: Option<bool>,
-    empty_union: bool,
-    replacement: &[u8],
+/// Native checkout coverage adds a nested ordinary file before the first
+/// retained image and durable plan are derived. Existing recipes are unchanged.
+pub(super) fn with_content_planned_checkout(
     test: impl FnOnce(
         &Fixture,
         &ProviderActiveSession,
@@ -149,8 +150,56 @@ fn with_planned_configuration(
         &ProviderTransitionIntentRecord,
     ),
 ) {
-    let (fixture, holder, allocation, prepared, binding) =
-        capture_family::active_holder_with_writable_file_private();
+    with_planned_configuration(Some(true), false, b"provider base content", true, test);
+}
+
+fn with_planned_configuration(
+    content_metadata: Option<bool>,
+    empty_union: bool,
+    replacement: &[u8],
+    nested_checkout: bool,
+    test: impl FnOnce(
+        &Fixture,
+        &ProviderActiveSession,
+        &CaptureAttemptLock,
+        &ProviderTransitionIntentRecord,
+    ),
+) {
+    let (fixture, holder, allocation, prepared, binding) = if nested_checkout {
+        // The nested creation is authorized by an explicit writable Absent
+        // source entry before bootstrap. Do not invent a grant after planning.
+        let old = Fixture::writable_file_source();
+        let mut snapshot = old.initial().clone();
+        snapshot
+            .entries
+            .push(layrs_core::projection::ProjectionEntry {
+                path: layrs_core::scm::RepoPath::parse("dir/extra.txt").unwrap(),
+                target: None,
+                executable: false,
+                writable: true,
+                state: layrs_core::projection::EntryState::Absent,
+            });
+        snapshot.entries.sort_by(|a, b| a.path.cmp(&b.path));
+        let descriptors = old
+            .descriptors()
+            .iter()
+            .map(
+                |d| crate::projection::provider::records::ProviderSourceDescriptor {
+                    path: d.path.clone(),
+                    manifest: d.manifest.clone(),
+                },
+            )
+            .collect();
+        let source = crate::projection::provider::records::ProviderBootstrapSource::validate(
+            snapshot,
+            old.selection().clone(),
+            descriptors,
+        )
+        .unwrap();
+        capture_family::active_holder_with_source(Some(source))
+    } else {
+        capture_family::active_holder_with_writable_file_private()
+    };
     let mut session = if content_metadata.is_some() {
         drop(holder);
         let effect = crate::projection::provider::family_upgrade::upgrade_source_family(
@@ -183,6 +232,14 @@ fn with_planned_configuration(
     let path = fixture.checkout.join("README.md");
     remove_placeholder(&path);
     fs::write(&path, replacement).unwrap();
+    if nested_checkout {
+        fs::create_dir_all(fixture.checkout.join("dir")).unwrap();
+        fs::write(
+            fixture.checkout.join("dir/extra.txt"),
+            b"nested checkout content",
+        )
+        .unwrap();
+    }
     let held = &session.source.held;
     let cancel = Cancellation::default();
     let active = {

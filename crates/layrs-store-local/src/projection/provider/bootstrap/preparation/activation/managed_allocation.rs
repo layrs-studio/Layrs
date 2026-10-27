@@ -152,6 +152,33 @@ impl ManagedDestinationAllocation<'_> {
         &self.database
     }
 
+    /// Borrow the already-owned destination for this exact checkout journal.
+    /// The returned pins grant no SQL admission and remain subordinate to the
+    /// retained allocation's owner lock, parent guard and family lifecycle.
+    pub(super) fn checkout_storage(
+        &self,
+        plan: &TransitionPlan,
+        expected: &crate::projection::provider::checkout_journal::ExpectedCheckout,
+        cancel: &Cancellation,
+    ) -> CauseResult<super::managed_checkout_fs::CheckoutStorage> {
+        cancel.check()?;
+        self.require_published(plan)?;
+        if expected.marker() != &self.proof.format
+            || expected.header().plan_digest != self.plan_digest
+            || expected.header().destination_proof_digest != self.proof.digest(plan)?
+        {
+            return Err(invalid("checkout storage differs from retained allocation"));
+        }
+        let storage = super::managed_checkout_fs::CheckoutStorage::new(
+            self.root.try_clone()?,
+            self.control.try_clone()?,
+            expected,
+            cancel,
+        )?;
+        self.require_published(plan)?;
+        Ok(storage)
+    }
+
     /// Factual published FORMAT proof for the next destination writer. This
     /// holds the destination owner lock but grants no SQL/family readiness.
     pub(super) fn require_published(&self, plan: &TransitionPlan) -> CauseResult<()> {

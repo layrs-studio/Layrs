@@ -35,14 +35,15 @@ mod artifacts;
 pub(in crate::projection) mod cancellation;
 #[cfg(windows)]
 mod capture_lock;
+mod checkout_journal;
 #[cfg(windows)]
 pub(in crate::projection) mod content_catalog;
 #[cfg(windows)]
 pub(super) mod database_io;
 #[cfg(windows)]
-mod destination_sql;
-#[cfg(windows)]
 mod destination_ready;
+#[cfg(windows)]
+mod destination_sql;
 #[cfg(windows)]
 mod destination_validation;
 #[cfg(windows)]

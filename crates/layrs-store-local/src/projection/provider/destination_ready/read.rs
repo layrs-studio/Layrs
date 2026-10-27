@@ -8,6 +8,7 @@ pub(super) fn ready(
     c: &Connection,
     inputs: &ManagedReadyInputs<'_>,
     prepared: &PreparedData,
+    checkout: Option<&super::super::checkout_journal::ExpectedCheckout>,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
     inputs.closure.require_copied_prefix_scope(
@@ -17,6 +18,19 @@ pub(super) fn ready(
         inputs.prefix,
         cancel,
     )?;
+    let checkout_rows = match checkout {
+        None => 0,
+        Some(expected) => {
+            require_checkout_expected(inputs, expected, cancel)?;
+            let journal = super::super::checkout_journal::read(c, expected, cancel)?;
+            if !journal.is_complete() {
+                return Err(invalid(
+                    "destination Ready requires complete checkout journal",
+                ));
+            }
+            journal.rows().len() as u64
+        }
+    };
     let closure = &inputs.prefix.closure;
     let counts = [
         ("projection_snapshots", add(closure.snapshots.count, 2)?),
@@ -55,6 +69,7 @@ pub(super) fn ready(
         ("projection_imports", 1),
         ("projection_provider_transitions", 1),
         ("projection_claims", 1),
+        ("projection_prejournal", checkout_rows),
     ];
     for (kind, name, _) in database_io::schema_inventory(c)? {
         cancellation::check(cancel)?;

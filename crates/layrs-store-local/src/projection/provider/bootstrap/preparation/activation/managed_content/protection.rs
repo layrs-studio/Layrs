@@ -38,6 +38,65 @@ impl ManagedImportProtection {
 }
 
 impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
+    /// Reconstruct physical protection after a checkout journal has already
+    /// been committed. This route is read-only and requires an existing exact
+    /// root; it cannot repair an absent root or bypass the typed journal.
+    pub(in crate::projection::provider::bootstrap::preparation::activation) fn reopen_protection(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> CauseResult<ManagedImportProtection> {
+        self.rehash(cancel)?;
+        let expected_checkout = self.expected_checkout(cancel)?;
+        let binding = self.exact_binding()?;
+        let expected = self.expected_protection(cancel)?;
+        let before = self.with_checkout_authority(
+            &expected_checkout,
+            cancel,
+            |proof, destination, floor, _, _| {
+                self.require_checkout_protection(
+                    &expected_checkout,
+                    proof,
+                    destination,
+                    floor,
+                    cancel,
+                )?;
+                self.read_protection(proof, destination, floor, &binding, &expected, cancel)
+            },
+        )?;
+        // Hashing may invoke filesystem reads and remains outside SQL gates.
+        let bytes =
+            verify_published_cas(self.pin_exact_storage()?, &binding, self.manifests, cancel)?;
+        bytes.require(&binding, self.manifests, cancel)?;
+        self.with_checkout_authority(
+            &expected_checkout,
+            cancel,
+            |proof, destination, floor, _, _| {
+                self.require_checkout_protection(
+                    &expected_checkout,
+                    proof,
+                    destination,
+                    floor,
+                    cancel,
+                )?;
+                let after =
+                    self.read_protection(proof, destination, floor, &binding, &expected, cancel)?;
+                if after != before || after.root != ProtectionPresence::Present {
+                    return Err(invalid(
+                        "managed checkout protection changed while reopening",
+                    ));
+                }
+                bytes.require(&binding, self.manifests, cancel)
+            },
+        )?;
+        let protected = ManagedImportProtection {
+            binding,
+            root: expected,
+            bytes,
+        };
+        protected.require(self, cancel)?;
+        Ok(protected)
+    }
+
     pub(super) fn expected_protection(
         &self,
         cancel: &Cancellation,
@@ -53,7 +112,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         )
     }
 
-    fn read_protection(
+    pub(super) fn read_protection(
         &self,
         proof: &PrivateActiveCaptureValidation,
         destination: &ProviderTransitionIntentRecord,

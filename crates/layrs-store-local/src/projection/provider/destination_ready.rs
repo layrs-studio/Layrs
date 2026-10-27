@@ -88,7 +88,7 @@ pub(in crate::projection::provider) fn read_ready(
     cancel: Option<&Cancellation>,
 ) -> Result<DestinationReady> {
     let prepared = data::prepare(source_c, destination, family_c, inputs, cancel)?;
-    read::ready(source_c, destination, inputs, &prepared, cancel)?;
+    read::ready(source_c, destination, inputs, &prepared, None, cancel)?;
     Ok(DestinationReady)
 }
 
@@ -100,6 +100,17 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
     destination: &Connection,
     family_c: &Connection,
     inputs: &ManagedReadyInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<ReadyEffect> {
+    finalize_inner(source_c, destination, family_c, inputs, None, cancel)
+}
+
+fn finalize_inner(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    checkout: Option<&super::checkout_journal::ExpectedCheckout>,
     cancel: Option<&Cancellation>,
 ) -> Result<ReadyEffect> {
     let prepared = data::prepare(source_c, destination, family_c, inputs, cancel)?;
@@ -117,7 +128,7 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if ready {
-        read::ready(source_c, destination, inputs, &prepared, cancel)?;
+        read::ready(source_c, destination, inputs, &prepared, checkout, cancel)?;
         return Ok(ReadyEffect::AlreadyReady);
     }
     if !staging {
@@ -126,18 +137,43 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
     if destination.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u64>(0))? != 1 {
         return Err(invalid("destination Ready writer requires FK ON"));
     }
-    destination_validation::read_staging(
-        destination,
-        inputs.marker,
-        inputs.source,
-        inputs.allocation,
-        inputs.prepared,
-        inputs.activation,
-        inputs.prefix,
-        inputs.staging,
-        inputs.closure,
-        cancel,
-    )?;
+    match checkout {
+        None => {
+            destination_validation::read_staging(
+                destination,
+                inputs.marker,
+                inputs.source,
+                inputs.allocation,
+                inputs.prepared,
+                inputs.activation,
+                inputs.prefix,
+                inputs.staging,
+                inputs.closure,
+                cancel,
+            )?;
+        }
+        Some(expected) => {
+            require_checkout_expected(inputs, expected, cancel)?;
+            let journal = destination_validation::read_checkout_staging(
+                destination,
+                inputs.marker,
+                inputs.source,
+                inputs.allocation,
+                inputs.prepared,
+                inputs.activation,
+                inputs.prefix,
+                inputs.staging,
+                inputs.closure,
+                expected,
+                cancel,
+            )?;
+            if !journal.is_complete() {
+                return Err(invalid(
+                    "destination Ready requires complete checkout journal",
+                ));
+            }
+        }
+    }
     let plan = &inputs.staging.plan;
     let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
         return Err(invalid("destination Ready requires provider source"));
@@ -209,10 +245,181 @@ pub(in crate::projection::provider) fn finalize_staged_or_replay(
     )? != 1 {
         return Err(invalid("destination Ready exact intent CAS differs"));
     }
-    read::ready(source_c, destination, inputs, &prepared, cancel)?;
+    read::ready(source_c, destination, inputs, &prepared, checkout, cancel)?;
     cancellation::check(cancel)?;
     Ok(ReadyEffect::Finalized)
 }
 
+/// Accept only a complete bound checkout journal and retain it byte-exact as
+/// durable path-to-ManifestId provenance, including for read-only Ready replay.
+/// The original readers/finalizer still require an empty prejournal.
+///
+/// This is DATA only: the caller must retain/revalidate the independently
+/// authenticated image, copied checkout bytes/modes/namespace and native pins
+/// through COMMIT and positive closes. A journal's inode strings are no physical
+/// proof. This intermediate protocol grants no ordinary admission or future
+/// history-import provenance. Migrating/retiring the retained journal requires
+/// a separate typed protocol; no ordinary cleanup route may consume it.
+/// Rollback is mandatory on every error after a mutation.
+pub(in crate::projection::provider) fn finalize_checkout_or_replay(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<ReadyEffect> {
+    finalize_inner(
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        Some(expected),
+        cancel,
+    )
+}
+
+/// Read only the distinct Ready form which retains complete exact checkout
+/// provenance. This returns SQL DATA, never a physical checkout capability.
+pub(in crate::projection::provider) fn read_checkout_ready(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<DestinationReady> {
+    let prepared = data::prepare(source_c, destination, family_c, inputs, cancel)?;
+    read::ready(
+        source_c,
+        destination,
+        inputs,
+        &prepared,
+        Some(expected),
+        cancel,
+    )?;
+    Ok(DestinationReady)
+}
+
+fn require_checkout_expected(
+    inputs: &ManagedReadyInputs<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    let rebound = super::checkout_journal::ExpectedCheckout::new(
+        inputs.staging,
+        expected.files(),
+        expected.deletions(),
+        &expected.header().image_digest,
+        cancel,
+    )?;
+    if rebound.header() != expected.header() || expected.marker() != inputs.marker {
+        return Err(invalid("checkout journal destination binding differs"));
+    }
+    require_checkout_inventory(inputs, expected, cancel)
+}
+
+/// Bind every current leaf and explicit deletion to the base-relative Ready
+/// patch. Unchanged files may use any required exact representation of those
+/// same bytes; changed files must use the committed overlay representation.
+/// This compares metadata, not the caller's actual retained image or bytes.
+fn require_checkout_inventory(
+    inputs: &ManagedReadyInputs<'_>,
+    expected: &super::checkout_journal::ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    use layrs_core::{projection::EntryState, scm::TreeEntryTarget};
+    let required: BTreeMap<_, _> = inputs.data.required.iter().map(|m| (m.id(), m)).collect();
+    let patch = inputs.data.capture;
+    let mut files = 0usize;
+    let mut deletions = 0usize;
+    let mut changes = 0usize;
+    for entry in &inputs.data.placement.entries {
+        cancellation::check(cancel)?;
+        if !inputs.source.selection().includes(&entry.path) {
+            continue;
+        }
+        let base = match &entry.target {
+            Some(TreeEntryTarget::File { file_id }) => Some((file_id, entry.executable)),
+            None if entry.state == EntryState::Absent => None,
+            _ => {
+                return Err(invalid(
+                    "checkout Ready base is not a selected file or absence",
+                ))
+            }
+        };
+        let change = patch
+            .changes
+            .binary_search_by(|change| change.path.cmp(&entry.path))
+            .ok();
+        let actual = if let Some(index) = change {
+            changes += 1;
+            let change = &patch.changes[index];
+            if !entry.writable
+                || change.expected.as_ref().map(|f| (&f.file_id, f.executable)) != base
+            {
+                return Err(invalid("checkout Ready patch preimage differs"));
+            }
+            match &change.replacement {
+                Some(file) => Some((
+                    &file.file_id,
+                    file.executable,
+                    file.bytes,
+                    inputs.data.overlay[index].manifest_id.as_ref(),
+                )),
+                None => {
+                    if base.is_none() || expected.deletions().get(deletions) != Some(&entry.path) {
+                        return Err(invalid("checkout Ready deletion inventory differs"));
+                    }
+                    deletions += 1;
+                    None
+                }
+            }
+        } else if let Some((file_id, executable)) = base {
+            let descriptor = inputs
+                .source
+                .descriptors()
+                .binary_search_by(|d| d.path.cmp(&entry.path))
+                .ok()
+                .and_then(|index| inputs.source.descriptors().get(index))
+                .filter(|d| &d.file_id == file_id && d.executable == executable)
+                .ok_or_else(|| invalid("checkout Ready unchanged source descriptor absent"))?;
+            Some((file_id, executable, descriptor.bytes, None))
+        } else {
+            None
+        };
+        if let Some((file_id, executable, bytes, overlay)) = actual {
+            let file = expected
+                .files()
+                .get(files)
+                .ok_or_else(|| invalid("checkout Ready file inventory differs"))?;
+            if file.path != entry.path
+                || &file.file_id != file_id
+                || file.executable != executable
+                || file.bytes != bytes
+                || overlay.is_some_and(|id| id != &file.manifest_id)
+                || !required
+                    .get(&file.manifest_id)
+                    .is_some_and(|m| m.file_id() == file_id && m.byte_length() == bytes)
+            {
+                return Err(invalid("checkout Ready file inventory differs"));
+            }
+            files += 1;
+        }
+    }
+    if files != expected.files().len()
+        || deletions != expected.deletions().len()
+        || changes != patch.changes.len()
+    {
+        return Err(invalid(
+            "checkout Ready inventory has missing or extra paths",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod checkout_tests;

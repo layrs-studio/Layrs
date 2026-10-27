@@ -546,12 +546,101 @@ It covers accepted catalog reads, not the entire managed import with accepted
 history or the unfinished source-installation fallback paths. The unmodulated
 checkout-journal drafts in the source snapshot are outside this qualification.
 
+## Checkout journal and retained provenance (2026-10-27)
+
+`checkout_journal` uses the existing schema-8 `projection_prejournal` table.
+The exact header binds plan, prefix, source image, destination proof and native
+identities. Complete initial declarations precede filesystem allocation.
+Directories transition Declared -> Owned; files transition Declared -> Owned
+-> Verified -> Publishing -> Published. Every row is canonical and bounded;
+the reader checks the complete inventory, unique identities, reserved DB/FORMAT
+identities and publication parents. Mutation requires FK ON and the caller's
+transaction; exact replay is query-only compatible and performs no writes.
+Each CAS currently rereads the complete journal: total work is quadratic in
+row count, despite the explicit 100k leaf/directory and 64MiB logical bounds.
+This is not a large-checkout performance qualification.
+
+Independent review found an asymmetric directory/file identity-alias check.
+Both header and relationship readers now normalize and reserve DB/FORMAT
+identities in the directory namespace. The retained
+`provider-checkout-journal-20261027-r2` artifact (505 inputs, CodeView age 70,
+EXE SHA256 `af944ae6ee966a468c3c4950f43d5ea3e3c68e94d9edd75258f49c7b8e5b50f3`)
+passes one pure and three memory SQL recipes. They cover canonical inventory,
+whole-row CAS, parent/stage/identity refusals without writes, rollback,
+complete progress, query-only replay and bounded corruptions. They do not
+qualify complete private Staging admission, the physical adapter, close faults
+or its runtime budget checks. Source test SHA256:
+`09d276345182ed8ca118b8e221de3124e0964d293289ff456403ca9f6cde86c2`.
+
+The integrated adapter preserves the strict Staging reader and introduces a
+separate typed checkout route. Journal progress is acknowledged only after
+destination COMMIT, positive destination/source closes and fresh readback.
+Only an exact Owned temporary can restart from byte zero. A distinct read-only
+`reopen_protection` reconstructs immutable CAS pins when a journal already
+exists; the initial reservation/installation/protection writers stay strict.
+Checkout bytes and maximum future journal size remain in the fixed reservation.
+
+Physical copying uses exclusive creates, single-link checks, full FileId
+verification, no-replace rename and a bounded exhaustive namespace observation.
+Final files are retained with immutable READ-only sharing through the returned
+proof. Directory listing retains the existing before/after pin checks, not an
+atomic hostile namespace snapshot. Existing Windows directory-sync tolerances
+do not establish power-loss durability. Executable files are refused before
+checkout effects because this Windows backend cannot preserve that mode.
+
+The initial r3 native recipe failed before destination allocation: a test helper
+reconstructed a fixed one-file source and rejected the new nested source's
+catalogue digest. Its fixture is preserved; the second recipe was not run.
+The helper now uses the source returned by the actual private validator. The
+nested creation has an explicit Absent+writable source entry before bootstrap,
+and native bytes are written before the image/plan are derived.
+
+All-target check r4 and no-run build r3 pass. The retained r4 artifact (505
+inputs, CodeView age 72, EXE SHA256
+`a7304f2e9538b86453453303c124177a3fa6d95b2e797e566b88f65b1b842df0`)
+passes both independently released native recipes (child 240 / outer 300,
+fresh C: parent, serial execution). They copy README and an explicitly
+authorized nested file, retain immutable final handles, reopen under the same
+process/checkpoint/allocation owners, replay without writers and refuse an
+unexpected file without modifying that file or the database. Source and family
+witnesses remain unchanged throughout checkout. The second recipe withholds
+an acknowledgement after the fourth positive writer close: the exact temporary
+inode is durably Owned but still zero bytes. A new lease and read-only protection
+reconstruction finish the checkout. The destination stays Staging without a
+claim; these tests do not establish Ready publication, crash restart, real BUSY,
+partial-written temporary or rename-gap recovery, link/reparse attacks or
+power-loss behavior. Test SHA256:
+`e57a9c87a03acb9eb0cccfbe2e31b7d8ca8835471193ab5554ecdcd14a4d10bf`;
+FS helper `9d5fe4517244cd32ca2119b0c182b3f56c91983a51f968c30e54c1f692232b39`;
+staging fixture `a69795a6ec5c9442e250b3201cc193b7d87d9d29f6d3597a6075abea56ebb3f8`;
+source-plan helper `cd4cd1e675e190a29a06d85702127fb98e46e627d200c88abc80160faa6b8296`.
+
+Ready must retain exact `path -> ManifestId` provenance: the historical
+FileId-primary-key mapping cannot reconstruct every current representation.
+The new typed Ready SQL route therefore retains the complete Published checkout
+journal byte-for-byte, while the old Ready reader still requires an empty
+journal. There is no journal deletion, quota release or ordinary admission in
+this tranche. Transfer to permanent import provenance requires a separate
+protocol before generic cleanup or ordinary mutation paths can be admitted.
+
+The same retained r4 artifact passes four independently released retained-
+checkout Ready SQL recipes and all four legacy Ready SQL regressions (child
+120 / outer 180, another fresh C: parent, serial stop on first failure).
+The new recipes check byte-exact journal retention, query-only Ready replay
+without writes, rollback to Staging with the complete journal restored, and
+incomplete/foreign/aliased/unrelated inventory refusals. The rollback is after
+a successful finalizer; no mid-write failure is injected. Their three memory
+databases do not qualify the physical Ready adapter or enclosing-close faults.
+Test SHA256 `54232a7b15d9fda7482fd22d7fdb9169073cfd27471f878b6682d751019b9cd2`;
+finalizer `e918a366749d511357ba413f3d9f76a198bc5a711931349740af295b2b96678c`;
+reader `732dbb161577c7579a666a2c2e1211a263ad0068f9fc218dd0683b47447ef1e4`.
+
 ## Remaining qualification boundaries
 
 The acknowledgement-refusal injections remain distinct from the separately
 qualified reservation source BUSY/quarantine recipe. Neither establishes an
 interrupted commit, restart after quarantine or power-loss guarantee.
 The two physical recipes above qualify their exact installation scope only.
-Family protection has the bounded evidence above. Physical checkout/Ready
-publication, companion conversion and selection expansion are not yet qualified. Product routes and Desktop
+Family protection and physical checkout have the bounded evidence above. Physical
+Ready/family publication, companion conversion and selection expansion are not yet qualified. Product routes and Desktop
 integration remain separate. The existing strict GC fence remains.

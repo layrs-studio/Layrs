@@ -2,13 +2,16 @@
 //! The source attempt, checkpoint and both physical owners stay with the caller.
 //! This lease exposes no general catalog, cleanup, installation or protection API.
 use super::*;
+mod checkout;
 mod exact;
 mod protection;
 use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,
+        checkout_journal::{CheckoutFile, CheckoutJournal, ExpectedCheckout},
         database_io::{self, WriterCloseObserver},
         destination_validation,
+        import_validation::VerifiedImportClosure,
         records::{
             import::{ImportSource, ProviderImportKind},
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
@@ -67,10 +70,24 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             fresh,
         };
         lease.rehash(cancel)?;
-        lease.with_authority_metadata(cancel, |proof, destination_staging, metadata_floor| {
-            lease.read_admission(proof, destination_staging, metadata_floor, cancel)?;
-            Ok(())
-        })?;
+        let expected = lease.expected_checkout(cancel)?;
+        lease.with_checkout_authority(
+            &expected,
+            cancel,
+            |proof, destination_staging, metadata_floor, journal, _| {
+                lease.read_admission(proof, destination_staging, metadata_floor, cancel)?;
+                if journal.is_some() {
+                    lease.require_checkout_protection(
+                        &expected,
+                        proof,
+                        destination_staging,
+                        metadata_floor,
+                        cancel,
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
         Ok(lease)
     }
 
@@ -176,6 +193,77 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             u64,
         ) -> CauseResult<T>,
     ) -> CauseResult<T> {
+        self.with_destination_authority(None, cancel, |proof, destination, floor, _, _| {
+            action(proof, destination, floor)
+        })
+    }
+
+    /// Inventory is derived only from the retained verified image; callers
+    /// cannot nominate arbitrary filesystem paths for checkout writes.
+    fn expected_checkout(&self, cancel: &Cancellation) -> CauseResult<ExpectedCheckout> {
+        cancel.check()?;
+        let files: Vec<_> = self
+            .image
+            .files()
+            .iter()
+            .map(|file| {
+                let manifest = file.manifest.manifest();
+                CheckoutFile {
+                    path: file.path.clone(),
+                    manifest_id: manifest.id().clone(),
+                    file_id: manifest.file_id().clone(),
+                    bytes: manifest.byte_length(),
+                    executable: file.executable,
+                }
+            })
+            .collect();
+        let deletions: Vec<_> = self
+            .image
+            .deletions()
+            .iter()
+            .map(|d| d.path.clone())
+            .collect();
+        ExpectedCheckout::new(
+            self.staging,
+            &files,
+            &deletions,
+            self.image.digest(),
+            Some(cancel),
+        )
+    }
+
+    fn with_checkout_authority<T>(
+        &self,
+        expected: &ExpectedCheckout,
+        cancel: &Cancellation,
+        action: impl FnOnce(
+            &PrivateActiveCaptureValidation,
+            &ProviderTransitionIntentRecord,
+            u64,
+            Option<CheckoutJournal>,
+            &VerifiedImportClosure,
+        ) -> CauseResult<T>,
+    ) -> CauseResult<T> {
+        if self.expected_checkout(cancel)?.header() != expected.header() {
+            return Err(invalid(
+                "managed checkout inventory differs from retained image",
+            ));
+        }
+        self.with_destination_authority(Some(expected), cancel, action)
+    }
+
+    fn with_destination_authority<T>(
+        &self,
+        checkout: Option<&ExpectedCheckout>,
+        cancel: &Cancellation,
+        action: impl FnOnce(
+            &PrivateActiveCaptureValidation,
+            &ProviderTransitionIntentRecord,
+            u64,
+            Option<CheckoutJournal>,
+            &VerifiedImportClosure,
+        ) -> CauseResult<T>,
+    ) -> CauseResult<T> {
         self.require_intent()?;
         // The allocation already retains the destination owner. Reacquiring
         // that lock here would be a reentrant error, not additional authority.
@@ -218,10 +306,33 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                     .prepared
                     .as_ref()
                     .ok_or_else(|| invalid("managed content source prepared receipt absent"))?;
-                managed_destination::valid(database_io::read_cancellable(
+                let journal = managed_destination::valid(database_io::read_cancellable(
                     self.destination.destination_database(),
                     cancel,
                     |c| {
+                        if let Some(expected) = checkout {
+                            let present: bool = c.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM projection_prejournal)",
+                                [],
+                                |row| row.get(0),
+                            )?;
+                            if present {
+                                return destination_validation::read_checkout_staging(
+                                    c,
+                                    &self.destination.proof().format,
+                                    &proof.active.source,
+                                    &self.held.artifacts.allocation,
+                                    prepared,
+                                    &proof.active.activation,
+                                    &self.staging.plan.source_prefix,
+                                    &destination_staging,
+                                    closure,
+                                    expected,
+                                    Some(cancel),
+                                )
+                                .map(Some);
+                            }
+                        }
                         destination_validation::read_staging(
                             c,
                             &self.destination.proof().format,
@@ -233,14 +344,21 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                             &destination_staging,
                             closure,
                             Some(cancel),
-                        )
+                        )?;
+                        Ok(None)
                     },
                 )?)?;
                 self.boundary(cancel)?;
                 let metadata_floor = derived
                     .validated_metadata_floor
                     .ok_or_else(|| invalid("managed metadata floor not rederived"))?;
-                let value = action(proof, &destination_staging, metadata_floor)?;
+                let value = action(
+                    proof,
+                    &destination_staging,
+                    metadata_floor,
+                    journal,
+                    closure,
+                )?;
                 self.image.require_owner(
                     self.root,
                     &proof.active.source,
