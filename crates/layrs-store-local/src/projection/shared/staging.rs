@@ -2,6 +2,8 @@
 //! physical attempt while the first attempt's bytes remain charged ambiguously.
 use super::*;
 use layrs_core::scm::FileId;
+#[cfg(windows)]
+mod cancellation;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,28 +75,46 @@ impl Stage {
                 published: false,
             }
         };
-        if stage.intent.incarnation != lease.family.marker.incarnation
-            || stage.intent.reservation != reservation
-            || stage.intent.file_id != expected.file_id
-            || stage.intent.bytes != expected.bytes
-            || stage.intent.owner.as_str() != owner
-            || stage.intent.operation != operation
-            || stage.intent.database_identity != database_identity
+        stage.validate_identity(lease, reservation, expected, &owner, &operation, &database_identity)?;
+        Ok(stage)
+        })
+    }
+    /// Pure comparison shared by creation/retry and read-only cancellation.
+    fn validate_identity(
+        &self,
+        lease: &Lease,
+        reservation: &str,
+        expected: &CapturedFile,
+        owner: &str,
+        operation: &str,
+        database_identity: &str,
+    ) -> Result<()> {
+        if self.intent.incarnation != lease.family.marker.incarnation
+            || self.intent.reservation != reservation
+            || self.intent.file_id != expected.file_id
+            || self.intent.bytes != expected.bytes
+            || self.intent.owner.as_str() != owner
+            || self.intent.operation != operation
+            || self.intent.database_identity != database_identity
         {
             return Err(invalid("installation ownership or source identity differs"));
         }
-        if let Some(manifest) = &stage.manifest {
+        if let Some(manifest) = &self.manifest {
             if manifest.file_id() != &expected.file_id || manifest.byte_length() != expected.bytes {
                 return Err(invalid("installation manifest differs from its intent"));
             }
         }
-        Ok(stage)
-        })
+        Ok(())
     }
     pub fn directory(&self, lease: &Lease) -> Result<PinnedDirectory> {
         if lease.is_admitted() {
             lease.with_content_catalog(false, |c| {
                 lease.authorize_content_reservation(c, &self.intent.reservation)?;
+                #[cfg(windows)]
+                cancellation::require_exclusive_installation_directories(
+                    c,
+                    std::slice::from_ref(self),
+                )?;
                 lease.authorize_content_directory(
                     c,
                     &self.intent.directory,
@@ -112,8 +132,17 @@ impl Stage {
         {
             return Err(invalid("installation directory is not bounded"));
         }
-        let directory = PinnedDirectory::open(&lease.family.root.join("staging"))?
-            .open_child(self.intent.directory.as_ref())?;
+        let parent = if lease.is_admitted() {
+            PinnedDirectory::open(&lease.family.root)?
+                .open_private_child_for_write("staging".as_ref())?
+        } else {
+            PinnedDirectory::open(&lease.family.root.join("staging"))?
+        };
+        let directory = if lease.is_admitted() {
+            parent.open_private_child_for_write(self.intent.directory.as_ref())?
+        } else {
+            parent.open_child(self.intent.directory.as_ref())?
+        };
         if directory.identity_token() != self.intent.directory_identity {
             return Err(invalid("installation directory replaced"));
         }
@@ -132,6 +161,27 @@ impl Stage {
             })?;
         }
         let directory = self.directory(lease)?;
+        let names = self.inventory(lease, &directory)?;
+        for name in names {
+            let file = directory.open_file(&name)?;
+            #[cfg(windows)]
+            if lease.is_admitted() {
+                crate::projection::file::require_single_link(file.file())?;
+                self.directory(lease)?;
+            }
+            file.verify_parent()?;
+            file.unlink()?;
+        }
+        directory.sync()?;
+        directory.verify_path_identity()?;
+        Ok(())
+    }
+    /// Enumerate and validate everything before deleting the first child.
+    fn inventory(
+        &self,
+        lease: &Lease,
+        directory: &PinnedDirectory,
+    ) -> Result<Vec<std::ffi::OsString>> {
         let path = lease
             .family
             .root
@@ -153,19 +203,26 @@ impl Stage {
                     "unrecognized installation staging; reservation retained",
                 ));
             }
+            #[cfg(windows)]
+            let pin = directory.open_readonly_file(&name)?;
+            #[cfg(not(windows))]
             let pin = directory.open_file(&name)?;
-            if pin.file().metadata()?.len() > CAPTURE_CHUNK_BYTES as u64 {
+            #[cfg(windows)]
+            if lease.is_admitted() {
+                crate::projection::file::require_single_link(pin.file())?;
+            }
+            let limit = if name == "manifest" {
+                262144
+            } else {
+                CAPTURE_CHUNK_BYTES as u64
+            };
+            if pin.file().metadata()?.len() > limit {
                 return Err(invalid("installation staged file exceeds bound"));
             }
             names.push(name);
         }
         directory.verify_path_identity()?;
-        for name in names {
-            directory.open_file(&name)?.unlink()?;
-        }
-        directory.sync()?;
-        directory.verify_path_identity()?;
-        Ok(())
+        Ok(names)
     }
     pub fn verified(&mut self, lease: &Lease, manifest: &FileManifest) -> Result<()> {
         let payload = canonical_json(manifest).map_err(invalid)?;
@@ -200,8 +257,13 @@ impl Stage {
             Ok(directory) => {
                 self.clean_files(lease)?;
                 drop(directory);
-                PinnedDirectory::open(&lease.family.root.join("staging"))?
-                    .remove_empty_child(self.intent.directory.as_ref())?;
+                let parent = if lease.is_admitted() {
+                    PinnedDirectory::open(&lease.family.root)?
+                        .open_private_child_for_write("staging".as_ref())?
+                } else {
+                    PinnedDirectory::open(&lease.family.root.join("staging"))?
+                };
+                parent.remove_empty_child(self.intent.directory.as_ref())?;
             }
             Err(ProjectionStoreError::Io(e))
                 if e.kind() == io::ErrorKind::NotFound
@@ -353,17 +415,32 @@ impl Lease {
     }
 }
 fn load(c: &Connection, reservation: &str, file: &FileId) -> Result<Option<Stage>> {
-    let row: Option<(Vec<u8>, Option<Vec<u8>>, bool)> = c.query_row("SELECT payload,manifest,published FROM installations WHERE reservation=?1 AND file_id=?2 AND length(payload)<=8192", params![reservation, file.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+    // Bound and type-check before materializing either payload. An oversized
+    // existing row must not masquerade as an absent retry intent.
+    let bounded: Option<bool> = c.query_row("SELECT typeof(reservation)='text' AND length(CAST(reservation AS BLOB)) BETWEEN 1 AND 128 AND typeof(file_id)='text' AND length(CAST(file_id AS BLOB))=71 AND typeof(payload)='blob' AND length(payload) BETWEEN 1 AND 8192 AND (manifest IS NULL OR (typeof(manifest)='blob' AND length(manifest) BETWEEN 1 AND 262144)) AND typeof(published)='integer' AND published IN (0,1) FROM installations WHERE reservation=?1 AND file_id=?2", params![reservation,file.as_str()], |r| r.get(0)).optional()?;
+    match bounded {
+        None => return Ok(None),
+        Some(false) => return Err(invalid("installation row exceeds bounds or scalar types")),
+        Some(true) => (),
+    }
+    let row: Option<(Vec<u8>, Option<Vec<u8>>, bool)> = c.query_row("SELECT payload,manifest,published FROM installations WHERE reservation=?1 AND file_id=?2", params![reservation, file.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
     row.map(|(payload, manifest, published)| {
         let intent: Intent = serde_json::from_slice(&payload).map_err(invalid)?;
-        if canonical_json(&intent).map_err(invalid)? != payload {
+        if canonical_json(&intent).map_err(invalid)? != payload
+            || intent.reservation != reservation
+            || &intent.file_id != file
+            || intent.bytes > MAX_CAPTURE_FILE_BYTES
+        {
             return Err(invalid("installation intent is not canonical"));
         }
         let manifest = manifest
             .map(|p| {
                 let value: FileManifest = serde_json::from_slice(&p).map_err(invalid)?;
-                if canonical_json(&value).map_err(invalid)? != p {
-                    return Err(invalid("installation manifest is not canonical"));
+                if canonical_json(&value).map_err(invalid)? != p
+                    || value.byte_length() > MAX_CAPTURE_FILE_BYTES
+                    || value.chunks().len() > 1024
+                {
+                    return Err(invalid("installation manifest is not canonical or bounded"));
                 }
                 Ok(value)
             })

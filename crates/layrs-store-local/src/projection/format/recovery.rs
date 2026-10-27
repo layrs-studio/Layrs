@@ -5,7 +5,7 @@ use rusqlite::OptionalExtension;
 mod admitted;
 mod handle;
 pub(super) use handle::verify_binding;
-pub(in crate::projection) use handle::{access, restore_access};
+pub(in crate::projection) use handle::{access, cancel_access, restore_access};
 pub use handle::{ProjectionRecovery, RecoveryBinding};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +17,7 @@ pub enum ProjectionRecoveryReason {
     Conversion,
     FilesystemOperation,
     Publication,
+    Reservation,
 }
 
 /// Evidence for routing to PARTIAL recovery, not a capability to read or mutate
@@ -254,8 +255,20 @@ fn inspect(
     if publication {
         reasons.push(ProjectionRecoveryReason::Publication);
     }
+    if store.marker.shared.is_some() && !filesystem && !publication && reservation_pending(&c)? {
+        reasons.push(ProjectionRecoveryReason::Reservation);
+    }
     verify()?;
     Ok(result(&store, binding.clone(), reasons))
+}
+
+/// Discovery only: an outstanding reservation or prejournal is not permission
+/// to cancel. An accepted journal keeps its own recovery reason and authority.
+fn reservation_pending(c: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_budgets) OR EXISTS(SELECT 1 FROM projection_prejournal)",
+        [], |r| r.get(0),
+    )
 }
 
 fn result(
@@ -275,6 +288,8 @@ fn result(
         Some("pending_filesystem_operation")
     } else if recovery.contains(&ProjectionRecoveryReason::Publication) {
         Some("pending_publication")
+    } else if recovery.contains(&ProjectionRecoveryReason::Reservation) {
+        Some("pending_reservation")
     } else if recovery.contains(&ProjectionRecoveryReason::Conversion) {
         Some("conversion_pending")
     } else if recovery.contains(&ProjectionRecoveryReason::Initializing) {

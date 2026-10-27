@@ -1,13 +1,13 @@
 # Admitted restore: cancellation before the durable journal
 
-27 October 2026. Source investigation and implementation plan, **not implemented
-or qualified**. This complements the restore-specific durable-journal route in
+27 October 2026. The implementation described below is integrated and source
+reviewed; its ten-case native recipe passes on r22. This complements the restore-specific durable-journal route in
 [the admission contract](worktrees-partial-vfs-managed-admission-contract.md).
 The target covers the whole window before `JournalDurable`, including partial
 preservation of checkout bytes into CAS; passing only `RestorePoint::Staged`
 does not complete this requirement.
 
-## Verified current behavior
+## Starting behavior at 5e3b8cd
 
 `restore/engine.rs::apply` reserves `restore:<operation_id>`, creates an owned
 checkout quarantine, records `OwnedStage`, writes/syncs its `new-NNNN` files,
@@ -35,12 +35,12 @@ Simply enabling the legacy cancellation is insufficient:
 - `shared/staging.rs::cancel_installations` validates and acts one installation
   at a time. A corrupt later Intent can be found after earlier effects.
 
-## Required implementation
+## Implemented boundary
 
-Add a dedicated cancellation mode behind both existing
-`cancel_shared_reservation` entry points. Keep legacy behavior available and
-keep other schema9 recovery modes fenced until their own implementation.
-Reuse the same-owner `open_access<T>` preflight/family/fresh-validation pattern.
+The implementation adds a dedicated cancellation mode behind both existing
+`cancel_shared_reservation` entry points. Legacy behavior remains available and
+other schema9 recovery modes remain fenced until their own implementation.
+It reuses the same-owner `open_access<T>` preflight/family/fresh-validation pattern.
 
 1. In the genuine clean private RO transaction, validate schema9 import and
    bounded cancellation DATA: unique restore budget, canonical operation,
@@ -73,24 +73,61 @@ each child's original inode; retaining and rechecking its private permissions
 is part of the deletion authority. Unrelated checkout files, imported roots and
 retained exact-installation artifacts must remain untouched.
 
-## Existing helpers and missing extraction
+## Helper boundaries
 
 | Existing code | Reusable evidence / required work |
 | --- | --- |
-| `shared/staging.rs::load` | Canonical Intent and payload at most 8 KiB; add SQL bounds before loading FileId, manifest and scalar fields. |
-| `Stage::begin` | Extract pure comparison of incarnation, reservation, FileId, byte count, owner, operation and database identity. Do not call the writer/creation path during preflight. |
+| `shared/staging.rs::load` | Canonical Intent and payload at most 8 KiB; SQL bounds precede loading FileId, manifest and scalar fields. Oversized existing rows cannot appear absent. |
+| `Stage::validate_identity` | Pure comparison extracted from begin: incarnation, reservation, FileId, byte count, owner, operation and database identity. The writer/creation path is not called during preflight. |
 | `Lease::authorize_content_reservation` | Refuses retained exact-import reservations and wrong admitted ownership. |
 | `Stage::directory` / `authorize_content_directory` | Validate recorded staging name/identity and reject retained-import aliases by name or native identity; use private reopening. |
-| `Stage::clean_files` | Extract nonmutating inventory validation before its deletion loop: known manifest/chunk names, regular files, count and size bounds. |
+| `Stage::inventory` | Nonmutating validation precedes the deletion loop: known manifest/chunk names, regular files, count, size and single-link bounds for admitted worktrees. |
 | `decode_manifest`, manifest/chunk verification | Validate every available piece in staging or CAS before recovering partially published content. `publish_installation` is not a read-only validator. |
-| `cancel_installations` | Keep recovery of partial CAS installations, preceded by complete bounded validation of all matching records (maximum 1024). |
+| `cancel_restore_installations` | Dedicated admitted route recovers partial CAS installations after complete bounded validation of all matching records (maximum 1024); it uses the exact manifest rather than arbitrary FileId lookup. |
 | `settle_with_lease` | Reuse release-before-delete ordering for the terminal committed budget phase. |
 
 `installation_dependencies` omits Intent records without a manifest and is not
 sufficient preflight. Exact-import validators concern a different journal and
 must not be substituted for ordinary Intent validation.
 
-## Required evidence
+The bounded global ordinary-installation inventory additionally rejects aliasing
+by staging directory name **or inode** across different `(reservation, FileId)`
+keys. It validates scalar/payload bounds before streaming canonical Intents.
+This check is also used by ordinary admitted `Stage::directory` retries, before
+resetting unverified content. The retained exact-import alias guard is separate.
+
+Admitted staging reads, deletion handles and CAS publication handles reject
+hardlinks. A checked directory alone cannot prevent an existing outside hardlink
+from remaining an alias to content subsequently renamed into immutable CAS.
+
+An already empty private cancellation retry returns without claiming or touching
+orphan family reservations. Accepted restore journals still refuse cancellation.
+Inspection reports `Reservation` only when no filesystem/publication journal
+owns the recovery action; the legacy shared inspection reports it too.
+
+## Qualification and remaining evidence
+
+The r22 exact native recipe passes in 928.34 s child / 928.37 s parent
+(child1200/outer1260). It constructs a genuine admitted destination, then exercises
+ten single-checkout-file cycles: Staged without an installation; all six
+production installation fault points under the actual restore reservation; and
+the checkout cleaning/file-deletion/directory-deletion interruption cases.
+The installation helper is called after the real Staged stop to establish the
+prejournal preservation states; no claim of process-crash injection is made.
+
+Seven cancellation error-return points are exercised across those cases.
+Both public cancellation APIs, a clean terminal retry, unchanged dirty checkout,
+removed budget/installation rows, original-preview retry, inverse, retained
+capture bytes, same imported admission and final retention fsck succeed.
+The malformed prejournal, wrong reservation, unexpected child, invalid later
+installation, real hardlink and ordinary reservation alias cases refuse without
+changing byte witnesses. The alias fixture also exercises ordinary install retry.
+See the checkpoint for binary, review and portable proof hashes.
+
+The acceptance requirements below retain the broader matrix. Additional
+ACL/identity/reparse/retained-alias negatives, actual I/O/close failures,
+multi-file partial cleanup and process/hot-journal recovery are not all
+established by this bounded recipe.
 
 - Native cancellation via bound and direct APIs after `Staged`, plus failures
   during preservation before journal acceptance. Retry the unchanged preview,

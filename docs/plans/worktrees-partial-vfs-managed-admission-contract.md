@@ -380,11 +380,37 @@ r20's native sandbox refusal occurred before checkout creation and is retained;
 r19 is superseded without execution. See the checkpoint and portable r19-r21
 archive for exact sources, reviews, logs and scope.
 
-Required remaining qualification: prejournal cancellation and AfterCommit fault
-replay; replaced inode/marker/registration; noncanonical/oversized journal;
+Prejournal cancellation is qualified separately on r22 below. Required remaining
+qualification includes AfterCommit fault replay; replaced inode/marker/registration; noncanonical/oversized journal;
 wrong base or conflicting operation; replaced quarantine/stage and destination
 collision; journal/geometry/close failures without implicit repair. The
 [prejournal plan](worktrees-partial-vfs-restore-staging-recovery.md) covers partial
 CAS preservation as well as the Staged callback. Provider8 and other admitted
 recovery entry points remain fenced. These error-return tests do not qualify
 process crashes, hot SQLite journals, inherited inverse history or GC.
+
+### Admitted prejournal cancellation — r22
+
+Both cancellation APIs now use a dedicated schema9 mode. Bounded private DATA,
+exact family reservation/registration, complete installation inventory and
+private checkout staging are validated before writer admission and again before
+effects. The cleanup preserves accepted CAS content, keeps `committed` private
+budget evidence until family release succeeds, and supports a clean terminal
+no-op. Other operation types remain fenced. Journal-free pending budgets and
+prejournal entries are visible as inspection reason `Reservation`.
+
+The ten-case r22 native recipe passes the six installation fault states and
+seven cancellation interruption points, including cleaning/unlink/rmdir gaps
+and release before private deletion. It verifies positive retry/inverse and
+retained provenance, plus unchanged-byte refusal for malformed/foreign staging,
+hardlinks and cross-reservation aliases. Exact proof and qualification limits
+are in the checkpoint and [staging contract](worktrees-partial-vfs-restore-staging-recovery.md).
+This does not establish the remaining ACL/identity and I/O-failure matrix,
+AfterCommit fault replay, other recovery modes or product-host integration.
+
+Inherited inverse history remains blocked at transport as well as resolution:
+the current prefix rowsets exclude restore receipts. The
+[imported-history plan](worktrees-partial-vfs-imported-restore-history.md) records
+the required versioned receipt/content/checkout commitments and the separate
+positive multi-segment publication work. A legacy provenance fallback cannot
+substitute for that incoming admission proof.

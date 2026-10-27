@@ -2,8 +2,12 @@
 use super::*;
 use crate::secure_fs::PinnedDirectory;
 use std::{fs, path::Path};
+#[cfg(windows)]
+mod restore;
+#[cfg(windows)]
+pub(super) use restore::{read_restore, RestoreStage};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OwnedStage {
     operation: String,

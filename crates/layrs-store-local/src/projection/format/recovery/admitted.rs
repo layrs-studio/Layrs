@@ -1,6 +1,6 @@
-//! Clean admitted inspection and restore recovery under already-retained
-//! physical/owner scopes. No settlement, migration, private rollback recovery,
-//! reservation cancellation or additional owner lock is available here.
+//! Clean admitted inspection, restore recovery and prejournal cancellation
+//! admission under already-retained physical/owner scopes. Opening never
+//! settles, migrates, rolls SQLite back or acquires an additional owner lock.
 use super::*;
 use crate::projection::provider::{
     admitted_private_io::{AdmittedPreflight, AdmittedPrivateHandle},
@@ -21,8 +21,49 @@ pub(super) fn inspection_reasons(access: &Access) -> Result<Vec<ProjectionRecove
         let mut reasons = Vec::new();
         if filesystem { reasons.push(ProjectionRecoveryReason::FilesystemOperation); }
         if publication { reasons.push(ProjectionRecoveryReason::Publication); }
+        if !filesystem && !publication && super::reservation_pending(c)? {
+            reasons.push(ProjectionRecoveryReason::Reservation);
+        }
         Ok(reasons)
     }).map_err(Into::into)
+}
+
+pub(super) fn cancel_access(
+    store: &ProjectionStore,
+    family: Option<shared::Lease>,
+    lock: StoreLock,
+    metadata: PinnedDirectory,
+    pin: DatabasePin,
+    boundaries: PreliminaryPins,
+    binding: RecoveryBinding,
+) -> Result<Access> {
+    let (access, _) = open_access(
+        store,
+        family,
+        lock,
+        metadata,
+        pin,
+        boundaries,
+        binding,
+        true,
+        |c| retention::restore_cancellation_preflight(c, store).map_err(Into::into),
+        |data, lease| {
+            data.validate_family(lease, store)?;
+            data.validate_staging(store)
+        },
+        |handle, baseline| {
+            let fresh = handle.with_validation(|c| {
+                retention::restore_cancellation_preflight(c, store).map_err(Into::into)
+            })?;
+            if fresh != *baseline {
+                return Err(rejected(
+                    "admitted cancellation preflight changed before recovery",
+                ));
+            }
+            fresh.validate_staging(store).map_err(Into::into)
+        },
+    )?;
+    Ok(access)
 }
 
 pub(super) fn inspection_access(

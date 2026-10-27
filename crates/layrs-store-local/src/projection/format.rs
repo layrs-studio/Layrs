@@ -15,6 +15,7 @@ pub(super) use family::{
     create_with_faults as create_shared_with_faults, resume as resume_shared,
 };
 pub(super) use recovery::access as recovery_access;
+pub(super) use recovery::cancel_access as cancel_recovery_access;
 pub(super) use recovery::restore_access as restore_recovery_access;
 pub use recovery::{
     ProjectionInspection, ProjectionRecovery, ProjectionRecoveryReason, RecoveryBinding,

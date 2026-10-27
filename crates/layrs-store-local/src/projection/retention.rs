@@ -1,8 +1,18 @@
 //! Two-database acceptance: protect first, accept a private claim second.
 //! A failed/ambiguous acceptance leaks protection rather than losing bytes.
 use super::*;
+#[cfg(windows)]
+mod cancellation;
 mod staging;
 use crate::secure_fs::PinnedFile;
+#[cfg(windows)]
+pub(in crate::projection) use cancellation::{
+    cancel_admitted_with_access, restore_cancellation_preflight, RestoreCancellationData,
+};
+#[cfg(all(windows, test))]
+pub(in crate::projection) use cancellation::{
+    cancel_admitted_with_faults, RestoreCancellationPoint,
+};
 use layrs_core::scm::{FileId, FileManifest, FileManifestId};
 use rusqlite::{params, Connection, OptionalExtension};
 pub(super) use staging::{accept_staging, require_no_staging, track_directory, track_file};
@@ -134,6 +144,15 @@ pub(super) fn settle_with_lease(
     store: &ProjectionStore,
     lease: Option<&shared::Lease>,
 ) -> Result<()> {
+    settle_with_lease_after_release(c, store, lease, || Ok(()))
+}
+
+fn settle_with_lease_after_release(
+    c: &Connection,
+    store: &ProjectionStore,
+    lease: Option<&shared::Lease>,
+    after_release: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let Some(lease) = lease else {
         return Ok(());
     };
@@ -146,6 +165,7 @@ pub(super) fn settle_with_lease(
         .optional()?;
     if let Some(id) = id {
         lease.release_reservation(&id, &store.identity().worktree_id)?;
+        after_release()?;
         c.execute(
             "DELETE FROM projection_budgets WHERE singleton=1 AND state='committed'",
             [],
@@ -640,11 +660,15 @@ impl ProjectionStore {
         if self.marker.shared.is_none() {
             return Err(invalid("reservation recovery requires format4"));
         }
-        cancel_with_access(self, format::recovery_access(self, None, false)?)
+        cancel_with_access(self, format::cancel_recovery_access(self, None)?)
     }
 }
 
 pub(super) fn cancel_with_access(store: &ProjectionStore, access: format::Access) -> Result<()> {
+    #[cfg(windows)]
+    if matches!(&access.connection, format::PrivateConnection::Admitted(_)) {
+        return cancel_admitted_with_access(store, access);
+    }
     access.run(|access| {
         database::require_mutable(&access.connection)?;
         if store.marker.shared.is_none() {

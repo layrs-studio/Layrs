@@ -51,7 +51,7 @@ impl RestoreFaults for Stop {
     }
 }
 
-fn admitted_destination() -> PathBuf {
+pub(super) fn admitted_destination() -> PathBuf {
     let mut destination = None;
     super::managed_staging_tests::with_content_planned_bytes_then(
         b"provider base content",

@@ -1,5 +1,32 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément annulation avant journal — r22
+
+La recette native r22 réussit dix cas d’annulation/reprise sur une destination
+admise : staging de restauration, six états d’installation partielle du contenu
+et sept points d’interruption du nettoyage/de la libération. Les refus ciblés
+préservent les témoins ; le réessai du preview, la restauration inverse,
+l’historique et l’import initial restent valides. Détails et limites dans le
+[checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md) et le
+[contrat de staging](../../plans/worktrees-partial-vfs-restore-staging-recovery.md).
+
+`restore-cancel-evidence-20261027-r22.tar.gz` contient 596 fichiers vérifiés
+(1 706 121 octets), SHA-256
+`4f78afd2f5c63c867f070a2ff3e10994b78ec30c72f5710ea7dfcbd18f2a7801`.
+Inventaire : `restore-cancel-inventory-20261027-r22.json`. Sources, revue, scripts
+et journaux sont portables ; binaires, bases et fixtures restent locaux. Cette
+archive ne qualifie pas un autre hôte.
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/restore-cancel-evidence-20261027-r22.tar.gz
+```
+
+La suite inclut le transport authentifié des reçus de restauration hérités et
+la publication positive sur plusieurs segments :
+[investigation et plan](../../plans/worktrees-partial-vfs-imported-restore-history.md).
+Les autres reprises, transitions, companions, expansion et hôtes produit
+restent à terminer ; le goal reste actif.
+
 ## Complément reprise des restaurations admises — r19 à r21
 
 Le scénario natif r21 réussit les quatre interruptions après journal durable,
@@ -21,8 +48,8 @@ locaux. Cette preuve ne vaut pas qualification d’un autre hôte.
 tar -xzf docs/continuation/worktrees-partial-vfs/restore-recovery-evidence-20261027-r19-r21.tar.gz
 ```
 
-La suite porte sur l’annulation de toute la fenêtre avant journal, y compris
-la préservation CAS partielle, puis les autres cas limites de récupération :
+L’annulation de la fenêtre avant journal est désormais qualifiée sur r22,
+y compris les états CAS partiels décrits ci-dessus. Les autres cas limites restent ouverts :
 [plan de reprise du staging](../../plans/worktrees-partial-vfs-restore-staging-recovery.md).
 Crashes de processus, journaux SQLite chauds, filiation inverse importée,
 transitions, companions, expansion, nettoyage et parcours produit restent ouverts.

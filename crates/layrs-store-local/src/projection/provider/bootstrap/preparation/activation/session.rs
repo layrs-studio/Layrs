@@ -488,6 +488,8 @@ mod managed_ready_tests;
 #[cfg(test)]
 mod managed_restore_recovery_tests;
 #[cfg(test)]
+mod managed_restore_cancellation_tests;
+#[cfg(test)]
 mod managed_source_publication_tests;
 
 #[cfg(test)]

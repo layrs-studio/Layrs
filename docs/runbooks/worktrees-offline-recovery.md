@@ -278,6 +278,22 @@ Choose recovery by the recorded operation, keeping writers stopped during it:
 | Installation, namespace, refresh, restore or rebase journal is pending | `partial resume-installation`, `partial resume-namespace`, `partial resume-refresh`, `partial resume-restore`, or `partial resume-rebase`, each with `--space "$Partial"` | Select the matching operation. Reservation cancellation refuses accepted application journals. Do not run all recovery commands blindly. |
 | Publication has an unresolved outcome or pending local acceptance | Inspect `partial status`; retry the original publication action/capture sequence when connected | Preserve the durable request and receipt. Do not create a substitute request, convert or cancel around an unknown remote outcome. |
 
+For an admitted managed destination (private schema9), Store inspection reports
+`reservation` when a private budget or staging remains without an accepted
+filesystem/publication journal. The dedicated cancellation route currently
+accepts restore operations only. It verifies all owned checkout and content
+staging before cleanup, preserves accepted content and checkout edits, and keeps
+a durable retry reference until the family reservation has been released. An
+interruption during cleanup or after that release can be retried through the
+same bound cancellation API. An already completed retry performs no orphan
+reservation cleanup. Other operation types retain their explicit refusal.
+This route does not authorize SQLite rollback recovery; shared hot journals
+remain refused.
+
+The backend's exact native qualification is recorded in the
+[managed checkpoint](../plans/worktrees-partial-vfs-checkpoint.md); this does not
+establish CLI/Desktop integration qualification for admitted destinations.
+
 The Desktop Diagnostic uses nonmutating, identity-validated inspection. A hot
 SQLite rollback journal is reported separately from a pending application
 operation. Its explicit database recovery action repairs only that database

@@ -1,5 +1,55 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r22 prejournal cancellation:** admitted schema9 now has a dedicated
+bound/direct restore-cancellation route, with clean private RO preflight,
+positive close, complete family/physical validation, fresh writer comparison,
+and consuming finalization. Inspection reports `Reservation` for journal-free
+private budgets/staging. The cancellation covers partial CAS preservation as
+well as the Staged callback, preserves verified content and checkout edits,
+and releases the family reservation before deleting its durable private retry
+reference. A clean terminal retry is a no-op, not authority over orphan family
+reservations. Other operation types and SQLite rollback remain fenced.
+
+Independent critical review closed two concrete integrity findings: hardlinked
+staging could leave an outside alias after CAS publication, and different
+ordinary reservations could claim the same staging directory/inode. The
+implemented checks cover read/prepublication/unlink handles and a bounded
+global ordinary Intent inventory, alongside the retained exact-import guard.
+Ordinary admitted staging retries also reject the cross-reservation alias.
+
+The released native recipe
+`managed_admitted_restore_cancels_prejournal_and_partial_installations_then_retries`
+passes all ten cases on r22: real restore Staged interruption, six production
+installation-helper fault states under its restore budget, and seven
+cancellation interruption points. These are installations cleared, staging
+marked cleaning, file unlinked, directory removed before prejournal deletion,
+staging cleared, private budget committed, and family reservation released.
+Bound/direct cancellation, terminal replay, retry of the original preview,
+restore/inverse, retained capture bytes, original admission and final fsck pass.
+Malformed staging, unexpected checkout entry, wrong reservation, invalid later
+installation, cross-reservation alias (also ordinary retry), and real hardlink
+refuse with unchanged checkout/family byte witnesses.
+
+Exact r22: EXE SHA-256
+`053aa9eb2d43778b8be8aa22a668a54acb916753efec8a8051c633bc3639e6b3`,
+CodeView age 99, 581 retained inputs, child1200/outer1260 on a fresh C: fixture.
+Runtime: 928.34 s child / 928.37 s libtest parent, 928.696 s outer runner.
+All-targets check and test build pass. The verified portable
+`restore-cancel-evidence-20261027-r22.tar.gz` contains 596 files, 1,706,121 bytes,
+SHA-256 `4f78afd2f5c63c867f070a2ff3e10994b78ec30c72f5710ea7dfcbd18f2a7801`.
+Sources, review, scripts and logs are included; binaries/databases/fixtures stay
+local. No full-suite, crash, hot-journal, all-ACL/identity corruption matrix,
+actual I/O/close-failure or product-host acceptance is inferred.
+
+Next: inherited restore history needs authenticated transport, not just a
+schema9 reader branch. Current import closures forbid and omit restore history;
+ordinary origins also lack checkout identity evidence. The
+[imported history plan](worktrees-partial-vfs-imported-restore-history.md) records
+the versioned closure/content/origin work and the independent positive
+multi-segment publication qualification. AfterCommit fault replay, additional
+recovery refusals, other operation-specific recovery, re-export9, companions,
+expansion, lifecycle/GC and CLI/Desktop qualification remain open.
+
 **27 October, r20-r21 admitted restore recovery:** the clean schema9 inspection
 and dedicated restore opener are implemented and independently reviewed. They
 validate the bounded pending journal in the same genuine private RO snapshot
@@ -29,8 +79,8 @@ contains 1,758 files, 4,848,141 bytes, SHA-256
 `ad224df8beaf7c83c64c51f0f1595a2649cef23f53a6996973879b36e1a89ec7`.
 
 This is explicit error-return recovery, not process-crash, hot-journal or
-whole-programme qualification. Remaining restore work includes prejournal
-cancellation/inspection, AfterCommit fault replay, further binding/geometry and
+whole-programme qualification. Prejournal cancellation/inspection is qualified
+separately on r22 above. Remaining restore work includes AfterCommit fault replay, further binding/geometry and
 close-failure negatives, and inherited inverse history. The next implementation
 plan covers the **whole** prejournal preservation window, including partially
 installed CAS content: [restore staging recovery](worktrees-partial-vfs-restore-staging-recovery.md).

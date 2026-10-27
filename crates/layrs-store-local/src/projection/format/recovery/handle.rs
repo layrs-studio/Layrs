@@ -116,7 +116,11 @@ impl ProjectionRecovery {
         rebase::resume_with_access(&self.store, self.access(false)?)
     }
     pub fn cancel_shared_reservation(&self) -> Result<()> {
-        retention::cancel_with_access(&self.store, self.access(false)?)
+        self.caller.verify_path_identity()?;
+        retention::cancel_with_access(
+            &self.store,
+            cancel_access(&self.store, Some(&self.binding))?,
+        )
     }
 }
 
@@ -142,7 +146,7 @@ pub(in crate::projection) fn access(
     expected: Option<&RecoveryBinding>,
     initializing: bool,
 ) -> Result<Access> {
-    access_mode(store, expected, initializing, false)
+    access_mode(store, expected, initializing, RecoveryMode::Common)
 }
 
 /// Only restore's pending journal may cross the admitted schema9 boundary.
@@ -151,14 +155,27 @@ pub(in crate::projection) fn restore_access(
     store: &ProjectionStore,
     expected: Option<&RecoveryBinding>,
 ) -> Result<Access> {
-    access_mode(store, expected, false, true)
+    access_mode(store, expected, false, RecoveryMode::Restore)
+}
+
+pub(in crate::projection) fn cancel_access(
+    store: &ProjectionStore,
+    expected: Option<&RecoveryBinding>,
+) -> Result<Access> {
+    access_mode(store, expected, false, RecoveryMode::CancelRestore)
+}
+
+enum RecoveryMode {
+    Common,
+    Restore,
+    CancelRestore,
 }
 
 fn access_mode(
     store: &ProjectionStore,
     expected: Option<&RecoveryBinding>,
     initializing: bool,
-    restore_specific: bool,
+    mode: RecoveryMode,
 ) -> Result<Access> {
     if let Some(expected) = expected {
         expected.validate()?;
@@ -188,17 +205,20 @@ fn access_mode(
     )?;
     #[cfg(windows)]
     if has_admitted_header(&pin)? {
-        if !restore_specific {
-            return Err(invalid(
+        return match mode {
+            RecoveryMode::Common => Err(invalid(
                 "admitted pending operations require a dedicated recovery route",
-            ));
-        }
-        return super::admitted::restore_access(
-            store, family, lock, metadata, pin, boundaries, actual,
-        );
+            )),
+            RecoveryMode::Restore => super::admitted::restore_access(
+                store, family, lock, metadata, pin, boundaries, actual,
+            ),
+            RecoveryMode::CancelRestore => super::admitted::cancel_access(
+                store, family, lock, metadata, pin, boundaries, actual,
+            ),
+        };
     }
     #[cfg(not(windows))]
-    let _ = restore_specific;
+    let _ = mode;
     if let Some(lease) = &family {
         let catalog = lease.inspection_catalog(false)?;
         let (bytes, state, registered_path, identity): (Vec<u8>, String, String, String) = catalog.connection.query_row(

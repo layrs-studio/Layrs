@@ -184,12 +184,23 @@ impl Lease {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
             };
+            #[cfg(windows)]
+            if self.is_admitted() {
+                if let Some(source) = &source {
+                    crate::projection::file::require_single_link(source.file())?;
+                }
+            }
             let name = object_name(id.as_str())?;
             let existed = source
                 .as_ref()
                 .map(|source| source.rename_to(&chunks, name.as_ref()))
                 .transpose()?
                 .unwrap_or(false);
+            #[cfg(windows)]
+            if self.is_admitted() {
+                let destination = chunks.open_readonly_file(name.as_ref())?;
+                crate::projection::file::require_single_link(destination.file())?;
+            }
             let actual = read_chunk_at(&chunks, id, size)?;
             verifier.push(actual.bytes()).map_err(invalid)?;
             if actual.byte_length() != size {
@@ -224,12 +235,23 @@ impl Lease {
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
+        #[cfg(windows)]
+        if self.is_admitted() {
+            if let Some(source) = &source {
+                crate::projection::file::require_single_link(source.file())?;
+            }
+        }
         let name = object_name(manifest.id().as_str())?;
         let existed = source
             .as_ref()
             .map(|source| source.rename_to(&manifests, name.as_ref()))
             .transpose()?
             .unwrap_or(false);
+        #[cfg(windows)]
+        if self.is_admitted() {
+            let destination = manifests.open_readonly_file(name.as_ref())?;
+            crate::projection::file::require_single_link(destination.file())?;
+        }
         if bounded_file(
             &self.family.root.join("objects/manifests").join(&name),
             262144,
