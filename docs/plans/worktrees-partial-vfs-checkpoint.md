@@ -1,5 +1,47 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r32-r33 ordinary C8 metadata copy:** the actual retained B9 owner
+and independent C pins now copy the complete committed prefix atomically into
+C8, including restore-only history. Exact schema, head/G0, all thirteen rowsets,
+singleton destination Copying and empty unrelated tables are checked. Partial
+ingress is refused. Errors before successful COMMIT roll back; later close or
+postvalidation errors can leave a complete durable copy, recognized read-only.
+
+All three SQL recipes pass on r32. The corrected r33 native recipe passes in
+696.21 s child / 696.29 s parent / 696.914 s outer (child1200/outer1260): actual
+allocation/Initializing, pre-cancel and substituted-proof refusal, complete
+copy with one deliberately withheld successful-close ACK, independent durable
+readback, managed B reopen and exact retry without another writer. Complete
+byte witnesses allow only the bound C database to change at the copy. B's
+incoming admission stays unchanged and C remains unready without reservations.
+
+Two fixture failures are preserved. r31 supplied an extra known manifest outside
+the actual export union and stopped before copying. After that test-only fix,
+r32 passed SQL but its native whole-content-table witness included an extra
+21-byte B base outside the committed historical mapping set. Independent log
+analysis found twelve other tables identical. The r33 test now independently
+derives the exact mapping rowset and compares the COMPLETE C content table to
+it, while retaining every other full-table and byte witness. No failed fixture
+was reopened, and the production code did not change for either correction.
+
+Workspace all-targets check passed (24.01 s); final libtest build passed
+(41.25 s). r33 audit binds EXE
+`ff0fc51d90f2720c7130feba64272ba507327cd05773745db7640ca4c5e112de`,
+CodeView age111, 612 retained inputs and nine startup checks. Independent release
+`5b382424cca0ac41ccf182f75ade2094c1113a909cbcbe4ea28c5ae725026106`
+compared 112 live/retained reviewed paths. Four retained but unwired future
+budget/Staging files are explicitly outside this runtime release.
+
+Portable `ordinary-metadata-evidence-20261027-r31-r33.tar.gz`: 1,858 verified
+files, 5,170,933 bytes, SHA-256
+`8277f045a188af5faa55119a68461e8050f8de8f5f9b1cc15078aecca8c9a912`.
+See [metadata/content integration](worktrees-partial-vfs-ordinary-content.md).
+Next: fund the complete future metadata envelope before Planned; integrate and
+qualify actual SourceStaging/DestinationStaging, dedicated retained-B/active-C
+reservation and content transfer. Ready/Published, autonomous C, recovery and
+the rest of the original programme remain open. No actual OS-close failure,
+midwrite cancellation, crash, product-host or performance acceptance is inferred.
+
 **27 October, r30 ordinary physical C allocation:** the genuine ordinary owner
 now allocates C with independent family/lifecycle/parent/artifact pins, commits
 exact SourceCopying, publishes the allocated FORMAT inode and registers exact C

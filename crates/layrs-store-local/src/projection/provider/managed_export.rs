@@ -3,6 +3,7 @@
 //! Dedicated child adapters retain allocation pins and journal Copying; content
 //! transfer, destination readiness and autonomous admission remain separate.
 pub(super) mod allocation;
+mod copy;
 mod destination;
 mod image;
 mod preallocation;

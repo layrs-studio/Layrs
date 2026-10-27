@@ -184,6 +184,22 @@ fn reengage(c: &Connection, f: &mut Fixture, files: &[CheckoutFile]) -> Verified
     .unwrap()
 }
 
+pub(in crate::projection::provider) fn with_admitted_source_sql(
+    body: impl FnOnce(&Connection, &format::Marker, &[FileManifest]),
+) {
+    with_private9(|c, f| {
+        body(
+            c,
+            &f.marker,
+            &[
+                f.source.source.descriptors()[0].manifest.clone(),
+                f.historical.clone(),
+                f.current.clone(),
+            ],
+        )
+    });
+}
+
 fn with_private9(body: impl FnOnce(&Connection, &Fixture)) {
     let source = BareConnection::reference().unwrap();
     let destination = BareConnection::reference().unwrap();

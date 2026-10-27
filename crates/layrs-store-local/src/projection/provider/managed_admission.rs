@@ -19,7 +19,7 @@ mod read;
 pub(super) mod record;
 pub(super) mod schema;
 #[cfg(test)]
-mod tests;
+pub(in crate::projection::provider) mod tests;
 mod write;
 pub(super) use read::read_admitted_import;
 pub(super) use read::read_record;

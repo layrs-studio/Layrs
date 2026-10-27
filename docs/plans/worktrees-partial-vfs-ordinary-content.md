@@ -5,6 +5,77 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
+## Current implementation checkpoint
+
+The ordinary C8 adapter and physical driver are connected and qualified on the
+three r32 SQL recipes and the corrected r33 native recipe. The workspace
+all-targets check passed (24.01 s); the final normal libtest build passed
+(41.25 s). The r33 executable and 612 retained source inputs are audited; four
+of those inputs are unwired future budget/Staging drafts, explicitly outside
+this release. Newer Staging/reservation drafts remain outside the module tree.
+
+r31 stopped in the SQL fixture before destination copying: its manifest list
+included a known old Provider base outside the exact ordinary union. The
+test-only correction derives the exact union from authenticated history and
+selected bases. All three r32 SQL recipes then passed (4.918, 7.264, 2.988 s).
+
+r32's native attempt reached durable C8 and successful physical close with ACK
+withheld, then failed a too-broad content-table witness after 580.436 s. Twelve
+other tables were identical; B retained one extra 21-byte base mapping outside
+the committed historical mapping rowset. No failed database was reopened. The
+corrected native witness derives that exact rowset independently in a fresh
+source RO snapshot, compares the COMPLETE C content table to it and compares
+all twelve other complete tables to B. Production code is unchanged.
+
+r33 native passes: 696.21 s child / 696.29 s parent / 696.914 s outer. The
+successful-close ACK refusal, durable complete C8, managed B reopen, exact
+no-writer retry, complete byte witnesses, unchanged incoming admission and C
+ordinary-open refusal all pass. Bounds remain child1200/outer1260. This is not
+performance acceptance. The three SQL passes retain their r32 provenance.
+
+The portable `ordinary-metadata-evidence-20261027-r31-r33.tar.gz` contains 1,858
+verified files, 5,170,933 bytes, SHA-256
+`8277f045a188af5faa55119a68461e8050f8de8f5f9b1cc15078aecca8c9a912`.
+r33 EXE SHA-256
+`ff0fc51d90f2720c7130feba64272ba507327cd05773745db7640ca4c5e112de`,
+CodeView age111; independent release SHA-256
+`5b382424cca0ac41ccf182f75ade2094c1113a909cbcbe4ea28c5ae725026106`.
+All 112 reviewed live/retained paths matched before execution.
+
+The native recipe deliberately withholds one acknowledgement after a successful
+physical writer close, independently checks complete durable C8, then reopens B
+and requires exact replay without another destination writer. It does not model
+an actual OS close failure or cancellation after destination writes.
+
+The next reservation investigation also found that ordinary planning currently
+budgets copied-prefix metadata only. The later base floor additionally includes
+observation, placement, capture, selection and both actual intents. The immutable
+plan must fund a conservative complete envelope before SourcePlanned; Staging
+must rederive and validate its actual floor. An underfunded durable plan must
+refuse reservation, never silently increase its quota or lower the floor.
+
+Two new Staging SQL modules are drafted outside the module tree:
+`ordinary_transition/staging.rs` and `ordinary_destination/staging.rs`. They are
+not compiled or qualified. Integration must extend the bounded outgoing reader,
+live-mutation gate, source phase/shape checks and preallocation capacity together.
+Source normalized byte accounting must include the reservation TEXT column.
+The destination source interpreter needs an explicit expected source phase and
+a shared exact copied-row validator; this permits actual SourceStaging with
+DestinationCopying without manufacturing historical SourceCopying authority.
+
+The first content-reservation slice can retain the installation engine's strict
+Provider policy: a dedicated ordinary ReserveOnly family validator must walk all
+retained Published groups, preserve global accounting and permit exactly C's
+absent-or-full reservation. C must still have no protection root, legacy journal
+or exact installation. Installation progress requires a later explicit mode.
+
+After that reservation exists, ordinary content-manifest lookup rejects it.
+The retained managed owner therefore needs an export-specific source callback
+and canonical manifest lookup using actual source/C commitments and pins. Keep
+generic ordinary content permissions strict. Retained-owner retry and reopening
+after owner loss are different requirements; the latter additionally needs the
+still-missing physical allocation recovery protocol.
+
 ## Atomic C8 ingress
 
 Use a dedicated ordinary adapter, leaving Provider EmptyIngress entry points
@@ -26,7 +97,9 @@ Under the real owner, source snapshot and independently retained C pins:
    every unrelated table remains empty.
 6. Commit, positively close and independently read back the complete state.
 
-Fresh failure rolls back rather than committing an intermediate EmptyIngress.
+Failure before successful COMMIT rolls back rather than committing an intermediate
+EmptyIngress. A later close, cancellation or postvalidation failure can leave a
+complete C8 copy durable; exact read-only replay must authenticate that state.
 Replaying an exact complete copy performs no writes. Do not copy B's incoming
 admission or outgoing intent rows as C history. Ancestry comes from the committed
 import rowsets and receipts. Do not use B's current observation as C's G0.

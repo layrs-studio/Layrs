@@ -65,6 +65,8 @@ mod managed_budget;
 #[cfg(windows)]
 mod managed_export;
 #[cfg(windows)]
+mod ordinary_destination;
+#[cfg(windows)]
 pub(in crate::projection) mod ordinary_transition;
 #[cfg(windows)]
 pub use managed_export::OrdinaryManagedExport;

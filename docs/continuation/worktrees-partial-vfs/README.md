@@ -1,5 +1,34 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément copie des métadonnées de C — r31 à r33
+
+Les trois recettes SQL passent sur r32 ; la recette native corrigée passe sur
+r33 en 696,914 s. Le propriétaire réel de B et les protections indépendantes de
+C copient atomiquement le préfixe engagé, dont les reçus et contenus conservés
+uniquement pour une restauration inverse. Le rejeu d'une copie complète est
+sans écriture ; une base partiellement initialisée est refusée.
+
+Le test natif refuse volontairement un acquittement après fermeture physique
+réussie. C reste entièrement copié ; après réouverture de B, le rejeu ne crée
+aucun nouveau writer. Les témoins complets limitent le changement à la base
+exacte de C ; l'admission de B est inchangée. C reste Copying/Initializing, sans
+réservation ni accès ordinaire.
+
+Deux échecs de fixtures sont conservés : manifeste supplémentaire dans r31,
+puis comparaison de toute la table des contenus de B dans r32 alors que le
+préfixe n'engage que ses mappings historiques. La correction vérifie exactement
+la table complète de C contre ce périmètre authentifié et les douze autres
+tables intégralement. Le code de production reste identique ; aucune fixture
+échouée n'a été rouverte. Les rejeux finaux sont réellement exécutés sur r33.
+
+Archive `ordinary-metadata-evidence-20261027-r31-r33.tar.gz` : 1 858 fichiers
+vérifiés, 5 170 933 octets, SHA-256
+`8277f045a188af5faa55119a68461e8050f8de8f5f9b1cc15078aecca8c9a912`.
+Inventaire : `ordinary-metadata-inventory-20261027-r31-r33.json`. Les brouillons
+du budget complet, de Staging et de la réservation restent distincts, non
+raccordés et non qualifiés. Suite et contraintes :
+[copie C8 et contenu](../../plans/worktrees-partial-vfs-ordinary-content.md).
+
 ## Complément allocation physique de C — r30
 
 Les 17 recettes passent : six tests de capacité, neuf tests SQL et deux scénarios
