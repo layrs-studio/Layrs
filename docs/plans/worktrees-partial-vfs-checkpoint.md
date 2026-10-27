@@ -1,5 +1,55 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r28-r29 ordinary durable source journal:** outgoing Planned and
+resource-free Cancelled now coexist with B's immutable incoming Ready. Schema9
+selects that ingress through the actual admission transaction/digest/receipt/
+prefix; fresh Ready8 retains its singleton rule. All outgoing records are bounded
+and authenticated against actual admission, source database and historical
+frontier. One live plan fences ordinary mutations and restore recovery.
+
+The genuine ordinary owner writes through an Immediate transaction with explicit
+commit/rollback and positive close. Dedicated managed reopen and cancellation
+retain normal admission/pin checks without ordinary budget settlement. Review
+corrected two issues before runtime: reserve actual Cancelled encoding capacity
+before Planned insertion, and prevent a terminal cancellation retry from settling
+an unrelated later capture budget.
+
+All ten r28 pure/SQL recipes pass: three capacity boundaries, five admitted-reader
+cases and two Ready8 compatibility regressions. Its native recipe failed after
+205.027 s because a whole-family equality assertion included B's intentionally
+changed private journal database under family/worktrees. Independent log review
+found identical 27-path inventories with only that same-identity DB changed.
+No failed fixture was reopened. The corrected test permits only the exact bound
+B DB content change at the two intended commits, compares all other nodes and
+the complete checkout, and checks exact SQL transitions/frontiers. Every retry
+and refusal still compares complete byte trees without DB exclusions.
+
+The corrected r29 native recipe passes: 340.87 s child / 340.94 s parent /
+341.302 s outer, child900/outer960. It covers pre-cancel, durable plan, ordinary
+open/capture/CAS refusal, managed read-only reopen, exact retries, changed plan/
+incoming ID/invalid ID/second live intent refusal, external-edit-preserving
+cancellation, no-write terminal retry, later generation/capture advancement with
+committed budget preserved by historical cancellation retry, and a second plan/
+cancel cycle. Incoming admission and Ready remain unchanged.
+
+r28 workspace all-targets check passed (15.62 s). r29's only build-source change
+is the corrected native test; final libtest build passed (18.77 s). Independent
+review compared all 597 retained r28/r29 build inputs and matched all 95 reviewed
+live/retained paths before execution. r29 EXE SHA-256
+`053522e95d62ae656e97acb9bbf0e6bd277a867eda8b261608c62c16348eb7f3`,
+CodeView age107; native release SHA-256
+`c4343f392a4c4e882efb0a058ecf185ddec5d988881668b520ad912e0c22241d`.
+Portable `ordinary-source-intent-evidence-20261027-r28-r29.tar.gz` contains
+1,226 verified files, 3,412,375 bytes, SHA-256
+`28d087dcc7d3b5f96e3fbf1de90aded2d45955e3321e7b8e93f0734235607b7c`.
+
+This qualifies [preallocation source intents](worktrees-partial-vfs-ordinary-source-intents.md),
+not Copying, resource-bearing cancellation or C allocation/publication/admission.
+The next [driver integration](worktrees-partial-vfs-ordinary-export-driver.md)
+adds genuine independent C family/physical ownership and Copying CAS, then
+content, publication and autonomous C admission. Inherited inverse operations,
+multiple publications and the remaining full programme still require execution.
+
 **27 October, r27 owned ordinary export source:** `begin_managed_export` now
 retains genuine exclusive ordinary Access, the selected physical image and
 immutable Windows leaf handles. Current file/chunk copies and exact retained

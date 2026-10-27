@@ -462,6 +462,24 @@ impl Access {
     }
 }
 pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Access> {
+    access_with_settlement(store, mode, true)
+}
+
+/// Explicit managed retry/cancellation must not settle another ordinary
+/// operation's committed budget. This route accepts genuine private9 only.
+#[cfg(windows)]
+pub(in crate::projection) fn access_for_managed_export_retry(
+    store: &ProjectionStore,
+    mode: SessionMode,
+) -> Result<Access> {
+    access_with_settlement(store, mode, false)
+}
+
+fn access_with_settlement(
+    store: &ProjectionStore,
+    mode: SessionMode,
+    settle_ordinary: bool,
+) -> Result<Access> {
     let mut family = shared::for_store_discovery(store)?;
     let metadata_path = store.marker.metadata_path(&store.root);
     let _lock =
@@ -509,7 +527,10 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
         };
         let checked = (|| {
             result.verify()?;
-            if mode == SessionMode::Exclusive {
+            if settle_ordinary
+                && mode == SessionMode::Exclusive
+                && !provider::ordinary_transition::has_live(&result.connection)?
+            {
                 retention::settle_with_lease(&result.connection, store, result.family.as_ref())?;
             }
             result.verify()
@@ -518,6 +539,9 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
             return result.run(|_| Err(error));
         }
         return Ok(result);
+    }
+    if !settle_ordinary {
+        return Err(invalid("managed export retry requires admitted private9"));
     }
     if let Some(binding) = &marker.shared {
         if database.identity() != binding.database_identity {

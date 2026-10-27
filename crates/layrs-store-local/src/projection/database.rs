@@ -339,6 +339,8 @@ pub(super) fn current(c: &Connection) -> Result<VersionedProjection> {
 }
 
 pub(super) fn require_idle(c: &Connection) -> Result<()> {
+    #[cfg(windows)]
+    provider::ordinary_transition::require_no_live(c)?;
     let pending: bool =
         c.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)", [], |r| {
             r.get(0)

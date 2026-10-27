@@ -1,6 +1,7 @@
 //! Destination-local interpretation of the immutable incoming prefix only.
 //! The caller pins the genuine destination FORMAT and retains its transaction.
 //! No live source, native authority, Ready suffix or content bytes are proved.
+use super::super::managed_admission::ManagedAdmissionRecord;
 use super::super::records::{
     activation::ProviderActivationRecord,
     transition::{
@@ -26,10 +27,9 @@ pub(in crate::projection::provider) struct VerifiedDestinationPrefix<'a> {
     schema: DestinationSchema,
 }
 
-#[derive(Clone, Copy)]
 enum DestinationSchema {
     Ready8,
-    Admitted9,
+    Admitted9(ManagedAdmissionRecord),
 }
 
 impl VerifiedDestinationPrefix<'_> {
@@ -84,15 +84,18 @@ impl VerifiedDestinationPrefix<'_> {
         cancel: Option<&Cancellation>,
     ) -> CauseResult<()> {
         self.require_destination_connection(c)?;
-        let current = match self.schema {
+        let current = match &self.schema {
             DestinationSchema::Ready8 => read_destination_prefix(c, &self.marker, cancel)?,
-            DestinationSchema::Admitted9 => {
+            DestinationSchema::Admitted9(admission) => {
                 let permit = super::super::managed_admission::schema::require_schema(
                     c,
                     &self.marker,
                     cancel,
                 )?;
-                read_admitted_destination_prefix(c, &self.marker, &permit, cancel)?
+                // This re-reads the actual bounded admission metadata and
+                // compares the retained anchor. It never calls the full
+                // admitted reader, which also interprets frozen prefix rows.
+                read_admitted_destination_prefix(c, &self.marker, &permit, admission, cancel)?
             }
         };
         if current.prefix != self.prefix
@@ -242,10 +245,18 @@ pub(in crate::projection::provider) fn read_admitted_destination_prefix<'a>(
     c: &'a Connection,
     marker: &format::Marker,
     permit: &super::super::managed_admission::schema::Schema9Permit<'_>,
+    admission: &ManagedAdmissionRecord,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<VerifiedDestinationPrefix<'a>> {
     permit.require(c, marker, cancel)?;
-    read_prefix_rows(c, marker, DestinationSchema::Admitted9, cancel)
+    let (actual, _, _) = super::super::managed_admission::read_record(c, cancel)?;
+    if &actual != admission {
+        return Err(invalid("destination prefix admission anchor changed"));
+    }
+    // Fence the complete transition inventory before historical/FK readers.
+    // Full outgoing interpretation still runs after incoming authentication.
+    super::super::ordinary_transition::preflight_rows(c, cancel)?;
+    read_prefix_rows(c, marker, DestinationSchema::Admitted9(actual), cancel)
 }
 
 fn read_prefix_rows<'a>(
@@ -278,7 +289,7 @@ fn read_prefix_rows<'a>(
     if count != 1 || backend_bytes > 16 || mount_bytes != 0 || !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_backend WHERE singleton=1 AND backend='ordinary' AND mount_id IS NULL)", [], |r| r.get::<_,bool>(0))? {
         return Err(invalid("destination prefix backend differs"));
     }
-    let ready = read_ready_link(c)?;
+    let ready = read_ready_link(c, &schema)?;
     ready.require_prefix(&prefix)?;
     if ready.role != TransitionRole::Destination
         || ready.state != TransitionState::Ready
@@ -297,7 +308,7 @@ fn read_prefix_rows<'a>(
             .ok_or_else(|| invalid("destination prefix receipt missing"))?,
     )?;
     ready.require_receipt(&receipt)?;
-    if matches!(schema, DestinationSchema::Admitted9) {
+    if matches!(&schema, DestinationSchema::Admitted9(_)) {
         let ImportSource::Provider { version, .. } = &prefix.source else {
             return Err(invalid("admitted prefix requires provider source"));
         };
@@ -362,16 +373,56 @@ fn read_prefix_rows<'a>(
     })
 }
 
-fn read_ready_link(c: &Connection) -> CauseResult<ProviderTransitionIntentRecord> {
-    let (count, oversized): (u64,bool) = c.query_row(
-        "SELECT count(*),coalesce(max(length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 OR length(payload)>262144 OR length(CAST(reservation AS BLOB))>128 OR length(CAST(receipt_id AS BLOB))>71),0) FROM projection_provider_transitions", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
+fn read_ready_link(
+    c: &Connection,
+    schema: &DestinationSchema,
+) -> CauseResult<ProviderTransitionIntentRecord> {
+    let transaction = match schema {
+        DestinationSchema::Ready8 => None,
+        DestinationSchema::Admitted9(admission) => Some(admission.transaction_id.as_str()),
+    };
+    let bound: [&dyn rusqlite::ToSql; 1] = [&transaction];
+    let empty: [&dyn rusqlite::ToSql; 0] = [];
+    let (probe, query, params): (&str, &str, &[&dyn rusqlite::ToSql]) = match schema {
+        DestinationSchema::Ready8 => (
+            "SELECT count(*),coalesce(max(length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 OR length(payload)>262144 OR length(CAST(reservation AS BLOB))>128 OR length(CAST(receipt_id AS BLOB))>71),0) FROM projection_provider_transitions",
+            "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions",
+            &empty,
+        ),
+        DestinationSchema::Admitted9(_) => (
+            "SELECT count(*),coalesce(max(length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 OR length(payload)>262144 OR length(CAST(reservation AS BLOB))>128 OR length(CAST(receipt_id AS BLOB))>71),0) FROM projection_provider_transitions WHERE id=?1",
+            "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions WHERE id=?1",
+            &bound,
+        ),
+    };
+    let (count, oversized): (u64, bool) =
+        c.query_row(probe, params, |r| Ok((r.get(0)?, r.get(1)?)))?;
     if count != 1 || oversized {
         return Err(invalid(
             "destination prefix Ready entry missing or oversized",
         ));
     }
-    let (id,role,state,generation,reservation,receipt,payload,digest): (String,String,String,u64,Option<String>,Option<String>,Vec<u8>,String) = c.query_row(
-        "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))?;
+    let (id, role, state, generation, reservation, receipt, payload, digest): (
+        String,
+        String,
+        String,
+        u64,
+        Option<String>,
+        Option<String>,
+        Vec<u8>,
+        String,
+    ) = c.query_row(query, params, |r| {
+        Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+            r.get(7)?,
+        ))
+    })?;
     let ready = ProviderTransitionIntentRecord::decode(&payload)?;
     ready.require_row(TransitionRowData {
         id: &id,
@@ -383,6 +434,15 @@ fn read_ready_link(c: &Connection) -> CauseResult<ProviderTransitionIntentRecord
         payload: &payload,
         digest: &digest,
     })?;
+    if let DestinationSchema::Admitted9(admission) = schema {
+        if ready.transaction_id != admission.transaction_id
+            || ready.digest()? != admission.ready_intent_digest
+            || ready.receipt_id.as_deref() != Some(admission.receipt_id.as_str())
+            || ready.plan.source_prefix_id != admission.prefix_id
+        {
+            return Err(invalid("destination prefix Ready admission links differ"));
+        }
+    }
     Ok(ready)
 }
 

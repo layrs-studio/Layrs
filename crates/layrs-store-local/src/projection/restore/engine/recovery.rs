@@ -127,6 +127,7 @@ fn read_pending(c: &Connection, store: &ProjectionStore) -> Result<RestoreRecove
     if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 9 {
         return Err(invalid("admitted restore recovery requires private9"));
     }
+    crate::projection::provider::ordinary_transition::require_no_live(c)?;
     let conflicts: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending) OR EXISTS(SELECT 1 FROM projection_prejournal) OR EXISTS(SELECT 1 FROM projection_preparations WHERE status='acquiring')",
         [], |r| r.get(0),

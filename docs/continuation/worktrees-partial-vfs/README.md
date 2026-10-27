@@ -1,5 +1,37 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément journal source ordinaire — r28 à r29
+
+Le plan d'export durable et son annulation avant allocation coexistent maintenant
+avec l'admission entrante de B. Un plan actif bloque les mutations ordinaires ;
+une ouverture dédiée permet son rejeu ou son annulation. Le rejeu d'une ancienne
+annulation ne libère pas le budget d'une capture ultérieure.
+
+Les dix tests purs/SQL passent sur r28. Sa recette native échoue sur un témoin
+trop large : la base privée de B se trouve dans l'arbre du stockage partagé et
+doit changer pour enregistrer le journal. La correction autorise uniquement le
+changement du contenu de cette base précisément identifiée aux deux commits
+attendus ; tous les autres fichiers et tous les témoins de refus/rejeu restent
+comparés intégralement. La fixture échouée et ses logs sont conservés.
+
+La recette native corrigée passe sur r29 en 341,302 s : plan, réouverture/rejeu,
+refus de mutations, annulation préservant les modifications externes, avancement
+de génération/capture, préservation d'un nouveau budget lors d'un ancien rejeu,
+puis second cycle. L'admission d'origine reste identique. Seul le test change
+entre r28 et r29 ; revue indépendante et build final passés.
+
+Archive `ordinary-source-intent-evidence-20261027-r28-r29.tar.gz` : 1 226 fichiers
+vérifiés, 3 412 375 octets, SHA-256
+`28d087dcc7d3b5f96e3fbf1de90aded2d45955e3321e7b8e93f0734235607b7c`.
+Inventaire : `ordinary-source-intent-inventory-20261027-r28-r29.json`.
+
+Suite : allocation physique de C, autorité propre dans le stockage partagé,
+journal Copying, copie/publication et admission autonome. Le [pilote B → C](../../plans/worktrees-partial-vfs-ordinary-export-driver.md)
+précise les interfaces ; [contrat du journal](../../plans/worktrees-partial-vfs-ordinary-source-intents.md).
+Les inverses hérités, publications successives et autres étapes du programme
+restent à terminer. Aucun arrêt brutal ni annulation après allocation n'est
+qualifié par cette recette.
+
 ## Complément exporteur ordinaire protégé — r26 à r27
 
 L’exporteur conserve maintenant l’accès exclusif, l’image physique et les handles

@@ -1,31 +1,24 @@
 # Ordinary re-export driver integration
 
-27 October 2026. Read-only source investigation after the ordinary physical
-owner implementation. This is the remaining integration plan, not runtime proof.
+27 October 2026. Integration plan after the qualified ordinary physical owner
+and implementation of the preallocation source journal. This document separates
+implemented boundaries from the remaining driver work; it is not runtime proof.
 The target is a real B9 to C9 transfer with inherited history usable after A and
 B become unavailable. Do not substitute source DATA validation for that outcome.
 
 ## Incoming admission and outgoing operations
 
-`managed_admission/read.rs::read_admitted_import` reads the admission record
-before asking `import_validation/destination_prefix.rs` to reconstruct it.
-`read_ready_link` currently counts every `projection_provider_transitions` row
-and requires a singleton. Inserting B's first outgoing source intent would
-therefore invalidate B's original admission, including its content scope.
+The [ordinary source journal](worktrees-partial-vfs-ordinary-source-intents.md)
+now implements schema9 incoming Ready selection by actual admission transaction,
+digest, receipt and prefix, followed by bounded outgoing interpretation. Fresh
+Ready8 retains its singleton rule. Metadata reads are nonrecursive and actual
+admission anchors are reread in the retained snapshot.
 
-For schema9, select the incoming Ready by the immutable admission record's
-transaction, Ready digest, receipt and prefix commitments. Preserve the fresh
-Ready8 singleton rule. Separately bound and authenticate all remaining rows as
-ordinary outgoing source intents; ignoring them is not validation. Never choose
-an outgoing receipt as incoming ancestry, or recursively call the admission
-reader to validate outgoing rows.
-
-At most one outgoing transfer may be live. Historical Published/Cancelled rows
-must remain interpretable after later ordinary captures. Existing ordinary
-mutation gates primarily inspect ordinary pending-operation tables, not outbound
-managed intents: define an explicit refusal/resume policy after interruption
-before removing the singleton rule. The exclusive live owner alone does not
-cover later reopening.
+Implemented outgoing states are Planned and resource-free Cancelled only, with
+at most one live plan, ordinary mutation barriers and dedicated managed
+reopen/cancellation. Historical Cancelled rows may outlive later captures.
+Copying and later phases must extend every reader and gate together, with real
+destination and reservation evidence. Published remains unimplemented here.
 
 ## Concrete adapters and shared mechanics
 
@@ -42,9 +35,10 @@ Keep the existing Provider proof paths strict:
 Add a concrete ordinary source adapter using actual Exclusive Access, incoming
 admission, private database identity and the protected ordinary image. Reuse
 destination filesystem mechanisms and common DATA computations only after
-separating their source adapter. `OrdinaryManagedExport::with_source` always rolls
-back its SQL snapshot: the writer needs its own explicit transaction/commit path.
-Terminal success must still observe positive database closure.
+separating their source adapter. `OrdinaryManagedExport::with_source` rolls back
+read snapshots; `with_source_transaction` now supplies the explicit Immediate
+writer/commit path used by `begin_plan`. Terminal success still observes positive
+database closure.
 
 ## Family authority and durable transfer
 
@@ -58,6 +52,44 @@ Recompute reservation metadata from the actual source/destination intents;
 `validated_metadata_floor == None` is not permission to reserve. Preserve
 ordered attempted/confirmed allocation effects and their pins on failure. No
 automatic adoption or cleanup of orphan resources.
+
+### Source proof and allocation interfaces
+
+Use a closed import-source input enum with two concrete validators. The Provider
+variant retains allocation/preparation/activation/capture checks unchanged. The
+ordinary variant exists only inside the genuine owner's source transaction and
+borrows its connection, marker, `VerifiedAdmittedImport`, verified import closure
+and `AdmittedFamilyContext`. Require the outgoing intent from that exact snapshot,
+the actual incoming admission and family binding, and source-connection equality.
+No detached DATA or conversion into Provider evidence grants physical authority.
+
+Ordinary family validation authenticates B's actual Ready registry membership
+through `AdmittedFamilyContext::validate_catalog`, then the common C registry
+kernel checks C independently. Do not widen B's ordinary lease to authorize C.
+Once C has an active transition reservation, the ordinary catalog validator
+currently rejects that unretained group. A dedicated export interpretation must
+recognize exactly that target before reservation and historical streaming are
+connected; generic admitted access remains strict.
+
+Destination allocation must own independent family/lifecycle pins. Borrowing
+`FamilyAccess` from `OrdinaryManagedExport` would prevent the mutable owner
+callback needed to commit Planned-to-Copying. Keep source SQL proofs out of the
+long-lived destination holder. Its common storage owns parent/root/control/
+member/metadata/database/FORMAT/owner pins and exact plan/destination commitments.
+
+The existing `ExportParentGuard` borrows a native Provider Session and cannot
+serve an ordinary source. Use a distinct `OrdinaryRootGuard` parent adapter with
+actual NTFS/outside-sync-root revalidation, independently pinned directory
+identity and exclusions for B's checkout/control/metadata and family paths.
+Never fabricate a Session. Common filesystem effects and exact FORMAT-inode
+publication remain mechanical; source ownership checks remain concrete.
+
+The next executable slice is real C allocation, source Copying CAS, exact FORMAT
+publication and C Initializing registration. Every attempted/confirmed effect
+and retained failure pin must remain observable. Check the actual encoded
+Copying capacity before allocation: current Planned capacity reserves only its
+resource-free Cancelled successor. `cancel_planned` stays Planned-only until
+resource-bearing cancellation has its own recovery protocol.
 
 ## Destination and handoff fences
 

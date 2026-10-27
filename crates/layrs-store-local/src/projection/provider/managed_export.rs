@@ -9,22 +9,27 @@ use super::{
     bootstrap::{self, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest},
     import_validation::{plan_admitted_import, VerifiedImportClosure},
     managed_admission::read_admitted_import,
-    records::import::ProviderImportPrefixRecord,
+    records::{
+        import::ProviderImportPrefixRecord,
+        transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
+    },
     recovery::error::ProviderBootstrapCause,
 };
 use crate::projection::{
     capture::MAX_CAPTURE_FILE_BYTES, database, format, invalid, selection, ProjectionIdentity,
     ProjectionStore, ProjectionStoreError, Result, SessionMode,
 };
+use crate::secure_fs::PinnedDirectory;
 use image::OrdinaryExportImage;
 use layrs_core::scm::{
     canonical_json, FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget,
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Write},
+    path::Path,
 };
 
 type Mappings = BTreeMap<FileId, (FileManifestId, u64)>;
@@ -47,6 +52,62 @@ pub struct OrdinaryManagedExport<'s> {
 }
 
 impl ProjectionStore {
+    /// Open an admitted source for explicit managed-export retry/cancellation.
+    /// Ordinary mutations remain fenced while its outgoing intent is live.
+    /// Discovery is shared/read-only and does not settle an ordinary budget.
+    pub fn open_for_managed_export(root: &Path) -> Result<Self> {
+        let root = std::path::absolute(root)?;
+        let marker = format::read_marker(&root)?;
+        let store = Self { root, marker };
+        format::access_for_managed_export_retry(&store, SessionMode::Shared)?.run(|access| {
+            access.with_content(|c, scope| {
+                let tx = c.transaction()?;
+                let result = (|| {
+                    read_admitted_import(&tx, &store.marker, None)?;
+                    let state = database::current(&tx)?;
+                    if state.snapshot.path_semantics
+                        != layrs_core::projection::PathSemantics::PortableWindows
+                    {
+                        return Err(invalid(
+                            "Windows export requires portable Windows path semantics",
+                        ));
+                    }
+                    scope.verify(&tx, &store)
+                })();
+                finish_snapshot(tx, result)
+            })
+        })?;
+        Ok(store)
+    }
+
+    /// Cancel only a Planned export that has not allocated destination resources.
+    /// This preserves external checkout edits and leaves a terminal journal row.
+    /// Later transfer phases require their own resource-aware recovery driver.
+    pub fn cancel_managed_export_plan(
+        &self,
+        transaction_id: &str,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        check_cancel(cancel)?;
+        format::access_for_managed_export_retry(self, SessionMode::Exclusive)?.run(|access| {
+            access.with_content(|c, scope| {
+                let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let result = (|| {
+                    scope.validate(&tx, self)?;
+                    super::ordinary_transition::cancel_planned(
+                        &tx,
+                        &self.marker,
+                        transaction_id,
+                        Some(cancel),
+                    )?;
+                    scope.verify(&tx, self)?;
+                    check_cancel(cancel)
+                })();
+                finish_writer(tx, result)
+            })
+        })
+    }
+
     /// Retain a genuine admitted ordinary source and its selected physical
     /// image for export to the named destination identity. No destination
     /// resources or remote rights are created by this operation.
@@ -114,6 +175,57 @@ impl ProjectionStore {
 }
 
 impl OrdinaryManagedExport<'_> {
+    /// Persist the source plan under its real owner and physical image. No
+    /// destination allocation or reservation is performed by this step.
+    pub(in crate::projection::provider) fn begin_plan(
+        &mut self,
+        parent: &Path,
+        leaf_nonce: &str,
+        transaction_id: &str,
+        cancel: &Cancellation,
+    ) -> Result<(
+        ProviderTransitionIntentRecord,
+        super::transition_sql::SourceIntentEffect,
+    )> {
+        check_cancel(cancel)?;
+        let parent = std::path::absolute(parent)?;
+        let parent_pin = PinnedDirectory::open(&parent)?;
+        let data = self.derive_plan(
+            parent
+                .to_str()
+                .ok_or_else(|| invalid("export parent is not UTF-8"))?,
+            &parent_pin.identity_token(),
+            leaf_nonce,
+            transaction_id,
+            cancel,
+        )?;
+        let next = ProviderTransitionIntentRecord {
+            schema_version: "layrs.projection-provider-transition-intent.v1".into(),
+            transaction_id: transaction_id.into(),
+            role: TransitionRole::Source,
+            state: TransitionState::Planned,
+            local_generation: self.source_generation(),
+            plan: data.plan,
+            destination: None,
+            reservation: None,
+            receipt_id: None,
+        };
+        let store = self.store;
+        let effect = self.with_source_transaction(cancel, true, |c, _, prefix, _, _| {
+            parent_pin.verify_path_identity()?;
+            let effect = super::ordinary_transition::apply_planned(
+                c,
+                &store.marker,
+                prefix,
+                &next,
+                Some(cancel),
+            )?;
+            parent_pin.verify_path_identity()?;
+            Ok(effect)
+        })?;
+        Ok((next, effect))
+    }
+
     /// Detached descriptive DATA. Transfer methods revalidate the live owner.
     pub fn source_generation(&self) -> u64 {
         self.prefix.source.version().generation
@@ -325,6 +437,21 @@ impl OrdinaryManagedExport<'_> {
             &mut OrdinaryExportImage,
         ) -> Result<T>,
     ) -> Result<T> {
+        self.with_source_transaction(cancel, false, action)
+    }
+
+    fn with_source_transaction<T>(
+        &mut self,
+        cancel: &Cancellation,
+        write: bool,
+        action: impl FnOnce(
+            &Connection,
+            &format::ContentScope<'_>,
+            &ProviderImportPrefixRecord,
+            &VerifiedImportClosure,
+            &mut OrdinaryExportImage,
+        ) -> Result<T>,
+    ) -> Result<T> {
         check_cancel(cancel)?;
         let Self {
             store,
@@ -338,7 +465,11 @@ impl OrdinaryManagedExport<'_> {
             .as_mut()
             .ok_or_else(|| invalid("ordinary export owner already finalized"))?;
         access.with_content(|c, scope| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(if write {
+                TransactionBehavior::Immediate
+            } else {
+                TransactionBehavior::Deferred
+            })?;
             let result = (|| {
                 let state = database::current(&tx)?;
                 image.revalidate(store, &tx, scope, &state.snapshot, cancel)?;
@@ -370,7 +501,11 @@ impl OrdinaryManagedExport<'_> {
                 check_cancel(cancel)?;
                 Ok(value)
             })();
-            finish_snapshot(tx, result)
+            if write {
+                finish_writer(tx, result)
+            } else {
+                finish_snapshot(tx, result)
+            }
         })
     }
 
@@ -517,6 +652,18 @@ fn finish_snapshot<T>(tx: Transaction<'_>, result: Result<T>) -> Result<T> {
             close: Box::new(close.into()),
         }
         .into()),
+    }
+}
+
+/// Observe COMMIT explicitly. On failure, also observe rollback instead of
+/// relying on Transaction's Drop to discard a possible rollback error.
+fn finish_writer<T>(tx: Transaction<'_>, result: Result<T>) -> Result<T> {
+    match result {
+        Err(error) => finish_snapshot(tx, Err(error)),
+        Ok(value) => match tx.execute_batch("COMMIT") {
+            Ok(()) => Ok(value),
+            Err(error) => finish_snapshot(tx, Err(error.into())),
+        },
     }
 }
 

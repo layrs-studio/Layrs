@@ -499,3 +499,290 @@ owned!(
         });
     }
 );
+
+/// Valid source-plan DATA from this fixture's actual admitted SQL prefix. The
+/// declared image and synthetic parent are not native or byte authority.
+fn ordinary_source_planned(c: &Connection, f: &Fixture) -> ProviderTransitionIntentRecord {
+    use crate::projection::provider::bootstrap::{
+        derive_ordinary_data, ImageFile, RequiredManifest,
+    };
+    use layrs_core::scm::WorktreeId;
+    let mut destination = f.marker.identity.clone();
+    destination.worktree_id = WorktreeId::parse("worktree:ordinary-data-outgoing").unwrap();
+    let image_digest = match &f.prefix.source {
+        ImportSource::Provider { version, .. } => &version.effective_image_digest,
+        _ => unreachable!(),
+    };
+    let (prefix, proof) = import_validation::plan_admitted_import(
+        c,
+        &f.marker,
+        destination.clone(),
+        image_digest,
+        None,
+    )
+    .unwrap();
+    let mappings = proof.copied_content_mappings(c, &prefix, None).unwrap();
+    let base = &f.source.source.descriptors()[0].manifest;
+    let known = [base, &f.historical, &f.current];
+    let historical: Vec<_> = mappings
+        .iter()
+        .map(|(file, (manifest, bytes))| RequiredManifest {
+            file_id: file.clone(),
+            manifest_id: manifest.clone(),
+            bytes: *bytes,
+        })
+        .collect();
+    let mut supplied = BTreeMap::new();
+    for row in &historical {
+        let manifest = known
+            .iter()
+            .find(|manifest| {
+                manifest.file_id() == &row.file_id
+                    && manifest.id() == &row.manifest_id
+                    && manifest.byte_length() == row.bytes
+            })
+            .unwrap();
+        supplied.insert(
+            (row.file_id.clone(), row.manifest_id.clone()),
+            (**manifest).clone(),
+        );
+    }
+    for manifest in [base, &f.current] {
+        supplied.insert(
+            (manifest.file_id().clone(), manifest.id().clone()),
+            manifest.clone(),
+        );
+    }
+    let supplied: Vec<_> = supplied.into_values().collect();
+    let selected = crate::projection::selection::at(c, f.ready.plan.placement_generation).unwrap();
+    let (generation, selection_digest) = match &prefix.source {
+        ImportSource::Ordinary { version, .. } => {
+            (version.generation, version.selection_digest.clone())
+        }
+        _ => unreachable!(),
+    };
+    let path = &f.placement.entries[0].path;
+    let files = [ImageFile {
+        path,
+        manifest: &f.current,
+        executable: false,
+        expected: Some((base.file_id().clone(), f.placement.entries[0].executable)),
+    }];
+    let data = derive_ordinary_data(
+        &prefix,
+        &f.placement,
+        &selected,
+        &selection_digest,
+        &[base],
+        &files,
+        &[],
+        destination,
+        "C:\\ordinary-data-parent",
+        "fs:v1:1111111111111111:2222222222222222",
+        "00000000000000000000000000000091",
+        "00000000000000000000000000000092",
+        &historical,
+        &supplied,
+        0,
+    )
+    .unwrap();
+    let planned = ProviderTransitionIntentRecord {
+        schema_version: "layrs.projection-provider-transition-intent.v1".into(),
+        transaction_id: "00000000000000000000000000000092".into(),
+        role: TransitionRole::Source,
+        state: TransitionState::Planned,
+        local_generation: generation,
+        plan: data.plan,
+        destination: None,
+        reservation: None,
+        receipt_id: None,
+    };
+    planned.validate_fields().unwrap();
+    planned
+}
+
+owned!(
+    admitted_outgoing_plan_preserves_ingress_and_invalidates_retained_outgoing_proof,
+    {
+        with_private9(|c, f| {
+            use crate::projection::provider::{
+                ordinary_transition, transition_sql::SourceIntentEffect,
+            };
+            let before = read_admitted_import(c, &f.marker, None).unwrap();
+            assert!(before.outgoing().is_empty());
+            let admission_digest = before.record().digest().unwrap();
+            let incoming = before.ready().encode().unwrap();
+            let permit = schema::require_schema(c, &f.marker, None).unwrap();
+            let retained_prefix = import_validation::read_admitted_destination_prefix(
+                c,
+                &f.marker,
+                &permit,
+                before.record(),
+                None,
+            )
+            .unwrap();
+            let planned = ordinary_source_planned(c, f);
+            assert_eq!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None
+                )
+                .unwrap(),
+                SourceIntentEffect::Inserted
+            );
+            let changed = read_admitted_import(c, &f.marker, None).unwrap();
+            assert_eq!(changed.record().digest().unwrap(), admission_digest);
+            assert_eq!(changed.ready().encode().unwrap(), incoming);
+            assert_eq!(
+                changed.outgoing(),
+                &[ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap()]
+            );
+            assert!(
+                before.require(c, None).is_err(),
+                "old outgoing vector must not silently change"
+            );
+            retained_prefix.require_prefix_scope(c, None).unwrap();
+            let changes = c.total_changes();
+            assert_eq!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None
+                )
+                .unwrap(),
+                SourceIntentEffect::AlreadyPresent
+            );
+            assert_eq!(c.total_changes(), changes);
+            changed.require(c, None).unwrap();
+            assert_eq!(
+                ordinary_transition::cancel_planned(c, &f.marker, &planned.transaction_id, None)
+                    .unwrap(),
+                SourceIntentEffect::Updated
+            );
+            assert!(changed.require(c, None).is_err());
+            let terminal = read_admitted_import(c, &f.marker, None).unwrap();
+            assert_eq!(terminal.outgoing()[0].state, TransitionState::Cancelled);
+            assert_eq!(terminal.record().digest().unwrap(), admission_digest);
+            assert_eq!(terminal.ready().encode().unwrap(), incoming);
+            let changes = c.total_changes();
+            assert_eq!(
+                ordinary_transition::cancel_planned(c, &f.marker, &planned.transaction_id, None)
+                    .unwrap(),
+                SourceIntentEffect::AlreadyPresent
+            );
+            assert_eq!(c.total_changes(), changes);
+            retained_prefix.require_prefix_scope(c, None).unwrap();
+        });
+    }
+);
+
+owned!(
+    admitted_outgoing_malformed_extra_row_refuses_reader_and_writers_before_effects,
+    {
+        with_private9(|c, f| {
+            use crate::projection::provider::ordinary_transition;
+            let planned = ordinary_source_planned(c, f);
+            c.execute_batch("SAVEPOINT malformed_outgoing").unwrap();
+            c.execute("INSERT INTO projection_provider_transitions VALUES(?1,'source','cancelled',3,NULL,NULL,X'7b7d',?2)",
+                params!["00000000000000000000000000000093", format!("blake3:{}", "1".repeat(64))]).unwrap();
+            let changes = c.total_changes();
+            assert!(read_admitted_import(c, &f.marker, None).is_err());
+            assert!(ordinary_transition::apply_planned(
+                c,
+                &f.marker,
+                &planned.plan.source_prefix,
+                &planned,
+                None
+            )
+            .is_err());
+            assert!(ordinary_transition::cancel_planned(
+                c,
+                &f.marker,
+                &planned.transaction_id,
+                None
+            )
+            .is_err());
+            assert_eq!(c.total_changes(), changes);
+            c.execute(
+                "UPDATE projection_provider_transitions SET payload=zeroblob(262145) WHERE id=?1",
+                ["00000000000000000000000000000093"],
+            )
+            .unwrap();
+            let changes = c.total_changes();
+            let error = read_admitted_import(c, &f.marker, None)
+                .err()
+                .expect("oversized extra row must refuse");
+            assert!(error.to_string().contains("SQL bounds"), "{error}");
+            assert!(ordinary_transition::apply_planned(
+                c,
+                &f.marker,
+                &planned.plan.source_prefix,
+                &planned,
+                None
+            )
+            .is_err());
+            assert!(ordinary_transition::cancel_planned(
+                c,
+                &f.marker,
+                &planned.transaction_id,
+                None
+            )
+            .is_err());
+            assert_eq!(c.total_changes(), changes);
+            c.execute_batch("ROLLBACK TO malformed_outgoing; RELEASE malformed_outgoing")
+                .unwrap();
+            read_admitted_import(c, &f.marker, None).unwrap();
+        });
+    }
+);
+
+owned!(
+    admitted_retained_prefix_refuses_actual_admission_anchor_rebinding,
+    {
+        with_private9(|c, f| {
+            let proof = read_admitted_import(c, &f.marker, None).unwrap();
+            let permit = schema::require_schema(c, &f.marker, None).unwrap();
+            let retained = import_validation::read_admitted_destination_prefix(
+                c,
+                &f.marker,
+                &permit,
+                proof.record(),
+                None,
+            )
+            .unwrap();
+            let mut unrelated = proof.record().clone();
+            unrelated.transaction_id = "00000000000000000000000000000094".into();
+            let changes = c.total_changes();
+            assert!(import_validation::read_admitted_destination_prefix(
+                c, &f.marker, &permit, &unrelated, None
+            )
+            .is_err());
+            assert_eq!(c.total_changes(), changes);
+            c.execute_batch("SAVEPOINT rebound_admission").unwrap();
+            let mut actual = proof.record().clone();
+            actual.source_database_identity.push_str("-changed");
+            c.execute(
+                "UPDATE projection_managed_admission SET digest=?1,payload=?2",
+                params![actual.digest().unwrap(), actual.encode().unwrap()],
+            )
+            .unwrap();
+            let changes = c.total_changes();
+            let error = retained.require_prefix_scope(c, None).unwrap_err();
+            assert!(
+                error.to_string().contains("admission anchor changed"),
+                "{error}"
+            );
+            assert!(proof.require(c, None).is_err());
+            assert_eq!(c.total_changes(), changes);
+            c.execute_batch("ROLLBACK TO rebound_admission; RELEASE rebound_admission")
+                .unwrap();
+            retained.require_prefix_scope(c, None).unwrap();
+            proof.require(c, None).unwrap();
+        });
+    }
+);

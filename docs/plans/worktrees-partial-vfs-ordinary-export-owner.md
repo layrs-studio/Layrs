@@ -60,8 +60,10 @@ it cannot substitute for C's family import authority.
 
 ## Required next integration
 
-1. Add an ordinary source intent path while keeping the incoming admission
-   anchored to its exact original Ready transaction and receipt.
+1. Preallocation source intent and cancellation are now qualified in r28-r29,
+   with incoming admission anchored to its original Ready transaction/receipt.
+   See the [journal contract](worktrees-partial-vfs-ordinary-source-intents.md).
+   Extend that journal to Copying and later resource-bearing phases.
 2. Bind allocation to the retained parent identity and ordinary source owner;
    obtain dedicated destination import authority and exact reservations.
 3. Connect content production, physical copy, staging, Ready and publication.
