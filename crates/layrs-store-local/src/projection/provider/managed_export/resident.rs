@@ -18,7 +18,7 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
 };
 
 const MAX_FILES: usize = 100_000;
@@ -212,6 +212,67 @@ pub(super) struct RetainedCas {
 }
 
 impl RetainedCas {
+    /// Byte transfer only from a representation whose canonical manifest and
+    /// chunk are still held immutably. The caller supplies export authority;
+    /// this method neither opens SQL nor falls back to another representation.
+    pub(super) fn copy_chunk(
+        &self,
+        manifest: &FileManifest,
+        ordinal: usize,
+        sink: &mut dyn Write,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        self.verify_identity(cancel)?;
+        let manifest_name = object_name(manifest.id().as_str())?;
+        let manifest_pin = self
+            .pins
+            .get(&(true, manifest_name.to_owned()))
+            .ok_or_else(|| invalid("ordinary install historical manifest is not retained"))?;
+        compare_bytes(
+            &manifest_pin.pin,
+            &canonical_manifest_bytes(manifest)?,
+            cancel,
+        )?;
+        let chunk = manifest
+            .chunks()
+            .get(ordinal)
+            .ok_or_else(|| invalid("ordinary install historical chunk ordinal exceeds manifest"))?;
+        let name = object_name(chunk.chunk_id().as_str())?;
+        let object = self
+            .pins
+            .get(&(false, name.to_owned()))
+            .ok_or_else(|| invalid("ordinary install historical chunk is not retained"))?;
+        if object.bytes != chunk.byte_length() {
+            return Err(invalid("ordinary install historical chunk length differs"));
+        }
+        let mut input = object.pin.file();
+        let copied = crate::projection::provider::bootstrap::copy_managed_chunk(
+            manifest,
+            ordinal,
+            sink,
+            cancel,
+            |offset, block| {
+                let local = offset
+                    .checked_sub(chunk.offset())
+                    .ok_or_else(|| invalid("ordinary install historical chunk offset underflow"))?;
+                input.seek(SeekFrom::Start(local))?;
+                input.read_exact(block)?;
+                Ok(())
+            },
+        );
+        let after = self.verify_identity(cancel);
+        match (copied, after) {
+            (Ok(()), value) => value,
+            (Err(error), Ok(())) => Err(error.into()),
+            (Err(primary), Err(close)) => Err(
+                crate::projection::provider::recovery::error::ProviderBootstrapCause::Cleanup {
+                    primary: Box::new(primary.into()),
+                    close: Box::new(close),
+                },
+            ),
+        }
+    }
+
     /// Call after positive catalog close, with the same expected map previously
     /// authenticated by actual private mappings and the full export catalog.
     /// This function performs filesystem reads only and acquires its own shared

@@ -52,13 +52,18 @@ The r36 fixture failure remains included. These recipes do not qualify actual
 OS close failure, index mutation during the released-gate interval or recovery
 after owner loss. Later Installing changes are a separate unqualified lot.
 
-## Installing implementation in progress
+## Qualified Installing checkpoint — r38
 
 The complete-family Installing gate and ordinary ExactCatalog adapter are now
 written and wired. Workspace all-targets check passes in 55.46 s; the final
-normal test build is running. Independent critical source review finds no
-confirmed blocking issue in production and SQL tests; the separately authored
-native recipe is still awaiting review and execution. The strict Provider and ReserveOnly routes
+normal test build passes in 1m40s. The r38 audit retains 623 inputs, nine startup
+checks and CodeView age116; EXE SHA256
+`0cadf30343128b48409bd610640dd4aaa3f5eff775a4ef8cc49546116eb2374e`.
+Independent critical source review finds no
+confirmed blocking issue in production and SQL tests. The separate final r38
+review also finds no blocking issue: 143 reviewed paths, all 623 source inputs,
+artifact/runner bindings and all fourteen exact recipe names match. Release
+SHA256 `a9ad09a9a8bf66b1b630b52437ae17705eba2f43aeed999b3fbdb2bd938b9474`. The strict Provider and ReserveOnly routes
 retain their exclusions. The new gate validates all retained Published groups
 first, then C Declared..Published using the same charged chunk/manifest sets,
 then the complete reservation inventory. Global accounting includes every exact
@@ -80,8 +85,95 @@ keep the rights needed for publication. Four new SQL DATA recipes and a pure
 100k capacity-boundary test are written. The genuine native recipe is now frozen:
 one B owner, retained base/history plus new current content, withheld Declared
 close acknowledgement, complete union installation and no-writer retry. It is
-not yet executed. Checkout population, protection, Ready/Published transition,
+qualified on the retained r38 artifact. Checkout population, protection, Ready/Published transition,
 C9 admission, autonomous C and owner-loss recovery remain separate next steps.
+
+The qualified ReserveOnly predecessor is `00d7aa7`. All fourteen r38 recipes
+pass: two pure, four new Installing SQL, two strict exact-engine SQL, five
+ReserveOnly SQL regressions and the genuine native scenario. Native timings:
+1193.83 s child / 1193.87 s parent / 1193.900 s outer, child1800/outer1860.
+Session 18648 is terminal exit0. The complete union includes retained base,
+historical-only capture and uncaptured current bytes; all three C journals
+become Published. A withheld acknowledgement AFTER actual successful Declared
+close leaves exactly that durable progress; same-owner retry completes it.
+Completed retry opens no writer and preserves all SQL/tree witnesses. Actual
+retained CAS pins refuse conflicting Windows write opens during writer callbacks.
+C remains Initializing/C8 without root, checkout, Ready or ordinary admission.
+
+Archive `ordinary-installing-evidence-20261027-r38.tar.gz`: 649 verified files,
+1,818,703 bytes, SHA256
+`75f35736a3003220ce69215a52c0691ffa86ed9d4561004cce0f642f209493be`.
+Sources, startup audit, independent release, runner and all results are retained;
+native fixtures and binaries are excluded. The 16 staged source blobs match
+the retained r38 source modulo CRLF. Subsequent Protected/Checkout source is a
+separate working-tree lot and is not covered by this qualification.
+
+## Next integrated protection and checkout slice
+
+Implementation is now integrated in the working tree, still uncompiled and
+unqualified. The new `managed_export/content.rs` factors the retained source
+snapshot/full union/funding proof into closed Installing, Protection and
+Checkout modes. Installing retains its strict no-root/no-checkout rules.
+`protection.rs` verifies and pins C CAS, writes/replays the exact root with
+unchanged installation/accounting state, and requires acknowledged closes.
+`checkout.rs` uses the typed Ordinary journal, retained allocation pins and
+the existing filesystem engine; source/C/family validation surrounds every
+acknowledged journal mutation. An unsuccessful writer/rollback/close cannot
+advance filesystem work. Protection reopening is read-only and requires an
+existing exact checkout journal. Checkout success retains immutable final-file
+pins; it grants no Ready or admission authority.
+
+Five Protected SQL recipes, two Ordinary checkout pure recipes and two C8
+checkout SQL recipes are written/formatted. A separate native Protection +
+Checkout recipe is being authored with genuine B/C owners, withheld successful
+Declare-close acknowledgement, same-owner retry and complete witnesses. None
+of this new lot has run. Next: archive/commit qualified r38 sources, compile the integrated new lot,
+independently review
+its source and exact audited artifact/recipes, then run serial fresh fixtures.
+
+After Installing qualification, protect C and materialize its checkout under
+the same genuine B/C owners. Keep the current Installing/ReserveOnly gates
+strict. The independent investigation identified these concrete seams:
+
+1. Add a closed Protected family mode. The retained root walk currently calls
+   read_group/require_member before target validation, and therefore requires
+   every provider-import root to belong to a Ready member. Defer ONLY the exact
+   expected C root_id to the active validator, still count that root in the
+   global bounded inventory, and leave all other retained roots unchanged.
+2. The active validator reuses validate_export_installations with the same
+   shared debit sets, requires all required C journals Published, and validates
+   exact root absence/presence, binding, member and retained envelope. Existing
+   ExactProtection::insert_or_replay is accessible from admitted_catalog;
+   its complete caller pre/post checks must preserve installation, reservations
+   and global usage exactly. No new debit or release accompanies protection.
+3. Verify C through verify_published_cas with its actual ExactBinding and
+   ExactStorage outside catalog scopes. RetainedCas remains the independent B
+   proof. Never label B's pins as C's Published proof.
+4. Add an explicit ordinary ExpectedCheckout constructor. Current
+   checkout_journal/inventory.rs::expected_parts requires ImportSource::Provider;
+   the ordinary entry must require admitted private9 and reuse the bounded
+   inventory, Windows alias checks and canonical header. Reconstruct its header
+   from the actual destination Staging before admitting any journal.
+5. Add a distinct ordinary read_checkout_staging. The current copied reader
+   requires projection_prejournal empty. Preserve read_stageable's strict rule;
+   factor only the common complete C8 schema, identity/head/intent, thirteen
+   copied rowsets (including restore history) and FK checks. The new branch
+   accepts solely checkout_journal::read's complete bounded typed inventory.
+6. Expose only the needed CheckoutStorage/OwnedCheckoutFile methods through
+   bootstrap and construct storage from the ordinary allocation's cloned root
+   and control pins. Do not reopen ownership by pathname. Reuse the filesystem
+   engine's durable Declare/Owned/Verified/Publishing/Published protocol.
+7. Before checkout effects require the exact root present and
+   protection.require_envelope(remaining - expected.file_bytes,
+   actual_metadata_floor + expected.maximum_encoded_bytes). Commit, positively
+   close and freshly reread each private C journal mutation before filesystem
+   work. Retain immutable final-file proof; do not admit C at checkout completion.
+
+Follow-on order remains C private Ready, C family member Ready, B Ready,
+B Published, then C9 admission. Those readers/writers still contain Provider
+source assumptions and need explicit ordinary interpretations authenticating
+B9 provenance. Autonomous C must eventually read its archived provenance with
+A and B unavailable; source availability cannot become a permanent dependency.
 
 ## Qualified Staging checkpoint — r34/r35
 

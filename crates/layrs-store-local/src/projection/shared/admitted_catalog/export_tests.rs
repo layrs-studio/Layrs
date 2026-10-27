@@ -79,7 +79,10 @@ fn baseline_quota(required: &[FileManifest]) -> u64 {
     quota + required.first().map_or(0, FileManifest::byte_length)
 }
 
-fn target(retained: &AdmittedFamilyContext, required: &[FileManifest]) -> ExportReserveOnlyTarget {
+pub(super) fn target(
+    retained: &AdmittedFamilyContext,
+    required: &[FileManifest],
+) -> ExportReserveOnlyTarget {
     let marker = retained.marker();
     let shared = marker.shared.as_ref().unwrap();
     let mut identity = marker.identity.clone();
@@ -189,7 +192,7 @@ fn target(retained: &AdmittedFamilyContext, required: &[FileManifest]) -> Export
     .unwrap()
 }
 
-fn fixture(
+pub(super) fn fixture(
     body: impl FnOnce(
         &Connection,
         &[u8],

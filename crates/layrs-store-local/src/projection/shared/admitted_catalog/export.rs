@@ -1,4 +1,4 @@
-//! Export-only ReserveOnly DATA for the admitted family's complete retained
+//! Export-only ReserveOnly/Installing DATA for the complete retained-family
 //! group validator. No private B/C reader, opener, physical pin or COMMIT lives
 //! here. The driver must authenticate both actual Staging rows, source image,
 //! complete union and metadata floor before and after the catalog operation.
@@ -30,6 +30,8 @@ const MAX_METADATA: u64 = 1024 * 1024 * 1024;
 /// Expected target DATA, not evidence that B/C private SQL, C's physical files,
 /// image completeness or a metadata-floor calculation is authentic. Closed
 /// fields merely keep all catalog comparisons tied to one immutable plan.
+/// The same immutable target also describes Installing; only the complete
+/// parent gate chooses that explicit interpretation and supplies the full union.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::projection) struct ExportReserveOnlyTarget {
     source_marker: format::Marker,
@@ -41,6 +43,7 @@ pub(in crate::projection) struct ExportReserveOnlyTarget {
     private_metadata_floor: u64,
     root_payload_bytes: u64,
     required_manifests: u64,
+    required_digest: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +182,7 @@ impl ExportReserveOnlyTarget {
             private_metadata_floor,
             root_payload_bytes: root.payload().len() as u64,
             required_manifests: required.len() as u64,
+            required_digest: source_staging.plan.protected_manifests.digest.clone(),
         };
         cancellation::check(cancel)?;
         Ok(result)
@@ -218,6 +222,76 @@ impl ExportReserveOnlyTarget {
         if matches!(state.reservation, ExportReservation::Present { .. }) {
             classified.insert(self.binding.reservation.clone());
         }
+        Ok(state)
+    }
+
+    /// Parent-only Installing interpretation AFTER every retained group has
+    /// passed. The final parent inventory must still classify every journal
+    /// and import reservation. Actual B/C Staging and bytes remain driver-owned.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn validate_installing_and_classify(
+        &self,
+        c: &Connection,
+        retained: &AdmittedFamilyContext,
+        family: &FamilyMarker,
+        required: &[FileManifest],
+        classified: &mut BTreeSet<String>,
+        charged_chunks: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExactInstallState> {
+        cancellation::check(cancel)?;
+        if retained.marker() != &self.source_marker
+            || retained.binding() != &self.source_binding
+            || retained.admission_digest() != self.source_admission_digest
+        {
+            return Err(invalid("export Installing retained source context changed"));
+        }
+        require_union_commitment(
+            &self.required_digest,
+            self.required_manifests,
+            required,
+            cancel,
+        )?;
+        self.require_member(c, retained, family)?;
+        let owner = self.binding.owner.as_str();
+        for sql in [
+            "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+            "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+        ] {
+            cancellation::check(cancel)?;
+            if c.query_row(sql, [owner], |r| r.get::<_, bool>(0))? {
+                return Err(invalid("export Installing target has root or legacy effects"));
+            }
+        }
+        if c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1 AND id!=?2)",
+            params![owner, self.binding.reservation],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Err(invalid("export Installing target has another reservation"));
+        }
+        if classified.len() >= MAX_GROUPS || classified.contains(&self.binding.reservation) {
+            return Err(invalid("export Installing group collides or exceeds bound"));
+        }
+        let state = self.binding.validate_export_installations(
+            c,
+            required,
+            charged_chunks,
+            charged_manifests,
+            cancel,
+        )?;
+        // Existing C journals already contribute to global records. Add only
+        // missing future C rows, retaining the preallocation full-lifecycle cap.
+        let usage = global_usage(c, state.records, self.required_manifests, cancel)?;
+        if state.content_bytes != usage.content_bytes
+            || state.reserved_bytes != usage.reserved_bytes
+            || state.limit_bytes != usage.limit_bytes
+        {
+            return Err(invalid("export Installing global accounting differs"));
+        }
+        classified.insert(self.binding.reservation.clone());
+        cancellation::check(cancel)?;
         Ok(state)
     }
 
@@ -319,7 +393,7 @@ impl ExportReserveOnlyTarget {
         // ReserveOnly has no C journals, so this adds the future C row count
         // once to all currently retained journals. Refuse before reserving a
         // transfer that could never fit the installation engine's global cap.
-        let usage = global_usage(c, self.required_manifests, cancel)?;
+        let usage = global_usage(c, 0, self.required_manifests, cancel)?;
         cancellation::check(cancel)?;
         Ok(ExportReserveOnlyState { reservation, usage })
     }
@@ -462,6 +536,20 @@ fn require_union(
     required: &[FileManifest],
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
+    require_union_commitment(
+        &source.plan.protected_manifests.digest,
+        source.plan.protected_manifests.count,
+        required,
+        cancel,
+    )
+}
+
+fn require_union_commitment(
+    digest: &str,
+    count: u64,
+    required: &[FileManifest],
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct RequiredRow<'a> {
@@ -469,9 +557,7 @@ fn require_union(
         manifest_id: &'a FileManifestId,
         bytes: u64,
     }
-    if required.len() > MAX_MANIFESTS as usize
-        || required.len() as u64 != source.plan.protected_manifests.count
-    {
+    if required.len() > MAX_MANIFESTS as usize || required.len() as u64 != count {
         return Err(invalid("export ReserveOnly complete union count differs"));
     }
     let mut rows = BTreeMap::new();
@@ -507,7 +593,7 @@ fn require_union(
         hash.update(&(payload.len() as u64).to_be_bytes());
         hash.update(&payload);
     }
-    if source.plan.protected_manifests.digest != format!("blake3:{}", hash.finalize()) {
+    if digest != format!("blake3:{}", hash.finalize()) {
         return Err(invalid(
             "export ReserveOnly complete union commitment differs",
         ));
@@ -517,6 +603,7 @@ fn require_union(
 
 fn global_usage(
     c: &Connection,
+    current_target_manifests: u64,
     target_manifests: u64,
     cancel: Option<&Cancellation>,
 ) -> Result<ExportUsage> {
@@ -526,7 +613,7 @@ fn global_usage(
         [],
         |r| r.get(0),
     )?;
-    require_record_capacity(records, target_manifests)?;
+    require_future_record_capacity(records, current_target_manifests, target_manifests)?;
     let manifests: u64 = c.query_row(
         "SELECT coalesce(sum(length(manifest)),0) FROM exact_installations",
         [],
@@ -554,6 +641,22 @@ fn require_record_capacity(retained: u64, target: u64) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn require_future_record_capacity(
+    global: u64,
+    current_target: u64,
+    complete_target: u64,
+) -> Result<()> {
+    if global > MAX_MANIFESTS || current_target > complete_target {
+        return Err(invalid(
+            "export current exact journal count exceeds bound or union",
+        ));
+    }
+    let retained = global
+        .checked_sub(current_target)
+        .ok_or_else(|| invalid("export current target exceeds global journal count"))?;
+    require_record_capacity(retained, complete_target)
 }
 
 fn usage(
@@ -629,5 +732,16 @@ mod tests {
         assert!(require_record_capacity(MAX_MANIFESTS, 1).is_err());
         assert!(require_record_capacity(MAX_MANIFESTS - 1, 2).is_err());
         assert!(require_record_capacity(1, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn installing_future_capacity_counts_existing_target_journals_once() {
+        require_future_record_capacity(MAX_MANIFESTS, 1, 1).unwrap();
+        require_future_record_capacity(MAX_MANIFESTS - 1, 1, 2).unwrap();
+        require_future_record_capacity(MAX_MANIFESTS, MAX_MANIFESTS, MAX_MANIFESTS).unwrap();
+        assert!(require_future_record_capacity(MAX_MANIFESTS, 1, 2).is_err());
+        assert!(require_future_record_capacity(MAX_MANIFESTS + 1, 1, 1).is_err());
+        assert!(require_future_record_capacity(1, 2, 2).is_err());
+        assert!(require_future_record_capacity(1, 1, 0).is_err());
     }
 }

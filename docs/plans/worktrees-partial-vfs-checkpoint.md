@@ -1,5 +1,28 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**28 October Paris, r38 ordinary Installing qualified:** all fourteen recipes
+pass (2 pure, 11 SQL, 1 native). Native elapsed1193.83s child/1193.87s parent/
+1193.900s outer. Genuine retained B owner installs the complete base/history/
+uncaptured-current union into three C Published journals, preserves all retained
+groups/global accounting and private B/C data, refuses write sharing against
+immutable CAS pins, resumes after deliberately withheld successful Declared
+close ACK, and replays completion with zero writer calls. C stays Initializing,
+C8/no root/checkout/Ready/admission. No real OS close failure or owner-loss claim.
+
+Independent final source review binds143 paths and all623 source inputs to the
+audited artifact/runner/14 recipes. Release SHA256
+`a9ad09a9a8bf66b1b630b52437ae17705eba2f43aeed999b3fbdb2bd938b9474`.
+Archive `ordinary-installing-evidence-20261027-r38.tar.gz`: 649 verified files,
+1,818,703 bytes, SHA256
+`75f35736a3003220ce69215a52c0691ffa86ed9d4561004cce0f642f209493be`.
+
+Next Protected/Checkout lot is separately implemented in the working tree:
+closed catalog mode, actual C byte proof/root, typed Ordinary journal and
+owner-pinned filesystem engine, plus pure/SQL/native recipes. Compilation and
+independent critical review are in progress, runtime remains unqualified.
+Ready/publication/autonomous C, transitions/companions/expansion/recovery,
+lifecycle/performance and CLI/Desktop/full acceptance remain in the full goal.
+
 **28 October Paris, r36-r37 ordinary ReserveOnly:** actual B/C Staging,
 complete immutable funding and exact retained CAS/index checks now authorize
 only the exact C full-Q reservation alongside every retained Published import.

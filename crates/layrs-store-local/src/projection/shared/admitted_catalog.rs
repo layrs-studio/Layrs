@@ -1,8 +1,8 @@
-//! Admitted retained-family policy and a separate export-only reservation SQL
-//! primitive. The ordinary gate stays read-only. No private opener, owner lock,
-//! recovery, COMMIT, release or content I/O is permitted beneath either gate.
+//! Admitted retained-family policy, export-only ReserveOnly/Installing readers
+//! and a separate reservation SQL primitive. The ordinary gate stays read-only.
+//! No private opener, owner lock, recovery, COMMIT, release or content I/O here.
 use super::{
-    exact_content::{ExactBinding, ExactRecord},
+    exact_content::{ExactBinding, ExactInstallState, ExactRecord},
     exact_protection::ExactProtection,
     FamilyMarker,
 };
@@ -32,7 +32,17 @@ pub(in crate::projection) use export::{
 struct CatalogParts {
     proof: AdmittedCatalogProof,
     export: Option<ExportReserveOnlyState>,
+    installation: Option<ExactInstallState>,
     marker: FamilyMarker,
+}
+
+// Closed DATA interpretations, never a switch granting physical authority.
+enum ExportCatalogTarget<'a> {
+    ReserveOnly(&'a ExportReserveOnlyTarget),
+    Installing {
+        target: &'a ExportReserveOnlyTarget,
+        required: &'a [FileManifest],
+    },
 }
 
 #[derive(Clone)]
@@ -160,11 +170,42 @@ impl AdmittedFamilyContext {
         target: &ExportReserveOnlyTarget,
         cancel: Option<&Cancellation>,
     ) -> Result<(AdmittedCatalogProof, ExportReserveOnlyState)> {
-        let parts = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let parts = self.validate_catalog_parts(
+            c,
+            family_marker,
+            Some(ExportCatalogTarget::ReserveOnly(target)),
+            cancel,
+        )?;
         let state = parts
             .export
             .ok_or_else(|| invalid("export catalog state absent"))?;
         Ok((parts.proof, state))
+    }
+
+    /// Complete retained Published groups plus exactly C's typed installation
+    /// progress. No C protection root, private admission or byte authority is
+    /// inferred. Caller authenticates actual B/C Staging and brackets effects
+    /// with this full gate in the same transaction.
+    pub(in crate::projection) fn validate_export_installing(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: &ExportReserveOnlyTarget,
+        required: &[FileManifest],
+        cancel: Option<&Cancellation>,
+    ) -> Result<(AdmittedCatalogProof, ExactInstallState)> {
+        let parts = self.validate_catalog_parts(
+            c,
+            family_marker,
+            Some(ExportCatalogTarget::Installing { target, required }),
+            cancel,
+        )?;
+        Ok((
+            parts.proof,
+            parts
+                .installation
+                .ok_or_else(|| invalid("export installation state absent"))?,
+        ))
     }
 
     /// Insert only C's exact full reservation or replay it without writing.
@@ -185,13 +226,23 @@ impl AdmittedFamilyContext {
                 "export reservation requires FK-enabled caller transaction",
             ));
         }
-        let before = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let before = self.validate_catalog_parts(
+            c,
+            family_marker,
+            Some(ExportCatalogTarget::ReserveOnly(target)),
+            cancel,
+        )?;
         let previous = before
             .export
             .ok_or_else(|| invalid("export predecessor state absent"))?;
         let effect =
             target.insert_or_replay_after_retained_validation(c, self, &before.marker, cancel)?;
-        let after = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let after = self.validate_catalog_parts(
+            c,
+            family_marker,
+            Some(ExportCatalogTarget::ReserveOnly(target)),
+            cancel,
+        )?;
         let actual = after
             .export
             .ok_or_else(|| invalid("export prospective state absent"))?;
@@ -229,7 +280,7 @@ impl AdmittedFamilyContext {
         &self,
         c: &Connection,
         family_marker: &[u8],
-        target: Option<&ExportReserveOnlyTarget>,
+        target: Option<ExportCatalogTarget<'_>>,
         cancel: Option<&Cancellation>,
     ) -> Result<CatalogParts> {
         cancellation::check(cancel)?;
@@ -347,9 +398,26 @@ impl AdmittedFamilyContext {
         // Retained roots, Published journals, exact debit equality and shared
         // charged sets have ALL passed. Only now may an exact active C group
         // join the final inventory. None preserves the strict ordinary policy.
-        let export = target
-            .map(|target| target.validate_and_classify(c, self, &marker, &mut groups, cancel))
-            .transpose()?;
+        let (export, installation) = match target {
+            None => (None, None),
+            Some(ExportCatalogTarget::ReserveOnly(target)) => (
+                Some(target.validate_and_classify(c, self, &marker, &mut groups, cancel)?),
+                None,
+            ),
+            Some(ExportCatalogTarget::Installing { target, required }) => (
+                None,
+                Some(target.validate_installing_and_classify(
+                    c,
+                    self,
+                    &marker,
+                    required,
+                    &mut groups,
+                    &mut charged_chunks,
+                    &mut charged_manifests,
+                    cancel,
+                )?),
+            ),
+        };
         // Every retained exact journal AND every import reservation must map
         // to precisely one validated root, or the one fully validated export
         // reservation. Ordinary reservations coexist as before.
@@ -377,6 +445,7 @@ impl AdmittedFamilyContext {
                     .ok_or_else(|| invalid("admitted family primary import root absent"))?,
             },
             export,
+            installation,
             marker,
         })
     }
@@ -393,3 +462,7 @@ mod tests;
 #[cfg(test)]
 #[path = "admitted_catalog/export_tests.rs"]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "admitted_catalog/installing_tests.rs"]
+mod installing_tests;

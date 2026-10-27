@@ -335,6 +335,33 @@ impl OrdinaryExportImage {
         self.root.verify_path_identity()?;
         check(cancel)
     }
+
+    /// No content reads: usable inside a catalog transaction while the full
+    /// image scans and hashes run before entry and after positive close.
+    pub(super) fn verify_identity(&self, cancel: &Cancellation) -> Result<()> {
+        check(cancel)?;
+        self.root.verify_path_identity()?;
+        if self.root.identity_token() != self.marker.checkout_identity()
+            || self.pins.len() != self.files.len()
+        {
+            return Err(invalid("ordinary install image identity differs"));
+        }
+        for (file, pin) in self.files.iter().zip(&self.pins) {
+            check(cancel)?;
+            file::require_single_link(pin.file())?;
+            pin.verify_parent()?;
+            let (parent, name) = self.root.existing_parent(Path::new(file.path.as_str()))?;
+            parent.verify_path_identity()?;
+            let metadata = pin.file().metadata()?;
+            if !pin.same_file(&parent.open_readonly_file(&name)?)
+                || metadata.len() != file.manifest.byte_length()
+                || executable(&metadata) != file.executable
+            {
+                return Err(invalid("ordinary install retained leaf identity differs"));
+            }
+        }
+        check(cancel)
+    }
 }
 
 fn bound_paths(

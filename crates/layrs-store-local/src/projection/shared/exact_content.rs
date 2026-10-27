@@ -138,8 +138,14 @@ impl ExactStorage {
 }
 
 /// Closed crate-internal scope implemented by the managed provider adapter.
-/// `action` receives an active caller transaction (FK ON for writes). A scope
-/// returns only after COMMIT and every observable family/source close succeeds.
+/// `action` receives an active caller transaction (FK ON for writes). Each
+/// family scope completes its transaction and positively closes before return.
+/// Provider adapters also complete their source scope for every action. An
+/// ordinary adapter may instead retain one immutable private read snapshot
+/// across the engine: no attempt/capability escapes that outer closure, and
+/// public success waits for its observed snapshot completion. The persistent
+/// private connection still requires explicit owner.close. A failed family
+/// action aborts the engine without any subsequent SQL readback.
 /// No ordinary Lease, opener, cleanup or arbitrary budget is exposed here.
 pub(in crate::projection) trait ExactCatalog {
     fn expected_manifest(&self, id: &FileManifestId) -> Result<FileManifest>;

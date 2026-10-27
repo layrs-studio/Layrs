@@ -146,11 +146,14 @@ fn prepare_spool<C: ExactCatalog>(
         // Existing bytes are never appended, truncated or reset. A complete
         // recorded inode can be verified and flushed through this narrow opener.
         let pin = if active.from_cas {
-            attempt.storage.chunks.open_file(OsStr::new(object_name(
-                chunk_id
-                    .as_deref()
-                    .ok_or_else(|| invalid("exact resident input is not a chunk"))?,
-            )?))?
+            attempt
+                .storage
+                .chunks
+                .open_readonly_file(OsStr::new(object_name(
+                    chunk_id
+                        .as_deref()
+                        .ok_or_else(|| invalid("exact resident input is not a chunk"))?,
+                )?))?
         } else {
             attempt
                 .directory
@@ -189,11 +192,14 @@ fn prepare_spool<C: ExactCatalog>(
             }
         })?;
         let pin = if resident {
-            let pin = attempt.storage.chunks.open_file(OsStr::new(object_name(
-                chunk_id
-                    .as_deref()
-                    .ok_or_else(|| invalid("exact resident chunk id absent"))?,
-            )?))?;
+            let pin = attempt
+                .storage
+                .chunks
+                .open_readonly_file(OsStr::new(object_name(
+                    chunk_id
+                        .as_deref()
+                        .ok_or_else(|| invalid("exact resident chunk id absent"))?,
+                )?))?;
             verify_piece(&pin, expected_bytes, chunk_id.as_deref(), None, cancel)?;
             pin
         } else {
@@ -260,12 +266,15 @@ pub(in crate::projection) fn finish_piece<C: ExactCatalog>(
         cancel,
     )?;
     let reopened = if piece.from_cas {
-        attempt.storage.chunks.open_file(OsStr::new(object_name(
-            piece
-                .chunk_id
-                .as_deref()
-                .ok_or_else(|| invalid("exact resident piece id absent"))?,
-        )?))?
+        attempt
+            .storage
+            .chunks
+            .open_readonly_file(OsStr::new(object_name(
+                piece
+                    .chunk_id
+                    .as_deref()
+                    .ok_or_else(|| invalid("exact resident piece id absent"))?,
+            )?))?
     } else {
         attempt
             .directory
@@ -328,7 +337,7 @@ pub(in crate::projection) fn verify_staged(
         } else {
             object_name(attempt.manifest.id().as_str())?
         };
-        if !pin.same_file(&parent.open_file(OsStr::new(name))?) {
+        if !pin.same_file(&parent.open_readonly_file(OsStr::new(name))?) {
             return Err(invalid("exact verified manifest path replaced"));
         }
     } else if attempt.record.phase != Phase::Allocated {
@@ -485,7 +494,7 @@ pub(super) fn hash_file(attempt: &ExactAttempt, cancel: &Cancellation) -> Result
             attempt
                 .storage
                 .chunks
-                .open_file(OsStr::new(object_name(chunk.chunk_id().as_str())?))?
+                .open_readonly_file(OsStr::new(object_name(chunk.chunk_id().as_str())?))?
         } else {
             match attempt.directory.open_file(OsStr::new(&name)) {
                 Ok(pin) => pin,
@@ -504,7 +513,7 @@ pub(super) fn hash_file(attempt: &ExactAttempt, cancel: &Cancellation) -> Result
                     let pin = attempt
                         .storage
                         .chunks
-                        .open_file(OsStr::new(object_name(chunk.chunk_id().as_str())?))?;
+                        .open_readonly_file(OsStr::new(object_name(chunk.chunk_id().as_str())?))?;
                     if file_identity(&pin)? != active.inode {
                         return Err(invalid("exact unindexed chunk is not the active inode"));
                     }
@@ -551,7 +560,7 @@ fn manifest_pin(attempt: &ExactAttempt) -> Result<(&PinnedDirectory, PinnedFile)
         let parent = &attempt.storage.manifests;
         return Ok((
             parent,
-            parent.open_file(OsStr::new(object_name(attempt.manifest.id().as_str())?))?,
+            parent.open_readonly_file(OsStr::new(object_name(attempt.manifest.id().as_str())?))?,
         ));
     }
     match attempt.directory.open_file(OsStr::new("manifest")) {
@@ -568,7 +577,7 @@ fn manifest_pin(attempt: &ExactAttempt) -> Result<(&PinnedDirectory, PinnedFile)
             let pin = attempt
                 .storage
                 .manifests
-                .open_file(OsStr::new(object_name(attempt.manifest.id().as_str())?))?;
+                .open_readonly_file(OsStr::new(object_name(attempt.manifest.id().as_str())?))?;
             if active.piece != Piece::Manifest || file_identity(&pin)? != active.inode {
                 return Err(invalid(
                     "exact manifest is not the active publication inode",

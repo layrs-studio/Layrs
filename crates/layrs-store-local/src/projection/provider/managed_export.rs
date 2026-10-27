@@ -7,6 +7,7 @@ mod budget;
 mod copy;
 mod destination;
 mod image;
+mod installing;
 mod preallocation;
 mod reservation;
 mod reserve_plan;

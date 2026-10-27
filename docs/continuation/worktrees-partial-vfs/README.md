@@ -1,5 +1,25 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément installation ordinaire B → C — r38
+
+Les quatorze recettes passent : deux tests purs, onze SQL et le scénario natif
+Windows en 1 193,900 s. L’union complète base/historique/courant est installée
+avec trois journaux C Published. Après acquittement volontairement retenu d’une
+fermeture réellement réussie au stade Declared, le même propriétaire reprend
+et termine. Le rejeu terminé n’ouvre aucun writer. Témoins SQL/fichiers complets
+et refus Windows d’écriture sur les objets CAS protégés sont vérifiés.
+
+C reste Initializing/C8, sans root, checkout, Ready ni admission. Ce résultat
+ne qualifie pas une panne réelle de fermeture ni la reprise après perte du
+propriétaire. La protection et la copie des fichiers sont écrites dans un lot
+distinct en cours de compilation/revue ; elles restent à exécuter.
+
+Archive `ordinary-installing-evidence-20261027-r38.tar.gz` : 649 fichiers,
+1 818 703 octets, SHA-256
+`75f35736a3003220ce69215a52c0691ffa86ed9d4561004cce0f642f209493be`.
+Les seize sources de cet incrément correspondent exactement au lot audité
+(hors conversion CRLF). Le programme complet reste actif.
+
 ## Complément réservation ordinaire de C — r36 à r37
 
 La réservation exacte de C coexiste avec tous les imports Published retenus.

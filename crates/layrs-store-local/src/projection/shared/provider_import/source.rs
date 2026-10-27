@@ -146,13 +146,54 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
         cancel: Option<&Cancellation>,
     ) -> Result<crate::projection::shared::admitted_catalog::ExportReserveOnlyState> {
+        self.require_export_target(family, intent, target, cancel)?;
+        let (_, state) =
+            self.retained
+                .validate_export_reserve_only(c, family.marker_bytes(), target, cancel)?;
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
+    /// Genuine B-private/family checks plus the complete retained-and-active
+    /// Installing catalog. The physical driver still authenticates actual C
+    /// Staging, complete image/funding and retained pins around every effect.
+    pub(in crate::projection) fn validate_export_installing(
+        &self,
+        family: &FamilyAccess,
+        c: &Connection,
+        intent: &ProviderTransitionIntentRecord,
+        target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
+        required: &[layrs_core::scm::FileManifest],
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::exact_content::ExactInstallState> {
+        self.require_export_target(family, intent, target, cancel)?;
+        let (_, state) = self.retained.validate_export_installing(
+            c,
+            family.marker_bytes(),
+            target,
+            required,
+            cancel,
+        )?;
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
+    fn require_export_target(
+        &self,
+        family: &FamilyAccess,
+        intent: &ProviderTransitionIntentRecord,
+        target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
         if intent.state != TransitionState::Staging {
-            return Err(invalid("ordinary reserve source must be actual Staging"));
+            return Err(invalid("ordinary export source must be actual Staging"));
         }
         let proof = intent
             .destination
             .as_ref()
-            .ok_or_else(|| invalid("ordinary reserve destination proof absent"))?;
+            .ok_or_else(|| invalid("ordinary export destination proof absent"))?;
         let target_binding = target.binding();
         if target_binding.transaction_id != intent.transaction_id
             || target_binding.plan_digest != intent.plan.digest()?
@@ -164,16 +205,10 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
             || intent.reservation.as_deref() != Some(target_binding.reservation.as_str())
         {
             return Err(invalid(
-                "ordinary reserve target differs from actual source intent",
+                "ordinary export target differs from actual source intent",
             ));
         }
-        self.require_family_identity(family, intent, cancel)?;
-        let (_, state) =
-            self.retained
-                .validate_export_reserve_only(c, family.marker_bytes(), target, cancel)?;
-        family.verify()?;
-        cancellation::check(cancel)?;
-        Ok(state)
+        self.require_family_identity(family, intent, cancel)
     }
 
     fn require_family_identity(

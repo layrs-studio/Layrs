@@ -237,7 +237,7 @@ impl OrdinaryManagedExport<'_> {
     }
 }
 
-fn read_destination(
+pub(super) fn read_destination(
     destination: &ManagedDestinationAllocation,
     source: &Connection,
     source_marker: &format::Marker,
@@ -272,7 +272,7 @@ fn read_destination(
     Ok(result)
 }
 
-fn valid<T>(state: ReadState<T>) -> CauseResult<T> {
+pub(super) fn valid<T>(state: ReadState<T>) -> CauseResult<T> {
     match state {
         ReadState::Valid(value) => Ok(value),
         ReadState::Uninitialized => Err(cause_invalid("ordinary reserve storage is uninitialized")),
@@ -287,7 +287,7 @@ fn valid<T>(state: ReadState<T>) -> CauseResult<T> {
     }
 }
 
-fn combine<T>(result: CauseResult<T>, post: CauseResult<()>) -> CauseResult<T> {
+pub(super) fn combine<T>(result: CauseResult<T>, post: CauseResult<()>) -> CauseResult<T> {
     match (result, post) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),

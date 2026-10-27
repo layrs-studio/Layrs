@@ -526,8 +526,77 @@ fn validate_installations_inner(
     )? {
         return Err(invalid("exact owner has foreign reservation"));
     }
-    let (count, max_id, max_file, max_payload, max_manifest): (u64,u64,u64,u64,u64) = c.query_row("SELECT count(*),coalesce(max(length(CAST(manifest_id AS BLOB))),0),coalesce(max(length(CAST(file_id AS BLOB))),0),coalesce(max(length(payload)),0),coalesce(max(length(manifest)),0) FROM (SELECT * FROM exact_installations LIMIT 100001)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-    if count > required.len() as u64
+    let group = validate_group_records(
+        c,
+        binding,
+        &by_id,
+        &mut BTreeSet::new(),
+        &mut BTreeSet::new(),
+        cancel,
+    )?;
+    let GroupState {
+        remaining,
+        debit_bytes,
+        records: count,
+        published,
+        journal_manifests,
+    } = group;
+    let base: u64 = c.query_row("SELECT coalesce((SELECT sum(bytes) FROM chunks),0)+coalesce((SELECT sum(length(payload)) FROM manifests),0)+coalesce((SELECT sum(bytes) FROM sweep),0)", [], |r| r.get(0))?;
+    let content_bytes = base
+        .checked_add(
+            count
+                .checked_mul(PREPARE_CHARGE)
+                .ok_or_else(|| invalid("exact metadata charge overflow"))?,
+        )
+        .and_then(|bytes| bytes.checked_add(journal_manifests))
+        .ok_or_else(|| invalid("exact content charge overflow"))?;
+    let reserved_bytes: u64 = c.query_row(
+        "SELECT coalesce(sum(remaining),0) FROM reservations",
+        [],
+        |r| r.get(0),
+    )?;
+    let limit_bytes: u64 = c.query_row("SELECT bytes FROM quota WHERE singleton=1", [], |r| {
+        r.get(0)
+    })?;
+    if content_bytes
+        .checked_add(reserved_bytes)
+        .is_none_or(|bytes| bytes > limit_bytes)
+    {
+        return Err(invalid(
+            "partial_store_quota: exact family is overcommitted",
+        ));
+    }
+    Ok(ExactInstallState {
+        remaining,
+        debit_bytes,
+        records: count,
+        published,
+        content_bytes,
+        reserved_bytes,
+        limit_bytes,
+    })
+}
+
+// Only typed group interpretation. Full-family classification stays with the
+// strict wrapper or admitted_catalog's retained-plus-active walk.
+struct GroupState {
+    remaining: u64,
+    debit_bytes: u64,
+    records: u64,
+    published: u64,
+    journal_manifests: u64,
+}
+
+fn validate_group_records(
+    c: &Connection,
+    binding: &ExactBinding,
+    by_id: &BTreeMap<&str, &FileManifest>,
+    charged_chunks: &mut BTreeSet<String>,
+    charged_manifests: &mut BTreeSet<String>,
+    cancel: Option<&Cancellation>,
+) -> Result<GroupState> {
+    let (count, max_id, max_file, max_payload, max_manifest): (u64,u64,u64,u64,u64) = c.query_row("SELECT count(*),coalesce(max(length(CAST(manifest_id AS BLOB))),0),coalesce(max(length(CAST(file_id AS BLOB))),0),coalesce(max(length(payload)),0),coalesce(max(length(manifest)),0) FROM (SELECT * FROM exact_installations WHERE reservation=?1 LIMIT 100001)", [&binding.reservation], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    if count > by_id.len() as u64
         || max_id > 71
         || max_file > 71
         || max_payload > 8192
@@ -538,10 +607,9 @@ fn validate_installations_inner(
     let mut debit_bytes = 0u64;
     let mut published = 0u64;
     let mut journal_manifests = 0u64;
-    let mut charged_chunks = BTreeSet::new();
     let mut query =
-        c.prepare("SELECT manifest_id FROM exact_installations ORDER BY manifest_id LIMIT 100001")?;
-    let mut rows = query.query([])?;
+        c.prepare("SELECT manifest_id FROM exact_installations WHERE reservation=?1 ORDER BY manifest_id LIMIT 100001")?;
+    let mut rows = query.query([&binding.reservation])?;
     while let Some(row) = rows.next()? {
         crate::projection::provider::cancellation::check(cancel)?;
         let id: String = row.get(0)?;
@@ -553,6 +621,11 @@ fn validate_installations_inner(
         debit_bytes = debit_bytes
             .checked_add(record.debit_bytes)
             .ok_or_else(|| invalid("exact aggregate debit overflow"))?;
+        if record.charged_manifest && !charged_manifests.insert(manifest.id().to_string()) {
+            return Err(invalid(
+                "exact manifest was debited by multiple installation rows",
+            ));
+        }
         if record.verified() {
             journal_manifests = journal_manifests
                 .checked_add(journal::manifest_bytes(manifest)?.len() as u64)
@@ -565,7 +638,10 @@ fn validate_installations_inner(
             {
                 return Err(invalid("exact published prefix lost its chunk"));
             }
-            if record.charged_chunk(n) && !charged_chunks.insert(chunk.chunk_id()) {
+            if record.charged_chunk(n) && charged_chunks.len() >= 1_000_000 {
+                return Err(invalid("exact charged chunk union exceeds bound"));
+            }
+            if record.charged_chunk(n) && !charged_chunks.insert(chunk.chunk_id().to_string()) {
                 return Err(invalid(
                     "exact chunk was debited by multiple installation rows",
                 ));
@@ -602,38 +678,89 @@ fn validate_installations_inner(
             "exact reservation does not equal quota minus durable debits",
         ));
     }
-    let base: u64 = c.query_row("SELECT coalesce((SELECT sum(bytes) FROM chunks),0)+coalesce((SELECT sum(length(payload)) FROM manifests),0)+coalesce((SELECT sum(bytes) FROM sweep),0)", [], |r| r.get(0))?;
-    let content_bytes = base
-        .checked_add(
-            count
-                .checked_mul(PREPARE_CHARGE)
-                .ok_or_else(|| invalid("exact metadata charge overflow"))?,
-        )
-        .and_then(|bytes| bytes.checked_add(journal_manifests))
-        .ok_or_else(|| invalid("exact content charge overflow"))?;
-    let reserved_bytes: u64 = c.query_row(
-        "SELECT coalesce(sum(remaining),0) FROM reservations",
-        [],
-        |r| r.get(0),
-    )?;
-    let limit_bytes: u64 = c.query_row("SELECT bytes FROM quota WHERE singleton=1", [], |r| {
-        r.get(0)
-    })?;
-    if content_bytes
-        .checked_add(reserved_bytes)
-        .is_none_or(|bytes| bytes > limit_bytes)
-    {
-        return Err(invalid(
-            "partial_store_quota: exact family is overcommitted",
-        ));
-    }
-    Ok(ExactInstallState {
+    Ok(GroupState {
         remaining,
         debit_bytes,
         records: count,
         published,
-        content_bytes,
-        reserved_bytes,
-        limit_bytes,
+        journal_manifests,
     })
+}
+
+impl ExactBinding {
+    /// SQL DATA only for one active group, after the caller's complete retained
+    /// walk. Share both debit sets across ALL retained and active groups; this
+    /// method alone neither classifies foreign groups nor grants byte authority.
+    pub(in crate::projection) fn validate_export_installations(
+        &self,
+        c: &Connection,
+        required: &[FileManifest],
+        charged_chunks: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExactInstallState> {
+        transaction(c, false)?;
+        self.validate()?;
+        crate::projection::provider::cancellation::check(cancel)?;
+        if required.len() > 100_000 {
+            return Err(invalid("exact export manifest union exceeds bound"));
+        }
+        let mut by_id = BTreeMap::new();
+        for manifest in required {
+            crate::projection::provider::cancellation::check(cancel)?;
+            journal::manifest_bytes(manifest)?;
+            if by_id.insert(manifest.id().as_str(), manifest).is_some() {
+                return Err(invalid("exact export manifest union contains duplicate ID"));
+            }
+        }
+        let group =
+            validate_group_records(c, self, &by_id, charged_chunks, charged_manifests, cancel)?;
+        // ALL groups contribute metadata, even if C has not started yet.
+        let records: u64 = c.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM exact_installations LIMIT 100001)",
+            [],
+            |r| r.get(0),
+        )?;
+        if records > 100_000 {
+            return Err(invalid("exact export global journal count exceeds bound"));
+        }
+        let journal_bytes: u64 = c.query_row(
+            "SELECT coalesce(sum(length(manifest)),0) FROM exact_installations",
+            [],
+            |r| r.get(0),
+        )?;
+        let base: u64 = c.query_row("SELECT coalesce((SELECT sum(bytes) FROM chunks),0)+coalesce((SELECT sum(length(payload)) FROM manifests),0)+coalesce((SELECT sum(bytes) FROM sweep),0)", [], |r| r.get(0))?;
+        let content_bytes = records
+            .checked_mul(PREPARE_CHARGE)
+            .and_then(|n| n.checked_add(journal_bytes))
+            .and_then(|n| n.checked_add(base))
+            .ok_or_else(|| invalid("exact export global content charge overflow"))?;
+        let reserved_bytes: u64 = c.query_row(
+            "SELECT coalesce(sum(remaining),0) FROM reservations",
+            [],
+            |r| r.get(0),
+        )?;
+        let limit_bytes: u64 =
+            c.query_row("SELECT bytes FROM quota WHERE singleton=1", [], |r| {
+                r.get(0)
+            })?;
+        if content_bytes
+            .checked_add(reserved_bytes)
+            .is_none_or(|n| n > limit_bytes)
+        {
+            return Err(invalid(
+                "partial_store_quota: exact export family is overcommitted",
+            ));
+        }
+        crate::projection::provider::cancellation::check(cancel)?;
+        Ok(ExactInstallState {
+            remaining: group.remaining,
+            debit_bytes: group.debit_bytes,
+            records: group.records,
+            published: group.published,
+            content_bytes,
+            reserved_bytes,
+            limit_bytes,
+        })
+    }
 }

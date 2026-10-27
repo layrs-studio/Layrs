@@ -120,7 +120,7 @@ fn publish_one<C: ExactCatalog>(
                 return Err(invalid("exact resident publication lost indexed chunk"));
             }
             let (parent, name, _, _, _) = info(attempt, piece)?;
-            parent.open_file(OsStr::new(name))?
+            parent.open_readonly_file(OsStr::new(name))?
         } else {
             attempt.directory.open_file(OsStr::new(&piece.name()))?
         };
@@ -161,7 +161,7 @@ fn publish_one<C: ExactCatalog>(
             Err(error) => return Err(error.into()),
         }
     };
-    let target = match parent.open_file(OsStr::new(name)) {
+    let target = match parent.open_readonly_file(OsStr::new(name)) {
         Ok(pin) => Some(pin),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
@@ -187,7 +187,7 @@ fn publish_one<C: ExactCatalog>(
             let collision = source.rename_to(parent, OsStr::new(name))?;
             parent.sync()?;
             attempt.directory.sync()?;
-            let pin = parent.open_file(OsStr::new(name))?;
+            let pin = parent.open_readonly_file(OsStr::new(name))?;
             let same_inode = file_identity(&pin)? == active.inode;
             if !same_inode {
                 if !collision {
@@ -209,7 +209,7 @@ fn publish_one<C: ExactCatalog>(
     parent.sync()?;
     attempt.directory.sync()?;
     target.verify_parent()?;
-    if !target.same_file(&parent.open_file(OsStr::new(name))?) {
+    if !target.same_file(&parent.open_readonly_file(OsStr::new(name))?) {
         return Err(invalid("exact CAS path changed after verification"));
     }
     attempt.require_context(context, cancel)?;
