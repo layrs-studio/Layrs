@@ -26,6 +26,7 @@ impl ProjectionStore {
     /// Check all immutable history. Does not alter or validate live checkout edits.
     pub fn fsck(&self) -> Result<ProjectionCheck> {
         let access = format::access(self, SessionMode::Shared)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
         database::require_idle(&access.connection)?;
         let c = &access.connection;
         retention::fsck(c, self)?;
@@ -181,6 +182,7 @@ impl ProjectionStore {
             restore_operations,
             rebase_operations,
         })
+        })
     }
     /// Descending immutable local captures; the exclusive cursor is a sequence.
     pub fn capture_history(
@@ -192,6 +194,7 @@ impl ProjectionStore {
             return Err(invalid("capture history limit must be 1..100"));
         }
         let access = format::access(self, SessionMode::Shared)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
         database::require_idle(&access.connection)?;
         let mut statement=access.connection.prepare(
             "SELECT sequence FROM projection_captures WHERE sequence<?1 ORDER BY sequence DESC LIMIT ?2")?;
@@ -211,6 +214,7 @@ impl ProjectionStore {
         Ok(ProjectionHistoryPage {
             captures,
             next_before,
+        })
         })
     }
 }

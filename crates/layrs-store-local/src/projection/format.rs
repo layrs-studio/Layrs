@@ -1,4 +1,8 @@
 use super::*;
+mod connection;
+pub(in crate::projection) use connection::PrivateConnection;
+mod content_scope;
+pub(in crate::projection) use content_scope::{content_family, ContentScope};
 mod family;
 mod recovery;
 use crate::{
@@ -267,7 +271,7 @@ pub(super) fn open(root: &Path) -> Result<ProjectionStore> {
     let result = ProjectionStore { root, marker };
     // Upgrade the exact legacy schema under the store's exclusive lock before
     // any shared reader validates the new schema.
-    drop(access(&result, SessionMode::Exclusive)?);
+    access(&result, SessionMode::Exclusive)?.run(|_| Ok(()))?;
     let current = result.state()?;
     validate_platform(&current.snapshot)?;
     Ok(result)
@@ -379,7 +383,7 @@ pub(super) fn resume_selected(
     open(&root)
 }
 pub(super) struct Access {
-    pub connection: rusqlite::Connection,
+    pub connection: PrivateConnection,
     pub metadata: PinnedDirectory,
     pub database: super::file::DatabasePin,
     root: PathBuf,
@@ -392,9 +396,53 @@ pub(super) struct Access {
     pub family: Option<shared::Lease>,
 }
 impl Access {
+    /// Borrow the already-held owner and family together with the connection.
+    /// No authority is inferred from an arbitrary caller transaction.
+    pub(in crate::projection) fn with_content<T>(
+        &mut self,
+        operation: impl FnOnce(&mut rusqlite::Connection, &ContentScope<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.verify()?;
+        #[cfg(windows)]
+        let admission = match &self.connection {
+            PrivateConnection::Legacy(_) => None,
+            PrivateConnection::Admitted(handle) => Some(handle.admission()),
+        };
+        let scope = ContentScope::new(
+            &self.marker,
+            &self.root,
+            &self._lock,
+            self.family.as_ref(),
+            &self.metadata,
+            &self.database,
+            &self._boundaries,
+            self.recovery_binding.as_ref(),
+            #[cfg(windows)]
+            admission,
+        );
+        operation(&mut self.connection, &scope)
+    }
+
+    /// All operation paths, including early errors after COMMIT, end here.
+    /// The connection is positively closed before the owner/family scopes drop.
+    pub fn run<T>(mut self, operation: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let result = operation(&mut self);
+        let result = result.and_then(|value| self.verify().map(|_| value));
+        self.connection.finish(result)
+    }
     pub fn verify(&self) -> Result<()> {
         self._boundaries.verify(&self.root, &self.marker)?;
-        provider::require_ordinary(&self.connection)?;
+        match &self.connection {
+            PrivateConnection::Legacy(c) => provider::require_ordinary(c)?,
+            #[cfg(windows)]
+            PrivateConnection::Admitted(handle) => {
+                handle.verify()?;
+                self.family
+                    .as_ref()
+                    .ok_or_else(|| invalid("admitted private handle lost family lease"))?
+                    .require_same_admission(handle.data())?;
+            }
+        }
         if let Some(family) = &self.family {
             family.verify()?;
         }
@@ -412,7 +460,7 @@ impl Access {
     }
 }
 pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Access> {
-    let family = shared::for_store_discovery(store)?;
+    let mut family = shared::for_store_discovery(store)?;
     let metadata_path = store.marker.metadata_path(&store.root);
     let _lock =
         StoreLock::acquire_existing(&metadata_path.join("layrs.lock"), mode).map_err(invalid)?;
@@ -423,6 +471,52 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
     let metadata = PinnedDirectory::open(&metadata_path)?;
     let database = super::file::DatabasePin::open(&metadata_path.join(DATABASE))?;
     let boundaries = preliminary_pins(&store.root, &marker, &metadata, &database)?;
+    #[cfg(windows)]
+    if has_admitted_header(&database)? {
+        let binding = marker
+            .shared
+            .as_ref()
+            .ok_or_else(|| invalid("admitted private database requires shared FORMAT"))?;
+        if database.identity() != binding.database_identity {
+            return Err(invalid("admitted private database replaced"));
+        }
+        // This dispatch read grants no authority. Only the independently and
+        // positively closed clean RO probe can mint durable admitted provenance.
+        let preflight = provider::admitted_private_io::AdmittedPreflight::open(
+            &metadata_path.join(DATABASE),
+            database.identity(),
+            &marker,
+        )?;
+        family
+            .as_mut()
+            .ok_or_else(|| invalid("admitted family lease absent"))?
+            .admit(preflight.data())?;
+        boundaries.verify(&store.root, &marker)?;
+        verify_boundaries(&store.root, &marker, &metadata, &database)?;
+        let handle = preflight.into_handle(mode == SessionMode::Exclusive)?;
+        let result = Access {
+            connection: PrivateConnection::Admitted(handle),
+            metadata,
+            database,
+            root: store.root.clone(),
+            marker,
+            recovery_binding: None,
+            _boundaries: boundaries,
+            _lock,
+            family,
+        };
+        let checked = (|| {
+            result.verify()?;
+            if mode == SessionMode::Exclusive {
+                retention::settle_with_lease(&result.connection, store, result.family.as_ref())?;
+            }
+            result.verify()
+        })();
+        if let Err(error) = checked {
+            return result.run(|_| Err(error));
+        }
+        return Ok(result);
+    }
     if let Some(binding) = &marker.shared {
         if database.identity() != binding.database_identity {
             return Err(invalid("shared Worktree database replaced"));
@@ -472,7 +566,7 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
         retention::settle(&connection, store)?;
     }
     let result = Access {
-        connection,
+        connection: PrivateConnection::Legacy(connection),
         metadata,
         database,
         family,
@@ -484,6 +578,21 @@ pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Acces
     };
     result.verify()?;
     Ok(result)
+}
+/// Read only the physical SQLite header for route selection, before any SQLite
+/// opener. A wrong or stale header cannot grant admission: both routes validate
+/// their complete schema independently, and neither route recovers a journal.
+#[cfg(windows)]
+fn has_admitted_header(pin: &super::file::DatabasePin) -> Result<bool> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = pin.file.try_clone()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut header = [0u8; 100];
+    file.read_exact(&mut header)?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(invalid("projection database header differs"));
+    }
+    Ok(u32::from_be_bytes(header[60..64].try_into().expect("fixed header slice")) == 9)
 }
 /// Filesystem identity only: deliberately contains no CheckoutReader or SQL.
 /// Generic directory pins refuse CFAPI roots until the provider control guard

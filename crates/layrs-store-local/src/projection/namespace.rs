@@ -87,72 +87,74 @@ impl ProjectionStore {
         if paths.is_empty() || paths.len() > 1024 {
             return Err(invalid("absence observation requires1..1024 paths"));
         }
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let current = database::current(&access.connection)?;
-        selection::check_paths(&access.connection, paths)?;
-        if current.generation != expected_generation || current.digest != expected_digest {
-            return Err(invalid("absence observation projection changed"));
-        }
-        let fences = current.snapshot.reserved_paths()?;
-        let root = PinnedDirectory::open(&self.root)?;
-        let mut next = current.snapshot.clone();
-        let mut changed = false;
-        let mut seen = std::collections::BTreeSet::new();
-        for path in paths {
-            if !seen.insert(path) || path.as_str().len() > 4096 {
-                return Err(invalid("duplicate or oversized absent path"));
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let current = database::current(&access.connection)?;
+            selection::check_paths(&access.connection, paths)?;
+            if current.generation != expected_generation || current.digest != expected_digest {
+                return Err(invalid("absence observation projection changed"));
             }
-            fences.check_path(path.as_str())?;
-            super::install::files::destination_absent(&root, &self.root, path.as_str())?;
-            match next.entries.binary_search_by(|e| e.path.cmp(path)) {
-                Ok(index)
-                    if next.entries[index].state == EntryState::Absent
-                        && next.entries[index].writable => {}
-                Ok(_) => return Err(invalid("path already has a different observation")),
-                Err(index) => {
-                    next.entries.insert(
-                        index,
-                        ProjectionEntry {
-                            path: path.clone(),
-                            target: None,
-                            executable: false,
-                            writable: true,
-                            state: EntryState::Absent,
-                        },
-                    );
-                    changed = true;
+            let fences = current.snapshot.reserved_paths()?;
+            let root = PinnedDirectory::open(&self.root)?;
+            let mut next = current.snapshot.clone();
+            let mut changed = false;
+            let mut seen = std::collections::BTreeSet::new();
+            for path in paths {
+                if !seen.insert(path) || path.as_str().len() > 4096 {
+                    return Err(invalid("duplicate or oversized absent path"));
+                }
+                fences.check_path(path.as_str())?;
+                super::install::files::destination_absent(&root, &self.root, path.as_str())?;
+                match next.entries.binary_search_by(|e| e.path.cmp(path)) {
+                    Ok(index)
+                        if next.entries[index].state == EntryState::Absent
+                            && next.entries[index].writable => {}
+                    Ok(_) => return Err(invalid("path already has a different observation")),
+                    Err(index) => {
+                        next.entries.insert(
+                            index,
+                            ProjectionEntry {
+                                path: path.clone(),
+                                target: None,
+                                executable: false,
+                                writable: true,
+                                state: EntryState::Absent,
+                            },
+                        );
+                        changed = true;
+                    }
                 }
             }
-        }
-        if !changed {
-            return Ok(current);
-        }
-        let bytes = next.canonical_bytes()?;
-        let generation = current
-            .generation
-            .checked_add(1)
-            .filter(|n| *n <= i64::MAX as u64)
-            .ok_or_else(|| invalid("projection generation exhausted"))?;
-        let digest = database::digest(generation, Some(&current.digest), &bytes);
-        access.verify()?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
-            params![generation, digest, current.digest, bytes],
-        )?;
-        tx.execute(
-            "UPDATE projection_head SET generation=?1 WHERE singleton=1",
-            [generation],
-        )?;
-        tx.commit()?;
-        access.verify()?;
-        Ok(VersionedProjection {
-            generation,
-            digest,
-            snapshot: next,
+            if !changed {
+                return Ok(current);
+            }
+            let bytes = next.canonical_bytes()?;
+            let generation = current
+                .generation
+                .checked_add(1)
+                .filter(|n| *n <= i64::MAX as u64)
+                .ok_or_else(|| invalid("projection generation exhausted"))?;
+            let digest = database::digest(generation, Some(&current.digest), &bytes);
+            access.verify()?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute(
+                "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
+                params![generation, digest, current.digest, bytes],
+            )?;
+            tx.execute(
+                "UPDATE projection_head SET generation=?1 WHERE singleton=1",
+                [generation],
+            )?;
+            tx.commit()?;
+            access.verify()?;
+            Ok(VersionedProjection {
+                generation,
+                digest,
+                snapshot: next,
+            })
         })
     }
     pub fn preview_namespace(
@@ -161,17 +163,19 @@ impl ProjectionStore {
         mutation: &NamespaceMutation,
     ) -> Result<NamespacePreview> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_mutable(&access.connection)?;
-        let state = database::current(&access.connection)?;
-        if state.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: state.generation,
-            });
-        }
-        let result = preview(self, &access.connection, &state, mutation)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let state = database::current(&access.connection)?;
+            if state.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: state.generation,
+                });
+            }
+            let result = preview(self, &access.connection, &state, mutation)?;
+            access.verify()?;
+            Ok(result)
+        })
     }
     pub fn apply_namespace(
         &self,

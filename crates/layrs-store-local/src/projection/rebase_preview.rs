@@ -31,6 +31,7 @@ impl ProjectionStore {
             return Err(invalid("merge draft must be canonical JSON"));
         }
         let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
         database::require_mutable(&access.connection)?;
         let current = database::current(&access.connection)?;
         let capture = capture::storage::load_metadata(&access.connection, self, sequence)?;
@@ -57,13 +58,16 @@ impl ProjectionStore {
         access.connection.execute("INSERT INTO projection_rebase_previews(singleton,payload) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload", [payload])?;
         access.verify()?;
         Ok(())
+        })
     }
     pub fn rebase_draft(&self) -> Result<Option<Vec<u8>>> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let result = verify(&access.connection, self)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_idle(&access.connection)?;
+            let result = verify(&access.connection, self)?;
+            access.verify()?;
+            Ok(result)
+        })
     }
 }
 pub(super) fn verify(

@@ -46,16 +46,18 @@ impl PublicationFaults for NoPublicationFaults {
 impl ProjectionStore {
     pub fn completed_publication(&self, sequence: u64) -> Result<Option<CompletedPublication>> {
         let access = format::access(self, SessionMode::Shared)?;
-        if conversion::imported(&access.connection, self, sequence)? {
-            return Err(invalid(
-                "imported publication is historical; use imported_publication",
-            ));
-        }
-        database::require_idle(&access.connection)?;
-        let result = storage::completed_record(&access.connection, self, sequence)?
-            .map(|(record, _)| record);
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            if conversion::imported(&access.connection, self, sequence)? {
+                return Err(invalid(
+                    "imported publication is historical; use imported_publication",
+                ));
+            }
+            database::require_idle(&access.connection)?;
+            let result = storage::completed_record(&access.connection, self, sequence)?
+                .map(|(record, _)| record);
+            access.verify()?;
+            Ok(result)
+        })
     }
     pub fn begin_publication(
         &self,
@@ -78,75 +80,79 @@ impl ProjectionStore {
         faults: &dyn PublicationFaults,
     ) -> Result<PendingPublication> {
         let request_digest = storage::json_digest(b"layrs-projection-request-v1\0", request_bytes)?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        if conversion::imported(&access.connection, self, sequence)? {
-            return Err(invalid(
-                "imported_capture_not_publishable: create a destination capture first",
-            ));
-        }
-        database::require_idle(&access.connection)?;
-        let current = database::current(&access.connection)?;
-        let patch = super::capture::storage::load(&access.connection, self, sequence)?;
-        let pending = PendingPublication {
-            sequence,
-            projection_generation: expected_generation,
-            projection_digest: current.digest.clone(),
-            capture_digest: patch.digest.clone(),
-            request_digest,
-            request_bytes: request_bytes.to_vec(),
-            receipt_bytes: None,
-        };
-        if let Some(existing) = storage::pending(&access.connection, self)? {
-            let mut comparable = existing.clone();
-            comparable.receipt_bytes = None;
-            if comparable == pending {
-                return Ok(existing);
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            if conversion::imported(&access.connection, self, sequence)? {
+                return Err(invalid(
+                    "imported_capture_not_publishable: create a destination capture first",
+                ));
             }
-            return Err(invalid("a different publication is already pending"));
-        }
-        if current.generation != expected_generation
-            || patch.projection_generation != current.generation
-            || patch.projection_digest != current.digest
-        {
-            return Err(invalid("publication capture or projection is stale"));
-        }
-        if patch.changes.is_empty() {
-            return Err(invalid("cannot publish an empty capture"));
-        }
-        let completed: bool = access.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM projection_publications WHERE sequence=?1)",
-            [sequence],
-            |r| r.get(0),
-        )?;
-        if completed {
-            return Err(invalid("capture already has a completed publication"));
-        }
-        access.verify()?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "INSERT INTO projection_publication_pending VALUES(1,?1,?2,?3,?4,?5,?6,NULL,NULL)",
-            params![
+            database::require_idle(&access.connection)?;
+            let current = database::current(&access.connection)?;
+            let patch = super::capture::storage::load(&access.connection, self, sequence)?;
+            let pending = PendingPublication {
                 sequence,
-                expected_generation,
-                pending.projection_digest,
-                pending.capture_digest,
-                pending.request_digest,
-                request_bytes
-            ],
-        )?;
-        tx.commit()?;
-        faults.check(PublicationPoint::RequestDurable)?;
-        access.verify()?;
-        Ok(pending)
+                projection_generation: expected_generation,
+                projection_digest: current.digest.clone(),
+                capture_digest: patch.digest.clone(),
+                request_digest,
+                request_bytes: request_bytes.to_vec(),
+                receipt_bytes: None,
+            };
+            if let Some(existing) = storage::pending(&access.connection, self)? {
+                let mut comparable = existing.clone();
+                comparable.receipt_bytes = None;
+                if comparable == pending {
+                    return Ok(existing);
+                }
+                return Err(invalid("a different publication is already pending"));
+            }
+            if current.generation != expected_generation
+                || patch.projection_generation != current.generation
+                || patch.projection_digest != current.digest
+            {
+                return Err(invalid("publication capture or projection is stale"));
+            }
+            if patch.changes.is_empty() {
+                return Err(invalid("cannot publish an empty capture"));
+            }
+            let completed: bool = access.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projection_publications WHERE sequence=?1)",
+                [sequence],
+                |r| r.get(0),
+            )?;
+            if completed {
+                return Err(invalid("capture already has a completed publication"));
+            }
+            access.verify()?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute(
+                "INSERT INTO projection_publication_pending VALUES(1,?1,?2,?3,?4,?5,?6,NULL,NULL)",
+                params![
+                    sequence,
+                    expected_generation,
+                    pending.projection_digest,
+                    pending.capture_digest,
+                    pending.request_digest,
+                    request_bytes
+                ],
+            )?;
+            tx.commit()?;
+            faults.check(PublicationPoint::RequestDurable)?;
+            access.verify()?;
+            Ok(pending)
+        })
     }
     pub fn pending_publication(&self) -> Result<Option<PendingPublication>> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let result = storage::pending(&access.connection, self)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_idle(&access.connection)?;
+            let result = storage::pending(&access.connection, self)?;
+            access.verify()?;
+            Ok(result)
+        })
     }
     /// Preserve a terminal receipt even if fetching its new projection fails.
     pub fn record_publication_receipt(
@@ -155,7 +161,8 @@ impl ProjectionStore {
         receipt_bytes: &[u8],
     ) -> Result<PendingPublication> {
         let digest = storage::json_digest(b"layrs-projection-receipt-v1\0", receipt_bytes)?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
         database::require_idle(&access.connection)?;
         let mut pending = storage::pending(&access.connection, self)?
             .filter(|p| p.sequence == sequence)
@@ -175,6 +182,7 @@ impl ProjectionStore {
         access.verify()?;
         pending.receipt_bytes = Some(receipt_bytes.to_vec());
         Ok(pending)
+        })
     }
     /// `next` is supplied only after the client verifies an Applied server
     /// receipt and its complete projected namespace. Rejection leaves the base.
@@ -195,93 +203,95 @@ impl ProjectionStore {
     ) -> Result<VersionedProjection> {
         let receipt_digest = storage::json_digest(b"layrs-projection-receipt-v1\0", receipt_bytes)?;
         let next_bytes = next.map(ProjectionSnapshot::canonical_bytes).transpose()?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_idle(&access.connection)?;
-        if let Some(previous) = storage::completed(
-            &access.connection,
-            self,
-            sequence,
-            receipt_bytes,
-            next_bytes.as_deref(),
-        )? {
-            access.verify()?;
-            return Ok(previous);
-        }
-        let pending = storage::pending(&access.connection, self)?
-            .filter(|p| p.sequence == sequence)
-            .ok_or_else(|| invalid("matching publication is not pending"))?;
-        if pending
-            .receipt_bytes
-            .as_deref()
-            .is_some_and(|bytes| bytes != receipt_bytes)
-        {
-            return Err(invalid("publication finish differs from recorded receipt"));
-        }
-        let current = database::current(&access.connection)?;
-        if current.generation != pending.projection_generation
-            || current.digest != pending.projection_digest
-        {
-            return Err(invalid("pending publication projection changed"));
-        }
-        let patch = super::capture::storage::load(&access.connection, self, sequence)?;
-        if let Some(next) = next {
-            selection::verify_target(&access.connection, next)?;
-            validate_applied(&current.snapshot, next, &patch)?;
-        }
-        let after = if let Some(next) = next {
-            let generation = current
-                .generation
-                .checked_add(1)
-                .filter(|n| *n <= i64::MAX as u64)
-                .ok_or_else(|| invalid("projection generation exhausted"))?;
-            VersionedProjection {
-                generation,
-                digest: database::digest(
-                    generation,
-                    Some(&current.digest),
-                    next_bytes.as_ref().expect("next bytes present"),
-                ),
-                snapshot: next.clone(),
-            }
-        } else {
-            current.clone()
-        };
-        access.verify()?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(bytes) = &next_bytes {
-            tx.execute(
-                "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
-                params![after.generation, after.digest, current.digest, bytes],
-            )?;
-            tx.execute(
-                "UPDATE projection_head SET generation=?1 WHERE singleton=1",
-                [after.generation],
-            )?;
-        }
-        tx.execute(
-            "INSERT INTO projection_publications VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_idle(&access.connection)?;
+            if let Some(previous) = storage::completed(
+                &access.connection,
+                self,
                 sequence,
-                pending.request_digest,
-                receipt_digest,
                 receipt_bytes,
-                next_bytes,
-                after.generation,
-                after.digest,
-                canonical_json(&after).map_err(invalid)?
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM projection_publication_pending WHERE singleton=1",
-            [],
-        )?;
-        faults.check(PublicationPoint::BeforeReceiptCommit)?;
-        tx.commit()?;
-        faults.check(PublicationPoint::ReceiptDurable)?;
-        access.verify()?;
-        Ok(after)
+                next_bytes.as_deref(),
+            )? {
+                access.verify()?;
+                return Ok(previous);
+            }
+            let pending = storage::pending(&access.connection, self)?
+                .filter(|p| p.sequence == sequence)
+                .ok_or_else(|| invalid("matching publication is not pending"))?;
+            if pending
+                .receipt_bytes
+                .as_deref()
+                .is_some_and(|bytes| bytes != receipt_bytes)
+            {
+                return Err(invalid("publication finish differs from recorded receipt"));
+            }
+            let current = database::current(&access.connection)?;
+            if current.generation != pending.projection_generation
+                || current.digest != pending.projection_digest
+            {
+                return Err(invalid("pending publication projection changed"));
+            }
+            let patch = super::capture::storage::load(&access.connection, self, sequence)?;
+            if let Some(next) = next {
+                selection::verify_target(&access.connection, next)?;
+                validate_applied(&current.snapshot, next, &patch)?;
+            }
+            let after = if let Some(next) = next {
+                let generation = current
+                    .generation
+                    .checked_add(1)
+                    .filter(|n| *n <= i64::MAX as u64)
+                    .ok_or_else(|| invalid("projection generation exhausted"))?;
+                VersionedProjection {
+                    generation,
+                    digest: database::digest(
+                        generation,
+                        Some(&current.digest),
+                        next_bytes.as_ref().expect("next bytes present"),
+                    ),
+                    snapshot: next.clone(),
+                }
+            } else {
+                current.clone()
+            };
+            access.verify()?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if let Some(bytes) = &next_bytes {
+                tx.execute(
+                    "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
+                    params![after.generation, after.digest, current.digest, bytes],
+                )?;
+                tx.execute(
+                    "UPDATE projection_head SET generation=?1 WHERE singleton=1",
+                    [after.generation],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO projection_publications VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    sequence,
+                    pending.request_digest,
+                    receipt_digest,
+                    receipt_bytes,
+                    next_bytes,
+                    after.generation,
+                    after.digest,
+                    canonical_json(&after).map_err(invalid)?
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM projection_publication_pending WHERE singleton=1",
+                [],
+            )?;
+            faults.check(PublicationPoint::BeforeReceiptCommit)?;
+            tx.commit()?;
+            faults.check(PublicationPoint::ReceiptDurable)?;
+            access.verify()?;
+            Ok(after)
+        })
     }
 }
 

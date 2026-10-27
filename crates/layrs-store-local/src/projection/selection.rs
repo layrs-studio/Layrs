@@ -97,12 +97,14 @@ impl ProjectionStore {
     /// One shared lock binds the selection and snapshot to the same generation.
     pub fn state_with_selection(&self) -> Result<(VersionedProjection, ProjectionSelection)> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let state = database::current(&access.connection)?;
-        let selection = current(&access.connection)?;
-        selection.validate_snapshot(&state.snapshot)?;
-        access.verify()?;
-        Ok((state, selection))
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_idle(&access.connection)?;
+            let state = database::current(&access.connection)?;
+            let selection = current(&access.connection)?;
+            selection.validate_snapshot(&state.snapshot)?;
+            access.verify()?;
+            Ok((state, selection))
+        })
     }
     pub fn create_selected(
         root: impl AsRef<Path>,

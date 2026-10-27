@@ -6,6 +6,8 @@ pub(in crate::projection) mod admitted_catalog_io;
 #[cfg(windows)]
 pub(in crate::projection) mod admitted_ordinary;
 #[cfg(windows)]
+pub(in crate::projection) mod admitted_private_io;
+#[cfg(windows)]
 mod bootstrap;
 #[cfg(windows)]
 pub use bootstrap::{

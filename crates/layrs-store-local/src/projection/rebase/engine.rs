@@ -26,7 +26,8 @@ pub(super) fn apply(
     if expected.digest != expected.computed_digest()? {
         return Err(invalid("rebase preview digest mismatch"));
     }
-    let mut access = format::access(store, SessionMode::Exclusive)?;
+    let access = format::access(store, SessionMode::Exclusive)?;
+    access.run(|access: &mut format::Access| -> Result<_> {
     database::require_mutable(&access.connection)?;
     if let Some(capture) = history::completed(&access.connection, store, expected)? {
         return Ok(capture);
@@ -207,7 +208,8 @@ pub(super) fn apply(
     )?;
     tx.commit()?;
     faults.check(RebasePoint::JournalDurable)?;
-    finish(store, &mut access, &journal, faults)
+    finish(store, access, &journal, faults)
+    })
 }
 
 pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
@@ -215,8 +217,9 @@ pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
 }
 pub(in crate::projection) fn resume_with_access(
     store: &ProjectionStore,
-    mut access: format::Access,
+    access: format::Access,
 ) -> Result<CapturedPatch> {
+    access.run(|access: &mut format::Access| -> Result<_> {
     let conflicts: bool = access.connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending)", [], |r| r.get(0))?;
     if conflicts {
@@ -262,7 +265,8 @@ pub(in crate::projection) fn resume_with_access(
             "rebase staging incomplete; retry with prepared bytes",
         ));
     }
-    finish(store, &mut access, &journal, &NoRebaseFaults)
+    finish(store, access, &journal, &NoRebaseFaults)
+    })
 }
 
 fn finish(

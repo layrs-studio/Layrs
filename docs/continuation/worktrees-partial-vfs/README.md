@@ -1,5 +1,34 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément ouverture ordinaire et cycle modifiable — r16 à r18
+
+Le jalon r16 qualifie la réouverture publique du schéma 9 et la fermeture
+explicite de SQLite sur les chemins de succès et d'erreur testés. Le scénario
+natif r18 qualifie préparation hors ligne, modifications, captures, lectures,
+comparaison, réouverture et restaurations avec le chemin source indisponible.
+Les détails et limites sont dans le [checkpoint](../../plans/worktrees-partial-vfs-checkpoint.md)
+et le [contrat](../../plans/worktrees-partial-vfs-managed-admission-contract.md).
+La reprise des restaurations interrompues, les historiques inverses importés,
+les autres transitions, companions, expansion, nettoyage et parcours produit
+restent à terminer. Les sections plus anciennes ci-dessous conservent l'état
+historique de chaque jalon.
+
+`ordinary-evidence-20261027-r16-r18.tar.gz` contient 1 744 fichiers vérifiés :
+sources figées, revues, recettes et journaux de compilation/exécution, ainsi
+que la révision r17 remplacée sans exécution. Inventaire :
+`ordinary-inventory-20261027-r16-r18.json`. Archive : 4 768 023 octets ; SHA-256
+`e3ec0c58cc3375bdc6bf8b4df9ffc28e715e8d5ba2757c3b0754f1a94b07298e`.
+Exécutables/PDB, bases SQLite et fixtures natives restent exclus. Ce paquet
+préserve des preuves historiques et ne qualifie pas l'hôte d'un autre poste.
+
+Sur un poste où ces preuves sont absentes :
+
+```powershell
+tar -xzf docs/continuation/worktrees-partial-vfs/ordinary-evidence-20261027-r16-r18.tar.gz
+```
+
+Les restrictions de restauration ci-dessous s'appliquent.
+
 ## Complément admission et réconciliation — r11 à r13
 
 Le lecteur de provenance schema9, le writer transactionnel d'admission, les

@@ -2,7 +2,7 @@
 pub(super) mod scan;
 pub(super) mod storage;
 use super::*;
-use layrs_core::scm::{FileId, FileManifest, RepoPath, canonical_json};
+use layrs_core::scm::{canonical_json, FileId, FileManifest, RepoPath};
 
 pub const MAX_PATCH_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CAPTURE_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -83,46 +83,62 @@ impl ProjectionStore {
         expected_generation: u64,
         faults: &dyn CaptureFaults,
     ) -> Result<CapturedPatch> {
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let state = database::current(&access.connection)?;
-        if state.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: state.generation,
-            });
-        }
-        let first = scan::scan(self, &access.connection, &state.snapshot, false)?;
-        faults.check(CapturePoint::FirstScan)?;
-        let captured = scan::scan(self, &access.connection, &state.snapshot, true)?;
-        if first.files != captured.files {
-            return Err(invalid("checkout changed during partial capture; retry"));
-        }
-        access.verify()?;
-        let result = storage::persist(&mut access.connection, self, &state, captured, faults)?;
-        access.verify()?;
-        Ok(result)
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access| {
+            database::require_mutable(&access.connection)?;
+            let state = database::current(&access.connection)?;
+            if state.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: state.generation,
+                });
+            }
+            let first = access.with_content(|c, scope| {
+                scan::scan_with_scope(self, c, &state.snapshot, false, Some(scope))
+            })?;
+            faults.check(CapturePoint::FirstScan)?;
+            let captured = access.with_content(|c, scope| {
+                scan::scan_with_scope(self, c, &state.snapshot, true, Some(scope))
+            })?;
+            if first.files != captured.files {
+                return Err(invalid("checkout changed during partial capture; retry"));
+            }
+            access.verify()?;
+            let result = access.with_content(|c, scope| {
+                storage::persist_with_scope(c, self, &state, captured, faults, Some(scope))
+            })?;
+            access.verify()?;
+            Ok(result)
+        })
     }
     pub fn captured_patch(&self, sequence: u64) -> Result<CapturedPatch> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let patch = storage::load(&access.connection, self, sequence)?;
-        access.verify()?;
-        Ok(patch)
+        access.run(|access| {
+            database::require_idle(&access.connection)?;
+            let patch = access.with_content(|c, scope| {
+                storage::load_with_scope(c, self, sequence, Some(scope))
+            })?;
+            access.verify()?;
+            Ok(patch)
+        })
     }
     pub fn latest_captured_patch(&self) -> Result<Option<CapturedPatch>> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let sequence: Option<u64> = access.connection.query_row(
-            "SELECT MAX(sequence) FROM projection_captures",
-            [],
-            |r| r.get(0),
-        )?;
-        let result = sequence
-            .map(|n| storage::load(&access.connection, self, n))
-            .transpose()?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access| {
+            database::require_idle(&access.connection)?;
+            let sequence: Option<u64> = access.connection.query_row(
+                "SELECT MAX(sequence) FROM projection_captures",
+                [],
+                |r| r.get(0),
+            )?;
+            let result = access.with_content(|c, scope| {
+                sequence
+                    .map(|n| storage::load_with_scope(c, self, n, Some(scope)))
+                    .transpose()
+            })?;
+            access.verify()?;
+            Ok(result)
+        })
     }
     /// Reopen immutable captured bytes, not current live checkout contents.
     /// The callback runs under a local read lock; prepare bytes before network I/O.
@@ -133,17 +149,23 @@ impl ProjectionStore {
         out: &mut dyn io::Write,
     ) -> Result<()> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let patch = storage::load(&access.connection, self, sequence)?;
-        let file = patch
-            .changes
-            .iter()
-            .find(|c| &c.path == path)
-            .and_then(|c| c.replacement.as_ref())
-            .ok_or_else(|| invalid("capture has no replacement file at this path"))?;
-        storage::stream_file(&access.connection, self, file, out)?;
-        access.verify()?;
-        Ok(())
+        access.run(|access| {
+            database::require_idle(&access.connection)?;
+            let patch = access.with_content(|c, scope| {
+                storage::load_with_scope(c, self, sequence, Some(scope))
+            })?;
+            let file = patch
+                .changes
+                .iter()
+                .find(|c| &c.path == path)
+                .and_then(|c| c.replacement.as_ref())
+                .ok_or_else(|| invalid("capture has no replacement file at this path"))?;
+            access.with_content(|c, scope| {
+                storage::stream_file_with_scope(c, self, file, out, Some(scope))
+            })?;
+            access.verify()?;
+            Ok(())
+        })
     }
     pub fn captured_file_manifest(&self, sequence: u64, path: &RepoPath) -> Result<FileManifest> {
         Ok(self.verify_captured_file(sequence, path)?.manifest)
@@ -154,16 +176,20 @@ impl ProjectionStore {
         path: &RepoPath,
     ) -> Result<VerifiedCapturedFile> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let patch = storage::load_metadata(&access.connection, self, sequence)?;
-        let file = replacement(&patch, path)?;
-        let manifest = storage::file_manifest(&access.connection, self, file)?;
-        access.verify()?;
-        Ok(VerifiedCapturedFile {
-            sequence,
-            path: path.clone(),
-            capture_digest: patch.digest,
-            manifest,
+        access.run(|access| {
+            database::require_idle(&access.connection)?;
+            let patch = storage::load_metadata(&access.connection, self, sequence)?;
+            let file = replacement(&patch, path)?;
+            let manifest = access.with_content(|c, scope| {
+                storage::file_manifest_with_scope(c, self, file, Some(scope))
+            })?;
+            access.verify()?;
+            Ok(VerifiedCapturedFile {
+                sequence,
+                path: path.clone(),
+                capture_digest: patch.digest,
+                manifest,
+            })
         })
     }
     pub fn read_captured_chunk(
@@ -183,23 +209,27 @@ impl ProjectionStore {
         out: &mut dyn io::Write,
     ) -> Result<()> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let patch = storage::load_metadata(&access.connection, self, verified.sequence)?;
-        let file = replacement(&patch, &verified.path)?;
-        if patch.digest != verified.capture_digest
-            || &file.file_id != verified.manifest.file_id()
-            || file.bytes != verified.manifest.byte_length()
-        {
-            return Err(invalid("verified capture binding changed"));
-        }
-        let chunk = verified
-            .manifest
-            .chunks()
-            .get(ordinal)
-            .ok_or_else(|| invalid("capture chunk ordinal out of range"))?;
-        storage::read_chunk(&access.connection, self, file, ordinal, chunk, out)?;
-        access.verify()?;
-        Ok(())
+        access.run(|access| {
+            database::require_idle(&access.connection)?;
+            let patch = storage::load_metadata(&access.connection, self, verified.sequence)?;
+            let file = replacement(&patch, &verified.path)?;
+            if patch.digest != verified.capture_digest
+                || &file.file_id != verified.manifest.file_id()
+                || file.bytes != verified.manifest.byte_length()
+            {
+                return Err(invalid("verified capture binding changed"));
+            }
+            let chunk = verified
+                .manifest
+                .chunks()
+                .get(ordinal)
+                .ok_or_else(|| invalid("capture chunk ordinal out of range"))?;
+            access.with_content(|c, scope| {
+                storage::read_chunk_with_scope(c, self, file, ordinal, chunk, out, Some(scope))
+            })?;
+            access.verify()?;
+            Ok(())
+        })
     }
 }
 fn replacement<'a>(patch: &'a CapturedPatch, path: &RepoPath) -> Result<&'a CapturedFile> {

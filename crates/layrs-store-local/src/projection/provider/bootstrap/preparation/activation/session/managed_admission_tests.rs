@@ -1,6 +1,7 @@
 //! Native ACK refusal after a real admission COMMIT, followed by destination-
 //! only resolution after source disconnect and release of every setup holder.
-//! No ordinary open/edit, process crash, source deletion or cleanup is tested.
+//! Ordinary reopen/finalization is separate from the retained-holder ACK test.
+//! No process crash, source deletion or cleanup is tested.
 use super::*;
 use crate::{
     lock::StoreLock,
@@ -18,7 +19,7 @@ use crate::{
     },
 };
 use rusqlite::ffi;
-use std::path::Path;
+use std::{fs, path::Path};
 
 fn witnesses(
     destination: &Path,
@@ -247,6 +248,280 @@ fn managed_admission_commit_ack_refusal_resolves_after_source_disconnect_without
                 .require_same_import(&inspect_under_owner(&destination, &cancel))
                 .unwrap();
             assert_eq!(witnesses(&destination, &family_root), after_commit);
+        },
+    );
+}
+
+#[test]
+#[ignore = "UNQUALIFIED ordinary Admitted9 reopen/finalization; ROOT source release, owned child240 / outer300 required"]
+fn managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_transactions() {
+    child::run(concat!(module_path!(), "::managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_transactions"), 240, || {
+        child::declare();
+        let mut destination = None;
+        super::managed_staging_tests::with_content_planned_bytes_then(
+            b"provider base content",
+            |_, session, attempt, planned| super::managed_ready_reopen_tests::publish_destination(session, attempt, planned),
+            |_, session, root| {
+                let cancel = Cancellation::default();
+                let held = ManagedReadyAdmission::open(&root, &cancel).unwrap();
+                let mut close = Close::default();
+                let digest = session.admit_ready_destination(held, &mut close, &cancel)
+                    .unwrap_or_else(|failure| panic!("admission {:?}: {}", failure.step, failure.cause));
+                assert_eq!((close.opens, close.closes), (1, 1));
+                destination = Some((root, digest));
+            },
+        );
+        let (root, digest) = destination.unwrap();
+        let marker = format::read_marker(&root).unwrap();
+        let family = marker.shared.as_ref().unwrap().root.clone();
+        let before = witnesses(&root, &family);
+        let store = crate::projection::ProjectionStore::open(&root).unwrap();
+        let state = store.state().unwrap();
+        assert!(matches!(store.capture_patch(state.generation + 1),
+            Err(crate::projection::ProjectionStoreError::Stale { expected, actual })
+                if expected == state.generation + 1 && actual == state.generation));
+        assert_eq!(store.state().unwrap(), state, "early error still positively closes");
+        let unfinished = format::access(&store, SessionMode::Exclusive).unwrap().run(|access| {
+            access.connection.execute_batch("BEGIN IMMEDIATE")?;
+            Ok(())
+        });
+        assert!(unfinished.is_err(), "unfinished transaction cannot be acknowledged");
+        assert_eq!(store.state().unwrap(), state, "unfinished transaction rolled back and closed");
+        let failed: crate::projection::Result<()> = format::access(&store, SessionMode::Exclusive).unwrap().run(|access| {
+            access.connection.execute_batch("BEGIN IMMEDIATE")?;
+            Err(crate::projection::invalid("owned ordinary operation failure"))
+        });
+        assert!(failed.unwrap_err().to_string().contains("owned ordinary operation failure"));
+        drop(store);
+        let reopened = crate::projection::ProjectionStore::open(&root).unwrap();
+        assert_eq!(reopened.state().unwrap(), state);
+        drop(reopened);
+        let access = format::access(&crate::projection::ProjectionStore::open(&root).unwrap(), SessionMode::Shared).unwrap();
+        access.run(|access| {
+            let data = admitted_ordinary::inspect(&access.connection, &marker, None)?;
+            assert_eq!(data.admission_digest(), digest);
+            Ok(())
+        }).unwrap();
+        assert_eq!(witnesses(&root, &family), before);
+    });
+}
+
+#[test]
+#[ignore = "UNQUALIFIED ordinary Admitted9 mutable cycle; ROOT source release, owned child480 / outer540 required"]
+fn managed_admitted_ordinary_edit_capture_restore_without_source() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_admitted_ordinary_edit_capture_restore_without_source"
+        ),
+        480,
+        || {
+            use crate::projection::{ProjectionStore, RestoreSource};
+            use layrs_core::{
+                projection::{AvailabilityRequest, OfflineOperation, ProjectionVersion},
+                scm::RepoPath,
+            };
+            child::declare();
+            let mut destination = None;
+            super::managed_staging_tests::with_content_planned_bytes_then(
+                b"provider base content",
+                |_, session, attempt, planned| {
+                    super::managed_ready_reopen_tests::publish_destination(
+                        session, attempt, planned,
+                    )
+                },
+                |fixture, session, root| {
+                    let cancel = Cancellation::default();
+                    let held = ManagedReadyAdmission::open(&root, &cancel).unwrap();
+                    let mut close = Close::default();
+                    let digest = session
+                        .admit_ready_destination(held, &mut close, &cancel)
+                        .unwrap_or_else(|failure| {
+                            panic!("admission {:?}: {}", failure.step, failure.cause)
+                        });
+                    assert_eq!((close.opens, close.closes), (1, 1));
+                    destination = Some((root, digest, fixture.checkout.clone()));
+                },
+            );
+            // Every source/session/checkpoint holder has gone. Move only this fresh
+            // owned fixture checkout aside: the original source path is unavailable.
+            // Preserve its bytes for investigation; no recursive deletion or reuse.
+            let (root, digest, source) = destination.unwrap();
+            let parent =
+                std::path::absolute(std::env::var_os("LAYRS_VFS_TEST_PARENT").unwrap()).unwrap();
+            let source = std::path::absolute(source).unwrap();
+            let unavailable = source.with_extension("source-unavailable");
+            assert!(source.starts_with(&parent) && source != parent);
+            assert!(unavailable.starts_with(&parent) && unavailable != parent);
+            assert!(!root.starts_with(&source) && !unavailable.exists());
+            fs::rename(&source, &unavailable).unwrap();
+            assert!(!source.exists() && unavailable.is_dir());
+
+            let store = ProjectionStore::open(&root).unwrap();
+            let state = store.state().unwrap();
+            let original_version = store.current_version().unwrap();
+            let path = RepoPath::parse("README.md").unwrap();
+            let (baseline, exact) = format::access(&store, SessionMode::Shared)
+                .unwrap()
+                .run(|access| {
+                    assert!(
+                        crate::projection::capture::scan::scan(
+                            &store,
+                            &access.connection,
+                            &state.snapshot,
+                            false
+                        )
+                        .is_err(),
+                        "an unscoped caller cannot admit private9"
+                    );
+                    let data = admitted_ordinary::inspect(&access.connection, &store.marker, None)?;
+                    let file = data
+                        .checkout()
+                        .files()
+                        .iter()
+                        .find(|file| file.path == path)
+                        .unwrap();
+                    let manifest: String = access.connection.query_row(
+                        "SELECT manifest_id FROM projection_content WHERE file_id=?1",
+                        [file.file_id.as_str()],
+                        |r| r.get(0),
+                    )?;
+                    let manifest = layrs_core::scm::FileManifestId::parse(manifest)
+                        .map_err(crate::projection::invalid)?;
+                    Ok((data, manifest))
+                })
+                .unwrap();
+            assert_eq!(baseline.admission_digest(), digest);
+            assert_eq!(
+                fs::read(root.join(path.as_str())).unwrap(),
+                b"provider base content"
+            );
+            let request = AvailabilityRequest {
+                version: original_version.clone(),
+                other: None,
+                paths: vec![path.clone()],
+                operation: OfflineOperation::Read,
+            };
+            let coverage = store.availability(&request).unwrap();
+            assert!(coverage.available);
+            assert_eq!(coverage.paths[0].manifest_id.as_ref(), Some(&exact));
+            let preparation = store.begin_preparation(&request).unwrap();
+            let prepared = store
+                .resume_preparation(&preparation.id, &mut |_, _, _| {
+                    panic!("retained exact content must not reacquire from a source")
+                })
+                .unwrap();
+            assert_eq!(prepared.status, "ready");
+            let coverage = store.availability(&request).unwrap();
+            assert!(coverage.available && coverage.prepared);
+            assert_eq!(coverage.paths[0].manifest_id.as_ref(), Some(&exact));
+            let first_bytes = b"ordinary destination edit A: retained after source removal";
+            fs::write(root.join(path.as_str()), first_bytes).unwrap();
+            let first = store.capture_patch(state.generation).unwrap();
+            assert_eq!(first.identity, *store.identity());
+            assert_eq!(
+                store.capture_patch(state.generation).unwrap(),
+                first,
+                "same capture deduplicates"
+            );
+            let mut bytes = Vec::new();
+            store
+                .write_captured_file(first.sequence, &path, &mut bytes)
+                .unwrap();
+            assert_eq!(bytes, first_bytes);
+            let verified = store.verify_captured_file(first.sequence, &path).unwrap();
+            let mut chunks = Vec::new();
+            for ordinal in 0..verified.manifest().chunks().len() {
+                store
+                    .read_verified_captured_chunk(&verified, ordinal, &mut chunks)
+                    .unwrap();
+            }
+            assert_eq!(chunks, first_bytes);
+            let first_version = ProjectionVersion::Capture {
+                worktree_id: store.identity().worktree_id.clone(),
+                sequence: first.sequence,
+                digest: first.digest.clone(),
+            };
+            let second_bytes = b"ordinary destination edit B: preserve before restore";
+            fs::write(root.join(path.as_str()), second_bytes).unwrap();
+            let second = store.capture_patch(state.generation).unwrap();
+            assert_eq!(second.sequence, first.sequence + 1);
+            let comparison = AvailabilityRequest {
+                version: first_version.clone(),
+                other: Some(ProjectionVersion::Capture {
+                    worktree_id: store.identity().worktree_id.clone(),
+                    sequence: second.sequence,
+                    digest: second.digest.clone(),
+                }),
+                paths: vec![path.clone()],
+                operation: OfflineOperation::CompareContent,
+            };
+            assert_eq!(store.compare_versions(&comparison).unwrap().len(), 1);
+            drop(store);
+
+            let store = ProjectionStore::open(&root).unwrap();
+            assert_eq!(store.captured_patch(first.sequence).unwrap(), first);
+            assert_eq!(store.latest_captured_patch().unwrap().unwrap(), second);
+            let preview = store
+                .preview_restore(
+                    state.generation,
+                    &RestoreSource::Capture {
+                        sequence: first.sequence,
+                        paths: vec![path.clone()],
+                    },
+                )
+                .unwrap();
+            let restored = store.apply_restore(&preview).unwrap();
+            assert_eq!(fs::read(root.join(path.as_str())).unwrap(), first_bytes);
+            let inverse = store
+                .preview_restore(
+                    state.generation,
+                    &RestoreSource::Inverse {
+                        operation_id: restored.operation_id,
+                    },
+                )
+                .unwrap();
+            store.apply_restore(&inverse).unwrap();
+            assert_eq!(fs::read(root.join(path.as_str())).unwrap(), second_bytes);
+            let preview = store
+                .preview_restore(
+                    state.generation,
+                    &RestoreSource::Version {
+                        version: original_version,
+                        paths: vec![path.clone()],
+                    },
+                )
+                .unwrap();
+            store.apply_restore(&preview).unwrap();
+            assert_eq!(
+                fs::read(root.join(path.as_str())).unwrap(),
+                b"provider base content"
+            );
+            let mut immutable = Vec::new();
+            store
+                .read_version_file(&first_version, &path, &mut immutable)
+                .unwrap();
+            assert_eq!(immutable, first_bytes);
+            format::access(&store, SessionMode::Shared)
+                .unwrap()
+                .run(|access| {
+                    let after =
+                        admitted_ordinary::inspect(&access.connection, &store.marker, None)?;
+                    baseline.require_same_import(&after)?;
+                    access.with_content(|c, scope| {
+                        crate::projection::retention::fsck_with_scope(c, &store, Some(scope))
+                    })?;
+                    Ok(())
+                })
+                .unwrap();
+            drop(store);
+            let store = ProjectionStore::open(&root).unwrap();
+            assert_eq!(store.state().unwrap(), state);
+            assert_eq!(store.captured_patch(first.sequence).unwrap(), first);
+            assert!(
+                !source.exists(),
+                "ordinary cycle did not recreate the source"
+            );
         },
     );
 }

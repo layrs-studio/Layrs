@@ -1,5 +1,51 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r16 ordinary reopening:** the public schema9 route now uses a
+physically bound, independently closed RO preflight before admitting its family
+and opening the requested private handle. Owned ordinary operations explicitly
+finalize SQLite on success and error, while owner/lifecycle scopes remain held.
+The independently reviewed native recipe
+`managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_transactions`
+passes (162.18 s child / 162.23 s parent): true admission, source helper returned,
+ordinary open/state, typed stale-capture refusal, unfinished transaction refusal
+and rollback on both success/error exits, reopening, unchanged admission digest
+and byte witnesses. The recipe does not perform a valid capture or restore.
+
+Exact r16 evidence: `.layrs-local/validation/provider-family-publication-20261027-r16`;
+EXE `ead816cc5e06d0159600c518aaaf2bf5c291e7fdb1bce5336decc6f76c0fb703`,
+CodeView age 91, 573 source inputs. Two runner prechecks caught transcription
+errors in expected source hashes before creating any native fixture or child;
+the corrected recipe then ran once. Historical r14-r15 statements below describe
+their own earlier code, not the current opener.
+
+**Current integration:** explicit owner-borrowed `ContentScope` carries durable
+admission through capture, immutable file/chunk reads, offline availability and
+preparation, and ordinary restore. Metadata-only provenance readers remain
+independent; legacy unscoped helpers refuse private9. Independent review found
+and ROOT fixed preparation's selection of an arbitrary family representation:
+both begin/resume now prefer the exact private mapping. Integrated all-targets
+checks and test builds pass. The independently reviewed source-unavailable
+mutable-cycle recipe passes on r18 in 272.92 s child / 272.96 s parent: the fresh
+fixture source checkout is moved aside after all original holders are gone;
+availability and preparation retain the exact private representation without
+acquisition; two edits are captured, deduplicated, read in full and by verified
+chunks, compared and reopened; capture restore, destination-owned inverse and
+generation restore succeed; immutable version bytes, retained-content fsck and
+the original admission survive the complete cycle. No process crash or deletion
+of source bytes is claimed. Interrupted schema9 restore recovery and inherited
+inverse history remain explicitly unqualified and fenced. Other transitions, companions,
+expansion, lifecycle/GC and product-host qualification are still outstanding.
+
+r18: EXE `1ae6a72b052be6ee9bd070985e6e1d1af6187422c98880c734a04ef8f7c578b6`,
+CodeView age 94, 574 source inputs, child480/outer540 on a fresh C: parent. r17
+was superseded without execution after the test oracle was corrected to use
+the actual private representation rather than the physical checkout manifest.
+The portable `ordinary-evidence-20261027-r16-r18.tar.gz` supplement contains
+1,744 verified files (4,768,023 bytes), SHA-256
+`e3ec0c58cc3375bdc6bf8b4df9ffc28e715e8d5ba2757c3b0754f1a94b07298e`.
+It includes exact source snapshots, independent review receipts, runners and
+build/runtime logs; binaries, SQLite databases and native fixtures stay local.
+
 **Latest continuation: 27 October 2026.** The user explicitly resumed after the
 [night handoff](worktrees-partial-vfs-night-handoff-2026-10-27.md). The
 [managed checkpoint](worktrees-partial-vfs-managed-source-checkpoint.md) records

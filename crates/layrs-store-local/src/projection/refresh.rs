@@ -84,146 +84,150 @@ impl ProjectionStore {
         write_file: &mut dyn FnMut(&str, &mut dyn Write) -> io::Result<()>,
         faults: &dyn RefreshFaults,
     ) -> Result<VersionedProjection> {
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let current = database::current(&access.connection)?;
-        selection::verify_target(&access.connection, target)?;
-        if current.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: current.generation,
-            });
-        }
-        let planned = plan::prepare(self, &current.snapshot, target)?;
-        if planned.target == current.snapshot {
-            return Ok(current);
-        }
-        let directory = format!(
-            "refresh-{}-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(invalid)?
-                .as_nanos(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        );
-        let mut journal = Journal {
-            schema_version: "layrs.projection-refresh.v1".into(),
-            expected_generation,
-            expected_digest: current.digest,
-            directory,
-            directory_identity: None,
-            ready: false,
-            target: planned.target,
-            old: planned.old,
-            new: vec![],
-        };
-        access.verify()?;
-        let payload = encode(&journal)?;
-        access.connection.execute(
-            "INSERT INTO projection_refresh_pending VALUES(1,?1)",
-            [payload],
-        )?;
-        faults.check(RefreshPoint::IntentDurable)?;
-        let parent = PinnedDirectory::open(&self.root.join(".layrs"))?
-            .ensure_private_child("projection-quarantine".as_ref())?;
-        let directory = parent.ensure_private_child(journal.directory.as_ref())?;
-        journal.directory_identity = Some(directory.identity_token());
-        let targets: BTreeMap<_, _> = journal
-            .target
-            .entries
-            .iter()
-            .map(|e| (e.path.as_str(), e))
-            .collect();
-        let mut total = 0;
-        for (index, path) in planned.install.iter().enumerate() {
-            let entry = targets[path.as_str()];
-            let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
-                return Err(invalid("refresh file target missing"));
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let current = database::current(&access.connection)?;
+            selection::verify_target(&access.connection, target)?;
+            if current.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: current.generation,
+                });
+            }
+            let planned = plan::prepare(self, &current.snapshot, target)?;
+            if planned.target == current.snapshot {
+                return Ok(current);
+            }
+            let directory = format!(
+                "refresh-{}-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(invalid)?
+                    .as_nanos(),
+                SERIAL.fetch_add(1, Ordering::Relaxed)
+            );
+            let mut journal = Journal {
+                schema_version: "layrs.projection-refresh.v1".into(),
+                expected_generation,
+                expected_digest: current.digest,
+                directory,
+                directory_identity: None,
+                ready: false,
+                target: planned.target,
+                old: planned.old,
+                new: vec![],
             };
-            let name = format!("new-{index:08}");
-            let mut staged = directory.create_file(name.as_ref())?;
-            let mut writer =
-                install::files::FileWriter::new(staged.file_mut(), MAX_FILE.min(MAX_TOTAL - total));
-            write_file(path, &mut writer)?;
-            let bytes = writer.finish(file_id)?;
-            total += bytes;
-            install::files::set_mode(staged.file(), entry.executable)?;
-            staged.file().sync_all()?;
-            journal.new.push(Record {
-                path: path.clone(),
-                file_id: file_id.clone(),
-                executable: entry.executable,
-                bytes,
-                identity: file::identity(staged.file())?,
-                name,
-            });
-        }
-        directory.sync()?;
-        parent.sync()?;
-        faults.check(RefreshPoint::Staged)?;
-        journal.ready = true;
-        access.verify()?;
-        let retained = journal
-            .old
-            .iter()
-            .chain(&journal.new)
-            .map(|r| CapturedFile {
-                file_id: r.file_id.clone(),
-                executable: r.executable,
-                bytes: r.bytes,
-            })
-            .collect::<Vec<_>>();
-        retention::reserve(
-            &access.connection,
-            self,
-            &format!("refresh:{}", journal.expected_digest),
-            &journal.expected_digest,
-            &retained,
-            encode(&journal)?.len() as u64,
-        )?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if self.marker.shared.is_some() {
-            let checkout = PinnedDirectory::open(&self.root)?;
-            for record in &journal.old {
-                let pin = checkout.open_relative_file(Path::new(&record.path))?;
-                retention::retain_pinned(
-                    &tx,
-                    self,
-                    &pin,
-                    &CapturedFile {
-                        file_id: record.file_id.clone(),
-                        executable: record.executable,
-                        bytes: record.bytes,
-                    },
-                    "refresh-old-base",
-                    &journal.directory,
-                )?;
+            access.verify()?;
+            let payload = encode(&journal)?;
+            access.connection.execute(
+                "INSERT INTO projection_refresh_pending VALUES(1,?1)",
+                [payload],
+            )?;
+            faults.check(RefreshPoint::IntentDurable)?;
+            let parent = PinnedDirectory::open(&self.root.join(".layrs"))?
+                .ensure_private_child("projection-quarantine".as_ref())?;
+            let directory = parent.ensure_private_child(journal.directory.as_ref())?;
+            journal.directory_identity = Some(directory.identity_token());
+            let targets: BTreeMap<_, _> = journal
+                .target
+                .entries
+                .iter()
+                .map(|e| (e.path.as_str(), e))
+                .collect();
+            let mut total = 0;
+            for (index, path) in planned.install.iter().enumerate() {
+                let entry = targets[path.as_str()];
+                let Some(TreeEntryTarget::File { file_id }) = &entry.target else {
+                    return Err(invalid("refresh file target missing"));
+                };
+                let name = format!("new-{index:08}");
+                let mut staged = directory.create_file(name.as_ref())?;
+                let mut writer = install::files::FileWriter::new(
+                    staged.file_mut(),
+                    MAX_FILE.min(MAX_TOTAL - total),
+                );
+                write_file(path, &mut writer)?;
+                let bytes = writer.finish(file_id)?;
+                total += bytes;
+                install::files::set_mode(staged.file(), entry.executable)?;
+                staged.file().sync_all()?;
+                journal.new.push(Record {
+                    path: path.clone(),
+                    file_id: file_id.clone(),
+                    executable: entry.executable,
+                    bytes,
+                    identity: file::identity(staged.file())?,
+                    name,
+                });
             }
-            for record in &journal.new {
-                let pin = directory.open_file(record.name.as_ref())?;
-                retention::retain_pinned(
-                    &tx,
-                    self,
-                    &pin,
-                    &CapturedFile {
-                        file_id: record.file_id.clone(),
-                        executable: record.executable,
-                        bytes: record.bytes,
-                    },
-                    "refresh",
-                    &journal.directory,
-                )?;
+            directory.sync()?;
+            parent.sync()?;
+            faults.check(RefreshPoint::Staged)?;
+            journal.ready = true;
+            access.verify()?;
+            let retained = journal
+                .old
+                .iter()
+                .chain(&journal.new)
+                .map(|r| CapturedFile {
+                    file_id: r.file_id.clone(),
+                    executable: r.executable,
+                    bytes: r.bytes,
+                })
+                .collect::<Vec<_>>();
+            retention::reserve(
+                &access.connection,
+                self,
+                &format!("refresh:{}", journal.expected_digest),
+                &journal.expected_digest,
+                &retained,
+                encode(&journal)?.len() as u64,
+            )?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if self.marker.shared.is_some() {
+                let checkout = PinnedDirectory::open(&self.root)?;
+                for record in &journal.old {
+                    let pin = checkout.open_relative_file(Path::new(&record.path))?;
+                    retention::retain_pinned(
+                        &tx,
+                        self,
+                        &pin,
+                        &CapturedFile {
+                            file_id: record.file_id.clone(),
+                            executable: record.executable,
+                            bytes: record.bytes,
+                        },
+                        "refresh-old-base",
+                        &journal.directory,
+                    )?;
+                }
+                for record in &journal.new {
+                    let pin = directory.open_file(record.name.as_ref())?;
+                    retention::retain_pinned(
+                        &tx,
+                        self,
+                        &pin,
+                        &CapturedFile {
+                            file_id: record.file_id.clone(),
+                            executable: record.executable,
+                            bytes: record.bytes,
+                        },
+                        "refresh",
+                        &journal.directory,
+                    )?;
+                }
             }
-        }
-        tx.execute(
-            "UPDATE projection_refresh_pending SET payload=?1 WHERE singleton=1",
-            [encode(&journal)?],
-        )?;
-        tx.commit()?;
-        faults.check(RefreshPoint::JournalDurable)?;
-        recovery::finish(self, &mut access, &journal, faults)
+            tx.execute(
+                "UPDATE projection_refresh_pending SET payload=?1 WHERE singleton=1",
+                [encode(&journal)?],
+            )?;
+            tx.commit()?;
+            faults.check(RefreshPoint::JournalDurable)?;
+            recovery::finish(self, access, &journal, faults)
+        })
     }
     pub fn resume_refresh(checkout_root: impl AsRef<Path>) -> Result<VersionedProjection> {
         let root = std::path::absolute(checkout_root)?;

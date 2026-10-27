@@ -5,12 +5,12 @@ pub(super) use engine::resume_with_access;
 mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
-pub(super) use engine::verify_history;
+pub(super) use engine::{verify_history, verify_history_with_scope};
 use layrs_core::{
     projection::EntryState,
-    scm::{RepoPath, canonical_json},
+    scm::{canonical_json, RepoPath},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{collections::BTreeMap, io::Read};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,14 +89,17 @@ impl ProjectionStore {
         source: &RestoreSource,
     ) -> Result<RestorePreview> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_mutable(&access.connection)?;
-        let state = database::current(&access.connection)?;
-        if state.generation != expected_generation {
-            return Err(invalid("restore projection changed"));
-        }
-        let preview = preview(self, &access.connection, &state, source)?;
-        access.verify()?;
-        Ok(preview)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let state = database::current(&access.connection)?;
+            if state.generation != expected_generation {
+                return Err(invalid("restore projection changed"));
+            }
+            let preview =
+                access.with_content(|c, scope| preview(self, c, &state, source, Some(scope)))?;
+            access.verify()?;
+            Ok(preview)
+        })
     }
     pub fn apply_restore(&self, preview: &RestorePreview) -> Result<RestoreReceipt> {
         self.apply_restore_with_faults(preview, &NoRestoreFaults)
@@ -196,16 +199,17 @@ fn targets(
     c: &Connection,
     store: &ProjectionStore,
     source: &RestoreSource,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<BTreeMap<RepoPath, Option<CapturedFile>>> {
     match source {
         RestoreSource::Version { version, paths } => {
-            offline::restore_targets(c, store, version, paths)
+            offline::restore_targets_with_scope(c, store, version, paths, scope)
         }
         RestoreSource::Capture { sequence, paths } => {
             if paths.is_empty() || paths.len() > 1024 {
                 return Err(invalid("restore requires1..1024 paths"));
             }
-            let patch = capture::storage::load(c, store, *sequence)?;
+            let patch = capture::storage::load_with_scope(c, store, *sequence, scope)?;
             let mut result = BTreeMap::new();
             for path in paths {
                 let change = patch
@@ -223,7 +227,7 @@ fn targets(
             Ok(result)
         }
         RestoreSource::Inverse { operation_id } => {
-            let journal = engine::history(c, store, operation_id)?
+            let journal = engine::history_with_scope(c, store, operation_id, scope)?
                 .ok_or_else(|| invalid("restore operation unknown"))?;
             Ok(journal.0.preview.before)
         }
@@ -234,10 +238,11 @@ fn preview(
     c: &Connection,
     state: &VersionedProjection,
     source: &RestoreSource,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<RestorePreview> {
-    let after = targets(c, store, source)?;
+    let after = targets(c, store, source, scope)?;
     validate_paths(&state.snapshot, &after)?;
-    let scan = capture::scan::scan(store, c, &state.snapshot, false)?;
+    let scan = capture::scan::scan_with_scope(store, c, &state.snapshot, false, scope)?;
     let mut resulting = scan.files.clone();
     let mut before = BTreeMap::new();
     for (path, target) in &after {
@@ -249,7 +254,7 @@ fn preview(
         before.insert(path.clone(), old);
         resulting.insert(path.to_string(), target.clone());
         if let Some(file) = target {
-            capture::storage::file_manifest(c, store, file)?;
+            capture::storage::file_manifest_with_scope(c, store, file, scope)?;
         }
     }
     validate_paths(&state.snapshot, &before)?;

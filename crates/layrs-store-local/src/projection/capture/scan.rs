@@ -21,7 +21,21 @@ pub(in crate::projection) fn scan(
     snapshot: &ProjectionSnapshot,
     _retain: bool,
 ) -> Result<Scan> {
-    super::super::provider::require_ordinary(c)?;
+    scan_with_scope(store, c, snapshot, _retain, None)
+}
+
+pub(in crate::projection) fn scan_with_scope(
+    store: &ProjectionStore,
+    c: &rusqlite::Connection,
+    snapshot: &ProjectionSnapshot,
+    _retain: bool,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<Scan> {
+    if let Some(scope) = scope {
+        scope.validate(c, store)?;
+    } else {
+        super::super::provider::require_ordinary(c)?;
+    }
     let selection = super::super::selection::for_scan(c, snapshot)?;
     let root = PinnedDirectory::open(&store.root)?;
     let present = namespace(&root, &store.root, snapshot, &selection)?;

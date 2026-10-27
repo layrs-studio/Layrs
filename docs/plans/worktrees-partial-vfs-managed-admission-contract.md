@@ -291,3 +291,82 @@ all success/error returns must reach a consuming finalizer that reports close
 errors. Implicit Drop cannot acknowledge a successful capture while silently
 quarantining its connection. Keep existing provider-only BareConnection internals
 behind a narrow adapter and preserve the ordinary/recovery distinction.
+
+### r16 ordinary handle and r18 mutable-cycle qualification
+
+The private handle is now integrated. `AdmittedPreflight` binds the real private
+file, reads schema9 through an independent clean RO transaction, and positively
+closes before returning `DurableAdmission`. The token is not an owner or recovery
+grant. `Access` retains owner/lifecycle and namespace pins through a consuming
+`run` finalizer. It rejects unfinished successful transactions, explicitly rolls
+back on failure, preserves typed domain errors and observes the actual close.
+
+The r16 exact native reopening/finalization recipe passes in 162.18 seconds
+(162.23 including the parent), under child240/outer300. It disconnects the source
+and drops setup holders before public open/state, stale capture refusal and
+transaction-error checks, then verifies unchanged import and physical witnesses.
+EXE: `ead816cc5e06d0159600c518aaaf2bf5c291e7fdb1bce5336decc6f76c0fb703`,
+CodeView age 91, 573 retained source inputs. No valid mutation is covered by r16.
+
+`ContentScope` now borrows the retained owner, family, FORMAT and native boundary
+pins alongside the durable token. Capture, exact file/chunk reads, offline
+availability/preparation and ordinary restore propagate this explicit context.
+No context is synthesized from the current transaction. Metadata-only loaders
+retain their independent interpretation role; unscoped content wrappers refuse9.
+The preparation begin/resume paths were corrected during review to prefer the
+private exact mapping before considering a family FileId lookup.
+
+The r18 full native recipe passes in 272.92 seconds (272.96 including parent),
+child480/outer540 on a fresh C: parent. After genuine admission and release of
+all original holders, it moves the fixture source checkout aside within its
+owned parent. It verifies exact private representation before/after offline
+preparation without acquisition; captures A and B, deduplicates A, reads full
+files and verified chunks, compares versions and reopens; restores A, inverses
+that destination-owned restore to B, then restores the original generation.
+The old version's bytes remain readable, retained-content fsck succeeds and
+the immutable admission evidence is unchanged. The original source path stays
+absent. Moving preserved source bytes is not physical source deletion; neither
+process restart nor interrupted recovery is exercised.
+
+r18 EXE: `1ae6a72b052be6ee9bd070985e6e1d1af6187422c98880c734a04ef8f7c578b6`,
+CodeView age 94, 574 source inputs. The r17 snapshot was never executed: review
+corrected the test oracle to read `projection_content`, since physical checkout
+and private mapping may retain different representations of the same content.
+The exact review receipt and r16/r18 results are preserved in the portable
+`ordinary-evidence-20261027-r16-r18.tar.gz` supplement. Ordinary operation
+finalizer migrations also received a separate static review; no full ordinary
+operation suite, product-host or other-platform qualification is inferred.
+
+### Next boundary: restore-specific admitted recovery
+
+Read-only investigation identifies two public paths: `ProjectionStore::resume_restore`
+and `ProjectionRecovery::resume_restore`, plus `inspect_recovery` for bound
+recovery. Their common opener is legacy-only and must not be widened to admit
+installation/refresh/namespace/rebase/cancellation implicitly.
+
+Implement a restore-specific route under the same exclusive owner lock, with
+physical pins and expected `RecoveryBinding`. Before any generic SQLite open,
+dispatch schema9 to a clean, independently closed RO preflight. Validate a
+bounded canonical pending restore journal, exact destination, generation/digest,
+permissions, conflicting pending operations and restore-budget ownership in that
+preflight. Admit the family only after positive close; validate its exact ready
+registration via `with_content_catalog(false, ...)`, not `inspection_catalog`.
+Recheck native/binding evidence before consuming the clean writer admission.
+No settlement, migration, reservation cancellation or SQLite rollback recovery
+belongs to this route. Revalidate detached journal evidence before filesystem
+effects; use the existing scoped restore finisher and consuming finalizer.
+
+Inspection needs its own read-only schema9 branch, returning pending-state DATA
+after positive close without changing bytes or budgets. Hot and nonhot SQLite
+rollback journals remain refused. Never classify an admission/close Cleanup
+failure as a benign recovery reason. Inherited inverse history still requires a
+separate typed ancestry/checkout binding instead of a legacy conversion receipt.
+
+Required focused qualification: interrupted restore at JournalDurable,
+PathQuarantined, PathInstalled and BeforeCommit through both resume APIs;
+separate Staged/AfterCommit replay; read-only inspection witnesses; wrong binding,
+inode, marker or registration; malformed/noncanonical/oversized journal; wrong
+base/budget or conflicting operation; replaced quarantine/stage and destination
+collision; journal/geometry/close failures without implicit repair. Provider8 and
+other admitted recovery entry points must remain fenced. This paragraph records
+the next design boundary, not implementation or acceptance of recovery9.

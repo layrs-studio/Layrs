@@ -276,10 +276,12 @@ impl ProjectionStore {
     }
     pub fn state(&self) -> Result<VersionedProjection> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_idle(&access.connection)?;
-        let result = database::current(&access.connection)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_idle(&access.connection)?;
+            let result = database::current(&access.connection)?;
+            access.verify()?;
+            Ok(result)
+        })
     }
     /// Atomic metadata CAS. File installation must be journaled by the partial
     /// materializer before recording a materialized state through this API.
@@ -289,54 +291,56 @@ impl ProjectionStore {
         next: &ProjectionSnapshot,
     ) -> Result<VersionedProjection> {
         let bytes = next.canonical_bytes()?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let current = database::current(&tx)?;
-        if current.snapshot.entries != next.entries {
-            return Err(invalid(
-                "projection entries require journaled installation or capture",
-            ));
-        }
-        if current.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: current.generation,
-            });
-        }
-        if current.snapshot.path_semantics != next.path_semantics {
-            return Err(invalid(
-                "path semantics cannot change during snapshot update",
-            ));
-        }
-        if next.observed_authorization_epoch < current.snapshot.observed_authorization_epoch {
-            return Err(invalid(
-                "observed authorization epoch cannot move backwards",
-            ));
-        }
-        let generation = expected_generation
-            .checked_add(1)
-            .filter(|g| *g <= i64::MAX as u64)
-            .ok_or_else(|| invalid("projection generation exhausted"))?;
-        let digest = database::digest(generation, Some(&current.digest), &bytes);
-        tx.execute(
-            "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
-            rusqlite::params![generation, digest, current.digest, bytes],
-        )?;
-        tx.execute(
-            "UPDATE projection_head SET generation=?1 WHERE singleton=1",
-            [generation],
-        )?;
-        // Validate pinned directory/file identities before making SQL durable.
-        format::verify_boundaries(&self.root, &self.marker, &access.metadata, &access.database)?;
-        tx.commit()?;
-        access.verify()?;
-        Ok(VersionedProjection {
-            generation,
-            digest,
-            snapshot: next.clone(),
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let current = database::current(&tx)?;
+            if current.snapshot.entries != next.entries {
+                return Err(invalid(
+                    "projection entries require journaled installation or capture",
+                ));
+            }
+            if current.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: current.generation,
+                });
+            }
+            if current.snapshot.path_semantics != next.path_semantics {
+                return Err(invalid(
+                    "path semantics cannot change during snapshot update",
+                ));
+            }
+            if next.observed_authorization_epoch < current.snapshot.observed_authorization_epoch {
+                return Err(invalid(
+                    "observed authorization epoch cannot move backwards",
+                ));
+            }
+            let generation = expected_generation
+                .checked_add(1)
+                .filter(|g| *g <= i64::MAX as u64)
+                .ok_or_else(|| invalid("projection generation exhausted"))?;
+            let digest = database::digest(generation, Some(&current.digest), &bytes);
+            tx.execute(
+                "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
+                rusqlite::params![generation, digest, current.digest, bytes],
+            )?;
+            tx.execute(
+                "UPDATE projection_head SET generation=?1 WHERE singleton=1",
+                [generation],
+            )?;
+            // Validate pinned directory/file identities before making SQL durable.
+            format::verify_boundaries(&self.root, &self.marker, &access.metadata, &access.database)?;
+            tx.commit()?;
+            access.verify()?;
+            Ok(VersionedProjection {
+                generation,
+                digest,
+                snapshot: next.clone(),
+        })
         })
     }
 }

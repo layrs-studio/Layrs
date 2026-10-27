@@ -93,8 +93,7 @@ impl ProjectionRecovery {
     }
     pub fn resume_initialization(&self) -> Result<ProjectionInspection> {
         let access = self.access(true)?;
-        super::super::family::finish_initialization(&self.store, &access)?;
-        drop(access);
+        access.run(|access| super::super::family::finish_initialization(&self.store, access))?;
         inspect(&self.store.root, false, Some(&self.binding))
     }
     pub fn resume_installation(&self) -> Result<VersionedProjection> {
@@ -206,7 +205,7 @@ pub(in crate::projection) fn access(
     let connection = database::connect(&path.join(DATABASE), true)?;
     validate(&connection)?;
     let access = Access {
-        connection,
+        connection: PrivateConnection::Legacy(connection),
         metadata,
         database: pin,
         root: store.root.clone(),

@@ -7,7 +7,7 @@ use layrs_core::{
         TreeEntryTarget,
     },
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
@@ -20,21 +20,34 @@ pub(super) fn persist(
     scan: scan::Scan,
     faults: &dyn CaptureFaults,
 ) -> Result<CapturedPatch> {
+    persist_with_scope(c, store, state, scan, faults, None)
+}
+
+pub(super) fn persist_with_scope(
+    c: &mut Connection,
+    store: &ProjectionStore,
+    state: &VersionedProjection,
+    scan: scan::Scan,
+    faults: &dyn CaptureFaults,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<CapturedPatch> {
+    validate_content_scope(c, store, scope)?;
     let files = scan
         .changes
         .iter()
         .filter_map(|v| v.replacement.clone())
         .collect::<Vec<_>>();
-    retention::reserve(
+    retention::reserve_with_scope(
         c,
         store,
         &format!("capture:{}", state.digest),
         &shared::digest(&scan.files)?,
         &files,
         0,
+        scope,
     )?;
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let patch = persist_in_transaction(&tx, store, state, scan)?;
+    let patch = persist_in_transaction_with_scope(&tx, store, state, scan, scope)?;
     faults.check(CapturePoint::BeforeCommit)?;
     tx.commit()?;
     faults.check(CapturePoint::AfterCommit)?;
@@ -46,11 +59,24 @@ pub(in crate::projection) fn persist_in_transaction(
     state: &VersionedProjection,
     scan: scan::Scan,
 ) -> Result<CapturedPatch> {
+    persist_in_transaction_with_scope(c, store, state, scan, None)
+}
+
+pub(in crate::projection) fn persist_in_transaction_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    state: &VersionedProjection,
+    scan: scan::Scan,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<CapturedPatch> {
+    validate_content_scope(c, store, scope)?;
     let previous: Option<u64> =
         c.query_row("SELECT MAX(sequence) FROM projection_captures", [], |r| {
             r.get(0)
         })?;
-    let parent = previous.map(|n| load(c, store, n)).transpose()?;
+    let parent = previous
+        .map(|n| load_with_scope(c, store, n, scope))
+        .transpose()?;
     if let Some(previous) = &parent {
         if previous.identity == *store.identity()
             && previous.projection_digest == state.digest
@@ -82,15 +108,15 @@ pub(in crate::projection) fn persist_in_transaction(
     }
     for change in &patch.changes {
         if let Some(file) = &change.replacement {
-            persist_file(c, store, &change.path, file)?;
+            persist_file(c, store, &change.path, file, scope)?;
         }
     }
-    if scan::scan(store, c, &state.snapshot, false)?.files != scan.files {
+    if scan::scan_with_scope(store, c, &state.snapshot, false, scope)?.files != scan.files {
         return Err(invalid("checkout changed while storing partial capture"));
     }
     c.execute("INSERT INTO projection_captures(sequence,digest,projection_generation,payload) VALUES(?1,?2,?3,?4)",params![sequence,patch.digest,state.generation,payload])?;
     // Includes hashes of existing deduplicated blobs: corruption never becomes a successful capture.
-    validate(c, store, &patch)?;
+    validate_with_bytes(c, store, &patch, true, scope)?;
     retention::finish_budget(c, store)?;
     Ok(patch)
 }
@@ -99,23 +125,33 @@ pub(in crate::projection) fn load(
     store: &ProjectionStore,
     sequence: u64,
 ) -> Result<CapturedPatch> {
-    load_inner(c, store, sequence, true)
+    load_with_scope(c, store, sequence, None)
+}
+
+pub(in crate::projection) fn load_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    sequence: u64,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<CapturedPatch> {
+    load_inner(c, store, sequence, true, scope)
 }
 pub(in crate::projection) fn load_metadata(
     c: &Connection,
     store: &ProjectionStore,
     sequence: u64,
 ) -> Result<CapturedPatch> {
-    load_inner(c, store, sequence, false)
+    load_inner(c, store, sequence, false, None)
 }
 fn load_inner(
     c: &Connection,
     store: &ProjectionStore,
     sequence: u64,
     verify_bytes: bool,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<CapturedPatch> {
     let patch = load_record(c, sequence)?;
-    validate_with_bytes(c, store, &patch, verify_bytes)?;
+    validate_with_bytes(c, store, &patch, verify_bytes, scope)?;
     Ok(patch)
 }
 
@@ -168,26 +204,39 @@ fn load_record(c: &Connection, sequence: u64) -> Result<CapturedPatch> {
     }
     Ok(patch)
 }
-fn validate(c: &Connection, store: &ProjectionStore, patch: &CapturedPatch) -> Result<()> {
-    validate_with_bytes(c, store, patch, true)
-}
 fn validate_with_bytes(
     c: &Connection,
     store: &ProjectionStore,
     patch: &CapturedPatch,
     verify_bytes: bool,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<()> {
+    if verify_bytes {
+        validate_content_scope(c, store, scope)?;
+    }
     validate_record(
         c,
         patch,
         || conversion::validate_capture_identity(c, store, patch),
         |file| {
             if verify_bytes {
-                file_manifest(c, store, file)?;
+                file_manifest_with_scope(c, store, file, scope)?;
             }
             Ok(())
         },
     )
+}
+
+fn validate_content_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    if let Some(scope) = scope {
+        scope.validate(c, store)
+    } else {
+        super::super::provider::require_ordinary(c)
+    }
 }
 
 fn validate_record(
@@ -292,11 +341,12 @@ fn persist_file(
     store: &ProjectionStore,
     path: &RepoPath,
     file: &CapturedFile,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<()> {
     let root = PinnedDirectory::open(&store.root)?;
     let (parent, name) = root.existing_parent(Path::new(path.as_str()))?;
     let pinned = parent.open_file(&name)?;
-    persist_pinned_file(c, store, &pinned, file)?;
+    persist_pinned_file_with_scope(c, store, &pinned, file, scope)?;
     parent.verify_path_identity()?;
     if !pinned.same_file(&parent.open_file(&name)?) {
         return Err(invalid("capture file replaced while storing"));
@@ -310,14 +360,26 @@ pub(in crate::projection) fn persist_pinned_file(
     pinned: &PinnedFile,
     file: &CapturedFile,
 ) -> Result<()> {
+    persist_pinned_file_with_scope(c, store, pinned, file, None)
+}
+
+pub(in crate::projection) fn persist_pinned_file_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    pinned: &PinnedFile,
+    file: &CapturedFile,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    validate_content_scope(c, store, scope)?;
     if store.marker.shared.is_some() {
-        return retention::retain_pinned(
+        return retention::retain_pinned_with_scope(
             c,
             store,
             pinned,
             file,
             "captured-content",
             file.file_id.as_str(),
+            scope,
         );
     }
     let mut input = pinned.file();
@@ -374,7 +436,7 @@ pub(in crate::projection) fn persist_pinned_file(
         return Err(invalid("capture file changed while storing"));
     }
     pinned.verify_parent()?;
-    file_manifest(c, store, file)?;
+    file_manifest_with_scope(c, store, file, scope)?;
     Ok(())
 }
 fn for_each_chunk(
@@ -462,8 +524,18 @@ pub(in crate::projection) fn file_manifest(
     store: &ProjectionStore,
     file: &CapturedFile,
 ) -> Result<layrs_core::scm::FileManifest> {
+    file_manifest_with_scope(c, store, file, None)
+}
+
+pub(in crate::projection) fn file_manifest_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    file: &CapturedFile,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<layrs_core::scm::FileManifest> {
+    validate_content_scope(c, store, scope)?;
     if store.marker.shared.is_some() {
-        return retention::manifest(c, store, file);
+        return retention::manifest_with_scope(c, store, file, scope);
     }
     if file.bytes > MAX_CAPTURE_FILE_BYTES {
         return Err(invalid("capture file exceeds1GiB"));
@@ -505,8 +577,19 @@ pub(in crate::projection) fn stream_file(
     file: &CapturedFile,
     out: &mut dyn Write,
 ) -> Result<()> {
-    let manifest = file_manifest(c, store, file)?;
-    if let Some(lease) = shared::for_store(store)? {
+    stream_file_with_scope(c, store, file, out, None)
+}
+
+pub(in crate::projection) fn stream_file_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    file: &CapturedFile,
+    out: &mut dyn Write,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let manifest = file_manifest_with_scope(c, store, file, scope)?;
+    let family = format::content_family(c, store, scope)?;
+    if let Some(lease) = family.as_ref() {
         return lease.stream(&manifest, out);
     }
     let mut verifier = manifest.verifier();
@@ -526,8 +609,21 @@ pub(in crate::projection) fn read_chunk(
     expected_chunk: &FileChunk,
     out: &mut dyn Write,
 ) -> Result<()> {
-    if let Some(lease) = shared::for_store(store)? {
-        let manifest = retention::manifest(c, store, file)?;
+    read_chunk_with_scope(c, store, file, ordinal, expected_chunk, out, None)
+}
+
+pub(in crate::projection) fn read_chunk_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    file: &CapturedFile,
+    ordinal: usize,
+    expected_chunk: &FileChunk,
+    out: &mut dyn Write,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let family = format::content_family(c, store, scope)?;
+    if let Some(lease) = family.as_ref() {
+        let manifest = retention::manifest_with_scope(c, store, file, scope)?;
         if manifest.chunks().get(ordinal) != Some(expected_chunk) {
             return Err(invalid("shared capture representation changed"));
         }
@@ -560,7 +656,7 @@ pub(in crate::projection) fn read_chunk(
             return Err(invalid("legacy capture length mismatch"));
         }
         // Legacy blobs did not persist per-chunk digests, so verify the file.
-        file_manifest(c, store, file)?;
+        file_manifest_with_scope(c, store, file, scope)?;
         (
             None,
             c.query_row(

@@ -42,230 +42,234 @@ pub(super) fn apply(
     if expected.digest != expected.computed_digest()? {
         return Err(invalid("namespace preview digest mismatch"));
     }
-    let mut access = format::access(store, SessionMode::Exclusive)?;
-    database::require_mutable(&access.connection)?;
-    if let Some(capture) = completed(&access.connection, store, expected, create_bytes)? {
-        return Ok(capture);
-    }
-    let state = database::current(&access.connection)?;
-    let mut actual = preview(store, &access.connection, &state, &expected.mutation)?;
-    actual.operation_id = expected.operation_id.clone();
-    actual.digest = actual.computed_digest()?;
-    if &actual != expected {
-        return Err(invalid("namespace preview is stale"));
-    }
-    retention::require_no_staging(&access.connection, store)?;
-    // Deterministic capture limits must fail before accepting a durable budget.
-    let scan =
-        super::super::capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
-    match (&expected.mutation, create_bytes) {
-        (NamespaceMutation::Create { .. }, Some(bytes)) => {
-            let total: u64 = scan
-                .changes
-                .iter()
-                .filter_map(|c| c.replacement.as_ref())
-                .map(|f| f.bytes)
-                .sum();
-            if bytes.len() > MAX_PATCH_BYTES
-                || total + bytes.len() as u64 > MAX_PATCH_BYTES as u64
-                || scan.changes.len() >= 1024
-            {
-                return Err(invalid("creation would exceed capture budget"));
-            }
+    let access = format::access(store, SessionMode::Exclusive)?;
+    access.run(|access: &mut format::Access| -> Result<_> {
+        database::require_mutable(&access.connection)?;
+        if let Some(capture) = completed(&access.connection, store, expected, create_bytes)? {
+            return Ok(capture);
         }
-        (NamespaceMutation::Move { source, .. }, None) => {
-            let file = expected
-                .source_file
-                .as_ref()
-                .ok_or_else(|| invalid("missing move source descriptor"))?;
-            let remaining = scan
-                .changes
-                .iter()
-                .filter(|c| &c.path != source)
-                .collect::<Vec<_>>();
-            let total: u64 = remaining
-                .iter()
-                .filter_map(|c| c.replacement.as_ref())
-                .map(|f| f.bytes)
-                .sum();
-            let remote = state
-                .snapshot
-                .entries
-                .iter()
-                .any(|e| &e.path == source && e.target.is_some());
-            if total + file.bytes > MAX_PATCH_BYTES as u64
-                || remaining.len() + 1 + usize::from(remote) > 1024
-            {
-                return Err(invalid("move would exceed capture budget"));
-            }
+        let state = database::current(&access.connection)?;
+        let mut actual = preview(store, &access.connection, &state, &expected.mutation)?;
+        actual.operation_id = expected.operation_id.clone();
+        actual.digest = actual.computed_digest()?;
+        if &actual != expected {
+            return Err(invalid("namespace preview is stale"));
         }
-        _ => return Err(invalid("namespace mutation content mismatch")),
-    }
-    if store.marker.shared.is_some() {
-        let mut changes = std::collections::BTreeMap::new();
+        retention::require_no_staging(&access.connection, store)?;
+        // Deterministic capture limits must fail before accepting a durable budget.
+        let scan =
+            super::super::capture::scan::scan(store, &access.connection, &state.snapshot, false)?;
         match (&expected.mutation, create_bytes) {
-            (NamespaceMutation::Create { destination }, Some(bytes)) => {
-                changes.insert(
-                    destination.to_string(),
-                    Some(CapturedFile {
-                        file_id: FileId::from_bytes(bytes),
-                        executable: false,
-                        bytes: bytes.len() as u64,
-                    }),
-                );
+            (NamespaceMutation::Create { .. }, Some(bytes)) => {
+                let total: u64 = scan
+                    .changes
+                    .iter()
+                    .filter_map(|c| c.replacement.as_ref())
+                    .map(|f| f.bytes)
+                    .sum();
+                if bytes.len() > MAX_PATCH_BYTES
+                    || total + bytes.len() as u64 > MAX_PATCH_BYTES as u64
+                    || scan.changes.len() >= 1024
+                {
+                    return Err(invalid("creation would exceed capture budget"));
+                }
             }
-            (
-                NamespaceMutation::Move {
-                    source,
-                    destination,
-                },
-                None,
-            ) => {
-                changes.insert(source.to_string(), None);
-                changes.insert(destination.to_string(), expected.source_file.clone());
+            (NamespaceMutation::Move { source, .. }, None) => {
+                let file = expected
+                    .source_file
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing move source descriptor"))?;
+                let remaining = scan
+                    .changes
+                    .iter()
+                    .filter(|c| &c.path != source)
+                    .collect::<Vec<_>>();
+                let total: u64 = remaining
+                    .iter()
+                    .filter_map(|c| c.replacement.as_ref())
+                    .map(|f| f.bytes)
+                    .sum();
+                let remote = state
+                    .snapshot
+                    .entries
+                    .iter()
+                    .any(|e| &e.path == source && e.target.is_some());
+                if total + file.bytes > MAX_PATCH_BYTES as u64
+                    || remaining.len() + 1 + usize::from(remote) > 1024
+                {
+                    return Err(invalid("move would exceed capture budget"));
+                }
             }
             _ => return Err(invalid("namespace mutation content mismatch")),
         }
-        retention::reserve_checkout(
-            &access.connection,
-            store,
-            &format!("namespace:{}", expected.operation_id),
-            &state.snapshot,
-            &changes,
-        )?;
-    }
-    let root = PinnedDirectory::open(&store.root)?;
-    let (source_path, file) = match (&expected.mutation, create_bytes) {
-        (NamespaceMutation::Create { .. }, Some(bytes)) => {
-            if bytes.len() > MAX_PATCH_BYTES {
-                return Err(invalid("create exceeds16MiB"));
+        if store.marker.shared.is_some() {
+            let mut changes = std::collections::BTreeMap::new();
+            match (&expected.mutation, create_bytes) {
+                (NamespaceMutation::Create { destination }, Some(bytes)) => {
+                    changes.insert(
+                        destination.to_string(),
+                        Some(CapturedFile {
+                            file_id: FileId::from_bytes(bytes),
+                            executable: false,
+                            bytes: bytes.len() as u64,
+                        }),
+                    );
+                }
+                (
+                    NamespaceMutation::Move {
+                        source,
+                        destination,
+                    },
+                    None,
+                ) => {
+                    changes.insert(source.to_string(), None);
+                    changes.insert(destination.to_string(), expected.source_file.clone());
+                }
+                _ => return Err(invalid("namespace mutation content mismatch")),
             }
-            let scan = super::super::capture::scan::scan(
-                store,
-                &access.connection,
-                &state.snapshot,
-                false,
-            )?;
-            let total: u64 = scan
-                .changes
-                .iter()
-                .filter_map(|c| c.replacement.as_ref())
-                .map(|f| f.bytes)
-                .sum();
-            if total + bytes.len() as u64 > MAX_PATCH_BYTES as u64 || scan.changes.len() >= 1024 {
-                return Err(invalid("creation would exceed capture budget"));
-            }
-            let staging = root
-                .open_child(".layrs".as_ref())?
-                .ensure_child("namespace-staging".as_ref())?;
-            let name = unique_id()?;
-            let mut file = staging.create_file(name.as_ref())?;
-            retention::track_file(
+            retention::reserve_checkout(
                 &access.connection,
                 store,
                 &format!("namespace:{}", expected.operation_id),
-                &format!(".layrs/namespace-staging/{name}"),
-                &file,
-            )?;
-            file.file_mut().write_all(bytes)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                file.file()
-                    .set_permissions(fs::Permissions::from_mode(0o600))?;
-            }
-            file.file().sync_all()?;
-            staging.sync()?;
-            (
-                format!(".layrs/namespace-staging/{name}"),
-                CapturedFile {
-                    file_id: FileId::from_bytes(bytes),
-                    executable: false,
-                    bytes: bytes.len() as u64,
-                },
-            )
-        }
-        (NamespaceMutation::Move { source, .. }, None) => {
-            let file = expected
-                .source_file
-                .clone()
-                .ok_or_else(|| invalid("missing move source descriptor"))?;
-            let scan = super::super::capture::scan::scan(
-                store,
-                &access.connection,
                 &state.snapshot,
-                false,
+                &changes,
             )?;
-            let remaining: Vec<_> = scan.changes.iter().filter(|c| &c.path != source).collect();
-            let total: u64 = remaining
-                .iter()
-                .filter_map(|c| c.replacement.as_ref())
-                .map(|f| f.bytes)
-                .sum();
-            let source_was_remote = state
-                .snapshot
-                .entries
-                .iter()
-                .any(|entry| &entry.path == source && entry.target.is_some());
-            if total + file.bytes > MAX_PATCH_BYTES as u64
-                || remaining.len() + 1 + usize::from(source_was_remote) > 1024
-            {
-                return Err(invalid("move would exceed capture budget"));
+        }
+        let root = PinnedDirectory::open(&store.root)?;
+        let (source_path, file) = match (&expected.mutation, create_bytes) {
+            (NamespaceMutation::Create { .. }, Some(bytes)) => {
+                if bytes.len() > MAX_PATCH_BYTES {
+                    return Err(invalid("create exceeds16MiB"));
+                }
+                let scan = super::super::capture::scan::scan(
+                    store,
+                    &access.connection,
+                    &state.snapshot,
+                    false,
+                )?;
+                let total: u64 = scan
+                    .changes
+                    .iter()
+                    .filter_map(|c| c.replacement.as_ref())
+                    .map(|f| f.bytes)
+                    .sum();
+                if total + bytes.len() as u64 > MAX_PATCH_BYTES as u64 || scan.changes.len() >= 1024
+                {
+                    return Err(invalid("creation would exceed capture budget"));
+                }
+                let staging = root
+                    .open_child(".layrs".as_ref())?
+                    .ensure_child("namespace-staging".as_ref())?;
+                let name = unique_id()?;
+                let mut file = staging.create_file(name.as_ref())?;
+                retention::track_file(
+                    &access.connection,
+                    store,
+                    &format!("namespace:{}", expected.operation_id),
+                    &format!(".layrs/namespace-staging/{name}"),
+                    &file,
+                )?;
+                file.file_mut().write_all(bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.file()
+                        .set_permissions(fs::Permissions::from_mode(0o600))?;
+                }
+                file.file().sync_all()?;
+                staging.sync()?;
+                (
+                    format!(".layrs/namespace-staging/{name}"),
+                    CapturedFile {
+                        file_id: FileId::from_bytes(bytes),
+                        executable: false,
+                        bytes: bytes.len() as u64,
+                    },
+                )
             }
-            (source.to_string(), file)
+            (NamespaceMutation::Move { source, .. }, None) => {
+                let file = expected
+                    .source_file
+                    .clone()
+                    .ok_or_else(|| invalid("missing move source descriptor"))?;
+                let scan = super::super::capture::scan::scan(
+                    store,
+                    &access.connection,
+                    &state.snapshot,
+                    false,
+                )?;
+                let remaining: Vec<_> = scan.changes.iter().filter(|c| &c.path != source).collect();
+                let total: u64 = remaining
+                    .iter()
+                    .filter_map(|c| c.replacement.as_ref())
+                    .map(|f| f.bytes)
+                    .sum();
+                let source_was_remote = state
+                    .snapshot
+                    .entries
+                    .iter()
+                    .any(|entry| &entry.path == source && entry.target.is_some());
+                if total + file.bytes > MAX_PATCH_BYTES as u64
+                    || remaining.len() + 1 + usize::from(source_was_remote) > 1024
+                {
+                    return Err(invalid("move would exceed capture budget"));
+                }
+                (source.to_string(), file)
+            }
+            _ => {
+                return Err(invalid(
+                    "create needs bytes; move must not carry replacement bytes",
+                ));
+            }
+        };
+        let identity = super::super::file::DatabasePin::open(&store.root.join(&source_path))?
+            .identity()
+            .to_owned();
+        let journal = Journal {
+            schema_version: "layrs.projection-namespace.v1".into(),
+            preview: expected.clone(),
+            source_path,
+            file,
+            identity,
+        };
+        verify_file(&root, &store.root, &journal.source_path, &journal)?;
+        let bytes = canonical_json(&journal).map_err(invalid)?;
+        if bytes.len() > 64 * 1024 {
+            return Err(invalid("namespace journal exceeds64KiB"));
         }
-        _ => {
-            return Err(invalid(
-                "create needs bytes; move must not carry replacement bytes",
-            ));
+        access.verify()?;
+        let tx = access
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if store.marker.shared.is_some() {
+            let pin = root.open_relative_file(Path::new(&journal.source_path))?;
+            retention::retain_pinned(
+                &tx,
+                store,
+                &pin,
+                &journal.file,
+                "namespace",
+                &expected.operation_id,
+            )?;
         }
-    };
-    let identity = super::super::file::DatabasePin::open(&store.root.join(&source_path))?
-        .identity()
-        .to_owned();
-    let journal = Journal {
-        schema_version: "layrs.projection-namespace.v1".into(),
-        preview: expected.clone(),
-        source_path,
-        file,
-        identity,
-    };
-    verify_file(&root, &store.root, &journal.source_path, &journal)?;
-    let bytes = canonical_json(&journal).map_err(invalid)?;
-    if bytes.len() > 64 * 1024 {
-        return Err(invalid("namespace journal exceeds64KiB"));
-    }
-    access.verify()?;
-    let tx = access
-        .connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    if store.marker.shared.is_some() {
-        let pin = root.open_relative_file(Path::new(&journal.source_path))?;
-        retention::retain_pinned(
-            &tx,
-            store,
-            &pin,
-            &journal.file,
-            "namespace",
-            &expected.operation_id,
+        tx.execute(
+            "INSERT INTO projection_namespace_pending VALUES(1,?1)",
+            [bytes],
         )?;
-    }
-    tx.execute(
-        "INSERT INTO projection_namespace_pending VALUES(1,?1)",
-        [bytes],
-    )?;
-    retention::accept_staging(&tx, store, &format!("namespace:{}", expected.operation_id))?;
-    tx.commit()?;
-    faults.check(NamespacePoint::JournalDurable)?;
-    finish(store, &mut access, &journal, faults)
+        retention::accept_staging(&tx, store, &format!("namespace:{}", expected.operation_id))?;
+        tx.commit()?;
+        faults.check(NamespacePoint::JournalDurable)?;
+        finish(store, access, &journal, faults)
+    })
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<CapturedPatch> {
     resume_with_access(store, format::recovery_access(store, None, false)?)
 }
 pub(in crate::projection) fn resume_with_access(
     store: &ProjectionStore,
-    mut access: format::Access,
+    access: format::Access,
 ) -> Result<CapturedPatch> {
+    access.run(|access: &mut format::Access| -> Result<_> {
     let conflicts:bool=access.connection.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)",[],|r|r.get(0))?;
     if conflicts {
         return Err(invalid(
@@ -287,7 +291,7 @@ pub(in crate::projection) fn resume_with_access(
     )?;
     let tag: SchemaTag = serde_json::from_slice(&bytes).map_err(invalid)?;
     if tag.schema_version == "layrs.projection-directory-move-journal.v1" {
-        return super::super::directory_move::resume_payload(store, &mut access, &bytes);
+        return super::super::directory_move::resume_payload(store, access, &bytes);
     }
     if len > 64 * 1024 {
         return Err(invalid("namespace journal exceeds64KiB"));
@@ -296,7 +300,8 @@ pub(in crate::projection) fn resume_with_access(
     if canonical_json(&journal).map_err(invalid)? != bytes {
         return Err(invalid("namespace journal is not canonical"));
     }
-    finish(store, &mut access, &journal, &NoNamespaceFaults)
+    finish(store, access, &journal, &NoNamespaceFaults)
+    })
 }
 fn finish(
     store: &ProjectionStore,

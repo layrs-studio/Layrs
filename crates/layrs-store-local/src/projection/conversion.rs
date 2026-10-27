@@ -1,8 +1,8 @@
 //! Explicit copy conversion. No source SQL, marker, history, or checkout is rewritten.
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
-use layrs_core::scm::{canonical_json, FileId};
-use rusqlite::{params, Connection};
+use layrs_core::scm::{FileId, canonical_json};
+use rusqlite::{Connection, params};
 use std::{
     io::{Read, Seek, SeekFrom},
     time::Duration,
@@ -292,14 +292,17 @@ impl ProjectionStore {
         let store = Self { root, marker };
         require_conversion_source_schema(&store)?;
         let access = format::access(&store, SessionMode::Shared)?;
-        database::require_mutable(&access.connection)?;
-        access.verify()?;
-        drop(access);
+        access.run(|access: &mut format::Access| -> Result<()> {
+            database::require_mutable(&access.connection)?;
+            access.verify()
+        })?;
         Ok(store)
     }
     pub fn is_imported_capture(&self, sequence: u64) -> Result<bool> {
         let access = format::access(self, SessionMode::Shared)?;
-        imported(&access.connection, self, sequence)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            imported(&access.connection, self, sequence)
+        })
     }
     pub fn require_publishable_capture(&self, sequence: u64) -> Result<()> {
         if self.is_imported_capture(sequence)? {
@@ -315,7 +318,9 @@ impl ProjectionStore {
         sequence: u64,
     ) -> Result<Option<(ProjectionIdentity, CompletedPublication)>> {
         let access = format::access(self, SessionMode::Shared)?;
-        imported_publication_record(&access.connection, self, sequence)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            imported_publication_record(&access.connection, self, sequence)
+        })
     }
     pub fn convert_into_family(
         &self,
@@ -350,26 +355,28 @@ impl ProjectionStore {
             ));
         }
         let source_access = format::access(self, SessionMode::Exclusive)?;
-        let identity = ProjectionIdentity {
-            store_id: family.identity().store_id.clone(),
-            worktree_id,
-            space_id: family.identity().space_id.clone(),
-            origin: family.identity().origin.clone(),
-            principal_id: family.identity().principal_id.clone(),
-        };
-        let proof = receipt(self, &source_access, identity.clone())?;
-        let initial = offline::snapshot_at(&source_access.connection, 0, None)?;
-        let selection = selection::at(&source_access.connection, 0)?;
-        let target = format::create_shared_import(
-            &destination,
-            family,
-            identity.worktree_id,
-            initial.snapshot,
-            &selection,
-            shared::digest(&proof)?,
-        )?;
-        faults.check(ConversionPoint::DestinationCreated)?;
-        convert(self, &source_access, target, proof, faults)
+        source_access.run(|source_access: &mut format::Access| -> Result<_> {
+            let identity = ProjectionIdentity {
+                store_id: family.identity().store_id.clone(),
+                worktree_id,
+                space_id: family.identity().space_id.clone(),
+                origin: family.identity().origin.clone(),
+                principal_id: family.identity().principal_id.clone(),
+            };
+            let proof = receipt(self, &source_access, identity.clone())?;
+            let initial = offline::snapshot_at(&source_access.connection, 0, None)?;
+            let selection = selection::at(&source_access.connection, 0)?;
+            let target = format::create_shared_import(
+                &destination,
+                family,
+                identity.worktree_id,
+                initial.snapshot,
+                &selection,
+                shared::digest(&proof)?,
+            )?;
+            faults.check(ConversionPoint::DestinationCreated)?;
+            convert(self, &source_access, target, proof, faults)
+        })
     }
     pub fn resume_conversion_into(
         &self,
@@ -382,19 +389,21 @@ impl ProjectionStore {
             return Err(invalid("destination has no recognizable conversion intent"));
         }
         let source_access = format::access(self, SessionMode::Exclusive)?;
-        let proof = receipt(self, &source_access, marker.identity.clone())?;
-        if marker.import_digest.as_deref() != Some(shared::digest(&proof)?.as_str()) {
-            return Err(invalid(
-                "conversion source changed; retained source and destination require inspection",
-            ));
-        }
-        convert(
-            self,
-            &source_access,
-            ProjectionStore { root, marker },
-            proof,
-            &NoConversionFaults,
-        )
+        source_access.run(|source_access: &mut format::Access| -> Result<_> {
+            let proof = receipt(self, &source_access, marker.identity.clone())?;
+            if marker.import_digest.as_deref() != Some(shared::digest(&proof)?.as_str()) {
+                return Err(invalid(
+                    "conversion source changed; retained source and destination require inspection",
+                ));
+            }
+            convert(
+                self,
+                &source_access,
+                ProjectionStore { root, marker },
+                proof,
+                &NoConversionFaults,
+            )
+        })
     }
 }
 

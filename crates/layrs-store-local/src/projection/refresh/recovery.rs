@@ -6,45 +6,47 @@ pub(super) fn resume(store: &ProjectionStore) -> Result<VersionedProjection> {
 }
 pub(in crate::projection) fn resume_with_access(
     store: &ProjectionStore,
-    mut access: format::Access,
+    access: format::Access,
 ) -> Result<VersionedProjection> {
-    let length: Option<u64> = access
-        .connection
-        .query_row(
-            "SELECT length(payload) FROM projection_refresh_pending WHERE singleton=1",
+    access.run(|access: &mut format::Access| -> Result<_> {
+        let length: Option<u64> = access
+            .connection
+            .query_row(
+                "SELECT length(payload) FROM projection_refresh_pending WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(length) = length else {
+            database::require_idle(&access.connection)?;
+            access.verify()?;
+            return database::current(&access.connection);
+        };
+        if length > 64 * 1024 * 1024 {
+            return Err(invalid("refresh journal exceeds64MiB"));
+        }
+        let bytes: Vec<u8> = access.connection.query_row(
+            "SELECT payload FROM projection_refresh_pending WHERE singleton=1",
             [],
             |r| r.get(0),
-        )
-        .optional()?;
-    let Some(length) = length else {
-        database::require_idle(&access.connection)?;
-        access.verify()?;
-        return database::current(&access.connection);
-    };
-    if length > 64 * 1024 * 1024 {
-        return Err(invalid("refresh journal exceeds64MiB"));
-    }
-    let bytes: Vec<u8> = access.connection.query_row(
-        "SELECT payload FROM projection_refresh_pending WHERE singleton=1",
-        [],
-        |r| r.get(0),
-    )?;
-    let journal: Journal = serde_json::from_slice(&bytes).map_err(invalid)?;
-    if encode(&journal)? != bytes {
-        return Err(invalid("refresh journal is not canonical"));
-    }
-    let current = validate(&access, &journal)?;
-    if !journal.ready {
-        // Only private staging may exist. No checkout operation precedes Ready.
-        // Incomplete staged bytes are retained privately; retry supplies bytes again.
-        access.verify()?;
-        access.connection.execute(
-            "DELETE FROM projection_refresh_pending WHERE singleton=1",
-            [],
         )?;
-        return Ok(current);
-    }
-    finish(store, &mut access, &journal, &NoRefreshFaults)
+        let journal: Journal = serde_json::from_slice(&bytes).map_err(invalid)?;
+        if encode(&journal)? != bytes {
+            return Err(invalid("refresh journal is not canonical"));
+        }
+        let current = validate(&access, &journal)?;
+        if !journal.ready {
+            // Only private staging may exist. No checkout operation precedes Ready.
+            // Incomplete staged bytes are retained privately; retry supplies bytes again.
+            access.verify()?;
+            access.connection.execute(
+                "DELETE FROM projection_refresh_pending WHERE singleton=1",
+                [],
+            )?;
+            return Ok(current);
+        }
+        finish(store, access, &journal, &NoRefreshFaults)
+    })
 }
 
 fn validate(access: &format::Access, journal: &Journal) -> Result<VersionedProjection> {

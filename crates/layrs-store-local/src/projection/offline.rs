@@ -5,9 +5,9 @@ use layrs_core::{
         AvailabilityBlocker as Block, AvailabilityRequest, EntryState, OfflineOperation as Op,
         ProjectionAvailability, ProjectionSelection, ProjectionVersion, VersionPathAvailability,
     },
-    scm::{FileId, RepoPath, TreeEntryTarget, canonical_json},
+    scm::{canonical_json, FileId, RepoPath, TreeEntryTarget},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     collections::BTreeMap,
     io::{Seek, SeekFrom, Write},
@@ -173,6 +173,19 @@ pub(super) fn resolve(
     store: &ProjectionStore,
     version: &ProjectionVersion,
 ) -> Result<VersionState> {
+    resolve_with_scope(c, store, version, None)
+}
+pub(super) fn resolve_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    version: &ProjectionVersion,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<VersionState> {
+    if let Some(scope) = scope {
+        scope.validate(c, store)?;
+    } else {
+        provider::require_ordinary(c)?;
+    }
     match version {
         ProjectionVersion::Generation {
             worktree_id,
@@ -201,11 +214,13 @@ pub(super) fn resolve(
             // Accepted replacements are durable local history. Missing or damaged
             // replacement bytes are corruption, never a remote acquisition miss.
             let patch = capture::storage::load_metadata(c, store, *sequence)?;
-            let lease = shared::for_store(store)?
+            let family = format::content_family(c, store, scope)?;
+            let lease = family
+                .as_ref()
                 .ok_or_else(|| invalid("capture version requires shared family"))?;
-            let roots = retention::root_metadata(c, store, &lease)?;
+            let roots = retention::root_metadata(c, store, lease)?;
             for file in patch.changes.iter().filter_map(|v| v.replacement.as_ref()) {
-                let manifest = retention::lookup_with_roots(c, &lease, &file.file_id, &roots)?
+                let manifest = retention::lookup_with_roots(c, lease, &file.file_id, &roots)?
                     .ok_or_else(|| {
                         invalid(
                             "captured replacement missing; corruption is not an acquisition miss",
@@ -316,13 +331,14 @@ fn preparation_dependencies(
     store: &ProjectionStore,
     lease: &shared::Lease,
     request: &AvailabilityRequest,
+    scope: Option<&format::ContentScope<'_>>,
 ) -> Result<Vec<(ProjectionVersion, RepoPath, FileId, bool)>> {
     if matches!(request.operation, Op::Capture | Op::Restore) {
         return Err(invalid(
             "offline_preparation_unsupported: capture and restore require their whole-checkout preflight; prepare immutable restore target bytes with Read",
         ));
     }
-    let coverage = availability(c, store, lease, request)?;
+    let coverage = availability_with_scope(c, store, lease, request, scope)?;
     if !coverage.blockers.is_empty()
         || coverage
             .paths
@@ -334,11 +350,11 @@ fn preparation_dependencies(
             serde_json::to_string(&coverage).map_err(invalid)?
         )));
     }
-    let first = resolve(c, store, &request.version)?;
+    let first = resolve_with_scope(c, store, &request.version, scope)?;
     let second = request
         .other
         .as_ref()
-        .map(|v| resolve(c, store, v))
+        .map(|v| resolve_with_scope(c, store, v, scope))
         .transpose()?;
     let mut dependencies = Vec::new();
     for path in &request.paths {
@@ -373,12 +389,26 @@ pub(super) fn availability(
     lease: &shared::Lease,
     request: &AvailabilityRequest,
 ) -> Result<ProjectionAvailability> {
+    availability_with_scope(c, store, lease, request, None)
+}
+pub(super) fn availability_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    lease: &shared::Lease,
+    request: &AvailabilityRequest,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<ProjectionAvailability> {
+    if let Some(scope) = scope {
+        scope.validate(c, store)?;
+    } else {
+        provider::require_ordinary(c)?;
+    }
     request.validate()?;
-    let first = resolve(c, store, &request.version)?;
+    let first = resolve_with_scope(c, store, &request.version, scope)?;
     let second = request
         .other
         .as_ref()
-        .map(|v| resolve(c, store, v))
+        .map(|v| resolve_with_scope(c, store, v, scope))
         .transpose()?;
     let current = database::current(c)?;
     let roots = retention::root_metadata(c, store, lease)?;
@@ -492,7 +522,7 @@ pub(super) fn availability(
         && !pending(c)?
         && result.paths.iter().all(|row| row.blockers.is_empty())
     {
-        match capture::scan::scan(store, c, &current.snapshot, false) {
+        match capture::scan::scan_with_scope(store, c, &current.snapshot, false, scope) {
             Ok(scan) => {
                 let mut changes = BTreeMap::new();
                 if request.operation == Op::Restore {
@@ -524,11 +554,18 @@ pub(super) fn availability(
                 )? {
                     result.blockers.push(Block::PendingOperation);
                 }
-                if capture::scan::scan(store, c, &current.snapshot, false)?.files != scan.files {
+                if capture::scan::scan_with_scope(store, c, &current.snapshot, false, scope)?.files
+                    != scan.files
+                {
                     result.blockers.push(Block::ChangedCheckout);
                 }
             }
-            Err(_) => result.blockers.push(Block::ChangedCheckout),
+            Err(_) => {
+                if let Some(scope) = scope {
+                    scope.validate(c, store)?;
+                }
+                result.blockers.push(Block::ChangedCheckout);
+            }
         }
     }
     result.available =
@@ -553,12 +590,14 @@ pub(super) fn availability(
 impl ProjectionStore {
     pub fn generation_version(&self, generation: u64) -> Result<ProjectionVersion> {
         let access = format::access(self, SessionMode::Shared)?;
-        let state = snapshot_at(&access.connection, generation, None)?;
-        access.verify()?;
-        Ok(ProjectionVersion::Generation {
-            worktree_id: self.identity().worktree_id.clone(),
-            generation,
-            digest: state.digest,
+        access.run(|access: &mut format::Access| -> Result<_> {
+            let state = snapshot_at(&access.connection, generation, None)?;
+            access.verify()?;
+            Ok(ProjectionVersion::Generation {
+                worktree_id: self.identity().worktree_id.clone(),
+                generation,
+                digest: state.digest,
+            })
         })
     }
     pub fn current_version(&self) -> Result<ProjectionVersion> {
@@ -572,13 +611,17 @@ impl ProjectionStore {
     pub fn availability(&self, request: &AvailabilityRequest) -> Result<ProjectionAvailability> {
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing shared reader lease"))?;
-        let result = availability(&access.connection, self, lease, request)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                let family = format::content_family(c, self, Some(scope))?;
+                let lease = family
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing shared reader lease"))?;
+                let result = availability_with_scope(c, self, lease, request, Some(scope))?;
+                scope.verify(c, self)?;
+                Ok(result)
+            })
+        })
     }
     /// Resolve immutable metadata only from the named version. Capture changes
     /// overlay their own recorded base; this does not supply acquisition authority.
@@ -588,9 +631,13 @@ impl ProjectionStore {
     ) -> Result<(ProjectionSnapshot, ProjectionSelection)> {
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
-        let state = resolve(&access.connection, self, version)?;
-        access.verify()?;
-        Ok((state.snapshot, state.selection))
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                let state = resolve_with_scope(c, self, version, Some(scope))?;
+                scope.verify(c, self)?;
+                Ok((state.snapshot, state.selection))
+            })
+        })
     }
     /// Caller must supply a complete correlated server observation. This API
     /// records evidence only; it cannot authorize acquisition or publication.
@@ -619,33 +666,35 @@ impl ProjectionStore {
     ) -> Result<ProjectionVersion> {
         require_shared(self)?;
         selection.validate_snapshot(snapshot)?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        require_generation(&tx, expected_generation)?;
-        let value = Observation {
-            snapshot: snapshot.clone(),
-            selection: selection.clone(),
-        };
-        let digest = shared::digest(&value)?;
-        let payload = canonical_json(&value).map_err(invalid)?;
-        if payload.len() > 64 * 1024 * 1024 {
-            return Err(invalid("offline observation exceeds bound"));
-        }
-        tx.execute(
-            "INSERT INTO projection_observations VALUES(?1,?2) ON CONFLICT(digest) DO NOTHING",
-            params![digest, payload],
-        )?;
-        tx.commit()?;
-        access.verify()?;
-        Ok(ProjectionVersion::Remote {
-            step_id: snapshot.base_step_id.clone(),
-            root_tree_id: snapshot.base_root_tree_id.clone(),
-            policy_set_id: snapshot.observed_policy_set_id.clone(),
-            authorization_epoch: snapshot.observed_authorization_epoch,
-            observation_digest: digest,
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            require_generation(&tx, expected_generation)?;
+            let value = Observation {
+                snapshot: snapshot.clone(),
+                selection: selection.clone(),
+            };
+            let digest = shared::digest(&value)?;
+            let payload = canonical_json(&value).map_err(invalid)?;
+            if payload.len() > 64 * 1024 * 1024 {
+                return Err(invalid("offline observation exceeds bound"));
+            }
+            tx.execute(
+                "INSERT INTO projection_observations VALUES(?1,?2) ON CONFLICT(digest) DO NOTHING",
+                params![digest, payload],
+            )?;
+            tx.commit()?;
+            access.verify()?;
+            Ok(ProjectionVersion::Remote {
+                step_id: snapshot.base_step_id.clone(),
+                root_tree_id: snapshot.base_root_tree_id.clone(),
+                policy_set_id: snapshot.observed_policy_set_id.clone(),
+                authorization_epoch: snapshot.observed_authorization_epoch,
+                observation_digest: digest,
+            })
         })
     }
     pub fn read_version_file(
@@ -656,23 +705,27 @@ impl ProjectionStore {
     ) -> Result<()> {
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing version reader lease"))?;
-        let state = resolve(&access.connection, self, version)?;
-        let e = entry(&state, path)
-            .ok_or_else(|| invalid(format!("offline_missing_metadata: {path}")))?;
-        if e.state == EntryState::Reserved {
-            return Err(invalid("offline path is protected"));
-        }
-        let Some(TreeEntryTarget::File { file_id }) = &e.target else {
-            return Err(invalid("version path is absent or is not a regular file"));
-        };
-        let manifest = retention::lookup(&access.connection, self, lease, file_id)?
-            .ok_or_else(|| invalid(format!("offline_missing_content: {path} {file_id}")))?;
-        lease.stream(&manifest, out)?;
-        access.verify()
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                let family = format::content_family(c, self, Some(scope))?;
+                let lease = family
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing version reader lease"))?;
+                let state = resolve_with_scope(c, self, version, Some(scope))?;
+                let e = entry(&state, path)
+                    .ok_or_else(|| invalid(format!("offline_missing_metadata: {path}")))?;
+                if e.state == EntryState::Reserved {
+                    return Err(invalid("offline path is protected"));
+                }
+                let Some(TreeEntryTarget::File { file_id }) = &e.target else {
+                    return Err(invalid("version path is absent or is not a regular file"));
+                };
+                let manifest = retention::lookup(c, self, lease, file_id)?
+                    .ok_or_else(|| invalid(format!("offline_missing_content: {path} {file_id}")))?;
+                lease.stream(&manifest, out)?;
+                scope.verify(c, self)
+            })
+        })
     }
     pub fn compare_versions(
         &self,
@@ -683,46 +736,53 @@ impl ProjectionStore {
         }
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing compare lease"))?;
-        let coverage = availability(&access.connection, self, lease, request)?;
-        if !coverage.available {
-            return Err(invalid(format!(
-                "offline_compare_unavailable: {}",
-                serde_json::to_string(&coverage).map_err(invalid)?
-            )));
-        }
-        let first = resolve(&access.connection, self, &request.version)?;
-        let second = resolve(
-            &access.connection,
-            self,
-            request
-                .other
-                .as_ref()
-                .ok_or_else(|| invalid("missing comparison operand"))?,
-        )?;
-        let mut rows = Vec::new();
-        for path in &request.paths {
-            let a = entry(&first, path).ok_or_else(|| invalid("unknown comparison path"))?;
-            let b = entry(&second, path).ok_or_else(|| invalid("unknown comparison path"))?;
-            if a.target != b.target || a.executable != b.executable {
-                let id = |e: &layrs_core::projection::ProjectionEntry| match &e.target {
-                    Some(TreeEntryTarget::File { file_id }) => Some(file_id.clone()),
-                    _ => None,
-                };
-                rows.push(VersionDifference {
-                    path: path.clone(),
-                    before: id(a),
-                    after: id(b),
-                    before_executable: a.executable,
-                    after_executable: b.executable,
-                });
-            }
-        }
-        access.verify()?;
-        Ok(rows)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                let family = format::content_family(c, self, Some(scope))?;
+                let lease = family
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing compare lease"))?;
+                let coverage = availability_with_scope(c, self, lease, request, Some(scope))?;
+                if !coverage.available {
+                    return Err(invalid(format!(
+                        "offline_compare_unavailable: {}",
+                        serde_json::to_string(&coverage).map_err(invalid)?
+                    )));
+                }
+                let first = resolve_with_scope(c, self, &request.version, Some(scope))?;
+                let second = resolve_with_scope(
+                    c,
+                    self,
+                    request
+                        .other
+                        .as_ref()
+                        .ok_or_else(|| invalid("missing comparison operand"))?,
+                    Some(scope),
+                )?;
+                let mut rows = Vec::new();
+                for path in &request.paths {
+                    let a =
+                        entry(&first, path).ok_or_else(|| invalid("unknown comparison path"))?;
+                    let b =
+                        entry(&second, path).ok_or_else(|| invalid("unknown comparison path"))?;
+                    if a.target != b.target || a.executable != b.executable {
+                        let id = |e: &layrs_core::projection::ProjectionEntry| match &e.target {
+                            Some(TreeEntryTarget::File { file_id }) => Some(file_id.clone()),
+                            _ => None,
+                        };
+                        rows.push(VersionDifference {
+                            path: path.clone(),
+                            before: id(a),
+                            after: id(b),
+                            before_executable: a.executable,
+                            after_executable: b.executable,
+                        });
+                    }
+                }
+                scope.verify(c, self)?;
+                Ok(rows)
+            })
+        })
     }
     pub fn begin_preparation(&self, request: &AvailabilityRequest) -> Result<OfflinePreparation> {
         self.begin_preparation_inner(None, request)
@@ -741,61 +801,67 @@ impl ProjectionStore {
     ) -> Result<OfflinePreparation> {
         require_shared(self)?;
         request.validate()?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        require_generation(&access.connection, expected_generation)?;
-        let active: u64 = access.connection.query_row(
-            "SELECT COUNT(*) FROM projection_preparations WHERE status!='released'",
-            [],
-            |r| r.get(0),
-        )?;
-        if active >= MAX_ACTIVE_PREPARATIONS {
-            return Err(invalid(
-                "active preparation limit reached; release an existing preparation",
-            ));
-        }
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing preparation lease"))?;
-        let dependencies = preparation_dependencies(&access.connection, self, lease, request)?;
-        // Retain existing representations now. Missing files acquire their
-        // spool plus installation capacity before every write, by actual length.
-        let reserve = 65536u64;
-        let mut seen = std::collections::BTreeSet::new();
-        let mut retained = Vec::new();
-        for (_, _, file_id, _) in &dependencies {
-            if seen.insert(file_id) {
-                if let Some(manifest) = lease.manifest_for(file_id)? {
-                    lease.check_manifest_resident(&manifest)?;
-                    retained.push(manifest);
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                database::require_mutable(c)?;
+                require_generation(c, expected_generation)?;
+                let active: u64 = c.query_row(
+                    "SELECT COUNT(*) FROM projection_preparations WHERE status!='released'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if active >= MAX_ACTIVE_PREPARATIONS {
+                    return Err(invalid(
+                        "active preparation limit reached; release an existing preparation",
+                    ));
                 }
-            }
-        }
-        let id = shared::unique_id()?;
-        let reservation = lease.reserve(
-            &self.identity().worktree_id,
-            &format!("preparation:{id}"),
-            reserve,
-        )?;
-        let preparation = OfflinePreparation {
-            id: id.clone(),
-            request: request.clone(),
-            status: "acquiring".into(),
-        };
-        let payload = canonical_json(&preparation).map_err(invalid)?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        require_generation(&tx, expected_generation)?;
-        retention::accept_claim(&tx, self, lease, "preparation", &id, &retained)?;
-        tx.execute(
-            "INSERT INTO projection_preparations VALUES(?1,?2,'acquiring',NULL,?3)",
-            params![id, payload, reservation],
-        )?;
-        tx.commit()?;
-        access.verify()?;
-        Ok(preparation)
+                let family = format::content_family(c, self, Some(scope))?;
+                let lease = family
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing preparation lease"))?;
+                let dependencies = preparation_dependencies(c, self, lease, request, Some(scope))?;
+                // Retain existing representations now. Missing files acquire their
+                // spool plus installation capacity before every write, by actual length.
+                let reserve = 65536u64;
+                let mut seen = std::collections::BTreeSet::new();
+                let mut retained = Vec::new();
+                for (_, _, file_id, _) in &dependencies {
+                    if seen.insert(file_id) {
+                        let available = match retention::lookup(c, self, lease, file_id)? {
+                            Some(exact) => Some(exact),
+                            None => lease.manifest_for(file_id)?,
+                        };
+                        if let Some(manifest) = available {
+                            lease.check_manifest_resident(&manifest)?;
+                            retained.push(manifest);
+                        }
+                    }
+                }
+                let id = shared::unique_id()?;
+                let reservation = lease.reserve(
+                    &self.identity().worktree_id,
+                    &format!("preparation:{id}"),
+                    reserve,
+                )?;
+                let preparation = OfflinePreparation {
+                    id: id.clone(),
+                    request: request.clone(),
+                    status: "acquiring".into(),
+                };
+                let payload = canonical_json(&preparation).map_err(invalid)?;
+                let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                require_generation(&tx, expected_generation)?;
+                retention::accept_claim(&tx, self, lease, "preparation", &id, &retained)?;
+                tx.execute(
+                    "INSERT INTO projection_preparations VALUES(?1,?2,'acquiring',NULL,?3)",
+                    params![id, payload, reservation],
+                )?;
+                tx.commit()?;
+                scope.verify(c, self)?;
+                Ok(preparation)
+            })
+        })
     }
     pub fn prepare_offline(
         &self,
@@ -854,115 +920,125 @@ impl ProjectionStore {
         faults: &dyn PreparationFaults,
     ) -> Result<OfflinePreparation> {
         require_shared(self)?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        require_generation(&access.connection, expected_generation)?;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing preparation lease"))?;
-        let (payload,status,reservation):(Vec<u8>,String,String)=access.connection.query_row("SELECT payload,status,reservation FROM projection_preparations WHERE id=?1 AND length(payload)<=16777216",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-        let mut p: OfflinePreparation = serde_json::from_slice(&payload).map_err(invalid)?;
-        if p.id != id || p.status != status || canonical_json(&p).map_err(invalid)? != payload {
-            return Err(invalid("preparation identity mismatch"));
-        }
-        if status == "released" {
-            return Err(invalid("preparation released"));
-        }
-        let dependencies = preparation_dependencies(&access.connection, self, lease, &p.request)?;
-        if status == "ready" {
-            lease.release_reservation(&reservation, &self.identity().worktree_id)?;
-            access.verify()?;
-            return Ok(p);
-        }
-        faults.check(PreparationPoint::IntentDurable)?;
-        // An interrupted previous attempt may own a spool-sized installation.
-        // Resolve only its authenticated stages before charging a new spool.
-        lease.cancel_installations(&reservation, &self.identity().worktree_id)?;
-        let mut manifests = Vec::new();
-        for (version, path, file_id, executable) in dependencies {
-            let manifest = if let Some(manifest) = lease.manifest_for(&file_id)? {
-                lease.verify_manifest(&manifest)?;
-                manifest
-            } else {
-                let mut spool = crate::private_spool_file()?;
-                let mut charged = ChargedSpool {
-                    spool: &mut spool,
-                    lease,
-                    reservation: &reservation,
-                    owner: &self.identity().worktree_id,
-                    file_id: &file_id,
-                    bytes: 0,
-                };
-                let mut writer =
-                    install::files::FileWriter::new(&mut charged, MAX_CAPTURE_FILE_BYTES);
-                write_file(&version, &path, &mut writer)?;
-                let bytes = writer.finish(&file_id)?;
-                drop(charged);
-                spool.seek(SeekFrom::Start(0))?;
-                lease.install_file(
-                    &mut spool,
-                    &CapturedFile {
-                        file_id: file_id.clone(),
-                        executable,
-                        bytes,
-                    },
-                    &reservation,
-                )?
-            };
-            // Preserve successful acquisition progress across a later file's
-            // failure. Release removes these exact private preparation claims.
-            retention::accept_claim(
-                &access.connection,
-                self,
-                lease,
-                "preparation",
-                &p.id,
-                std::slice::from_ref(&manifest),
-            )?;
-            manifests.push(manifest);
-        }
-        faults.check(PreparationPoint::ContentVerified)?;
-        let (root, digest) =
-            lease.protect(&self.marker, &format!("preparation:{}", p.id), &manifests)?;
-        faults.check(PreparationPoint::ProtectionDurable)?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        require_generation(&tx, expected_generation)?;
-        // Root membership and private ready receipt are accepted atomically.
-        tx.execute("INSERT INTO projection_claims VALUES(?1,?2,'preparation',?3) ON CONFLICT(root_id) DO NOTHING",params![root,digest,p.id])?;
-        for m in &manifests {
-            tx.execute(
-                "INSERT INTO projection_content VALUES(?1,?2,?3) ON CONFLICT(file_id) DO NOTHING",
-                params![m.file_id().as_str(), m.id().as_str(), m.byte_length()],
-            )?;
-        }
-        p.status = "ready".into();
-        tx.execute(
-            "UPDATE projection_preparations SET payload=?1,status='ready',root_id=?2 WHERE id=?3",
-            params![canonical_json(&p).map_err(invalid)?, root, p.id],
-        )?;
-        tx.commit()?;
-        faults.check(PreparationPoint::ReadyDurable)?;
-        lease.release_reservation(&reservation, &self.identity().worktree_id)?;
-        access.verify()?;
-        Ok(p)
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            access.with_content(|c, scope| {
+                database::require_mutable(c)?;
+                require_generation(c, expected_generation)?;
+                let family = format::content_family(c, self, Some(scope))?;
+                let lease = family
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing preparation lease"))?;
+                let (payload,status,reservation):(Vec<u8>,String,String)=c.query_row("SELECT payload,status,reservation FROM projection_preparations WHERE id=?1 AND length(payload)<=16777216",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+                let mut p: OfflinePreparation = serde_json::from_slice(&payload).map_err(invalid)?;
+                if p.id != id || p.status != status || canonical_json(&p).map_err(invalid)? != payload {
+                    return Err(invalid("preparation identity mismatch"));
+                }
+                if status == "released" {
+                    return Err(invalid("preparation released"));
+                }
+                let dependencies = preparation_dependencies(c, self, lease, &p.request, Some(scope))?;
+                if status == "ready" {
+                    lease.release_reservation(&reservation, &self.identity().worktree_id)?;
+                    scope.verify(c, self)?;
+                    return Ok(p);
+                }
+                faults.check(PreparationPoint::IntentDurable)?;
+                // An interrupted previous attempt may own a spool-sized installation.
+                // Resolve only its authenticated stages before charging a new spool.
+                lease.cancel_installations(&reservation, &self.identity().worktree_id)?;
+                let mut manifests = Vec::new();
+                for (version, path, file_id, executable) in dependencies {
+                    let available = match retention::lookup(c, self, lease, &file_id)? {
+                        Some(exact) => Some(exact),
+                        None => lease.manifest_for(&file_id)?,
+                    };
+                    let manifest = if let Some(manifest) = available {
+                        lease.verify_manifest(&manifest)?;
+                        manifest
+                    } else {
+                        let mut spool = crate::private_spool_file()?;
+                        let mut charged = ChargedSpool {
+                            spool: &mut spool,
+                            lease,
+                            reservation: &reservation,
+                            owner: &self.identity().worktree_id,
+                            file_id: &file_id,
+                            bytes: 0,
+                        };
+                        let mut writer =
+                            install::files::FileWriter::new(&mut charged, MAX_CAPTURE_FILE_BYTES);
+                        write_file(&version, &path, &mut writer)?;
+                        let bytes = writer.finish(&file_id)?;
+                        drop(charged);
+                        spool.seek(SeekFrom::Start(0))?;
+                        lease.install_file(
+                            &mut spool,
+                            &CapturedFile {
+                                file_id: file_id.clone(),
+                                executable,
+                                bytes,
+                            },
+                            &reservation,
+                        )?
+                    };
+                    // Preserve successful acquisition progress across a later file's
+                    // failure. Release removes these exact private preparation claims.
+                    retention::accept_claim(
+                        c,
+                        self,
+                        lease,
+                        "preparation",
+                        &p.id,
+                        std::slice::from_ref(&manifest),
+                    )?;
+                    manifests.push(manifest);
+                }
+                faults.check(PreparationPoint::ContentVerified)?;
+                let (root, digest) =
+                    lease.protect(&self.marker, &format!("preparation:{}", p.id), &manifests)?;
+                faults.check(PreparationPoint::ProtectionDurable)?;
+                let tx = c
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                require_generation(&tx, expected_generation)?;
+                // Root membership and private ready receipt are accepted atomically.
+                tx.execute("INSERT INTO projection_claims VALUES(?1,?2,'preparation',?3) ON CONFLICT(root_id) DO NOTHING",params![root,digest,p.id])?;
+                for m in &manifests {
+                    tx.execute(
+                        "INSERT INTO projection_content VALUES(?1,?2,?3) ON CONFLICT(file_id) DO NOTHING",
+                        params![m.file_id().as_str(), m.id().as_str(), m.byte_length()],
+                    )?;
+                }
+                p.status = "ready".into();
+                tx.execute(
+                    "UPDATE projection_preparations SET payload=?1,status='ready',root_id=?2 WHERE id=?3",
+                    params![canonical_json(&p).map_err(invalid)?, root, p.id],
+                )?;
+                tx.commit()?;
+                faults.check(PreparationPoint::ReadyDurable)?;
+                lease.release_reservation(&reservation, &self.identity().worktree_id)?;
+                scope.verify(c, self)?;
+                Ok(p)
+            })
+        })
     }
     /// Exact lookup is independent of listing/history bounds. Pruned released
     /// receipts return None; active preparations are never pruned.
     pub fn preparation(&self, id: &str) -> Result<Option<OfflinePreparation>> {
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
-        let result = preparation_record(&access.connection, id)?.map(|(p, _)| p);
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            let result = preparation_record(&access.connection, id)?.map(|(p, _)| p);
+            access.verify()?;
+            Ok(result)
+        })
     }
     /// At most 1024 active entries plus the last 64 created released entries.
     /// Oversized histories from earlier drafts cannot block exact lookup.
     pub fn preparations(&self) -> Result<Vec<OfflinePreparation>> {
         require_shared(self)?;
         let access = format::access(self, SessionMode::Shared)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
         let mut out = Vec::new();
         for (released, limit) in [
             (false, MAX_ACTIVE_PREPARATIONS),
@@ -979,39 +1055,42 @@ impl ProjectionStore {
         }
         access.verify()?;
         Ok(out)
+        })
     }
     pub fn release_preparation(&self, id: &str) -> Result<()> {
         require_shared(self)?;
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        let (mut p, reservation) = preparation_record(&access.connection, id)?
-            .ok_or_else(|| invalid("preparation unknown or released history expired"))?;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing cancellation lease"))?;
-        lease.cancel_installations(&reservation, &self.identity().worktree_id)?;
-        p.status = "released".into();
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM projection_claims WHERE kind='preparation' AND owner=?1",
-            [id],
-        )?;
-        tx.execute(
-            "UPDATE projection_preparations SET payload=?1,status='released' WHERE id=?2",
-            params![canonical_json(&p).map_err(invalid)?, id],
-        )?;
-        tx.commit()?;
-        access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing release lease"))?
-            .release_reservation(&reservation, &self.identity().worktree_id)?;
-        prune_released(&access.connection, self, lease)?;
-        // Shared root removal requires exclusive reconciliation of every owner.
-        access.verify()
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let (mut p, reservation) = preparation_record(&access.connection, id)?
+                .ok_or_else(|| invalid("preparation unknown or released history expired"))?;
+            let lease = access
+                .family
+                .as_ref()
+                .ok_or_else(|| invalid("missing cancellation lease"))?;
+            lease.cancel_installations(&reservation, &self.identity().worktree_id)?;
+            p.status = "released".into();
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute(
+                "DELETE FROM projection_claims WHERE kind='preparation' AND owner=?1",
+                [id],
+            )?;
+            tx.execute(
+                "UPDATE projection_preparations SET payload=?1,status='released' WHERE id=?2",
+                params![canonical_json(&p).map_err(invalid)?, id],
+            )?;
+            tx.commit()?;
+            access
+                .family
+                .as_ref()
+                .ok_or_else(|| invalid("missing release lease"))?
+                .release_reservation(&reservation, &self.identity().worktree_id)?;
+            prune_released(&access.connection, self, lease)?;
+            // Shared root removal requires exclusive reconciliation of every owner.
+            access.verify()
+        })
     }
 }
 
@@ -1021,13 +1100,24 @@ pub(super) fn restore_targets(
     version: &ProjectionVersion,
     paths: &[RepoPath],
 ) -> Result<BTreeMap<RepoPath, Option<CapturedFile>>> {
+    restore_targets_with_scope(c, store, version, paths, None)
+}
+pub(super) fn restore_targets_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    version: &ProjectionVersion,
+    paths: &[RepoPath],
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<BTreeMap<RepoPath, Option<CapturedFile>>> {
     require_shared(store)?;
     if paths.is_empty() || paths.len() > 1024 || paths.windows(2).any(|p| p[0] >= p[1]) {
         return Err(invalid("restore version paths must be sorted and unique"));
     }
-    let lease =
-        shared::for_store(store)?.ok_or_else(|| invalid("missing restore content lease"))?;
-    let state = resolve(c, store, version)?;
+    let family = format::content_family(c, store, scope)?;
+    let lease = family
+        .as_ref()
+        .ok_or_else(|| invalid("missing restore content lease"))?;
+    let state = resolve_with_scope(c, store, version, scope)?;
     let mut out = BTreeMap::new();
     for path in paths {
         let e = entry(&state, path).ok_or_else(|| invalid("offline_restore_missing_metadata"))?;
@@ -1037,7 +1127,7 @@ pub(super) fn restore_targets(
         let file = match &e.target {
             None if e.state == EntryState::Absent => None,
             Some(TreeEntryTarget::File { file_id }) => {
-                let m = retention::lookup(c, store, &lease, file_id)?.ok_or_else(|| {
+                let m = retention::lookup(c, store, lease, file_id)?.ok_or_else(|| {
                     invalid(format!("offline_restore_missing_content: {path} {file_id}"))
                 })?;
                 lease.verify_manifest(&m)?;

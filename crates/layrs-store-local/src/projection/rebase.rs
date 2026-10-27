@@ -113,24 +113,26 @@ impl ProjectionStore {
         resolutions: &BTreeMap<RepoPath, Option<CapturedFile>>,
     ) -> Result<RebasePreview> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_mutable(&access.connection)?;
-        let current = database::current(&access.connection)?;
-        if current.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: current.generation,
-            });
-        }
-        let value = preview(
-            self,
-            &access.connection,
-            &current,
-            capture_sequence,
-            target,
-            resolutions,
-        )?;
-        access.verify()?;
-        Ok(value)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let current = database::current(&access.connection)?;
+            if current.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: current.generation,
+                });
+            }
+            let value = preview(
+                self,
+                &access.connection,
+                &current,
+                capture_sequence,
+                target,
+                resolutions,
+            )?;
+            access.verify()?;
+            Ok(value)
+        })
     }
     /// `write_file` may only read prepared local bytes; no network I/O under the lock.
     pub fn apply_rebase(
@@ -156,9 +158,11 @@ impl ProjectionStore {
     /// Validate and return a durable completed result without reading live checkout files.
     pub fn completed_rebase(&self, operation_id: &str) -> Result<Option<CapturedPatch>> {
         let access = format::access(self, SessionMode::Shared)?;
-        let result = history::completed_id(&access.connection, self, operation_id)?;
-        access.verify()?;
-        Ok(result)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            let result = history::completed_id(&access.connection, self, operation_id)?;
+            access.verify()?;
+            Ok(result)
+        })
     }
 }
 

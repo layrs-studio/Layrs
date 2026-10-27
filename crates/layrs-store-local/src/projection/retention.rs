@@ -54,10 +54,22 @@ pub(super) fn reserve(
     files: &[CapturedFile],
     extra: u64,
 ) -> Result<()> {
-    let Some(lease) = shared::for_store(store)? else {
+    reserve_with_scope(c, store, operation, witness, files, extra, None)
+}
+pub(super) fn reserve_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    operation: &str,
+    witness: &str,
+    files: &[CapturedFile],
+    extra: u64,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let family = format::content_family(c, store, scope)?;
+    let Some(lease) = family.as_ref() else {
         return Ok(());
     };
-    settle(c, store)?;
+    settle_with_lease(c, store, Some(lease))?;
     if fs2::available_space(&store.root)? < extra.saturating_add(65536) {
         return Err(invalid(
             "partial_store_quota: insufficient checkout staging space",
@@ -111,7 +123,18 @@ pub(super) fn finish_budget(c: &Connection, store: &ProjectionStore) -> Result<(
     Ok(())
 }
 pub(super) fn settle(c: &Connection, store: &ProjectionStore) -> Result<()> {
-    let Some(lease) = shared::for_store(store)? else {
+    let lease = shared::for_store(store)?;
+    settle_with_lease(c, store, lease.as_ref())
+}
+
+/// The caller retains its admitted owner scope and existing typed family lease.
+/// Never rediscover a generic ordinary lease while that owner is held.
+pub(super) fn settle_with_lease(
+    c: &Connection,
+    store: &ProjectionStore,
+    lease: Option<&shared::Lease>,
+) -> Result<()> {
+    let Some(lease) = lease else {
         return Ok(());
     };
     let id: Option<String> = c
@@ -188,8 +211,21 @@ pub(super) fn retain_pinned(
     kind: &str,
     owner: &str,
 ) -> Result<()> {
-    let lease =
-        shared::for_store(store)?.ok_or_else(|| invalid("shared content requires format4"))?;
+    retain_pinned_with_scope(c, store, pinned, file, kind, owner, None)
+}
+pub(super) fn retain_pinned_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    pinned: &PinnedFile,
+    file: &CapturedFile,
+    kind: &str,
+    owner: &str,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let family = format::content_family(c, store, scope)?;
+    let lease = family
+        .as_ref()
+        .ok_or_else(|| invalid("shared content requires format4"))?;
     let mut input = pinned.file();
     input.seek(SeekFrom::Start(0))?;
     if input.metadata()?.len() != file.bytes
@@ -198,13 +234,13 @@ pub(super) fn retain_pinned(
         return Err(invalid("shared source size or mode changed"));
     }
     let reservation = active_budget(c)?;
-    let manifest = if let Some(retained) = lookup(c, store, &lease, &file.file_id)? {
+    let manifest = if let Some(retained) = lookup(c, store, lease, &file.file_id)? {
         lease.retain_existing_representation(&mut input, file, &reservation, &retained)?
     } else {
         lease.install_file(&mut input, file, &reservation)?
     };
     pinned.verify_parent()?;
-    accept_claim(c, store, &lease, kind, owner, &[manifest])?;
+    accept_claim(c, store, lease, kind, owner, &[manifest])?;
     Ok(())
 }
 pub(super) fn manifest(
@@ -212,13 +248,23 @@ pub(super) fn manifest(
     store: &ProjectionStore,
     file: &CapturedFile,
 ) -> Result<FileManifest> {
+    manifest_with_scope(c, store, file, None)
+}
+pub(super) fn manifest_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    file: &CapturedFile,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<FileManifest> {
+    let family = format::content_family(c, store, scope)?;
+    let lease = family
+        .as_ref()
+        .ok_or_else(|| invalid("shared representation requires format4"))?;
     let id: String = c.query_row(
         "SELECT manifest_id FROM projection_content WHERE file_id=?1 AND bytes=?2",
         params![file.file_id.as_str(), file.bytes],
         |r| r.get(0),
     )?;
-    let lease = shared::for_store(store)?
-        .ok_or_else(|| invalid("shared representation requires format4"))?;
     let manifest = lease.manifest(&FileManifestId::parse(id).map_err(invalid)?)?;
     if manifest.file_id() != &file.file_id || manifest.byte_length() != file.bytes {
         return Err(invalid("private representation mismatch"));
@@ -326,7 +372,15 @@ pub(super) fn root_metadata(
     Ok(result)
 }
 pub(super) fn fsck(c: &Connection, store: &ProjectionStore) -> Result<()> {
-    let Some(lease) = shared::for_store(store)? else {
+    fsck_with_scope(c, store, None)
+}
+pub(super) fn fsck_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let family = format::content_family(c, store, scope)?;
+    let Some(lease) = family.as_ref() else {
         return Ok(());
     };
     let mut query = c.prepare("SELECT root_id,digest FROM projection_claims")?;
@@ -348,7 +402,17 @@ pub(super) fn reserve_checkout(
     snapshot: &ProjectionSnapshot,
     changes: &BTreeMap<String, Option<CapturedFile>>,
 ) -> Result<()> {
-    reserve_checkout_against(c, store, operation, snapshot, snapshot, changes)
+    reserve_checkout_with_scope(c, store, operation, snapshot, changes, None)
+}
+pub(super) fn reserve_checkout_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    operation: &str,
+    snapshot: &ProjectionSnapshot,
+    changes: &BTreeMap<String, Option<CapturedFile>>,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    reserve_checkout_against_with_scope(c, store, operation, snapshot, snapshot, changes, scope)
 }
 pub(super) fn reserve_checkout_against(
     c: &Connection,
@@ -358,14 +422,36 @@ pub(super) fn reserve_checkout_against(
     resulting_base: &ProjectionSnapshot,
     changes: &BTreeMap<String, Option<CapturedFile>>,
 ) -> Result<()> {
+    reserve_checkout_against_with_scope(
+        c,
+        store,
+        operation,
+        snapshot,
+        resulting_base,
+        changes,
+        None,
+    )
+}
+pub(super) fn reserve_checkout_against_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    operation: &str,
+    snapshot: &ProjectionSnapshot,
+    resulting_base: &ProjectionSnapshot,
+    changes: &BTreeMap<String, Option<CapturedFile>>,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
     if store.marker.shared.is_none() {
+        format::content_family(c, store, scope)?;
         return Ok(());
     }
-    let scan = capture::scan::scan(store, c, snapshot, false)?;
+    let scan = capture::scan::scan_with_scope(store, c, snapshot, false, scope)?;
     let witness = shared::digest(&scan.files)?;
     let (files, staging) = checkout_requirements(&scan.files, resulting_base, changes)?;
-    reserve(c, store, operation, &witness, &files, staging)?;
-    if shared::digest(&capture::scan::scan(store, c, snapshot, false)?.files)? != witness {
+    reserve_with_scope(c, store, operation, &witness, &files, staging, scope)?;
+    if shared::digest(&capture::scan::scan_with_scope(store, c, snapshot, false, scope)?.files)?
+        != witness
+    {
         return Err(invalid(
             "checkout changed during whole-capture quota preflight",
         ));
@@ -451,95 +537,102 @@ impl ProjectionStore {
         if !self.is_shared() {
             return Err(invalid("generation retention requires format4"));
         }
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        let c = &access.connection;
-        database::require_mutable(c)?;
-        let version = offline::snapshot_at(c, generation, None)?;
-        if database::current(c)?.generation == generation {
-            return Err(invalid(
-                "generation is the active base; retain it or advance the Worktree first",
-            ));
-        }
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing release lease"))?;
-        let mut q = c.prepare(
-            "SELECT root_id,digest FROM projection_claims WHERE kind='generation' AND owner=?1",
-        )?;
-        let claims = q
-            .query_map([&version.digest], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(q);
-        let mut exact = BTreeMap::new();
-        for (id, digest) in &claims {
-            for manifest in lease.verify_protection_metadata(&self.marker, id, digest)? {
-                exact.insert(manifest.id().clone(), manifest);
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access| {
+            let c = &access.connection;
+            database::require_mutable(c)?;
+            let version = offline::snapshot_at(c, generation, None)?;
+            if database::current(c)?.generation == generation {
+                return Err(invalid(
+                    "generation is the active base; retain it or advance the Worktree first",
+                ));
             }
-        }
-        let mut q = c.prepare("SELECT DISTINCT projection_generation FROM projection_captures")?;
-        let dependencies = q
-            .query_map([], |r| r.get::<_, u64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(q);
-        let mut historical_ids = BTreeSet::new();
-        for dependency in dependencies {
-            historical_ids.extend(
-                offline::snapshot_at(c, dependency, None)?
-                    .snapshot
-                    .entries
-                    .into_iter()
-                    .filter_map(|e| match e.target {
-                        Some(layrs_core::scm::TreeEntryTarget::File { file_id }) => Some(file_id),
-                        _ => None,
-                    }),
-            );
-        }
-        let current = database::current(c)?;
-        let active_ids = current
-            .snapshot
-            .entries
-            .iter()
-            .filter_map(|e| match &e.target {
-                Some(layrs_core::scm::TreeEntryTarget::File { file_id }) => Some(file_id.clone()),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        let active = exact
-            .values()
-            .filter(|m| active_ids.contains(m.file_id()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let historical = exact
-            .values()
-            .filter(|m| historical_ids.contains(m.file_id()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if !active.is_empty() {
-            accept_claim(&tx, self, lease, "generation", &current.digest, &active)?;
-        }
-        if !historical.is_empty() {
-            accept_claim(
-                &tx,
-                self,
-                lease,
-                "capture-base",
-                &version.digest,
-                &historical,
+            let lease = access
+                .family
+                .as_ref()
+                .ok_or_else(|| invalid("missing release lease"))?;
+            let mut q = c.prepare(
+                "SELECT root_id,digest FROM projection_claims WHERE kind='generation' AND owner=?1",
             )?;
-        }
-        let removed = tx.execute(
-            "DELETE FROM projection_claims WHERE kind='generation' AND owner=?1",
-            [&version.digest],
-        )? as u64;
-        tx.commit()?;
-        access.verify()?;
-        Ok(removed)
+            let claims = q
+                .query_map([&version.digest], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(q);
+            let mut exact = BTreeMap::new();
+            for (id, digest) in &claims {
+                for manifest in lease.verify_protection_metadata(&self.marker, id, digest)? {
+                    exact.insert(manifest.id().clone(), manifest);
+                }
+            }
+            let mut q =
+                c.prepare("SELECT DISTINCT projection_generation FROM projection_captures")?;
+            let dependencies = q
+                .query_map([], |r| r.get::<_, u64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(q);
+            let mut historical_ids = BTreeSet::new();
+            for dependency in dependencies {
+                historical_ids.extend(
+                    offline::snapshot_at(c, dependency, None)?
+                        .snapshot
+                        .entries
+                        .into_iter()
+                        .filter_map(|e| match e.target {
+                            Some(layrs_core::scm::TreeEntryTarget::File { file_id }) => {
+                                Some(file_id)
+                            }
+                            _ => None,
+                        }),
+                );
+            }
+            let current = database::current(c)?;
+            let active_ids = current
+                .snapshot
+                .entries
+                .iter()
+                .filter_map(|e| match &e.target {
+                    Some(layrs_core::scm::TreeEntryTarget::File { file_id }) => {
+                        Some(file_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            let active = exact
+                .values()
+                .filter(|m| active_ids.contains(m.file_id()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let historical = exact
+                .values()
+                .filter(|m| historical_ids.contains(m.file_id()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if !active.is_empty() {
+                accept_claim(&tx, self, lease, "generation", &current.digest, &active)?;
+            }
+            if !historical.is_empty() {
+                accept_claim(
+                    &tx,
+                    self,
+                    lease,
+                    "capture-base",
+                    &version.digest,
+                    &historical,
+                )?;
+            }
+            let removed = tx.execute(
+                "DELETE FROM projection_claims WHERE kind='generation' AND owner=?1",
+                [&version.digest],
+            )? as u64;
+            tx.commit()?;
+            access.verify()?;
+            Ok(removed)
+        })
     }
     /// Cancel a journal-free operation using exact recorded staging ownership.
     /// Accepted roots and user checkout files are never removed by cancellation.
@@ -552,32 +645,34 @@ impl ProjectionStore {
 }
 
 pub(super) fn cancel_with_access(store: &ProjectionStore, access: format::Access) -> Result<()> {
-    database::require_mutable(&access.connection)?;
-    if store.marker.shared.is_none() {
-        return Err(invalid("reservation recovery requires format4"));
-    }
-    staging::cancel(&access.connection, store)?;
-    let active: Option<(String, String)> = access
-        .connection
-        .query_row(
-            "SELECT operation,reservation FROM projection_budgets WHERE state='active'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if let Some((operation, reservation)) = active {
-        let _ = operation;
-        let lease = access
-            .family
-            .as_ref()
-            .ok_or_else(|| invalid("missing cancellation lease"))?;
-        lease.cancel_installations(&reservation, &store.identity().worktree_id)?;
-        access.connection.execute(
-            "DELETE FROM projection_budgets WHERE singleton=1 AND reservation=?1",
-            [&reservation],
-        )?;
-        lease.release_reservation(&reservation, &store.identity().worktree_id)?;
-    }
-    settle(&access.connection, store)?;
-    access.verify()
+    access.run(|access| {
+        database::require_mutable(&access.connection)?;
+        if store.marker.shared.is_none() {
+            return Err(invalid("reservation recovery requires format4"));
+        }
+        staging::cancel(&access.connection, store)?;
+        let active: Option<(String, String)> = access
+            .connection
+            .query_row(
+                "SELECT operation,reservation FROM projection_budgets WHERE state='active'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((operation, reservation)) = active {
+            let _ = operation;
+            let lease = access
+                .family
+                .as_ref()
+                .ok_or_else(|| invalid("missing cancellation lease"))?;
+            lease.cancel_installations(&reservation, &store.identity().worktree_id)?;
+            access.connection.execute(
+                "DELETE FROM projection_budgets WHERE singleton=1 AND reservation=?1",
+                [&reservation],
+            )?;
+            lease.release_reservation(&reservation, &store.identity().worktree_id)?;
+        }
+        settle(&access.connection, store)?;
+        access.verify()
+    })
 }

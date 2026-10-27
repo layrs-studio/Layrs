@@ -82,17 +82,19 @@ impl ProjectionStore {
         destination: &RepoPath,
     ) -> Result<DirectoryMovePreview> {
         let access = format::access(self, SessionMode::Shared)?;
-        database::require_mutable(&access.connection)?;
-        let state = database::current(&access.connection)?;
-        if state.generation != expected_generation {
-            return Err(ProjectionStoreError::Stale {
-                expected: expected_generation,
-                actual: state.generation,
-            });
-        }
-        let preview = preview(self, &access.connection, &state, source, destination)?;
-        access.verify()?;
-        Ok(preview)
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            let state = database::current(&access.connection)?;
+            if state.generation != expected_generation {
+                return Err(ProjectionStoreError::Stale {
+                    expected: expected_generation,
+                    actual: state.generation,
+                });
+            }
+            let preview = preview(self, &access.connection, &state, source, destination)?;
+            access.verify()?;
+            Ok(preview)
+        })
     }
     pub fn apply_directory_move(&self, preview: &DirectoryMovePreview) -> Result<CapturedPatch> {
         self.apply_directory_move_with_faults(preview, &NoNamespaceFaults)
@@ -105,83 +107,85 @@ impl ProjectionStore {
         if expected.digest != expected.computed_digest()? {
             return Err(invalid("directory move preview digest mismatch"));
         }
-        let mut access = format::access(self, SessionMode::Exclusive)?;
-        database::require_mutable(&access.connection)?;
-        if let Some(capture) = completed(&access.connection, self, expected)? {
-            return Ok(capture);
-        }
-        let state = database::current(&access.connection)?;
-        if state.generation != expected.projection_generation
-            || state.digest != expected.projection_digest
-        {
-            return Err(invalid("directory move projection changed"));
-        }
-        let mut actual = preview(
-            self,
-            &access.connection,
-            &state,
-            &expected.source,
-            &expected.destination,
-        )?;
-        actual.operation_id = expected.operation_id.clone();
-        actual.digest = actual.computed_digest()?;
-        if &actual != expected {
-            return Err(invalid("directory move preview is stale"));
-        }
-        if self.marker.shared.is_some() {
-            let mut changes = BTreeMap::new();
-            for (source, file) in &expected.source_files {
-                let suffix = source
-                    .strip_prefix(expected.source.as_str())
-                    .ok_or_else(|| invalid("directory source mismatch"))?;
-                changes.insert(source.clone(), None);
-                changes.insert(
-                    format!("{}{suffix}", expected.destination.as_str()),
-                    Some(file.clone()),
-                );
+        let access = format::access(self, SessionMode::Exclusive)?;
+        access.run(|access: &mut format::Access| -> Result<_> {
+            database::require_mutable(&access.connection)?;
+            if let Some(capture) = completed(&access.connection, self, expected)? {
+                return Ok(capture);
             }
-            retention::reserve_checkout(
-                &access.connection,
+            let state = database::current(&access.connection)?;
+            if state.generation != expected.projection_generation
+                || state.digest != expected.projection_digest
+            {
+                return Err(invalid("directory move projection changed"));
+            }
+            let mut actual = preview(
                 self,
-                &format!("directory-move:{}", expected.operation_id),
-                &state.snapshot,
-                &changes,
+                &access.connection,
+                &state,
+                &expected.source,
+                &expected.destination,
             )?;
-        }
-        let journal = Journal {
-            schema_version: JOURNAL_SCHEMA.into(),
-            preview: expected.clone(),
-            capture_digest: None,
-        };
-        let bytes = canonical_json(&journal).map_err(invalid)?;
-        if bytes.len() > MAX_JOURNAL {
-            return Err(invalid("directory move journal exceeds8MiB"));
-        }
-        access.verify()?;
-        let tx = access
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if self.marker.shared.is_some() {
-            let root = PinnedDirectory::open(&self.root)?;
-            for (path, file) in &expected.source_files {
-                let pin = root.open_relative_file(Path::new(path))?;
-                retention::retain_pinned(
-                    &tx,
+            actual.operation_id = expected.operation_id.clone();
+            actual.digest = actual.computed_digest()?;
+            if &actual != expected {
+                return Err(invalid("directory move preview is stale"));
+            }
+            if self.marker.shared.is_some() {
+                let mut changes = BTreeMap::new();
+                for (source, file) in &expected.source_files {
+                    let suffix = source
+                        .strip_prefix(expected.source.as_str())
+                        .ok_or_else(|| invalid("directory source mismatch"))?;
+                    changes.insert(source.clone(), None);
+                    changes.insert(
+                        format!("{}{suffix}", expected.destination.as_str()),
+                        Some(file.clone()),
+                    );
+                }
+                retention::reserve_checkout(
+                    &access.connection,
                     self,
-                    &pin,
-                    file,
-                    "directory-move",
-                    &expected.operation_id,
+                    &format!("directory-move:{}", expected.operation_id),
+                    &state.snapshot,
+                    &changes,
                 )?;
             }
-        }
-        tx.execute(
-            "INSERT INTO projection_namespace_pending VALUES(1,?1)",
-            [&bytes],
-        )?;
-        tx.commit()?;
-        faults.check(NamespacePoint::JournalDurable)?;
-        finish(self, &mut access, &journal, faults)
+            let journal = Journal {
+                schema_version: JOURNAL_SCHEMA.into(),
+                preview: expected.clone(),
+                capture_digest: None,
+            };
+            let bytes = canonical_json(&journal).map_err(invalid)?;
+            if bytes.len() > MAX_JOURNAL {
+                return Err(invalid("directory move journal exceeds8MiB"));
+            }
+            access.verify()?;
+            let tx = access
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if self.marker.shared.is_some() {
+                let root = PinnedDirectory::open(&self.root)?;
+                for (path, file) in &expected.source_files {
+                    let pin = root.open_relative_file(Path::new(path))?;
+                    retention::retain_pinned(
+                        &tx,
+                        self,
+                        &pin,
+                        file,
+                        "directory-move",
+                        &expected.operation_id,
+                    )?;
+                }
+            }
+            tx.execute(
+                "INSERT INTO projection_namespace_pending VALUES(1,?1)",
+                [&bytes],
+            )?;
+            tx.commit()?;
+            faults.check(NamespacePoint::JournalDurable)?;
+            finish(self, access, &journal, faults)
+        })
     }
 }
 

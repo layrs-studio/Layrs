@@ -246,9 +246,11 @@ impl ProjectionStore {
     /// database and family identities through the ordinary reader access path.
     pub fn shared_family(&self) -> Result<Option<PartialStoreFamily>> {
         let access = format::access(self, SessionMode::Shared)?;
-        let family = access.family.as_ref().map(|lease| lease.family.clone());
-        access.verify()?;
-        Ok(family)
+        access.run(|access| {
+            let family = access.family.as_ref().map(|lease| lease.family.clone());
+            access.verify()?;
+            Ok(family)
+        })
     }
 }
 
