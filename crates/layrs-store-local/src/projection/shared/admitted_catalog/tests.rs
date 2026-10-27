@@ -33,7 +33,7 @@ fn family() -> Vec<u8> {
     .unwrap()
 }
 
-fn manifests(bytes: &[u8]) -> Vec<FileManifest> {
+pub(super) fn manifests(bytes: &[u8]) -> Vec<FileManifest> {
     vec![
         FileManifest::from_chunks(
             ChunkingDescriptor::single(),
@@ -51,7 +51,7 @@ fn manifests(bytes: &[u8]) -> Vec<FileManifest> {
     ]
 }
 
-fn context(family: &[u8], n: u8, manifests: &[FileManifest]) -> AdmittedFamilyContext {
+pub(super) fn context(family: &[u8], n: u8, manifests: &[FileManifest]) -> AdmittedFamilyContext {
     let mut hash = blake3::Hasher::new();
     hash.update(b"layrs-projection-recovery-family-v1\0");
     hash.update(family);
@@ -112,7 +112,7 @@ fn context(family: &[u8], n: u8, manifests: &[FileManifest]) -> AdmittedFamilyCo
     }
 }
 
-fn install(c: &Connection, context: &AdmittedFamilyContext, manifests: &[FileManifest]) {
+pub(super) fn install(c: &Connection, context: &AdmittedFamilyContext, manifests: &[FileManifest]) {
     let g = &context.primary;
     let b = &g.binding;
     c.execute(
@@ -229,7 +229,9 @@ fn install(c: &Connection, context: &AdmittedFamilyContext, manifests: &[FileMan
     }
 }
 
-fn fixture(body: impl FnOnce(&Connection, &[u8], &AdmittedFamilyContext, &[FileManifest])) {
+pub(super) fn fixture(
+    body: impl FnOnce(&Connection, &[u8], &AdmittedFamilyContext, &[FileManifest]),
+) {
     with_reference("", |c| {
         super::super::schema_v2::initialize_test_reference(c)?;
         c.execute_batch("BEGIN IMMEDIATE")?;

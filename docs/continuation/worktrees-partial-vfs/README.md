@@ -1,5 +1,33 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément réservation ordinaire de C — r36 à r37
+
+La réservation exacte de C coexiste avec tous les imports Published retenus.
+Le pilote vérifie les vrais B/C Staging, le plan entièrement financé, les index
+et les octets immuables ; il conserve leurs protections pendant le commit et
+la fermeture du catalogue. Le rejeu avec le même propriétaire ne réécrit rien.
+
+Six tests purs passent sur r36. Après correction de trois noms de champs dans
+la fixture JSON (code de production inchangé), les dix tests SQL passent sur
+r37, puis le scénario natif en 640,167 s. Celui-ci retient volontairement un
+acquittement après fermeture physique réussie, vérifie la réservation durable,
+puis son rejeu sans nouveau writer. Les bases B/C, l’admission de B, les groupes
+retenus et les autres fichiers sont préservés. C reste Initializing, sans root,
+installation ni admission ordinaire. Perte du propriétaire et panne réelle de
+fermeture restent à qualifier.
+
+Archive `ordinary-reservation-evidence-20261027-r36-r37.tar.gz` : 1 277 fichiers
+vérifiés, 3 592 445 octets, SHA-256
+`87f9d2d4fc249e2f2a57cd9740f0393b27c157eeb1322e65cad1716a01184389`.
+Le nom conserve la date UTC de la collection ; qualification terminée le
+28 octobre à Paris. Échec initial et sources des deux versions conservés.
+
+Suite : installation des contenus, protection de C, checkout, publication et
+admission autonome. Le nouveau lot Installing est écrit et passe la vérification
+workspace/all-targets ; sa qualification d’exécution reste à faire. Tous les
+autres volets du programme restent actifs ; voir le
+[plan de contenu](../../plans/worktrees-partial-vfs-ordinary-content.md).
+
 ## Complément budget complet et Staging — r34 à r35
 
 Les neuf tests purs de budget/capacité passent sur r34. Après correction du

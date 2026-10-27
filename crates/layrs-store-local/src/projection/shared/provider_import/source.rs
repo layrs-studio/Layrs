@@ -125,6 +125,63 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         intent: &ProviderTransitionIntentRecord,
         cancel: Option<&Cancellation>,
     ) -> Result<()> {
+        self.require_family_identity(family, intent, cancel)?;
+        // The ordinary/Provider wrapper stays strict: active C groups are
+        // accepted only by the separately named export path below.
+        self.retained
+            .validate_catalog(c, family.marker_bytes(), cancel)?;
+        family.verify()?;
+        cancellation::check(cancel)
+    }
+
+    /// Actual B-private interpretation and physical family binding, followed
+    /// by the complete retained walk plus one exact ReserveOnly target. The
+    /// physical export driver separately authenticates C's actual Staging and
+    /// independent pins before entering this catalog scope.
+    pub(in crate::projection) fn validate_export_reserve_only(
+        &self,
+        family: &FamilyAccess,
+        c: &Connection,
+        intent: &ProviderTransitionIntentRecord,
+        target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::admitted_catalog::ExportReserveOnlyState> {
+        if intent.state != TransitionState::Staging {
+            return Err(invalid("ordinary reserve source must be actual Staging"));
+        }
+        let proof = intent
+            .destination
+            .as_ref()
+            .ok_or_else(|| invalid("ordinary reserve destination proof absent"))?;
+        let target_binding = target.binding();
+        if target_binding.transaction_id != intent.transaction_id
+            || target_binding.plan_digest != intent.plan.digest()?
+            || target_binding.prefix_id != intent.plan.source_prefix_id
+            || target_binding.destination_proof_digest != proof.digest(&intent.plan)?
+            || target_binding.owner != proof.format.identity.worktree_id
+            || target_binding.database_identity != proof.private_database_identity
+            || target_binding.quota_bytes != intent.plan.quota_bytes
+            || intent.reservation.as_deref() != Some(target_binding.reservation.as_str())
+        {
+            return Err(invalid(
+                "ordinary reserve target differs from actual source intent",
+            ));
+        }
+        self.require_family_identity(family, intent, cancel)?;
+        let (_, state) =
+            self.retained
+                .validate_export_reserve_only(c, family.marker_bytes(), target, cancel)?;
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
+    fn require_family_identity(
+        &self,
+        family: &FamilyAccess,
+        intent: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
         self.require_private(intent, cancel)?;
         family.verify()?;
         let shared = self
@@ -147,11 +204,6 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         {
             return Err(invalid("ordinary import source differs from pinned family"));
         }
-        // This verifies B's actual Ready registry membership, retained exact
-        // import group and protections. It intentionally rejects active C
-        // reservations until a separate export-scoped policy is implemented.
-        self.retained
-            .validate_catalog(c, family.marker_bytes(), cancel)?;
         family.verify()?;
         cancellation::check(cancel)
     }

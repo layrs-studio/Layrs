@@ -5,6 +5,84 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
+## Qualified ReserveOnly checkpoint — r36/r37
+
+After Staging commit `6ccea26`, the dedicated ReserveOnly catalog validator,
+exact source adapter and physical reservation callback are connected. The
+ordinary catalog route remains strict. Export planning uses the freshly
+authenticated private mappings and cached exact manifests, avoiding both
+ordinary lease lookups after C obtains its reservation. A complete export
+catalog/index read closes before physical CAS verification; immutable object
+pins and an independent lifecycle guard survive the later Exclusive/Immediate
+index revalidation, reservation COMMIT and positive close.
+
+Production check passes (28.44 s). Workspace all-targets check passes (40.19 s)
+after a test helper's domain argument was corrected to its required static
+lifetime. Final normal test build passes (1m18s); r36 audit retains 620 inputs,
+nine startup checks and CodeView age114. Independent critical source release
+compares 132 live/retained paths and releases 17 exact recipes.
+
+All six pure recipes pass on r36. The first SQL recipe stops during fixture
+construction: ImportSource::Ordinary enum fields are snake_case, but the
+fixture supplied formatDigest/privateSchema/checkoutIdentity. ROOT changes
+exactly those three test keys; production and native test sources are unchanged.
+The failed fixture and logs remain preserved and must not be reopened.
+
+The corrected normal test build passes (22.45 s). r37 audit retains the same
+620 inputs, with exactly one changed test file, CodeView age115 and EXE SHA256
+`75eb4f69be114a8b9d007701999610aa4fe44f14830ecd3c9ed3398dc72f577b`.
+ROOT's narrow fixture addendum inherits the unchanged independent production
+review and binds all 132 selected paths and all eleven remaining recipe names
+to this new artifact. Addendum SHA256:
+`a83ee6f59785afc1891846d223ff717fbd1456ac22abe0ee015eeee10bd8f0b9`.
+
+All ten SQL recipes pass on fresh r37 fixtures: five new ReserveOnly cases and
+five strict retained-family regressions. The native same-owner reservation
+recipe passes in 640.03 s child / 640.12 s parent / 640.167 s outer. It verifies
+the actual immutable CAS/source ownership, exact full-Q insertion, withheld
+acknowledgement after successful family writer close, and same-owner replay
+without another writer. Complete B/C private rows and other files are unchanged;
+only the identity-bound family catalog gains the reservation. C remains
+Initializing without root, installation, Ready or ordinary admission.
+
+Portable archive `ordinary-reservation-evidence-20261027-r36-r37.tar.gz`:
+1,277 verified files, 3,592,445 bytes, SHA256
+`87f9d2d4fc249e2f2a57cd9740f0393b27c157eeb1322e65cad1716a01184389`.
+The r36 fixture failure remains included. These recipes do not qualify actual
+OS close failure, index mutation during the released-gate interval or recovery
+after owner loss. Later Installing changes are a separate unqualified lot.
+
+## Installing implementation in progress
+
+The complete-family Installing gate and ordinary ExactCatalog adapter are now
+written and wired. Workspace all-targets check passes in 55.46 s; the final
+normal test build is running. Independent critical source review finds no
+confirmed blocking issue in production and SQL tests; the separately authored
+native recipe is still awaiting review and execution. The strict Provider and ReserveOnly routes
+retain their exclusions. The new gate validates all retained Published groups
+first, then C Declared..Published using the same charged chunk/manifest sets,
+then the complete reservation inventory. Global accounting includes every exact
+journal; future row capacity subtracts already-created C rows before adding
+the complete C union.
+
+The ordinary physical adapter holds one immutable private source snapshot and
+retained CAS pins across engine steps. Each family action validates completely,
+commits, positively closes and reads back before engine advancement. Byte reads
+and complete image revalidation happen outside family catalog scopes. Errors
+abort without further SQL probes; public success waits for observed outer
+snapshot completion, and persistent connection finalization still requires
+owner.close. No attempt/capability escapes. Provider per-action source-close
+semantics stay unchanged; the ExactCatalog documentation states this difference.
+
+CAS-only read opens in exact_content/spool.rs and publish.rs now request only
+read access, compatible with retained immutable Windows handles. Staging files
+keep the rights needed for publication. Four new SQL DATA recipes and a pure
+100k capacity-boundary test are written. The genuine native recipe is now frozen:
+one B owner, retained base/history plus new current content, withheld Declared
+close acknowledgement, complete union installation and no-writer retry. It is
+not yet executed. Checkout population, protection, Ready/Published transition,
+C9 admission, autonomous C and owner-loss recovery remain separate next steps.
+
 ## Qualified Staging checkpoint — r34/r35
 
 After metadata commit `959e363`, the ordinary destination interpreter now has
@@ -23,10 +101,8 @@ was restored before the passing check. Critical review also corrected both
 error-path family postchecks: failed updates or close acknowledgements now
 permit physical pin checks only, never an automatic additional SQL probe.
 No reservation, content installation or autonomous C claim is added by this
-Staging increment. The later ReserveOnly catalog draft is now connected in the
-working tree separately from the qualified Staging sources, with physical
-reservation/plan/CAS drafts still outside the module tree and no build or runtime
-qualification of those later changes.
+Staging increment. Later ReserveOnly changes are tracked separately above and
+are absent from the retained r35 executable/source release.
 
 r34 passed all nine pure budget/capacity recipes, then stopped at the exact-test
 guard: the first Staging SQL name ran zero tests. An implicit child module path
@@ -221,6 +297,38 @@ Three current fences need specialized interpretation, not removal:
   installation, including legitimate retained B rows.
 - `exact_content/sql::validate_installations_inner` rejects other reservation IDs
   and enumerates all exact rows rather than just the active C group.
+
+The Installing extension should use a closed alternative in the same complete
+admitted catalog walk. Factor the active-group validation kernel from
+`exact_content/sql.rs`, keeping the strict Provider wrapper unchanged. An
+export-only `ExactBinding::validate_export_installations` receives the SAME
+charged-chunk and charged-manifest sets populated by all retained Published
+groups. It verifies C's actual journal phases, canonical projections, cursors,
+inodes, indexed/resident pieces and exact remaining/debit equality. The final
+all-reservation classification and global usage remain mandatory; filtering to
+C without those checks would omit unknown or doubly charged groups.
+
+Installing prospective journal capacity differs from ReserveOnly:
+`global_records - current_C_records + complete_required_C <= 100000`.
+Each C journal pays its own 8192-byte prepare charge and its own canonical
+manifest column, even when physical CAS objects are already resident. Global
+usage includes CAS chunks, CAS manifest payloads, sweep, every exact journal's
+prepare/manifest metadata and all remaining reservations. Physical objects must
+not be debited twice across retained and active groups.
+
+There is also a Windows sharing adaptation before installing with retained CAS
+pins. `open_file` requests DELETE; the immutable B object handles allow READ
+sharing only. Existing CAS-only identity/read opens in exact-content `spool.rs`
+and `publish.rs` must use `open_readonly_file`. Keep rename rights on staging
+sources and keep the immutable B pins. This is a distinct physical adjustment,
+not a reason to weaken the complete catalog validator or drop source protections.
+
+The future ordinary Installing `ExactCatalog` adapter borrows actual B/C owners,
+source image/closure, target and CAS pins. Its callback reauthenticates those
+inputs and the full retained-plus-active catalog around each action; byte I/O
+stays outside catalog scopes. Existing prepare/piece/finish/publish operations
+can then be reused with current-image or exact retained byte producers. None of
+this Installing work is implemented or qualified by the ReserveOnly slice.
 
 Retain global inventory bounds and total family accounting. Share charged
 manifest/chunk sets between retained and active groups so duplicated debit cannot

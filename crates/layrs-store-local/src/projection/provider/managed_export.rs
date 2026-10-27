@@ -8,6 +8,9 @@ mod copy;
 mod destination;
 mod image;
 mod preallocation;
+mod reservation;
+mod reserve_plan;
+mod resident;
 mod staging;
 #[cfg(test)]
 pub(super) mod verification_cancellation;

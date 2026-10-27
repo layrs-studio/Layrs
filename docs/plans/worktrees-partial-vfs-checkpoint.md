@@ -1,5 +1,30 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**28 October Paris, r36-r37 ordinary ReserveOnly:** actual B/C Staging,
+complete immutable funding and exact retained CAS/index checks now authorize
+only the exact C full-Q reservation alongside every retained Published import.
+Six pure r36 cases pass; its first SQL case failed in JSON fixture construction.
+Correcting three test-only snake_case keys leaves production unchanged. Ten SQL
+recipes pass on r37, followed by the real same-owner native case in 640.167 s.
+After withheld acknowledgement of successful family close, the reservation is
+durable and retry opens no writer. Complete B/C private rows, retained groups,
+admission and byte witnesses pass; only the bound catalog changes. C remains
+Initializing without installations/root/Ready/admission. OS close failure,
+external index mutation during the dropped-gate interval and owner-loss/crash
+recovery are not claimed.
+
+Archive `ordinary-reservation-evidence-20261027-r36-r37.tar.gz`: 1,277 verified
+files, 3,592,445 bytes, SHA256
+`87f9d2d4fc249e2f2a57cd9740f0393b27c157eeb1322e65cad1716a01184389`.
+Independent critical r36 review covers132 paths; r37 ROOT fixture addendum
+binds the unchanged production review to the corrected audited executable.
+
+Next Installing code is a separate unqualified working-tree lot. Workspace
+all-targets check passes55.46s; critical source review found no confirmed
+blocking production/SQL issue, final build and native review/runtime remain.
+Protection, checkout, Ready/publication, autonomous C and the entire remaining
+programme still require implementation/qualification.
+
 **27 October, r34-r35 ordinary Staging:** immutable planning now funds the
 complete future metadata envelope; preallocation capacity covers terminal
 intent growth. Actual B and C metadata transition to Staging with exact CAS,

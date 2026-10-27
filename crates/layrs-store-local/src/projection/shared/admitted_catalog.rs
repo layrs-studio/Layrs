@@ -1,5 +1,6 @@
-//! Read-only admitted import family policy. No private opener, owner lock,
-//! recovery, COMMIT, release or content I/O is permitted beneath this gate.
+//! Admitted retained-family policy and a separate export-only reservation SQL
+//! primitive. The ordinary gate stays read-only. No private opener, owner lock,
+//! recovery, COMMIT, release or content I/O is permitted beneath either gate.
 use super::{
     exact_content::{ExactBinding, ExactRecord},
     exact_protection::ExactProtection,
@@ -20,6 +21,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_GROUPS: usize = 4096;
 const MAX_MANIFESTS: u64 = 100_000;
+
+#[path = "admitted_catalog/export.rs"]
+mod export;
+pub(in crate::projection) use export::{
+    ExportReservation, ExportReservationEffect, ExportReserveOnlyState, ExportReserveOnlyTarget,
+    ExportUsage,
+};
+
+struct CatalogParts {
+    proof: AdmittedCatalogProof,
+    export: Option<ExportReserveOnlyState>,
+    marker: FamilyMarker,
+}
 
 #[derive(Clone)]
 struct ImportContext {
@@ -131,6 +145,93 @@ impl AdmittedFamilyContext {
         family_marker: &[u8],
         cancel: Option<&Cancellation>,
     ) -> Result<AdmittedCatalogProof> {
+        Ok(self
+            .validate_catalog_parts(c, family_marker, None, cancel)?
+            .proof)
+    }
+
+    /// Complete retained-group interpretation plus exactly one ReserveOnly
+    /// export target. Target DATA grants no source/C private or physical rights;
+    /// the driver reauthenticates actual Staging, image, union and funding.
+    pub(in crate::projection) fn validate_export_reserve_only(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: &ExportReserveOnlyTarget,
+        cancel: Option<&Cancellation>,
+    ) -> Result<(AdmittedCatalogProof, ExportReserveOnlyState)> {
+        let parts = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let state = parts
+            .export
+            .ok_or_else(|| invalid("export catalog state absent"))?;
+        Ok((parts.proof, state))
+    }
+
+    /// Insert only C's exact full reservation or replay it without writing.
+    /// Caller retains both physical owners/private proofs, FK-enabled catalog
+    /// transaction and exclusive gate, and observes rollback/COMMIT/close.
+    /// Every error after INSERT requires rollback. No generic lease is granted.
+    pub(in crate::projection) fn reserve_export_only(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: &ExportReserveOnlyTarget,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExportReservationEffect> {
+        cancellation::check(cancel)?;
+        if c.is_autocommit() || c.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, u64>(0))? != 1
+        {
+            return Err(invalid(
+                "export reservation requires FK-enabled caller transaction",
+            ));
+        }
+        let before = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let previous = before
+            .export
+            .ok_or_else(|| invalid("export predecessor state absent"))?;
+        let effect =
+            target.insert_or_replay_after_retained_validation(c, self, &before.marker, cancel)?;
+        let after = self.validate_catalog_parts(c, family_marker, Some(target), cancel)?;
+        let actual = after
+            .export
+            .ok_or_else(|| invalid("export prospective state absent"))?;
+        let expected_reserved = match (effect, previous.reservation) {
+            (ExportReservationEffect::Inserted, ExportReservation::Absent) => previous
+                .usage
+                .reserved_bytes
+                .checked_add(target.binding().quota_bytes)
+                .ok_or_else(|| invalid("export prospective reservation sum overflow"))?,
+            (ExportReservationEffect::AlreadyPresent, ExportReservation::Present { remaining })
+                if remaining == target.binding().quota_bytes =>
+            {
+                previous.usage.reserved_bytes
+            }
+            _ => return Err(invalid("export reservation predecessor/effect differs")),
+        };
+        if actual.reservation
+            != (ExportReservation::Present {
+                remaining: target.binding().quota_bytes,
+            })
+            || actual.usage.reserved_bytes != expected_reserved
+            || actual.usage.content_bytes != previous.usage.content_bytes
+            || actual.usage.limit_bytes != previous.usage.limit_bytes
+            || after.proof.manifests() != before.proof.manifests()
+        {
+            return Err(invalid(
+                "export complete catalog prospective readback differs",
+            ));
+        }
+        cancellation::check(cancel)?;
+        Ok(effect)
+    }
+
+    fn validate_catalog_parts(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: Option<&ExportReserveOnlyTarget>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<CatalogParts> {
         cancellation::check(cancel)?;
         if c.is_autocommit() || family_marker.len() > 65536 {
             return Err(invalid(
@@ -243,8 +344,15 @@ impl AdmittedFamilyContext {
         if known.keys().any(|id| !roots.contains(*id)) {
             return Err(invalid("admitted family prevalidated import root absent"));
         }
+        // Retained roots, Published journals, exact debit equality and shared
+        // charged sets have ALL passed. Only now may an exact active C group
+        // join the final inventory. None preserves the strict ordinary policy.
+        let export = target
+            .map(|target| target.validate_and_classify(c, self, &marker, &mut groups, cancel))
+            .transpose()?;
         // Every retained exact journal AND every import reservation must map
-        // to precisely one validated root. Ordinary reservations coexist.
+        // to precisely one validated root, or the one fully validated export
+        // reservation. Ordinary reservations coexist as before.
         let mut query = c.prepare("SELECT id FROM reservations WHERE operation LIKE 'provider-transition%' OR id IN (SELECT reservation FROM exact_installations) LIMIT 4097")?;
         let mut rows = query.query([])?;
         let mut seen = BTreeSet::new();
@@ -263,9 +371,13 @@ impl AdmittedFamilyContext {
             return Err(invalid("admitted family retained reservation absent"));
         }
         cancellation::check(cancel)?;
-        Ok(AdmittedCatalogProof {
-            manifests: owned
-                .ok_or_else(|| invalid("admitted family primary import root absent"))?,
+        Ok(CatalogParts {
+            proof: AdmittedCatalogProof {
+                manifests: owned
+                    .ok_or_else(|| invalid("admitted family primary import root absent"))?,
+            },
+            export,
+            marker,
         })
     }
 }
@@ -277,3 +389,7 @@ use groups::{read_group, require_member};
 #[cfg(test)]
 #[path = "admitted_catalog/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "admitted_catalog/export_tests.rs"]
+mod export_tests;

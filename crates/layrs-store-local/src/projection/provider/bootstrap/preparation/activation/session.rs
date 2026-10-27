@@ -486,6 +486,9 @@ mod managed_ordinary_export_owner_tests;
 #[cfg(test)]
 mod managed_ordinary_metadata_tests;
 #[cfg(test)]
+#[path = "session/managed_ordinary_reservation_tests.rs"]
+mod managed_ordinary_reservation_tests;
+#[cfg(test)]
 mod managed_ordinary_staging_tests;
 #[cfg(test)]
 mod managed_ordinary_source_intent_tests;
