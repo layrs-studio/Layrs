@@ -75,7 +75,7 @@ pub(super) fn require_version(
         || version.generation > current.generation
         || version.capture_count < admission.boundaries.ready_capture_sequence
         || version.capture_count > current.captures
-        || (record.state == TransitionState::Planned
+        || (is_live(record.state)
             && (version.generation != current.generation
                 || version.capture_count != current.captures))
     {

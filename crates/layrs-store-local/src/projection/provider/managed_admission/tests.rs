@@ -786,3 +786,314 @@ owned!(
         });
     }
 );
+
+// Copied destination identities below are canonical SQL DATA only. No file,
+// directory, family catalog or destination ownership is manufactured here.
+fn ordinary_source_copying(
+    c: &Connection,
+    f: &Fixture,
+    planned: &ProviderTransitionIntentRecord,
+) -> ProviderTransitionIntentRecord {
+    use crate::projection::provider::records::transition::{
+        TransitionBackendKind, TransitionDestinationProof,
+    };
+    let admitted = read_admitted_import(c, &f.marker, None).unwrap();
+    let destination = &planned.plan.source_prefix.destination_identity;
+    let family = f.marker.shared.as_ref().unwrap();
+    let metadata = family
+        .root
+        .join("worktrees")
+        .join(
+            blake3::hash(destination.worktree_id.as_str().as_bytes())
+                .to_hex()
+                .to_string(),
+        )
+        .join("metadata");
+    let root = std::path::Path::new(&planned.plan.destination_parent)
+        .join(&planned.plan.destination_leaf_nonce);
+    let mut marker = serde_json::to_value(&f.marker).unwrap();
+    marker["identity"] = serde_json::to_value(destination).unwrap();
+    marker["checkoutRoot"] = root.to_str().unwrap().into();
+    marker["checkoutIdentity"] = "fs:v1:3333333333333333:4444444444444444".into();
+    marker["storeIdentity"] = "fs:v1:3333333333333333:5555555555555555".into();
+    marker["metadataIdentity"] = "fs:v1:3333333333333333:6666666666666666".into();
+    marker["importDigest"] = planned.plan.source_prefix_id.clone().into();
+    marker["shared"]["metadataPath"] = metadata.to_str().unwrap().into();
+    marker["shared"]["databaseIdentity"] = "1:0:9002".into();
+    let marker = format::parse_marker_bytes(&canonical_json(&marker).unwrap()).unwrap();
+    let mut copying = ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
+    copying.state = TransitionState::Copying;
+    copying.destination = Some(TransitionDestinationProof {
+        backend: TransitionBackendKind::Ordinary,
+        format: marker,
+        format_file_identity: "1:0:9001".into(),
+        private_database_identity: "1:0:9002".into(),
+        family_marker_digest: admitted.record().binding.family_marker_digest.clone(),
+        native_control_identity_hex: None,
+        native_root_identity: None,
+    });
+    copying.require_transition(planned).unwrap();
+    copying.encode().unwrap();
+    copying
+}
+
+type OrdinaryTransitionRow = (
+    String,
+    String,
+    String,
+    u64,
+    Option<String>,
+    Option<String>,
+    Vec<u8>,
+    String,
+);
+
+fn ordinary_transition_rows(c: &Connection) -> Vec<OrdinaryTransitionRow> {
+    let mut statement = c.prepare(
+        "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions ORDER BY id COLLATE BINARY",
+    ).unwrap();
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+owned!(
+    admitted_outgoing_copying_preserves_ingress_retries_and_refuses_resource_free_cancel,
+    {
+        with_private9(|c, f| {
+            use crate::projection::provider::{
+                ordinary_transition, transition_sql::SourceIntentEffect,
+            };
+            let original = read_admitted_import(c, &f.marker, None).unwrap();
+            let admission = original.record().encode().unwrap();
+            let incoming = original.ready().encode().unwrap();
+            let planned = ordinary_source_planned(c, f);
+            assert_eq!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None,
+                )
+                .unwrap(),
+                SourceIntentEffect::Inserted
+            );
+            let before = read_admitted_import(c, &f.marker, None).unwrap();
+            let rows = ordinary_transition_rows(c);
+            let changes = c.total_changes();
+            ordinary_transition::require_allocation_capacity(c, &f.marker, &planned, None).unwrap();
+            assert_eq!(c.total_changes(), changes);
+            assert_eq!(ordinary_transition_rows(c), rows);
+            let copying = ordinary_source_copying(c, f, &planned);
+            assert_eq!(
+                ordinary_transition::apply_copying(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &copying,
+                    None,
+                )
+                .unwrap(),
+                SourceIntentEffect::Updated
+            );
+            assert_eq!(c.total_changes(), changes + 1);
+            assert!(before.require(c, None).is_err());
+            let actual = read_admitted_import(c, &f.marker, None).unwrap();
+            assert_eq!(actual.record().encode().unwrap(), admission);
+            assert_eq!(actual.ready().encode().unwrap(), incoming);
+            assert_eq!(actual.outgoing().len(), 1);
+            assert_eq!(actual.outgoing()[0], copying);
+            assert!(ordinary_transition::has_live(c).unwrap());
+            assert!(ordinary_transition::require_no_live(c).is_err());
+
+            let rows = ordinary_transition_rows(c);
+            let changes = c.total_changes();
+            assert_eq!(
+                ordinary_transition::apply_copying(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &copying,
+                    None,
+                )
+                .unwrap(),
+                SourceIntentEffect::AlreadyPresent
+            );
+            assert!(
+                ordinary_transition::cancel_planned(c, &f.marker, &planned.transaction_id, None,)
+                    .is_err(),
+                "Copying cannot use resource-free cancellation"
+            );
+            assert!(
+                ordinary_transition::require_allocation_capacity(c, &f.marker, &planned, None,)
+                    .is_err(),
+                "Copying cannot allocate a second destination"
+            );
+            let mut second =
+                ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
+            second.transaction_id = "00000000000000000000000000000095".into();
+            second.encode().unwrap();
+            assert!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &second.plan.source_prefix,
+                    &second,
+                    None,
+                )
+                .is_err(),
+                "Copying remains a live source lifecycle"
+            );
+            assert_eq!(c.total_changes(), changes);
+            assert_eq!(ordinary_transition_rows(c), rows);
+            actual.require(c, None).unwrap();
+        });
+    }
+);
+
+owned!(
+    admitted_outgoing_copying_refuses_canonical_destination_rebinding_before_effects,
+    {
+        with_private9(|c, f| {
+            use crate::projection::provider::{
+                ordinary_transition, transition_sql::SourceIntentEffect,
+            };
+            let planned = ordinary_source_planned(c, f);
+            assert_eq!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None,
+                )
+                .unwrap(),
+                SourceIntentEffect::Inserted
+            );
+            let copying = ordinary_source_copying(c, f, &planned);
+            for substitution in ["family-marker", "member-path", "source-database-alias"] {
+                let mut altered =
+                    ProviderTransitionIntentRecord::decode(&copying.encode().unwrap()).unwrap();
+                let destination = altered.destination.as_mut().unwrap();
+                match substitution {
+                    "family-marker" => {
+                        let replacement = if destination.family_marker_digest.as_bytes()[7] == b'0'
+                        {
+                            "1"
+                        } else {
+                            "0"
+                        };
+                        destination
+                            .family_marker_digest
+                            .replace_range(7..8, replacement);
+                        assert_ne!(
+                            destination.family_marker_digest,
+                            copying.destination.as_ref().unwrap().family_marker_digest
+                        );
+                    }
+                    "member-path" => {
+                        destination.format.shared.as_mut().unwrap().metadata_path =
+                            f.marker.shared.as_ref().unwrap().metadata_path.clone();
+                    }
+                    "source-database-alias" => {
+                        let source = &f.marker.shared.as_ref().unwrap().database_identity;
+                        destination.private_database_identity = source.clone();
+                        destination
+                            .format
+                            .shared
+                            .as_mut()
+                            .unwrap()
+                            .database_identity = source.clone();
+                    }
+                    _ => unreachable!(),
+                }
+                // This mutation passes the canonical codec. Actual incoming
+                // admission and source-family interpretation must still refuse it.
+                altered.encode().unwrap();
+                let rows = ordinary_transition_rows(c);
+                let changes = c.total_changes();
+                assert!(
+                    ordinary_transition::apply_copying(
+                        c,
+                        &f.marker,
+                        &planned.plan.source_prefix,
+                        &altered,
+                        None,
+                    )
+                    .is_err(),
+                    "writer accepted {substitution}"
+                );
+                assert_eq!(c.total_changes(), changes);
+                assert_eq!(ordinary_transition_rows(c), rows);
+
+                c.execute_batch("SAVEPOINT rebound_copying").unwrap();
+                assert_eq!(c.execute(
+                    "UPDATE projection_provider_transitions SET state='copying',payload=?1,digest=?2 WHERE id=?3",
+                    params![altered.encode().unwrap(), altered.digest().unwrap(), altered.transaction_id],
+                ).unwrap(), 1);
+                let rows = ordinary_transition_rows(c);
+                let changes = c.total_changes();
+                assert!(
+                    read_admitted_import(c, &f.marker, None).is_err(),
+                    "reader accepted {substitution}"
+                );
+                assert!(ordinary_transition::apply_copying(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &copying,
+                    None,
+                )
+                .is_err());
+                assert!(ordinary_transition::apply_copying(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &altered,
+                    None,
+                )
+                .is_err());
+                assert!(ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None,
+                )
+                .is_err());
+                assert!(ordinary_transition::cancel_planned(
+                    c,
+                    &f.marker,
+                    &planned.transaction_id,
+                    None,
+                )
+                .is_err());
+                assert!(ordinary_transition::require_allocation_capacity(
+                    c, &f.marker, &planned, None,
+                )
+                .is_err());
+                assert_eq!(c.total_changes(), changes);
+                assert_eq!(ordinary_transition_rows(c), rows);
+                c.execute_batch("ROLLBACK TO rebound_copying; RELEASE rebound_copying")
+                    .unwrap();
+                let restored = read_admitted_import(c, &f.marker, None).unwrap();
+                assert_eq!(restored.outgoing().len(), 1);
+                assert_eq!(restored.outgoing()[0], planned);
+            }
+        });
+    }
+);

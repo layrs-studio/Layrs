@@ -21,8 +21,9 @@ pub(super) mod schema;
 #[cfg(test)]
 mod tests;
 mod write;
+pub(super) use read::read_admitted_import;
 pub(super) use read::read_record;
-pub(super) use read::{read_admitted_import, VerifiedAdmittedImport};
+pub(in crate::projection) use read::VerifiedAdmittedImport;
 pub(super) use record::{ArchiveCommitment, ManagedAdmissionRecord};
 pub(super) use write::{admit_ready, AdmissionWriteEffect};
 

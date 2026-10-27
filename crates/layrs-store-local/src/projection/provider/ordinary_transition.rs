@@ -17,8 +17,10 @@ use crate::projection::{format, Result};
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
+mod allocation;
 mod frontier;
 mod write;
+pub(super) use allocation::{apply_copying, require_allocation_capacity};
 pub(super) use write::{apply_planned, cancel_planned};
 
 const MAX_TRANSITIONS: u64 = 4096;
@@ -57,7 +59,10 @@ pub(super) fn read_outgoing(
                 admission: &binding,
             })?;
         frontier::require_version(c, marker, admission, record, &current, cancel)?;
-        if record.state == TransitionState::Planned {
+        if record.state == TransitionState::Copying {
+            allocation::require_destination(c, marker, admission, record)?;
+        }
+        if is_live(record.state) {
             if live {
                 return Err(invalid(
                     "ordinary source has multiple live outgoing intents",
@@ -88,7 +93,7 @@ pub(in crate::projection) fn has_live(c: &Connection) -> Result<bool> {
             incoming += 1;
         } else {
             require_shape(record)?;
-            live += u64::from(record.state == TransitionState::Planned);
+            live += u64::from(is_live(record.state));
         }
     }
     if incoming != 1 || live > 1 {
@@ -131,15 +136,19 @@ fn actual_binding(
     })
 }
 
+fn is_live(state: TransitionState) -> bool {
+    matches!(state, TransitionState::Planned | TransitionState::Copying)
+}
+
 fn require_shape(record: &ProviderTransitionIntentRecord) -> CauseResult<()> {
     record.validate_fields()?;
     let prefix = &record.plan.source_prefix;
     if record.role != TransitionRole::Source
         || !matches!(
             record.state,
-            TransitionState::Planned | TransitionState::Cancelled
+            TransitionState::Planned | TransitionState::Copying | TransitionState::Cancelled
         )
-        || record.destination.is_some()
+        || record.destination.is_some() != (record.state == TransitionState::Copying)
         || record.reservation.is_some()
         || record.receipt_id.is_some()
         || record.plan.kind != ProviderImportKind::ManagedOrdinary

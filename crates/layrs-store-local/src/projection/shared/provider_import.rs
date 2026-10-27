@@ -22,6 +22,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 pub(in crate::projection) mod content;
 #[path = "provider_import/publication.rs"]
 pub(in crate::projection) mod publication;
+#[path = "provider_import/source.rs"]
+pub(in crate::projection) mod source;
+use source::{ImportSourceInputs, OrdinarySourceInputs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::projection) enum ImportRegistration {
@@ -97,17 +100,26 @@ fn validate_unreserved(
     phase: UnreservedPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<ImportRegistration> {
-    let registration = validate_import_base(
+    validate_unreserved_for_source(
         family,
         c,
-        source_a,
-        source_p,
-        source_activation,
-        source_capture,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
         source_copying,
         phase,
         cancel,
-    )?;
+    )
+}
+
+fn validate_unreserved_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    let registration =
+        validate_import_base_for_source(family, c, source, source_copying, phase, cancel)?;
     let owner = source_copying
         .destination
         .as_ref()
@@ -145,13 +157,28 @@ fn validate_import_base(
     phase: UnreservedPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<ImportRegistration> {
-    match validate_import_base_at_member(
+    validate_import_base_for_source(
         family,
         c,
-        source_a,
-        source_p,
-        source_activation,
-        source_capture,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        phase,
+        cancel,
+    )
+}
+
+fn validate_import_base_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    match validate_import_base_at_member_for_source(
+        family,
+        c,
+        source,
         source_copying,
         phase,
         ImportMemberPhase::Initializing,
@@ -176,16 +203,31 @@ fn validate_import_base_at_member(
     member_phase: ImportMemberPhase,
     cancel: Option<&Cancellation>,
 ) -> Result<Option<ImportMemberPhase>> {
+    validate_import_base_at_member_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        phase,
+        member_phase,
+        cancel,
+    )
+}
+
+fn validate_import_base_at_member_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    member_phase: ImportMemberPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<ImportMemberPhase>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("import family read requires retained transaction"));
     }
-    family.require_allocation(source_a)?;
-    if family.validate_capture_catalog(c, source_a, source_capture, cancel)?
-        != ActivationRegistration::Ready
-    {
-        return Err(invalid("import source family is not Ready"));
-    }
+    let validated_source = source.require_family(family, c, source_copying, cancel)?;
     source_copying.validate_fields()?;
     let Some(destination) = source_copying.destination.as_ref() else {
         return Err(invalid("import Copying has no destination proof"));
@@ -207,28 +249,6 @@ fn validate_import_base_at_member(
             "import requires exact ordinary source phase without family effects",
         ));
     }
-    source_copying
-        .plan
-        .source_prefix
-        .require_references(ImportSourceReferences::Provider {
-            allocation: source_a,
-            prepared: source_p,
-            activation: source_activation,
-        })?;
-    let ImportSource::Provider { version, .. } = &source_copying.plan.source_prefix.source else {
-        return Err(invalid("import family source prefix is not provider"));
-    };
-    if version.capture_count != source_capture.patches.len() as u64
-        || version.capture_head.as_deref()
-            != source_capture
-                .patches
-                .last()
-                .map(|patch| patch.digest.as_str())
-    {
-        return Err(invalid(
-            "import source capture head differs from family proof",
-        ));
-    }
     let marker = &destination.format;
     let dest_worktree = &marker.identity.worktree_id;
     let shared = marker
@@ -240,10 +260,10 @@ fn validate_import_base_at_member(
     let member_path = exact_path(&member)?;
     let marker_bytes = marker.bytes()?;
     if marker.identity != expected_identity
-        || marker.identity == source_a.format.identity
+        || marker.identity == validated_source.marker().identity
         || shared.root != family.root()
-        || shared.incarnation != source_a.family.incarnation
-        || shared.root_identity != source_a.family.root_identity
+        || shared.incarnation != family.family.marker.incarnation
+        || shared.root_identity != family.root_pin.identity_token()
         || shared.metadata_path != member
         || shared.database_identity != destination.private_database_identity
         || destination.family_marker_digest != family.marker_digest()
@@ -314,6 +334,22 @@ fn register_import_initializing(
     source_copying: &ProviderTransitionIntentRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<ImportRegistrationEffect> {
+    register_import_initializing_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        cancel,
+    )
+}
+
+fn register_import_initializing_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistrationEffect> {
     cancellation::check(cancel)?;
     if c.is_autocommit() || c.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u64>(0))? != 1
     {
@@ -321,14 +357,12 @@ fn register_import_initializing(
             "import family writer requires FK-enabled caller transaction",
         ));
     }
-    let before = validate_import_initializing(
+    let before = validate_unreserved_for_source(
         family,
         c,
-        source_a,
-        source_p,
-        source_activation,
-        source_capture,
+        source,
         source_copying,
+        UnreservedPhase::Copying,
         cancel,
     )?;
     if before == ImportRegistration::Initializing {
@@ -345,14 +379,12 @@ fn register_import_initializing(
         params![owner, exact_path(&member)?, destination.private_database_identity, destination.format.bytes()?],
     )?;
     if inserted != 1
-        || validate_import_initializing(
+        || validate_unreserved_for_source(
             family,
             c,
-            source_a,
-            source_p,
-            source_activation,
-            source_capture,
+            source,
             source_copying,
+            UnreservedPhase::Copying,
             cancel,
         )? != ImportRegistration::Initializing
     {
@@ -364,6 +396,45 @@ fn register_import_initializing(
 }
 
 impl FamilyAccess {
+    /// Ordinary B remains the source owner, never C's ordinary lease. The
+    /// caller retains B's physical image and both private/family transactions;
+    /// these borrowed inputs authenticate B's incoming Ready and exact outgoing
+    /// Copying row before this independently checks C's target registration.
+    pub(in crate::projection) fn validate_ordinary_import_initializing(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistration> {
+        validate_unreserved_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_copying,
+            UnreservedPhase::Copying,
+            cancel,
+        )
+    }
+
+    /// Exact Initializing insert/readback or no-write replay under the caller's
+    /// held catalog gate. No source lease, C reservation or commit is granted.
+    pub(in crate::projection) fn register_ordinary_import_initializing(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistrationEffect> {
+        register_import_initializing_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_copying,
+            cancel,
+        )
+    }
+
     /// The private Staging intent names its future reservation, but no family
     /// reservation, installation or protection may exist yet. Caller proves
     /// this exact Staging row from the retained source transaction.

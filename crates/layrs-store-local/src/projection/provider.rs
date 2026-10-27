@@ -59,7 +59,7 @@ pub(in crate::projection) mod import_validation;
 #[cfg(windows)]
 mod journal;
 #[cfg(windows)]
-mod managed_admission;
+pub(in crate::projection) mod managed_admission;
 #[cfg(windows)]
 mod managed_budget;
 #[cfg(windows)]

@@ -1,5 +1,53 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**27 October, r30 ordinary physical C allocation:** the genuine ordinary owner
+now allocates C with independent family/lifecycle/parent/artifact pins, commits
+exact SourceCopying, publishes the allocated FORMAT inode and registers exact C
+Initializing. A closed source-input adapter retains existing Provider checks;
+B's ordinary lease has not gained authority over C. The outgoing reader binds
+Copying to actual admission/family, canonical member path and generation-zero
+snapshot/selection. Maximum canonical Copying capacity is checked before effects.
+
+Partial allocation can create resources while SQL remains Planned. Public
+resource-free cancellation now holds pinned parent/worktrees/family/catalog
+absence checks through source COMMIT and refuses destination artifacts or
+ownership. Terminal cancellation retries still leave later work untouched.
+There is no orphan adoption, deletion or resource-aware recovery in this slice;
+the old live intent must be resolved before another nonce can be used.
+
+All 17 recipes pass: six pure capacity tests, nine SQL cases and two native
+scenarios. SQL covers canonical destination family/member/B-database substitutions
+before writes and as persisted malformed rows, exact Copying CAS/retry and live
+mutation/cancellation/second-allocation refusal. The source-intent regression
+passes in 520.52 s child / 520.57 s parent / 520.597 s outer with the new absence
+fence. The real allocation recipe passes in 594.80 s child / 594.86 s parent /
+594.909 s outer; both native bounds remain child900/outer960.
+
+The allocation recipe observes all seven actual artifacts and confirmed effects,
+unchanged source/family metadata during allocation, Planned cancellation refusal
+after allocation, changed plan/parent and substituted FORMAT-inode refusals,
+exact Copying commit/retry, same-inode FORMAT publication/retry, Initializing
+commit/retry and FORMAT retry after registration. Complete witnesses allow only
+B's private DB to change at Copying and only the family catalog at registration.
+Source admission stays identical; C's private DB remains empty without reservation
+or Ready. Measured durations are qualification data, not performance acceptance.
+
+Workspace all-targets check passes (20.00 s), final libtest build passes (45.67 s)
+and diff check passes. Independent release binds 107 reviewed live/retained paths,
+including 95 inherited (85 unchanged), to the audited 604-input closure and nine
+startup checks. r30 EXE SHA-256
+`c37cd31be9dd3feee46b4347101b459b5746f8a3f2fb7c46a6174f7870a00094`,
+CodeView age108; release SHA-256
+`33f7aecb29e3a670c65b97fce691a7a7deefcf51ab9184e71ae360845ef30b08`.
+Portable `ordinary-allocation-evidence-20261027-r30.tar.gz` contains 636 verified
+files, 1,835,754 bytes, SHA-256
+`008b36d10f3d669875bbb9dc39fa247998d887b648f631374dc879f1d6123eb7`.
+
+Next is [atomic C8 metadata and dedicated content authority](worktrees-partial-vfs-ordinary-content.md).
+That new adapter is a separate, not-yet-qualified implementation. Staging,
+reservation/installations, checkout, Ready/Published, independent C admission,
+resource recovery and the remaining full programme still require execution.
+
 **27 October, r28-r29 ordinary durable source journal:** outgoing Planned and
 resource-free Cancelled now coexist with B's immutable incoming Ready. Schema9
 selects that ingress through the actual admission transaction/digest/receipt/

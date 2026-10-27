@@ -63,7 +63,7 @@ struct ProviderInputBinding {
 impl VerifiedImportClosure {
     /// This only binds the retained connection and active transaction. It does
     /// not replace source revalidation before external effects or prove bytes.
-    pub(in crate::projection::provider) fn require_source_connection(
+    pub(in crate::projection) fn require_source_connection(
         &self,
         c: &Connection,
     ) -> CauseResult<()> {

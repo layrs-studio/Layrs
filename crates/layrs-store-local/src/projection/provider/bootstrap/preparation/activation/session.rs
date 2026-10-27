@@ -479,6 +479,8 @@ mod managed_exact_tests;
 mod managed_family_publication_tests;
 #[cfg(test)]
 mod managed_live_read_tests;
+#[cfg(all(test, windows))]
+mod managed_ordinary_allocation_tests;
 #[cfg(test)]
 mod managed_ordinary_export_owner_tests;
 #[cfg(test)]

@@ -241,6 +241,8 @@ pub(in crate::projection) struct TransitionDestinationProof {
     pub native_root_identity: Option<String>,
 }
 impl TransitionDestinationProof {
+    pub const MAX_FORMAT_BYTES: usize = codec::FORMAT_MAX;
+
     /// Physical owner commitment from FORMAT, family marker and private file
     /// identity. Native registration identity is excluded so renewal cannot
     /// silently change the durable owner.
@@ -272,7 +274,7 @@ impl TransitionDestinationProof {
 
     fn validate(&self, plan: &TransitionPlan) -> Result<()> {
         self.format.validate()?;
-        if self.format.bytes()?.len() > codec::FORMAT_MAX
+        if self.format.bytes()?.len() > Self::MAX_FORMAT_BYTES
             || self.format.identity != plan.source_prefix.destination_identity
             || self.format.import_digest.as_deref() != Some(&plan.source_prefix_id)
             || self.format.checkout_root

@@ -84,12 +84,12 @@ identity and exclusions for B's checkout/control/metadata and family paths.
 Never fabricate a Session. Common filesystem effects and exact FORMAT-inode
 publication remain mechanical; source ownership checks remain concrete.
 
-The next executable slice is real C allocation, source Copying CAS, exact FORMAT
-publication and C Initializing registration. Every attempted/confirmed effect
-and retained failure pin must remain observable. Check the actual encoded
-Copying capacity before allocation: current Planned capacity reserves only its
-resource-free Cancelled successor. `cancel_planned` stays Planned-only until
-resource-bearing cancellation has its own recovery protocol.
+Real C allocation, source Copying CAS, exact FORMAT publication and C Initializing
+registration are now qualified by r30. The [allocation contract](worktrees-partial-vfs-ordinary-allocation.md)
+records actual pins, maximum pre-effect Copying capacity and resource-absence
+cancellation. `cancel_planned` stays Planned-only; partial resources keep B
+fenced until explicit recovery resolves them. Next is [atomic C8 metadata and
+content integration](worktrees-partial-vfs-ordinary-content.md).
 
 ## Destination and handoff fences
 

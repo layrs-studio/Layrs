@@ -39,11 +39,7 @@ pub(in crate::projection::provider) fn apply_planned(
         if previous != next {
             return Err(invalid("ordinary planned retry differs from stored intent"));
         }
-    } else if before
-        .outgoing()
-        .iter()
-        .any(|row| row.state == TransitionState::Planned)
-    {
+    } else if before.outgoing().iter().any(|row| is_live(row.state)) {
         return Err(invalid(
             "ordinary source already has a live managed export intent",
         ));
@@ -64,7 +60,7 @@ pub(in crate::projection::provider) fn apply_planned(
     }
     cancellation::check(cancel)?;
     let changed = c.execute(
-        "INSERT INTO projection_provider_transitions(id,role,state,local_generation,reservation,receipt_id,payload,digest) SELECT ?1,'source','planned',?2,NULL,NULL,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE role='source' AND state='planned')",
+        "INSERT INTO projection_provider_transitions(id,role,state,local_generation,reservation,receipt_id,payload,digest) SELECT ?1,'source','planned',?2,NULL,NULL,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE role='source' AND state IN ('planned','copying'))",
         params![next.transaction_id, next.local_generation, payload, digest],
     )?;
     if changed != 1 {
@@ -105,7 +101,7 @@ fn require_insert_capacity(
     Ok(())
 }
 
-fn normalized_bytes(
+pub(super) fn normalized_bytes(
     record: &ProviderTransitionIntentRecord,
     state: &str,
     payload: &[u8],
@@ -192,7 +188,7 @@ pub(in crate::projection::provider) fn cancel_planned(
     Ok(SourceIntentEffect::Updated)
 }
 
-fn verify_prefix(
+pub(super) fn verify_prefix(
     c: &Connection,
     marker: &format::Marker,
     admission: &ManagedAdmissionRecord,
@@ -224,7 +220,7 @@ fn verify_prefix(
     cancellation::check(cancel)
 }
 
-fn require_post(
+pub(super) fn require_post(
     c: &Connection,
     marker: &format::Marker,
     admission: &ManagedAdmissionRecord,

@@ -1,7 +1,11 @@
 //! Owned ordinary source for managed export. SQL DATA is reauthenticated inside
 //! each retained snapshot; no ContentScope or transaction escapes its callback.
-//! This holder does not itself allocate, publish or admit a destination.
+//! Dedicated child adapters retain allocation pins and journal Copying; content
+//! transfer, destination readiness and autonomous admission remain separate.
+pub(super) mod allocation;
+mod destination;
 mod image;
+mod preallocation;
 #[cfg(test)]
 pub(super) mod verification_cancellation;
 
@@ -92,8 +96,21 @@ impl ProjectionStore {
         format::access_for_managed_export_retry(self, SessionMode::Exclusive)?.run(|access| {
             access.with_content(|c, scope| {
                 let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let mut absence = None;
                 let result = (|| {
                     scope.validate(&tx, self)?;
+                    let admitted = read_admitted_import(&tx, &self.marker, Some(cancel))?;
+                    if let Some(planned) = admitted.outgoing().iter().find(|row| {
+                        row.transaction_id == transaction_id
+                            && row.state == TransitionState::Planned
+                    }) {
+                        absence = Some(preallocation::Absence::open(
+                            &tx,
+                            &self.marker,
+                            planned,
+                            cancel,
+                        )?);
+                    }
                     super::ordinary_transition::cancel_planned(
                         &tx,
                         &self.marker,
@@ -101,9 +118,14 @@ impl ProjectionStore {
                         Some(cancel),
                     )?;
                     scope.verify(&tx, self)?;
+                    if let Some(absence) = &absence {
+                        absence.verify(cancel)?;
+                    }
                     check_cancel(cancel)
                 })();
-                finish_writer(tx, result)
+                let result = finish_writer(tx, result);
+                drop(absence);
+                result
             })
         })
     }

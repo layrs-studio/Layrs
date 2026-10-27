@@ -8,7 +8,7 @@ use super::*;
 
 /// Frozen ingress evidence plus exact representation references. This proves
 /// neither a current family root nor canonical current manifests/CAS bytes.
-pub(in crate::projection::provider) struct VerifiedAdmittedImport<'a> {
+pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
     connection: &'a Connection,
     marker: format::Marker,
     record: ManagedAdmissionRecord,
@@ -22,7 +22,7 @@ impl VerifiedAdmittedImport<'_> {
     pub(in crate::projection::provider) fn record(&self) -> &ManagedAdmissionRecord {
         &self.record
     }
-    pub(in crate::projection::provider) fn outgoing(&self) -> &[ProviderTransitionIntentRecord] {
+    pub(in crate::projection) fn outgoing(&self) -> &[ProviderTransitionIntentRecord] {
         &self.outgoing
     }
     pub(in crate::projection::provider) fn source_published(
@@ -66,7 +66,7 @@ impl VerifiedAdmittedImport<'_> {
 
     /// Every validating reuse reinterprets the frozen domain. Current ordinary
     /// tails may advance; they are deliberately not part of this commitment.
-    pub(in crate::projection::provider) fn require(
+    pub(in crate::projection) fn require(
         &self,
         c: &Connection,
         cancel: Option<&Cancellation>,

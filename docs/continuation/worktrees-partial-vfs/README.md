@@ -1,5 +1,35 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément allocation physique de C — r30
+
+Les 17 recettes passent : six tests de capacité, neuf tests SQL et deux scénarios
+natifs. Le journal source avec le refus d'annulation en présence de ressources
+passe en 520,597 s ; l'allocation réelle passe en 594,909 s.
+
+Le parcours conserve ses propres accès protégés pour C, crée ses sept artefacts,
+enregistre SourceCopying, publie le même inode FORMAT puis l'entrée Initializing
+exacte. Les rejeux préservent les témoins complets ; seule la base de B change au
+commit Copying et seul le catalogue change à l'enregistrement. Les substitutions
+et mutations incompatibles sont refusées. L'admission de B reste identique. C a
+encore une base vide, sans réservation de contenu ni état Ready.
+
+Une allocation partielle bloque l'annulation simple même si B est encore Planned.
+Sa récupération reste à implémenter : changer de nonce ne contourne pas un ancien
+intent actif. Aucun nettoyage/adoption implicite ni reprise après crash n'est
+revendiqué.
+
+Archive `ordinary-allocation-evidence-20261027-r30.tar.gz` : 636 fichiers vérifiés,
+1 835 754 octets, SHA-256
+`008b36d10f3d669875bbb9dc39fa247998d887b648f631374dc879f1d6123eb7`.
+Inventaire : `ordinary-allocation-inventory-20261027-r30.json`. Revue indépendante
+de 107 chemins, compilation workspace et build final passés.
+
+Suite : [copie C8 et contenu](../../plans/worktrees-partial-vfs-ordinary-content.md),
+puis staging, réservation exacte, transfert, Ready/Published et admission autonome.
+Les nouveaux fichiers de l'adaptateur de métadonnées sont un lot distinct encore
+non qualifié. Le [contrat d'allocation](../../plans/worktrees-partial-vfs-ordinary-allocation.md)
+précise les limites. Toutes les autres étapes du programme restent actives.
+
 ## Complément journal source ordinaire — r28 à r29
 
 Le plan d'export durable et son annulation avant allocation coexistent maintenant
