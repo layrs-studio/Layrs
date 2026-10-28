@@ -272,7 +272,7 @@ impl OrdinaryStagingPromotion {
         family: &Connection,
         phase: Phase,
         cancel: &Cancellation,
-    ) -> CauseResult<Validated> {
+    ) -> CauseResult<Box<Validated>> {
         #[cfg(test)]
         trace_stage("validate/observation");
         let state = self.require_observation(source, phase, cancel)?;
@@ -433,15 +433,19 @@ impl OrdinaryStagingPromotion {
         self.require_identity(cancel)?;
         #[cfg(test)]
         trace_stage("validate/complete");
-        Ok(Validated {
+        Ok(Box::new(Validated {
             source: state,
             ready: ready_record,
             receipt,
             capacity,
-        })
+        }))
     }
 
-    fn read_validated(&self, phase: Phase, cancel: &Cancellation) -> CauseResult<Validated> {
+    // Carry owned DATA through the nested reader/close results by pointer.
+    // Keeping the complete records inline duplicates large return slots in
+    // each debug reader frame. Proof borrows remain inside validate's scopes;
+    // all three positive closes still precede returning this owned value.
+    fn read_validated(&self, phase: Phase, cancel: &Cancellation) -> CauseResult<Box<Validated>> {
         self.require_identity(cancel)?;
         let family = self.destination.family();
         let _catalog = StoreLock::acquire_existing(

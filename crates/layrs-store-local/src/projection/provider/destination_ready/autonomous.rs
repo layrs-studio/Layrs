@@ -9,9 +9,15 @@ use super::super::{
     managed_budget,
 };
 use super::*;
+use crate::projection::shared::admitted_catalog::ExportPublicationMember;
 use crate::projection::shared::exact_content::{self, ExactBinding, ExactInstallState};
 
 mod family_read;
+mod ordinary_family_publication;
+pub(in crate::projection::provider) use ordinary_family_publication::{
+    read_ordinary_family_publication, read_ordinary_private_ready, OrdinaryPrivateReadySnapshot,
+    VerifiedOrdinaryFamilyPublication,
+};
 pub(super) mod inventory;
 #[cfg(test)]
 mod tests;
@@ -206,6 +212,106 @@ fn read_ready_origin<'d, 'f>(
     origin: DestinationOriginKind,
     cancel: Option<&Cancellation>,
 ) -> Result<VerifiedManagedReady<'d, 'f>> {
+    let parts = read_private_ready_parts(
+        c,
+        actual_marker,
+        family_c,
+        origin,
+        ExportPublicationMember::Ready,
+        cancel,
+    )?;
+    // Terminal entry points always retain the original complete family gate.
+    let installation = match origin {
+        DestinationOriginKind::Provider => exact_content::validate_protected_installations(
+            family_c,
+            &parts.family.binding,
+            &parts.family.required,
+            &parts.family.protection,
+            cancel,
+        )?,
+        DestinationOriginKind::Ordinary => {
+            crate::projection::shared::admitted_catalog::validate_terminal_ready_catalog(
+                family_c,
+                &parts.family.marker_bytes,
+                actual_marker,
+                &parts.family.binding,
+                &parts.family.required,
+                &parts.family.protection,
+                cancel,
+            )?
+        }
+    };
+    parts.require_installation(installation, cancel)?;
+    cancellation::check(cancel)?;
+    Ok(VerifiedManagedReady {
+        prefix: parts.prefix,
+        family_connection: family_c,
+        marker: parts.marker,
+        expected: parts.expected,
+        journal: parts.journal,
+        required: parts.family.required,
+        binding: parts.family.binding,
+        installation,
+        metadata_floor: parts.metadata_floor,
+    })
+}
+
+/// Internal private SQL interpretation. No complete family walk, installation
+/// state, physical bytes, admission or publication capacity is inferred here.
+/// Keep this large summary boxed through all nested readers.
+struct PrivateReadyParts<'d> {
+    prefix: VerifiedDestinationPrefix<'d>,
+    marker: format::Marker,
+    expected: ExpectedCheckout,
+    journal: CheckoutJournal,
+    family: family_read::FamilyData,
+    metadata_floor: u64,
+    member: ExportPublicationMember,
+}
+
+impl PrivateReadyParts<'_> {
+    /// Only a complete family validator may supply this actual installation.
+    fn require_installation(
+        &self,
+        installation: ExactInstallState,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        let retained = self
+            .metadata_floor
+            .checked_add(self.expected.maximum_encoded_bytes())
+            .ok_or_else(|| invalid("Ready retained metadata envelope overflow"))?;
+        let remaining = installation
+            .remaining
+            .checked_sub(self.expected.header().file_bytes)
+            .ok_or_else(|| invalid("Ready retained checkout envelope insufficient"))?;
+        self.family
+            .protection
+            .require_envelope(remaining, retained)?;
+        if self.prefix.origin() == DestinationOriginKind::Ordinary {
+            let budget = managed_budget::ordinary_admission_budget(
+                self.metadata_floor,
+                self.expected.files().len() as u64,
+                self.expected.directories().len() as u64,
+                self.family.required.len() as u64,
+            )?;
+            budget.require_remaining(
+                remaining,
+                self.family.protection.payload().len() as u64,
+                self.family.required.len() as u64,
+            )?;
+        }
+        cancellation::check(cancel)
+    }
+}
+
+fn read_private_ready_parts<'d>(
+    c: &'d Connection,
+    actual_marker: &format::Marker,
+    family_c: &Connection,
+    origin: DestinationOriginKind,
+    member: ExportPublicationMember,
+    cancel: Option<&Cancellation>,
+) -> Result<Box<PrivateReadyParts<'d>>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() || family_c.is_autocommit() || std::ptr::eq(c, family_c) {
         return Err(invalid(
@@ -253,7 +359,19 @@ fn read_ready_origin<'d, 'f>(
         }
     };
     let claim = family_read::read_claim(c, ready)?;
-    let family = family_read::read(family_c, actual_marker, ready, &claim, cancel)?;
+    let family = match member {
+        ExportPublicationMember::Ready => {
+            family_read::read(family_c, actual_marker, ready, &claim, cancel)?
+        }
+        ExportPublicationMember::Initializing => {
+            if origin != DestinationOriginKind::Ordinary {
+                return Err(invalid(
+                    "provisional private Ready requires Ordinary origin",
+                ));
+            }
+            family_read::read_at_member(family_c, actual_marker, ready, &claim, member, cancel)?
+        }
+    };
     let copied = prefix.copied_content_mappings(c, cancel)?;
     let lengths = match origin {
         DestinationOriginKind::Provider => {
@@ -333,26 +451,6 @@ fn read_ready_origin<'d, 'f>(
         &claims,
         cancel,
     )?;
-    let installation = match origin {
-        DestinationOriginKind::Provider => exact_content::validate_protected_installations(
-            family_c,
-            &family.binding,
-            &family.required,
-            &family.protection,
-            cancel,
-        )?,
-        DestinationOriginKind::Ordinary => {
-            crate::projection::shared::admitted_catalog::validate_terminal_ready_catalog(
-                family_c,
-                &family.marker_bytes,
-                actual_marker,
-                &family.binding,
-                &family.required,
-                &family.protection,
-                cancel,
-            )?
-        }
-    };
     let (source_size, destination_size) = managed_budget::original_staging_sizes(ready)?;
     let base = managed_budget::base_metadata_floor(
         prefix.metadata_bytes(c, cancel)?,
@@ -387,14 +485,6 @@ fn read_ready_origin<'d, 'f>(
         &family.required,
         cancel,
     )?;
-    let retained = floor
-        .checked_add(expected.maximum_encoded_bytes())
-        .ok_or_else(|| invalid("Ready retained metadata envelope overflow"))?;
-    let remaining = installation
-        .remaining
-        .checked_sub(expected.header().file_bytes)
-        .ok_or_else(|| invalid("Ready retained checkout envelope insufficient"))?;
-    family.protection.require_envelope(remaining, retained)?;
     if origin == DestinationOriginKind::Ordinary {
         // C8 must already fund its complete future C10 witness and archive
         // peak. Durable quotas remain immutable; a cheap current read cannot
@@ -406,22 +496,16 @@ fn read_ready_origin<'d, 'f>(
             family.required.len() as u64,
         )?;
         budget.require_quota(plan.quota_bytes, baseline)?;
-        budget.require_remaining(
-            remaining,
-            family.protection.payload().len() as u64,
-            family.required.len() as u64,
-        )?;
     }
     cancellation::check(cancel)?;
-    Ok(VerifiedManagedReady {
+    family_read::require_member(family_c, actual_marker, member)?;
+    Ok(Box::new(PrivateReadyParts {
         prefix,
-        family_connection: family_c,
         marker: actual_marker.clone(),
         expected,
         journal,
-        required: family.required,
-        binding: family.binding,
-        installation,
+        family,
         metadata_floor: floor,
-    })
+        member,
+    }))
 }

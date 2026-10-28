@@ -271,6 +271,7 @@ pub(super) struct AdmissionHooks {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PublicationStop {
+    PrivateReady,
     FamilyReady,
     SourceReady,
     Published,
@@ -328,6 +329,24 @@ pub(super) fn with_source_staging_data<T>(
         before_published: |_, _, _| {},
         continuation: after_family_ready,
         stop: PublicationStop::FamilyReady,
+    }))
+    .unwrap()
+}
+
+/// Stop after genuine private C8 Ready, before any family publication. Actual
+/// B remains Staging and C's family member remains Initializing. The callback
+/// must positively close B; only its owned DATA escapes after all old holders.
+pub(super) fn with_private_ready_data<T>(
+    after_private_ready: impl FnOnce(
+        OrdinaryManagedExport<'_>,
+        &PublicationFixture<'_>,
+        &Cancellation,
+    ) -> T,
+) -> T {
+    source_publication_inner(Some(PublicationHooks {
+        before_published: |_, _, _| {},
+        continuation: after_private_ready,
+        stop: PublicationStop::PrivateReady,
     }))
     .unwrap()
 }
@@ -591,6 +610,37 @@ fn source_publication_inner<T>(
     );
     physical.require();
     require_source_pin(&root.join(path.as_str()));
+
+    if hooks
+        .as_ref()
+        .is_some_and(|hooks| hooks.stop == PublicationStop::PrivateReady)
+    {
+        let fixture = PublicationFixture {
+            destination: &allocated,
+            protection: &protection,
+            checkout: &checkout,
+            ready: &durable.ready,
+            receipt: &durable.receipt,
+            required: &required,
+            expected: &expected,
+            source_marker: &store.marker,
+            provider_source_root: &provider_source_root,
+            source_root: &root,
+            source_database: &source_database,
+            destination_root: &destination_root,
+            destination_database: &destination_database,
+            family_root: &family_root,
+            family_database: &family_database,
+        };
+        let hooks = hooks.take().unwrap();
+        let result = (hooks.continuation)(owner, &fixture, &cancel);
+        allocated.require_published(&staging.plan).unwrap();
+        drop(checkout);
+        drop(protection);
+        drop(allocated);
+        drop(store);
+        return Some(result);
+    }
 
     let family_ready = owner
         .publish_destination_family_ready(

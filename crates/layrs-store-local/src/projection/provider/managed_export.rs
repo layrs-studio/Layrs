@@ -13,6 +13,11 @@ pub(in crate::projection::provider) use checkout::OrdinaryCheckoutProof;
 mod content;
 mod copy;
 mod destination;
+mod family_reopen;
+pub(in crate::projection::provider) use family_reopen::{
+    OrdinaryFamilyReadyPublication, OrdinaryFamilyReadyPublicationFailure,
+    OrdinaryFamilyReadyPublicationProgress,
+};
 mod image;
 mod installing;
 mod preallocation;

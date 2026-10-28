@@ -1,20 +1,26 @@
 # Reprise du 28 octobre 2026
 
-## Dernier checkpoint — r72 échoué et archivé, diagnostic r77 actif
+## Dernier checkpoint — Staging r79 qualifié, réexport r81 et candidat familial revu
 
 Goal **actif**, programme complet ; aucun push/PR. Base des revues `e2a1ac4`.
 r66 admission fraîche et r69 publication fraîche : cinq PASS chacun, archives
 vérifiées. Reprise fraîche Staging : revue r70 sans défaut, build/check r71 PASS.
 Runner r72 **ROOT17382** terminé exit1 : cinq régressions PASS, premier natif
 FAIL101/Windows0xc00000fd après642,474s (stack overflow), second non atteint.
-Archive vérifiée. Aucun succès Staging natif revendiqué.
+Archive vérifiée. Cet échec est désormais suivi des deux succès natifs r79.
 
 Revues **r73/r74 terminées sans finding**, threads lus au résultat final.
 Garde Ready et recette C10→D10 compilées r75 ; instrumentation de diagnostic
-Staging uniquement test compilée/check r76. Runner **ROOT81989/r77 actif** :
-SQL Ready puis premier natif Staging avec traces et pile inchangée ; pas de
-source10 ni ACK Staging exécuté dans ce runner. Aucun autre build/test/SQL
-concurrent ; ne relancer aucun runner. Aucun agent/revue en attente.
+Staging uniquement test compilée/check r76. r77 terminé : SQL Ready PASS,
+natif FAIL ; traces localisent le débordement à open/validated-read puis
+validate/observation. Correction privée Box<Validated> compilée/check r78,
+réduction de pile compilée mesurée. Runner **ROOT22841/r79 terminé exit0**,
+deux natifs Staging PASS599,491s et598,976s, pile inchangée ; archive vérifiée.
+Réexport C10→D10 : r80 refus sandbox avant fixture ; **ROOT40925/r81 actif**
+sur un nouveau parent, accès hôte accordé. Aucun autre build/test/SQL concurrent.
+Lot reprise familiale entièrement intégré en source, trois implémenteurs finis,
+revue critique r82 terminée ; unique remarque P3 de formulation corrigée par ROOT.
+Compilation et qualification familiale encore attendues. Ne relancer aucun runner/script.
 Les sections finales donnent hashes, chemins, périmètres et scripts déjà exécutés.
 Le reste de ce document conserve la chronologie des preuves, y compris échecs.
 
@@ -834,3 +840,187 @@ stack revendiqué. Source10 et ACK Staging exclus de cette exécution.
 
 Préserver ces sources/archives/docs dans un commit local de continuation,
 pas de push/PR ; stash original conservé. Goal actif, programme non terminé.
+
+Checkpoint local effectivement créé : `8dbeba239a7bf08abc0cf9430ccf6621582c9cbb`,
+24 fichiers, index/worktree propres juste après commit, stash contrôlé inchangé.
+r77 SQL Ready avec les nouveaux refus **PASS28,109s** ; natif diagnostique en
+cours ROOT81989, seul marqueur encore disponible à17:49UTC = création fixture.
+Ne pas conclure que le nouveau driver est atteint avant les traces suivantes.
+
+Investigation offline terminée (aucun agent restant), résumé
+`D:/Layrs/tmp/ordinary-r72-callchain-summary.json`, graph et50 ranges adjacents.
+Chaîne open/read_validated/validate mesurée statiquement : trois read_inner
+imbriqués transportant Validated occupent508552 octets +120408 with_progress ;
+subtotalavec test/open/callbacks/validate1275888 octets, puis admission ajoute
+276352 avant ses propres callees. Ce sont des frames qui peuvent coexister,
+pas une capture de la pile fautive ni une mesure de sa limite réelle.
+Correction candidate après confirmation de phase : faire traverser aux scopes
+stricts un résultat petit (`Box<Validated>` ou `()` avec DATA local), conserver
+toutes les propagations de close/erreur, aucun emprunt de preuve hors transaction.
+Aucune de ces corrections n'est encore implémentée. La pile reste inchangée.
+Script packaging r77 créé et parsé, NON exécuté :
+`D:/Layrs/tmp/package-ordinary-staging-diagnostic-20261028-r77.py`.
+Attendre la terminaison du handle puis archiver succès ou échec, sans fixture.
+
+Tour goal suivant : ROOT81989 revérifié vivant, ancien binaire diagnostic
+toujours seul en exécution. ROOT prépare le delta minimal dans un seul fichier
+`managed_export/staging_reopen.rs` : validate et read_validated retournent
+`Box<Validated>`, construit après toutes les validations. Les trois readers
+transportent ainsi un pointeur au lieu de dupliquer les records dans leurs
+slots de retour. Aucun ordre SQL/close, owner/pin, contrôle ou budget modifié.
+Rustfmt passe ; pas encore de compilation/mesure/runtime de ce candidat.
+Le site exact du débordement r72 reste à confirmer par les traces r77.
+
+
+## r77 terminé, candidat Box r78/r79 en qualification
+
+ROOT81989 terminé exit1 : SQL Ready PASS28,109s, premier natif FAIL101688,67s.
+Les traces établissent setup-released, precancel, drift-open/source/C/image,
+puis exact-open/source/C/image/validated-read et validate/observation avant
+stack overflow. La chaîne de validation fraîche est effectivement atteinte.
+Archive r77 vérifiée725 fichiers2173486 octets SHA256
+`7ee36f854c09a133603a3c3a02cb045987d8dbcf5f0fcddbf3800217a7584c15`.
+Pas de fixture r77 rouverte, aucun succès natif inféré de ces traces.
+
+Box<Validated> compile r78 PASS18,63s, check workspace/all-targets PASS5,09s.
+Comparaison indépendante offline du binaire r78,24 plages désassemblées :
+`D:/Layrs/tmp/ordinary-r78-callchain-comparison.json`, graph adjacent.
+Même chaîne compilée imbriquée : subtotal1275888→548464 octets, gain727424
+(57,01%). Trois read_inner508552→20872 ; progress120408→4632 ; callbacks
+58744→1720 ; read_validated30056→1544 ; open154088→115480 ; validate reste
+291944. Pas une pile dynamique/borne complète : callees plus profonds, bridges,
+retours et libtest ne sont pas tous inclus. Réduction compilée, pas runtime PASS.
+Attention : ordinary-r78-callchain-map.json est une ligne JSON~30Mo ; ne jamais
+Get-Content/head ce fichier brut. Filtrer avec Python et limiter les résultats.
+
+ROOT accepte uniquement la petite représentation privée mécanique : retirer
+deux signatures Box, le constructeur Box et son commentaire retrouve exactement
+r77. Aucun ordre de preuve/SQL/fermeture, owner/pin ni limite de pile changé.
+Self-review ROOT, pas de nouvelle revue critique indépendante revendiquée pour
+ce delta mécanique ; reviews r70/r73/r74 restent le contexte protocolaire.
+Release r79 SHA256
+`18e478d0a2ce5feefb9c03bdf83accabd61d1d6dccaf2eb980f108a36c20bf6f`.
+EXE `695389de06e1c912136bbd871a831ba3010007c67b06aab9b47b3ebd9b7cf51a`,
+CodeView age135,662 inputs live/retenus, exactement1 fichier changé depuis r77.
+
+Runner `D:/Layrs/tmp/provider-ordinary-staging-box-run-r79.py r79`,
+**ROOT22841 actif**, artefacts
+`.layrs-local/validation/provider-ordinary-staging-box-20261028-r79`.
+Deux natifs Staging exacts : drift/succès puis ACK/Ready handoff, chacun parent
+neuf, child3600/outer3660, arrêt premier échec. Premier en cours, second pas
+encore atteint. Aucun autre build/SQL/test simultané. Ne relancer aucun script.
+Packager `D:/Layrs/tmp/package-ordinary-staging-box-20261028-r79.py` créé/parsable,
+NON exécuté ; attendre terminaison ROOT22841, archiver résultat même échoué.
+
+L'agent d'investigation est terminé ; aucun agent/revue restant. Son plan
+précis pour PrivateReadyParts puis lecteur/holder distinct family-publication
+est ajouté au document fresh-staging. Ne pas élargir terminal/admission Ready.
+Code Box, docs courants et archive r77 restent non commités après8dbeba2.
+Source10 natif et second ACK Staging restent non qualifiés. Goal actif.
+
+## Reprise suivante — premier natif r79 PASS, publication familiale en source
+
+ROOT22841 confirme le premier natif r79 PASS599,491s : image B modifiée
+refusée, puis image exacte authentifiée et B promu Ready après libération de
+tous les anciens holders. Le second scénario ACK est maintenant actif.
+Ne pas reconstruire ni lancer un autre test avant terminaison du même handle.
+Le packaging r79 reste à faire après terminaison ; aucun script relancé.
+
+Trois contributions source séparées, sans exécution concurrente :
+
+- `ordinary_family_ready_sql_parts` a extrait PrivateReadyParts et deux
+  nouvelles lectures distinctes : DATA privée provisoire, puis lecture complète
+  soutenue par B réel et le catalogue familial complet. Les lecteurs terminaux
+  conservent leur obligation Ready et leurs contrôles stricts. Il ajoute la
+  couverture SQL dans ordinary_tests et corrige une comparaison d'union qui
+  dépendait à tort de l'ordre FileId au lieu de l'ensemble exact ManifestId.
+- `source10_nested_export_recipe` implémente le driver physique frais
+  OrdinaryFamilyReadyPublication, les ressources C distinctes et leur factory
+  depuis B Exclusive. Pas d'adoption d'une ancienne allocation/proof ni d'upgrade.
+- `fresh_family_recipe` prépare deux recettes natives et un arrêt de setup
+  réellement PrivateReady : succès Updated/relecture/rejeu et ACK retenu/reprise.
+
+ROOT révise l'intégration. Ces nouveaux fichiers ne sont pas encore compilés,
+revus indépendamment ou qualifiés. Le lot fait seulement passer le membre C
+Initializing→Ready lorsque C privé est déjà Ready et B reste Staging. La reprise
+Staging→Ready, la publication B et l'admission restent des actions distinctes.
+Goal actif ; aucun push/PR. Le réexport natif C10→D10 reste en attente.
+
+## r79 qualifié, réexport C10→D10 r81 et candidat familial r82
+
+ROOT22841 terminé exit0. Les deux natifs Staging passent, respectivement
+599,491s et598,976s. Le second conserve la cause ACK, refuse les probes suivants,
+retient les pins/owners puis permet le handoff Ready après libération explicite.
+Archive r79 vérifiée721 fichiers2159560 octets, SHA256
+`418996d68d3ccecb1cfd81e509fe969cbd7cecb2ffa9e3f73d441c91a079434c`.
+Packager exécuté, ne pas relancer. Pas de hausse de pile ; aucune qualification
+de panne OS réelle ou de crash déduite des ACK retenus.
+
+Réexport source10 : les18 chemins de revue r74 correspondent exactement aux
+sources du binaire retenu r79 ;662 inputs retenus revérifiés. Aucune source du
+nouveau lot familial n'entre dans ce binaire. r80 termine exit1/101 en0,078s :
+refus d'ouverture pinned-directory C:/Users/ALEXA, os error5, avant fixture.
+Ce résultat est un défaut d'accès du bac à sable, pas une exécution du parcours.
+Preuves conservées sous `.layrs-local/validation/provider-ordinary-source10-20261028-r80`.
+
+r81 utilise un parent neuf et l'escalade d'accès explicitement acceptée.
+Release source/artefact SHA256
+`eff620e8a4ce898cfa00f6a821e8bf082921b1cc800e7bd393f71ecba60d9f98`.
+Runner `D:/Layrs/tmp/provider-ordinary-source10-run-r81.py r81`, **ROOT40925 actif**.
+Artefacts `.layrs-local/validation/provider-ordinary-source10-20261028-r81`.
+Une seule recette native, child5400/outer5460 proposés non mesurés, nouveau
+parent C:, arrêt au premier échec. EXE retenu r79/age135 inchangé. Ne pas lancer
+de compilation/SQL/natif concurrent ; ne jamais rouvrir la fixture r80.
+
+Les trois implémenteurs natifs sont terminés, fichiers figés. Revue critique
+T3 GPT-6-Astra xhigh r82 démarrée en mode wait, cellule ROOT492 (600000ms).
+Manifeste40 fichiers/13changés :
+`D:/Layrs/tmp/provider-ordinary-fresh-family-review-r82-inputs.json`, SHA256
+`62a903bad05b08a0820a2874f7f15e2b161f71bced02f1ae43b604c653c0252b`.
+Diff SHA256 `a81d0f6cd5fc9a327510fa96408d9c00a7b9c656956836533e6ec4c8dbfd859e`.
+Ne pas modifier les sources ni HEAD pendant la revue ; docs non liées possibles.
+Nouveau lot non compilé/non exécuté : uniquement extraction SQL stricte,
+reconstruction physique source/famille et recettes. ROOT garde l'intégration,
+la compilation, la release et la qualification. Goal actif, programme ouvert.
+
+Packager r80/r81 préparé et parsé, NON exécuté :
+`D:/Layrs/tmp/package-ordinary-source10-20261028-r80-r81.py`.
+Attendre terminaison explicite ROOT40925 avant archivage (succès ou échec).
+Il vérifie les deux releases/résultats, conserve le refus initial et archive
+une seule copie des662 sources identiques ; EXE/PDB/fixtures exclus.
+
+La cellule ROOT492 a rendu après son wait600000ms : revue r82 encore en cours,
+aucune question/approbation en attente. Directive T3 : terminer ce tour et laisser
+la fin de revue réveiller ROOT, sans polling. Task suffixe
+`77458e04-b3b0-4b15-8b87-5d361effe67d`, thread
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3A77458e04-b3b0-4b15-8b87-5d361effe67d`.
+Lire le résultat final complet au réveil. ROOT40925 encore vivant à18:30:49UTC,
+aucun résultat natif source10 disponible alors. Tous les agents natifs ont fini.
+Goal toujours actif ; aucun commit durant cette revue (HEAD doit rester figé).
+
+## Revue r82 terminée, précision de preuve corrigée
+
+Thread complet lu jusqu'au résultat final, hasMore=false. Aucun défaut concret
+de protocole, permission ou intégrité identifié en source. Unique finding
+R82-CV-01/P3 : la recette annonçait un succès OS alors que l'observateur établit
+seulement le retour réussi de Connection::close/SQLite. ROOT a corrigé l'en-tête
+et le texte d'assertion, sans toucher au comportement. Comparaison mécanique
+des40 sources : seul ce fichier diffère, exactement ces deux substitutions.
+Rustfmt check PASS. Pas de nouvelle délégation pour cette correction textuelle.
+Rapport `D:/Layrs/tmp/provider-ordinary-fresh-family-critical-review-r82.json`.
+La revue est source-only ; compilation, durées et tests restent non établis.
+
+Le tour précédent a produit du progrès concret (deux natifs r79 PASS, archive,
+nouveau lot familial intégré et revue lancée). Ce tour confirme ROOT40925 vivant,
+consomme la revue achevée et corrige sa remarque ; goal actif sans réduction de
+périmètre. La sérialisation interdit encore Cargo/SQL/natif tant que r81 tourne.
+
+Archive source-only r82 vérifiée47 fichiers199971 octets, SHA256
+`333e08d8bd06f4c3638aa2da88f57d7880a46acff2b6120454fc7fba7d45aa93`.
+Elle conserve les40 sources revues, le rapport/manifeste/diff, puis le fichier
+de recette corrigé et sa comparaison mécanique. Pas de qualification runtime.
+Checkpoint local prévu pour ces14 Rust (13famille +Box Staging), quatre docs
+et les archives/inventaires r77/r79/r82 ; aucun push, stash original inchangé.
+L'agent `fresh_private_ready_investigation` examine uniquement en lecture source
+le prochain prédécesseur : B Staging/C Staging/protection+checkout complets vers
+C Ready privé. Aucun code de ce prochain lot commencé.

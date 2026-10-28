@@ -670,6 +670,11 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             data: &data,
         };
         if publication {
+            assert!(read_ordinary_private_ready(c, &target_marker, family, None).is_err());
+            assert!(
+                read_ordinary_family_publication(source, c, family, &inputs, &expected, None,)
+                    .is_err()
+            );
             assert!(
                 read_ordinary_checkout_ready_for_publication(
                     source, c, family, &inputs, &expected, None
@@ -1868,6 +1873,30 @@ fn exercise_publication(
     let source_before = dump(source);
     let destination_before = dump(destination);
     let family_before = dump(family);
+    let read_changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    let private_before =
+        read_ordinary_private_ready(destination, inputs.marker, family, None).unwrap();
+    assert_eq!(
+        private_before.member(),
+        ExportPublicationMember::Initializing
+    );
+    assert_eq!(private_before.ready(), inputs.data.ready);
+    assert_eq!(private_before.receipt(), inputs.data.receipt);
+    assert_eq!(private_before.metadata_floor(), inputs.metadata_floor);
+    let complete_before =
+        read_ordinary_family_publication(source, destination, family, inputs, expected, None)
+            .unwrap();
+    private_before
+        .require_same(complete_before.snapshot())
+        .unwrap();
+    assert!(
+        read_ordinary_managed_ready(destination, inputs.marker, family, None).is_err(),
+        "Initializing must not enter the terminal Ready reader",
+    );
     read_ordinary_checkout_ready_for_publication(
         source,
         destination,
@@ -1882,10 +1911,114 @@ fn exercise_publication(
         .unwrap()
         .1;
     assert_eq!(before.member, ExportPublicationMember::Initializing);
+    assert_eq!(complete_before.state(), before);
+    let snapshot_before = complete_before.into_snapshot();
+
+    // The same canonical representations may arrive in a different order.
+    // Their actual ManifestIds and complete bodies remain exact.
+    let reversed_required: Vec<_> = private_before.required().iter().rev().cloned().collect();
+    assert!(reversed_required.len() > 1);
+    assert_ne!(reversed_required.as_slice(), private_before.required());
+    let reversed_data = ManagedReadyData {
+        required: &reversed_required,
+        ..*inputs.data
+    };
+    let reversed = OrdinaryReadyInputs {
+        data: &reversed_data,
+        ..*inputs
+    };
+    let reordered =
+        read_ordinary_family_publication(source, destination, family, &reversed, expected, None)
+            .unwrap();
+    assert_eq!(reordered.state(), before);
+    snapshot_before
+        .require_same(&reordered.into_snapshot())
+        .unwrap();
+
+    // A different canonical ManifestId for the same FileId/length is not a
+    // substitute, even though its exact chunk bodies describe the same bytes.
+    let original = &reversed_required[0];
+    let single = layrs_core::scm::ChunkingDescriptor::single();
+    let chunking = if original.chunking() == &single {
+        layrs_core::scm::ChunkingDescriptor::deterministic_fixed(1048576).unwrap()
+    } else {
+        single
+    };
+    let substitute = FileManifest::new(
+        original.file_id().clone(),
+        original.byte_length(),
+        chunking,
+        original.chunks().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(substitute.file_id(), original.file_id());
+    assert_eq!(substitute.byte_length(), original.byte_length());
+    assert_ne!(substitute.id(), original.id());
+    let mut substituted_required = reversed_required.clone();
+    substituted_required[0] = substitute;
+    let substituted_data = ManagedReadyData {
+        required: &substituted_required,
+        ..*inputs.data
+    };
+    let substituted = OrdinaryReadyInputs {
+        data: &substituted_data,
+        ..*inputs
+    };
+    assert!(read_ordinary_family_publication(
+        source,
+        destination,
+        family,
+        &substituted,
+        expected,
+        None,
+    )
+    .is_err());
+    let mut duplicated_required = reversed_required.clone();
+    duplicated_required[0] = duplicated_required[1].clone();
+    let duplicated_data = ManagedReadyData {
+        required: &duplicated_required,
+        ..*inputs.data
+    };
+    let duplicated = OrdinaryReadyInputs {
+        data: &duplicated_data,
+        ..*inputs
+    };
+    assert!(read_ordinary_family_publication(
+        source,
+        destination,
+        family,
+        &duplicated,
+        expected,
+        None,
+    )
+    .is_err());
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        read_changes
+    );
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
 
     let cancel = Cancellation::default();
     cancel.cancel();
     let changes = family.total_changes();
+    assert!(
+        read_ordinary_private_ready(destination, inputs.marker, family, Some(&cancel),).is_err()
+    );
+    assert!(read_ordinary_family_publication(
+        source,
+        destination,
+        family,
+        inputs,
+        expected,
+        Some(&cancel),
+    )
+    .is_err());
     assert!(retained
         .publish_export_ready(family, marker, &publication, Some(&cancel))
         .is_err());
@@ -1895,12 +2028,90 @@ fn exercise_publication(
     let mut wrong_receipt =
         ProviderTransitionReceiptRecord::decode(&inputs.data.receipt.encode().unwrap()).unwrap();
     wrong_receipt.transaction_id = "000000000000000000000000000ce199".into();
+    let wrong_data = ManagedReadyData {
+        receipt: &wrong_receipt,
+        ..*inputs.data
+    };
+    let wrong_inputs = OrdinaryReadyInputs {
+        data: &wrong_data,
+        ..*inputs
+    };
+    assert!(read_ordinary_family_publication(
+        source,
+        destination,
+        family,
+        &wrong_inputs,
+        expected,
+        None,
+    )
+    .is_err());
     let mut wrong = inputs.publication_inputs(expected);
     wrong.receipt = &wrong_receipt;
     assert!(retained
         .publish_export_ready(family, marker, &wrong, None)
         .is_err());
     assert_eq!(family.total_changes(), changes);
+    assert_eq!(dump(family), family_before);
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        read_changes
+    );
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+
+    assert_family_publication_corruption(source, destination, family, inputs, expected);
+    // C's provisional private DATA does not validate B's retained family root.
+    // Losing that whole known group must still fail the complete actual-B gate.
+    family
+        .execute_batch("SAVEPOINT missing_retained_publication_root")
+        .unwrap();
+    assert!(
+        family
+            .execute(
+                "DELETE FROM root_manifests WHERE root_id IN (SELECT id FROM roots WHERE owner=?1)",
+                [inputs.source_marker.identity.worktree_id.as_str()],
+            )
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        family
+            .execute(
+                "DELETE FROM roots WHERE owner=?1",
+                [inputs.source_marker.identity.worktree_id.as_str()],
+            )
+            .unwrap(),
+        1
+    );
+    let missing = dump(family);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    let still_private =
+        read_ordinary_private_ready(destination, inputs.marker, family, None).unwrap();
+    private_before.require_same(&still_private).unwrap();
+    assert!(
+        read_ordinary_family_publication(source, destination, family, inputs, expected, None,)
+            .is_err()
+    );
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(family), missing);
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    family.execute_batch("ROLLBACK TO missing_retained_publication_root; RELEASE missing_retained_publication_root").unwrap();
     assert_eq!(dump(family), family_before);
 
     family
@@ -1940,6 +2151,36 @@ fn exercise_publication(
         .1;
     assert_eq!(after.member, ExportPublicationMember::Ready);
     assert_eq!(after.protection, before.protection);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    let private_after =
+        read_ordinary_private_ready(destination, inputs.marker, family, None).unwrap();
+    assert_eq!(private_after.member(), ExportPublicationMember::Ready);
+    assert!(
+        private_before.require_same(&private_after).is_err(),
+        "provisional comparison must retain its exact observed member phase"
+    );
+    let complete_after =
+        read_ordinary_family_publication(source, destination, family, inputs, expected, None)
+            .unwrap();
+    private_after
+        .require_same(complete_after.snapshot())
+        .unwrap();
+    assert_eq!(complete_after.state(), after);
+    snapshot_before
+        .require_same(&complete_after.into_snapshot())
+        .unwrap();
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
     let mut expected_family = family_before;
     let members = expected_family.get_mut("worktrees").unwrap();
     let owner = Cell::Text(inputs.target.binding().owner.as_str().as_bytes().to_vec());
@@ -1985,44 +2226,26 @@ fn exercise_publication(
             None
         )
         .is_err());
-    for sql in [
-        "UPDATE worktrees SET marker=x'00' WHERE id=?1",
-        "UPDATE roots SET payload=x'00' WHERE owner=?1",
-        "UPDATE reservations SET remaining=remaining+1 WHERE owner=?1",
-    ] {
-        family
-            .execute_batch("SAVEPOINT corrupt_publication")
-            .unwrap();
-        assert_eq!(
-            family
-                .execute(sql, [inputs.target.binding().owner.as_str()])
-                .unwrap(),
-            1
-        );
-        let corrupt = dump(family);
-        let changes = family.total_changes();
-        assert!(read_ordinary_checkout_ready_for_publication(
-            source,
-            destination,
-            family,
-            inputs,
-            expected,
-            None
-        )
-        .is_err());
-        assert!(retained
-            .publish_export_ready(family, marker, &publication, None)
-            .is_err());
-        assert_eq!(dump(family), corrupt);
-        assert_eq!(family.total_changes(), changes);
-        family
-            .execute_batch("ROLLBACK TO corrupt_publication; RELEASE corrupt_publication")
-            .unwrap();
-    }
+    assert_family_publication_corruption(source, destination, family, inputs, expected);
     family
         .execute_batch("COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED")
         .unwrap();
-    let changes = family.total_changes();
+    source.execute_batch("PRAGMA query_only=ON").unwrap();
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    let readonly_private =
+        read_ordinary_private_ready(destination, inputs.marker, family, None).unwrap();
+    private_after.require_same(&readonly_private).unwrap();
+    let readonly =
+        read_ordinary_family_publication(source, destination, family, inputs, expected, None)
+            .unwrap();
+    assert_eq!(readonly.state(), after);
+    snapshot_before
+        .require_same(&readonly.into_snapshot())
+        .unwrap();
     read_ordinary_checkout_ready_for_publication(
         source,
         destination,
@@ -2047,8 +2270,89 @@ fn exercise_publication(
         Some(&cancel)
     )
     .is_err());
-    assert_eq!(family.total_changes(), changes);
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
     assert_eq!(dump(family), expected_family);
     assert_eq!(dump(source), source_before);
     assert_eq!(dump(destination), destination_before);
+    source.execute_batch("PRAGMA query_only=OFF").unwrap();
+}
+
+fn assert_family_publication_corruption(
+    source: &Connection,
+    destination: &Connection,
+    family: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+) {
+    let source_before = dump(source);
+    let destination_before = dump(destination);
+    let family_before = dump(family);
+    for sql in [
+        "UPDATE worktrees SET metadata_path='foreign' WHERE id=?1",
+        "UPDATE worktrees SET database_identity='foreign' WHERE id=?1",
+        "UPDATE worktrees SET marker=x'00' WHERE id=?1",
+        "UPDATE roots SET payload=x'00' WHERE owner=?1",
+        "UPDATE reservations SET remaining=remaining+1 WHERE owner=?1",
+    ] {
+        family
+            .execute_batch("SAVEPOINT corrupt_publication")
+            .unwrap();
+        assert_eq!(
+            family
+                .execute(sql, [inputs.target.binding().owner.as_str()])
+                .unwrap(),
+            1
+        );
+        let corrupt = dump(family);
+        let changes = (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes(),
+        );
+        assert!(
+            read_ordinary_family_publication(source, destination, family, inputs, expected, None,)
+                .is_err(),
+            "complete family publication accepted {sql}"
+        );
+        assert!(read_ordinary_checkout_ready_for_publication(
+            source,
+            destination,
+            family,
+            inputs,
+            expected,
+            None,
+        )
+        .is_err());
+        assert!(inputs
+            .retained
+            .publish_export_ready(
+                family,
+                inputs.family_marker_bytes,
+                &inputs.publication_inputs(expected),
+                None,
+            )
+            .is_err());
+        assert_eq!(
+            (
+                source.total_changes(),
+                destination.total_changes(),
+                family.total_changes()
+            ),
+            changes
+        );
+        assert_eq!(dump(family), corrupt);
+        assert_eq!(dump(source), source_before);
+        assert_eq!(dump(destination), destination_before);
+        family
+            .execute_batch("ROLLBACK TO corrupt_publication; RELEASE corrupt_publication")
+            .unwrap();
+        assert_eq!(dump(family), family_before);
+    }
 }

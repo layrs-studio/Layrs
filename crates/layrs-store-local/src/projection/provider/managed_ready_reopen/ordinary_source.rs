@@ -64,6 +64,19 @@ impl OrdinaryExclusiveSource {
         self.source.require_destination(&pins, cancel)?;
         OrdinaryReadyInspection::open_shared(pins, cancel)
     }
+
+    /// Preliminary C resources only. Preserve the anti-alias/family checks
+    /// before C ownership; actual Ready and complete family authentication are
+    /// the separate fresh family driver's responsibility.
+    pub(in crate::projection::provider) fn inspect_family_destination(
+        &self,
+        root: &Path,
+        cancel: &Cancellation,
+    ) -> Result<OrdinaryFamilyResources> {
+        let pins = ManagedReadyPins::open(root, cancel)?;
+        self.source.require_destination(&pins, cancel)?;
+        OrdinaryFamilyResources::open_shared(pins, cancel)
+    }
 }
 
 /// Nonforgeable fresh source capability, acquired before any destination owner.

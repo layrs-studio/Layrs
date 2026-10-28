@@ -15,8 +15,13 @@ La reprise B Ready → Published avec nouveaux propriétaires passe les cinq
 recettes r69 ; les preuves sont archivées. La reprise fraîche B Staging → Ready
 passe la revue r70 et la compilation/workspace r71. Les cinq régressions r72
 passent ; le premier natif échoue sur un débordement de pile, le second n'est
-pas lancé. Le diagnostic r77 est en cours. La garde Ready r73 et le scénario
-C10→D10 r74 passent leurs revues source et la compilation, sans résultat natif.
+pas lancé. Le diagnostic r77 localise l'échec dans la validation imbriquée ;
+la correction de transport des résultats passe les deux natifs r79, archivés.
+La garde Ready r73 passe son SQL r77. Le scénario C10→D10 r74 est en exécution
+native r81 sur le binaire retenu ; le premier lancement r80 a refusé l'accès
+au parent avant création de fixture. La reprise familiale fraîche est intégrée
+en source ; revue critique r82 terminée, précision de preuve corrigée,
+sans compilation ni résultat runtime pour ce nouveau lot.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 

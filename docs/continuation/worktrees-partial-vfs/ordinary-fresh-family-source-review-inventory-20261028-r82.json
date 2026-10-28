@@ -1,0 +1,246 @@
+{
+  "recordedUtc": "2026-10-28T18:36:26.213735+00:00",
+  "scope": "SOURCE ONLY fresh family Ready reconstruction/publication r82. Independent review plus ROOT mechanical correction of R82-CV-01 comment/assertion text; no behavioral changes after review.",
+  "limitations": [
+    "Candidate uncompiled and unexecuted. No runtime or release qualification.",
+    "SQLite successful connection close is not native xClose or OS-close proof.",
+    "ROOT40925 retained r79 source10 test is separate and does not exercise this candidate."
+  ],
+  "files": [
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/admitted_ordinary.rs",
+      "bytes": 1751,
+      "sha256": "dc1ed002a549bc85f518bfdf272832aac75cad7551b5517d20e6a16548a2d3b5"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 18347,
+      "sha256": "d93a6ad93c22a9dff5bce03082a6fd274a8fbc16b03851b3e8a87842cc6a12ad"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs",
+      "bytes": 20848,
+      "sha256": "ff61a820b335d28d4f252659375bb63d8bffb21c5421fb6877c5020a0fa1df8c"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_family_tests.rs",
+      "bytes": 23236,
+      "sha256": "d52b5f06361b251cea59286af82b61988a8f1084a34ea2aa571282ccb8cee5ad"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_staging_tests.rs",
+      "bytes": 20341,
+      "sha256": "7d003d53e34033b9884de8b73c4a09ee363e2509310d32ce6063d41a7c3d56db"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_installing_tests.rs",
+      "bytes": 40793,
+      "sha256": "fa50a6627d30a46b64df0c7f21726b80a73a72942586de994a20d85181fd2ed9"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_source_publication_tests.rs",
+      "bytes": 32691,
+      "sha256": "44743f5fc666f680af19c282d83a5f1a109737cae2dd9aab0041cff3eb28a072"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/database_io.rs",
+      "bytes": 16830,
+      "sha256": "441e1cbc3aa0552641c51c04b8b70a5c5b5010ce11ed49a18a77a4a6e8dfa868"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/database_io/bare.rs",
+      "bytes": 15526,
+      "sha256": "ce15781fdcebfbeba404adad5fe71e3b3b2b2bfb0d6af89a79058bbc35f4108e"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/database_io/sidecars.rs",
+      "bytes": 5635,
+      "sha256": "7015452898bfa565d5ae66f7fcec5b8454fd7bd76d6145e16daf8953f2f73a12"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/database_io/tests/fresh_ordinary_support.rs",
+      "bytes": 1476,
+      "sha256": "146a34a0ca2e5092ddf52b864ea5141f6481f7b47c6790ff13a92a85da83a745"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready.rs",
+      "bytes": 26638,
+      "sha256": "0719a5ba34088c13895af6d6a86b11a310f39940e6ecf6aa5de52f2a5522ecb1"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous.rs",
+      "bytes": 19417,
+      "sha256": "2449711b660a6b7d35303d1fe6ad4f12a7cc8aba3e3995cc8cdb2bf2bab26e25"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/family_read.rs",
+      "bytes": 9414,
+      "sha256": "ae20162a0b91b61791688d57bccf18104f801dc799f3bcfe8f0e9d05760559f2"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/inventory.rs",
+      "bytes": 8453,
+      "sha256": "39e35210f3907f7e183e99a12f814fd714576f3fb0a95398d34486801ac353a0"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/ordinary_family_publication.rs",
+      "bytes": 10285,
+      "sha256": "10f3b57495ff1cca7e5e4898fe019553ce15efcbff8c2d2feecafd81b0c08c6d"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/historical.rs",
+      "bytes": 18627,
+      "sha256": "52530bd7759d7416b9490d915acaefb201e0a9a06cd4a3e3ac7d3e8656314a9d"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs",
+      "bytes": 28474,
+      "sha256": "b3b27a1f73cf4031cdb4c0a8ccf7576d41ebc0ab5531d91ec71679ce2f51c292"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs",
+      "bytes": 87515,
+      "sha256": "4a8a3dae23bc8235231c44eecf124e3c0b09c29ec836c9bee091cd16c27f35cd"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/import_validation/source.rs",
+      "bytes": 26061,
+      "sha256": "4d401c0988d07ab79ca8153583a4ca795905e1f989904a5383688f4bc9abbe1e"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export.rs",
+      "bytes": 28182,
+      "sha256": "8ccd66958da6dbbb38766e808766a490629d20ed91bf7a604ababa6d19b64594"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/content.rs",
+      "bytes": 20959,
+      "sha256": "a1919255a7c48646c618c3ce6774891dd566777cb58059f0f9b5e21eb21e2608"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/family_reopen.rs",
+      "bytes": 28126,
+      "sha256": "6697b3aa765db0c84a0b3bc4098306cebb929f91a63acbccc44772b04c017400"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/image.rs",
+      "bytes": 19736,
+      "sha256": "fd7f8740215d691e6ce6827014ac91b04025ebf09760f1f483fa6121460a9ed5"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/ready.rs",
+      "bytes": 32045,
+      "sha256": "541d00adf48af062aa9f229e489f70f81145e4f159ec4ccb2862418b02ac363d"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/ready_data.rs",
+      "bytes": 28746,
+      "sha256": "726d6d617cef56eede902bde2f81223053e46b41049e2faacd006e06d2ee5cc9"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/reservation.rs",
+      "bytes": 13732,
+      "sha256": "f2eb82aaef2ae2e26898fb661d0527b32685c25ca1885038bd838a296ce4e887"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/reserve_plan.rs",
+      "bytes": 6839,
+      "sha256": "eccb2500f326b2de6e2ba2adc9568e1b6c4575caf6c3baa95a4aff6ef11b7863"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_export/staging_reopen.rs",
+      "bytes": 27250,
+      "sha256": "e22a421bbd69b213d4f43dded33d2d8e2dff622f457b42ab08b0d4847c96e79c"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen.rs",
+      "bytes": 7873,
+      "sha256": "47f08ad58cb9f72541e1b1b18da4ff8cf990b584b690a6154e9a2e8d21fff1a0"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_family.rs",
+      "bytes": 4349,
+      "sha256": "ba3775e40ce83970a9df70aa1027c2857318255250b73359b32309be8f3660c2"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_publication.rs",
+      "bytes": 16145,
+      "sha256": "46743b25917e2549211947d469c82c380e3cbcd34f68d9a3c35263da45e85f87"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_source.rs",
+      "bytes": 10779,
+      "sha256": "1ce036b79e31e9b07f3e7e24e5e8ec5a80f38f19dd298c6877af7c43a5d894d6"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/pins.rs",
+      "bytes": 8135,
+      "sha256": "a052e368627ad1da9a55c7040aaf0c69d0262ea95afd0f8b35b72977e7c62346"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/ordinary_transition/publication.rs",
+      "bytes": 15739,
+      "sha256": "3f048f4862d525d46c4bb07ffaede24cc37bf47e6f992a3ecd1313e123e25db1"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/provider/process_profile/tests/child.rs",
+      "bytes": 3863,
+      "sha256": "a760407958434881f8f02a4d3f899c86e2d10e07cc0061062b9d6e669befee33"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+      "bytes": 25805,
+      "sha256": "35e733bd3eb0b2cea0fb711ec5675908b809d410068df7d7a4c3ad2354e805ba"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs",
+      "bytes": 37022,
+      "sha256": "3fe62f4ae8680a34e1b5e439d2da9af1d5c8960ea4a8d99d665be3e6725eb067"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs",
+      "bytes": 10298,
+      "sha256": "0814aedee09b7e5e627c3b35c5de1a92fd6f8765dda09dbfc7664a484753bade"
+    },
+    {
+      "path": "reviewed-source/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready.rs",
+      "bytes": 8867,
+      "sha256": "bbb46146af9c4f5c8a957ddf5962bb56f2bd811e9d9462f6de5290cd67d76154"
+    },
+    {
+      "path": "root-wording-correction/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_family_tests.rs",
+      "bytes": 23304,
+      "sha256": "40c82747b3b39f1dbaef84238a9c0d1ddf1d026435c9744b6a39a86ad93a7f46"
+    },
+    {
+      "path": "support/package-ordinary-fresh-family-review-r82.py",
+      "bytes": 3180,
+      "sha256": "4691e8fe42f6c7aed332dd2075d1eeb1c8592d534ff11f978975abd06f1225fb"
+    },
+    {
+      "path": "support/prepare-ordinary-fresh-family-review-r82.py",
+      "bytes": 3779,
+      "sha256": "e05088f55da6068a85ac4f2187b1d1f37da124187c2420c245b273bc219bb39f"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-family-critical-review-r82.json",
+      "bytes": 58138,
+      "sha256": "8ecbde6e3e75c5025221c089b316b9a7e995b458069c67c094a28d1ccefc00a3"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-family-review-r82-inputs.json",
+      "bytes": 12212,
+      "sha256": "62a903bad05b08a0820a2874f7f15e2b161f71bced02f1ae43b604c653c0252b"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-family-review-r82.diff",
+      "bytes": 105263,
+      "sha256": "a81d0f6cd5fc9a327510fa96408d9c00a7b9c656956836533e6ec4c8dbfd859e"
+    }
+  ],
+  "archive": {
+    "path": "ordinary-fresh-family-source-review-20261028-r82.tar.gz",
+    "bytes": 199971,
+    "sha256": "333e08d8bd06f4c3638aa2da88f57d7880a46acff2b6120454fc7fba7d45aa93"
+  }
+}

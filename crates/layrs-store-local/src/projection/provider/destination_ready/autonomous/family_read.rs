@@ -1,6 +1,8 @@
 use super::*;
+use crate::projection::shared::admitted_catalog::ExportPublicationMember;
 use crate::projection::shared::{self, exact_protection::ExactProtection};
 use layrs_core::scm::WorktreeId;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 
 pub(super) struct FamilyData {
@@ -46,6 +48,80 @@ pub(super) fn read(
     marker: &format::Marker,
     ready: &ProviderTransitionIntentRecord,
     claim: &ManagedReadyClaim,
+    cancel: Option<&Cancellation>,
+) -> Result<FamilyData> {
+    read_at_member(
+        c,
+        marker,
+        ready,
+        claim,
+        ExportPublicationMember::Ready,
+        cancel,
+    )
+}
+
+/// Observe only the closed publication phases. This does not validate the
+/// complete family or grant installation/capacity authority.
+pub(super) fn read_member(
+    c: &Connection,
+    marker: &format::Marker,
+    cancel: Option<&Cancellation>,
+) -> Result<ExportPublicationMember> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit()
+        || shared::provider_access::require_provider_catalog_schema(c, cancel)?
+            != shared::CatalogSchema::V2
+    {
+        return Err(invalid(
+            "private Ready member requires retained family schema2",
+        ));
+    }
+    let owner = marker.identity.worktree_id.as_str();
+    if c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND length(CAST(state AS BLOB))>12)",
+        [owner],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(invalid("private Ready member phase exceeds bound"));
+    }
+    let state: Option<String> = c
+        .query_row("SELECT state FROM worktrees WHERE id=?1", [owner], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    let member = match state.as_deref() {
+        Some("initializing") => ExportPublicationMember::Initializing,
+        Some("ready") => ExportPublicationMember::Ready,
+        _ => return Err(invalid("private Ready member absent or phase differs")),
+    };
+    require_member(c, marker, member)?;
+    cancellation::check(cancel)?;
+    Ok(member)
+}
+
+pub(super) fn require_member(
+    c: &Connection,
+    marker: &format::Marker,
+    member: ExportPublicationMember,
+) -> Result<()> {
+    let binding = marker
+        .shared
+        .as_ref()
+        .ok_or_else(|| invalid("autonomous Ready shared FORMAT absent"))?;
+    let state = match member {
+        ExportPublicationMember::Initializing => "initializing",
+        ExportPublicationMember::Ready => "ready",
+    };
+    if !c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND metadata_path=?2 AND database_identity=?3 AND marker=?4 AND state=?5)",params![marker.identity.worktree_id.as_str(),binding.metadata_path.to_str().ok_or_else(||invalid("autonomous Ready metadata path is not UTF8"))?,binding.database_identity,marker.bytes()?,state],|r|r.get::<_,bool>(0))? {return Err(invalid("autonomous Ready destination family member differs"));}
+    Ok(())
+}
+
+pub(super) fn read_at_member(
+    c: &Connection,
+    marker: &format::Marker,
+    ready: &ProviderTransitionIntentRecord,
+    claim: &ManagedReadyClaim,
+    member: ExportPublicationMember,
     cancel: Option<&Cancellation>,
 ) -> Result<FamilyData> {
     if shared::provider_access::require_provider_catalog_schema(c, cancel)?
@@ -95,7 +171,7 @@ pub(super) fn read(
         return Err(invalid("autonomous Ready family marker differs"));
     }
     // No lookup of the historical source member: it may have been removed.
-    if !c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND metadata_path=?2 AND database_identity=?3 AND marker=?4 AND state='ready')",params![marker.identity.worktree_id.as_str(),binding.metadata_path.to_str().ok_or_else(||invalid("autonomous Ready metadata path is not UTF8"))?,binding.database_identity,marker.bytes()?],|r|r.get::<_,bool>(0))? {return Err(invalid("autonomous Ready destination family member differs"));}
+    require_member(c, marker, member)?;
     let marker_bytes = payload;
     let (count, bytes): (u64, u64) = c.query_row(
         "SELECT count(*),coalesce(max(length(payload)),0) FROM roots WHERE id=?1 AND owner=?2",

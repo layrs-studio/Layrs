@@ -32,6 +32,10 @@ mod ordinary_source;
 pub(in crate::projection::provider) use ordinary_source::{
     OrdinaryAdmissionSource, OrdinaryExclusiveSource,
 };
+mod ordinary_family;
+pub(in crate::projection::provider) use ordinary_family::{
+    OrdinaryFamilyPhysical, OrdinaryFamilyResources,
+};
 mod ordinary_admission;
 pub(in crate::projection::provider) use ordinary_admission::{
     OrdinaryFreshAdmission, OrdinaryFreshAdmissionFailure,

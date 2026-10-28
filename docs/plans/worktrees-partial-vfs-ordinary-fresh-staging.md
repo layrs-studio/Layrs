@@ -6,9 +6,12 @@ fresh-fixture recipes. Independent source review r70 found no actionable defect;
 build and workspace/all-targets check r71 pass. ROOT released seven exact r72
 recipes after matching all 661 retained build inputs. The first five regressions
 pass; the first native fails with stack overflow0xc00000fd after642.474s; the
-second is not run. Evidence is archived. r77 diagnoses the same case using new
-fixtures and test-only phase traces, with unchanged stack limits. No native
-qualification or stack-overflow fix is claimed.
+second is not run. Evidence is archived. r77 reproduces overflow at the nested
+validated read after setup and the real image-drift refusal. A private
+Box<Validated> return representation passes build/check r78 and reduces measured
+compiled nested frame storage. Both r79 native recipes pass (599.491s/598.976s)
+with unchanged stack limits; evidence is archived. This qualifies those exact
+clean-teardown and withheld-ACK paths, not actual OS-close failure or crash recovery.
 This follows the separate fresh Ready-to-Published adapter. It does not change
 that adapter's explicit refusal of SourceStaging. Paths below are relative to
 `crates/layrs-store-local/src/projection/`.
@@ -107,7 +110,8 @@ separate work. This note records source reasoning, not executable proof.
 Read-only investigation after r72 launch identifies the closest missing step:
 actual B SourceStaging, C8 private Ready, family member Initializing. Publish
 only the family member Ready, then the existing fresh Staging adapter can run.
-This is a proposed clean-holder recovery unit, not an implemented capability.
+The r82 source candidate now implements this clean-holder unit; compilation,
+critical review and runtime qualification are still pending at this checkpoint.
 
 `managed_ready_reopen/ordinary_source.rs::OrdinaryExclusiveSource` already gives
 fresh B ownership. `ManagedReadyPins::open` supplies existing-file identity
@@ -133,3 +137,32 @@ allocation artifacts lacks a durable destination proof and cannot use it.
 Hot/cold rollback journals are refused by clean_admission. Observable native
 close failure may retain process-lifetime quarantine; dropping a holder does not
 establish that it cleared. Those are separate prerequisites for crash recovery.
+
+The narrower decomposition investigation recommends an internal
+`PrivateReadyParts` DATA kernel (actual prefix/suffix/Ready/receipt, exact union,
+checkout/journal, canonical family/protection fields and true metadata floor),
+then a distinct `VerifiedOrdinaryFamilyPublication` reader/physical holder.
+Existing `VerifiedManagedReady` and `OrdinaryReadyInspection` remain fixed to
+family Ready; `terminal_ready.rs` and generic membership checks stay unchanged.
+The new entry observes the exact closed ExportPublicationMember phase, never a
+general permissive boolean on terminal constructors.
+
+Provisional parts cannot expose terminal capacity or physical authority. The
+new entry must finish through the existing actual-B-backed
+`read_ordinary_checkout_ready_for_publication` / `read_export_publication` full
+catalog gate. This preserves known B empty groups, exact C-root deferral, shared
+debit sets and all-reservation classification. An empty C union still has its
+authenticated root/reservation; unknown foreign empty groups remain refused.
+CAS/checkout verification then occurs outside SQL, followed by a full reread.
+Family Exclusive/Immediate repeats the actual B/C/full-family interpretation
+before and after the exact member CAS; successful closes precede fresh readback.
+Keep summaries boxed through nested readers. Suggested separate ownership:
+SQL/private DATA extraction in autonomous.rs/family_read.rs and a new reader;
+physical driver in `managed_export/family_reopen.rs` with preliminary C resources
+in `managed_ready_reopen/ordinary_family.rs`. The r82 candidate follows this
+decomposition, adds exact-set comparison independent of input manifest order,
+and extends the dedicated SQL publication recipe plus two new native recipes.
+Independent critical review r82 is complete, with no concrete protocol defect
+identified and one SQLite/OS-close evidence wording issue corrected by ROOT.
+These source additions have not yet been compiled or run; the concurrent r81
+source10 run uses retained r79 sources and does not exercise these changes.

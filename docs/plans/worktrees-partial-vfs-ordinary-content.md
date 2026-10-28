@@ -18,9 +18,14 @@ native also passes (746.214s); all five r66 recipes passed and are archived.
 Fresh B Ready→Published passes all five r69 recipes; its bounded evidence is
 archived. Fresh B Staging→Ready passes source review r70 and build/check r71.
 The five r72 regressions pass; its first native fails with stack overflow and
-the second is not run. r77 runs phase diagnosis on fresh fixtures with unchanged
-stack limits. Ready quiescence r73 and the C10→D10 recipe r74 pass independent
-source review and compilation; source10 runtime remains unexecuted.
+the second is not run. r77 locates overflow in the nested validated read. A small
+boxed-data correction passes build/check and compiled frame comparison; both
+r79 natives pass with unchanged stack limits and archived evidence.
+Ready quiescence r73 passes SQL r77. The reviewed and compiled C10→D10 recipe
+is running under r81 after r80 was denied sandbox access before fixture creation.
+Fresh family publication is source-integrated; critical review r82 found one
+close-evidence wording issue, corrected without behavioral changes. That new
+candidate is not compiled or executed yet.
 See the
 [current handoff](worktrees-partial-vfs-resume-2026-10-28.md) for exact scope,
 archives and outstanding recovery/product work. The full programme remains open.

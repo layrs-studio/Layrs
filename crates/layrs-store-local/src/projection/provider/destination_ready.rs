@@ -38,7 +38,9 @@ pub(in crate::projection::provider) use ordinary::{
 };
 mod read;
 pub(in crate::projection::provider) use autonomous::{
-    read_managed_ready, read_ordinary_managed_ready, OwnedReadySnapshot, VerifiedManagedReady,
+    read_managed_ready, read_ordinary_family_publication, read_ordinary_managed_ready,
+    read_ordinary_private_ready, OrdinaryPrivateReadySnapshot, OwnedReadySnapshot,
+    VerifiedManagedReady, VerifiedOrdinaryFamilyPublication,
 };
 
 pub(in crate::projection::provider) struct ManagedReadyOverlay {
