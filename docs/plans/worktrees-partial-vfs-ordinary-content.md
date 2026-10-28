@@ -5,7 +5,23 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
-## Current execution checkpoint — private Ready r43/r44
+## Current execution checkpoint — Ready and family publication r47 PASS
+
+28 October 2026, after explicit user resume. All 18 r47 recipes pass: 3 pure,
+12 SQL, private Ready native611.529s, family successful-close ACK/replay
+native745.666s, and family Updated/fresh-readback/read-only replay native785.795s.
+The exact Ready witness now includes selected base plus history and current;
+the outer SQL fixture owns its final rollback. The r46 teardown failure and
+earlier r43/r44 failures remain retained, never presented as passing runs.
+
+Test corrections are committed as `218e625`; the verified r46/r47 evidence
+archive contains1338 files,3822723bytes, SHA256
+`ffad3ec7ebb04ca48de61bd9bb9a873ab163bb8de0b98adde33f45875380428d`.
+C is private Ready8 and family Ready; B remains Staging. B publication and C
+admission/autonomy require their own subsequent qualification. Current progress
+is recorded in `worktrees-partial-vfs-resume-2026-10-28.md`.
+
+## Previous execution checkpoint — private Ready r43/r44
 
 28 October 2026. Qualified Protection/Checkout is committed as `b3ceea9`.
 The independent final r43 source/artifact review releases 13 recipes, 177

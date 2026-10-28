@@ -31,27 +31,68 @@ Baseline sauvegardée : `3291ab5` (Ready WIP), `9ab84e0` (famille WIP).
   `aa272b8107fb222bd8cc9d80be8838ddbbb5a598be7331b76f61ee8d5cb6b89c`.
   Revues indépendantes produit r43/r45 conservées ; corrections de tests
   vérifiées par ROOT. Ne pas présenter cela comme une nouvelle revue indépendante.
-- **r47 en cours** : 15 tests courts PASS (3 purs, 12 SQL). Premier natif Ready
-  actif, puis deux natifs famille prévus en série. Session ROOT `78672`.
-  Ne pas relancer ce runner/parent ; reprendre cette session jusqu'à sa fin.
-  Pas de Cargo/SQL/autre test en parallèle de ces recettes natives.
+- **r47 terminé, 18 PASS** : 15 tests courts (3 purs, 12 SQL), natif privé Ready
+  611,529 s, natif famille ACK/rejeu 745,666 s, natif famille Updated/relecture
+  785,795 s. Session ROOT `78672` terminée exit0. Ne pas relancer ce parent.
+- Archive vérifiée : `ordinary-ready-family-evidence-20261028-r46-r47.tar.gz`,
+  1 338 fichiers, 3 822 723 octets, SHA256
+  `ffad3ec7ebb04ca48de61bd9bb9a873ab163bb8de0b98adde33f45875380428d`.
+  Inventaire correspondant dans `docs/continuation/worktrees-partial-vfs`.
 
 Preuves sous `.layrs-local/validation/provider-family-publication-20261027-r46`
 et `r47`. Runner `D:/Layrs/tmp/provider-ordinary-ready-family-run-r47.py`.
 Chaque exécution utilise un parent C: neuf. Les fixtures échouées r44/r46
-restent conservées et ne sont pas rouvertes. Aucune réussite native r47 n'est
-encore revendiquée dans ce point de reprise.
+restent conservées et ne sont pas rouvertes. Ces résultats qualifient les seules
+portées annoncées ; aucun résultat B Ready/Published/C9 n'en est déduit.
 
 ## Suite en préparation, indépendante des artefacts r47
 
-Un implementer GPT-6.1-Sol prépare les lecteurs/partition exacte des reçus et
-les primitives SQL B Staging -> Ready -> Published. Il possède les modules
-`ordinary_transition`, les ajustements des lecteurs d'admission/historique et
-leurs tests. Source uniquement tant que r47 tourne ; aucun runtime transféré.
+Le commit local `218e625` conserve les trois corrections de tests r47 et cette
+note, sans inclure le nouveau lot B Ready/Published. Aucun push.
 
-L'investigation des lecteurs C/famille sensibles à la phase réelle B prépare
-le driver physique suivant. Les entrées actuelles Staging doivent rester
-strictes ; des données Staging reconstruites ne prouvent pas une phase réelle.
+Le nouveau lot est intégré en source :
+partition bornée exacte des reçus, primitives SQL B Ready/Published, nouveaux
+lecteurs C/famille sensibles à la phase B réelle, driver physique à deux commits,
+nettoyage err-only sans nouvelle validation SQL et invalidation des clones après
+rollback échoué. Tests SQL et natifs écrits, pas exécutés. La fermeture positive
+de l'owner B reste séparée des résultats de progression ; C reste non admis.
+
+Revue critique T3 GPT-6-Astra xhigh terminée sans finding actionnable ; rapport
+`D:/Layrs/tmp/provider-ordinary-source-publication-critical-review-r48.json`.
+La cellule ROOT `51` est terminée ; le résultat complet du thread a été lu.
+Manifeste de 24 sources :
+`D:/Layrs/tmp/provider-ordinary-source-publication-review-inputs-r48.json`, SHA256
+`be48500220fdd4f84a8c5c94d17960095afde65734c6928e5a16a2fdc0ccb976`.
+Diff SHA256 `7fb83cdbce76fb303667d6ce2c15ab7136692ddbdd3c9a6a253a079f9c06474f`.
+Les sources sont restées figées pendant la revue. Recettes r48 proposées : 3 purs,
+13 SQL et 2 natifs (nettoyage 240/300, publication B 3600/3660 non mesurés).
+Après fin r47, compilation libtest r48 en échec E0603 : import privé depuis le
+module partagé. ROOT conserve la preuve fraîche fournie par le driver et la
+réauthentifie via require_private, sans exposer l'entrée privée ni réutiliser
+une preuve obsolète. Le digest de fixture ci-dessous est également corrigé.
+Build r49 réussi (61 s), workspace/all-targets réussi (32,79 s).
+
+ROOT a trouvé et corrigé un défaut dans son nouveau cas natif de nettoyage :
+`SET digest='invalid-uncommitted-digest'` viole le CHECK SQL longueur71 avant le
+chemin testé. Ce digest est remplacé par `blake3:` +64zéros de longueur71 ; le
+rollback et l'assertion d'erreur exacte sont conservés. Les sources originales
+revues r48 sont reconstruites depuis le diff épinglé et vérifiées contre leurs
+hashes, puis conservées dans le lot r49 avec le diff exact des deux corrections.
+
+Qualification r49 active, session ROOT `63777`, runner
+`D:/Layrs/tmp/provider-ordinary-source-publication-run-r49.py`. 16 recettes
+courtes PASS (3 pures,13 SQL dont publication B en43,002s), première native de
+nettoyage en cours, puis native B publication. Ne pas relancer ce parent.
+Aucun Cargo/SQL/test concurrent pendant la qualification native.
+EXE SHA256 `dc237db7d62e0d90b30ccbca76e7721d0ad841f7188cc6dfabc36fa04c4e6dcd`.
+Release ROOT r49 SHA256 `743bfdca56d45d8e08060f69e9e02a16a8325e456b20b004fddcef89fdedf14e`.
+644 sources,186 chemins sélectionnés,18 recettes. Les résultats natifs restent
+à attendre ; les lacunes close/rollback OS, bornes maximales et owner-loss
+signalées par la revue restent explicites.
+
+Les entrées existantes Staging restent strictes ; les nouvelles entrées
+réauthentifient la phase réelle B. Les données Staging reconstruites servent
+uniquement aux calculs et ne prouvent pas une phase stockée.
 
 Le programme reste incomplet : B publication physique, admission C9/autonomie,
 reprise après perte d'owner/crash, couverture native complémentaire, transitions,

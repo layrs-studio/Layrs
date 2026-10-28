@@ -1,6 +1,25 @@
 # Reprendre le programme Worktrees / partial VFS
 
-## Arrêt de nuit du 28 octobre — Ready reste non qualifié
+## Reprise du 28 octobre — Ready et publication familiale qualifiés r47
+
+Les 18 recettes r47 passent : 3 pures, 12 SQL et 3 natives Windows. Le témoin
+Ready compte maintenant exactement base, historique et courant ; le scénario
+familial Updated avec relecture fraîche complète le scénario ACK/rejeu.
+Temps natifs : privé Ready 611,529 s, famille ACK/rejeu 745,666 s, famille
+Updated/relecture/rejeu 785,795 s. B reste Staging, C8 reste non admis.
+
+Corrections sauvegardées dans `218e625`. Archive vérifiée
+`ordinary-ready-family-evidence-20261028-r46-r47.tar.gz` : 1 338 fichiers,
+3 822 723 octets, SHA256
+`ffad3ec7ebb04ca48de61bd9bb9a873ab163bb8de0b98adde33f45875380428d`.
+Elle conserve aussi la tentative r46 échouée au double rollback de fixture.
+
+Le lot B Ready/Published suivant est intégré, relu en source et compilé ; sa
+qualification r49 est distincte et en cours. Voir
+`docs/plans/worktrees-partial-vfs-resume-2026-10-28.md`. Aucune réussite C9,
+autonomie, crash/owner-loss ou intégration complète n'est déduite de r47.
+
+## Historique : arrêt de nuit du 28 octobre, avant correction Ready
 
 L'utilisateur a demandé l'arrêt après le test en cours. Voir la passation
 `docs/plans/worktrees-partial-vfs-night-handoff-2026-10-28.md` pour la reprise.
