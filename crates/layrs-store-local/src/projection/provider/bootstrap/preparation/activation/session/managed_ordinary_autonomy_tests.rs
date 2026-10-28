@@ -431,11 +431,13 @@ fn managed_ordinary_c10_reopens_and_captures_restores_after_all_holders_and_ance
             Ok(())
         }).unwrap();
         drop(store);
-        // Restore the original checkout bytes so terminal refusal exercises
-        // the coherent mutable SQL suffix, rather than a dirty checkout alone.
+        // Restore the original checkout bytes before testing the terminal
+        // fence. Real captures/restores add C retention roots, so the complete
+        // family interpreter rejects this mutable state before private-row
+        // inventory. The SQL-only recipe separately exercises that inventory.
         fs::write(f.destination.join(path.as_str()), CURRENT).unwrap();
         match OrdinaryTerminalResolution::open(&f.destination, &cancel) {
-            Err(error) => assert!(error.to_string().contains("terminal Ordinary10"), "{error}"),
+            Err(error) => assert_eq!(error.to_string(), "exact protection owner has additional roots"),
             Ok(_) => panic!("terminal resolution accepted coherent later ordinary mutations"),
         }
         fs::write(f.destination.join(path.as_str()), DIRTY).unwrap();

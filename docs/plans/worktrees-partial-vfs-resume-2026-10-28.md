@@ -316,3 +316,149 @@ Le visuel demandé est affiché dans le chat, source conservée hors dépôt dan
 `D:/Layrs/outputs/avancement-worktrees-20261028.html`. Il n'arrête pas le goal.
 L'investigateur `ordinary_ready_reopen_scope` poursuit en lecture seule la
 recherche d'une capacité source B fraîche pour le futur writer d'admission C8.
+
+## Admission fraîche r61 : source figée en revue critique
+
+Le commit local `2ccf824` conserve le candidat terminal r60, ses tests et
+l'archive d'admission r56/r57. Aucun push, stash original conservé.
+Le script `D:/Layrs/tmp/package-ordinary-terminal-20261028-r60.py` est préparé,
+NON exécuté ; il refuse l'archivage tant que le runner n'est pas terminal.
+
+Investigation B fraîche terminée : pas de holder existant complet. Réutiliser
+l'enveloppe FS ManagedReadyPins, contrôler explicitement l'identité du control
+contre FORMAT, acquérir lifecycle puis owner B Shared, et AdmittedPreflight RO
+positivement fermé. Aucun into_handle, Lease::admit, format::Access ou settlement.
+
+Deux agents natifs terminés, source seulement. Nouveau lot de dix fichiers :
+`OrdinaryAdmissionSource::open`, `OrdinaryFreshAdmission::open(&source,C,cancel)`
+impose B avant l'acquisition Exclusive C ; `commit` et `resolve` renvoient un
+digest ou failure step/cause/held. B réel Published et famille sont retenus à
+travers COMMIT et close C ; resolve ne consulte ni SQL ni identité B. Le driver
+retained, Provider et la résolution terminale C10 restent indépendants.
+ROOT ajoute le getter FORMAT étroit, l'enregistrement des tests et un observer
+cfg(test), local au thread, RAII, avant read_inner/snapshot et avant identité B.
+Aucune modification d'auto-extension, de VFS ou de configuration SQLite globale.
+
+Deux recettes proposées dans `managed_ordinary_fresh_admission_tests.rs` :
+- `managed_ordinary_fresh_admission_accepts_advanced_published_b_after_all_publication_holders_release` ;
+- `managed_ordinary_fresh_admission_withheld_c_ack_resolves_without_b_reads_or_identity_checks`.
+Chacune ignored child3600/outer3660, non mesurée. La seconde prouve une absence
+instrumentée de frontière B, pas son absence physique sous pins retenus. Aucun
+crash ou échec OS réel n'est revendiqué. Rustfmt isolé PASS ; **non compilé**.
+
+Revue GPT-6-Astra xhigh en cours, cellule ROOT251 (delegate_task mode wait600000).
+Manifeste `D:/Layrs/tmp/provider-ordinary-fresh-admission-review-r61-inputs.json`,
+SHA256 `4a0d4eee00aa355fbba1c5b0eb5b3be03bc55d3d2a90599e12807a7f5761e21f` ;
+diff SHA256 `8f8de85779f42f5bc4c0ca230c8359225b117011986cd1d4a779086e48169756`.
+HEAD figé `2ccf824561a511a304332839071576007b143cb5`, dix sources copiées dans
+le snapshot adjacent `-source`. Ne pas modifier ces sources ni HEAD pendant revue.
+Rapport attendu `D:/Layrs/tmp/provider-ordinary-fresh-admission-critical-review-r61.json`.
+Ne pas relancer le script de préparation ; suivre le next de la délégation et
+ne pas la poller. Session native r60 ROOT48378 toujours distincte et en cours.
+
+### Résultat terminal r60 et correctif de recette hors périmètre r61
+
+ROOT48378 terminé **exit1** : SQL PASS38,249s, natif FAIL101 après989,252s.
+Échec dans l'assertion `managed_ordinary_autonomy_tests.rs:438` : le refus
+terminal attendu existe, mais le catalogue familial refuse déjà les racines C
+supplémentaires créées par capture/restauration, avant le contrôle d'inventaire
+privé. Erreur exacte : `exact protection owner has additional roots`.
+Les assertions précédentes du natif ont donc été traversées ; sa réouverture
+publique finale et les derniers contrôles B ne sont PAS qualifiés.
+
+Archive r60 créée/vérifiée : `ordinary-terminal-evidence-20261028-r60.tar.gz`,
+694 fichiers,2074692 octets, SHA256
+`3c8243ccab13820f6814ed6afa85f4a392815a2f13c017fb36f85309ce664908`.
+Ne pas relancer le script d'archive ni rouvrir la fixture échouée.
+ROOT corrige uniquement le test d'autonomie : assert_eq sur cette erreur exacte,
+en conservant bytes d'origine avant refus et toutes les assertions suivantes.
+La recette SQL qualifie séparément le refus d'inventaire privé. Ce fichier est
+hors des dix sources figées r61 ; aucun fichier de revue ni HEAD ne change.
+Build libtest r62 lancé après terminaison du runner, log
+`D:/Layrs/tmp/provider-ordinary-fresh-admission-build-r62.log`.
+
+Build r62 terminé **exit101**, un seul E0308 dans
+`managed_ready_reopen/ordinary_source.rs:144` : `require_ready_source` renvoie
+directement Result<(),ProjectionStoreError> au lieu de convertir en Cause.
+Correction mécanique prévue après la revue figée : `require_references(...)?;`
+puis `Ok(())`. Ne pas modifier ce fichier pendant r61. Aucun autre diagnostic
+compilateur d'erreur ; ne pas transformer ce build en PASS. Prochain build r63.
+
+## Correction R61-F1 et validation suivante
+
+Revue r61 reçue et thread lu jusqu'à position75/hasMore=false, rapport
+`D:/Layrs/tmp/provider-ordinary-fresh-admission-critical-review-r61.json`.
+Un finding medium confirmé : après ACK C refusé sans échec physique de close,
+les lecteurs RO famille/B ordinaires effectuaient encore leurs snapshots FS
+de conclusion. Ces snapshots pouvaient remplacer la cause ACK, et le premier
+observer ne voyait pas ces opérations. Aucun autre défaut concret établi.
+
+Correction ROOT : nouveau `read_cancellable_strict`, utilisé par les quatre
+scopes du nouveau driver frais seulement. La fermeture réelle reste obligatoire ;
+toute erreur callback/close est ensuite propagée avant le snapshot final.
+Les succès conservent les mêmes comparaisons ; les lecteurs existants gardent
+leur comportement de classification/recovery. La cause d'origine reste dans
+Cleanup.primary si la fermeture réelle échoue aussi.
+Le hook cfg(test) observe maintenant `DatabaseFile::snapshot` ET `verify` avant
+FS, en plus de l'entrée RO et de l'identité source. Les contrôles positifs et
+le refus après ACK sont étendus. Deux nouvelles recettes SQL courtes dans
+`database_io/tests/strict_read.rs` : erreur callback imbriquée ; erreur callback
+avec vraie fermeture SQLite BUSY produite par statement retenu. Cette dernière
+met le handle en quarantaine jusqu'à sortie du child, sans retry ni simulation
+de panne OS. Aucune configuration globale SQLite/VFS ajoutée.
+
+La conversion E0308 r62 est corrigée mécaniquement via `?; Ok(())`.
+Build r63 FAIL101 sur comparaison d'un Box<ProjectionStoreError> à une chaîne
+dans le nouveau test uniquement ; correction via `.to_string()`.
+Build r64 lancé, log `D:/Layrs/tmp/provider-ordinary-fresh-admission-build-r64.log`.
+Ces corrections nécessitent une nouvelle contre-revue, pas une acceptation r61.
+
+Build r64 **PASS33,65s**, workspace/all-targets **PASS14,07s**. Aucun test exécuté.
+Contre-revue ciblée r65 lancée, cellule ROOT275, GPT-6-Astra xhigh ; attendre son
+résultat et suivre son next, sans poller la tâche. Manifeste13 fichiers :
+`D:/Layrs/tmp/provider-ordinary-fresh-admission-review-r65-inputs.json`, SHA256
+`0af2628d4b38d6df1cba08f4a55df3718143eb5977523b2c658ec158febe8cf5` ;
+diff SHA256 `8e33a2b6f245dfc730a9439b22671f9822c50789cb617f3adf1c256eef7b7152`.
+Neuf fichiers changent depuis r61/HEAD pour les extensions de périmètre. Tous
+les13 fichiers et HEAD2ccf824 restent figés. Rapport attendu :
+`D:/Layrs/tmp/provider-ordinary-fresh-admission-correction-review-r65.json`.
+
+Artefacts r66 préparés, **liaison seulement, aucune release ni exécution** :
+`.layrs-local/validation/provider-ordinary-fresh-admission-20261028-r66`,657sources,
+EXE SHA256 `9e1d64645593e64e61695034158a8df36de7177b9368643ccacd3892f5afd34d`,
+CodeView age130, neuf startup checksums et EXE/PDB vérifiés. Script
+`prepare-ordinary-fresh-admission-artifacts-r66.py` déjà exécuté, ne pas relancer.
+`release-ordinary-fresh-admission-r66.py` préparé, syntaxe parsée, NON exécuté.
+Après lecture/acceptation du rapport r65 uniquement, ROOT pourra l'appeler avec
+`--root-accept-source-review`. Il refuse les sources modifiées depuis le manifeste.
+Programme proposé : les2 régressions SQL courtes, autonomie C10 corrigée, admission
+fraîche succès, admission fraîche ACK/résolution. Parent C neuf, séquentiel stop
+premier échec. Le runner n'est créé que lors de la release. Aucune session native
+ni compilation encore active ; tous les échecs/builds précédents sont conservés.
+
+## État courant r66 : source acceptée, qualification en cours
+
+Contre-revue r65 reçue/lue intégralement jusqu'à position55/hasMore=false :
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3A11af785e-d59c-4985-9ee4-620ba55e1b30`.
+R61-F1 corrigé en source, zéro nouveau finding ;13 fichiers, HEAD/branche et
+hashes début/fin concordent. ROOT accepte cette portée pour les cinq recettes
+définies ; le rapport ne prétend aucune exécution ou acceptation produit.
+Script de release r66 maintenant exécuté (ne pas relancer), SHA256 release :
+`7f5ad4198d3743569591f99e4f19645ae727843b305ada99219d10927a1d6e6d`.
+
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-admission-run-r66.py r66`,
+**session ROOT7553 en cours**, parent C neuf, arrêt au premier échec :
+1. `strict_nested_read_preserves_callback_failure_without_concluding_filesystem_probes`
+   **PASS0,534s** ;
+2. `strict_nested_read_preserves_primary_and_actual_busy_close_without_concluding_probes`
+   **PASS0,118s** ;
+3. autonomie C10 corrigée : **EN COURS** ;
+4. admission fraîche succès et B avancé : non atteinte ;
+5. admission fraîche ACK/résolution sans probes B : non atteinte.
+
+Pas de nouvelle compilation/SQL/natif concurrent avant terminaison du runner.
+Le test BUSY couvre une vraie erreur sqlite3_close provoquée par statement
+retenu, pas une panne OS ni un crash. L'investigateur ordinary_ready_reopen_scope
+étudie en lecture seule la future réouverture de B SourceReady et publication
+avec C8/famille Ready, sans réadopter l'allocation ni fabriquer l'image source.
+Cette investigation n'est pas une implémentation ni une qualification de reprise.

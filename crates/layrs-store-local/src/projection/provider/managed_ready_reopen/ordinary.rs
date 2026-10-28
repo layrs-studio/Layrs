@@ -19,8 +19,8 @@ use crate::projection::{
 /// Genuine Ordinary C8 Ready plus independently acquired immutable physical
 /// proofs. No admission writer or lock upgrade is available from this holder.
 pub(in crate::projection::provider) struct OrdinaryReadyInspection {
-    pins: ManagedReadyPins,
-    data: OwnedReadySnapshot,
+    pub(super) pins: ManagedReadyPins,
+    pub(super) data: OwnedReadySnapshot,
     cas: PublishedCasProof,
     checkout: VerifiedCheckout,
     _owner: StoreLock,
@@ -34,11 +34,20 @@ impl OrdinaryReadyInspection {
     ) -> Result<Self> {
         cancel.check()?;
         let pins = ManagedReadyPins::open(root, cancel)?;
+        Self::open_pins(pins, SessionMode::Shared, cancel)
+    }
+
+    /// A separate acquisition, never an upgrade of a shared inspection. The
+    /// fresh admission caller checks that these pins are distinct from B
+    /// before attempting the exclusive C owner.
+    pub(super) fn open_exclusive(pins: ManagedReadyPins, cancel: &Cancellation) -> Result<Self> {
+        Self::open_pins(pins, SessionMode::Exclusive, cancel)
+    }
+
+    fn open_pins(pins: ManagedReadyPins, mode: SessionMode, cancel: &Cancellation) -> Result<Self> {
+        cancel.check()?;
         let lifecycle = pins.family.lifecycle_lease()?;
-        let owner = StoreLock::acquire_existing(
-            &pins.metadata_path().join("layrs.lock"),
-            SessionMode::Shared,
-        )?;
+        let owner = StoreLock::acquire_existing(&pins.metadata_path().join("layrs.lock"), mode)?;
         let data = read_ready_snapshot(&pins, cancel)?;
         pins.require_data(&data, cancel)?;
         // All SQL scopes closed positively before any full byte/namespace I/O.
@@ -81,12 +90,21 @@ impl OrdinaryReadyInspection {
         self.require_physical(cancel)
     }
 
-    fn require_physical(&self, cancel: &Cancellation) -> Result<()> {
+    pub(super) fn require_physical(&self, cancel: &Cancellation) -> Result<()> {
         self.pins.require_data(&self.data, cancel)?;
         self.cas
             .require(&self.data.binding, &self.data.required, cancel)?;
         self.checkout
             .require(&self.data.expected, &self.data.journal, cancel)
+    }
+
+    /// Identity-only boundary for retained SQL scopes and post-COMMIT close.
+    /// Full namespace checks remain outside every catalog/SQL scope.
+    pub(super) fn require_identity(&self, cancel: &Cancellation) -> Result<()> {
+        self.pins.require_data(&self.data, cancel)?;
+        self.cas.verify_identity(cancel)?;
+        self.checkout
+            .require_identity(&self.data.expected, &self.data.journal, cancel)
     }
 
     pub(in crate::projection::provider) fn root(&self) -> &Path {

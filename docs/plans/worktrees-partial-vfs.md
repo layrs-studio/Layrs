@@ -4,6 +4,16 @@ Programme approuvé le 24 octobre 2026. Base :
 `4601b1694a4737183049e3c12124141b24860b92` (`redesign/foundations`).
 Branche de réalisation : `feature/worktrees-partial-vfs`.
 
+État du 28 octobre : la chaîne ordinaire B → C est qualifiée jusqu'à l'admission
+C10 et sa résolution avec preuves retenues (r56/r57). La réouverture terminale
+et l'autonomie C10 passent le test SQL r60 ; leur natif échoue sur une assertion
+attendant un refus privé alors que le refus familial intervient déjà. Ce test
+est corrigé, sans changement produit ; sa fin reste à qualifier. L'admission
+depuis des holders entièrement frais a passé la revue corrigée r65 et la
+compilation/workspace r64. Les deux régressions SQL r66 passent ; les trois
+scénarios natifs sont en cours séquentiels. Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
+pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
+
 ## Résultat attendu
 
 Deux agents travaillent simultanément sur une même machine dans deux Worktrees

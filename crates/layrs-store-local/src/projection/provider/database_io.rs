@@ -51,7 +51,7 @@ pub(super) fn read<T>(
     database: &DatabaseFile,
     validate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<ReadState<T>> {
-    read_inner(database, None, validate)
+    read_inner(database, None, ReadCleanup::Interpret, validate)
 }
 
 pub(super) fn read_cancellable<T>(
@@ -59,17 +59,46 @@ pub(super) fn read_cancellable<T>(
     cancel: &Cancellation,
     validate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<ReadState<T>> {
-    read_inner(database, Some(cancel), validate)
+    read_inner(database, Some(cancel), ReadCleanup::Interpret, validate)
+}
+
+/// Nested protocol scope: close the actual connection on every outcome, but
+/// propagate a failed callback/close before any concluding filesystem probe.
+/// This grants no rollback/recovery capability. Successful scopes still require
+/// the same before/after snapshots as the ordinary interpreting reader.
+pub(super) fn read_cancellable_strict<T>(
+    database: &DatabaseFile,
+    cancel: &Cancellation,
+    validate: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<ReadState<T>> {
+    read_inner(
+        database,
+        Some(cancel),
+        ReadCleanup::PropagateFailure,
+        validate,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadCleanup {
+    Interpret,
+    PropagateFailure,
 }
 
 fn read_inner<T>(
     database: &DatabaseFile,
     cancel: Option<&Cancellation>,
+    cleanup: ReadCleanup,
     validate: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<ReadState<T>> {
     if let Some(cancel) = cancel {
         cancel.check().map_err(Cause::Vfs)?;
     }
+    #[cfg(test)]
+    tests::fresh_ordinary_support::probe(
+        database.path(),
+        tests::fresh_ordinary_support::ReadBoundary::BeforeSnapshot,
+    )?;
     let before = match database.snapshot() {
         Ok(v) => v,
         Err(e) => return Ok(ReadState::Unavailable(e)),
@@ -101,7 +130,9 @@ fn read_inner<T>(
     };
     let mut observed_trigger = None;
     let result = match result {
-        Err(Cause::Sqlite(trigger)) if is_rollback(&trigger) => {
+        Err(Cause::Sqlite(trigger))
+            if cleanup == ReadCleanup::Interpret && is_rollback(&trigger) =>
+        {
             let trigger = Arc::new(trigger);
             observed_trigger = Some(Arc::clone(&trigger));
             Err(Cause::ReadonlyRollback(trigger))
@@ -111,6 +142,9 @@ fn read_inner<T>(
     let geometry = bare.geometry;
     let result = bare.finish(result);
     let result = match result {
+        // finish always performed the mandatory real close and, if it also
+        // failed, preserved the callback cause inside Cleanup.primary.
+        Err(e) if cleanup == ReadCleanup::PropagateFailure => return Err(e),
         Err(e @ Cause::Cleanup { .. }) => return Err(e),
         result => result,
     };

@@ -47,6 +47,10 @@ pub(super) struct Marker {
     pub(super) import_digest: Option<String>,
 }
 impl Marker {
+    pub(super) fn store_identity(&self) -> &str {
+        &self.store_identity
+    }
+
     pub(super) fn checkout_identity(&self) -> &str {
         &self.checkout_identity
     }

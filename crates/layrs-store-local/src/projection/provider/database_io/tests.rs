@@ -5,7 +5,9 @@ use super::super::{
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 mod forward;
+pub(in crate::projection::provider) mod fresh_ordinary_support;
 mod interruption;
+mod strict_read;
 pub(in crate::projection::provider) mod support;
 static OPEN_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 unsafe extern "C" fn count_open(

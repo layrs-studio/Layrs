@@ -1,5 +1,5 @@
-//! Independent physical inspection of the exact terminal managed Ready state.
-//! Fresh Ordinary routes are read-only and require their own owner capability.
+//! Independent physical inspection and admission of exact terminal managed Ready.
+//! Fresh Ordinary routes require their own source/destination owner capabilities.
 //! No route performs recovery or cleanup.
 use super::{
     bootstrap::{verify_managed_ready_checkout, VerifiedCheckout},
@@ -27,6 +27,12 @@ use pins::ManagedReadyPins;
 mod ordinary;
 pub(in crate::projection::provider) use ordinary::{
     OrdinaryReadyInspection, OrdinaryTerminalResolution,
+};
+mod ordinary_source;
+pub(in crate::projection::provider) use ordinary_source::OrdinaryAdmissionSource;
+mod ordinary_admission;
+pub(in crate::projection::provider) use ordinary_admission::{
+    OrdinaryFreshAdmission, OrdinaryFreshAdmissionFailure,
 };
 mod admission;
 pub(in crate::projection::provider) use admission::{

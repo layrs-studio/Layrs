@@ -57,6 +57,11 @@ impl DatabaseFile {
         &self.path
     }
     pub(in crate::projection) fn verify(&self) -> Result<()> {
+        #[cfg(test)]
+        super::tests::fresh_ordinary_support::probe(
+            &self.path,
+            super::tests::fresh_ordinary_support::ReadBoundary::DatabaseIdentity,
+        )?;
         self.parent.verify_path_identity()?;
         self.pin.verify(&self.path)?;
         Ok(())
@@ -67,6 +72,11 @@ impl DatabaseFile {
         PathBuf::from(value)
     }
     pub(super) fn snapshot(&self) -> Result<Snapshot> {
+        #[cfg(test)]
+        super::tests::fresh_ordinary_support::probe(
+            &self.path,
+            super::tests::fresh_ordinary_support::ReadBoundary::DatabaseSnapshot,
+        )?;
         self.verify()?;
         // Presence alone is never a hot-journal verdict. No directory scan and
         // no DELETE handle; each short-lived read handle closes in probe_leaf.
