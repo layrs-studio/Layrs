@@ -12,6 +12,8 @@ mod image;
 mod installing;
 mod preallocation;
 mod protection;
+mod ready;
+mod ready_data;
 mod reservation;
 mod reserve_plan;
 mod resident;

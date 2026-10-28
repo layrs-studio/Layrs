@@ -490,6 +490,9 @@ mod managed_ordinary_checkout_tests;
 #[path = "session/managed_ordinary_installing_tests.rs"]
 mod managed_ordinary_installing_tests;
 #[cfg(test)]
+#[path = "session/managed_ordinary_ready_tests.rs"]
+mod managed_ordinary_ready_tests;
+#[cfg(test)]
 mod managed_ordinary_metadata_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_reservation_tests.rs"]

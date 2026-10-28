@@ -1,6 +1,9 @@
 //! ReserveOnly planning DATA, without ordinary lease/catalog lookup. The
-//! physical caller authenticates actual B/C Staging before using this result;
-//! cached manifest bodies must then pass the export catalog and CAS readers.
+//! physical caller authenticates actual B Staging and C through the appropriate
+//! closed phase reader before any effect. A Ready driver may supply canonical
+//! destination-Staging predecessor DATA here; that is never a claim about C's
+//! actual phase. Cached manifest bodies must pass the export catalog and CAS
+//! readers, and actual C must pass its complete Staging or Ready reader.
 //! This never sets validated_metadata_floor or authorizes a reservation.
 use super::*;
 use crate::projection::provider::{managed_budget, records::Record};

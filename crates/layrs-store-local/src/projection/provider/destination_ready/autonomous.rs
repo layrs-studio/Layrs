@@ -188,7 +188,7 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
     };
     let view = ReadyView {
         marker: actual_marker,
-        source: prefix.source(),
+        source: ReadySource::Provider(prefix.source()),
         prefix: prefix.prefix(),
         data: &data,
     };

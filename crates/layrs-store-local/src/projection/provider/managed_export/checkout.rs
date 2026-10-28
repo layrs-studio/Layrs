@@ -27,6 +27,24 @@ pub(in crate::projection::provider) struct OrdinaryCheckoutProof {
     bytes: VerifiedCheckout,
 }
 impl OrdinaryCheckoutProof {
+    pub(super) fn require_parts(
+        &self,
+        expected: &ExpectedCheckout,
+        journal: &CheckoutJournal,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        if expected.header() != self.expected.header() || journal.rows() != self.journal.rows() {
+            return Err(cause_invalid(
+                "ordinary checkout proof inventory/journal differs",
+            ));
+        }
+        self.bytes.require(expected, journal, cancel)
+    }
+
+    pub(super) fn journal(&self) -> &CheckoutJournal {
+        &self.journal
+    }
+
     pub(super) fn require_physical<O: WriterCloseObserver>(
         &self,
         catalog: &Catalog<'_, '_, O>,

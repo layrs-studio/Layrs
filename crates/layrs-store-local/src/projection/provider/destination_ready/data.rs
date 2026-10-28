@@ -1,5 +1,5 @@
 //! Bounded immutable expected DATA for the one managed Ready suffix.
-use super::super::records::{activation::activation_snapshot, import::ProviderImportKind};
+use super::super::records::import::ProviderImportKind;
 use super::*;
 use serde::Serialize;
 
@@ -145,21 +145,18 @@ pub(super) fn prepare_suffix(
     {
         return Err(invalid("destination Ready suffix binding differs"));
     }
-    let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
-        return Err(invalid("destination Ready requires provider source"));
-    };
+    let version = inputs.source.version(inputs.prefix)?;
+    inputs.source.require_snapshots(inputs.data)?;
     let plan = &inputs.data.ready.plan;
     if version.generation.checked_add(1) != Some(plan.observation.generation)
         || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
         || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
-        || inputs.data.observation != inputs.source.initial()
-        || inputs.data.placement != &activation_snapshot(inputs.source)?
         || plan.observation.step_id != inputs.data.observation.base_step_id
         || plan.observation.root_tree_id != inputs.data.observation.base_root_tree_id
         || plan.observation.policy_set_id != inputs.data.observation.observed_policy_set_id
         || plan.observation.authorization_epoch
             != inputs.data.observation.observed_authorization_epoch
-        || plan.observation.selection_digest != inputs.source.commitment().selection_digest
+        || plan.observation.selection_digest != inputs.source.selection_digest(inputs.prefix)?
     {
         return Err(invalid(
             "destination Ready local boundaries or snapshots differ",
@@ -203,6 +200,13 @@ pub(super) fn prepare_suffix(
     let patch = inputs.data.capture;
     if patch.schema_version != "layrs.projection-capture.v1"
         || patch.changes.len() > 1024
+        || patch.changes.iter().any(|change| {
+            change.path.as_str().len() > 4096
+                || change
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|file| file.bytes > 1073741824)
+        })
         || patch.sequence != plan.capture_sequence
         || patch.previous_patch_digest != version.capture_head
         || patch.projection_generation != plan.placement_generation
@@ -220,10 +224,13 @@ pub(super) fn prepare_suffix(
     }
     let mut required = BTreeMap::new();
     let mut lengths = BTreeMap::new();
+    // Same inline-root frame as ExactProtection::new and the ordinary planner's
+    // root_payload_bound: both already enforce 65536 + sum(payload + 1) <=16MiB.
+    // The separate 32MiB source/cache bound does not enlarge a protectable union.
     let mut encoded_total = 65536usize;
     for manifest in inputs.data.required {
         cancellation::check(cancel)?;
-        let payload = canonical_json(manifest).map_err(|e| invalid(e.to_string()))?;
+        let payload = crate::projection::shared::exact_content::canonical_manifest_bytes(manifest)?;
         encoded_total = encoded_total
             .checked_add(payload.len() + 1)
             .filter(|n| *n <= 16 * 1024 * 1024)
@@ -256,16 +263,7 @@ pub(super) fn prepare_suffix(
     {
         return Err(invalid("destination Ready protected union differs"));
     }
-    for descriptor in inputs.source.descriptors() {
-        cancellation::check(cancel)?;
-        if required
-            .get(&(&descriptor.file_id, descriptor.manifest.id()))
-            .copied()
-            != Some(&descriptor.manifest)
-        {
-            return Err(invalid("destination Ready source representation absent"));
-        }
-    }
+    inputs.source.require_base_union(&required, cancel)?;
     let mut overlay = Vec::with_capacity(patch.changes.len());
     let mut prior = None;
     for (change, supplied) in patch.changes.iter().zip(inputs.data.overlay) {

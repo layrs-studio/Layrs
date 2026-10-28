@@ -1,7 +1,10 @@
 //! Export-only reservation/content DATA for the complete retained-family
 //! group validator. No private B/C reader, opener, physical pin or COMMIT lives
-//! here. The driver must authenticate both actual Staging rows, source image,
-//! complete union and metadata floor before and after the catalog operation.
+//! here. The driver authenticates actual B Staging and actual C through its
+//! closed phase reader, plus source image, complete union and metadata floor,
+//! before and after effects. A private-Ready driver may derive this target from
+//! canonical destination-Staging predecessor DATA, but must separately validate
+//! actual C Staging or Ready. This target alone grants no phase authority.
 //!
 //! Parent integration must first run its UNCHANGED complete retained-root walk
 //! (Published journals, exact debits and shared charged sets), then call

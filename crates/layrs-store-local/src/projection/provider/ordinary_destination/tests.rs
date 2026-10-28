@@ -51,7 +51,7 @@ mod checkout;
 #[path = "tests/staging.rs"]
 mod staging;
 
-fn append_restore(
+pub(in crate::projection::provider) fn append_restore(
     c: &Connection,
     marker: &format::Marker,
     manifests: &[FileManifest],

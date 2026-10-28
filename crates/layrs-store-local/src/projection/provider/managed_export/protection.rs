@@ -21,19 +21,30 @@ pub(in crate::projection::provider) struct OrdinaryImportProtection {
     bytes: PublishedCasProof,
 }
 impl OrdinaryImportProtection {
+    pub(super) fn require_parts(
+        &self,
+        binding: &ExactBinding,
+        required: &[FileManifest],
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        if binding != &self.binding {
+            return Err(cause_invalid("ordinary protection binding differs"));
+        }
+        self.root.require_binding(binding, required, Some(cancel))?;
+        self.bytes.require(binding, required, cancel)
+    }
+
+    pub(super) fn root(&self) -> &ExactProtection {
+        &self.root
+    }
+
     pub(super) fn require<O: WriterCloseObserver>(
         &self,
         catalog: &Catalog<'_, '_, O>,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
         let binding = catalog.binding()?;
-        if binding != self.binding {
-            return Err(cause_invalid("ordinary protection binding differs"));
-        }
-        self.root
-            .require_binding(&binding, &catalog.plan.required, Some(cancel))?;
-        self.bytes
-            .require(&binding, &catalog.plan.required, cancel)?;
+        self.require_parts(&binding, &catalog.plan.required, cancel)?;
         catalog.boundary(cancel)
     }
 }

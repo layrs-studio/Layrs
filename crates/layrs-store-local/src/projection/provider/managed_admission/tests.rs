@@ -200,6 +200,33 @@ pub(in crate::projection::provider) fn with_admitted_source_sql(
     });
 }
 
+/// Genuine private9 source plus the fixture's canonical family SQL DATA.
+/// Original A/family scopes still close inside with_private9 before this fresh
+/// DATA catalog is constructed; no obsolete source holder becomes authority.
+pub(in crate::projection::provider) fn with_admitted_source_family_sql(
+    body: impl FnOnce(&Connection, &format::Marker, &[FileManifest], &Connection, &[u8]),
+) {
+    with_private9(|c, f| {
+        let family = BareConnection::reference().unwrap();
+        f.populate_family(family.connection());
+        body(
+            c,
+            &f.marker,
+            &[
+                f.source.source.descriptors()[0].manifest.clone(),
+                f.historical.clone(),
+                f.current.clone(),
+            ],
+            family.connection(),
+            &f.family_marker,
+        );
+        if !family.connection().is_autocommit() {
+            family.connection().execute_batch("ROLLBACK").unwrap();
+        }
+        family.finish(Ok(())).unwrap();
+    });
+}
+
 fn with_private9(body: impl FnOnce(&Connection, &Fixture)) {
     let source = BareConnection::reference().unwrap();
     let destination = BareConnection::reference().unwrap();

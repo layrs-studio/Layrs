@@ -47,6 +47,13 @@ pub(super) fn ready_suffix(
         ("projection_selections", add(closure.selections.count, 2)?),
         ("projection_captures", add(closure.captures.count, 1)?),
         ("projection_publications", closure.publications.count),
+        (
+            "projection_restore_history",
+            closure
+                .restore_history
+                .as_ref()
+                .map_or(0, |rows| rows.count),
+        ),
         ("projection_provider_catalogs", closure.catalogs.count),
         ("projection_provider_descriptors", closure.descriptors.count),
         (
@@ -101,9 +108,7 @@ pub(super) fn ready_suffix(
         }
     }
     let plan = &inputs.data.ready.plan;
-    let ImportSource::Provider { version, .. } = &inputs.prefix.source else {
-        return Err(invalid("destination Ready requires provider source"));
-    };
+    let version = inputs.source.version(inputs.prefix)?;
     let head: (u64, u64) = c.query_row(
         "SELECT singleton,generation FROM projection_head",
         [],

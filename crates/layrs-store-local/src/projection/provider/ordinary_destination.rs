@@ -68,6 +68,19 @@ impl<'a> OrdinaryCopyInputs<'a> {
         self.require_phase(destination, marker, TransitionState::Copying, cancel)
     }
 
+    /// Authenticate actual B9 SourceStaging and its exact C FORMAT binding.
+    /// The returned destination Staging row is expected DATA only: this helper
+    /// never reads C tables and does not claim C is still Staging. Ready ingress
+    /// must separately validate the complete actual C prefix/suffix or journal.
+    pub(in crate::projection::provider) fn authenticate_staging_source(
+        &self,
+        destination: &Connection,
+        marker: &format::Marker,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ProviderTransitionIntentRecord> {
+        self.require_phase(destination, marker, TransitionState::Staging, cancel)
+    }
+
     // The expected phase must match the actual durable source row. A proposal
     // alone cannot authorize inspection of C, including during a phase gap.
     fn require_phase(
@@ -473,4 +486,4 @@ fn require_intent_row(c: &Connection, expected: &ProviderTransitionIntentRecord)
 
 #[cfg(test)]
 #[path = "ordinary_destination/tests.rs"]
-mod tests;
+pub(in crate::projection::provider) mod tests;
