@@ -156,6 +156,30 @@ pub(in crate::projection::provider) struct ManagedDestinationAllocation {
     _lifecycle: crate::lock::StoreLock,
 }
 impl ManagedDestinationAllocation {
+    pub(in crate::projection::provider) fn checkout_storage(
+        &self,
+        plan: &TransitionPlan,
+        expected: &crate::projection::provider::checkout_journal::ExpectedCheckout,
+        cancel: &Cancellation,
+    ) -> CauseResult<crate::projection::provider::bootstrap::CheckoutStorage> {
+        cancel.check()?;
+        self.require_published(plan)?;
+        if expected.marker() != &self.proof.format
+            || expected.header().plan_digest != self.plan_digest
+            || expected.header().destination_proof_digest != self.proof.digest(plan)?
+        {
+            return Err(invalid("checkout storage differs from retained allocation"));
+        }
+        let storage = crate::projection::provider::bootstrap::CheckoutStorage::new(
+            self.root.try_clone()?,
+            self.control.try_clone()?,
+            expected,
+            cancel,
+        )?;
+        self.require_published(plan)?;
+        Ok(storage)
+    }
+
     pub(in crate::projection::provider) fn family(&self) -> &FamilyAccess {
         &self.family
     }

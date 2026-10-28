@@ -105,12 +105,12 @@ impl WriterCloseObserver for Close {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Node {
+pub(super) enum Node {
     Directory(String),
     File((String, u64, String)),
     LockedOwner(String, u64),
 }
-type Tree = BTreeMap<PathBuf, Node>;
+pub(super) type Tree = BTreeMap<PathBuf, Node>;
 
 fn tree(root: &Path, locks: [&Path; 2]) -> Tree {
     assert_ne!(locks[0], locks[1]);
@@ -158,7 +158,12 @@ fn tree(root: &Path, locks: [&Path; 2]) -> Tree {
     }
     result
 }
-fn trees(root: &Path, family: &Path, destination: &Path, locks: [&Path; 2]) -> (Tree, Tree, Tree) {
+pub(super) fn trees(
+    root: &Path,
+    family: &Path,
+    destination: &Path,
+    locks: [&Path; 2],
+) -> (Tree, Tree, Tree) {
     let result = (
         tree(root, locks),
         tree(family, locks),
@@ -203,17 +208,17 @@ fn only_catalog_changed(before: &(Tree, Tree, Tree), after: &(Tree, Tree, Tree),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Cell {
+pub(super) enum Cell {
     Null,
     Integer(i64),
     Real(u64),
     Text(Vec<u8>),
     Blob(Vec<u8>),
 }
-type Rows = Vec<Vec<Cell>>;
-type Database = BTreeMap<String, Rows>;
+pub(super) type Rows = Vec<Vec<Cell>>;
+pub(super) type Database = BTreeMap<String, Rows>;
 
-fn read<T>(path: &Path, inspect: impl FnOnce(&Connection) -> T) -> T {
+pub(super) fn read<T>(path: &Path, inspect: impl FnOnce(&Connection) -> T) -> T {
     // Independent read-only SQL observations, without another owner lock.
     let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     c.execute_batch("BEGIN DEFERRED").unwrap();
@@ -222,7 +227,7 @@ fn read<T>(path: &Path, inspect: impl FnOnce(&Connection) -> T) -> T {
     c.close().unwrap();
     result
 }
-fn database(c: &Connection) -> Database {
+pub(super) fn database(c: &Connection) -> Database {
     let tables = {
         let mut q = c
             .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name LIMIT 65")
@@ -274,7 +279,7 @@ fn database(c: &Connection) -> Database {
     }
     result
 }
-fn source(
+pub(super) fn source(
     path: &Path,
     marker: &format::Marker,
     expected: Option<&ProviderTransitionIntentRecord>,
@@ -296,7 +301,7 @@ fn source(
         database(c)
     })
 }
-fn destination(path: &Path, expected: &ProviderTransitionIntentRecord) -> Database {
+pub(super) fn destination(path: &Path, expected: &ProviderTransitionIntentRecord) -> Database {
     read(path, |c| {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
@@ -477,13 +482,13 @@ fn catalog(path: &Path, stage: &ProviderTransitionIntentRecord) -> Catalog {
     })
 }
 
-fn object(family: &Path, kind: &str, id: &str) -> PathBuf {
+pub(super) fn object(family: &Path, kind: &str, id: &str) -> PathBuf {
     let hex = id.strip_prefix("blake3:").unwrap();
     assert_eq!(hex.len(), 64);
     assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
     family.join("objects").join(kind).join(hex)
 }
-fn verify_objects(family: &Path, manifests: &[FileManifest]) {
+pub(super) fn verify_objects(family: &Path, manifests: &[FileManifest]) {
     for manifest in manifests {
         assert_eq!(
             fs::read(object(family, "manifests", manifest.id().as_str())).unwrap(),

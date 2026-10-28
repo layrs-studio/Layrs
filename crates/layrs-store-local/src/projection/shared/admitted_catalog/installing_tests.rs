@@ -39,16 +39,16 @@ const TABLES: [&str; 13] = [
     "sweep",
 ];
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Cell {
+pub(super) enum Cell {
     Null,
     Integer(i64),
     Real(u64),
     Text(Vec<u8>),
     Blob(Vec<u8>),
 }
-type Rows = Vec<Vec<Cell>>;
-type State = BTreeMap<&'static str, Rows>;
-fn state(c: &Connection) -> State {
+pub(super) type Rows = Vec<Vec<Cell>>;
+pub(super) type State = BTreeMap<&'static str, Rows>;
+pub(super) fn state(c: &Connection) -> State {
     let mut result = BTreeMap::new();
     let mut bytes = 0usize;
     for table in TABLES {
@@ -179,7 +179,7 @@ fn reserve(
     );
 }
 
-fn journal(
+pub(super) fn journal(
     binding: &ExactBinding,
     manifest: &FileManifest,
     phase: &str,
@@ -207,7 +207,7 @@ fn journal(
         "chargedChunks":String::from_utf8(bits).unwrap(), "residentChunks":"0".repeat(256),
         "chargedManifest":charge_manifest, "debitBytes":debit})
 }
-fn put(c: &Connection, binding: &ExactBinding, manifest: &FileManifest, record: &Value) {
+pub(super) fn put(c: &Connection, binding: &ExactBinding, manifest: &FileManifest, record: &Value) {
     let previous: Option<Vec<u8>> = c
         .query_row(
             "SELECT payload FROM exact_installations WHERE reservation=?1 AND manifest_id=?2",
@@ -233,7 +233,7 @@ fn put(c: &Connection, binding: &ExactBinding, manifest: &FileManifest, record: 
     )
     .unwrap();
 }
-fn index(c: &Connection, manifest: &FileManifest) {
+pub(super) fn index(c: &Connection, manifest: &FileManifest) {
     c.execute(
         "INSERT INTO files VALUES(?1,?2) ON CONFLICT DO NOTHING",
         params![manifest.file_id().as_str(), manifest.byte_length()],

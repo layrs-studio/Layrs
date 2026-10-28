@@ -46,6 +46,8 @@ macro_rules! owned {
     };
 }
 
+#[path = "tests/checkout.rs"]
+mod checkout;
 #[path = "tests/staging.rs"]
 mod staging;
 

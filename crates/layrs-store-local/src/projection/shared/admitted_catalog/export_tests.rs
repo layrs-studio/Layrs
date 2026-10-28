@@ -83,6 +83,24 @@ pub(super) fn target(
     retained: &AdmittedFamilyContext,
     required: &[FileManifest],
 ) -> ExportReserveOnlyTarget {
+    target_with_funding(
+        retained,
+        required,
+        baseline_quota(required),
+        DECLARED_MARGIN,
+        DECLARED_PRIVATE_FLOOR,
+    )
+}
+
+// Declared DATA only: alternate funding lets protection tests isolate the
+// late remaining-envelope check without weakening a production constructor.
+pub(super) fn target_with_funding(
+    retained: &AdmittedFamilyContext,
+    required: &[FileManifest],
+    baseline: u64,
+    margin: u64,
+    private_floor: u64,
+) -> ExportReserveOnlyTarget {
     let marker = retained.marker();
     let shared = marker.shared.as_ref().unwrap();
     let mut identity = marker.identity.clone();
@@ -145,8 +163,7 @@ pub(super) fn target(
         .unwrap()
         .into();
     destination_marker["shared"]["databaseIdentity"] = "1:0:800".into();
-    let baseline = baseline_quota(required);
-    let quota = baseline + DECLARED_MARGIN;
+    let quota = baseline.checked_add(margin).unwrap();
     let mut source: ProviderTransitionIntentRecord = serde_json::from_value(json!({
         "schemaVersion": "layrs.projection-provider-transition-intent.v1",
         "transactionId": TX, "role": "source", "state": "staging", "localGeneration": 3,
@@ -179,14 +196,14 @@ pub(super) fn target(
     destination.local_generation = 0;
     destination.encode().unwrap();
     let encoded_pair = source.encode().unwrap().len() + destination.encode().unwrap().len();
-    assert!((encoded_pair as u64) < DECLARED_PRIVATE_FLOOR);
+    assert!((encoded_pair as u64) < private_floor);
     ExportReserveOnlyTarget::new(
         retained,
         &source,
         &destination,
         required,
         baseline,
-        DECLARED_PRIVATE_FLOOR,
+        private_floor,
         None,
     )
     .unwrap()

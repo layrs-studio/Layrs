@@ -1,9 +1,9 @@
-//! Admitted retained-family policy, export-only ReserveOnly/Installing readers
+//! Admitted retained-family policy, export-only reservation/content readers
 //! and a separate reservation SQL primitive. The ordinary gate stays read-only.
 //! No private opener, owner lock, recovery, COMMIT, release or content I/O here.
 use super::{
     exact_content::{ExactBinding, ExactInstallState, ExactRecord},
-    exact_protection::ExactProtection,
+    exact_protection::{ExactProtection, ProtectionEffect, ProtectionPresence},
     FamilyMarker,
 };
 use crate::projection::{
@@ -33,6 +33,7 @@ struct CatalogParts {
     proof: AdmittedCatalogProof,
     export: Option<ExportReserveOnlyState>,
     installation: Option<ExactInstallState>,
+    protection: Option<ExportProtectionState>,
     marker: FamilyMarker,
 }
 
@@ -43,6 +44,19 @@ enum ExportCatalogTarget<'a> {
         target: &'a ExportReserveOnlyTarget,
         required: &'a [FileManifest],
     },
+    Protected {
+        target: &'a ExportReserveOnlyTarget,
+        required: &'a [FileManifest],
+        protection: &'a ExactProtection,
+    },
+}
+
+/// Catalog DATA only. Physical C CAS, B/C ownership and durable closes are
+/// independently authenticated by the export driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) struct ExportProtectionState {
+    pub installation: ExactInstallState,
+    pub root: ProtectionPresence,
 }
 
 #[derive(Clone)]
@@ -208,6 +222,89 @@ impl AdmittedFamilyContext {
         ))
     }
 
+    /// Complete retained walk plus C's complete Published union and its exact
+    /// optional protection root. C remains Initializing; no byte or admission
+    /// authority follows from this DATA-only interpretation.
+    pub(in crate::projection) fn validate_export_protection(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: &ExportReserveOnlyTarget,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        cancel: Option<&Cancellation>,
+    ) -> Result<(AdmittedCatalogProof, ExportProtectionState)> {
+        let parts = self.validate_catalog_parts(
+            c,
+            family_marker,
+            Some(ExportCatalogTarget::Protected {
+                target,
+                required,
+                protection,
+            }),
+            cancel,
+        )?;
+        Ok((
+            parts.proof,
+            parts
+                .protection
+                .ok_or_else(|| invalid("export protection state absent"))?,
+        ))
+    }
+
+    /// SQL effect only, after the physical driver has verified/pinned C CAS.
+    /// Caller owns rollback on every post-mutation error, COMMIT and positive
+    /// closes. Reservation/debits/content usage are preserved, including replay.
+    pub(in crate::projection) fn protect_export(
+        &self,
+        c: &Connection,
+        family_marker: &[u8],
+        target: &ExportReserveOnlyTarget,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ProtectionEffect> {
+        cancellation::check(cancel)?;
+        if c.is_autocommit() || c.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, u64>(0))? != 1
+        {
+            return Err(invalid(
+                "export protection requires FK-enabled caller transaction",
+            ));
+        }
+        let (before_proof, before) = self.validate_export_protection(
+            c,
+            family_marker,
+            target,
+            required,
+            protection,
+            cancel,
+        )?;
+        let effect = protection.insert_or_replay(c, cancel)?;
+        let (after_proof, after) = self.validate_export_protection(
+            c,
+            family_marker,
+            target,
+            required,
+            protection,
+            cancel,
+        )?;
+        let expected_effect = match before.root {
+            ProtectionPresence::Absent => ProtectionEffect::Inserted,
+            ProtectionPresence::Present => ProtectionEffect::AlreadyPresent,
+        };
+        if effect != expected_effect
+            || after.root != ProtectionPresence::Present
+            || after.installation != before.installation
+            || after_proof.manifests() != before_proof.manifests()
+        {
+            return Err(invalid(
+                "export protection full prospective readback differs",
+            ));
+        }
+        cancellation::check(cancel)?;
+        Ok(effect)
+    }
+
     /// Insert only C's exact full reservation or replay it without writing.
     /// Caller retains both physical owners/private proofs, FK-enabled catalog
     /// transaction and exclusive gate, and observes rollback/COMMIT/close.
@@ -335,6 +432,25 @@ impl AdmittedFamilyContext {
         for group in std::iter::once(&self.primary).chain(self.additional.iter()) {
             known.insert(group.root_id.as_str(), group);
         }
+        // Only this exact canonical C root may bypass the retained Ready-member
+        // interpreter. It is still counted below and fully inspected AFTER all
+        // retained groups. No owner-wide WHERE exclusion is permitted.
+        let deferred_root = match &target {
+            Some(ExportCatalogTarget::Protected {
+                target,
+                required,
+                protection,
+            }) => {
+                protection.require_binding(target.binding(), required, cancel)?;
+                if known.contains_key(protection.id()) {
+                    return Err(invalid(
+                        "export protection collides with a retained context root",
+                    ));
+                }
+                Some(protection.id())
+            }
+            _ => None,
+        };
         let mut groups = BTreeSet::new();
         let mut roots = BTreeSet::new();
         let mut owned = None;
@@ -360,6 +476,9 @@ impl AdmittedFamilyContext {
                 return Err(invalid("admitted family import root key differs"));
             }
             roots.insert(id.to_owned());
+            if deferred_root == Some(id) {
+                continue;
+            }
             let (binding, required, member) = read_group(c, id, known.get(id).copied(), cancel)?;
             require_member(c, &marker, &self.primary.marker, &binding, &member)?;
             if binding.family_marker_digest != digest || !groups.insert(binding.reservation.clone())
@@ -398,10 +517,11 @@ impl AdmittedFamilyContext {
         // Retained roots, Published journals, exact debit equality and shared
         // charged sets have ALL passed. Only now may an exact active C group
         // join the final inventory. None preserves the strict ordinary policy.
-        let (export, installation) = match target {
-            None => (None, None),
+        let (export, installation, protection) = match target {
+            None => (None, None, None),
             Some(ExportCatalogTarget::ReserveOnly(target)) => (
                 Some(target.validate_and_classify(c, self, &marker, &mut groups, cancel)?),
+                None,
                 None,
             ),
             Some(ExportCatalogTarget::Installing { target, required }) => (
@@ -411,6 +531,26 @@ impl AdmittedFamilyContext {
                     self,
                     &marker,
                     required,
+                    &mut groups,
+                    &mut charged_chunks,
+                    &mut charged_manifests,
+                    cancel,
+                )?),
+                None,
+            ),
+            Some(ExportCatalogTarget::Protected {
+                target,
+                required,
+                protection,
+            }) => (
+                None,
+                None,
+                Some(target.validate_protection_and_classify(
+                    c,
+                    self,
+                    &marker,
+                    required,
+                    protection,
                     &mut groups,
                     &mut charged_chunks,
                     &mut charged_manifests,
@@ -446,6 +586,7 @@ impl AdmittedFamilyContext {
             },
             export,
             installation,
+            protection,
             marker,
         })
     }
@@ -466,3 +607,7 @@ mod export_tests;
 #[cfg(test)]
 #[path = "admitted_catalog/installing_tests.rs"]
 mod installing_tests;
+
+#[cfg(test)]
+#[path = "admitted_catalog/protection_tests.rs"]
+mod protection_tests;

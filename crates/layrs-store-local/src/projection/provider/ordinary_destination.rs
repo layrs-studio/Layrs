@@ -3,7 +3,9 @@
 //! is granted here. Fresh schema creation and complete prefix copying are one
 //! destination transaction; a partial ingress is never a resumable state.
 use super::{
-    cancellation, database_io,
+    cancellation,
+    checkout_journal::{CheckoutJournal, ExpectedCheckout},
+    database_io,
     import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
     managed_admission::read_admitted_import,
     records::{
@@ -24,7 +26,9 @@ use crate::projection::{database, format, retention, selection};
 use layrs_vfs::Cancellation;
 use rusqlite::{params, Connection};
 
+mod checkout;
 pub(super) mod staging;
+pub(in crate::projection::provider) use checkout::read_checkout_staging;
 
 /// Borrow only from the actual ordinary owner callback. The source closure
 /// binds this exact live source connection, while its actual durable Copying
@@ -285,8 +289,33 @@ fn read_copied_parts(
     incoming: &ProviderTransitionIntentRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<CopiedPrefix> {
+    read_copied_kernel(
+        destination,
+        marker,
+        source,
+        incoming,
+        Prejournal::Empty,
+        cancel,
+    )?;
+    Ok(CopiedPrefix { _private: () })
+}
+
+// Only the explicit checkout reader can permit projection_prejournal progress;
+// every other operational table and the complete copied prefix remain strict.
+enum Prejournal<'a> {
+    Empty,
+    Checkout(&'a ExpectedCheckout),
+}
+fn read_copied_kernel(
+    destination: &Connection,
+    marker: &format::Marker,
+    source: &OrdinaryCopyInputs<'_>,
+    incoming: &ProviderTransitionIntentRecord,
+    prejournal: Prejournal<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<CheckoutJournal>> {
     import_validation::require_schema(destination, marker, ImportDatabaseKind::Provider, cancel)?;
-    require_inventory(destination, cancel)?;
+    require_inventory_mode(destination, &prejournal, cancel)?;
     let head: (u64, u64) = destination.query_row(
         "SELECT singleton,generation FROM projection_head",
         [],
@@ -330,11 +359,26 @@ fn read_copied_parts(
     )? {
         return Err(invalid("ordinary copied destination foreign key violation"));
     }
+    let journal = match prejournal {
+        Prejournal::Empty => None,
+        Prejournal::Checkout(expected) => Some(super::checkout_journal::read(
+            destination,
+            expected,
+            cancel,
+        )?),
+    };
     cancellation::check(cancel)?;
-    Ok(CopiedPrefix { _private: () })
+    Ok(journal)
 }
 
 fn require_inventory(c: &Connection, cancel: Option<&Cancellation>) -> Result<()> {
+    require_inventory_mode(c, &Prejournal::Empty, cancel)
+}
+fn require_inventory_mode(
+    c: &Connection,
+    prejournal: &Prejournal<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
     // These names are accepted only after the complete exact schema fingerprint.
     for (kind, name, _) in database_io::schema_inventory(c)? {
         cancellation::check(cancel)?;
@@ -347,6 +391,7 @@ fn require_inventory(c: &Connection, cancel: Option<&Cancellation>) -> Result<()
             | "projection_backend"
             | "projection_imports"
             | "projection_provider_transitions" => Some(1),
+            "projection_prejournal" if matches!(prejournal, Prejournal::Checkout(_)) => None,
             "projection_snapshots"
             | "projection_selections"
             | "projection_captures"

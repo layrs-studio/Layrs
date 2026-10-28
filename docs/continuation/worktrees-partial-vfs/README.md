@@ -1,5 +1,28 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Complément protection et copie ordinaires B → C — r39 à r41
+
+Les dix-huit recettes passent : trois tests purs sur r39, quatorze SQL sur r40,
+puis le scénario Windows r41 en 1 321,903 s. La protection CAS de C reste
+épinglée pendant le commit et la fermeture ; le checkout suit son journal
+durable. Un acquittement retenu après fermeture réellement réussie se reprend
+sous le même propriétaire. Le rejeu terminé n'ouvre aucun writer ; les témoins
+complets des bases et des fichiers passent. C reste Initializing/C8, sans Ready
+ni admission.
+
+L'échec de fixture FK r39 et le refus d'accès du bac à sable r40 sont conservés.
+Archive `ordinary-protection-evidence-20261028-r39-r41.tar.gz` : 1 969 fichiers,
+5 799 657 octets, SHA-256
+`68a219176f6a15f6e5a79f890953c6affa8a8b7d6603f402f989da049ad5d4dd`.
+Les 26 sources indexées correspondent au lot r41 audité, hors conversion CRLF.
+
+Le lot privé C Ready suivant est séparé : code et tests intégrés, revue critique
+sans défaut confirmé, vérification workspace/all-targets réussie en 36,89 s.
+Sa qualification reste à faire. Publication, autonomie C, récupération complète
+et intégration produit restent dans l'objectif actif. Le scénario natif qualifié
+utilise un seul fichier ; suppression positive, arborescences imbriquées, panne
+réelle de fermeture et perte du propriétaire restent à qualifier.
+
 ## Complément installation ordinaire B → C — r38
 
 Les quatorze recettes passent : deux tests purs, onze SQL et le scénario natif

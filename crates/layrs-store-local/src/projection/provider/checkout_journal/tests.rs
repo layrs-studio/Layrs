@@ -8,6 +8,8 @@ use crate::projection::{
 };
 #[path = "tests/fixture.rs"]
 mod fixture;
+#[path = "tests/ordinary.rs"]
+mod ordinary;
 use fixture::{Fixture, DIRECTORY, IMAGE, STAGE};
 
 fn refuses<T>(result: Result<T>, message: &str) {

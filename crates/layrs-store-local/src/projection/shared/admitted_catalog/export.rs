@@ -1,4 +1,4 @@
-//! Export-only ReserveOnly/Installing DATA for the complete retained-family
+//! Export-only reservation/content DATA for the complete retained-family
 //! group validator. No private B/C reader, opener, physical pin or COMMIT lives
 //! here. The driver must authenticate both actual Staging rows, source image,
 //! complete union and metadata floor before and after the catalog operation.
@@ -27,11 +27,17 @@ use serde::Serialize;
 
 const MAX_METADATA: u64 = 1024 * 1024 * 1024;
 
+#[derive(Clone, Copy)]
+enum ActiveRoot<'a> {
+    Absent,
+    Protection(&'a ExactProtection),
+}
+
 /// Expected target DATA, not evidence that B/C private SQL, C's physical files,
 /// image completeness or a metadata-floor calculation is authentic. Closed
 /// fields merely keep all catalog comparisons tied to one immutable plan.
-/// The same immutable target also describes Installing; only the complete
-/// parent gate chooses that explicit interpretation and supplies the full union.
+/// The same immutable target also describes Installing and Protected; only the
+/// complete parent gate chooses that interpretation and supplies the full union.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::projection) struct ExportReserveOnlyTarget {
     source_marker: format::Marker,
@@ -240,6 +246,60 @@ impl ExportReserveOnlyTarget {
         charged_manifests: &mut BTreeSet<String>,
         cancel: Option<&Cancellation>,
     ) -> Result<ExactInstallState> {
+        Ok(self
+            .validate_active_and_classify(
+                c,
+                retained,
+                family,
+                required,
+                ActiveRoot::Absent,
+                classified,
+                charged_chunks,
+                charged_manifests,
+                cancel,
+            )?
+            .installation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn validate_protection_and_classify(
+        &self,
+        c: &Connection,
+        retained: &AdmittedFamilyContext,
+        family: &FamilyMarker,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        classified: &mut BTreeSet<String>,
+        charged_chunks: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExportProtectionState> {
+        self.validate_active_and_classify(
+            c,
+            retained,
+            family,
+            required,
+            ActiveRoot::Protection(protection),
+            classified,
+            charged_chunks,
+            charged_manifests,
+            cancel,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_active_and_classify(
+        &self,
+        c: &Connection,
+        retained: &AdmittedFamilyContext,
+        family: &FamilyMarker,
+        required: &[FileManifest],
+        root_mode: ActiveRoot<'_>,
+        classified: &mut BTreeSet<String>,
+        charged_chunks: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExportProtectionState> {
         cancellation::check(cancel)?;
         if retained.marker() != &self.source_marker
             || retained.binding() != &self.source_binding
@@ -255,14 +315,28 @@ impl ExportReserveOnlyTarget {
         )?;
         self.require_member(c, retained, family)?;
         let owner = self.binding.owner.as_str();
-        for sql in [
-            "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
-            "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
-        ] {
-            cancellation::check(cancel)?;
-            if c.query_row(sql, [owner], |r| r.get::<_, bool>(0))? {
-                return Err(invalid("export Installing target has root or legacy effects"));
+        let root = match root_mode {
+            ActiveRoot::Absent => {
+                if c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+                    [owner],
+                    |r| r.get::<_, bool>(0),
+                )? {
+                    return Err(invalid("export Installing target has root effects"));
+                }
+                ProtectionPresence::Absent
             }
+            ActiveRoot::Protection(protection) => {
+                protection.require_binding(&self.binding, required, cancel)?;
+                protection.inspect(c, cancel)?
+            }
+        };
+        cancellation::check(cancel)?;
+        if c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+            [owner], |r| r.get::<_, bool>(0),
+        )? {
+            return Err(invalid("export active target has legacy installation effects"));
         }
         if c.query_row(
             "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1 AND id!=?2)",
@@ -290,9 +364,22 @@ impl ExportReserveOnlyTarget {
         {
             return Err(invalid("export Installing global accounting differs"));
         }
+        if let ActiveRoot::Protection(protection) = root_mode {
+            if state.records != self.required_manifests
+                || state.published != self.required_manifests
+            {
+                return Err(invalid(
+                    "export protection requires the complete Published union",
+                ));
+            }
+            protection.require_envelope(state.remaining, self.private_metadata_floor)?;
+        }
         classified.insert(self.binding.reservation.clone());
         cancellation::check(cancel)?;
-        Ok(state)
+        Ok(ExportProtectionState {
+            installation: state,
+            root,
+        })
     }
 
     /// Low-level parent-only INSERT primitive. The public export writer

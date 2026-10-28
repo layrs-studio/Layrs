@@ -31,7 +31,42 @@ pub(super) fn expected(
             "checkout expected inventory requires exact managed Staging",
         ));
     }
-    expected_parts(staging, files, deletions, image_digest, cancel)
+    expected_parts(
+        staging,
+        files,
+        deletions,
+        image_digest,
+        SourceKind::Provider,
+        cancel,
+    )
+}
+
+pub(super) fn expected_ordinary(
+    staging: &ProviderTransitionIntentRecord,
+    files: &[CheckoutFile],
+    deletions: &[RepoPath],
+    image_digest: &str,
+    cancel: Option<&Cancellation>,
+) -> Result<ExpectedCheckout> {
+    cancellation::check(cancel)?;
+    staging.validate_fields()?;
+    if staging.state != TransitionState::Staging
+        || staging.plan.kind != ProviderImportKind::ManagedOrdinary
+        || staging.receipt_id.is_some()
+        || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
+    {
+        return Err(invalid(
+            "ordinary checkout inventory requires exact managed Staging",
+        ));
+    }
+    expected_parts(
+        staging,
+        files,
+        deletions,
+        image_digest,
+        SourceKind::AdmittedOrdinary,
+        cancel,
+    )
 }
 
 pub(super) fn expected_ready(
@@ -53,7 +88,19 @@ pub(super) fn expected_ready(
             "checkout terminal inventory requires destination Ready",
         ));
     }
-    expected_parts(ready, files, deletions, image_digest, cancel)
+    expected_parts(
+        ready,
+        files,
+        deletions,
+        image_digest,
+        SourceKind::Provider,
+        cancel,
+    )
+}
+
+enum SourceKind {
+    Provider,
+    AdmittedOrdinary,
 }
 
 fn expected_parts(
@@ -61,10 +108,32 @@ fn expected_parts(
     files: &[CheckoutFile],
     deletions: &[RepoPath],
     image_digest: &str,
+    source_kind: SourceKind,
     cancel: Option<&Cancellation>,
 ) -> Result<ExpectedCheckout> {
-    let ImportSource::Provider { version, .. } = &staging.plan.source_prefix.source else {
-        return Err(invalid("checkout requires provider source prefix"));
+    let version = match (&staging.plan.source_prefix.source, source_kind) {
+        (ImportSource::Provider { version, .. }, SourceKind::Provider) => version,
+        (
+            ImportSource::Ordinary {
+                private_schema: 9,
+                admission: Some(_),
+                checkout_identity: Some(identity),
+                version,
+                ..
+            },
+            SourceKind::AdmittedOrdinary,
+        ) => {
+            codec::directory_identity(identity)?;
+            version
+        }
+        (_, SourceKind::Provider) => {
+            return Err(invalid("checkout requires provider source prefix"))
+        }
+        (_, SourceKind::AdmittedOrdinary) => {
+            return Err(invalid(
+                "ordinary checkout requires admitted private9 source and checkout identity",
+            ))
+        }
     };
     codec::raw_digest(image_digest)?;
     if image_digest != version.effective_image_digest {

@@ -4,11 +4,14 @@
 //! transfer, destination readiness and autonomous admission remain separate.
 pub(super) mod allocation;
 mod budget;
+mod checkout;
+mod content;
 mod copy;
 mod destination;
 mod image;
 mod installing;
 mod preallocation;
+mod protection;
 mod reservation;
 mod reserve_plan;
 mod resident;

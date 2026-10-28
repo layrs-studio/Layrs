@@ -180,6 +180,34 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         Ok(state)
     }
 
+    /// Complete Published/protection DATA under actual B Staging and the full
+    /// retained-family gate. C pins, actual C Staging and CAS bytes remain the
+    /// physical driver's separate responsibility before and after effects.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection) fn validate_export_protection(
+        &self,
+        family: &FamilyAccess,
+        c: &Connection,
+        intent: &ProviderTransitionIntentRecord,
+        target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
+        required: &[layrs_core::scm::FileManifest],
+        protection: &crate::projection::shared::exact_protection::ExactProtection,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::admitted_catalog::ExportProtectionState> {
+        self.require_export_target(family, intent, target, cancel)?;
+        let (_, state) = self.retained.validate_export_protection(
+            c,
+            family.marker_bytes(),
+            target,
+            required,
+            protection,
+            cancel,
+        )?;
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
     fn require_export_target(
         &self,
         family: &FamilyAccess,

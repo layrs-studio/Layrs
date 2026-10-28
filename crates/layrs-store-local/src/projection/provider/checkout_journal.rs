@@ -276,6 +276,19 @@ pub(in crate::projection::provider) struct ExpectedCheckout {
     maximum_encoded_bytes: u64,
 }
 impl ExpectedCheckout {
+    /// Explicit admitted-ordinary Staging DATA. The caller authenticates the
+    /// actual source/destination rows and retains the image and physical pins.
+    /// Provider constructors and terminal Ready readers stay separate.
+    pub fn ordinary(
+        staging: &ProviderTransitionIntentRecord,
+        files: &[CheckoutFile],
+        deletions: &[RepoPath],
+        image_digest: &str,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        inventory::expected_ordinary(staging, files, deletions, image_digest, cancel)
+    }
+
     pub fn new(
         staging: &ProviderTransitionIntentRecord,
         files: &[CheckoutFile],

@@ -484,6 +484,9 @@ mod managed_ordinary_allocation_tests;
 #[cfg(test)]
 mod managed_ordinary_export_owner_tests;
 #[cfg(test)]
+#[path = "session/managed_ordinary_checkout_tests.rs"]
+mod managed_ordinary_checkout_tests;
+#[cfg(test)]
 #[path = "session/managed_ordinary_installing_tests.rs"]
 mod managed_ordinary_installing_tests;
 #[cfg(test)]

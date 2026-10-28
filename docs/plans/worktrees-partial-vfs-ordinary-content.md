@@ -104,14 +104,14 @@ Archive `ordinary-installing-evidence-20261027-r38.tar.gz`: 649 verified files,
 1,818,703 bytes, SHA256
 `75f35736a3003220ce69215a52c0691ffa86ed9d4561004cce0f642f209493be`.
 Sources, startup audit, independent release, runner and all results are retained;
-native fixtures and binaries are excluded. The 16 staged source blobs match
-the retained r38 source modulo CRLF. Subsequent Protected/Checkout source is a
+native fixtures and binaries are excluded. The 16 source blobs committed in
+`bb1a5ac` match the retained r38 source modulo CRLF. Subsequent Protected/Checkout source is a
 separate working-tree lot and is not covered by this qualification.
 
 ## Next integrated protection and checkout slice
 
-Implementation is now integrated in the working tree, still uncompiled and
-unqualified. The new `managed_export/content.rs` factors the retained source
+The Protection/Checkout implementation is now qualified on r39–r41 as recorded
+below. The new `managed_export/content.rs` factors the retained source
 snapshot/full union/funding proof into closed Installing, Protection and
 Checkout modes. Installing retains its strict no-root/no-checkout rules.
 `protection.rs` verifies and pins C CAS, writes/replays the exact root with
@@ -124,12 +124,83 @@ existing exact checkout journal. Checkout success retains immutable final-file
 pins; it grants no Ready or admission authority.
 
 Five Protected SQL recipes, two Ordinary checkout pure recipes and two C8
-checkout SQL recipes are written/formatted. A separate native Protection +
-Checkout recipe is being authored with genuine B/C owners, withheld successful
-Declare-close acknowledgement, same-owner retry and complete witnesses. None
-of this new lot has run. Next: archive/commit qualified r38 sources, compile the integrated new lot,
-independently review
-its source and exact audited artifact/recipes, then run serial fresh fixtures.
+checkout SQL recipes are written/formatted. The separate native Protection +
+Checkout recipe is frozen with genuine B/C owners, withheld successful
+Declare-close acknowledgement, same-owner retry and complete witnesses. The
+execution checkpoint below distinguishes passed and pending recipes. It covers
+one selected current file; positive deletion,
+nested directories, actual OS close failure, mid-copy interruption and owner
+loss remain unqualified.
+
+The first workspace check found E0425 in content.rs: the stageable reader is
+under ordinary_destination::staging. After that path correction, the workspace
+all-targets check passes in 35.14 s and the normal test build passes in 1m27s.
+The independent critical source review reports no confirmed remaining blocker,
+including the corrected call and all new recipes. Its full final result is
+retained at `D:/Layrs/tmp/provider-ordinary-protection-critical-review-20261028.json`.
+
+The r39 audit retains 631 source inputs, nine startup sources and CodeView
+age117. EXE SHA256
+`20d9a32e2a4853ce1cc7266d241555076ffb4df76f1e6ae19d91bc2ea8e696bb`.
+Eighteen proposed recipes comprise three pure, fourteen SQL (including strict
+Provider journal and Installing regressions), and one native child2400/outer2460
+case. Independent final binding review released 157 selected paths, all 631
+inputs and all eighteen names, SHA256
+`7ef171d69f693ee1651fc0196a0273432f1b1bbacc3f4b671ba91d374d8353d5`.
+
+### Execution checkpoint r39–r41 (28 October)
+
+r39 passed three pure recipes and the first Protected SQL recipe, then stopped
+at corruption fixture case 2: an absent `worktree:foreign` violated the owner
+foreign key before invoking production validation. ROOT corrected only cases
+2/8/10 to use existing retained B's owner, which is foreign to C; case 8 also
+uses B's database identity. All twelve corruption cases and FK enforcement
+remain. Build r2 passes in 17.55 s. r40's mechanical addendum checks exactly
+one changed test file across all 631 inputs and inherits unchanged independent
+production review; SHA256
+`37b3d60033414324da477d2feb8f178ca364ed40ce1d4ca8b2f7d343075cc6bc`.
+
+All fourteen SQL recipes pass on r40. Its native child fails immediately at
+the disposable-parent opener: sandbox access to `C:\Users\ALEXA` is denied
+(OS error 5), before creating its product fixture. No physical-copy result is
+claimed from that attempt. r41 reuses the exact same EXE/PDB, CodeView age118,
+and all 631 inputs. Only the native recipe is released again, on a fresh parent
+with the required Windows permissions. Release SHA256
+`c5f7546c84264d314b898b426b5a15149683e1511a19ea997131f8fa8971aac2`.
+The r41 native process completed successfully: 1321.20 s child / 1321.25 s
+parent / 1321.903 s outer. Session 41254 is terminal exit0. Three pure and
+fourteen SQL passes retain their r39/r40 provenance, for eighteen qualified
+recipes. Actual C CAS remains pinned through root commit/positive close; after
+a withheld successful Declare-close ACK, the same owner reconstructs protection
+read-only and completes the exact current checkout. Final files are Published,
+all full SQL/tree witnesses pass, and completed replay opens no writer. C stays
+Initializing/C8, with no Ready or admission. Failed fixtures are never reopened.
+
+Archive `ordinary-protection-evidence-20261028-r39-r41.tar.gz`: 1,969 verified
+files, 5,799,657 bytes, SHA256
+`68a219176f6a15f6e5a79f890953c6affa8a8b7d6603f402f989da049ad5d4dd`.
+The archive includes failed attempts and exact release input snapshots, and
+excludes executables, databases and native fixtures. Actual OS close failure,
+mid-copy interruption, owner loss, positive deletion and nested-directory native
+coverage remain separate obligations.
+
+All r39/r40/r41 release input bindings are copied byte-exact into each retained
+`bound-inputs/` directory, including the prior versions of the audit script and
+the r39 plan document. The 26 indexed Rust blobs match retained r41 modulo
+CRLF. New private-Ready work is deliberately unindexed and unqualified:
+`managed_export/ready_data.rs` constructs bounded canonical suffix DATA;
+`ready.rs` retains actual B ownership/image/CAS and C checkout pins through
+private C Ready COMMIT, positive close and full readback. Its phase-aware
+reader accepts exact C Staging or Ready while B stays Staging and the family
+member stays Initializing. The ordinary SQL suffix adapter and a dedicated
+native Ready/withheld-successful-close-ACK replay test are integrated. A new
+SQL recipe uses nonempty restore history and checks writer, RO/FKOFF replay and
+refusal without repair. The independent critical Ready review found no confirmed
+defect and verified all 18 changed source hashes at both ends of its inspection.
+Workspace all-targets check passes in 36.89 s after r41 ended. The proposed r42
+set contains three pure, nine SQL and one native recipe, child3000/outer3060 for
+the native case. Build/artifact release and runtime qualification remain pending;
+no C Ready runtime result is claimed by this source review.
 
 After Installing qualification, protect C and materialize its checkout under
 the same genuine B/C owners. Keep the current Installing/ReserveOnly gates
@@ -174,6 +245,88 @@ B Published, then C9 admission. Those readers/writers still contain Provider
 source assumptions and need explicit ordinary interpretations authenticating
 B9 provenance. Autonomous C must eventually read its archived provenance with
 A and B unavailable; source availability cannot become a permanent dependency.
+
+### Investigated Ready/publication/admission seams — 28 October
+
+Read-only investigation after the Protected/Checkout implementation identified
+these concrete next changes. No Ready implementation or runtime evidence yet:
+
+1. `managed_export/content.rs` is deliberately Staging-only, including its final
+   revalidation. A distinct Ready context must retain original Staging, actual
+   selection, rederived `ReservePlan.data` (observation/placement/capture), full
+   union/binding, C protection and exact checkout expected/journal/file pins.
+   Expose narrow internal proof getters and exact `require_journal`; do not use
+   the Staging callback to perform a mutation that invalidates its own exit gate.
+2. `destination_ready::{ManagedReadyInputs,ReadyView,data,read}` and
+   `managed_content/ready_data.rs` contain Provider bootstrap/activation inputs.
+   Introduce a closed ordinary input backed by actual B9 admitted provenance and
+   closure, and factor the common suffix INSERT/CAS (snapshots/selections,
+   capture/mappings/claim/receipt/DestinationReady). The Ready table inventory in
+   `destination_ready/read.rs` currently omits `projection_restore_history`;
+   preserve and authenticate that copied history for this ordinary route.
+3. Ready DATA must be rebuilt from the genuine ordinary image and plan. The
+   current ReservePlan intentionally has `validated_metadata_floor=None`;
+   compute complete Ready/journal/admission metadata explicitly, without
+   upgrading planning DATA into physical authority. The destination reader must
+   accept only exact Staging or the complete exact Ready suffix, not the old
+   Copied reader after suffix insertion.
+4. `shared/provider_import/publication.rs` and `destination_ready/family.rs`
+   need a closed ordinary publication mode using actual C Ready and B9. Preserve
+   the full retained-family walk/shared debits/root; distinguish C Initializing
+   from Ready explicitly. Only CAS registry Initializing→Ready, retaining C's
+   validated read transaction across family COMMIT/close and fresh readback.
+5. `ordinary_transition.rs` currently rejects Ready/Published and receipt IDs.
+   Add exact ordinary forms and separate B Ready then Published writers, with
+   actual C/family snapshots held through each source COMMIT/close. After B
+   Ready, use retained CAS/checkout/plan; never re-enter the Staging image route.
+   Historical B Published must remain inspectable after later allowed B changes.
+6. `VerifiedDestinationPrefix` and `PublishedForReady` retain Provider source
+   or activation types. Ordinary provenance needs explicit historical variants:
+   complete copied B9 prefix/ancestry and actual B Published read through an
+   independent RO connection with exact admission/FORMAT/database/receipt.
+   `destination_ready/autonomous.rs` must use the complete multi-group family
+   interpreter, rather than a single-group family interpretation.
+7. `managed_admission::{write,record}` currently refuses Ordinary. Reuse its
+   journal/source-publication archive and budget protocol with genuine B9
+   binding fields. Hold independent B RO and family through C9 COMMIT/close;
+   then prove C9 can read the archived provenance with B unavailable.
+   `read_admitted_import` and `destination_ready/historical.rs` must support
+   that origin. A fresh Ready opener/retry after allocation-holder loss remains
+   separate work; same-holder retry is not evidence for that recovery.
+
+Required observable order stays **C private Ready → C family Ready → B Ready →
+B Published → C9**, with positive closes/fresh readback at every acknowledgement.
+
+For the first private-Ready integration, keep the current complete Protected
+family gate: C's family registry remains Initializing while its private suffix
+becomes Ready. A new family publication mode is needed only for the subsequent
+registry CAS. The Ready boundary can rederive the planned destination-Staging
+DATA from actual B Staging and retained C allocation pins, then authenticate
+actual C as either that Staging form or its exact complete Ready suffix. Never
+present the derived predecessor as an observed C row. This avoids re-entering
+the old Staging-only reader after a successful Ready COMMIT.
+
+The current `destination_ready::ReadyView` is not truly provenance-neutral: its
+source field supplies selection, observation/activation placement and selected
+base descriptors. A closed ordinary view must carry actual B selection and
+source-derived observation/placement plus the exact selected-base map from
+private content mappings and retained manifests. The unchanged-file checkout
+check must use that exact map, not manufacture Provider descriptors or choose
+an arbitrary representation by FileId. Keep Provider constructor checks intact.
+
+The common suffix mutation itself is reusable after authenticated predecessor
+and DATA preparation: append two snapshots/selections, exact new mappings,
+capture/claim/receipt, CAS head and DestinationReady, then re-read the complete
+prefix plus suffix. `projection_restore_history` must join the bounded count
+inventory while the immutable prefix validator continues checking its exact
+rows. Add a dedicated ordinary Ready checkout expectation constructor; the
+existing Provider `from_ready` must remain strict.
+
+Metadata can reuse `managed_budget::complete_metadata_floor` on the actual
+base floor and canonical Ready/receipt/claim, then add the retained checkout
+journal envelope. Require the remaining exact reservation after checkout bytes
+to cover that floor and the exact protection envelope. This does not set the
+planning-only `validated_metadata_floor` field or change quota/reservation.
 
 ## Qualified Staging checkpoint — r34/r35
 

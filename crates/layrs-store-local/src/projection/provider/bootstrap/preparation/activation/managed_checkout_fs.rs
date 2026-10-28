@@ -22,12 +22,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) struct CheckoutStorage {
+pub(in crate::projection::provider) struct CheckoutStorage {
     root: PinnedDirectory,
     control: PinnedDirectory,
     header: CheckoutHeader,
 }
-pub(super) struct OwnedCheckoutFile {
+pub(in crate::projection::provider) struct OwnedCheckoutFile {
     ordinal: u32,
     header: CheckoutHeader,
     inode: String,
@@ -53,7 +53,7 @@ pub(in crate::projection::provider) fn verify_managed_ready_checkout(
 }
 
 impl CheckoutStorage {
-    pub(super) fn new(
+    pub(in crate::projection::provider) fn new(
         root: PinnedDirectory,
         control: PinnedDirectory,
         expected: &ExpectedCheckout,
@@ -162,7 +162,7 @@ impl CheckoutStorage {
         Ok(pin)
     }
 
-    pub(super) fn prepare_stage(
+    pub(in crate::projection::provider) fn prepare_stage(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -228,7 +228,7 @@ impl CheckoutStorage {
         Ok((pin, leaf.to_owned()))
     }
 
-    pub(super) fn prepare_directory(
+    pub(in crate::projection::provider) fn prepare_directory(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -293,7 +293,7 @@ impl CheckoutStorage {
         Ok((row, file, state))
     }
 
-    pub(super) fn create_temp(
+    pub(in crate::projection::provider) fn create_temp(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -322,7 +322,7 @@ impl CheckoutStorage {
         ))
     }
 
-    pub(super) fn open_owned_temp(
+    pub(in crate::projection::provider) fn open_owned_temp(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -348,7 +348,7 @@ impl CheckoutStorage {
 
     /// Only a fresh durably Owned row grants reset-to-zero of its exact TEMP.
     /// A newly created candidate cannot expose a writer before caller close.
-    pub(super) fn begin_write<'p>(
+    pub(in crate::projection::provider) fn begin_write<'p>(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -374,7 +374,7 @@ impl CheckoutStorage {
         Ok(piece.pin.file_mut())
     }
 
-    pub(super) fn verify_temp(
+    pub(in crate::projection::provider) fn verify_temp(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -401,7 +401,7 @@ impl CheckoutStorage {
         row.verified_file()
     }
 
-    pub(super) fn prepare_publish(
+    pub(in crate::projection::provider) fn prepare_publish(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -424,7 +424,7 @@ impl CheckoutStorage {
 
     /// Publishing is already durably acknowledged. A rename gap resumes only
     /// its exact inode at one name. Published replay performs no write or sync.
-    pub(super) fn publish(
+    pub(in crate::projection::provider) fn publish(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -506,7 +506,7 @@ impl CheckoutStorage {
         row.published_file()
     }
 
-    pub(super) fn verify_complete(
+    pub(in crate::projection::provider) fn verify_complete(
         self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,
@@ -547,7 +547,7 @@ impl CheckoutStorage {
     /// Exhaustive bounded listing at the existing pins-before/after guarantee.
     /// Enumeration is observation only; children are reopened relative to pins
     /// and checked against durable ownership. No reparse child is traversed.
-    pub(super) fn require_namespace(
+    pub(in crate::projection::provider) fn require_namespace(
         &self,
         expected: &ExpectedCheckout,
         journal: &CheckoutJournal,

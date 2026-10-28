@@ -1,5 +1,28 @@
 # Worktrees / partial VFS checkpoint — 2026-10-25
 
+**28 October Paris, ordinary Protection/Checkout r39–r41 qualified:** eighteen
+recipes pass: three pure r39, fourteen SQL r40 and the native r41 case in
+1321.20 s child / 1321.25 s parent / 1321.903 s outer. Actual C CAS protection,
+journal-first checkout, successful-close ACK loss and same-owner no-writer
+replay are verified with complete SQL/tree witnesses. C remains Initializing/C8,
+without Ready or admission. The FK fixture failure and sandbox parent-opener
+failure remain preserved; no failed native fixture was reopened.
+
+Archive `ordinary-protection-evidence-20261028-r39-r41.tar.gz`: 1,969 files,
+5,799,657 bytes, SHA256
+`68a219176f6a15f6e5a79f890953c6affa8a8b7d6603f402f989da049ad5d4dd`.
+The 26 staged Rust blobs match retained r41 modulo CRLF. Native coverage is one
+README, not positive deletion/nested paths, actual OS-close failure, mid-copy
+interruption or owner loss.
+
+Next private C Ready lot is integrated separately and unqualified. Independent
+critical source review found no confirmed defect across its 18 changed inputs.
+Workspace all-targets check passes in 36.89 s. Three pure, nine SQL and one
+native recipe are proposed; build/artifact release and execution remain pending.
+Family Ready, B Ready/Published, C9 autonomous admission, remaining transitions,
+companions/expansion/recovery, lifecycle/performance and CLI/Desktop acceptance
+remain in the full active goal.
+
 **28 October Paris, r38 ordinary Installing qualified:** all fourteen recipes
 pass (2 pure, 11 SQL, 1 native). Native elapsed1193.83s child/1193.87s parent/
 1193.900s outer. Genuine retained B owner installs the complete base/history/
