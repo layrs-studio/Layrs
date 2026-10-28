@@ -36,6 +36,10 @@ mod ordinary_family;
 pub(in crate::projection::provider) use ordinary_family::{
     OrdinaryFamilyPhysical, OrdinaryFamilyResources,
 };
+mod ordinary_private_ready;
+pub(in crate::projection::provider) use ordinary_private_ready::{
+    OrdinaryPrivateReadyParts, OrdinaryPrivateReadyPhysical, OrdinaryPrivateReadyResources,
+};
 mod ordinary_admission;
 pub(in crate::projection::provider) use ordinary_admission::{
     OrdinaryFreshAdmission, OrdinaryFreshAdmissionFailure,

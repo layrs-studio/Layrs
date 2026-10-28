@@ -1,6 +1,7 @@
 //! Genuine private C8 Ready while B remains Staging and C's family member is
-//! Initializing. A successful C writer-close acknowledgement is withheld;
-//! no OS close failure, family publication, admission or owner loss is claimed.
+//! Initializing. An ACK is withheld after SQLite connection-close success;
+//! native xClose/OS close, family publication, admission and owner loss remain
+//! outside the qualification of this recipe.
 use super::managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree};
 use crate::projection::{
     capture::scan::executable,
@@ -8,7 +9,11 @@ use crate::projection::{
     provider::{
         bootstrap::ManagedPlanData,
         checkout_journal::{self, CheckoutFile, ExpectedCheckout},
-        database_io::{self, WriterCloseObserver, WriterOpenPoint},
+        database_io::{
+            self,
+            tests::fresh_ordinary_support::{with_observer, ReadBoundary},
+            WriterCloseObserver, WriterOpenPoint,
+        },
         destination_ready::ReadyEffect,
         managed_export::allocation,
         ordinary_destination::{staging::StageEffect, CopyEffect},
@@ -37,10 +42,12 @@ use layrs_core::scm::{
 use layrs_vfs::Cancellation;
 use rusqlite::ffi;
 use std::{
+    cell::{Cell as Flag, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 const LEAF: &str = "00000000000000000000000000000101";
@@ -89,6 +96,7 @@ struct Close {
     withheld: usize,
     physical: Option<Physical>,
     physical_checks: usize,
+    after_close: Rc<Flag<bool>>,
 }
 impl Close {
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -120,13 +128,14 @@ impl WriterCloseObserver for Close {
     fn after_close(&mut self, succeeded: bool) -> Option<Cause> {
         assert!(
             succeeded,
-            "observer requires physically successful writer close"
+            "observer requires SQLite connection-close success, without native xClose/OS-close inference"
         );
         self.closes += 1;
         if let Some(physical) = &self.physical {
             physical.require();
             self.physical_checks += 1;
         }
+        self.after_close.set(true);
         if std::mem::take(&mut self.withhold) {
             self.withheld += 1;
             Some(invalid(WITHHELD_ACK))
@@ -135,6 +144,28 @@ impl WriterCloseObserver for Close {
         }
     }
 }
+
+pub(super) fn require_ready_read_controls(
+    events: &[(PathBuf, ReadBoundary)],
+    destination: &Path,
+    family: &Path,
+) {
+    for path in [destination, family] {
+        for boundary in [
+            ReadBoundary::BeforeSnapshot,
+            ReadBoundary::DatabaseSnapshot,
+            ReadBoundary::DatabaseIdentity,
+        ] {
+            assert!(
+                events
+                    .iter()
+                    .any(|(actual, point)| actual == path && *point == boundary),
+                "retained Ready must exercise actual {boundary:?} route {path:?}"
+            );
+        }
+    }
+}
+
 fn snapshot(path: &Path) -> Database {
     witness::read(path, witness::database)
 }
@@ -745,19 +776,45 @@ fn ready_recipe() {
     assert_eq!(snapshot(&family_database), before_family);
 
     close.withhold = true;
-
-    let error = match owner.finalize_destination_ready(
-        &allocated,
-        &staging,
-        &protection,
-        &checkout,
-        &mut close,
-        &cancel,
-    ) {
+    let after_close = close.after_close.clone();
+    let after_close_probes = Rc::new(Flag::new(0usize));
+    let observed_after_close = after_close_probes.clone();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let failed = with_observer(
+        move |path, point| {
+            observed.borrow_mut().push((path.to_owned(), point));
+            if after_close.get() {
+                observed_after_close.set(observed_after_close.get() + 1);
+                return Err(invalid(
+                    "failed retained private Ready ACK forbids later observed SQL/identity/snapshot probes",
+                ));
+            }
+            Ok(())
+        },
+        || {
+            owner.finalize_destination_ready(
+                &allocated,
+                &staging,
+                &protection,
+                &checkout,
+                &mut close,
+                &cancel,
+            )
+        },
+    );
+    let error = match failed {
         Ok(_) => panic!("Ready close ACK was not withheld"),
         Err(e) => e,
     };
     assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
+    let primary = error.to_string();
+    assert_eq!(
+        after_close_probes.get(),
+        0,
+        "only mandatory rollback/reader closes follow the failed ACK"
+    );
+    require_ready_read_controls(&events.borrow(), &destination_database, &family_database);
     assert_eq!(close.counts(), (1, 1, 1, 1));
     assert_eq!(close.physical_checks, 2);
 
@@ -802,6 +859,11 @@ fn ready_recipe() {
     assert_eq!(outcome.receipt(), &durable.receipt);
     assert_eq!(close.counts(), (1, 1, 1, 1));
     assert_eq!(close.physical_checks, 2);
+    assert_eq!(
+        error.to_string(),
+        primary,
+        "replay preserves the original ACK error"
+    );
 
     assert_eq!(
         witness::trees(&root, &family, &destination_root, locks),

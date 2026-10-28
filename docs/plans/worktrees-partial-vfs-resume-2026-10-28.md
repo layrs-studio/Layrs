@@ -1,6 +1,6 @@
 # Reprise du 28 octobre 2026
 
-## Dernier checkpoint — Staging r79 qualifié, réexport r81 et candidat familial revu
+## Dernier checkpoint — r84 sept PASS archivés ; r88 quatre SQL PASS, natifs en cours
 
 Goal **actif**, programme complet ; aucun push/PR. Base des revues `e2a1ac4`.
 r66 admission fraîche et r69 publication fraîche : cinq PASS chacun, archives
@@ -16,11 +16,17 @@ natif FAIL ; traces localisent le débordement à open/validated-read puis
 validate/observation. Correction privée Box<Validated> compilée/check r78,
 réduction de pile compilée mesurée. Runner **ROOT22841/r79 terminé exit0**,
 deux natifs Staging PASS599,491s et598,976s, pile inchangée ; archive vérifiée.
-Réexport C10→D10 : r80 refus sandbox avant fixture ; **ROOT40925/r81 actif**
-sur un nouveau parent, accès hôte accordé. Aucun autre build/test/SQL concurrent.
-Lot reprise familiale entièrement intégré en source, trois implémenteurs finis,
-revue critique r82 terminée ; unique remarque P3 de formulation corrigée par ROOT.
-Compilation et qualification familiale encore attendues. Ne relancer aucun runner/script.
+Réexport C10→D10 : r80 refus sandbox avant fixture ; r81 FAIL1011189,026s sur
+un témoin de budget trop précoce, avant admission D. Archive conservée. ROOT a
+corrigé le témoin avec comparaison exacte du nettoyage autorisé source/famille.
+Lot familial revu r82 (remarque P3 corrigée), build/check r83 PASS. **ROOT73332/r84
+terminé exit0**, sept PASS : quatre courts, réexport1309,558s, famille609,067s et
+famille ACK600,052s. Archive vérifiée. Le passage privé frais et les corrections
+Ready retenues passent les revues r85/r86. Compilation r87 échoue sur un motif
+de test incomplet ; correction ROOT d'une ligne, build37,27s et check14,40s r87b
+PASS. **ROOT38516/r88 actif** : quatre SQL PASS, premier natif privé chronométré
+en cours, quatre autres à suivre. Aucun build/test/SQL concurrent. Ne relancer
+aucun runner/script déjà exécuté ; les sections finales donnent l'état exact.
 Les sections finales donnent hashes, chemins, périmètres et scripts déjà exécutés.
 Le reste de ce document conserve la chronologie des preuves, y compris échecs.
 
@@ -1024,3 +1030,251 @@ et les archives/inventaires r77/r79/r82 ; aucun push, stash original inchangé.
 L'agent `fresh_private_ready_investigation` examine uniquement en lecture source
 le prochain prédécesseur : B Staging/C Staging/protection+checkout complets vers
 C Ready privé. Aucun code de ce prochain lot commencé.
+
+Checkpoint créé : `f01f6b9518b71a3cfc309be3a2911c51599f2e79`,24 fichiers,
+worktree/index propres immédiatement après commit, stash inchangé, aucun push.
+Investigation private Ready terminée : résultats consignés dans
+`worktrees-partial-vfs-ordinary-fresh-private-ready.md`. Ajouts précis identifiés :
+lecteur SQL finalizable RO, lecture exacte de manifests par ID, C Exclusive dès
+factory et driver strict séparé. Les anciens ReadyContext retenus demandent
+aussi un audit de leurs contrôles post-erreur et namespace sous gate ; ne pas
+confondre ce suivi avec une preuve de panne exécutée. Aucun agent natif actif.
+
+Préparation future r83 parsée, NON exécutée :
+`D:/Layrs/tmp/prepare-and-release-ordinary-fresh-family-r83.py`.
+Elle exige r81 terminal PASS, deux logs build/check r83 réussis, même HEAD et
+delta exact r82+correction texte ; attend666 inputs et13 chemins changés depuis
+r79. Six recettes prévues : deux régressions Provider terminal, autonomie
+Ordinary, SQL familial étendu, puis deux natifs frais. Si le build exige des
+correctifs, adapter la release avec une nouvelle comparaison explicite ; ne
+contourner aucune assertion. Aucun build/check exécuté à ce stade.
+
+## Échec témoin r81 archivé, build r83 et qualification combinée r84
+
+ROOT40925 terminé exit1 ; source10 FAIL1011189,026s à l'assertion all-table
+« C export changed projection_budgets ». Le budget committed de la dernière
+capture était présent dans la baseline avant acquisition propriétaire, puis
+absent à SourcePublished. Admission D et réouvertures n'ont pas été atteintes.
+Trace source confirmée : begin_managed_export appelle format::access Exclusive,
+qui settle le budget committed en l'absence d'intent live ; le settlement
+libère exactement la réservation familiale puis supprime le singleton privé.
+Pas de défaut produit établi par cet échec ; fixture non rouverte.
+
+ROOT corrige uniquement le témoin source10 : discovery Shared doit conserver
+toutes les tables ; avant begin, le budget unique est lié à capture:state.digest
+et committed, sa réservation doit appartenir au bon owner/opération. Après
+begin, toutes les tables privées et familiales doivent correspondre exactement
+à la suppression de ces deux lignes. La comparaison complète ultérieure garde
+le droit d'ajouter seulement intent/reçu. Aucun tableau ignoré ou assertion
+historique supprimée. Self-review ROOT ciblée, pas nouvelle revue indépendante.
+Delta inclut le rangement rustfmt d'imports et de lignes d'assertions.
+Archive r80/r81 vérifiée691 fichiers2105179 octets, SHA256
+`9f3d5ed33eb7f12f884c4733422c0ac3926933d6d09a355053fb93d05cad2dd3`.
+
+Build libtest r83 PASS30,80s, ROOT20321 terminé exit0 ; workspace/all-targets
+check PASS9,52s. Les nouveaux sources familiaux compilent sans correction Rust.
+Préparation r83 NON exécutée reste remplacée par r84 explicite : r81 n'a pas
+PASS, et source10 possède désormais son propre correctif de témoin borné.
+
+r84 host audit/retention créé,666 inputs. Le premier script de release s'est
+arrêté sur décodage Windows cp1252 d'un source UTF8 après retention, avant
+runner/release/fixture. Un script de continuation utilise UTF8 explicite,
+vérifie l'audit et les artefacts déjà retenus, puis finit sans les recréer.
+Scripts déjà exécutés : prepare-fresh-family-and-source10-release-r84.py,
+prepare-and-release-ordinary-fresh-family-r84.py (partiel),
+finish-family-release-script-r84.py, finish-ordinary-fresh-family-release-r84.py.
+Ne les relancer pas.
+
+Release r84 SHA256
+`ff6e1c462351dfd039a23fda46ee38d84156e50b6fbcb8c4a4ee1d387613dcc4`.
+EXE SHA256 `48ec4b8a3419dfa6552f6419c2178e259c61c9519e70da9d5181f89cdbe37dd9`,
+CodeView age136.666 sources live/retenues concordantes au lancement,14 chemins
+changés depuis r79 =13familiaux revus+correction texte et1testsource10 corrigé.
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-family-run-r84.py r84`, **ROOT73332**,
+artefacts `.layrs-local/validation/provider-ordinary-fresh-family-20261028-r84`.
+Sept recettes séquentielles : Provider terminal RO PASS1,338s ; corruption
+Provider PASS1,278s ; autonomie Ordinary PASS22,008s ; SQL familial étendu
+PASS21,454s ; source10 corrigé en cours ; puis deux natifs familiaux. Source10
+child5400/outer5460, famille child3600/outer3660, chaque parent neuf, stop first
+failure. Aucun résultat natif r84 revendiqué. Accès hôte autorisé via escalation.
+
+Trois agents source-only, sans build/SQL/process/fixtures :
+`ordinary_family_ready_sql_parts` possède ordinary.rs/destination_ready.rs,
+shared/content.rs/shared.rs et ordinary_tests.rs pour le lecteur finalizable RO
+et les manifests exacts ; `source10_nested_export_recipe` possède nouveau driver
+private_ready_reopen et ressources C Exclusive/factory ; `fresh_family_recipe`
+possède nouveau test fresh_private_ready et hook checkout-complete/registration.
+Les preuves r84 sont retenues et indépendantes de ces nouveaux edits live.
+Goal actif, aucun push. Commit f01f6b9 conserve la baseline précédente.
+
+Packager r84 préparé/parsable, NON exécuté :
+`D:/Layrs/tmp/package-ordinary-fresh-family-20261028-r84.py`.
+Attendre terminaison du handle ROOT73332, puis archiver tous les résultats
+atteints même en cas d'échec ; ne pas confondre les sources live suivantes
+avec les666 sources retenues du binaire actuellement exécuté.
+
+## Reprise privée fraîche intégrée et gelée r85 — SOURCE ONLY
+
+Les trois agents sont terminés. ROOT a examiné le lecteur SQL finalizable,
+l'accès exact ManifestId, le pilote C Exclusive, le hook checkout-complete et
+les deux recettes. Aucun build/test/SQL supplémentaire : ROOT73332 reste actif.
+Les contextes actual Staging/Ready sont distincts et le rejeu Ready impose
+explicitement la famille Initializing. Les tests négatifs journal incomplet,
+substitution de manifeste et corruption familiale sont des recettes SQL ; les
+deux natives proposées couvrent succès/rejeu et ACK SQLite retenu, pas une
+fermeture native xClose/OS échouée ni un crash.
+
+`prepare-ordinary-fresh-private-ready-review-r85.py` exécuté une fois :
+50 sources gelées, 13 fichiers modifiés, comparaison au source retenu r84.
+Manifeste `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-review-r85-inputs.json`
+SHA256 `ed6167d858eec42dda2038e75ed821d43a62071af4266114d82dee5e6a0b3c1f` ;
+diff SHA256 `9f9d8b873a8274c6486f266c15331f3e3b95791cbb2a88d66ec62aa1a5f8f00e`.
+Revue critique T3 GPT-6-Astra xhigh demandée, cellule557, mode wait600000.
+Rapport prévu `provider-ordinary-fresh-private-ready-critical-review-r85.json`.
+Ne pas modifier les50 sources avant résultat et vérification finale de la revue.
+ROOT a exécuté `rustfmt --check` sur les13 fichiers intégrés : PASS, puis
+`git diff --check` : PASS. Aucun résultat de compilation n'en est déduit.
+
+Le document `worktrees-partial-vfs-ordinary-fresh-private-ready.md` précise
+également un audit ultérieur de ReadyContext retenu : lecteur nonstrict faisant
+un snapshot après callback Err, et boundary finale inconditionnelle encore sous
+gate. ROOT a confirmé le contrôle de flux en source, sans exécution. Ne pas
+confondre cette lacune de l'ancien chemin avec la qualification future r85.
+
+## Résultats reçus à 19:12 UTC — r84 source10 et revue r85
+
+ROOT73332 a rendu le réexport C10→D10 corrigé **PASS1309,558s**, exit0, puis
+a lancé `managed_ordinary_fresh_family_refuses_changed_b_image_then_updates_only_member_and_replays_without_writer`.
+La suite globale r84 n'est pas terminée ; ne pas archiver un succès global ni
+compiler avant la terminaison du handle. Le second natif familial reste à suivre.
+
+Revue critique r85 terminée sans défaut concret actionnable. Rapport JSON créé,
+50 sources et8 dépendances supplémentaires vérifiées sans dérive. Thread
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3A0a20efaf-9a07-4bae-9a67-f2f1be8aa895`
+lu jusqu'au résultat final, position95, hasMorefalse. Cellule557 fermée. Aucun
+build/runtime r85 ; ne pas transformer cette revue source en qualification.
+Le gel de revue est terminé. Conserver snapshot/manifeste/diff/rapport avant
+les prochains changements, puis préparer compilation et qualification ciblée.
+
+L'utilisateur demande si les durées sont normales. Réponse : recettes natives
+complexes, mais pas d'explication mesurée suffisante pour déclarer20minutes
+nécessaires. Le lanceur child.rs n'impose ni CPUthrottle ni attente dans le corps;
+son sleep50ms ne fait que surveiller le processus. La consultation du PID59712
+est arrivée après sa fin (aucun compteur CPU obtenu). Aucun profilage exécuté.
+Ajouter des durées par grandes phases aux prochaines recettes, sans relancer
+une fixture passée ni affaiblir les assertions. Distinguer setup, contrôles
+produit, témoins complets et replay ; le coût dominant reste à établir.
+
+## Travaux source indépendants après r85
+
+Archive source r85 créée et relue :
+`ordinary-fresh-private-ready-source-review-20261028-r85.tar.gz`,64fichiers,
+262338octets,SHA256`b987609f2c3ca4749e5fe5b783c758d5dfb172f4197517df22cd17adb15aabde`.
+Contient les50sources,8dépendances supplémentaires et supports de revue ; aucun
+binaire/fixture/résultat runtime. Packager exécuté, ne pas le relancer.
+
+Agent `retained_ready_failure_order` : ownership ready.rs et les deux recettes
+retained privateReady/familyReady, correction strict failure ordering et probes
+ACK. Agent `native_phase_timings` : ownership process_profile/tests/child.rs,
+source_publication testhelper et fresh_private_ready tests, chronomètres monotones
+test-only. Tous deux SOURCE ONLY ; ROOT73332 continue seul le runtime r84.
+Le premier tour de l'agent retained a échoué sur capacité GPT-6.1-Sol après
+investigation ; une reprise du même agent/profil a été demandée, aucun changement
+de modèle. Les contributions restent à intégrer/revoir/qualifier.
+
+## Lot intégré r86 et prochaine qualification préparée
+
+Les deux agents sont terminés et leurs fichiers sont gelés. ROOT a examiné le
+diff ReadyContext, les témoins ACK et l'instrumentation. `rustfmt --check` sur
+les six fichiers intégrés passe. Aucun build, test ou SQL exécuté pour ce candidat.
+ReadyContext utilise des lecteurs stricts, des contrôles d'identité sous le
+verrou catalogue et des contrôles physiques complets avant/après les scopes
+réussis. Une erreur se propage avant toute sonde optionnelle. Les deux anciennes
+recettes ACK observent les routes C/famille et exigent zéro sonde après l'ACK
+refusé ; la recette Updated observe la relecture familiale fraîche.
+
+Chronomètres test-only : `LAYRS_TEST_PHASE phase=... event=START|END
+elapsed_seconds=... unwinding=...`. 141 lignes ajoutées dans trois fichiers,
+aucune ligne originale supprimée/remplacée. Aucune closure supplémentaire ni
+donnée de fixture retenue par PhaseTimer. Les durées imbriquées se chevauchent ;
+END n'est pas un verdict de succès.
+Analyseur offline `D:/Layrs/tmp/analyze-native-phase-log.py` créé et exécuté sur
+le log source10 r84 terminé : aucun événement de phase, résultat correctement vide.
+Il ne lance aucun processus produit ni n'ouvre de fixture.
+
+Revue critique r86 T3 GPT-6-Astra xhigh en cours, cellule588, mode wait600000.
+Manifeste `D:/Layrs/tmp/provider-ordinary-ready-ordering-review-r86-inputs.json` :
+60 sources, six fichiers modifiés depuis r85, SHA256
+`d9684350c299384cc3006d42c1a60efa45e58671d5a4a996de32a86ccce6275d`.
+DiffSHA256`da515be2617eaa26598a129bbf76020797f8ea195259e3f9dec16423fd520c34`.
+Rapport prévu `provider-ordinary-ready-ordering-critical-review-r86.json`.
+HEAD toujours f01f6b9 ; ne pas committer/modifier les 60 sources pendant la revue.
+
+ROOT73332 a désormais six PASS : quatre tests courts, réexport1309,558s et premier
+familial609,067s. Dernier familial ACK en cours. Aucun build concurrent. Après
+confirmation de terminaison du handle et résultat de revue, archiver r84 avec
+son packager existant, puis compiler libtest et workspace/all-targets r87 (logs prévus
+`provider-ordinary-fresh-private-ready-build-r87.log` et `...-check-r87.log`).
+
+Scripts préparés/ASTPASS mais NON exécutés :
+`D:/Layrs/tmp/prepare-and-release-ordinary-fresh-private-ready-r88.py`
+(argument `--root-accept-reviewed-private-ready`) et
+`D:/Layrs/tmp/package-ordinary-fresh-private-ready-20261028-r88.py`.
+La release attend les sept PASS r84, les revues r85/r86 sans finding, les builds
+r87 réussis, HEAD f01f6b9, 669 sources et exactement 17 fichiers modifiés depuis
+r84. Neuf recettes : deux strict-read SQL, private Ready SQL, family/finalizable
+SQL, deux natives privées fraîches chronométrées, retained private ACK,
+retained family Updated et retained family ACK. Quatre SQL child120/outer180 ;
+fresh3600/3660 ; retained3000/3060. Aucun scénario natif r88 lancé. Revoir les scripts si finding,
+correction de compilation ou changement de HEAD avant release ; ne pas contourner
+les checks ni qualifier les sources live avec le résultat du binaire r84.
+Préflight ROOT effectué : les 669 sources courantes présentent exactement les
+17 changements de l'union des manifestes r85/r86 par rapport aux sources r84.
+Ce contrôle de contenu n'établit pas leur compilabilité.
+
+## r84 terminal, r86 reçu, compilation corrigée et r88 lancé
+
+ROOT73332 terminal exit0 : sept PASS. Second familial ACK/rejeu600,052s.
+Packager r84 exécuté :695fichiers,2256804octets,SHA256
+`2eea7bcdd155122cbb2853b10e4e2a474c05bd37021695ba424b627ef77309aa`.
+Archive `ordinary-fresh-family-evidence-20261028-r84.tar.gz` et inventaire adjacent.
+
+Revue r86 terminée sans finding actionnable, thread lu jusqu'à position78,
+hasMorefalse ; cellule588 fermée. Identifiant :
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3Ab6951e9e-e662-4728-8e36-e5e922b39123`.
+Archive source r86 exécutée/vérifiée :73fichiers,294357octets,SHA256
+`0de57eee7b3f312a2f790bb36485dc64d142050d8ad9119e899cb44af92e5433`.
+Les deux agents natifs sont terminés. Aucun sous-agent encore attendu.
+
+Build r87 ROOT81353 terminal101 : E0027 à ordinary_tests.rs996, motif Published
+omettant parent_identity. Après fin et archivage de revue, ROOT remplace seulement
+`Published { inode }` par `Published { inode, .. }`. Le test construit toujours
+le même état Verified et garde toutes ses assertions. Comparaison mécanique
+d'une substitution,59autres sources sélectionnées identiques, rustfmt PASS.
+Rapport `ordinary-private-ready-compile-correction-r87.json` SHA256
+`4c5a366d6b50ac7ea01c12c292b7b3b84a726f051f41f2503d084b8857352b58` ;
+diff SHA256`a96eaf768001b0d8923a37f0531d51d0303577f3dacaab18cdb3e2629ab2a5f0`.
+Le log échoué r87 est conservé, jamais écrasé. Aucun protocole modifié par ce fix.
+
+Build corrigé r87b ROOT88959 terminal0,37,27s. Workspace/all-targets ROOT12687
+terminal0,14,40s. Logs `...-build-r87b.log` et `...-check-r87b.log` sous tmp.
+Script release r88 adapté au fix et à ces logs puis exécuté une fois : host audit,
+EXE/PDB,669sources retenues,17deltas vsr84, deux revues+fix ROOT+runner liés.
+EXE SHA256`8d793beea8af3d4d1611ccedbffe22f68e19c051687daffe810fff00fb506e57`,
+CodeView age137. Release SHA256
+`23fba8be8c7155b0758f0c4dd9c9bb07915b49c2b511bdaea6707ae38126d0f0`.
+
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-run-r88.py r88`
+lancé avec accès hôte autorisé, **handle ROOT38516 actif**. Quatre SQL PASS :
+strict callback0,695s ; strict réel BUSY close0,176s ; private Ready9,227s ;
+family/finalizable27,644s. Premier natif fresh private Updated/replay chronométré
+en cours, puis fresh ACK, retained private ACK, retained family Updated et ACK.
+Ne lancer aucun autre build/SQL/natif avant terminaison de38516. Chaque recette
+possède un parent neuf. Ne jamais rouvrir une fixture passée ou échouée.
+
+Lire uniquement les logs pour les premières durées :
+`.layrs-local/validation/provider-ordinary-fresh-private-ready-20261028-r88/`.
+L'analyseur de phases accepte les chemins explicites des logs, jamais les fixtures.
+Packager r88 préparé et parsable, NON exécuté ; attendre terminal et conserver
+aussi un éventuel échec avec tous les résultats atteints. Aucun résultat natif
+r88 acquis à ce checkpoint. Goal actif ; aucun push/PR ; stash original conservé.

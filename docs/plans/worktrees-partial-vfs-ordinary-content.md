@@ -21,11 +21,17 @@ The five r72 regressions pass; its first native fails with stack overflow and
 the second is not run. r77 locates overflow in the nested validated read. A small
 boxed-data correction passes build/check and compiled frame comparison; both
 r79 natives pass with unchanged stack limits and archived evidence.
-Ready quiescence r73 passes SQL r77. The reviewed and compiled C10→D10 recipe
-is running under r81 after r80 was denied sandbox access before fixture creation.
-Fresh family publication is source-integrated; critical review r82 found one
-close-evidence wording issue, corrected without behavioral changes. That new
-candidate is not compiled or executed yet.
+Ready quiescence r73 passes SQL r77. C10→D10 r81 failed its source-table witness
+because ordinary Exclusive acquisition legitimately settled a committed capture
+budget. ROOT now witnesses exactly that cleanup before the strict export baseline.
+Fresh family publication passes critical review r82 with one corrected wording
+issue, build/check r83 and four short r84 recipes. The corrected source10 native
+passes in1309.558s; both family natives pass in609.067s and600.052s. Fresh
+private Staging→Ready passed independent source review r85 without an actionable
+finding:13changed files,50selected sources. Retained Ready failure ordering and
+test timings passed source review r86. Build/workspace r87b pass after a one-line
+test compilation fix; all four short SQL r88 recipes pass. The five r88 natives
+remain pending completion. These sources are separate from the r84 executable.
 See the
 [current handoff](worktrees-partial-vfs-resume-2026-10-28.md) for exact scope,
 archives and outstanding recovery/product work. The full programme remains open.

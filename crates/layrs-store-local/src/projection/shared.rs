@@ -4,6 +4,8 @@ mod admitted_access;
 #[cfg(windows)]
 pub(in crate::projection) mod admitted_catalog;
 mod content;
+#[cfg(windows)]
+pub(in crate::projection) use content::read_manifest_exact;
 pub(in crate::projection) use content::Protection;
 #[cfg(windows)]
 pub(in crate::projection) mod exact_content;

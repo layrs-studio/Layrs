@@ -670,6 +670,7 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             data: &data,
         };
         if publication {
+            exercise_finalizable_sql(source, c, family, &inputs, &expected);
             assert!(read_ordinary_private_ready(c, &target_marker, family, None).is_err());
             assert!(
                 read_ordinary_family_publication(source, c, family, &inputs, &expected, None,)
@@ -729,6 +730,24 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             history
         );
         read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
+        if publication {
+            assert!(
+                read_ordinary_checkout_finalizable(source, c, family, &inputs, &expected, None,)
+                    .is_err(),
+                "finalizable reader must not reinterpret actual private Ready as Staging"
+            );
+            let actual =
+                read_ordinary_family_publication(source, c, family, &inputs, &expected, None)
+                    .unwrap();
+            assert_eq!(
+                actual.state().member,
+                crate::projection::shared::admitted_catalog::ExportPublicationMember::Initializing
+            );
+            assert_eq!(
+                actual.snapshot().journal().rows(),
+                checkout_journal::read(c, &expected, None).unwrap().rows()
+            );
+        }
         for sql in [
             "UPDATE projection_restore_history SET payload=x'00'",
             "UPDATE projection_head SET generation=0",
@@ -760,6 +779,15 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             ReadyEffect::AlreadyReady
         );
         read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
+        if publication {
+            let actual =
+                read_ordinary_family_publication(source, c, family, &inputs, &expected, None)
+                    .unwrap();
+            assert_eq!(
+                actual.state().member,
+                crate::projection::shared::admitted_catalog::ExportPublicationMember::Initializing
+            );
+        }
         let cancel = Cancellation::default();
         cancel.cancel();
         assert!(finalize_ordinary_checkout_or_replay(
@@ -819,6 +847,294 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
         c.execute_batch("ROLLBACK").unwrap();
         bare.finish(Ok(())).unwrap();
     });
+}
+
+fn exercise_finalizable_sql(
+    source: &Connection,
+    destination: &Connection,
+    family: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+) {
+    use crate::projection::shared::read_manifest_exact;
+    let source_before = dump(source);
+    let destination_before = dump(destination);
+    let family_before = dump(family);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    source.execute_batch("PRAGMA query_only=ON").unwrap();
+    destination.execute_batch("PRAGMA query_only=ON").unwrap();
+    family.execute_batch("PRAGMA query_only=ON").unwrap();
+    let journal =
+        read_ordinary_checkout_finalizable(source, destination, family, inputs, expected, None)
+            .unwrap();
+    assert!(journal.is_complete());
+    assert_eq!(
+        journal.rows(),
+        checkout_journal::read(destination, expected, None)
+            .unwrap()
+            .rows()
+    );
+    for manifest in inputs.data.required {
+        assert_eq!(
+            read_manifest_exact(family, manifest.id(), None)
+                .unwrap()
+                .as_ref(),
+            Some(manifest)
+        );
+    }
+    let original = &inputs.data.required[0];
+    let alternate = FileManifest::new(
+        original.file_id().clone(),
+        original.byte_length(),
+        layrs_core::scm::ChunkingDescriptor::deterministic_fixed(524288).unwrap(),
+        original.chunks().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(alternate.file_id(), original.file_id());
+    assert_eq!(alternate.byte_length(), original.byte_length());
+    assert_ne!(alternate.id(), original.id());
+    assert!(!inputs
+        .data
+        .required
+        .iter()
+        .any(|manifest| manifest.id() == alternate.id()));
+    assert!(
+        read_manifest_exact(family, alternate.id(), None)
+            .unwrap()
+            .is_none(),
+        "an absent exact ManifestId must not fall back to the retained same-FileId body"
+    );
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    assert!(read_ordinary_checkout_finalizable(
+        source,
+        destination,
+        family,
+        inputs,
+        expected,
+        Some(&cancel),
+    )
+    .is_err());
+    assert!(read_manifest_exact(family, original.id(), Some(&cancel)).is_err());
+    let missing_data = ManagedReadyData {
+        required: &inputs.data.required[1..],
+        ..*inputs.data
+    };
+    let missing = OrdinaryReadyInputs {
+        data: &missing_data,
+        ..*inputs
+    };
+    assert!(read_ordinary_checkout_finalizable(
+        source,
+        destination,
+        family,
+        &missing,
+        expected,
+        None,
+    )
+    .is_err());
+    let mut substituted_required = inputs.data.required.to_vec();
+    substituted_required[0] = alternate;
+    let substituted_data = ManagedReadyData {
+        required: &substituted_required,
+        ..*inputs.data
+    };
+    let substituted = OrdinaryReadyInputs {
+        data: &substituted_data,
+        ..*inputs
+    };
+    assert!(read_ordinary_checkout_finalizable(
+        source,
+        destination,
+        family,
+        &substituted,
+        expected,
+        None,
+    )
+    .is_err());
+    let wrong_floor = OrdinaryReadyInputs {
+        metadata_floor: inputs.metadata_floor + 1,
+        ..*inputs
+    };
+    assert!(read_ordinary_checkout_finalizable(
+        source,
+        destination,
+        family,
+        &wrong_floor,
+        expected,
+        None,
+    )
+    .is_err());
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
+    source.execute_batch("PRAGMA query_only=OFF").unwrap();
+    destination.execute_batch("PRAGMA query_only=OFF").unwrap();
+    family.execute_batch("PRAGMA query_only=OFF").unwrap();
+
+    // A complete row inventory with a legal intermediate file phase must be
+    // refused specifically by the finalizable entry's completion requirement.
+    destination
+        .execute_batch("SAVEPOINT finalizable_progress")
+        .unwrap();
+    let mut incomplete = journal.row(RowKey::File(0)).unwrap().clone();
+    let checkout_journal::CheckoutEntry::File { state, .. } = &mut incomplete.entry else {
+        panic!("fixture file row required")
+    };
+    let checkout_journal::FileState::Published { inode, .. } = state else {
+        panic!("fixture published file required")
+    };
+    *state = checkout_journal::FileState::Verified {
+        inode: inode.clone(),
+    };
+    assert_eq!(
+        destination
+            .execute(
+                "UPDATE projection_prejournal SET digest=?1,payload=?2 WHERE path=?3",
+                params![
+                    incomplete.digest().unwrap(),
+                    incomplete.encode().unwrap(),
+                    expected.sql_key(RowKey::File(0)).unwrap()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    let progress = dump(destination);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    let copy = OrdinaryCopyInputs::new(
+        source,
+        inputs.source_marker,
+        inputs.source_staging,
+        inputs.closure,
+    );
+    assert!(!ordinary_destination::read_checkout_staging(
+        destination,
+        inputs.marker,
+        &copy,
+        expected,
+        None
+    )
+    .unwrap()
+    .is_complete());
+    let error =
+        read_ordinary_checkout_finalizable(source, destination, family, inputs, expected, None)
+            .err()
+            .expect("legal intermediate journal must not be finalizable");
+    assert!(
+        error.to_string().contains("complete typed journal"),
+        "{error}"
+    );
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(destination), progress);
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(family), family_before);
+    destination
+        .execute_batch("ROLLBACK TO finalizable_progress; RELEASE finalizable_progress")
+        .unwrap();
+    assert_eq!(dump(destination), destination_before);
+
+    let target_owner = inputs.target.binding().owner.as_str();
+    for (sql, owner) in [
+        (
+            "UPDATE worktrees SET state='ready' WHERE id=?1",
+            Some(target_owner),
+        ),
+        (
+            "UPDATE worktrees SET marker=x'00' WHERE id=?1",
+            Some(target_owner),
+        ),
+        (
+            "UPDATE roots SET payload=x'00' WHERE owner=?1",
+            Some(target_owner),
+        ),
+        (
+            "UPDATE reservations SET remaining=remaining+1 WHERE owner=?1",
+            Some(target_owner),
+        ),
+        (
+            "UPDATE roots SET payload=x'00' WHERE owner=?1",
+            Some(inputs.source_marker.identity.worktree_id.as_str()),
+        ),
+        ("UPDATE family SET marker=x'00' WHERE singleton=1", None),
+    ] {
+        family
+            .execute_batch("SAVEPOINT finalizable_family")
+            .unwrap();
+        let changed = match owner {
+            Some(owner) => family.execute(sql, [owner]).unwrap(),
+            None => family.execute(sql, []).unwrap(),
+        };
+        assert_eq!(changed, 1);
+        let corrupt = dump(family);
+        let changes = (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes(),
+        );
+        assert!(read_ordinary_checkout_finalizable(
+            source, destination, family, inputs, expected, None,
+        ).is_err(), "finalizable reader accepted {sql}");
+        assert_eq!(
+            (
+                source.total_changes(),
+                destination.total_changes(),
+                family.total_changes()
+            ),
+            changes
+        );
+        assert_eq!(dump(family), corrupt);
+        assert_eq!(dump(source), source_before);
+        assert_eq!(dump(destination), destination_before);
+        family
+            .execute_batch("ROLLBACK TO finalizable_family; RELEASE finalizable_family")
+            .unwrap();
+    }
+    for sql in [
+        "UPDATE manifests SET payload=x'00' WHERE id=?1",
+        "DELETE FROM manifest_chunks WHERE manifest_id=?1 AND ordinal=0",
+    ] {
+        family
+            .execute_batch("SAVEPOINT finalizable_exact_manifest")
+            .unwrap();
+        assert_eq!(family.execute(sql, [original.id().as_str()]).unwrap(), 1);
+        let corrupt = dump(family);
+        let changes = family.total_changes();
+        assert!(read_manifest_exact(family, original.id(), None).is_err());
+        assert_eq!(family.total_changes(), changes);
+        assert_eq!(dump(family), corrupt);
+        family
+            .execute_batch(
+                "ROLLBACK TO finalizable_exact_manifest; RELEASE finalizable_exact_manifest",
+            )
+            .unwrap();
+    }
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
 }
 
 // This recipe intentionally supplies decoded C Ready and declared capacity

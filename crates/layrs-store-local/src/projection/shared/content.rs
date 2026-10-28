@@ -568,6 +568,26 @@ fn read_manifest_for(c: &Connection, file: &FileId) -> Result<Option<FileManifes
     Ok(Some(manifest))
 }
 
+/// Exact ManifestId SQL DATA only. The caller authenticates the family and
+/// checks its expected FileId/length, aggregate bound and physical bytes.
+/// This never chooses another representation or creates a lease/capability.
+#[cfg(windows)]
+pub(in crate::projection) fn read_manifest_exact(
+    c: &Connection,
+    id: &FileManifestId,
+    cancel: Option<&layrs_vfs::Cancellation>,
+) -> Result<Option<FileManifest>> {
+    crate::projection::provider::cancellation::check(cancel)?;
+    if c.is_autocommit() {
+        return Err(invalid(
+            "exact manifest DATA requires retained caller transaction",
+        ));
+    }
+    let manifest = read_manifest_optional(c, id)?;
+    crate::projection::provider::cancellation::check(cancel)?;
+    Ok(manifest)
+}
+
 fn read_manifest_optional(c: &Connection, id: &FileManifestId) -> Result<Option<FileManifest>> {
     let bounds: Option<(u64, u64, u64)> = c
         .query_row(

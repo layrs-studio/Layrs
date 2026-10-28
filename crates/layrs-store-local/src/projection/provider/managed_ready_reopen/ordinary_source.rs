@@ -77,6 +77,19 @@ impl OrdinaryExclusiveSource {
         self.source.require_destination(&pins, cancel)?;
         OrdinaryFamilyResources::open_shared(pins, cancel)
     }
+
+    /// Private finalization needs its own Exclusive C acquisition from the
+    /// start. Preserve the anti-alias/family preflight before that acquisition;
+    /// no shared inspection or allocation can be upgraded/adopted here.
+    pub(in crate::projection::provider) fn inspect_private_ready_destination(
+        &self,
+        root: &Path,
+        cancel: &Cancellation,
+    ) -> Result<OrdinaryPrivateReadyResources> {
+        let pins = ManagedReadyPins::open(root, cancel)?;
+        self.source.require_destination(&pins, cancel)?;
+        OrdinaryPrivateReadyResources::open_exclusive(pins, cancel)
+    }
 }
 
 /// Nonforgeable fresh source capability, acquired before any destination owner.

@@ -164,5 +164,8 @@ decomposition, adds exact-set comparison independent of input manifest order,
 and extends the dedicated SQL publication recipe plus two new native recipes.
 Independent critical review r82 is complete, with no concrete protocol defect
 identified and one SQLite/OS-close evidence wording issue corrected by ROOT.
-These source additions have not yet been compiled or run; the concurrent r81
-source10 run uses retained r79 sources and does not exercise these changes.
+These source additions pass build/check r83 and four SQL regressions in r84.
+The r84 runner executes the corrected source10 recipe before the two fresh
+family natives; no family native result is claimed yet. The next private Ready
+predecessor is described in `worktrees-partial-vfs-ordinary-fresh-private-ready.md`
+and implemented separately from the retained r84 executable.

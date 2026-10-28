@@ -3,20 +3,19 @@
 //! and runs the ignored recipe; no crash, owner-loss or close-failure claim.
 use super::{
     managed_ordinary_autonomy_tests::released_source10,
-    managed_ordinary_family_ready_tests::{Close, family},
-    managed_ordinary_installing_tests::{self as witness, Database},
+    managed_ordinary_family_ready_tests::{family, text, Close},
+    managed_ordinary_installing_tests::{self as witness, Cell, Database},
     managed_ordinary_ready_tests::CURRENT,
     managed_ordinary_source_publication_tests::{self as publication, HISTORY},
 };
 use crate::projection::{
-    CapturedPatch, ProjectionStore,
     provider::{
         admitted_ordinary,
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         destination_ready::ReadyEffect,
         managed_admission::read_admitted_import,
-        managed_export::{AdmissionStep, OrdinaryReadyAdmission, allocation},
-        ordinary_destination::{CopyEffect, staging::StageEffect},
+        managed_export::{allocation, AdmissionStep, OrdinaryReadyAdmission},
+        ordinary_destination::{staging::StageEffect, CopyEffect},
         process_profile::tests::child,
         records::{
             import::ImportSource,
@@ -28,6 +27,7 @@ use crate::projection::{
         admitted_catalog::{ExportPublicationEffect, ExportReservationEffect},
         provider_access::ImportRegistrationEffect,
     },
+    CapturedPatch, ProjectionStore,
 };
 use layrs_core::{
     projection::EntryState,
@@ -183,24 +183,18 @@ fn source10_export_recipe() {
             (patch, bytes)
         })
         .collect();
-    assert!(
-        captures
-            .iter()
-            .any(|(patch, bytes)| patch.identity == b_identity
-                && bytes.iter().any(|(_, bytes)| bytes == HISTORY))
-    );
-    assert!(
-        captures
-            .iter()
-            .any(|(patch, bytes)| patch.identity == *store.identity()
-                && bytes.iter().any(|(_, bytes)| bytes == CURRENT))
-    );
-    assert!(
-        captures
-            .iter()
-            .any(|(patch, bytes)| patch.identity == *store.identity()
-                && bytes.iter().any(|(_, bytes)| bytes == NESTED))
-    );
+    assert!(captures
+        .iter()
+        .any(|(patch, bytes)| patch.identity == b_identity
+            && bytes.iter().any(|(_, bytes)| bytes == HISTORY)));
+    assert!(captures
+        .iter()
+        .any(|(patch, bytes)| patch.identity == *store.identity()
+            && bytes.iter().any(|(_, bytes)| bytes == CURRENT)));
+    assert!(captures
+        .iter()
+        .any(|(patch, bytes)| patch.identity == *store.identity()
+            && bytes.iter().any(|(_, bytes)| bytes == NESTED)));
     let source_marker = store.marker.clone();
     let source_database = source_marker
         .metadata_path(&root)
@@ -208,7 +202,7 @@ fn source10_export_recipe() {
     let original_ingress = witness::read(&source_database, |c| {
         publication::ingress(c, &source_marker)
     });
-    let before_source = snapshot(&source_database);
+    let mut before_source = snapshot(&source_database);
     admission
         .require_same_import(&witness::read(&source_database, |c| {
             admitted_ordinary::inspect(c, &source_marker, None).unwrap()
@@ -220,11 +214,54 @@ fn source10_export_recipe() {
 
     let store = ProjectionStore::open_for_managed_export(&root).unwrap();
     assert_eq!(store.state().unwrap(), state);
+    assert_eq!(
+        snapshot(&source_database),
+        before_source,
+        "shared discovery must not settle the capture budget"
+    );
     let family_root = store.marker.shared.as_ref().unwrap().root.clone();
     let family_database = family_root.join("metadata/catalog.sqlite3");
+    // The last public capture leaves a committed ordinary budget. Exclusive
+    // begin_managed_export settles it before creating any outgoing intent.
+    // Witness that exact cleanup separately, then retain full-table equality
+    // for every later export step rather than ignoring the budgets table.
+    let budget = &before_source["projection_budgets"];
+    assert_eq!(budget.len(), 1);
+    let row = &budget[0];
+    assert_eq!(row.len(), 6);
+    assert_eq!(row[0], Cell::Integer(1));
+    assert_eq!(row[1], text(&format!("capture:{}", state.digest)));
+    assert_eq!(row[5], text("committed"));
+    let Cell::Text(completed_reservation) = &row[2] else {
+        panic!("committed capture reservation must be text")
+    };
+    let mut settled_family = snapshot(&family_database);
+    let reservations = settled_family.get_mut("reservations").unwrap();
+    let ordinal = reservations
+        .iter()
+        .position(|row| row.first() == Some(&Cell::Text(completed_reservation.clone())))
+        .expect("committed capture reservation exists before settlement");
+    let reservation = reservations.remove(ordinal);
+    assert_eq!(reservation.len(), 4);
+    assert_eq!(
+        reservation[1],
+        text(source_marker.identity.worktree_id.as_str())
+    );
+    assert_eq!(reservation[2], row[1]);
+    before_source.get_mut("projection_budgets").unwrap().clear();
     let mut owner = store
         .begin_managed_export(state.generation, identity, &cancel)
         .unwrap();
+    assert_eq!(
+        snapshot(&source_database),
+        before_source,
+        "owner acquisition only settles the exact committed budget"
+    );
+    assert_eq!(
+        snapshot(&family_database),
+        settled_family,
+        "settlement only releases its exact family reservation"
+    );
     assert!(owner.current_manifest(&readme).is_none());
     let current = owner.current_manifest(&nested).unwrap().clone();
     assert_eq!(current.file_id(), &FileId::from_bytes(NESTED));

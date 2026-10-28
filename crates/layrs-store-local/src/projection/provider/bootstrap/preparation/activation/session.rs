@@ -502,6 +502,9 @@ mod managed_ordinary_fresh_admission_tests;
 #[path = "session/managed_ordinary_fresh_family_tests.rs"]
 mod managed_ordinary_fresh_family_tests;
 #[cfg(all(test, windows))]
+#[path = "session/managed_ordinary_fresh_private_ready_tests.rs"]
+mod managed_ordinary_fresh_private_ready_tests;
+#[cfg(all(test, windows))]
 #[path = "session/managed_ordinary_fresh_publication_tests.rs"]
 mod managed_ordinary_fresh_publication_tests;
 #[cfg(all(test, windows))]

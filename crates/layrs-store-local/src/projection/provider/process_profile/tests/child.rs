@@ -2,10 +2,63 @@
 //! authors do not run them. The opt-in asserts an audited disposable test host,
 //! not a product activation or automatic-extension-registry proof.
 use std::{
+    io::Write,
     os::windows::process::CommandExt,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+
+/// Monotonic diagnostic timing only. START/END describe scope lifetime, never
+/// success: END is also emitted during unwinding. No owned test DATA or extra
+/// callback frame is retained, and a stderr error cannot replace a test failure.
+pub(in crate::projection::provider) struct PhaseTimer {
+    name: &'static str,
+    started: Instant,
+}
+
+pub(in crate::projection::provider) fn phase(name: &'static str) -> PhaseTimer {
+    let timer = PhaseTimer {
+        name,
+        started: Instant::now(),
+    };
+    timer.start();
+    timer
+}
+
+impl PhaseTimer {
+    fn start(&self) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "LAYRS_TEST_PHASE phase={} event=START elapsed_seconds=0.000000 unwinding={}",
+            self.name,
+            std::thread::panicking(),
+        );
+    }
+
+    fn end(&self) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "LAYRS_TEST_PHASE phase={} event=END elapsed_seconds={:.6} unwinding={}",
+            self.name,
+            self.started.elapsed().as_secs_f64(),
+            std::thread::panicking(),
+        );
+    }
+
+    /// Reuse one small guard for sequential phases instead of nesting wrappers.
+    pub(in crate::projection::provider) fn next(&mut self, name: &'static str) {
+        self.end();
+        self.name = name;
+        self.started = Instant::now();
+        self.start();
+    }
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
 
 /// Panic paths also terminate/reap this exact owned handle. Never kill by a
 /// rediscovered PID or enumerate other processes.

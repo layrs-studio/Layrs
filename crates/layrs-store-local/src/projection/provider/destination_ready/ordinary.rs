@@ -4,7 +4,7 @@ use super::*;
 use crate::projection::{
     provider::{
         admitted_ordinary,
-        checkout_journal::ExpectedCheckout,
+        checkout_journal::{CheckoutJournal, ExpectedCheckout},
         import_validation::ImportDatabaseKind,
         managed_budget,
         ordinary_destination::{self, OrdinaryCopyInputs},
@@ -15,6 +15,7 @@ use crate::projection::{
             AdmittedFamilyContext, ExportPublicationInputs, ExportPublicationMember,
             ExportReserveOnlyTarget,
         },
+        exact_content::ExactInstallState,
         exact_protection::{ExactProtection, ProtectionPresence},
     },
 };
@@ -96,6 +97,8 @@ struct OrdinaryPrepared {
     family: FamilyInterpretation,
     basis: OrdinaryBasis,
     suffix: PreparedData,
+    installation: ExactInstallState,
+    metadata_floor: u64,
 }
 
 pub(super) fn unchanged_bytes(
@@ -126,7 +129,7 @@ fn prepare(
     inputs: &OrdinaryReadyInputs<'_>,
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
-) -> Result<OrdinaryPrepared> {
+) -> Result<Box<OrdinaryPrepared>> {
     cancellation::check(cancel)?;
     if source_c.is_autocommit()
         || destination.is_autocommit()
@@ -314,13 +317,15 @@ fn prepare(
             "ordinary Ready metadata floor differs from actual B/C pair",
         ));
     }
-    require_family(family, family_c, inputs, expected, cancel)?;
+    let installation = require_family(family, family_c, inputs, expected, cancel)?;
     cancellation::check(cancel)?;
-    Ok(OrdinaryPrepared {
+    Ok(Box::new(OrdinaryPrepared {
         family,
         basis,
         suffix,
-    })
+        installation,
+        metadata_floor: floor,
+    }))
 }
 
 fn require_family(
@@ -329,7 +334,7 @@ fn require_family(
     inputs: &OrdinaryReadyInputs<'_>,
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
-) -> Result<()> {
+) -> Result<ExactInstallState> {
     let state = match interpretation {
         FamilyInterpretation::PrivateReady => {
             inputs
@@ -386,7 +391,7 @@ fn require_family(
         .checked_add(expected.maximum_encoded_bytes())
         .ok_or_else(|| invalid("ordinary Ready checkout metadata envelope overflow"))?;
     inputs.protection.require_envelope(remaining, floor)?;
-    Ok(())
+    Ok(state.installation)
 }
 
 fn require_complete_union(
@@ -457,7 +462,74 @@ fn read_prepared(
         Some(expected),
         cancel,
     )?;
-    require_family(prepared.family, family_c, inputs, expected, cancel)
+    require_family(prepared.family, family_c, inputs, expected, cancel).map(|_| ())
+}
+
+/// Actual C8 Staging with a complete published checkout journal and fixed
+/// funding for private Ready and future C10. This read-only entry authenticates
+/// B and the entire Initializing/protected family through the existing kernels.
+/// The detached journal is DATA only; physical pins, writers and closes belong
+/// to the driver. Actual private Ready has a separate complete reader.
+pub(in crate::projection::provider) fn read_ordinary_checkout_finalizable(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<Box<CheckoutJournal>> {
+    let prepared = prepare(
+        FamilyInterpretation::PrivateReady,
+        SourceAuthentication::Staging,
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        cancel,
+    )?;
+    let source = OrdinaryCopyInputs::new(
+        source_c,
+        inputs.source_marker,
+        inputs.source_staging,
+        inputs.closure,
+    );
+    let journal = ordinary_destination::read_checkout_staging(
+        destination,
+        inputs.marker,
+        &source,
+        expected,
+        cancel,
+    )?;
+    if !journal.is_complete() {
+        return Err(invalid(
+            "ordinary finalizable checkout requires complete typed journal",
+        ));
+    }
+    let budget = managed_budget::ordinary_admission_budget(
+        prepared.metadata_floor,
+        expected.files().len() as u64,
+        expected.directories().len() as u64,
+        inputs.data.required.len() as u64,
+    )?;
+    let baseline = managed_budget::quota(
+        inputs.data.required,
+        expected.files().iter().map(|file| file.bytes),
+        0,
+    )?;
+    budget.require_quota(prepared.basis.staging.plan.quota_bytes, baseline)?;
+    let remaining = prepared
+        .installation
+        .remaining
+        .checked_sub(expected.header().file_bytes)
+        .ok_or_else(|| invalid("ordinary finalizable checkout exceeds remaining reservation"))?;
+    budget.require_remaining(
+        remaining,
+        inputs.protection.payload().len() as u64,
+        inputs.data.required.len() as u64,
+    )?;
+    cancellation::check(cancel)?;
+    Ok(Box::new(journal))
 }
 
 pub(in crate::projection::provider) fn read_ordinary_checkout_ready(

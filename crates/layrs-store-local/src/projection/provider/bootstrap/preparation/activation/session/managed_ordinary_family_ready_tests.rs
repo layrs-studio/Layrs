@@ -1,9 +1,9 @@
 //! Genuine ordinary family publication after private C8 Ready. Only C's family
 //! member changes Initializing -> Ready; B remains Staging and C unadmitted.
 //! Separate fresh fixtures cover acknowledged Updated with durable readback and
-//! withheld ACK replay. Withholding ACK follows successful OS close, not an OS
-//! close failure. Positive deletion/nested checkout, crashes and owner-loss
-//! recovery remain unqualified.
+//! withheld ACK replay. ACK withholding follows SQLite connection-close success;
+//! native xClose/OS-close outcomes, positive deletion/nested checkout, crashes
+//! and owner-loss recovery remain unqualified.
 use super::{
     managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
     managed_ordinary_ready_tests::{self as ready_witness, Physical, CURRENT},
@@ -11,7 +11,10 @@ use super::{
 use crate::projection::{
     provider::{
         checkout_journal::{CheckoutFile, ExpectedCheckout},
-        database_io::{WriterCloseObserver, WriterOpenPoint},
+        database_io::{
+            tests::fresh_ordinary_support::{with_observer, ReadBoundary},
+            WriterCloseObserver, WriterOpenPoint,
+        },
         destination_ready::ReadyEffect,
         managed_export::allocation,
         ordinary_destination::{staging::StageEffect, CopyEffect},
@@ -31,7 +34,13 @@ use crate::projection::{
 use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
 use layrs_vfs::Cancellation;
 use rusqlite::ffi;
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    cell::{Cell as Flag, RefCell},
+    collections::BTreeSet,
+    fs,
+    path::Path,
+    rc::Rc,
+};
 
 const LEAF: &str = "00000000000000000000000000000111";
 const TX: &str = "00000000000000000000000000000112";
@@ -47,6 +56,7 @@ pub(super) struct Close {
     withhold: bool,
     physical: Option<Physical>,
     physical_checks: usize,
+    after_close: Rc<Flag<bool>>,
 }
 impl Close {
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -78,13 +88,14 @@ impl WriterCloseObserver for Close {
     fn after_close(&mut self, succeeded: bool) -> Option<Cause> {
         assert!(
             succeeded,
-            "family observer requires physically successful writer close"
+            "family observer requires SQLite connection-close success, without native xClose/OS-close inference"
         );
         self.closes += 1;
         if let Some(physical) = &self.physical {
             physical.require();
             self.physical_checks += 1;
         }
+        self.after_close.set(true);
         if std::mem::take(&mut self.withhold) {
             self.withheld += 1;
             Some(invalid(WITHHELD_ACK))
@@ -503,28 +514,74 @@ fn family_ready_recipe(withhold_close_ack: bool) {
     assert_eq!(snapshot(&family_database), before_family);
 
     close.withhold = withhold_close_ack;
-    let publication = owner.publish_destination_family_ready(
-        &allocated,
-        &staging,
-        &protection,
-        &checkout,
-        &mut close,
-        &cancel,
+    let after_close = close.after_close.clone();
+    let after_close_probes = Rc::new(Flag::new(0usize));
+    let observed_after_close = after_close_probes.clone();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let post_close_events = Rc::new(RefCell::new(Vec::new()));
+    let observed_post_close = post_close_events.clone();
+    let publication = with_observer(
+        move |path, point| {
+            observed.borrow_mut().push((path.to_owned(), point));
+            if after_close.get() {
+                observed_post_close
+                    .borrow_mut()
+                    .push((path.to_owned(), point));
+                if withhold_close_ack {
+                    observed_after_close.set(observed_after_close.get() + 1);
+                    return Err(invalid(
+                        "failed retained family Ready ACK forbids later observed SQL/identity/snapshot probes",
+                    ));
+                }
+            }
+            Ok(())
+        },
+        || {
+            owner.publish_destination_family_ready(
+                &allocated,
+                &staging,
+                &protection,
+                &checkout,
+                &mut close,
+                &cancel,
+            )
+        },
     );
-    if withhold_close_ack {
+    ready_witness::require_ready_read_controls(
+        &events.borrow(),
+        &destination_database,
+        &family_database,
+    );
+    let original_error = if withhold_close_ack {
         let error = match publication {
             Ok(_) => panic!("family Ready close ACK was not withheld"),
             Err(error) => error,
         };
         assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
+        assert_eq!(
+            after_close_probes.get(),
+            0,
+            "only mandatory rollback/reader closes follow the failed ACK"
+        );
+        assert!(post_close_events.borrow().is_empty());
+        let primary = error.to_string();
+        Some((error, primary))
     } else {
         // Returning Updated requires the production path's fresh catalog
-        // readback after COMMIT and positively acknowledged physical close.
+        // readback after COMMIT and positively acknowledged SQLite close.
         let outcome = publication.unwrap();
         assert_eq!(outcome.effect(), ExportPublicationEffect::Updated);
         assert_eq!(outcome.ready(), &durable.ready);
         assert_eq!(outcome.receipt(), &durable.receipt);
-    }
+        assert!(post_close_events.borrow().iter().any(|(path, point)| {
+            path == &family_database && *point == ReadBoundary::BeforeSnapshot
+        }));
+        assert!(post_close_events.borrow().iter().any(|(path, point)| {
+            path == &destination_database && *point == ReadBoundary::DatabaseSnapshot
+        }));
+        None
+    };
     let expected_closes = (1, 1, 1, usize::from(withhold_close_ack));
     assert_eq!(close.counts(), expected_closes);
     assert_eq!(close.physical_checks, 2);
@@ -558,6 +615,13 @@ fn family_ready_recipe(withhold_close_ack: bool) {
     assert_eq!(outcome.receipt(), &durable.receipt);
     assert_eq!(close.counts(), expected_closes);
     assert_eq!(close.physical_checks, 2);
+    if let Some((error, primary)) = &original_error {
+        assert_eq!(
+            error.to_string(),
+            *primary,
+            "replay preserves original family ACK error"
+        );
+    }
     assert_eq!(
         witness::trees(&root, &family_root, &destination_root, locks),
         committed

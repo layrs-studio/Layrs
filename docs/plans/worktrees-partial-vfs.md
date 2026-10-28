@@ -17,11 +17,17 @@ passe la revue r70 et la compilation/workspace r71. Les cinq régressions r72
 passent ; le premier natif échoue sur un débordement de pile, le second n'est
 pas lancé. Le diagnostic r77 localise l'échec dans la validation imbriquée ;
 la correction de transport des résultats passe les deux natifs r79, archivés.
-La garde Ready r73 passe son SQL r77. Le scénario C10→D10 r74 est en exécution
-native r81 sur le binaire retenu ; le premier lancement r80 a refusé l'accès
-au parent avant création de fixture. La reprise familiale fraîche est intégrée
-en source ; revue critique r82 terminée, précision de preuve corrigée,
-sans compilation ni résultat runtime pour ce nouveau lot.
+La garde Ready r73 passe son SQL r77. Le scénario C10→D10 r81 a échoué sur un
+témoin de budget avant admission D ; ROOT a corrigé sa baseline avec vérification
+exacte du nettoyage autorisé. La reprise familiale fraîche passe la revue r82,
+la compilation/workspace r83 et les quatre tests courts r84. Le réexport corrigé
+réussit dans r84 en1309,558s ; les deux natifs familiaux passent en609,067s et
+600,052s. Les sept résultats r84 sont archivés.
+La reprise privée C Staging→Ready passe la revue critique r85 sans défaut concret
+identifié (13 fichiers changés, 50 sources),
+avec correction du chemin Ready retenu revue r86. Après une correction d'une
+ligne de test, build et workspace r87b passent. Les quatre SQL r88 passent ;
+les cinq recettes natives r88 restent à terminer.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 

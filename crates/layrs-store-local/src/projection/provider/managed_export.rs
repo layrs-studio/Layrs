@@ -21,6 +21,11 @@ pub(in crate::projection::provider) use family_reopen::{
 mod image;
 mod installing;
 mod preallocation;
+mod private_ready_reopen;
+pub(in crate::projection::provider) use private_ready_reopen::{
+    OrdinaryPrivateReadyFinalization, OrdinaryPrivateReadyFinalizationFailure,
+    OrdinaryPrivateReadyFinalizationProgress,
+};
 mod protection;
 pub(in crate::projection::provider) use protection::OrdinaryImportProtection;
 mod ready;

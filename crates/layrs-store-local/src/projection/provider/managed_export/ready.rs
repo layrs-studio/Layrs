@@ -260,61 +260,64 @@ impl OrdinaryManagedExport<'_> {
                     operation.gate_mode(),
                 )
                 .map_err(Cause::from)?;
-                let checked = database_io::read_cancellable(&family.catalog, cancel, |catalog| {
-                    let inputs = OrdinarySourceInputs::new(
-                        &tx,
-                        &store.marker,
-                        &admitted,
-                        &closure,
-                        &context,
-                    );
-                    let protected = match operation {
-                        ReadyOperation::Private => inputs.validate_export_protection(
-                            family,
-                            catalog,
-                            staging,
-                            &target,
-                            &required,
-                            protection.root(),
-                            Some(cancel),
-                        )?,
-                        ReadyOperation::FamilyPublication => {
-                            let ready_data = data.as_data(&required)?;
-                            let ready_inputs = OrdinaryReadyInputs {
-                                marker: &destination.proof().format,
-                                source_marker: &store.marker,
-                                source_staging: staging,
-                                closure: &closure,
-                                retained: &context,
-                                target: &target,
-                                protection: protection.root(),
-                                family_marker_bytes: family.marker_bytes(),
-                                metadata_floor: data.metadata_floor(),
-                                data: &ready_data,
-                            };
-                            inputs
-                                .read_export_publication(
-                                    family,
-                                    catalog,
-                                    staging,
-                                    &ready_inputs.publication_inputs(&expected),
-                                    Some(cancel),
-                                )?
-                                .protection
+                let checked =
+                    database_io::read_cancellable_strict(&family.catalog, cancel, |catalog| {
+                        let inputs = OrdinarySourceInputs::new(
+                            &tx,
+                            &store.marker,
+                            &admitted,
+                            &closure,
+                            &context,
+                        );
+                        let protected = match operation {
+                            ReadyOperation::Private => inputs.validate_export_protection(
+                                family,
+                                catalog,
+                                staging,
+                                &target,
+                                &required,
+                                protection.root(),
+                                Some(cancel),
+                            )?,
+                            ReadyOperation::FamilyPublication => {
+                                let ready_data = data.as_data(&required)?;
+                                let ready_inputs = OrdinaryReadyInputs {
+                                    marker: &destination.proof().format,
+                                    source_marker: &store.marker,
+                                    source_staging: staging,
+                                    closure: &closure,
+                                    retained: &context,
+                                    target: &target,
+                                    protection: protection.root(),
+                                    family_marker_bytes: family.marker_bytes(),
+                                    metadata_floor: data.metadata_floor(),
+                                    data: &ready_data,
+                                };
+                                inputs
+                                    .read_export_publication(
+                                        family,
+                                        catalog,
+                                        staging,
+                                        &ready_inputs.publication_inputs(&expected),
+                                        Some(cancel),
+                                    )?
+                                    .protection
+                            }
+                        };
+                        if protected.root != ProtectionPresence::Present {
+                            return Err(cause_invalid(
+                                "ordinary Ready requires durable protection",
+                            ));
                         }
-                    };
-                    if protected.root != ProtectionPresence::Present {
-                        return Err(cause_invalid("ordinary Ready requires durable protection"));
-                    }
-                    require_envelope(
-                        &data,
-                        &expected,
-                        protection,
-                        protected.installation.remaining,
-                    )?;
-                    resident::require_indexed(catalog, retained, cancel)
-                })
-                .and_then(reservation::valid);
+                        require_envelope(
+                            &data,
+                            &expected,
+                            protection,
+                            protected.installation.remaining,
+                        )?;
+                        resident::require_indexed(catalog, retained, cancel)
+                    })
+                    .and_then(reservation::valid);
                 drop(gate);
                 checked?;
                 let cas = resident::RetainedCas::verify(family, retained, cancel)?;
@@ -357,11 +360,20 @@ impl OrdinaryManagedExport<'_> {
 }
 
 impl ReadyContext<'_, '_> {
+    // Retained identities only while a catalog gate/read transaction is held.
+    // Full CAS binding and checkout namespace validation bracket those scopes.
     fn boundary(&self, cancel: &Cancellation) -> CauseResult<()> {
         cancel.check()?;
         self.destination.require_published(&self.staging.plan)?;
         self.cas.verify_identity(cancel)?;
         self.image.verify_identity(cancel)?;
+        self.protection.verify_identity(cancel)?;
+        self.checkout
+            .require_identity(self.expected, self.checkout.journal(), cancel)
+    }
+
+    fn require_physical(&self, cancel: &Cancellation) -> CauseResult<()> {
+        self.boundary(cancel)?;
         self.protection
             .require_parts(self.target.binding(), self.required, cancel)?;
         self.checkout
@@ -393,8 +405,8 @@ impl ReadyContext<'_, '_> {
         }
         let expected = content::expected_checkout(self.staging, self.image, cancel)?;
         self.checkout
-            .require_parts(&expected, self.checkout.journal(), cancel)?;
-        self.boundary(cancel)
+            .require_identity(&expected, self.checkout.journal(), cancel)?;
+        self.require_physical(cancel)
     }
 
     fn validate_family(&self, c: &Connection, cancel: &Cancellation) -> CauseResult<()> {
@@ -486,7 +498,7 @@ impl ReadyContext<'_, '_> {
         })?;
         let journal = checkout_journal::read(destination, self.expected, Some(cancel))?;
         self.checkout
-            .require_parts(self.expected, &journal, cancel)?;
+            .require_identity(self.expected, &journal, cancel)?;
         require_envelope(
             self.data,
             self.expected,
@@ -503,7 +515,7 @@ impl ReadyContext<'_, '_> {
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
     ) -> CauseResult<ExportPublicationEffect> {
-        self.boundary(cancel)?;
+        self.require_physical(cancel)?;
         let family = self.destination.family();
         let gate = StoreLock::acquire_existing(
             &family.root().join("metadata/catalog.lock"),
@@ -512,11 +524,11 @@ impl ReadyContext<'_, '_> {
         .map_err(Cause::from)?;
         // C's distinct read transaction and all physical witnesses remain live
         // through each family scope, the sole CAS, positive close and readback.
-        let result = database_io::read_cancellable(
+        let result = database_io::read_cancellable_strict(
             self.destination.destination_database(),
             cancel,
             |destination| {
-                let before = reservation::valid(database_io::read_cancellable(
+                let before = reservation::valid(database_io::read_cancellable_strict(
                     &family.catalog,
                     cancel,
                     |catalog| self.validate_publication(destination, catalog, cancel),
@@ -578,7 +590,7 @@ impl ReadyContext<'_, '_> {
                 let effect = bare.finish_writer(written, close)?;
                 // No SQL follows an uncertain COMMIT/rollback/observed close.
                 self.boundary(cancel)?;
-                let after = reservation::valid(database_io::read_cancellable(
+                let after = reservation::valid(database_io::read_cancellable_strict(
                     &family.catalog,
                     cancel,
                     |catalog| self.validate_publication(destination, catalog, cancel),
@@ -594,9 +606,10 @@ impl ReadyContext<'_, '_> {
             },
         )
         .and_then(reservation::valid);
-        let post = self.boundary(cancel);
         drop(gate);
-        reservation::combine(result, post)
+        let effect = result?;
+        self.require_physical(cancel)?;
+        Ok(effect)
     }
 
     // The discriminant is only a dispatch hint. Each arm validates the complete
@@ -659,36 +672,34 @@ impl ReadyContext<'_, '_> {
             _ => return Err(cause_invalid("ordinary Ready predecessor phase differs")),
         };
         self.checkout
-            .require_parts(self.expected, &journal, cancel)?;
+            .require_identity(self.expected, &journal, cancel)?;
         self.boundary(cancel)?;
         Ok(phase == "ready")
     }
 
     fn read_current(&self, cancel: &Cancellation) -> CauseResult<bool> {
-        self.boundary(cancel)?;
+        self.require_physical(cancel)?;
         let family = self.destination.family();
         let gate = StoreLock::acquire_existing(
             &family.root().join("metadata/catalog.lock"),
             SessionMode::Shared,
         )
         .map_err(Cause::from)?;
-        let result = reservation::valid(database_io::read_cancellable(
-            &family.catalog,
-            cancel,
-            |catalog| {
-                self.validate_family(catalog, cancel)?;
-                let ready = reservation::valid(database_io::read_cancellable(
-                    self.destination.destination_database(),
-                    cancel,
-                    |c| self.read_destination(c, catalog, cancel),
-                )?)?;
-                self.validate_family(catalog, cancel)?;
-                Ok(ready)
-            },
-        )?);
-        let post = self.boundary(cancel);
+        let result = database_io::read_cancellable_strict(&family.catalog, cancel, |catalog| {
+            self.validate_family(catalog, cancel)?;
+            let ready = reservation::valid(database_io::read_cancellable_strict(
+                self.destination.destination_database(),
+                cancel,
+                |c| self.read_destination(c, catalog, cancel),
+            )?)?;
+            self.validate_family(catalog, cancel)?;
+            Ok(ready)
+        })
+        .and_then(reservation::valid);
         drop(gate);
-        reservation::combine(result, post)
+        let ready = result?;
+        self.require_physical(cancel)?;
+        Ok(ready)
     }
 
     fn finalize(
@@ -696,21 +707,21 @@ impl ReadyContext<'_, '_> {
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
     ) -> CauseResult<ReadyEffect> {
-        self.boundary(cancel)?;
+        self.require_physical(cancel)?;
         let family = self.destination.family();
         let gate = StoreLock::acquire_existing(
             &family.root().join("metadata/catalog.lock"),
             SessionMode::Shared,
         )
         .map_err(Cause::from)?;
-        let result = reservation::valid(database_io::read_cancellable(
+        let result = database_io::read_cancellable_strict(
             &family.catalog,
             cancel,
             |catalog| {
                 self.validate_family(catalog, cancel)?;
                 let file = self.destination.destination_database();
                 let already =
-                    reservation::valid(database_io::read_cancellable(file, cancel, |c| {
+                    reservation::valid(database_io::read_cancellable_strict(file, cancel, |c| {
                         self.read_destination(c, catalog, cancel)
                     })?)?;
                 if already {
@@ -769,7 +780,7 @@ impl ReadyContext<'_, '_> {
                 let effect = bare.finish_writer(written, close)?;
                 // No SQL probe follows an uncertain COMMIT/rollback/writer close.
                 let ready =
-                    reservation::valid(database_io::read_cancellable(file, cancel, |c| {
+                    reservation::valid(database_io::read_cancellable_strict(file, cancel, |c| {
                         self.read_destination(c, catalog, cancel)
                     })?)?;
                 if !ready {
@@ -778,10 +789,12 @@ impl ReadyContext<'_, '_> {
                 self.validate_family(catalog, cancel)?;
                 Ok(effect)
             },
-        )?);
-        let post = self.boundary(cancel);
+        )
+        .and_then(reservation::valid);
         drop(gate);
-        reservation::combine(result, post)
+        let effect = result?;
+        self.require_physical(cancel)?;
+        Ok(effect)
     }
 }
 

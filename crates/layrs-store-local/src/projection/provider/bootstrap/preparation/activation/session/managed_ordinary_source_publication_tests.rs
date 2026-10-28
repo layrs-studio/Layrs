@@ -10,6 +10,7 @@ use super::{
 use crate::projection::{
     database, format,
     provider::{
+        bootstrap::ManagedPlanData,
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         destination_ready::ReadyEffect,
         managed_admission::read_admitted_import,
@@ -263,6 +264,29 @@ pub(super) struct PublicationFixture<'a> {
     pub family_database: &'a Path,
 }
 
+/// Actual complete checkout at C Staging. No Ready record or receipt exists
+/// on this route; these cannot be mistaken for PublicationFixture evidence.
+pub(super) struct CheckoutFixture<'a> {
+    pub source_staging: &'a ProviderTransitionIntentRecord,
+    pub destination_staging: &'a ProviderTransitionIntentRecord,
+    pub protection: &'a OrdinaryImportProtection,
+    pub checkout: &'a OrdinaryCheckoutProof,
+    pub expected: &'a ExpectedCheckout,
+    pub derived: &'a ManagedPlanData,
+    pub selection_payload: &'a [u8],
+    pub base: &'a FileManifest,
+    pub history: &'a FileManifest,
+    pub current: &'a FileManifest,
+    pub required: &'a [FileManifest],
+    pub source_marker: &'a format::Marker,
+    pub source_root: &'a Path,
+    pub source_database: &'a Path,
+    pub destination_root: &'a Path,
+    pub destination_database: &'a Path,
+    pub family_root: &'a Path,
+    pub family_database: &'a Path,
+}
+
 pub(super) struct AdmissionHooks {
     pub before_published:
         fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
@@ -293,11 +317,14 @@ pub(super) fn with_admission_data<T>(
     before_published: fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
     after_published: impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
 ) -> T {
-    source_publication_inner(Some(PublicationHooks {
-        before_published,
-        continuation: after_published,
-        stop: PublicationStop::Published,
-    }))
+    source_publication_inner(
+        Some(PublicationHooks {
+            before_published,
+            continuation: after_published,
+            stop: PublicationStop::Published,
+        }),
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+    )
     .unwrap()
 }
 
@@ -307,11 +334,14 @@ pub(super) fn with_admission_data<T>(
 pub(super) fn with_source_ready_data<T>(
     after_ready: impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
 ) -> T {
-    source_publication_inner(Some(PublicationHooks {
-        before_published: |_, _, _| {},
-        continuation: after_ready,
-        stop: PublicationStop::SourceReady,
-    }))
+    source_publication_inner(
+        Some(PublicationHooks {
+            before_published: |_, _, _| {},
+            continuation: after_ready,
+            stop: PublicationStop::SourceReady,
+        }),
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+    )
     .unwrap()
 }
 
@@ -325,11 +355,14 @@ pub(super) fn with_source_staging_data<T>(
         &Cancellation,
     ) -> T,
 ) -> T {
-    source_publication_inner(Some(PublicationHooks {
-        before_published: |_, _, _| {},
-        continuation: after_family_ready,
-        stop: PublicationStop::FamilyReady,
-    }))
+    source_publication_inner(
+        Some(PublicationHooks {
+            before_published: |_, _, _| {},
+            continuation: after_family_ready,
+            stop: PublicationStop::FamilyReady,
+        }),
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+    )
     .unwrap()
 }
 
@@ -343,11 +376,31 @@ pub(super) fn with_private_ready_data<T>(
         &Cancellation,
     ) -> T,
 ) -> T {
-    source_publication_inner(Some(PublicationHooks {
-        before_published: |_, _, _| {},
-        continuation: after_private_ready,
-        stop: PublicationStop::PrivateReady,
-    }))
+    source_publication_inner(
+        Some(PublicationHooks {
+            before_published: |_, _, _| {},
+            continuation: after_private_ready,
+            stop: PublicationStop::PrivateReady,
+        }),
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+    )
+    .unwrap()
+}
+
+/// Stop after the genuine checkout has completed, before private Ready. The
+/// callback must positively close original B. All other original owners and
+/// image/allocation/CAS/checkout holders drop before its owned DATA escapes.
+pub(super) fn with_complete_checkout_data<T>(
+    after_checkout: impl FnOnce(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T,
+) -> T {
+    source_publication_inner(
+        None::<
+            PublicationHooks<
+                fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
+            >,
+        >,
+        Some(after_checkout),
+    )
     .unwrap()
 }
 
@@ -356,6 +409,7 @@ fn source_publication_recipe() {
         None::<
             PublicationHooks<fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation)>,
         >,
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation)>,
     );
 }
 
@@ -365,14 +419,20 @@ fn source_publication_inner<T>(
             impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
         >,
     >,
+    mut checkout_hook: Option<
+        impl FnOnce(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T,
+    >,
 ) -> Option<T> {
     child::declare();
+    let _total = child::phase("source-route.total");
+    let mut phase = child::phase("source-setup.provider-to-admitted-b");
 
     // Independent fresh fixture: no r47/earlier database is reopened or reset.
     // The family recipe owns its capabilities through teardown, so its setup
     // cannot be shared by visibility alone; only its witnesses are reused.
     let (root, provider_source_root) =
         super::managed_restore_recovery_tests::admitted_destination_with_source();
+    phase.next("source-setup.prepare-b");
     let store = ProjectionStore::open(&root).unwrap();
     let state = store.state().unwrap();
     let path = RepoPath::parse("README.md").unwrap();
@@ -404,6 +464,7 @@ fn source_publication_inner<T>(
     identity.worktree_id =
         WorktreeId::parse("worktree:ordinary-source-publication-destination").unwrap();
     let cancel = Cancellation::default();
+    phase.next("source-setup.begin-export");
     let mut owner = store
         .begin_managed_export(state.generation, identity, &cancel)
         .unwrap();
@@ -416,6 +477,7 @@ fn source_publication_inner<T>(
     assert!(owner.retained_manifest(current.file_id()).is_none());
     assert_eq!(current.chunks().len(), 1);
 
+    phase.next("source-setup.plan");
     let (planned, effect) = owner
         .begin_plan(root.parent().unwrap(), LEAF, TX, &cancel)
         .unwrap();
@@ -462,6 +524,7 @@ fn source_publication_inner<T>(
         bytes: current.byte_length(),
         executable: false,
     }];
+    phase.next("source-setup.allocate-and-register");
     let mut allocated = allocation::allocate(&mut owner, &planned, &cancel)
         .unwrap_or_else(|e| panic!("source publication allocation {e:?}"));
     let (copying, effect) = owner
@@ -478,12 +541,14 @@ fn source_publication_inner<T>(
         ImportRegistrationEffect::Inserted
     );
     let mut setup = Close::default();
+    phase.next("source-setup.copy-metadata");
     assert_eq!(
         owner
             .copy_metadata(&allocated, &copying, &mut setup, &cancel)
             .unwrap(),
         CopyEffect::Copied
     );
+    phase.next("source-setup.stage-metadata");
     let staged = owner
         .stage_metadata(&allocated, &copying, &mut setup, &cancel)
         .unwrap();
@@ -491,12 +556,14 @@ fn source_publication_inner<T>(
     assert_eq!(staged.destination, StageEffect::Updated);
     let staging = staged.intent;
     assert_eq!(staging.state, TransitionState::Staging);
+    phase.next("source-setup.reserve-content");
     assert_eq!(
         owner
             .reserve_content(&allocated, &staging, &mut setup, &cancel)
             .unwrap(),
         ExportReservationEffect::Inserted
     );
+    phase.next("source-setup.install-content");
     for manifest in &required {
         assert_eq!(
             owner
@@ -505,12 +572,15 @@ fn source_publication_inner<T>(
             *manifest
         );
     }
+    phase.next("source-setup.protect-content");
     let protection = owner
         .protect_content(&allocated, &staging, &mut setup, &cancel)
         .unwrap();
+    phase.next("source-setup.copy-checkout");
     let checkout = owner
         .copy_checkout(&allocated, &staging, &protection, &mut setup, &cancel)
         .unwrap();
+    phase.next("source-setup.checkout-witness");
     let destination_root = allocated.root().to_owned();
     let destination_database = allocated.destination_database().path().to_owned();
     let destination_lock = destination_database.parent().unwrap().join("layrs.lock");
@@ -525,6 +595,55 @@ fn source_publication_inner<T>(
     let selection_payload = witness::read(&source_database, |c| {
         selection::encode(&selection::at(c, staging.local_generation).unwrap()).unwrap()
     });
+    if let Some(after_checkout) = checkout_hook.take() {
+        assert!(
+            hooks.is_none(),
+            "checkout stop and later phase hooks are exclusive"
+        );
+        let destination_staging = witness::read(&destination_database, |c| {
+            let payload: Vec<u8> = c
+                .query_row(
+                    "SELECT payload FROM projection_provider_transitions WHERE id=?1",
+                    [&staging.transaction_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            ProviderTransitionIntentRecord::decode(&payload).unwrap()
+        });
+        assert_eq!(destination_staging.role, TransitionRole::Destination);
+        assert_eq!(destination_staging.state, TransitionState::Staging);
+        assert!(destination_staging.receipt_id.is_none());
+        let fixture = CheckoutFixture {
+            source_staging: &staging,
+            destination_staging: &destination_staging,
+            protection: &protection,
+            checkout: &checkout,
+            expected: &expected,
+            derived: &derived,
+            selection_payload: &selection_payload,
+            base: &base,
+            history: &history,
+            current: &current,
+            required: &required,
+            source_marker: &store.marker,
+            source_root: &root,
+            source_database: &source_database,
+            destination_root: &destination_root,
+            destination_database: &destination_database,
+            family_root: &family_root,
+            family_database: &family_database,
+        };
+        phase.next("source-route.checkout-complete-continuation");
+        let result = after_checkout(owner, &fixture, &cancel);
+        phase.next("source-route.checkout-complete-teardown");
+        allocated.require_published(&staging.plan).unwrap();
+        drop(checkout);
+        drop(protection);
+        drop(allocated);
+        drop(store);
+        return Some(result);
+    }
+    phase.next("source-setup.private-ready");
     let private_ready = owner
         .finalize_destination_ready(
             &allocated,
@@ -535,6 +654,7 @@ fn source_publication_inner<T>(
             &cancel,
         )
         .unwrap();
+    phase.next("source-setup.private-ready-witness");
     assert_eq!(private_ready.effect(), ReadyEffect::Finalized);
     let durable = ready_witness::require_ready_rows(
         &destination_database,
@@ -581,6 +701,7 @@ fn source_publication_inner<T>(
     witness::verify_objects(&family_root, &required);
     // C8 Ready alone cannot publish B while the exact family member is still
     // Initializing. The retained owner survives this ordinary refusal.
+    phase.next("source-setup.early-source-ready-refusal");
     assert!(owner
         .publish_source_ready(
             &allocated,
@@ -592,6 +713,7 @@ fn source_publication_inner<T>(
             &cancel,
         )
         .is_err());
+    phase.next("source-setup.early-refusal-witness");
     assert_eq!(
         source(
             &source_database,
@@ -633,7 +755,9 @@ fn source_publication_inner<T>(
             family_database: &family_database,
         };
         let hooks = hooks.take().unwrap();
+        phase.next("source-route.private-ready-continuation");
         let result = (hooks.continuation)(owner, &fixture, &cancel);
+        phase.next("source-route.private-ready-teardown");
         allocated.require_published(&staging.plan).unwrap();
         drop(checkout);
         drop(protection);
@@ -642,6 +766,7 @@ fn source_publication_inner<T>(
         return Some(result);
     }
 
+    phase.next("source-setup.family-ready");
     let family_ready = owner
         .publish_destination_family_ready(
             &allocated,
@@ -652,6 +777,7 @@ fn source_publication_inner<T>(
             &cancel,
         )
         .unwrap();
+    phase.next("source-setup.family-ready-witness");
     assert_eq!(family_ready.effect(), ExportPublicationEffect::Updated);
     assert_eq!(family_ready.ready(), &durable.ready);
     assert_eq!(family_ready.receipt(), &durable.receipt);
@@ -694,7 +820,9 @@ fn source_publication_inner<T>(
         // The genuine family Ready publication above is the last setup call.
         // Neither SourceReady nor SourcePublished is reached on this route.
         let hooks = hooks.take().unwrap();
+        phase.next("source-route.family-ready-continuation");
         let result = (hooks.continuation)(owner, &fixture, &cancel);
+        phase.next("source-route.family-ready-teardown");
         allocated.require_published(&staging.plan).unwrap();
         drop(checkout);
         drop(protection);
@@ -706,6 +834,7 @@ fn source_publication_inner<T>(
     // Independently derive exact B DATA from the witnessed complete C Ready.
     // Only role and source-local generation change; Published then changes
     // only state. None of these expected records rewrite the stored B phase.
+    phase.next("source-setup.source-publication-witness");
     let mut expected_ready =
         ProviderTransitionIntentRecord::decode(&durable.ready.encode().unwrap()).unwrap();
     expected_ready.role = TransitionRole::Source;
@@ -729,6 +858,11 @@ fn source_publication_inner<T>(
     let mut previous_rows = before_b;
     let mut previous_trees = witness::trees(&root, &family_root, &destination_root, locks);
     for next in [&expected_ready, &expected_published] {
+        phase.next(if next.state == TransitionState::Ready {
+            "source-setup.source-ready-preflight"
+        } else {
+            "source-setup.source-published-preflight"
+        });
         if next.state == TransitionState::Published {
             if let Some(hooks) = &hooks {
                 (hooks.before_published)(&mut owner, &fixture, &cancel);
@@ -761,7 +895,13 @@ fn source_publication_inner<T>(
         require_source_pin(&root.join(path.as_str()));
         let cancelled = Cancellation::default();
         cancelled.cancel();
+        phase.next(if next.state == TransitionState::Ready {
+            "source-setup.source-ready-precancel"
+        } else {
+            "source-setup.source-published-precancel"
+        });
         assert!(publish(&cancelled).is_err());
+        phase.next("source-setup.source-precancel-witness");
         assert_eq!(snapshot(&source_database), previous_rows);
         assert_eq!(snapshot(&destination_database), durable.rows);
         assert_eq!(
@@ -775,7 +915,13 @@ fn source_publication_inner<T>(
         physical.require();
         require_source_pin(&root.join(path.as_str()));
 
+        phase.next(if next.state == TransitionState::Ready {
+            "source-setup.source-ready"
+        } else {
+            "source-setup.source-published"
+        });
         let progress = publish(&cancel).unwrap();
+        phase.next("source-setup.source-publication-result-witness");
         assert_eq!(progress.effect(), SourceIntentEffect::Updated);
         assert_eq!(progress.intent(), next);
         assert_eq!(progress.receipt(), &durable.receipt);
@@ -799,7 +945,13 @@ fn source_publication_inner<T>(
         require_source_pin(&root.join(path.as_str()));
         witness::verify_objects(&family_root, &required);
 
+        phase.next(if next.state == TransitionState::Ready {
+            "source-setup.source-ready-replay"
+        } else {
+            "source-setup.source-published-replay"
+        });
         let replay = publish(&cancel).unwrap();
+        phase.next("source-setup.source-replay-witness");
         assert_eq!(replay.effect(), SourceIntentEffect::AlreadyPresent);
         assert_eq!(replay.intent(), next);
         assert_eq!(replay.receipt(), &durable.receipt);
@@ -840,7 +992,9 @@ fn source_publication_inner<T>(
             // This is a true terminal branch of setup. In particular the
             // Published callback/driver below is never called on this route.
             let hooks = hooks.take().unwrap();
+            phase.next("source-route.source-ready-continuation");
             let result = (hooks.continuation)(owner, &fixture, &cancel);
+            phase.next("source-route.source-ready-teardown");
             allocated.require_published(&staging.plan).unwrap();
             drop(checkout);
             drop(protection);
@@ -853,7 +1007,9 @@ fn source_publication_inner<T>(
     if let Some(hooks) = hooks {
         // The continuation owns the original B owner through its explicit
         // positive close. C allocation and byte proofs stay borrowed here.
+        phase.next("source-route.source-published-continuation");
         let result = (hooks.continuation)(owner, &fixture, &cancel);
+        phase.next("source-route.source-published-teardown");
         allocated.require_published(&staging.plan).unwrap();
         drop(checkout);
         drop(protection);
@@ -865,9 +1021,12 @@ fn source_publication_inner<T>(
     // All four successful calls used the same live B owner and C protections.
     // Only its positive native close completes that boundary; the progress
     // objects above conferred neither a close witness nor C9 admission.
+    phase.next("source-route.final-close-preflight");
     physical.require();
     require_source_pin(&root.join(path.as_str()));
+    phase.next("source-route.close-b-owner");
     owner.close().unwrap();
+    phase.next("source-route.final-reopen-and-witness");
     let reopened = ProjectionStore::open(&root).unwrap();
     assert_eq!(reopened.state().unwrap(), state);
     assert_eq!(
