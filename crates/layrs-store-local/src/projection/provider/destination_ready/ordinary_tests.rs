@@ -732,6 +732,11 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
         read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
         if publication {
             assert!(
+                read_ordinary_checkout_progress(source, c, family, &inputs, &expected, None,)
+                    .is_err(),
+                "progress reader must not reinterpret actual private Ready as Staging"
+            );
+            assert!(
                 read_ordinary_checkout_finalizable(source, c, family, &inputs, &expected, None,)
                     .is_err(),
                 "finalizable reader must not reinterpret actual private Ready as Staging"
@@ -872,6 +877,12 @@ fn exercise_finalizable_sql(
         read_ordinary_checkout_finalizable(source, destination, family, inputs, expected, None)
             .unwrap();
     assert!(journal.is_complete());
+    let progress =
+        read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+            .unwrap()
+            .expect("complete journal remains observed progress");
+    assert!(progress.is_complete());
+    assert_eq!(progress.rows(), journal.rows());
     assert_eq!(
         journal.rows(),
         checkout_journal::read(destination, expected, None)
@@ -910,6 +921,15 @@ fn exercise_finalizable_sql(
     );
     let cancel = Cancellation::default();
     cancel.cancel();
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        inputs,
+        expected,
+        Some(&cancel),
+    )
+    .is_err());
     assert!(read_ordinary_checkout_finalizable(
         source,
         destination,
@@ -928,6 +948,10 @@ fn exercise_finalizable_sql(
         data: &missing_data,
         ..*inputs
     };
+    assert!(
+        read_ordinary_checkout_progress(source, destination, family, &missing, expected, None,)
+            .is_err()
+    );
     assert!(read_ordinary_checkout_finalizable(
         source,
         destination,
@@ -947,6 +971,15 @@ fn exercise_finalizable_sql(
         data: &substituted_data,
         ..*inputs
     };
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &substituted,
+        expected,
+        None,
+    )
+    .is_err());
     assert!(read_ordinary_checkout_finalizable(
         source,
         destination,
@@ -960,6 +993,28 @@ fn exercise_finalizable_sql(
         metadata_floor: inputs.metadata_floor + 1,
         ..*inputs
     };
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &wrong_floor,
+        expected,
+        None,
+    )
+    .is_err());
+    let wrong_marker = OrdinaryReadyInputs {
+        source_marker: inputs.marker,
+        ..*inputs
+    };
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &wrong_marker,
+        expected,
+        None,
+    )
+    .is_err());
     assert!(read_ordinary_checkout_finalizable(
         source,
         destination,
@@ -984,39 +1039,28 @@ fn exercise_finalizable_sql(
     destination.execute_batch("PRAGMA query_only=OFF").unwrap();
     family.execute_batch("PRAGMA query_only=OFF").unwrap();
 
-    // A complete row inventory with a legal intermediate file phase must be
-    // refused specifically by the finalizable entry's completion requirement.
+    // SQL-only absent predecessor. No filesystem state or ownership is
+    // synthesized; a physical driver must separately validate an empty root.
     destination
-        .execute_batch("SAVEPOINT finalizable_progress")
+        .execute_batch("SAVEPOINT checkout_absent")
         .unwrap();
-    let mut incomplete = journal.row(RowKey::File(0)).unwrap().clone();
-    let checkout_journal::CheckoutEntry::File { state, .. } = &mut incomplete.entry else {
-        panic!("fixture file row required")
-    };
-    let checkout_journal::FileState::Published { inode, .. } = state else {
-        panic!("fixture published file required")
-    };
-    *state = checkout_journal::FileState::Verified {
-        inode: inode.clone(),
-    };
-    assert_eq!(
-        destination
-            .execute(
-                "UPDATE projection_prejournal SET digest=?1,payload=?2 WHERE path=?3",
-                params![
-                    incomplete.digest().unwrap(),
-                    incomplete.encode().unwrap(),
-                    expected.sql_key(RowKey::File(0)).unwrap()
-                ],
-            )
-            .unwrap(),
-        1
-    );
-    let progress = dump(destination);
+    let declared_rows = destination
+        .execute("DELETE FROM projection_prejournal", [])
+        .unwrap();
+    assert!(declared_rows > 0);
+    let absent = dump(destination);
     let changes = (
         source.total_changes(),
         destination.total_changes(),
         family.total_changes(),
+    );
+    source.execute_batch("PRAGMA query_only=ON").unwrap();
+    destination.execute_batch("PRAGMA query_only=ON").unwrap();
+    family.execute_batch("PRAGMA query_only=ON").unwrap();
+    assert!(
+        read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+            .unwrap()
+            .is_none()
     );
     let copy = OrdinaryCopyInputs::new(
         source,
@@ -1024,7 +1068,7 @@ fn exercise_finalizable_sql(
         inputs.source_staging,
         inputs.closure,
     );
-    assert!(!ordinary_destination::read_checkout_staging(
+    assert!(ordinary_destination::read_checkout_progress(
         destination,
         inputs.marker,
         &copy,
@@ -1032,14 +1076,100 @@ fn exercise_finalizable_sql(
         None
     )
     .unwrap()
-    .is_complete());
-    let error =
-        read_ordinary_checkout_finalizable(source, destination, family, inputs, expected, None)
-            .err()
-            .expect("legal intermediate journal must not be finalizable");
+    .is_none());
+    assert!(ordinary_destination::read_checkout_staging(
+        destination,
+        inputs.marker,
+        &copy,
+        expected,
+        None
+    )
+    .is_err());
+    assert!(read_ordinary_checkout_finalizable(
+        source,
+        destination,
+        family,
+        inputs,
+        expected,
+        None
+    )
+    .is_err());
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        inputs,
+        expected,
+        Some(&cancel)
+    )
+    .is_err());
     assert!(
-        error.to_string().contains("complete typed journal"),
-        "{error}"
+        read_ordinary_checkout_progress(source, destination, family, &missing, expected, None)
+            .is_err()
+    );
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &substituted,
+        expected,
+        None
+    )
+    .is_err());
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &wrong_floor,
+        expected,
+        None
+    )
+    .is_err());
+    assert!(read_ordinary_checkout_progress(
+        source,
+        destination,
+        family,
+        &wrong_marker,
+        expected,
+        None
+    )
+    .is_err());
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), absent);
+    assert_eq!(dump(family), family_before);
+    source.execute_batch("PRAGMA query_only=OFF").unwrap();
+    destination.execute_batch("PRAGMA query_only=OFF").unwrap();
+    family.execute_batch("PRAGMA query_only=OFF").unwrap();
+    // Even without a journal, the full retained/protected family is required.
+    family
+        .execute_batch("SAVEPOINT checkout_absent_family")
+        .unwrap();
+    assert_eq!(
+        family
+            .execute(
+                "UPDATE worktrees SET state='ready' WHERE id=?1",
+                [inputs.target.binding().owner.as_str()]
+            )
+            .unwrap(),
+        1
+    );
+    let corrupt_family = dump(family);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    assert!(
+        read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+            .is_err()
     );
     assert_eq!(
         (
@@ -1049,13 +1179,191 @@ fn exercise_finalizable_sql(
         ),
         changes
     );
-    assert_eq!(dump(destination), progress);
     assert_eq!(dump(source), source_before);
-    assert_eq!(dump(family), family_before);
+    assert_eq!(dump(destination), absent);
+    assert_eq!(dump(family), corrupt_family);
+    family
+        .execute_batch("ROLLBACK TO checkout_absent_family; RELEASE checkout_absent_family")
+        .unwrap();
     destination
-        .execute_batch("ROLLBACK TO finalizable_progress; RELEASE finalizable_progress")
+        .execute_batch("ROLLBACK TO checkout_absent; RELEASE checkout_absent")
         .unwrap();
     assert_eq!(dump(destination), destination_before);
+
+    source
+        .execute_batch("SAVEPOINT checkout_changed_source")
+        .unwrap();
+    assert_eq!(source.execute(
+        "UPDATE projection_provider_transitions SET state='ready' WHERE id=?1 AND role='source' AND state='staging'",
+        [&inputs.source_staging.transaction_id],
+    ).unwrap(), 1);
+    let changed_source = dump(source);
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    assert!(
+        read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+            .is_err()
+    );
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(source), changed_source);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
+    source
+        .execute_batch("ROLLBACK TO checkout_changed_source; RELEASE checkout_changed_source")
+        .unwrap();
+
+    // A complete row inventory with a legal intermediate file phase must be
+    // refused specifically by the finalizable entry's completion requirement.
+    for owned in [true, false] {
+        destination
+            .execute_batch("SAVEPOINT finalizable_progress")
+            .unwrap();
+        let mut incomplete = journal.row(RowKey::File(0)).unwrap().clone();
+        let checkout_journal::CheckoutEntry::File { state, .. } = &mut incomplete.entry else {
+            panic!("fixture file row required")
+        };
+        let checkout_journal::FileState::Published { inode, .. } = state else {
+            panic!("fixture published file required")
+        };
+        *state = if owned {
+            checkout_journal::FileState::Owned {
+                inode: inode.clone(),
+            }
+        } else {
+            checkout_journal::FileState::Verified {
+                inode: inode.clone(),
+            }
+        };
+        assert_eq!(
+            destination
+                .execute(
+                    "UPDATE projection_prejournal SET digest=?1,payload=?2 WHERE path=?3",
+                    params![
+                        incomplete.digest().unwrap(),
+                        incomplete.encode().unwrap(),
+                        expected.sql_key(RowKey::File(0)).unwrap()
+                    ],
+                )
+                .unwrap(),
+            1
+        );
+        let progress = dump(destination);
+        let changes = (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes(),
+        );
+        let copy = OrdinaryCopyInputs::new(
+            source,
+            inputs.source_marker,
+            inputs.source_staging,
+            inputs.closure,
+        );
+        source.execute_batch("PRAGMA query_only=ON").unwrap();
+        destination.execute_batch("PRAGMA query_only=ON").unwrap();
+        family.execute_batch("PRAGMA query_only=ON").unwrap();
+        let actual =
+            read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+                .unwrap()
+                .expect("legal partial journal must remain observable");
+        assert!(!actual.is_complete());
+        assert_eq!(actual.row(RowKey::File(0)).unwrap(), &incomplete);
+        assert!(!ordinary_destination::read_checkout_staging(
+            destination,
+            inputs.marker,
+            &copy,
+            expected,
+            None
+        )
+        .unwrap()
+        .is_complete());
+        let error =
+            read_ordinary_checkout_finalizable(source, destination, family, inputs, expected, None)
+                .err()
+                .expect("legal intermediate journal must not be finalizable");
+        assert!(
+            error.to_string().contains("complete typed journal"),
+            "{error}"
+        );
+        assert_eq!(
+            (
+                source.total_changes(),
+                destination.total_changes(),
+                family.total_changes()
+            ),
+            changes
+        );
+        assert_eq!(dump(destination), progress);
+        assert_eq!(dump(source), source_before);
+        assert_eq!(dump(family), family_before);
+        source.execute_batch("PRAGMA query_only=OFF").unwrap();
+        destination.execute_batch("PRAGMA query_only=OFF").unwrap();
+        family.execute_batch("PRAGMA query_only=OFF").unwrap();
+        destination
+            .execute_batch("ROLLBACK TO finalizable_progress; RELEASE finalizable_progress")
+            .unwrap();
+        assert_eq!(dump(destination), destination_before);
+    }
+
+    for sql in [
+        "DELETE FROM projection_prejournal WHERE path=?1",
+        "UPDATE projection_prejournal SET path=path||':foreign' WHERE path=?1",
+        "UPDATE projection_prejournal SET payload=x'00' WHERE path=?1",
+    ] {
+        destination
+            .execute_batch("SAVEPOINT checkout_foreign_journal")
+            .unwrap();
+        assert_eq!(
+            destination
+                .execute(sql, [expected.sql_key(RowKey::Header).unwrap()])
+                .unwrap(),
+            1
+        );
+        let corrupt = dump(destination);
+        let changes = (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes(),
+        );
+        assert!(
+            read_ordinary_checkout_progress(source, destination, family, inputs, expected, None)
+                .is_err(),
+            "progress accepted {sql}"
+        );
+        assert!(read_ordinary_checkout_finalizable(
+            source,
+            destination,
+            family,
+            inputs,
+            expected,
+            None
+        )
+        .is_err());
+        assert_eq!(
+            (
+                source.total_changes(),
+                destination.total_changes(),
+                family.total_changes()
+            ),
+            changes
+        );
+        assert_eq!(dump(source), source_before);
+        assert_eq!(dump(destination), corrupt);
+        assert_eq!(dump(family), family_before);
+        destination
+            .execute_batch("ROLLBACK TO checkout_foreign_journal; RELEASE checkout_foreign_journal")
+            .unwrap();
+    }
 
     let target_owner = inputs.target.binding().owner.as_str();
     for (sql, owner) in [
@@ -1095,6 +1403,11 @@ fn exercise_finalizable_sql(
             destination.total_changes(),
             family.total_changes(),
         );
+        assert!(
+            read_ordinary_checkout_progress(source, destination, family, inputs, expected, None,)
+                .is_err(),
+            "progress reader accepted {sql}"
+        );
         assert!(read_ordinary_checkout_finalizable(
             source, destination, family, inputs, expected, None,
         ).is_err(), "finalizable reader accepted {sql}");
@@ -1124,8 +1437,32 @@ fn exercise_finalizable_sql(
         let corrupt = dump(family);
         let changes = family.total_changes();
         assert!(read_manifest_exact(family, original.id(), None).is_err());
+        let all_changes = (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes(),
+        );
+        assert!(read_ordinary_checkout_progress(
+            source,
+            destination,
+            family,
+            inputs,
+            expected,
+            None
+        )
+        .is_err());
+        assert_eq!(
+            (
+                source.total_changes(),
+                destination.total_changes(),
+                family.total_changes()
+            ),
+            all_changes
+        );
         assert_eq!(family.total_changes(), changes);
         assert_eq!(dump(family), corrupt);
+        assert_eq!(dump(source), source_before);
+        assert_eq!(dump(destination), destination_before);
         family
             .execute_batch(
                 "ROLLBACK TO finalizable_exact_manifest; RELEASE finalizable_exact_manifest",

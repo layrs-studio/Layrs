@@ -478,6 +478,31 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_finalizable(
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
 ) -> Result<Box<CheckoutJournal>> {
+    let journal =
+        read_ordinary_checkout_progress(source_c, destination, family_c, inputs, expected, cancel)?
+            .ok_or_else(|| {
+                invalid("ordinary finalizable checkout requires complete typed journal")
+            })?;
+    if !journal.is_complete() {
+        return Err(invalid(
+            "ordinary finalizable checkout requires complete typed journal",
+        ));
+    }
+    cancellation::check(cancel)?;
+    Ok(journal)
+}
+
+/// Actual B SourceStaging and C8 DestinationStaging with fixed Ready/C10
+/// funding and full committed protection. The journal may be absent or carry
+/// any legal typed progress. Its detached SQL DATA grants no physical rights.
+pub(in crate::projection::provider) fn read_ordinary_checkout_progress(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<Box<CheckoutJournal>>> {
     let prepared = prepare(
         FamilyInterpretation::PrivateReady,
         SourceAuthentication::Staging,
@@ -494,18 +519,13 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_finalizable(
         inputs.source_staging,
         inputs.closure,
     );
-    let journal = ordinary_destination::read_checkout_staging(
+    let journal = ordinary_destination::read_checkout_progress(
         destination,
         inputs.marker,
         &source,
         expected,
         cancel,
     )?;
-    if !journal.is_complete() {
-        return Err(invalid(
-            "ordinary finalizable checkout requires complete typed journal",
-        ));
-    }
     let budget = managed_budget::ordinary_admission_budget(
         prepared.metadata_floor,
         expected.files().len() as u64,
@@ -522,14 +542,14 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_finalizable(
         .installation
         .remaining
         .checked_sub(expected.header().file_bytes)
-        .ok_or_else(|| invalid("ordinary finalizable checkout exceeds remaining reservation"))?;
+        .ok_or_else(|| invalid("ordinary checkout exceeds remaining reservation"))?;
     budget.require_remaining(
         remaining,
         inputs.protection.payload().len() as u64,
         inputs.data.required.len() as u64,
     )?;
     cancellation::check(cancel)?;
-    Ok(Box::new(journal))
+    Ok(journal)
 }
 
 pub(in crate::projection::provider) fn read_ordinary_checkout_ready(

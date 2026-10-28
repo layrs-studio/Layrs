@@ -28,7 +28,7 @@ use rusqlite::{params, Connection};
 
 mod checkout;
 pub(super) mod staging;
-pub(in crate::projection::provider) use checkout::read_checkout_staging;
+pub(in crate::projection::provider) use checkout::{read_checkout_progress, read_checkout_staging};
 
 /// Borrow only from the actual ordinary owner callback. The source closure
 /// binds this exact live source connection, while its actual durable Copying

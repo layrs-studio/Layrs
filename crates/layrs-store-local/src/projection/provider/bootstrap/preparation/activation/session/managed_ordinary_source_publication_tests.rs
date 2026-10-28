@@ -524,16 +524,19 @@ fn source_publication_inner<T>(
         bytes: current.byte_length(),
         executable: false,
     }];
-    phase.next("source-setup.allocate-and-register");
+    phase.next("source-setup.allocate");
     let mut allocated = allocation::allocate(&mut owner, &planned, &cancel)
         .unwrap_or_else(|e| panic!("source publication allocation {e:?}"));
+    phase.next("source-setup.commit-allocation");
     let (copying, effect) = owner
         .commit_allocation(&planned, &allocated, &cancel)
         .unwrap();
     assert_eq!(effect, SourceIntentEffect::Updated);
+    phase.next("source-setup.publish-format");
     allocated
         .publish_format(&mut owner, &copying, &cancel)
         .unwrap();
+    phase.next("source-setup.register-allocation");
     assert_eq!(
         owner
             .register_allocation(&allocated, &copying, &cancel)

@@ -1,6 +1,6 @@
 # Reprise du 28 octobre 2026
 
-## Dernier checkpoint — r84 sept PASS archivés ; r88 quatre SQL PASS, natifs en cours
+## Dernier checkpoint — r89 revu et compilé ; r91 deux SQL PASS, premier natif en cours
 
 Goal **actif**, programme complet ; aucun push/PR. Base des revues `e2a1ac4`.
 r66 admission fraîche et r69 publication fraîche : cinq PASS chacun, archives
@@ -24,8 +24,10 @@ terminé exit0**, sept PASS : quatre courts, réexport1309,558s, famille609,067s
 famille ACK600,052s. Archive vérifiée. Le passage privé frais et les corrections
 Ready retenues passent les revues r85/r86. Compilation r87 échoue sur un motif
 de test incomplet ; correction ROOT d'une ligne, build37,27s et check14,40s r87b
-PASS. **ROOT38516/r88 actif** : quatre SQL PASS, premier natif privé chronométré
-en cours, quatre autres à suivre. Aucun build/test/SQL concurrent. Ne relancer
+PASS. **ROOT38516/r88 terminal exit1** : quatre SQL PASS, premier natif échoue
+dans le témoin des reçus hérités, avant le driver privé frais ; quatre natifs
+non atteints. Archive conservée, témoin corrigé en source. Lot r89 revu sans finding,
+build/check r90 PASS. ROOT75810/r91 actif : deux SQL PASS, premier natif en cours. Ne relancer
 aucun runner/script déjà exécuté ; les sections finales donnent l'état exact.
 Les sections finales donnent hashes, chemins, périmètres et scripts déjà exécutés.
 Le reste de ce document conserve la chronologie des preuves, y compris échecs.
@@ -1278,3 +1280,99 @@ L'analyseur de phases accepte les chemins explicites des logs, jamais les fixtur
 Packager r88 préparé et parsable, NON exécuté ; attendre terminal et conserver
 aussi un éventuel échec avec tous les résultats atteints. Aucun résultat natif
 r88 acquis à ce checkpoint. Goal actif ; aucun push/PR ; stash original conservé.
+
+
+## r88 échec de témoin archivé ; progression checkout SQL r89
+
+Checkpoint local `91c566ab6cf778f731167e7adc1334fc1a46ce73` conserve r85/r86,
+correction de compilation, archives r80/r81/r84/r85/r86. Aucun push/PR ; stash
+original inchangé. Goal actif, programme Worktrees/partial VFS complet ouvert.
+
+ROOT38516/r88 terminal exit1 : quatre SQL PASS (0,695s / 0,176s / 9,227s /
+27,644s), premier natif FAIL101 après556,326s. Les quatre suivants ne sont pas
+atteints. Échec dans `close_at_complete_checkout` : le témoin exigeait zéro
+ligne dans la table des reçus alors que C hérite du reçu d'entrée de B. Aucun
+appel au driver frais, aucune clôture de l'ancien owner encore atteints.
+ROOT conserve l'égalité exacte des lignes reçus B/C et exige zéro reçu pour
+la transaction B→C courante. Ce correctif ne modifie pas le protocole produit.
+Ne pas réutiliser ni rouvrir cette fixture.
+
+Packager r88 EXÉCUTÉ : archive
+`ordinary-fresh-private-ready-evidence-20261028-r88.tar.gz`,703fichiers,
+2650961octets,SHA256
+`2c6ebd9299bab22a47f1b1fb7822d89e2aafd5f5b1375811a99fa69401f38051`.
+Inventaire adjacent ; EXE/PDB et fixtures exclus. Quatre PASS et échec conservés,
+sans verdict global PASS. Analyseur de phases exécuté sur le log terminal.
+
+Mesures séquentielles de préparation r88 : Provider→B139,632s ; prepare16,682s ;
+begin3,571s ; plan8,956s ; allocation/registration70,298s ; copy metadata4,772s ;
+stage14,881s ; reserve6,932s ; install232,010s ; protect15,719s ; checkout41,963s.
+Les phases parentes se recouvrent ; ne pas les additionner aux enfants. END
+est aussi émis en unwind et n'est pas un verdict. Aucun temps de reprise privée
+Ready mesuré : son driver n'a pas été atteint. Aucun CPU fiable obtenu.
+ROOT a séparé le groupe allocation en allocate/commit-allocation/publish-format/
+register-allocation, sans changer opérations ni assertions. Coûts possibles
+identifiés en source : revalidations image répétées, traversées d'ancêtres et
+pins/no-follow/ACL. Aucune cause dominante mesurée ni optimisation revendiquée.
+
+Agent `ordinary_checkout_progress_sql` terminé SOURCE ONLY, cinq fichiers gelés.
+Nouvelle API `read_ordinary_checkout_progress` retourne None ou journal typé
+partiel/complet après B/C Staging, union/protection/famille et budget futur C10.
+Finalizable refuse toujours absent/partiel. Aucune autorité physique. Recette
+étendue : query-only, absence, Owned, Verified, complet, annulation, erreurs
+marqueur/manifeste/floor/source, journal étranger et corruptions familiales.
+Les deux modifications ROOT de témoin/chronométrage portent le lot à sept
+fichiers Rust. Revue critique r89 en cours, manifeste60sources SHA256
+`153fc804bfd947a2d0921357f11b89fd278905b928ef5db11ab362a673adb866`, diffSHA256
+`19420536cce3720deccc8ef28a21b64ff52d1b6001f433a2238a8bc06d077603`.
+Snapshot `D:/Layrs/tmp/provider-ordinary-checkout-progress-review-r89-source`.
+Build libtest r90 ROOT88929 terminal0,16,62s ; workspace/all-targets terminal0.
+Logs `provider-ordinary-checkout-progress-build-r90.log` et `...-check-r90.log`.
+Ne pas modifier sources/HEAD pendant revue. Nouvelle qualification requiert
+nouveau binaire retenu/release/runner/parent ; ne pas relancer r88.
+
+Suite de reprise physique identifiée mais NON implémentée : ouvrir B/C frais
+Exclusives sur SourceStaging/C8Staging protégés, journal absent ou partiel,
+puis reprendre le moteur checkout avec scopes stricts et clôtures observées.
+Ne pas adopter ManagedDestinationAllocation. Ressources propres sans prétendre
+VerifiedCheckout avant complétude. None exige espace initial physique exact,
+distinct du journal SQL. Les transitions Owned/Verified/Publishing/Published
+existantes sont réutilisables ; Declared avec objet présent non durablement
+Owned reste refusé et nécessite une résolution séparée. Ne pas déclarer la
+reprise crash globale achevée avec ce seul lecteur SQL. Le chemin checkout
+retenu requiert aussi correction des post-probes inconditionnelles, comme Ready.
+
+
+Preparation suivante (NON executee tant que revue r89 non acceptee) :
+`D:/Layrs/tmp/prepare-and-release-ordinary-private-ready-r91.py`
+avec `--root-accept-r89-review`, et
+`D:/Layrs/tmp/package-ordinary-fresh-private-ready-20261028-r91.py`.
+AST des deux scripts PASS. Le premier attend HEAD91c566a, les60sources gelees,
+zero finding r89, build/check r90, exactement7deltas sur669inputs vsr88.
+Il cree audit/runner/release immuables r91. Sept recettes prevues : deux SQL
+Ready/progress affectes, deux natifs fresh private, retained private ACK,
+retained family Updated et ACK. Les deux strict-read r88 inchanges ne sont
+pas relances. Le packager exige resultat terminal et archive aussi un echec.
+
+
+## r89 accepte en source, r90 compile, r91 actif
+
+Revue critique r89 terminee sans finding; thread lu jusqu'a position64,
+hasMorefalse. 60sources +8dependances stables; seules3notes documentaires ont
+change hors perimetre pendant revue. Lacunes distinguees : seuil C10 non isole
+par recette de frontiere, phases Declared/Publishing et Copying canonique non
+directement couvertes ici, qualification physique absente. Aucun bypass source
+confirme. Archive source r89 executee/verifiee :74fichiers,275818octets,SHA256
+`11f616b8216bbc6007c95be235ca3e6d0bfc66bcac01c1a2d521abf8b71de951`.
+
+Build r90 16,62s et workspace/all-targets5,28s PASS. Release r91 executee :
+669inputs,7deltas depuis r88, EXE/PDB identity age138; SHA256 EXE
+`a762bdbdc61c90e747e164720e331cc0cb1b661e1af6fa879b510176f09a69a5`.
+Release SHA256`1c014a07ce4030baa96fc2e3b8091f8474ef521dc6b60e8c63d75d7c87d6e79e`.
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-run-r91.py r91`
+actif sous **ROOT75810**, acces hote autorise. SQL private9,494s PASS,
+family/progress40,422s PASS. Premier natif frais Updated/replay en cours,
+puis fresh ACK, retained private ACK, retained family Updated et ACK.
+Aucun build/SQL/natif concurrent. Aucun script r91 execute ne doit etre relance.
+Packager r91 prepare seulement; attendre terminal. Ne jamais rouvrir fixtures
+anciennes. Les edits sources suivants ne modifieront pas le binaire retenu r91.

@@ -27,7 +27,12 @@ La reprise privée C Staging→Ready passe la revue critique r85 sans défaut co
 identifié (13 fichiers changés, 50 sources),
 avec correction du chemin Ready retenu revue r86. Après une correction d'une
 ligne de test, build et workspace r87b passent. Les quatre SQL r88 passent ;
-les cinq recettes natives r88 restent à terminer.
+Le premier natif r88 échoue dans un témoin des reçus hérités, avant la reprise
+privée, et les quatre suivants ne sont pas atteints. Échec archivé et témoin
+corrigé ; compilation/workspace r90 passent. Le lecteur SQL de progression
+checkout (absent/partiel/complet) et ce correctif passent la revue r89. Deux SQL
+r91 passent ; le premier natif est en cours sous ROOT75810. Aucune reprise privée
+réussie revendiquée avant son résultat terminal.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 

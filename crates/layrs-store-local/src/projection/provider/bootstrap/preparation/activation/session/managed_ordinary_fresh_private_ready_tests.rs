@@ -115,6 +115,18 @@ fn close_at_complete_checkout(
         &original_ingress,
     );
     let destination_rows = witness::destination(f.destination_database, f.source_staging);
+    // C Staging already contains the exact inherited ingress receipt copied
+    // from B. Only the receipt for this new B -> C transaction must be absent.
+    let inherited_receipts = &source_rows["projection_provider_transition_receipts"];
+    assert_eq!(
+        inherited_receipts.len(),
+        1,
+        "fixture has one B ingress receipt"
+    );
+    assert_eq!(
+        &destination_rows["projection_provider_transition_receipts"], inherited_receipts,
+        "C Staging must preserve every inherited receipt row exactly"
+    );
     witness::read(f.destination_database, |c| {
         let journal = checkout_journal::read(c, f.expected, None).unwrap();
         assert!(
@@ -134,8 +146,8 @@ fn close_at_complete_checkout(
         );
         assert_eq!(
             c.query_row(
-                "SELECT count(*) FROM projection_provider_transition_receipts",
-                [],
+                "SELECT count(*) FROM projection_provider_transition_receipts WHERE transaction_id=?1",
+                [&f.source_staging.transaction_id],
                 |row| row.get::<_, u64>(0)
             )
             .unwrap(),

@@ -4,8 +4,12 @@ Source integration, 28 October 2026, after the r82 family-publication review.
 The three bounded implementation tasks and independent critical source review
 r85 are complete. No concrete actionable defect was established. The integrated
 r85/r86 candidate compiled and passed workspace/all-targets in r87b after ROOT
-corrected one test pattern. The four short r88 SQL recipes pass; its five native
-recipes are still pending completion.
+corrected one test pattern. The four short r88 SQL recipes passed; the first
+native failed in its setup receipt witness before the fresh driver. Four later
+natives were not reached. The failed run is archived. ROOT corrected the witness
+and split allocation timings; build/check r90 PASS, integrated review r89 found
+no concrete defect. ROOT75810/r91 now runs the retained corrected candidate:
+two affected SQL recipes PASS, first fresh private native in progress.
 Source review and build base: `f01f6b9518b71a3cfc309be3a2911c51599f2e79`.
 
 Review manifest: `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-review-r85-inputs.json`,
@@ -13,8 +17,9 @@ Review manifest: `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-review-r85-
 `ed6167d858eec42dda2038e75ed821d43a62071af4266114d82dee5e6a0b3c1f`.
 Diff SHA256 `9f9d8b873a8274c6486f266c15331f3e3b95791cbb2a88d66ec62aa1a5f8f00e`.
 Baseline is the retained r84 source tree; unchanged context matched after newline
-normalization. ROOT73332/r84 finished with seven PASS results. ROOT38516 now
-executes the retained r88 candidate. No build, SQL or native may overlap it.
+normalization. ROOT73332/r84 finished with seven PASS results. ROOT38516/r88
+is terminal exit1; ROOT75810/r91 is the only active runtime. Never reuse r88
+fixtures or rerun its scripts. A fresh retained revision is required.
 
 Implemented interfaces: `read_ordinary_checkout_finalizable` returns a boxed
 complete journal after actual Staging, full family and future C10 budget checks;
@@ -28,15 +33,16 @@ explicit old B close and all-holder teardown, then cover success/replay and a
 withheld ACK after SQLite connection-close success. They also inspect real B/C
 byte drift, C Exclusive contention and pinned bytes. Incomplete journal and
 exact-manifest/corrupt family refusals are covered by the SQL recipe that passed
-in r88, not by the native recipes. No native r88 result or actual xClose/OS-close
-failure behavior is established at this checkpoint.
+in r88, not by the native recipes. The r88 native failure is a setup witness
+error: C correctly inherits B ingress receipt. No fresh-driver success or actual
+xClose/OS-close failure behavior is established at this checkpoint.
 
 The follow-up retained ReadyContext correction and test-only phase timings are
 integrated as r86 passed independent critical source review. Six paths differ
 from r85; the fresh private product driver itself is unchanged. The r86 review
 selects 60 sources, manifest SHA256
 `d9684350c299384cc3006d42c1a60efa45e58671d5a4a996de32a86ccce6275d`.
-The compiled candidate is undergoing runtime qualification. Timing events describe
+The corrected candidate requires new runtime qualification. Timing events describe
 scope duration, including unwind; nested scopes overlap and END is not success.
 
 ## Exact scope
