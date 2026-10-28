@@ -5,7 +5,19 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
-## Current execution checkpoint — Ready and family publication r47 PASS
+## Current execution checkpoint — source publication r49/r51 PASS
+
+28 October 2026: r49 3 pure+13 SQL PASS, r51 cleanup native356.977s and
+ordinary B Ready/Published native1438.083s PASS. Source publication preserves
+the original ingress and performs two distinct commits and exact replays;
+the B owner closes positively. C remains unadmitted Ready8/family Ready.
+The native cleanup child240 timeout r49 and sandbox access denial r50 are
+retained alongside success. Archive2014files/5895640bytes SHA256
+`c3e18a26146fd1e1026225970e3ed6dad9fe5768e8eda57c5b4c52f93003ef66`.
+Next: Ordinary8→10 admission with permanent complete-union witness. Source
+review/build pending; no C10 runtime claim. Full programme remains open.
+
+## Previous checkpoint — Ready and family publication r47 PASS
 
 28 October 2026, after explicit user resume. All 18 r47 recipes pass: 3 pure,
 12 SQL, private Ready native611.529s, family successful-close ACK/replay

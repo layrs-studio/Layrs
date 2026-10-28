@@ -111,7 +111,7 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
                 admission: &admission,
             })?;
         let ImportSource::Ordinary {
-            private_schema: 9, ..
+            private_schema: 9 | 10, ..
         } = &intent.plan.source_prefix.source
         else {
             return Err(invalid("ordinary import requires admitted private9 source"));

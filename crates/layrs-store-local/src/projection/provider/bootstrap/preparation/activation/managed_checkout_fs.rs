@@ -665,6 +665,20 @@ impl VerifiedCheckout {
             return Err(invalid("checkout proof lacks complete journal"));
         }
         self.storage.require_namespace(expected, journal, cancel)?;
+        self.require_identity(expected, journal, cancel)
+    }
+
+    /// Recheck only retained identities. Callers must separately run the full
+    /// namespace check outside catalog gates, before and after positive closes.
+    pub(in crate::projection::provider) fn require_identity(
+        &self,
+        expected: &ExpectedCheckout,
+        journal: &CheckoutJournal,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        if !journal.is_complete() || self.files.len() != expected.files().len() {
+            return Err(invalid("checkout proof lacks complete journal"));
+        }
         for (ordinal, pin) in &self.files {
             cancel.check()?;
             let (_, file, state) = CheckoutStorage::file_row(expected, journal, *ordinal)?;

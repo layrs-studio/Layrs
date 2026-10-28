@@ -73,7 +73,7 @@ fn require_ready(
         .ok_or_else(|| invalid("export publication destination proof absent"))?;
     let prefix = &ready.plan.source_prefix;
     let ImportSource::Ordinary {
-        private_schema: 9,
+        private_schema: 9 | 10,
         admission: Some(admission),
         ..
     } = &prefix.source

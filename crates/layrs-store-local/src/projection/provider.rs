@@ -148,7 +148,7 @@ pub const PROVIDER_COMPANION_AGGREGATE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// documents as authorization, readiness, or a reason to reclaim their content.
 pub(super) fn require_ordinary(c: &rusqlite::Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION {
+    if matches!(version, PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION | 10) {
         return Err(invalid(
             "managed admission requires its typed ordinary interpreter",
         ));
@@ -176,7 +176,7 @@ pub(super) fn require_ordinary(c: &rusqlite::Connection) -> Result<()> {
 /// reservations or companion dependencies invisible to the ordinary sweeper.
 pub(super) fn require_reclamation_safe(c: &rusqlite::Connection) -> Result<()> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION {
+    if matches!(version, PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION | 10) {
         return Err(invalid(
             "managed admission retains import provenance and reclamation fences",
         ));

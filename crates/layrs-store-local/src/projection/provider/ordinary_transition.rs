@@ -86,10 +86,18 @@ pub(super) fn read_outgoing(
         });
     }
     let current = frontier::Current::read(c, admission, cancel)?;
+    let actual_schema: u32 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let mut live = false;
     for record in &outgoing {
         cancellation::check(cancel)?;
         require_shape(record)?;
+        if !matches!(&record.plan.source_prefix.source,
+            ImportSource::Ordinary { private_schema, .. } if *private_schema == actual_schema)
+        {
+            return Err(invalid(
+                "ordinary outgoing source schema differs from admitted layout",
+            ));
+        }
         record
             .plan
             .source_prefix
@@ -127,7 +135,7 @@ pub(super) fn read_outgoing(
 /// separate. Legacy and provider databases keep their existing behavior.
 pub(in crate::projection) fn has_live(c: &Connection) -> Result<bool> {
     let version: u32 = c.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version != 9 {
+    if !matches!(version, 9 | 10) {
         return Ok(false);
     }
     let rows = read_rows(c, None, None)?;
@@ -230,7 +238,7 @@ fn require_shape(record: &ProviderTransitionIntentRecord) -> CauseResult<()> {
         || !matches!(
             &prefix.source,
             ImportSource::Ordinary {
-                private_schema: 9,
+                private_schema: 9 | 10,
                 admission: Some(_),
                 ..
             }

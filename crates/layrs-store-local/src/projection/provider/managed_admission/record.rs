@@ -98,6 +98,7 @@ impl ManagedAdmissionRecord {
 
     pub(super) fn require_links(
         &self,
+        layout: schema::AdmittedLayout,
         marker: &format::Marker,
         prefix: &ProviderImportPrefixRecord,
         ready: &ProviderTransitionIntentRecord,
@@ -108,14 +109,26 @@ impl ManagedAdmissionRecord {
         ready.require_prefix(prefix)?;
         ready.require_receipt(receipt)?;
         published.require_receipt(receipt)?;
-        let ImportSource::Provider {
-            format_digest,
-            binding: source_binding,
-            version,
-            ..
-        } = &prefix.source
-        else {
-            return Err(invalid("admitted import requires provider source prefix"));
+        let (format_digest, source_database_identity, version) = match (&prefix.source, layout) {
+            (
+                ImportSource::Provider {
+                    format_digest,
+                    binding,
+                    version,
+                    ..
+                },
+                schema::AdmittedLayout::Provider9,
+            ) => (format_digest, &binding.recovery.database_identity, version),
+            (
+                ImportSource::Ordinary {
+                    format_digest,
+                    admission: Some(admission),
+                    version,
+                    ..
+                },
+                schema::AdmittedLayout::Ordinary10,
+            ) => (format_digest, &admission.database_identity, version),
+            _ => return Err(invalid("admitted import source and private layout differ")),
         };
         let proof = ready
             .destination
@@ -145,7 +158,7 @@ impl ManagedAdmissionRecord {
             || self.receipt_id != receipt.digest()?
             || self.source_published_digest != published.digest()?
             || self.source_format_digest != *format_digest
-            || self.source_database_identity != source_binding.recovery.database_identity
+            || self.source_database_identity != *source_database_identity
             || self.boundaries.imported_generation != version.generation
             || self.boundaries.imported_capture_count != version.capture_count
             || self.boundaries.observation_generation != ready.plan.observation.generation

@@ -103,7 +103,7 @@ impl<'a> OrdinaryCopyInputs<'a> {
         self.copying.validate_fields()?;
         let prefix = self.prefix();
         let ImportSource::Ordinary {
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(_),
             version,
             ..

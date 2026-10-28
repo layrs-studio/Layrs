@@ -49,6 +49,85 @@ macro_rules! owned {($name:ident,$body:block)=>{
     fn $name(){child::run(concat!(module_path!(),"::",stringify!($name)),120,||{child::declare();$body});}
 };}
 
+owned!(
+    admitted_schema_requires_exact_version_ddl_and_matching_origin,
+    {
+        with_private9(|c, f| {
+            let retained = schema::require_schema(c, &f.marker, None).unwrap();
+            assert_eq!(retained.layout(), schema::AdmittedLayout::Provider9);
+            assert_eq!(retained.private_schema(), 9);
+            assert_eq!(
+                read_admitted_import(c, &f.marker, None)
+                    .unwrap()
+                    .private_schema(),
+                9
+            );
+            c.execute_batch("SAVEPOINT layout_change").unwrap();
+            c.execute_batch(schema::SQL10_WITNESS).unwrap();
+            assert!(schema::require_schema(c, &f.marker, None).is_err());
+            c.execute_batch("PRAGMA user_version=10").unwrap();
+            let ordinary = schema::require_schema(c, &f.marker, None).unwrap();
+            assert_eq!(ordinary.layout(), schema::AdmittedLayout::Ordinary10);
+            assert_eq!(ordinary.private_schema(), 10);
+            assert!(retained.require(c, &f.marker, None).is_err());
+            // An exact schema10 alone cannot reinterpret Provider ingress.
+            assert!(read_admitted_import(c, &f.marker, None).is_err());
+            c.execute_batch(
+                "CREATE INDEX witness_unexpected ON projection_import_representations(bytes)",
+            )
+            .unwrap();
+            assert!(schema::require_schema(c, &f.marker, None).is_err());
+            c.execute_batch(
+                "DROP INDEX witness_unexpected; DROP TABLE projection_import_representations",
+            )
+            .unwrap();
+            assert!(schema::require_schema(c, &f.marker, None).is_err());
+            c.execute_batch("PRAGMA user_version=11").unwrap();
+            assert!(schema::require_schema(c, &f.marker, None).is_err());
+            c.execute_batch("ROLLBACK TO layout_change; RELEASE layout_change")
+                .unwrap();
+            retained.require(c, &f.marker, None).unwrap();
+            read_admitted_import(c, &f.marker, None).unwrap();
+        });
+    }
+);
+
+owned!(
+    admitted_witness_scalar_fence_precedes_admission_body_decoding,
+    {
+        with_private9(|c, f| {
+            c.execute_batch("SAVEPOINT witness_scalar").unwrap();
+            c.execute_batch(schema::SQL10_WITNESS).unwrap();
+            c.execute_batch("PRAGMA user_version=10; PRAGMA ignore_check_constraints=ON")
+                .unwrap();
+            c.execute(
+                "UPDATE projection_managed_admission SET payload=X'7b7d'",
+                [],
+            )
+            .unwrap();
+            let file = format!("blake3:{}", "a".repeat(64));
+            let manifest = format!("blake3:{}", "1".repeat(64));
+            for (candidate, bytes) in [
+                (format!("blake3:{}", "A".repeat(64)), 42u64),
+                (file.clone(), 1073741825),
+            ] {
+                c.execute("INSERT INTO projection_import_representations(file_id,manifest_id,bytes) VALUES(?1,?2,?3)", params![candidate,manifest,bytes]).unwrap();
+                let before = c.total_changes();
+                let error = read_admitted_import(c, &f.marker, None).err().unwrap();
+                assert!(
+                    error.to_string().contains("witness scalar differs"),
+                    "{error}"
+                );
+                assert_eq!(c.total_changes(), before);
+                c.execute("DELETE FROM projection_import_representations", [])
+                    .unwrap();
+            }
+            c.execute_batch("PRAGMA ignore_check_constraints=OFF; ROLLBACK TO witness_scalar; RELEASE witness_scalar").unwrap();
+            read_admitted_import(c, &f.marker, None).unwrap();
+        });
+    }
+);
+
 fn complete(c: &Connection, expected: &ExpectedCheckout) {
     checkout_journal::declare(c, expected, None).unwrap();
     let row = checkout_journal::read(c, expected, None)

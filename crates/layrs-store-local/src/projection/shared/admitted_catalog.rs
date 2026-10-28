@@ -36,6 +36,10 @@ pub(in crate::projection) use export_publication::{
     ExportPublicationState,
 };
 
+#[path = "admitted_catalog/terminal_ready.rs"]
+mod terminal_ready;
+pub(in crate::projection) use terminal_ready::validate_terminal_ready_catalog;
+
 struct CatalogParts {
     proof: AdmittedCatalogProof,
     export: Option<ExportReserveOnlyState>,
@@ -651,3 +655,7 @@ mod installing_tests;
 #[cfg(test)]
 #[path = "admitted_catalog/protection_tests.rs"]
 mod protection_tests;
+
+#[cfg(test)]
+#[path = "admitted_catalog/terminal_ready_tests.rs"]
+mod terminal_ready_tests;

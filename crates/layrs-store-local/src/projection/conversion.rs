@@ -1,8 +1,8 @@
 //! Explicit copy conversion. No source SQL, marker, history, or checkout is rewritten.
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
-use layrs_core::scm::{FileId, canonical_json};
-use rusqlite::{Connection, params};
+use layrs_core::scm::{canonical_json, FileId};
+use rusqlite::{params, Connection};
 use std::{
     io::{Read, Seek, SeekFrom},
     time::Duration,
@@ -251,10 +251,10 @@ pub(super) fn imported(c: &Connection, store: &ProjectionStore, sequence: u64) -
 }
 
 fn admitted_schema(c: &Connection) -> Result<bool> {
-    Ok(
-        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?
-            == provider::PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION,
-    )
+    Ok(matches!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?,
+        provider::PROJECTION_MANAGED_ADMISSION_SCHEMA_VERSION | 10
+    ))
 }
 
 /// Connection-local dispatch also used by bounded SQL qualification. Physical

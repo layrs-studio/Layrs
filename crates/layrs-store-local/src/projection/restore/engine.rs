@@ -455,15 +455,18 @@ pub(super) fn history_with_scope(
     )?;
     let journal = decode(&bytes)?;
     let capture = capture::storage::load_with_scope(c, store, sequence, scope)?;
-    let private9 = c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 9;
+    let admitted_layout = matches!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?,
+        9 | 10
+    );
     // A later checkout can reuse an ancestor's logical identity. Only the
     // authenticated incoming capture boundary distinguishes that history from
     // this destination's local suffix.
     #[cfg(windows)]
     let admitted_import =
-        private9 && provider::admitted_ordinary::imported(c, &store.marker, sequence, None)?;
+        admitted_layout && provider::admitted_ordinary::imported(c, &store.marker, sequence, None)?;
     #[cfg(not(windows))]
-    let admitted_import = private9;
+    let admitted_import = admitted_layout;
     if admitted_import {
         #[cfg(windows)]
         {

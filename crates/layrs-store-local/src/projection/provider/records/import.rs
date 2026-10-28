@@ -208,7 +208,7 @@ impl ImportSource {
                 ..
             } => match (*schema, admission) {
                 (6 | 7 | 8, None) => {}
-                (9, Some(binding)) if checkout_identity.is_some() => binding.validate()?,
+                (9 | 10, Some(binding)) if checkout_identity.is_some() => binding.validate()?,
                 _ => return Err(invalid("import ordinary schema/admission binding differs")),
             },
             Self::Provider { .. } if *schema == 8 => {}

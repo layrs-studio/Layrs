@@ -60,8 +60,13 @@ pub(in crate::projection) fn restore_cancellation_preflight(
             "restore cancellation DATA requires an active snapshot",
         ));
     }
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 9 {
-        return Err(invalid("admitted restore cancellation requires private9"));
+    if !matches!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?,
+        9 | 10
+    ) {
+        return Err(invalid(
+            "admitted restore cancellation requires admitted private9 or private10",
+        ));
     }
     database::require_mutable(c)?;
     if c.query_row(

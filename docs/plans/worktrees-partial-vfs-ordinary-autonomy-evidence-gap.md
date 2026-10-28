@@ -42,3 +42,30 @@ Sources centrales : `managed_export.rs::include_selected_bases`,
 `destination_ready/data.rs::prepare_suffix`, `exact_protection.rs::Protection`,
 `destination_ready/autonomous/family_read.rs`, `autonomous/inventory.rs::require_union`,
 `import_validation/destination_prefix.rs` et `destination_ready/historical.rs`.
+
+## Décision d'implémentation du 28 octobre 2026
+
+Retenir un schéma privé **10 distinct** pour l'admission d'origine Ordinary.
+Le DDL et le chemin Provider8→9 restent inchangés ; aucune migration automatique
+9→10. Le témoin local immuable contient les triples exacts
+`(file_id, manifest_id, bytes)`, au plus 100 000 lignes et 15 000 000 octets
+normalisés. Il provient de la vraie union C/famille et doit retrouver exactement
+le count/digest Ready. Les mappings copiés et checkout, la couverture des bases
+sélectionnées et la cohérence des longueurs restent contrôlés séparément.
+
+La transition C8→10 doit être atomique : admission et archive existantes,
+témoin complet, SourcePublished réel, retrait du journal opérationnel et version
+10 dans une même transaction. La relecture privée doit retrouver toute la preuve.
+Un permit fermé distingue exactement Provider9 et Ordinary10 et revalide version,
+empreinte et FORMAT. Refuser l'origine Ordinary sous9 et le témoin sous9.
+
+Le record d'admission v1 et son `metadata_layout_version=1` conservent leur
+sémantique admission/archive ; Ready engage déjà les triples du témoin. FORMAT
+ne porte pas de version privée et ne change pas. Le préfixe entrant décrit la
+source B ; un export ultérieur C→D doit déclarer la vraie version10 de C.
+Le témoin n'est pas un rowset hérité de la closure : D construit son propre témoin.
+
+Le budget Ordinary doit charger explicitement le coût borné et réel du témoin.
+Les quotas des plans persistés restent immuables : refuser l'enveloppe insuffisante,
+sans augmentation ni consommation implicite d'une marge réservée séparément.
+Cette décision décrit le prochain lot ; aucune qualification C10 n'est acquise.

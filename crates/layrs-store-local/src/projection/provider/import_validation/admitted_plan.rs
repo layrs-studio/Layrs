@@ -25,7 +25,7 @@ pub(in crate::projection) fn plan_admitted_import(
     image_digest: &str,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<(ProviderImportPrefixRecord, VerifiedImportClosure)> {
-    // This fences actual schema9 and FORMAT, and follows the database's own
+    // This fences the actual admitted schema and FORMAT, and follows the database's own
     // incoming admission before using any caller-selected outgoing DATA.
     let admitted = read_admitted_import(c, marker, cancel)?;
     format::validate_identity(&destination)?;
@@ -59,7 +59,7 @@ pub(in crate::projection) fn plan_admitted_import(
                 "layrs-projection-provider-import-format-v1",
                 &marker.bytes()?,
             ),
-            private_schema: 9,
+            private_schema: admitted.private_schema(),
             checkout_identity: Some(marker.checkout_identity().to_owned()),
             admission: Some(binding.clone()),
             version: version.clone(),

@@ -506,6 +506,9 @@ mod managed_ordinary_source_intent_tests;
 #[path = "session/managed_ordinary_source_publication_tests.rs"]
 mod managed_ordinary_source_publication_tests;
 #[cfg(test)]
+#[path = "session/managed_ordinary_admission_tests.rs"]
+mod managed_ordinary_admission_tests;
+#[cfg(test)]
 mod managed_ordinary_staging_tests;
 #[cfg(test)]
 mod managed_post_publication_capture_tests;

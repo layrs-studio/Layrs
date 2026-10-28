@@ -105,7 +105,7 @@ impl OwnedOrdinaryReadyData {
         let prefix = &derived.plan.source_prefix;
         let ImportSource::Ordinary {
             identity,
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(admission),
             checkout_identity: Some(checkout_identity),
             version,
@@ -285,10 +285,11 @@ impl OwnedOrdinaryReadyData {
             image.files().iter().map(|f| f.manifest.byte_length()),
             0,
         )?;
-        let admission = managed_budget::admission_budget(
+        let admission = managed_budget::ordinary_admission_budget(
             metadata_floor,
             checkout.files().len() as u64,
             checkout.directories().len() as u64,
+            required.len() as u64,
         )?;
         let metadata = admission.require_quota(derived.quota_bytes, baseline_quota)?;
         // This checks the durable fixed funding DATA, not remaining SQL quota.

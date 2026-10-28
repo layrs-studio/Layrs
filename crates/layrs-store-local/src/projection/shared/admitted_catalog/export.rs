@@ -101,7 +101,7 @@ impl ExportReserveOnlyTarget {
         let source_marker = retained.marker();
         let prefix = &source_staging.plan.source_prefix;
         let ImportSource::Ordinary {
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(admission),
             ..
         } = &prefix.source
@@ -764,7 +764,7 @@ fn require_union_commitment(
     Ok(())
 }
 
-fn global_usage(
+pub(super) fn global_usage(
     c: &Connection,
     current_target_manifests: u64,
     target_manifests: u64,

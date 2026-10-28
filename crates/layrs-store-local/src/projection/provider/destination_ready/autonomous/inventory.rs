@@ -1,6 +1,76 @@
 use super::super::super::checkout_journal::CheckoutFile;
 use super::*;
+use crate::projection::provider::{
+    import_validation::OrdinaryFrozenBasis, managed_admission::RequiredRepresentation,
+};
 use serde::Serialize;
+
+/// Full committed ordinary union. Exact historical/checkout mappings are
+/// subsets; selected bases require FileId coverage, never an invented old B
+/// ManifestId. Every representation of one FileId must have one length.
+pub(in crate::projection::provider::destination_ready) fn require_ordinary_union(
+    source: &OrdinaryFrozenBasis,
+    copied: &BTreeMap<FileId, (FileManifestId, u64)>,
+    expected: &ExpectedCheckout,
+    required: &[RequiredRepresentation],
+    cancel: Option<&Cancellation>,
+) -> Result<BTreeMap<FileId, u64>> {
+    if required.len() > 100_000 {
+        return Err(invalid("ordinary frozen required union exceeds bound"));
+    }
+    let mut allowed = BTreeSet::new();
+    for entry in &source.snapshot().entries {
+        cancellation::check(cancel)?;
+        if source.selection().includes(&entry.path) {
+            if let Some(layrs_core::scm::TreeEntryTarget::File { file_id }) = &entry.target {
+                allowed.insert(file_id.clone());
+            }
+        }
+    }
+    let selected = allowed.clone();
+    allowed.extend(copied.keys().cloned());
+    allowed.extend(expected.files().iter().map(|file| file.file_id.clone()));
+    let mut exact = BTreeMap::new();
+    let mut lengths = BTreeMap::new();
+    let mut prior = None;
+    for row in required {
+        cancellation::check(cancel)?;
+        let key = (&row.file_id, &row.manifest_id);
+        if row.bytes > 1073741824
+            || !allowed.contains(&row.file_id)
+            || prior.is_some_and(|old| old >= key)
+            || lengths
+                .insert(row.file_id.clone(), row.bytes)
+                .is_some_and(|old| old != row.bytes)
+            || exact.insert(key, row.bytes).is_some()
+        {
+            return Err(invalid(
+                "ordinary frozen union order, coverage or length differs",
+            ));
+        }
+        prior = Some(key);
+    }
+    if selected.iter().any(|file| !lengths.contains_key(file)) {
+        return Err(invalid("ordinary frozen selected base FileId absent"));
+    }
+    for (file, (manifest, bytes)) in copied {
+        cancellation::check(cancel)?;
+        if exact.get(&(file, manifest)) != Some(bytes) {
+            return Err(invalid(
+                "ordinary frozen historical exact representation absent",
+            ));
+        }
+    }
+    for file in expected.files() {
+        cancellation::check(cancel)?;
+        if exact.get(&(&file.file_id, &file.manifest_id)) != Some(&file.bytes) {
+            return Err(invalid(
+                "ordinary frozen checkout exact representation absent",
+            ));
+        }
+    }
+    Ok(lengths)
+}
 
 pub(super) fn require_union(
     source: &ProviderBootstrapSource,

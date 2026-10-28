@@ -124,8 +124,13 @@ pub(in crate::projection) fn recovery_preflight(
 }
 
 fn read_pending(c: &Connection, store: &ProjectionStore) -> Result<RestoreRecoveryData> {
-    if c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? != 9 {
-        return Err(invalid("admitted restore recovery requires private9"));
+    if !matches!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?,
+        9 | 10
+    ) {
+        return Err(invalid(
+            "admitted restore recovery requires admitted private9 or private10",
+        ));
     }
     crate::projection::provider::ordinary_transition::require_no_live(c)?;
     let conflicts: bool = c.query_row(

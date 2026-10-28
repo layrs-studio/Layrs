@@ -1,4 +1,4 @@
-//! Pure private9 sizing DATA. The future planner must opt into this envelope;
+//! Pure admitted private9/private10 sizing DATA. Planners opt into each envelope;
 //! historical Ready8 readers retain their original accounting. No function here
 //! grows a reservation, validates SQL rows or authenticates a SourcePublished.
 use super::{add_metadata, invalid, Result, MAX_METADATA};
@@ -17,6 +17,9 @@ const MAX_ADMISSION_RECORD_BYTES: u64 = 65536;
 const ADMISSION_FIXED_BYTES: u64 = 4 * 71 + 4 * 8;
 const MAX_ADMISSION_BYTES: u64 =
     ADMISSION_FIXED_BYTES + MAX_SOURCE_PUBLISHED_BYTES + MAX_ADMISSION_RECORD_BYTES;
+const MAX_WITNESS_ROWS: u64 = 100_000;
+const WITNESS_ROW_BYTES: u64 = 71 + 71 + 8;
+const MAX_WITNESS_BYTES: u64 = 15_000_000;
 
 /// Normalized logical values only, excluding SQLite pages, indices and WAL.
 /// Closed fields ensure every instance was checked with the same layout.
@@ -25,6 +28,8 @@ pub(in crate::projection::provider) struct AdmissionBudget {
     archive_rows: u64,
     archive_bound: u64,
     minimum_metadata: u64,
+    witness_rows: u64,
+    witness_bound: u64,
 }
 
 /// Actual bounded column lengths supplied by a future SQL writer. This DATA
@@ -34,6 +39,8 @@ pub(in crate::projection::provider) struct AdmissionCost {
     archive_rows: u64,
     archive_bytes: u64,
     admission_bytes: u64,
+    witness_rows: u64,
+    witness_bytes: u64,
 }
 
 /// F_ready_bound excludes checkout journal/archive columns and the admission
@@ -67,7 +74,31 @@ pub(in crate::projection::provider) fn admission_budget(
         archive_rows,
         archive_bound,
         minimum_metadata,
+        witness_rows: 0,
+        witness_bound: 0,
     })
+}
+
+/// Ordinary10 reserves its complete immutable representation witness in M.
+/// This does not consume the separately funded family protection margin.
+pub(in crate::projection::provider) fn ordinary_admission_budget(
+    ready_metadata_bound: u64,
+    checkout_files: u64,
+    checkout_directories: u64,
+    representations: u64,
+) -> Result<AdmissionBudget> {
+    let witness_bound = witness_bytes(representations)?;
+    let mut budget = admission_budget(ready_metadata_bound, checkout_files, checkout_directories)?;
+    budget.minimum_metadata = add_metadata(budget.minimum_metadata, witness_bound)?;
+    budget.witness_rows = representations;
+    budget.witness_bound = witness_bound;
+    Ok(budget)
+}
+
+fn witness_bytes(rows: u64) -> Result<u64> {
+    rows.checked_mul(WITNESS_ROW_BYTES)
+        .filter(|bytes| rows <= MAX_WITNESS_ROWS && *bytes <= MAX_WITNESS_BYTES)
+        .ok_or_else(|| invalid("ordinary admission witness exceeds bounded inventory"))
 }
 
 /// Compute A_actual and J_actual after a separately bounded SQL inventory.
@@ -106,10 +137,40 @@ pub(in crate::projection::provider) fn admission_cost(
         archive_rows,
         archive_bytes: archive_column_bytes,
         admission_bytes,
+        witness_rows: 0,
+        witness_bytes: 0,
     })
 }
 
+pub(in crate::projection::provider) fn ordinary_admission_cost(
+    source_published_bytes: u64,
+    admission_record_bytes: u64,
+    archive_rows: u64,
+    archive_column_bytes: u64,
+    witness_rows: u64,
+    witness_column_bytes: u64,
+) -> Result<AdmissionCost> {
+    if witness_column_bytes != witness_bytes(witness_rows)? {
+        return Err(invalid("ordinary admission actual witness bytes differ"));
+    }
+    let mut cost = admission_cost(
+        source_published_bytes,
+        admission_record_bytes,
+        archive_rows,
+        archive_column_bytes,
+    )?;
+    cost.witness_rows = witness_rows;
+    cost.witness_bytes = witness_column_bytes;
+    Ok(cost)
+}
+
 impl AdmissionBudget {
+    pub(in crate::projection::provider) fn witness_rows(&self) -> u64 {
+        self.witness_rows
+    }
+    pub(in crate::projection::provider) fn witness_bound(&self) -> u64 {
+        self.witness_bound
+    }
     pub(in crate::projection::provider) fn archive_rows(&self) -> u64 {
         self.archive_rows
     }
@@ -182,6 +243,8 @@ impl AdmissionBudget {
         if actual.archive_rows != self.archive_rows
             || actual.archive_bytes > self.archive_bound
             || actual.admission_bytes > MAX_ADMISSION_BYTES
+            || actual.witness_rows != self.witness_rows
+            || actual.witness_bytes != self.witness_bound
         {
             return Err(invalid(
                 "admission actual costs differ from planned inventory",
@@ -191,6 +254,9 @@ impl AdmissionBudget {
     }
 }
 impl AdmissionCost {
+    pub(in crate::projection::provider) fn witness_bytes(&self) -> u64 {
+        self.witness_bytes
+    }
     pub(in crate::projection::provider) fn archive_bytes(&self) -> u64 {
         self.archive_bytes
     }
@@ -201,6 +267,7 @@ impl AdmissionCost {
         self.archive_bytes
             .checked_mul(2)
             .and_then(|n| n.checked_add(self.admission_bytes))
+            .and_then(|n| n.checked_add(self.witness_bytes))
             .ok_or_else(|| invalid("admission actual copy peak overflow"))
     }
 }

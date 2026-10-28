@@ -2,7 +2,10 @@
 //! family. No source connection, original source owner or physical byte proof.
 use super::super::{
     checkout_journal::{CheckoutJournal, ExpectedCheckout},
-    import_validation::{read_destination_prefix, VerifiedDestinationPrefix},
+    import_validation::{
+        read_destination_prefix, DestinationOriginKind, VerifiedDestinationPrefix,
+    },
+    managed_admission::RequiredRepresentation,
     managed_budget,
 };
 use super::*;
@@ -73,6 +76,9 @@ impl VerifiedManagedReady<'_, '_> {
     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
         self.prefix.receipt()
     }
+    pub(in crate::projection::provider) fn origin(&self) -> DestinationOriginKind {
+        self.prefix.origin()
+    }
     pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
         self.prefix.ready()
     }
@@ -102,7 +108,7 @@ impl VerifiedManagedReady<'_, '_> {
                 "autonomous Ready family transaction differs or ended",
             ));
         }
-        let fresh = read_managed_ready(c, &self.marker, family_c, cancel)?;
+        let fresh = read_ready_origin(c, &self.marker, family_c, self.origin(), cancel)?;
         if fresh.receipt() != self.receipt()
             || fresh.ready() != self.ready()
             || fresh.expected.header() != self.expected.header()
@@ -125,6 +131,39 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
     family_c: &'f Connection,
     cancel: Option<&Cancellation>,
 ) -> Result<VerifiedManagedReady<'d, 'f>> {
+    read_ready_origin(
+        c,
+        actual_marker,
+        family_c,
+        DestinationOriginKind::Provider,
+        cancel,
+    )
+}
+
+/// Ordinary C8 Ready from copied immutable history and the complete real
+/// family union. No B connection or historical B base mapping is consulted.
+pub(in crate::projection::provider) fn read_ordinary_managed_ready<'d, 'f>(
+    c: &'d Connection,
+    actual_marker: &format::Marker,
+    family_c: &'f Connection,
+    cancel: Option<&Cancellation>,
+) -> Result<VerifiedManagedReady<'d, 'f>> {
+    read_ready_origin(
+        c,
+        actual_marker,
+        family_c,
+        DestinationOriginKind::Ordinary,
+        cancel,
+    )
+}
+
+fn read_ready_origin<'d, 'f>(
+    c: &'d Connection,
+    actual_marker: &format::Marker,
+    family_c: &'f Connection,
+    origin: DestinationOriginKind,
+    cancel: Option<&Cancellation>,
+) -> Result<VerifiedManagedReady<'d, 'f>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() || family_c.is_autocommit() || std::ptr::eq(c, family_c) {
         return Err(invalid(
@@ -132,11 +171,14 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
         ));
     }
     let prefix = read_destination_prefix(c, actual_marker, cancel)?;
+    if prefix.origin() != origin {
+        return Err(invalid(
+            "autonomous Ready origin differs from closed reader",
+        ));
+    }
     let ready = prefix.ready();
     let plan = &ready.plan;
-    let ImportSource::Provider { version, .. } = &prefix.prefix().source else {
-        return Err(invalid("autonomous Ready requires provider prefix"));
-    };
+    let version = prefix.prefix().source.version();
     if version.generation.checked_add(1) != Some(plan.observation.generation)
         || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
         || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
@@ -160,21 +202,62 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
         .filter(|change| change.replacement.is_none())
         .map(|change| change.path.clone())
         .collect();
-    let (expected, journal) = ExpectedCheckout::read_ready(c, ready, &deletions, cancel)?;
+    let (expected, journal) = match origin {
+        DestinationOriginKind::Provider => {
+            ExpectedCheckout::read_ready(c, ready, &deletions, cancel)?
+        }
+        DestinationOriginKind::Ordinary => {
+            ExpectedCheckout::read_ready_ordinary(c, ready, &deletions, cancel)?
+        }
+    };
     let claim = family_read::read_claim(c, ready)?;
     let family = family_read::read(family_c, actual_marker, ready, &claim, cancel)?;
     let copied = prefix.copied_content_mappings(c, cancel)?;
-    inventory::require_union(
-        prefix.source(),
-        &copied,
-        &expected,
-        &family.required,
-        cancel,
-    )?;
+    let lengths = match origin {
+        DestinationOriginKind::Provider => {
+            inventory::require_union(
+                prefix.source()?,
+                &copied,
+                &expected,
+                &family.required,
+                cancel,
+            )?;
+            BTreeMap::new()
+        }
+        DestinationOriginKind::Ordinary => {
+            let mut rows: Vec<_> = family
+                .required
+                .iter()
+                .map(|manifest| RequiredRepresentation {
+                    file_id: manifest.file_id().clone(),
+                    manifest_id: manifest.id().clone(),
+                    bytes: manifest.byte_length(),
+                })
+                .collect();
+            // Family roots sort by ManifestId; this commitment uses FileId first.
+            // Preserve root order and sort only the derived triple inventory.
+            rows.sort_unstable();
+            inventory::require_ordinary_union(
+                prefix.ordinary_frozen()?,
+                &copied,
+                &expected,
+                &rows,
+                cancel,
+            )?
+        }
+    };
     let overlay = inventory::overlay(&capture, &expected, cancel)?;
     inventory::require_image(&capture, &expected, &version.effective_image_digest, cancel)?;
-    let observation = prefix.source().initial().clone();
-    let placement = super::super::records::activation::activation_snapshot(prefix.source())?;
+    let (observation, placement) = match origin {
+        DestinationOriginKind::Provider => (
+            prefix.source()?.initial().clone(),
+            super::super::records::activation::activation_snapshot(prefix.source()?)?,
+        ),
+        DestinationOriginKind::Ordinary => (
+            prefix.ordinary_frozen()?.snapshot().clone(),
+            prefix.ordinary_frozen()?.snapshot().clone(),
+        ),
+    };
     let claims = [claim];
     let data = ManagedReadyData {
         observation: &observation,
@@ -188,7 +271,13 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
     };
     let view = ReadyView {
         marker: actual_marker,
-        source: ReadySource::Provider(prefix.source()),
+        source: match origin {
+            DestinationOriginKind::Provider => ReadySource::Provider(prefix.source()?),
+            DestinationOriginKind::Ordinary => ReadySource::OrdinaryFrozen {
+                source: prefix.ordinary_frozen()?,
+                lengths: &lengths,
+            },
+        },
         prefix: prefix.prefix(),
         data: &data,
     };
@@ -202,13 +291,26 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
         &claims,
         cancel,
     )?;
-    let installation = exact_content::validate_protected_installations(
-        family_c,
-        &family.binding,
-        &family.required,
-        &family.protection,
-        cancel,
-    )?;
+    let installation = match origin {
+        DestinationOriginKind::Provider => exact_content::validate_protected_installations(
+            family_c,
+            &family.binding,
+            &family.required,
+            &family.protection,
+            cancel,
+        )?,
+        DestinationOriginKind::Ordinary => {
+            crate::projection::shared::admitted_catalog::validate_terminal_ready_catalog(
+                family_c,
+                &family.marker_bytes,
+                actual_marker,
+                &family.binding,
+                &family.required,
+                &family.protection,
+                cancel,
+            )?
+        }
+    };
     let (source_size, destination_size) = managed_budget::original_staging_sizes(ready)?;
     let base = managed_budget::base_metadata_floor(
         prefix.metadata_bytes(c, cancel)?,
@@ -216,7 +318,7 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
         &placement,
         &capture,
         plan,
-        prefix.source().selection(),
+        view.source.selection(),
         source_size,
         destination_size,
     )?;
@@ -251,6 +353,23 @@ pub(in crate::projection::provider) fn read_managed_ready<'d, 'f>(
         .checked_sub(expected.header().file_bytes)
         .ok_or_else(|| invalid("Ready retained checkout envelope insufficient"))?;
     family.protection.require_envelope(remaining, retained)?;
+    if origin == DestinationOriginKind::Ordinary {
+        // C8 must already fund its complete future C10 witness and archive
+        // peak. Durable quotas remain immutable; a cheap current read cannot
+        // borrow the separate family protection margin as private capacity.
+        let budget = managed_budget::ordinary_admission_budget(
+            floor,
+            expected.files().len() as u64,
+            expected.directories().len() as u64,
+            family.required.len() as u64,
+        )?;
+        budget.require_quota(plan.quota_bytes, baseline)?;
+        budget.require_remaining(
+            remaining,
+            family.protection.payload().len() as u64,
+            family.required.len() as u64,
+        )?;
+    }
     cancellation::check(cancel)?;
     Ok(VerifiedManagedReady {
         prefix,

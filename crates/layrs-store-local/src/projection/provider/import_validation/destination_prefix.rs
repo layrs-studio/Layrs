@@ -1,6 +1,7 @@
 //! Destination-local interpretation of the immutable incoming prefix only.
 //! The caller pins the genuine destination FORMAT and retains its transaction.
 //! No live source, native authority, Ready suffix or content bytes are proved.
+use super::super::managed_admission::schema::{AdmittedLayout, AdmittedSchemaPermit};
 use super::super::managed_admission::ManagedAdmissionRecord;
 use super::super::records::{
     activation::ProviderActivationRecord,
@@ -10,6 +11,7 @@ use super::super::records::{
     ProviderBootstrapSource, Record,
 };
 use super::*;
+use layrs_core::projection::{ProjectionSelection, ProjectionSnapshot};
 use layrs_core::scm::{FileId, FileManifestId};
 mod bounds;
 
@@ -22,14 +24,47 @@ pub(in crate::projection::provider) struct VerifiedDestinationPrefix<'a> {
     receipt: ProviderTransitionReceiptRecord,
     ready: ProviderTransitionIntentRecord,
     metadata: SourceMetadata,
-    source: ProviderBootstrapSource,
-    activation: ProviderActivationRecord,
+    source: DestinationSource,
     schema: DestinationSchema,
 }
 
 enum DestinationSchema {
     Ready8,
-    Admitted9(ManagedAdmissionRecord),
+    Admitted(ManagedAdmissionRecord, AdmittedLayout),
+}
+
+/// Closed historical origin; neither arm is a live source capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection::provider) enum DestinationOriginKind {
+    Provider,
+    Ordinary,
+}
+
+enum DestinationSource {
+    Provider {
+        source: ProviderBootstrapSource,
+        activation: ProviderActivationRecord,
+    },
+    Ordinary(OrdinaryFrozenBasis),
+}
+
+/// Copied immutable B snapshot and selection, authenticated at the incoming
+/// prefix's high-water. No private FileId mapping from historical B is claimed.
+pub(in crate::projection::provider) struct OrdinaryFrozenBasis {
+    snapshot: ProjectionSnapshot,
+    selection: ProjectionSelection,
+    selection_digest: String,
+}
+impl OrdinaryFrozenBasis {
+    pub(in crate::projection::provider) fn snapshot(&self) -> &ProjectionSnapshot {
+        &self.snapshot
+    }
+    pub(in crate::projection::provider) fn selection(&self) -> &ProjectionSelection {
+        &self.selection
+    }
+    pub(in crate::projection::provider) fn selection_digest(&self) -> &str {
+        &self.selection_digest
+    }
 }
 
 impl VerifiedDestinationPrefix<'_> {
@@ -63,11 +98,39 @@ impl VerifiedDestinationPrefix<'_> {
     pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
         &self.ready
     }
-    pub(in crate::projection::provider) fn source(&self) -> &ProviderBootstrapSource {
-        &self.source
+    pub(in crate::projection::provider) fn origin(&self) -> DestinationOriginKind {
+        match self.source {
+            DestinationSource::Provider { .. } => DestinationOriginKind::Provider,
+            DestinationSource::Ordinary(_) => DestinationOriginKind::Ordinary,
+        }
     }
-    pub(in crate::projection::provider) fn activation(&self) -> &ProviderActivationRecord {
-        &self.activation
+    pub(in crate::projection::provider) fn source(&self) -> CauseResult<&ProviderBootstrapSource> {
+        match &self.source {
+            DestinationSource::Provider { source, .. } => Ok(source),
+            DestinationSource::Ordinary(_) => {
+                Err(invalid("ordinary prefix has no Provider source"))
+            }
+        }
+    }
+    pub(in crate::projection::provider) fn activation(
+        &self,
+    ) -> CauseResult<&ProviderActivationRecord> {
+        match &self.source {
+            DestinationSource::Provider { activation, .. } => Ok(activation),
+            DestinationSource::Ordinary(_) => {
+                Err(invalid("ordinary prefix has no Provider activation"))
+            }
+        }
+    }
+    pub(in crate::projection::provider) fn ordinary_frozen(
+        &self,
+    ) -> CauseResult<&OrdinaryFrozenBasis> {
+        match &self.source {
+            DestinationSource::Ordinary(source) => Ok(source),
+            DestinationSource::Provider { .. } => {
+                Err(invalid("Provider prefix has no ordinary frozen basis"))
+            }
+        }
     }
 
     pub(in crate::projection::provider) fn require_destination_connection(
@@ -92,12 +155,15 @@ impl VerifiedDestinationPrefix<'_> {
         self.require_destination_connection(c)?;
         let current = match &self.schema {
             DestinationSchema::Ready8 => read_destination_prefix(c, &self.marker, cancel)?,
-            DestinationSchema::Admitted9(admission) => {
+            DestinationSchema::Admitted(admission, layout) => {
                 let permit = super::super::managed_admission::schema::require_schema(
                     c,
                     &self.marker,
                     cancel,
                 )?;
+                if permit.layout() != *layout {
+                    return Err(invalid("destination prefix admitted layout changed"));
+                }
                 // This re-reads the actual bounded admission metadata and
                 // compares the retained anchor. It never calls the full
                 // admitted reader, which also interprets frozen prefix rows.
@@ -250,7 +316,7 @@ pub(in crate::projection::provider) fn read_destination_prefix<'a>(
 pub(in crate::projection::provider) fn read_admitted_destination_prefix<'a>(
     c: &'a Connection,
     marker: &format::Marker,
-    permit: &super::super::managed_admission::schema::Schema9Permit<'_>,
+    permit: &AdmittedSchemaPermit<'_>,
     admission: &ManagedAdmissionRecord,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<VerifiedDestinationPrefix<'a>> {
@@ -263,7 +329,12 @@ pub(in crate::projection::provider) fn read_admitted_destination_prefix<'a>(
     // Full outgoing interpretation still runs after incoming authentication.
     super::super::ordinary_transition::preflight_rows(c, cancel)?;
     super::super::ordinary_transition::preflight_receipts(c, cancel)?;
-    read_prefix_rows(c, marker, DestinationSchema::Admitted9(actual), cancel)
+    read_prefix_rows(
+        c,
+        marker,
+        DestinationSchema::Admitted(actual, permit.layout()),
+        cancel,
+    )
 }
 
 fn read_prefix_rows<'a>(
@@ -315,10 +386,15 @@ fn read_prefix_rows<'a>(
             .ok_or_else(|| invalid("destination prefix receipt missing"))?,
     )?;
     ready.require_receipt(&receipt)?;
-    if matches!(&schema, DestinationSchema::Admitted9(_)) {
-        let ImportSource::Provider { version, .. } = &prefix.source else {
-            return Err(invalid("admitted prefix requires provider source"));
-        };
+    if let DestinationSchema::Admitted(_, layout) = &schema {
+        if !matches!(
+            (&prefix.source, layout),
+            (ImportSource::Provider { .. }, AdmittedLayout::Provider9)
+                | (ImportSource::Ordinary { .. }, AdmittedLayout::Ordinary10)
+        ) {
+            return Err(invalid("admitted prefix origin/layout differs"));
+        }
+        let version = prefix.source.version();
         if version.generation.checked_add(1) != Some(ready.plan.observation.generation)
             || ready.plan.observation.generation.checked_add(1)
                 != Some(ready.plan.placement_generation)
@@ -348,23 +424,73 @@ fn read_prefix_rows<'a>(
     )?;
     ancestry::verify_historical_closures(c, &prefix, &metadata, cancel)?;
     scoped::read_scoped_closure(c, ImportDatabaseKind::Provider, &prefix, &metadata, cancel)?;
-    let ImportSource::Provider {
-        activation_map_id, ..
-    } = &prefix.source
-    else {
-        return Err(invalid("destination prefix requires a provider source"));
+    let source = match &prefix.source {
+        ImportSource::Provider {
+            activation_map_id, ..
+        } => {
+            // The scoped interpreter just validated every scalar and binding of this
+            // exact activation. Decode only its separately bounded canonical body.
+            let activation_payload: Vec<u8> = c.query_row("SELECT payload FROM projection_provider_activations WHERE id=?1 AND length(payload)<=1048576", [activation_map_id], |r| r.get(0))?;
+            let activation = ProviderActivationRecord::decode(&activation_payload)?;
+            if activation.digest()? != *activation_map_id {
+                return Err(invalid("destination prefix activation differs"));
+            }
+            let provider =
+                scoped::catalogs::reconstruct_catalog(c, &activation.catalog_id, cancel)?;
+            if provider.commitment() != &activation.source {
+                return Err(invalid("destination prefix reconstructed source differs"));
+            }
+            DestinationSource::Provider {
+                source: provider,
+                activation,
+            }
+        }
+        ImportSource::Ordinary {
+            private_schema: 9 | 10,
+            admission: Some(_),
+            checkout_identity: Some(_),
+            version,
+            ..
+        } => {
+            let (digest, parent, payload): (String, Option<String>, Vec<u8>) = c.query_row(
+                "SELECT digest,parent_digest,payload FROM projection_snapshots WHERE generation=?1",
+                [version.generation],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let snapshot: ProjectionSnapshot =
+                serde_json::from_slice(&payload).map_err(|e| invalid(e.to_string()))?;
+            if digest != version.snapshot_digest
+                || database::digest(version.generation, parent.as_deref(), &payload) != digest
+                || snapshot
+                    .canonical_bytes()
+                    .map_err(|e| invalid(e.to_string()))?
+                    != payload
+            {
+                return Err(invalid("ordinary frozen snapshot differs"));
+            }
+            let selected = selection::at(c, version.generation)?;
+            selected
+                .validate_snapshot(&snapshot)
+                .map_err(|e| invalid(e.to_string()))?;
+            let selection_digest: String = c.query_row(
+                "SELECT digest FROM projection_selections WHERE generation<=?1 ORDER BY generation DESC LIMIT 1",
+                [version.generation], |row| row.get(0),
+            )?;
+            if selection_digest != version.selection_digest {
+                return Err(invalid("ordinary frozen selection differs"));
+            }
+            DestinationSource::Ordinary(OrdinaryFrozenBasis {
+                snapshot,
+                selection: selected,
+                selection_digest,
+            })
+        }
+        _ => {
+            return Err(invalid(
+                "destination ordinary prefix requires admitted source",
+            ))
+        }
     };
-    // The scoped interpreter just validated every scalar and binding of this
-    // exact activation. Decode only its separately bounded canonical body.
-    let activation_payload: Vec<u8> = c.query_row("SELECT payload FROM projection_provider_activations WHERE id=?1 AND length(payload)<=1048576", [activation_map_id], |r| r.get(0))?;
-    let activation = ProviderActivationRecord::decode(&activation_payload)?;
-    if activation.digest()? != *activation_map_id {
-        return Err(invalid("destination prefix activation differs"));
-    }
-    let source = scoped::catalogs::reconstruct_catalog(c, &activation.catalog_id, cancel)?;
-    if source.commitment() != &activation.source {
-        return Err(invalid("destination prefix reconstructed source differs"));
-    }
     require_bounded_foreign_keys(c, cancel)?;
     super::super::cancellation::check(cancel)?;
     Ok(VerifiedDestinationPrefix {
@@ -375,7 +501,6 @@ fn read_prefix_rows<'a>(
         ready,
         metadata,
         source,
-        activation,
         schema,
     })
 }
@@ -386,7 +511,7 @@ fn read_ready_link(
 ) -> CauseResult<ProviderTransitionIntentRecord> {
     let transaction = match schema {
         DestinationSchema::Ready8 => None,
-        DestinationSchema::Admitted9(admission) => Some(admission.transaction_id.as_str()),
+        DestinationSchema::Admitted(admission, _) => Some(admission.transaction_id.as_str()),
     };
     let bound: [&dyn rusqlite::ToSql; 1] = [&transaction];
     let empty: [&dyn rusqlite::ToSql; 0] = [];
@@ -396,7 +521,7 @@ fn read_ready_link(
             "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions",
             &empty,
         ),
-        DestinationSchema::Admitted9(_) => (
+        DestinationSchema::Admitted(_, _) => (
             "SELECT count(*),coalesce(max(length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 OR length(payload)>262144 OR length(CAST(reservation AS BLOB))>128 OR length(CAST(receipt_id AS BLOB))>71),0) FROM projection_provider_transitions WHERE id=?1",
             "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions WHERE id=?1",
             &bound,
@@ -441,7 +566,7 @@ fn read_ready_link(
         payload: &payload,
         digest: &digest,
     })?;
-    if let DestinationSchema::Admitted9(admission) = schema {
+    if let DestinationSchema::Admitted(admission, _) = schema {
         if ready.transaction_id != admission.transaction_id
             || ready.digest()? != admission.ready_intent_digest
             || ready.receipt_id.as_deref() != Some(admission.receipt_id.as_str())

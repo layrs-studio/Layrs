@@ -21,6 +21,12 @@ pub(in crate::projection::provider) struct OrdinaryImportProtection {
     bytes: PublishedCasProof,
 }
 impl OrdinaryImportProtection {
+    /// Retained object identities only; no canonical root reconstruction or
+    /// content hashing while the family catalog gate is held.
+    pub(super) fn verify_identity(&self, cancel: &Cancellation) -> CauseResult<()> {
+        self.bytes.verify_identity(cancel)
+    }
+
     pub(super) fn require_parts(
         &self,
         binding: &ExactBinding,

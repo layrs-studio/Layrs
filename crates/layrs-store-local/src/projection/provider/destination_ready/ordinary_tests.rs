@@ -238,7 +238,7 @@ fn ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_re
 }
 
 fn exercise_ready_sql(publication: bool) {
-    exercise_ready_sql_phases(publication, false);
+    exercise_ready_sql_phases(publication, false, false);
 }
 
 #[test]
@@ -247,11 +247,22 @@ fn ordinary_source_publication_partitions_receipts_fences_ready_and_replays_hist
     let test = concat!(module_path!(), "::ordinary_source_publication_partitions_receipts_fences_ready_and_replays_historical_published");
     child::run(test, 120, || {
         child::declare();
-        exercise_ready_sql_phases(false, true);
+        exercise_ready_sql_phases(false, true, false);
     });
 }
 
-fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
+#[test]
+#[ignore = "ROOT source release and audited Ordinary10 SQL child120/outer180 required"]
+fn ordinary_autonomy_keeps_uncopied_selected_base_and_current_representations_through_admission10()
+{
+    let test = concat!(module_path!(), "::ordinary_autonomy_keeps_uncopied_selected_base_and_current_representations_through_admission10");
+    child::run(test, 120, || {
+        child::declare();
+        exercise_ready_sql_phases(false, false, true);
+    });
+}
+
+fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autonomy: bool) {
     with_admitted_source_family_sql(|source, marker, supplied, family, family_marker| {
         let actual = admitted_ordinary::inspect(source, marker, None).unwrap();
         let retained = AdmittedFamilyContext::new(&actual).unwrap();
@@ -267,15 +278,91 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
             .unwrap();
         let (preimage, history) =
             ordinary_destination::tests::append_restore(source, marker, supplied);
-        let known: Vec<_> = supplied.iter().cloned().chain([preimage]).collect();
+        let mut known: Vec<_> = supplied.iter().cloned().chain([preimage]).collect();
+        let alternate = if autonomy {
+            // New selected F has no capture/restore mapping. M1 sorts BEFORE
+            // B's exact M0, so C's FileId-primary-key mapping cannot recover M0.
+            use layrs_core::scm::{Chunk, ChunkingDescriptor};
+            // Also force distinct FileIds whose manifest ordering is reversed.
+            // The family root orders by ManifestId, whereas the local witness
+            // orders by (FileId, ManifestId). Both orders must remain valid.
+            let historical = known.last().unwrap();
+            let (first, second) = (0..128)
+                .find_map(|seed| {
+                    let bytes = format!("selected base absent from history {seed}");
+                    let first = FileManifest::from_chunks(
+                        ChunkingDescriptor::single(),
+                        &[Chunk::new(bytes.as_bytes().to_vec()).unwrap()],
+                    )
+                    .unwrap();
+                    let second = FileManifest::from_chunks(
+                        ChunkingDescriptor::deterministic_fixed(1048576).unwrap(),
+                        &[Chunk::new(bytes.into_bytes()).unwrap()],
+                    )
+                    .unwrap();
+                    let reversed = [&first, &second].iter().any(|candidate| {
+                        candidate.file_id() != historical.file_id()
+                            && candidate.file_id().cmp(historical.file_id())
+                                != candidate.id().cmp(historical.id())
+                    });
+                    reversed.then_some((first, second))
+                })
+                .expect("bounded fixture must find opposite file/manifest order");
+            assert_eq!(first.file_id(), second.file_id());
+            assert_ne!(first.id(), second.id());
+            let (base, current) = if first.id() > second.id() {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            let old = database::current(source).unwrap();
+            let mut snapshot = old.snapshot.clone();
+            snapshot.entries[0].target = Some(TreeEntryTarget::File {
+                file_id: base.file_id().clone(),
+            });
+            let generation = old.generation + 1;
+            let payload = snapshot.canonical_bytes().unwrap();
+            let digest = database::digest(generation, Some(&old.digest), &payload);
+            source
+                .execute(
+                    "INSERT INTO projection_snapshots VALUES(?1,?2,?3,?4)",
+                    params![generation, digest, old.digest, payload],
+                )
+                .unwrap();
+            source
+                .execute("UPDATE projection_head SET generation=?1", [generation])
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO projection_content VALUES(?1,?2,?3)",
+                    params![
+                        base.file_id().as_str(),
+                        base.id().as_str(),
+                        base.byte_length()
+                    ],
+                )
+                .unwrap();
+            known.push(base.clone());
+            known.push(current.clone());
+            Some((base, current))
+        } else {
+            None
+        };
         let current = database::current(source).unwrap();
         let selected = selection::at(source, current.generation).unwrap();
         let entry = &current.snapshot.entries[0];
         let Some(TreeEntryTarget::File { file_id: base_id }) = &entry.target else {
             panic!("fixture file required")
         };
-        let image_manifest = supplied.last().unwrap();
-        assert_ne!(base_id, image_manifest.file_id());
+        let image_manifest = alternate
+            .as_ref()
+            .map(|(_, current)| current)
+            .unwrap_or_else(|| supplied.last().unwrap());
+        if autonomy {
+            assert_eq!(base_id, image_manifest.file_id());
+        } else {
+            assert_ne!(base_id, image_manifest.file_id());
+        }
         let image = bootstrap::recovery_image_digest(
             &[ProviderRecoveryExportFile {
                 path: entry.path.clone(),
@@ -299,6 +386,9 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
         let mappings = closure
             .copied_content_mappings(source, &prefix, None)
             .unwrap();
+        if autonomy {
+            assert!(!mappings.contains_key(base_id));
+        }
         let historical: Vec<_> = mappings
             .iter()
             .map(|(file, (id, bytes))| RequiredManifest {
@@ -323,6 +413,13 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
             );
         }
         let required: Vec<_> = union.into_values().collect();
+        if autonomy {
+            let mut root_order: Vec<_> = required.iter().collect();
+            root_order.sort_unstable_by_key(|manifest| manifest.id());
+            assert!(root_order
+                .windows(2)
+                .any(|pair| pair[0].file_id() > pair[1].file_id()));
+        }
         let version = prefix.source.version();
         let stored_selection_digest: String = source.query_row(
                 "SELECT digest FROM projection_selections WHERE generation<=?1 ORDER BY generation DESC LIMIT 1",
@@ -358,7 +455,7 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
             4 * 1024 * 1024,
         )
         .unwrap();
-        assert_eq!(derived.capture.changes.len(), 1);
+        assert_eq!(derived.capture.changes.len(), if autonomy { 0 } else { 1 });
         let planned = ProviderTransitionIntentRecord {
             schema_version: "layrs.projection-provider-transition-intent.v1".into(),
             transaction_id: TX.into(),
@@ -528,10 +625,18 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
             ProviderTransitionIntentRecord::decode(&destination_staging.encode().unwrap()).unwrap();
         ready.state = TransitionState::Ready;
         ready.receipt_id = Some(receipt.digest().unwrap());
-        let overlay = [ManagedReadyOverlay {
-            path: entry.path.clone(),
-            manifest_id: Some(image_manifest.id().clone()),
-        }];
+        let overlay: Vec<_> = derived
+            .capture
+            .changes
+            .iter()
+            .map(|change| ManagedReadyOverlay {
+                path: change.path.clone(),
+                manifest_id: change
+                    .replacement
+                    .as_ref()
+                    .map(|_| image_manifest.id().clone()),
+            })
+            .collect();
         let claims = [ManagedReadyClaim {
             root_id: protection.id().into(),
             digest: protection.id().into(),
@@ -696,6 +801,16 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
         if source_publication {
             exercise_source_publication(source, c, family, &inputs, &expected);
         }
+        if autonomy {
+            exercise_ordinary_admission(
+                source,
+                c,
+                family,
+                &inputs,
+                &expected,
+                alternate.as_ref().unwrap(),
+            );
+        }
         c.execute_batch("ROLLBACK").unwrap();
         bare.finish(Ok(())).unwrap();
     });
@@ -703,6 +818,354 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool) {
 
 // This recipe intentionally supplies decoded C Ready and declared capacity
 // DATA. It proves the B SQL mutations/partition, not physical C/family or ACK.
+fn exercise_ordinary_admission(
+    source: &Connection,
+    destination: &Connection,
+    family: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    alternate: &(FileManifest, FileManifest),
+) {
+    use crate::projection::provider::{
+        import_validation::{read_destination_prefix, DestinationOriginKind},
+        managed_admission::{admit_ordinary_ready, AdmissionWriteEffect},
+        ordinary_transition::PublicationCapacity,
+        published_handoff::read_ordinary_published_for_ready,
+        transition_sql::SourceIntentEffect,
+    };
+    let (base, current) = alternate;
+    assert_eq!(base.file_id(), current.file_id());
+    assert!(current.id() < base.id());
+    destination
+        .execute_batch("ROLLBACK; PRAGMA query_only=OFF; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
+        .unwrap();
+    inputs
+        .retained
+        .publish_export_ready(
+            family,
+            inputs.family_marker_bytes,
+            &inputs.publication_inputs(expected),
+            None,
+        )
+        .unwrap();
+    let prefix = read_destination_prefix(destination, inputs.marker, None).unwrap();
+    assert_eq!(prefix.origin(), DestinationOriginKind::Ordinary);
+    assert!(prefix.source().is_err());
+    assert!(prefix.activation().is_err());
+    let copied = prefix.copied_content_mappings(destination, None).unwrap();
+    assert!(!copied.contains_key(base.file_id()));
+    assert_eq!(
+        destination
+            .query_row(
+                "SELECT manifest_id FROM projection_content WHERE file_id=?1",
+                [base.file_id().as_str()],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        current.id().as_str()
+    );
+    assert!(read_managed_ready(destination, inputs.marker, family, None).is_err());
+    let ready = read_ordinary_managed_ready(destination, inputs.marker, family, None).unwrap();
+    let original_journal = ready.journal().rows().to_vec();
+    assert_eq!(ready.origin(), DestinationOriginKind::Ordinary);
+    assert_eq!(ready.required(), inputs.data.required);
+    assert!(ready
+        .required()
+        .iter()
+        .any(|manifest| manifest.id() == base.id()));
+    assert!(ready
+        .required()
+        .iter()
+        .any(|manifest| manifest.id() == current.id()));
+    ready.require(destination, family, None).unwrap();
+    // The autonomous C8 read is strictly observational.
+    let before = dump(destination);
+    let changes = destination.total_changes();
+    read_ordinary_managed_ready(destination, inputs.marker, family, None).unwrap();
+    assert_eq!(destination.total_changes(), changes);
+    assert_eq!(dump(destination), before);
+    let remaining: u64 = family
+        .query_row(
+            "SELECT remaining FROM reservations WHERE id=?1",
+            [&inputs.target.binding().reservation],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let remaining = remaining.checked_sub(expected.header().file_bytes).unwrap();
+    let capacity = PublicationCapacity::new(
+        inputs.data.ready,
+        inputs.data.receipt,
+        inputs.metadata_floor + expected.maximum_encoded_bytes(),
+        remaining,
+    )
+    .unwrap();
+    inputs
+        .protection
+        .require_envelope(remaining, capacity.metadata_floor())
+        .unwrap();
+    assert_eq!(
+        ordinary_transition::apply_ready(
+            source,
+            inputs.source_marker,
+            inputs.source_staging,
+            ready.ready(),
+            ready.receipt(),
+            &capacity,
+            None,
+        )
+        .unwrap(),
+        SourceIntentEffect::Updated
+    );
+    let previous =
+        ordinary_transition::read_publication_state(source, inputs.source_marker, TX, None)
+            .unwrap();
+    assert_eq!(
+        ordinary_transition::apply_published(
+            source,
+            inputs.source_marker,
+            &previous.intent,
+            ready.ready(),
+            ready.receipt(),
+            &capacity,
+            None,
+        )
+        .unwrap(),
+        SourceIntentEffect::Updated
+    );
+    let published = read_ordinary_published_for_ready(
+        source,
+        inputs.source_marker,
+        ready.ready(),
+        ready.receipt(),
+        None,
+    )
+    .unwrap();
+    destination
+        .execute_batch("SAVEPOINT admission_rollback")
+        .unwrap();
+    assert_eq!(
+        admit_ordinary_ready(
+            destination,
+            inputs.marker,
+            family,
+            source,
+            &ready,
+            &published,
+            None
+        )
+        .unwrap(),
+        AdmissionWriteEffect::Admitted
+    );
+    assert_eq!(
+        read_admitted_import(destination, inputs.marker, None)
+            .unwrap()
+            .private_schema(),
+        10
+    );
+    destination
+        .execute_batch("ROLLBACK TO admission_rollback; RELEASE admission_rollback")
+        .unwrap();
+    assert_eq!(
+        destination
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        8
+    );
+    assert!(!destination.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='projection_import_representations')", [], |row| row.get::<_, bool>(0)).unwrap());
+    assert_eq!(
+        dump(destination),
+        before,
+        "rollback restores complete C8 footprint and operational journal"
+    );
+    ready.require(destination, family, None).unwrap();
+    assert_eq!(
+        admit_ordinary_ready(
+            destination,
+            inputs.marker,
+            family,
+            source,
+            &ready,
+            &published,
+            None
+        )
+        .unwrap(),
+        AdmissionWriteEffect::Admitted
+    );
+    let admitted = read_admitted_import(destination, inputs.marker, None).unwrap();
+    assert_eq!(admitted.private_schema(), 10);
+    assert_eq!(admitted.required().len(), inputs.data.required.len());
+    for manifest in [base, current] {
+        assert!(admitted
+            .required()
+            .iter()
+            .any(|row| &row.file_id == manifest.file_id()
+                && &row.manifest_id == manifest.id()
+                && row.bytes == manifest.byte_length()));
+    }
+    assert_eq!(admitted.archive().rows(), original_journal.as_slice());
+    drop(admitted);
+    for sql in [
+        "DELETE FROM projection_import_representations WHERE manifest_id=?1",
+        "UPDATE projection_import_representations SET bytes=bytes+1 WHERE manifest_id=?1",
+    ] {
+        destination
+            .execute_batch("SAVEPOINT witness_corrupt")
+            .unwrap();
+        assert_eq!(destination.execute(sql, [base.id().as_str()]).unwrap(), 1);
+        let changed = dump(destination);
+        let writes = destination.total_changes();
+        assert!(read_admitted_import(destination, inputs.marker, None).is_err());
+        assert_eq!(destination.total_changes(), writes);
+        assert_eq!(dump(destination), changed);
+        destination
+            .execute_batch("ROLLBACK TO witness_corrupt; RELEASE witness_corrupt")
+            .unwrap();
+    }
+    destination
+        .execute_batch("SAVEPOINT witness_extra")
+        .unwrap();
+    destination
+        .execute(
+            "INSERT INTO projection_import_representations VALUES(?1,?2,?3)",
+            params![
+                base.file_id().as_str(),
+                format!("blake3:{}", "0".repeat(64)),
+                base.byte_length()
+            ],
+        )
+        .unwrap();
+    assert!(read_admitted_import(destination, inputs.marker, None).is_err());
+    destination
+        .execute_batch("ROLLBACK TO witness_extra; RELEASE witness_extra")
+        .unwrap();
+    destination
+        .execute_batch("SAVEPOINT no_migration; PRAGMA user_version=9")
+        .unwrap();
+    let changed = dump(destination);
+    assert!(read_admitted_import(destination, inputs.marker, None).is_err());
+    assert_eq!(
+        destination
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        9
+    );
+    assert_eq!(dump(destination), changed);
+    destination
+        .execute_batch("ROLLBACK TO no_migration; RELEASE no_migration")
+        .unwrap();
+    // Commit C10, invalidate both external snapshots, then prove all permanent
+    // provenance and later export planning use C alone. No source proof is
+    // refreshed; replay must return before touching these stale holders.
+    destination
+        .execute_batch("COMMIT; PRAGMA query_only=ON; BEGIN DEFERRED")
+        .unwrap();
+    source.execute_batch("ROLLBACK").unwrap();
+    family.execute_batch("ROLLBACK").unwrap();
+    let changes = destination.total_changes();
+    assert_eq!(
+        admit_ordinary_ready(
+            destination,
+            inputs.marker,
+            family,
+            source,
+            &ready,
+            &published,
+            None
+        )
+        .unwrap(),
+        AdmissionWriteEffect::AlreadyAdmitted
+    );
+    let actual = read_admitted_import(destination, inputs.marker, None).unwrap();
+    assert_eq!(actual.private_schema(), 10);
+    assert_c10_history_dispatch(destination, inputs.marker);
+    let mut target = inputs.marker.identity.clone();
+    target.worktree_id = WorktreeId::parse("worktree:ordinary-autonomous-d").unwrap();
+    let (outgoing, closure) = plan_admitted_import(
+        destination,
+        inputs.marker,
+        target,
+        &inputs
+            .data
+            .ready
+            .plan
+            .source_prefix
+            .source
+            .version()
+            .effective_image_digest,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        outgoing.source,
+        ImportSource::Ordinary {
+            private_schema: 10,
+            admission: Some(_),
+            ..
+        }
+    ));
+    closure.assert_current_c10_as_historical_ancestor(destination, &outgoing);
+    assert_eq!(destination.total_changes(), changes);
+}
+
+fn assert_c10_history_dispatch(c: &Connection, marker: &format::Marker) {
+    use crate::projection::{capture, conversion, offline, provider, ProjectionStore};
+    use layrs_core::projection::ProjectionVersion;
+
+    // SQL DATA handle only: these calls neither open the checkout nor grant I/O.
+    let store = ProjectionStore {
+        root: marker.checkout_root.clone().into(),
+        marker: marker.clone(),
+    };
+    let admitted = admitted_ordinary::inspect(c, marker, None).unwrap();
+    let count: u64 = c
+        .query_row("SELECT count(*) FROM projection_captures", [], |r| r.get(0))
+        .unwrap();
+    assert!(count > 0);
+    for sequence in 1..=count {
+        let patch = capture::storage::load_metadata(c, &store, sequence).unwrap();
+        conversion::validate_capture_identity(c, &store, &patch).unwrap();
+        assert_eq!(
+            conversion::imported(c, &store, sequence).unwrap(),
+            sequence <= admitted.imported_capture_count()
+        );
+        conversion::imported_publication_record(c, &store, sequence).unwrap();
+        let mut foreign = patch;
+        foreign.identity.worktree_id = WorktreeId::parse("worktree:foreign-capture").unwrap();
+        assert!(conversion::validate_capture_identity(c, &store, &foreign).is_err());
+    }
+    let mut history = c
+        .prepare("SELECT operation_id,capture_sequence,payload FROM projection_restore_history")
+        .unwrap();
+    let rows = history
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(!rows.is_empty());
+    for (id, sequence, payload) in rows {
+        let origin =
+            admitted_ordinary::restore_history_origin(c, marker, &id, sequence, &payload, None)
+                .unwrap();
+        let patch = capture::storage::load_metadata(c, &store, sequence).unwrap();
+        assert_eq!(origin.identity, patch.identity);
+    }
+    assert!(provider::require_ordinary(c).is_err());
+    assert!(provider::require_reclamation_safe(c).is_err());
+    let current = database::current(c).unwrap();
+    let version = ProjectionVersion::Generation {
+        worktree_id: marker.identity.worktree_id.clone(),
+        generation: current.generation,
+        digest: current.digest,
+    };
+    assert!(offline::resolve(c, &store, &version).is_err());
+}
+
 fn exercise_source_publication(
     source: &Connection,
     destination: &Connection,

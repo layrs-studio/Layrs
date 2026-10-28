@@ -20,7 +20,10 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod admission;
-pub(super) use admission::{admission_budget, admission_cost, AdmissionBudget, AdmissionCost};
+pub(super) use admission::{
+    admission_budget, admission_cost, ordinary_admission_budget, ordinary_admission_cost,
+    AdmissionBudget, AdmissionCost,
+};
 
 const MAX_METADATA: u64 = 1073741824;
 

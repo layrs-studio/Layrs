@@ -107,9 +107,12 @@ owned!(
             assert_eq!(prefix.prefix(), &f.prefix);
             assert_eq!(prefix.receipt(), &f.receipt);
             assert_eq!(prefix.ready(), &f.ready);
-            assert_eq!(prefix.activation(), &f.activation);
-            assert_eq!(prefix.source().commitment(), f.source.source.commitment());
-            assert_eq!(prefix.source().descriptors().len(), 1);
+            assert_eq!(prefix.activation().unwrap(), &f.activation);
+            assert_eq!(
+                prefix.source().unwrap().commitment(),
+                f.source.source.commitment()
+            );
+            assert_eq!(prefix.source().unwrap().descriptors().len(), 1);
             let mappings = prefix.copied_content_mappings(c, None).unwrap();
             assert_eq!(mappings.len(), 1);
             assert_eq!(

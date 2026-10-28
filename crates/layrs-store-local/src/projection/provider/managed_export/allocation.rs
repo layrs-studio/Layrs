@@ -943,7 +943,7 @@ fn observe(
         || !matches!(
             &expected.plan.source_prefix.source,
             ImportSource::Ordinary {
-                private_schema: 9,
+                private_schema: 9 | 10,
                 admission: Some(_),
                 ..
             }

@@ -126,6 +126,7 @@ pub(in crate::projection::provider) fn admit_ready(
         metadata_layout_version: 1,
     };
     record.require_links(
+        schema::AdmittedLayout::Provider9,
         marker,
         prefix.prefix(),
         intent,
@@ -133,8 +134,8 @@ pub(in crate::projection::provider) fn admit_ready(
         published.published(),
     )?;
     let payload = record.encode()?;
-    let observation = prefix.source().initial();
-    let placement = super::super::records::activation::activation_snapshot(prefix.source())?;
+    let observation = prefix.source()?.initial();
+    let placement = super::super::records::activation::activation_snapshot(prefix.source()?)?;
     let capture = load_metadata_for_origin(
         c,
         intent.plan.capture_sequence,
@@ -148,7 +149,7 @@ pub(in crate::projection::provider) fn admit_ready(
         &placement,
         &capture,
         &intent.plan,
-        prefix.source().selection(),
+        prefix.source()?.selection(),
         source_size,
         destination_size,
     )?;
@@ -238,7 +239,10 @@ pub(in crate::projection::provider) fn admit_ready(
 // Frozen provenance is ordered by (FileId, ManifestId), whereas the family
 // protection payload is ordered by ManifestId. Compare exact triples in the
 // provenance order rather than rejecting a valid union because of ordering.
-fn same_representations(actual: &[RequiredRepresentation], manifests: &[FileManifest]) -> bool {
+pub(super) fn same_representations(
+    actual: &[RequiredRepresentation],
+    manifests: &[FileManifest],
+) -> bool {
     if actual.len() != manifests.len() {
         return false;
     }
@@ -256,7 +260,7 @@ fn same_representations(actual: &[RequiredRepresentation], manifests: &[FileMani
 
 /// Stream canonical original journal columns in the archive's exact BINARY key
 /// order. The checksum commits to byte-for-byte copying, not decoded aliases.
-fn journal_commitment(
+pub(super) fn journal_commitment(
     c: &Connection,
     expected: &ExpectedCheckout,
     journal: &CheckoutJournal,

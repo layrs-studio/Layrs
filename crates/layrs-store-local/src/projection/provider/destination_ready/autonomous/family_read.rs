@@ -4,6 +4,7 @@ use layrs_core::scm::WorktreeId;
 use serde::Deserialize;
 
 pub(super) struct FamilyData {
+    pub marker_bytes: Vec<u8>,
     pub required: Vec<FileManifest>,
     pub binding: ExactBinding,
     pub protection: ExactProtection,
@@ -95,6 +96,7 @@ pub(super) fn read(
     }
     // No lookup of the historical source member: it may have been removed.
     if !c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND metadata_path=?2 AND database_identity=?3 AND marker=?4 AND state='ready')",params![marker.identity.worktree_id.as_str(),binding.metadata_path.to_str().ok_or_else(||invalid("autonomous Ready metadata path is not UTF8"))?,binding.database_identity,marker.bytes()?],|r|r.get::<_,bool>(0))? {return Err(invalid("autonomous Ready destination family member differs"));}
+    let marker_bytes = payload;
     let (count, bytes): (u64, u64) = c.query_row(
         "SELECT count(*),coalesce(max(length(payload)),0) FROM roots WHERE id=?1 AND owner=?2",
         params![claim.root_id, marker.identity.worktree_id.as_str()],
@@ -161,6 +163,7 @@ pub(super) fn read(
     };
     exact.validate()?;
     Ok(FamilyData {
+        marker_bytes,
         required: root.manifests,
         binding: exact,
         protection,

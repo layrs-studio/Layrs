@@ -17,8 +17,16 @@ pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
     frozen: FrozenReadyRows,
     outgoing: super::super::ordinary_transition::OrdinaryOutgoing,
     admission_column_bytes: u64,
+    private_schema: u32,
+    witness_column_bytes: u64,
 }
 impl VerifiedAdmittedImport<'_> {
+    pub(in crate::projection::provider) fn private_schema(&self) -> u32 {
+        self.private_schema
+    }
+    pub(in crate::projection::provider) fn witness_column_bytes(&self) -> u64 {
+        self.witness_column_bytes
+    }
     pub(in crate::projection::provider) fn record(&self) -> &ManagedAdmissionRecord {
         &self.record
     }
@@ -89,6 +97,8 @@ impl VerifiedAdmittedImport<'_> {
             || self.frozen.archive != fresh.frozen.archive
             || self.outgoing != fresh.outgoing
             || self.admission_column_bytes != fresh.admission_column_bytes
+            || self.private_schema != fresh.private_schema
+            || self.witness_column_bytes != fresh.witness_column_bytes
         {
             return Err(invalid("admitted immutable provenance changed"));
         }
@@ -146,6 +156,7 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
     let (record, published, admission_column_bytes) = read_record(c, cancel)?;
     let prefix = read_admitted_destination_prefix(c, marker, &permit, &record, cancel)?;
     record.require_links(
+        permit.layout(),
         marker,
         prefix.prefix(),
         prefix.ready(),
@@ -155,6 +166,12 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
     let outgoing =
         super::super::ordinary_transition::read_outgoing(c, marker, &record, &prefix, cancel)?;
     let frozen = read_frozen_ready_rows(c, marker, &prefix, &record, &permit, &outgoing, cancel)?;
+    let witness_column_bytes = match permit.layout() {
+        schema::AdmittedLayout::Provider9 => 0,
+        schema::AdmittedLayout::Ordinary10 => {
+            representations::column_bytes(frozen.required.len() as u64)?
+        }
+    };
     cancellation::check(cancel)?;
     Ok(VerifiedAdmittedImport {
         connection: c,
@@ -165,13 +182,15 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
         frozen,
         outgoing,
         admission_column_bytes,
+        private_schema: permit.private_schema(),
+        witness_column_bytes,
     })
 }
 
 /// Bounded canonical admission metadata only. This neither follows incoming
 /// prefix/frozen rows nor validates outgoing transitions, so it cannot recurse
 /// through destination-prefix revalidation or issue an admitted-import proof.
-/// The caller must first require the genuine schema9/FORMAT permit.
+/// The caller must first require the genuine admitted-schema/FORMAT permit.
 pub(in crate::projection::provider) fn read_record(
     c: &Connection,
     cancel: Option<&Cancellation>,

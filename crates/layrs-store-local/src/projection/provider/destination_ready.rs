@@ -7,7 +7,7 @@
 //! after external family publication; neither entry grants ordinary admission.
 use super::{
     cancellation, database_io, destination_validation,
-    import_validation::VerifiedImportClosure,
+    import_validation::{OrdinaryFrozenBasis, VerifiedImportClosure},
     records::{
         activation::ProviderActivationRecord,
         import::{ImportSource, ProviderImportPrefixRecord, ProviderTransitionReceiptRecord},
@@ -38,7 +38,7 @@ pub(in crate::projection::provider) use ordinary::{
 };
 mod read;
 pub(in crate::projection::provider) use autonomous::{
-    read_managed_ready, OwnedReadySnapshot, VerifiedManagedReady,
+    read_managed_ready, read_ordinary_managed_ready, OwnedReadySnapshot, VerifiedManagedReady,
 };
 
 pub(in crate::projection::provider) struct ManagedReadyOverlay {
@@ -90,6 +90,10 @@ struct ReadyView<'a> {
 enum ReadySource<'a> {
     Provider(&'a ProviderBootstrapSource),
     Ordinary(&'a ordinary::OrdinaryBasis),
+    OrdinaryFrozen {
+        source: &'a OrdinaryFrozenBasis,
+        lengths: &'a BTreeMap<FileId, u64>,
+    },
 }
 
 impl ReadySource<'_> {
@@ -100,9 +104,9 @@ impl ReadySource<'_> {
         match (self, &prefix.source) {
             (Self::Provider(_), ImportSource::Provider { version, .. })
             | (
-                Self::Ordinary(_),
+                Self::Ordinary(_) | Self::OrdinaryFrozen { .. },
                 ImportSource::Ordinary {
-                    private_schema: 9,
+                    private_schema: 9 | 10,
                     admission: Some(_),
                     version,
                     ..
@@ -116,6 +120,7 @@ impl ReadySource<'_> {
         match self {
             Self::Provider(source) => source.selection(),
             Self::Ordinary(source) => &source.selection,
+            Self::OrdinaryFrozen { source, .. } => source.selection(),
         }
     }
 
@@ -127,6 +132,9 @@ impl ReadySource<'_> {
             }
             Self::Ordinary(source) => {
                 data.observation == &source.snapshot && data.placement == &source.snapshot
+            }
+            Self::OrdinaryFrozen { source, .. } => {
+                data.observation == source.snapshot() && data.placement == source.snapshot()
             }
         };
         if !valid {
@@ -146,6 +154,12 @@ impl ReadySource<'_> {
                     return Err(invalid("ordinary Ready source selection differs"));
                 }
                 source.selection_digest.clone()
+            }
+            Self::OrdinaryFrozen { source, .. } => {
+                if source.selection_digest() != self.version(prefix)?.selection_digest {
+                    return Err(invalid("ordinary frozen Ready source selection differs"));
+                }
+                source.selection_digest().to_owned()
             }
         })
     }
@@ -181,6 +195,23 @@ impl ReadySource<'_> {
                     }
                 }
             }
+            Self::OrdinaryFrozen { source, lengths } => {
+                // Only FileId coverage is recoverable here. The complete
+                // committed union, not an arbitrary C mapping, supplies exact
+                // representations; the old B base ManifestId is not inferred.
+                for entry in &source.snapshot().entries {
+                    cancellation::check(cancel)?;
+                    if !source.selection().includes(&entry.path) {
+                        continue;
+                    }
+                    if let Some(layrs_core::scm::TreeEntryTarget::File { file_id }) = &entry.target
+                    {
+                        if !lengths.contains_key(file_id) {
+                            return Err(invalid("ordinary frozen Ready selected base absent"));
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -202,6 +233,10 @@ impl ReadySource<'_> {
                 .map(|d| d.bytes)
                 .ok_or_else(|| invalid("checkout Ready unchanged source descriptor absent")),
             Self::Ordinary(source) => ordinary::unchanged_bytes(&source.base, file, required),
+            Self::OrdinaryFrozen { lengths, .. } => lengths
+                .get(file)
+                .copied()
+                .ok_or_else(|| invalid("ordinary frozen unchanged representation absent")),
         }
     }
 }
@@ -463,6 +498,15 @@ fn require_checkout_ready_expected(
             &expected.header().image_digest,
             cancel,
         )?,
+        ReadySource::OrdinaryFrozen { .. } => {
+            super::checkout_journal::ExpectedCheckout::from_ready_ordinary(
+                inputs.data.ready,
+                expected.files(),
+                expected.deletions(),
+                &expected.header().image_digest,
+                cancel,
+            )?
+        }
     };
     if rebound.header() != expected.header() || expected.marker() != inputs.marker {
         return Err(invalid("checkout journal destination binding differs"));

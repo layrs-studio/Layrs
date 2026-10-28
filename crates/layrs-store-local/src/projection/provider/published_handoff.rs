@@ -18,6 +18,109 @@ use super::{
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
+/// Actual admitted ordinary source SQL at a retained historical publication.
+/// This never grants durability: the admission driver owns an independent
+/// read-only source connection and observes its close after destination COMMIT.
+pub(super) struct OrdinaryPublishedForReady<'s> {
+    connection: &'s Connection,
+    marker: crate::projection::format::Marker,
+    published: ProviderTransitionIntentRecord,
+    receipt: ProviderTransitionReceiptRecord,
+    ready: ProviderTransitionIntentRecord,
+}
+
+impl OrdinaryPublishedForReady<'_> {
+    pub(super) fn published(&self) -> &ProviderTransitionIntentRecord {
+        &self.published
+    }
+
+    pub(super) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
+        &self.receipt
+    }
+
+    pub(super) fn require(&self, c: &Connection, cancel: Option<&Cancellation>) -> Result<()> {
+        if c.is_autocommit() || !std::ptr::eq(c, self.connection) {
+            return Err(invalid(
+                "ordinary publication handoff snapshot ended or differs",
+            ));
+        }
+        let fresh =
+            read_ordinary_published_for_ready(c, &self.marker, &self.ready, &self.receipt, cancel)?;
+        if fresh.published != self.published || fresh.receipt != self.receipt {
+            return Err(invalid(
+                "ordinary publication handoff historical rows changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn read_ordinary_published_for_ready<'s>(
+    c: &'s Connection,
+    marker: &crate::projection::format::Marker,
+    ready: &ProviderTransitionIntentRecord,
+    receipt: &ProviderTransitionReceiptRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<OrdinaryPublishedForReady<'s>> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit() {
+        return Err(invalid(
+            "ordinary publication handoff requires retained transaction",
+        ));
+    }
+    let ready_bytes = ready.encode()?;
+    receipt.encode()?;
+    if ready.role != TransitionRole::Destination
+        || ready.state != TransitionState::Ready
+        || !matches!(
+            ready.plan.source_prefix.source,
+            super::records::import::ImportSource::Ordinary {
+                private_schema: 9 | 10,
+                admission: Some(_),
+                ..
+            }
+        )
+    {
+        return Err(invalid(
+            "ordinary publication handoff target origin or phase differs",
+        ));
+    }
+    ready.require_receipt(receipt)?;
+    // Complete current admission/outgoing partition; Published may predate the
+    // current head. No live planner or reconstructed Staging is used here.
+    let observed = super::ordinary_transition::read_publication_state(
+        c,
+        marker,
+        &ready.transaction_id,
+        cancel,
+    )?;
+    let published = observed.intent;
+    let actual_receipt = observed
+        .receipt
+        .ok_or_else(|| invalid("ordinary publication handoff receipt absent"))?;
+    if published.role != TransitionRole::Source
+        || published.state != TransitionState::Published
+        || published.plan != ready.plan
+        || published.destination != ready.destination
+        || published.reservation != ready.reservation
+        || published.receipt_id != ready.receipt_id
+        || actual_receipt != *receipt
+    {
+        return Err(invalid(
+            "ordinary publication handoff actual source differs from Ready",
+        ));
+    }
+    published.require_receipt(&actual_receipt)?;
+    cancellation::check(cancel)?;
+    Ok(OrdinaryPublishedForReady {
+        connection: c,
+        marker: marker.clone(),
+        published,
+        receipt: actual_receipt,
+        ready: ProviderTransitionIntentRecord::decode(&ready_bytes)?,
+    })
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PublicationSource<'a> {
     pub allocation: &'a AllocationRecord,

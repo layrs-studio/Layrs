@@ -2,9 +2,14 @@
 //! each retained snapshot; no ContentScope or transaction escapes its callback.
 //! Dedicated child adapters retain allocation pins and journal Copying; content
 //! transfer, destination readiness and autonomous admission remain separate.
+mod admission;
 pub(super) mod allocation;
+pub(in crate::projection::provider) use admission::{
+    AdmissionStep, OrdinaryAdmissionFailure, OrdinaryAdmissionProgress, OrdinaryReadyAdmission,
+};
 mod budget;
 mod checkout;
+pub(in crate::projection::provider) use checkout::OrdinaryCheckoutProof;
 mod content;
 mod copy;
 mod destination;
@@ -12,6 +17,7 @@ mod image;
 mod installing;
 mod preallocation;
 mod protection;
+pub(in crate::projection::provider) use protection::OrdinaryImportProtection;
 mod ready;
 mod ready_data;
 mod reservation;

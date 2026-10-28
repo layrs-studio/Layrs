@@ -3,6 +3,65 @@ use super::*;
 use layrs_core::scm::{SpaceId, StoreId, WorktreeId};
 use rusqlite::ToSql;
 
+impl VerifiedImportClosure {
+    /// Exercise the historical walker one receipt beyond the real C10 export
+    /// prefix. The added D receipt is declared DATA, never a live D admission
+    /// or a physical transition proof. Every ancestor closure is checked against
+    /// the unchanged, real C10 SQL rows, including its copied restore history.
+    pub(in crate::projection::provider) fn assert_current_c10_as_historical_ancestor(
+        mut self,
+        c: &Connection,
+        prefix: &ProviderImportPrefixRecord,
+    ) {
+        use super::super::records::Record;
+        assert!(matches!(
+            prefix.source,
+            ImportSource::Ordinary {
+                private_schema: 10,
+                admission: Some(_),
+                ..
+            }
+        ));
+        self.require_source_connection(c).unwrap();
+        let parent = self.metadata.lineage.receipts.last().unwrap();
+        let mut next = ProviderTransitionReceiptRecord::decode(&parent.encode().unwrap()).unwrap();
+        let version = prefix.source.version();
+        next.source_prefix = ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap();
+        next.source_prefix_id = prefix.digest().unwrap();
+        next.parent_receipt_id = prefix.ancestry_root_receipt.clone();
+        next.source_identity = match &prefix.source {
+            ImportSource::Ordinary { identity, .. } => identity.clone(),
+            _ => unreachable!("C10 ordinary source asserted above"),
+        };
+        next.destination_identity = prefix.destination_identity.clone();
+        next.transaction_id = "declared-future-d-receipt".into();
+        next.imported_max_generation = version.generation;
+        next.destination_observation_generation = version.generation + 1;
+        next.destination_placement_generation = version.generation + 2;
+        next.imported_capture_count = version.capture_count;
+        next.destination_capture_sequence = version.capture_count + 1;
+        next.content_mappings = prefix.closure.content_mappings.clone();
+        next.validate_fields().unwrap();
+        prefix.require_admission_parent(Some(parent)).unwrap();
+        let segment = ImportedSegment::from_receipt(&next, Some(parent)).unwrap();
+        self.metadata.lineage.segments.push(segment);
+        self.metadata.lineage.receipts.push(next);
+        self.metadata.lineage.local_identity = prefix.destination_identity.clone();
+        self.metadata.lineage.local_min_generation = version.generation + 1;
+        ancestry::verify_historical_closures(c, prefix, &self.metadata, None).unwrap();
+
+        // A valid ancestor schema does not waive its committed SQL contents.
+        let last = self.metadata.lineage.receipts.last_mut().unwrap();
+        last.source_prefix.closure.snapshots.digest = format!("blake3:{}", "0".repeat(64));
+        last.source_prefix_id = last.source_prefix.digest().unwrap();
+        let error =
+            ancestry::verify_historical_closures(c, prefix, &self.metadata, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ancestor immutable SQL closure differs"));
+    }
+}
+
 fn identity() -> crate::projection::ProjectionIdentity {
     crate::projection::ProjectionIdentity {
         store_id: StoreId::parse("store:source").unwrap(),

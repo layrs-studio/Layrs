@@ -581,7 +581,7 @@ pub(in crate::projection::provider) fn derive_ordinary_data(
     let source_identity = match &prefix.source {
         ImportSource::Ordinary {
             identity,
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(_),
             ..
         } if prefix.supports_restore_history() => identity,

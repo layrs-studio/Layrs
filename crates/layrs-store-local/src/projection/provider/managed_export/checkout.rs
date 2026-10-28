@@ -27,6 +27,22 @@ pub(in crate::projection::provider) struct OrdinaryCheckoutProof {
     bytes: VerifiedCheckout,
 }
 impl OrdinaryCheckoutProof {
+    /// The full inventory was checked outside the catalog gate. Recheck its
+    /// immutable retained inodes without enumerating the checkout namespace.
+    pub(super) fn require_identity(
+        &self,
+        expected: &ExpectedCheckout,
+        journal: &CheckoutJournal,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        if expected.header() != self.expected.header() || journal.rows() != self.journal.rows() {
+            return Err(cause_invalid(
+                "ordinary checkout proof inventory/journal differs",
+            ));
+        }
+        self.bytes.require_identity(expected, journal, cancel)
+    }
+
     pub(super) fn require_parts(
         &self,
         expected: &ExpectedCheckout,

@@ -1,5 +1,5 @@
-//! Additive private9 footprint. Never append this DDL under private8, and never
-//! spoof user_version to reinterpret the archive as an operational journal.
+//! Exact admitted private9/private10 footprints. Never append either to a
+//! private8 database outside its caller-transaction admission writer.
 use super::*;
 use crate::projection::{database, retention, selection};
 
@@ -13,12 +13,42 @@ CREATE TABLE projection_import_checkout(path TEXT PRIMARY KEY CHECK(length(CAST(
 pub(super) const MAX_ADMISSION_COLUMN_BYTES: u64 = 4 * 71 + 4 * 8 + 262144 + 65536;
 pub(super) const MAX_ARCHIVE_COLUMN_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Ordinary admission adds its own immutable witness; SQL above is the exact
+/// historical private9 DDL and must remain unchanged.
+pub(super) const SQL10_WITNESS: &str = r#"
+CREATE TABLE projection_import_representations(file_id TEXT NOT NULL CHECK(length(CAST(file_id AS BLOB))=71 AND substr(file_id,1,7)='blake3:' AND substr(file_id,8) NOT GLOB '*[^0-9a-f]*'),manifest_id TEXT NOT NULL CHECK(length(CAST(manifest_id AS BLOB))=71 AND substr(manifest_id,1,7)='blake3:' AND substr(manifest_id,8) NOT GLOB '*[^0-9a-f]*'),bytes INTEGER NOT NULL CHECK(bytes>=0 AND bytes<=1073741824),PRIMARY KEY(file_id,manifest_id)) STRICT;
+"#;
+pub(super) const MAX_REPRESENTATIONS: u64 = 100_000;
+pub(super) const REPRESENTATION_COLUMN_BYTES: u64 = 71 + 71 + 8;
+pub(super) const MAX_REPRESENTATION_COLUMN_BYTES: u64 = 15_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection::provider) enum AdmittedLayout {
+    Provider9,
+    Ordinary10,
+}
+impl AdmittedLayout {
+    pub(in crate::projection::provider) fn private_schema(self) -> u32 {
+        match self {
+            Self::Provider9 => 9,
+            Self::Ordinary10 => 10,
+        }
+    }
+}
+
 /// Closed actual-schema token. It is not admission, ACK durability or bytes.
-pub(in crate::projection::provider) struct Schema9Permit<'a> {
+pub(in crate::projection::provider) struct AdmittedSchemaPermit<'a> {
     connection: &'a Connection,
     marker: format::Marker,
+    layout: AdmittedLayout,
 }
-impl Schema9Permit<'_> {
+impl AdmittedSchemaPermit<'_> {
+    pub(in crate::projection::provider) fn layout(&self) -> AdmittedLayout {
+        self.layout
+    }
+    pub(in crate::projection::provider) fn private_schema(&self) -> u32 {
+        self.layout.private_schema()
+    }
     pub(in crate::projection::provider) fn require(
         &self,
         c: &Connection,
@@ -32,7 +62,9 @@ impl Schema9Permit<'_> {
             ));
         }
         // A borrow cannot prevent transaction restart or transactional DDL.
-        require_schema(c, marker, cancel)?;
+        if require_schema(c, marker, cancel)?.layout != self.layout {
+            return Err(invalid("admitted schema permit layout changed"));
+        }
         Ok(())
     }
 }
@@ -41,7 +73,7 @@ pub(in crate::projection::provider) fn require_schema<'a>(
     c: &'a Connection,
     marker: &format::Marker,
     cancel: Option<&Cancellation>,
-) -> Result<Schema9Permit<'a>> {
+) -> Result<AdmittedSchemaPermit<'a>> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("admitted import requires retained transaction"));
@@ -52,10 +84,16 @@ pub(in crate::projection::provider) fn require_schema<'a>(
     }
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let inventory = super::super::database_io::schema_inventory(c)?;
-    if version != 9 {
-        return Err(invalid("admitted import requires exact private schema9"));
-    }
-    let ddl = [
+    let layout = match version {
+        9 => AdmittedLayout::Provider9,
+        10 => AdmittedLayout::Ordinary10,
+        _ => {
+            return Err(invalid(
+                "admitted import requires exact private schema9 or schema10",
+            ))
+        }
+    };
+    let mut ddl = [
         database::SQL,
         selection::SQL,
         retention::SQL,
@@ -63,12 +101,18 @@ pub(in crate::projection::provider) fn require_schema<'a>(
         SQL,
     ]
     .concat();
+    if layout == AdmittedLayout::Ordinary10 {
+        ddl.push_str(SQL10_WITNESS);
+    }
     super::super::database_io::with_reference(&ddl, |reference| {
         if inventory != super::super::database_io::schema_inventory(reference)? {
             return Err(invalid("admitted import schema fingerprint differs"));
         }
         Ok(())
     })?;
+    if layout == AdmittedLayout::Ordinary10 {
+        super::representations::preflight(c, cancel)?;
+    }
     let (count, bytes): (u64, u64) = c.query_row(
         "SELECT count(*),coalesce(max(length(identity)),0) FROM projection_meta",
         [],
@@ -86,8 +130,9 @@ pub(in crate::projection::provider) fn require_schema<'a>(
         return Err(invalid("admitted import identity differs from FORMAT"));
     }
     cancellation::check(cancel)?;
-    Ok(Schema9Permit {
+    Ok(AdmittedSchemaPermit {
         connection: c,
         marker: marker.clone(),
+        layout,
     })
 }

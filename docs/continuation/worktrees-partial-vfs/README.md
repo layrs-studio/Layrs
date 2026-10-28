@@ -1,5 +1,18 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Publication source ordinaire qualifiée r49–r51
+
+16 recettes courtes r49 PASS (3 pures,13 SQL), puis les deux natives r51 PASS :
+nettoyage357s et publication B Ready/Published1438s avec replays exacts et fermeture
+positive du propriétaire B. C reste privé Ready8, membre familial Ready, non admis.
+Le timeout nettoyage240s de r49 et le refus d'accès r50 restent conservés.
+
+Archive vérifiée `ordinary-source-publication-evidence-20261028-r49-r51.tar.gz` :
+2014fichiers,5895640octets, SHA256
+`c3e18a26146fd1e1026225970e3ed6dad9fe5768e8eda57c5b4c52f93003ef66`.
+Code produit B sauvegardé dans `3717c59`. Lot suivant C10 en source et en revue,
+sans qualification encore ; voir la note de reprise du28octobre.
+
 ## Reprise du 28 octobre — Ready et publication familiale qualifiés r47
 
 Les 18 recettes r47 passent : 3 pures, 12 SQL et 3 natives Windows. Le témoin
@@ -14,8 +27,7 @@ Corrections sauvegardées dans `218e625`. Archive vérifiée
 `ffad3ec7ebb04ca48de61bd9bb9a873ab163bb8de0b98adde33f45875380428d`.
 Elle conserve aussi la tentative r46 échouée au double rollback de fixture.
 
-Le lot B Ready/Published suivant est intégré, relu en source et compilé ; sa
-qualification r49 est distincte et en cours. Voir
+Le lot B Ready/Published suivant est qualifié séparément ci-dessus. Voir
 `docs/plans/worktrees-partial-vfs-resume-2026-10-28.md`. Aucune réussite C9,
 autonomie, crash/owner-loss ou intégration complète n'est déduite de r47.
 

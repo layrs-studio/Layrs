@@ -13,7 +13,10 @@ use crate::projection::{
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         destination_ready::ReadyEffect,
         managed_admission::read_admitted_import,
-        managed_export::allocation,
+        managed_export::{
+            allocation::{self, ManagedDestinationAllocation},
+            OrdinaryCheckoutProof, OrdinaryImportProtection, OrdinaryManagedExport,
+        },
         ordinary_destination::{staging::StageEffect, CopyEffect},
         process_profile::tests::child,
         records::{
@@ -240,7 +243,40 @@ fn managed_ordinary_source_publication_commits_ready_then_published_and_replays_
     );
 }
 
+/// Optional continuation of this fresh same-owner fixture. The original
+/// publication test supplies no hooks and keeps its exact C8 assertions.
+pub(super) struct PublicationFixture<'a> {
+    pub destination: &'a ManagedDestinationAllocation,
+    pub protection: &'a OrdinaryImportProtection,
+    pub checkout: &'a OrdinaryCheckoutProof,
+    pub ready: &'a ProviderTransitionIntentRecord,
+    pub receipt: &'a ProviderTransitionReceiptRecord,
+    pub required: &'a [FileManifest],
+    pub expected: &'a ExpectedCheckout,
+    pub source_marker: &'a format::Marker,
+    pub source_root: &'a Path,
+    pub source_database: &'a Path,
+    pub destination_root: &'a Path,
+    pub destination_database: &'a Path,
+    pub family_root: &'a Path,
+    pub family_database: &'a Path,
+}
+
+pub(super) struct AdmissionHooks {
+    pub before_published:
+        fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
+    pub after_published: fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
+}
+
+pub(super) fn with_admission_hooks(hooks: AdmissionHooks) {
+    source_publication_inner(Some(hooks));
+}
+
 fn source_publication_recipe() {
+    source_publication_inner(None);
+}
+
+fn source_publication_inner(hooks: Option<AdmissionHooks>) {
     child::declare();
 
     // Independent fresh fixture: no r47/earlier database is reopened or reset.
@@ -512,6 +548,23 @@ fn source_publication_recipe() {
     assert_eq!(snapshot(&destination_database), durable.rows);
     let family_rows = family(&family_database, &staging, &required, "ready");
 
+    let fixture = PublicationFixture {
+        destination: &allocated,
+        protection: &protection,
+        checkout: &checkout,
+        ready: &durable.ready,
+        receipt: &durable.receipt,
+        required: &required,
+        expected: &expected,
+        source_marker: &store.marker,
+        source_root: &root,
+        source_database: &source_database,
+        destination_root: &destination_root,
+        destination_database: &destination_database,
+        family_root: &family_root,
+        family_database: &family_database,
+    };
+
     // Independently derive exact B DATA from the witnessed complete C Ready.
     // Only role and source-local generation change; Published then changes
     // only state. None of these expected records rewrite the stored B phase.
@@ -538,6 +591,11 @@ fn source_publication_recipe() {
     let mut previous_rows = before_b;
     let mut previous_trees = witness::trees(&root, &family_root, &destination_root, locks);
     for next in [&expected_ready, &expected_published] {
+        if next.state == TransitionState::Published {
+            if let Some(hooks) = &hooks {
+                (hooks.before_published)(&mut owner, &fixture, &cancel);
+            }
+        }
         let mut publish = |cancel: &Cancellation| {
             if next.state == TransitionState::Ready {
                 owner.publish_source_ready(
@@ -636,6 +694,18 @@ fn source_publication_recipe() {
         previous = next;
         previous_rows = rows;
         previous_trees = trees;
+    }
+
+    if let Some(hooks) = hooks {
+        // The continuation owns the original B owner through its explicit
+        // positive close. C allocation and byte proofs stay borrowed here.
+        (hooks.after_published)(owner, &fixture, &cancel);
+        allocated.require_published(&staging.plan).unwrap();
+        drop(checkout);
+        drop(protection);
+        drop(allocated);
+        drop(store);
+        return;
     }
 
     // All four successful calls used the same live B owner and C protections.

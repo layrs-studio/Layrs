@@ -628,7 +628,10 @@ fn has_admitted_header(pin: &super::file::DatabasePin) -> Result<bool> {
     if &header[..16] != b"SQLite format 3\0" {
         return Err(invalid("projection database header differs"));
     }
-    Ok(u32::from_be_bytes(header[60..64].try_into().expect("fixed header slice")) == 9)
+    Ok(matches!(
+        u32::from_be_bytes(header[60..64].try_into().expect("fixed header slice")),
+        9 | 10
+    ))
 }
 /// Filesystem identity only: deliberately contains no CheckoutReader or SQL.
 /// Generic directory pins refuse CFAPI roots until the provider control guard

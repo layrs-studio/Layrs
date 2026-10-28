@@ -3,10 +3,10 @@
 //! No family connection, canonical current manifest body or byte authority.
 use super::super::{
     checkout_journal::{self, CheckoutJournal, ExpectedCheckout},
-    import_validation::VerifiedDestinationPrefix,
+    import_validation::{DestinationOriginKind, VerifiedDestinationPrefix},
     managed_admission::{
         record::{ArchiveCommitment, ManagedAdmissionRecord},
-        schema::Schema9Permit,
+        schema::{AdmittedLayout, AdmittedSchemaPermit},
         RequiredRepresentation,
     },
 };
@@ -27,25 +27,47 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
     marker: &format::Marker,
     prefix: &VerifiedDestinationPrefix<'_>,
     record: &ManagedAdmissionRecord,
-    permit: &Schema9Permit<'_>,
+    permit: &AdmittedSchemaPermit<'_>,
     outgoing: &super::super::ordinary_transition::OrdinaryOutgoing,
     cancel: Option<&Cancellation>,
 ) -> Result<FrozenReadyRows> {
     permit.require(c, marker, cancel)?;
     let ready = prefix.ready();
     let plan = &ready.plan;
-    let ImportSource::Provider { version, .. } = &prefix.prefix().source else {
-        return Err(invalid("admitted Ready requires provider prefix"));
-    };
+    let version = prefix.prefix().source.version();
+    if !matches!(
+        (prefix.origin(), permit.layout()),
+        (DestinationOriginKind::Provider, AdmittedLayout::Provider9)
+            | (DestinationOriginKind::Ordinary, AdmittedLayout::Ordinary10)
+    ) {
+        return Err(invalid("admitted Ready frozen origin/layout differs"));
+    }
     if plan.companion_id.is_some()
         || plan.companion_files.count != 0
         || plan.companion_deletions.count != 0
     {
         return Err(invalid("admitted managed Ready companions unsupported"));
     }
-    let source = prefix.source();
-    let observation = source.initial();
-    let placement = super::super::records::activation::activation_snapshot(source)?;
+    let (observation, placement, selected, selection_digest) = match prefix.origin() {
+        DestinationOriginKind::Provider => {
+            let source = prefix.source()?;
+            (
+                source.initial(),
+                super::super::records::activation::activation_snapshot(source)?,
+                source.selection(),
+                source.commitment().selection_digest.as_str(),
+            )
+        }
+        DestinationOriginKind::Ordinary => {
+            let source = prefix.ordinary_frozen()?;
+            (
+                source.snapshot(),
+                source.snapshot().clone(),
+                source.selection(),
+                source.selection_digest(),
+            )
+        }
+    };
     let observation_bytes = observation
         .canonical_bytes()
         .map_err(|e| invalid(e.to_string()))?;
@@ -56,7 +78,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
         || plan.observation.root_tree_id != observation.base_root_tree_id
         || plan.observation.policy_set_id != observation.observed_policy_set_id
         || plan.observation.authorization_epoch != observation.observed_authorization_epoch
-        || plan.observation.selection_digest != source.commitment().selection_digest
+        || plan.observation.selection_digest != selection_digest
         || database::digest(
             plan.observation.generation,
             Some(&version.snapshot_digest),
@@ -85,10 +107,10 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
         ),
     ] {
         cancellation::check(cancel)?;
-        let selected = selection::encode(source.selection())?;
-        let selected_digest = database::digest(generation, Some(digest), &selected);
+        let selected_bytes = selection::encode(selected)?;
+        let selected_digest = database::digest(generation, Some(digest), &selected_bytes);
         if !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_snapshots WHERE generation=?1 AND digest=?2 AND parent_digest=?3 AND payload=?4)",params![generation,digest,parent,payload],|r|r.get::<_,bool>(0))?
-            || !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_selections WHERE generation=?1 AND digest=?2 AND payload=?3)",params![generation,selected_digest,selected],|r|r.get::<_,bool>(0))? {
+            || !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_selections WHERE generation=?1 AND digest=?2 AND payload=?3)",params![generation,selected_digest,selected_bytes],|r|r.get::<_,bool>(0))? {
             return Err(invalid("admitted Ready frozen snapshot or selection differs"));
         }
     }
@@ -208,7 +230,23 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
         return Err(invalid("admitted checkout archive commitment differs"));
     }
     let copied = prefix.copied_content_mappings(c, cancel)?;
-    let required = required(source, &copied, &expected, cancel)?;
+    let required = match prefix.origin() {
+        DestinationOriginKind::Provider => required(prefix.source()?, &copied, &expected, cancel)?,
+        DestinationOriginKind::Ordinary => {
+            let rows =
+                super::super::managed_admission::representations::read_import_representations(
+                    c, permit, ready, cancel,
+                )?;
+            super::autonomous::inventory::require_ordinary_union(
+                prefix.ordinary_frozen()?,
+                &copied,
+                &expected,
+                &rows,
+                cancel,
+            )?;
+            rows
+        }
+    };
     if plan.protected_manifests.count != required.len() as u64
         || plan.protected_manifests.digest
             != rowset(
@@ -221,7 +259,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
             "admitted exact required representation union differs",
         ));
     }
-    require_inventory(source, &placement, &capture, &expected, cancel)?;
+    require_inventory(prefix, &placement, &capture, &expected, &required, cancel)?;
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Overlay<'a> {
@@ -343,19 +381,28 @@ fn required(
 }
 
 fn require_inventory(
-    source: &ProviderBootstrapSource,
+    prefix: &VerifiedDestinationPrefix<'_>,
     placement: &ProjectionSnapshot,
     capture: &CapturedPatch,
     expected: &ExpectedCheckout,
+    required: &[RequiredRepresentation],
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
     use layrs_core::{projection::EntryState, scm::TreeEntryTarget};
+    let selected = match prefix.origin() {
+        DestinationOriginKind::Provider => prefix.source()?.selection(),
+        DestinationOriginKind::Ordinary => prefix.ordinary_frozen()?.selection(),
+    };
+    let lengths: BTreeMap<_, _> = required
+        .iter()
+        .map(|row| (&row.file_id, row.bytes))
+        .collect();
     let mut files = 0usize;
     let mut deletions = 0usize;
     let mut changes = 0usize;
     for entry in &placement.entries {
         cancellation::check(cancel)?;
-        if !source.selection().includes(&entry.path) {
+        if !selected.includes(&entry.path) {
             continue;
         }
         let base = match &entry.target {
@@ -386,14 +433,23 @@ fn require_inventory(
                 }
             }
         } else if let Some((file_id, executable)) = base {
-            let descriptor = source
-                .descriptors()
-                .binary_search_by(|d| d.path.cmp(&entry.path))
-                .ok()
-                .and_then(|n| source.descriptors().get(n))
-                .filter(|d| &d.file_id == file_id && d.executable == executable)
-                .ok_or_else(|| invalid("admitted Ready unchanged descriptor absent"))?;
-            Some((file_id, executable, descriptor.bytes))
+            let bytes = match prefix.origin() {
+                DestinationOriginKind::Provider => {
+                    let source = prefix.source()?;
+                    let descriptor = source
+                        .descriptors()
+                        .binary_search_by(|d| d.path.cmp(&entry.path))
+                        .ok()
+                        .and_then(|n| source.descriptors().get(n))
+                        .filter(|d| &d.file_id == file_id && d.executable == executable)
+                        .ok_or_else(|| invalid("admitted Ready unchanged descriptor absent"))?;
+                    descriptor.bytes
+                }
+                DestinationOriginKind::Ordinary => *lengths
+                    .get(file_id)
+                    .ok_or_else(|| invalid("admitted ordinary unchanged representation absent"))?,
+            };
+            Some((file_id, executable, bytes))
         } else {
             None
         };

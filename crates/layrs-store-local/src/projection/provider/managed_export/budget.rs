@@ -100,8 +100,12 @@ pub(super) fn planning_envelope(
         },
     )?;
     let ready = complete_ready_bound(base, required, cancel)?;
-    let admission =
-        managed_budget::admission_budget(ready, inventory.files, inventory.directories)?;
+    let admission = managed_budget::ordinary_admission_budget(
+        ready,
+        inventory.files,
+        inventory.directories,
+        required.len() as u64,
+    )?;
     let root_payload = root_payload_bound(required, cancel)?;
     // Keep family root/relations/frame capacity in addition to the complete
     // private M. These are precisely AdmissionBudget::require_remaining and
@@ -186,7 +190,7 @@ fn require_baseline(
     if !matches!(
         &baseline.plan.source_prefix.source,
         ImportSource::Ordinary {
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(_),
             ..
         }

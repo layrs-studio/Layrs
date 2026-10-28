@@ -64,6 +64,7 @@ impl AdmittedArchiveData {
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::projection) struct AdmittedOrdinaryData {
     marker: format::Marker,
+    private_schema: u32,
     admission_record_bytes: Vec<u8>,
     admission_digest: String,
     record: ManagedAdmissionRecord,
@@ -74,8 +75,15 @@ pub(in crate::projection) struct AdmittedOrdinaryData {
     checkout: AdmittedCheckoutData,
     archive: AdmittedArchiveData,
     admission_column_bytes: u64,
+    witness_column_bytes: u64,
 }
 impl AdmittedOrdinaryData {
+    pub(in crate::projection) fn private_schema(&self) -> u32 {
+        self.private_schema
+    }
+    pub(in crate::projection) fn witness_column_bytes(&self) -> u64 {
+        self.witness_column_bytes
+    }
     pub(in crate::projection) fn marker(&self) -> &format::Marker {
         &self.marker
     }
@@ -197,6 +205,7 @@ pub(super) fn detach(
     cancellation::check(cancel)?;
     Ok(AdmittedOrdinaryData {
         marker: marker.clone(),
+        private_schema: proof.private_schema(),
         admission_record_bytes,
         admission_digest,
         record,
@@ -207,5 +216,6 @@ pub(super) fn detach(
         checkout,
         archive,
         admission_column_bytes: proof.admission_column_bytes(),
+        witness_column_bytes: proof.witness_column_bytes(),
     })
 }

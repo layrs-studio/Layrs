@@ -153,15 +153,14 @@ pub(in crate::projection) fn read_source_metadata(
             ..
         } => (*private_schema, version, identity),
     };
-    if schema
-        != match kind {
-            ImportDatabaseKind::Ordinary => 6,
-            ImportDatabaseKind::SharedOrdinary => 7,
-            ImportDatabaseKind::Provider => 8,
-            ImportDatabaseKind::AdmittedOrdinary => 9,
-        }
-        || image_digest != version.effective_image_digest
-    {
+    let schema_matches = match kind {
+        ImportDatabaseKind::Ordinary => schema == 6,
+        ImportDatabaseKind::SharedOrdinary => schema == 7,
+        ImportDatabaseKind::Provider => schema == 8,
+        // Compared with the genuine admitted proof below as well.
+        ImportDatabaseKind::AdmittedOrdinary => matches!(schema, 9 | 10),
+    };
+    if !schema_matches || image_digest != version.effective_image_digest {
         return Err(invalid(
             "import source schema or independently witnessed image differs",
         ));
@@ -173,7 +172,8 @@ pub(in crate::projection) fn read_source_metadata(
         let binding = prefix
             .source_admission()
             .ok_or_else(|| invalid("admitted source binding absent"))?;
-        if admitted.record().digest()? != binding.admission_digest
+        if admitted.private_schema() != schema
+            || admitted.record().digest()? != binding.admission_digest
             || admitted.prefix().digest()? != binding.incoming_prefix_id
             || admitted.receipt().digest()? != binding.incoming_receipt_id
             || marker

@@ -1,13 +1,16 @@
 //! Permanent private9 archive interpreter. No operational prejournal selector,
 //! writer, migration, filesystem check or adoption is available through this API.
-use super::super::managed_admission::{schema::Schema9Permit, ArchiveCommitment};
+use super::super::managed_admission::{
+    schema::{AdmittedLayout, AdmittedSchemaPermit},
+    ArchiveCommitment,
+};
 use super::*;
 
 pub(in crate::projection::provider) fn read_archived(
     c: &Connection,
     ready: &ProviderTransitionIntentRecord,
     deletions: &[RepoPath],
-    permit: &Schema9Permit<'_>,
+    permit: &AdmittedSchemaPermit<'_>,
     cancel: Option<&Cancellation>,
 ) -> Result<(ExpectedCheckout, CheckoutJournal, ArchiveCommitment)> {
     cancellation::check(cancel)?;
@@ -83,11 +86,33 @@ pub(in crate::projection::provider) fn read_archived(
     if values.len() as u64 != count || observed != bytes {
         return Err(invalid("archived checkout rowset changed after preflight"));
     }
-    let image = match &ready.plan.source_prefix.source {
-        ImportSource::Provider { version, .. } => &version.effective_image_digest,
-        _ => return Err(invalid("archived checkout requires provider prefix")),
+    let expected = match (&ready.plan.source_prefix.source, permit.layout()) {
+        (ImportSource::Provider { version, .. }, AdmittedLayout::Provider9) => {
+            ExpectedCheckout::from_ready(
+                ready,
+                &files,
+                deletions,
+                &version.effective_image_digest,
+                cancel,
+            )?
+        }
+        (
+            ImportSource::Ordinary {
+                private_schema: 9 | 10,
+                admission: Some(_),
+                version,
+                ..
+            },
+            AdmittedLayout::Ordinary10,
+        ) => ExpectedCheckout::from_ready_ordinary(
+            ready,
+            &files,
+            deletions,
+            &version.effective_image_digest,
+            cancel,
+        )?,
+        _ => return Err(invalid("archived checkout origin/admitted layout differs")),
     };
-    let expected = ExpectedCheckout::from_ready(ready, &files, deletions, image, cancel)?;
     if values.len() != expected.directories.len() + expected.files.len() + 2 {
         return Err(invalid("archived checkout inventory count differs"));
     }

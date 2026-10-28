@@ -82,7 +82,7 @@ impl<'a> OrdinaryPublicationSource<'a> {
         self.staging.validate_fields()?;
         let prefix = &self.staging.plan.source_prefix;
         let ImportSource::Ordinary {
-            private_schema: 9,
+            private_schema: 9 | 10,
             admission: Some(_),
             version,
             ..

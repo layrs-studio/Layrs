@@ -76,6 +76,24 @@ pub(super) fn expected_ready(
     image_digest: &str,
     cancel: Option<&Cancellation>,
 ) -> Result<ExpectedCheckout> {
+    expected_ready_parts(
+        ready,
+        files,
+        deletions,
+        image_digest,
+        SourceKind::Provider,
+        cancel,
+    )
+}
+
+fn expected_ready_parts(
+    ready: &ProviderTransitionIntentRecord,
+    files: &[CheckoutFile],
+    deletions: &[RepoPath],
+    image_digest: &str,
+    source: SourceKind,
+    cancel: Option<&Cancellation>,
+) -> Result<ExpectedCheckout> {
     cancellation::check(cancel)?;
     ready.validate_fields()?;
     if ready.role != super::super::records::transition::TransitionRole::Destination
@@ -88,16 +106,10 @@ pub(super) fn expected_ready(
             "checkout terminal inventory requires destination Ready",
         ));
     }
-    expected_parts(
-        ready,
-        files,
-        deletions,
-        image_digest,
-        SourceKind::Provider,
-        cancel,
-    )
+    expected_parts(ready, files, deletions, image_digest, source, cancel)
 }
 
+#[derive(Clone, Copy)]
 enum SourceKind {
     Provider,
     AdmittedOrdinary,
@@ -115,7 +127,7 @@ fn expected_parts(
         (ImportSource::Provider { version, .. }, SourceKind::Provider) => version,
         (
             ImportSource::Ordinary {
-                private_schema: 9,
+                private_schema: 9 | 10,
                 admission: Some(_),
                 checkout_identity: Some(identity),
                 version,
@@ -131,7 +143,7 @@ fn expected_parts(
         }
         (_, SourceKind::AdmittedOrdinary) => {
             return Err(invalid(
-                "ordinary checkout requires admitted private9 source and checkout identity",
+                "ordinary checkout requires admitted source and checkout identity",
             ))
         }
     };
@@ -321,6 +333,46 @@ pub(super) fn read_ready(
     deletions: &[RepoPath],
     cancel: Option<&Cancellation>,
 ) -> Result<(ExpectedCheckout, CheckoutJournal)> {
+    read_ready_parts(c, ready, deletions, SourceKind::Provider, cancel)
+}
+
+impl ExpectedCheckout {
+    /// Terminal ordinary inventory only. No assertion of actual B Staging or
+    /// Provider bootstrap identity is made by this calculation constructor.
+    pub(in crate::projection::provider) fn from_ready_ordinary(
+        ready: &ProviderTransitionIntentRecord,
+        files: &[CheckoutFile],
+        deletions: &[RepoPath],
+        image_digest: &str,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        expected_ready_parts(
+            ready,
+            files,
+            deletions,
+            image_digest,
+            SourceKind::AdmittedOrdinary,
+            cancel,
+        )
+    }
+
+    pub(in crate::projection::provider) fn read_ready_ordinary(
+        c: &Connection,
+        ready: &ProviderTransitionIntentRecord,
+        deletions: &[RepoPath],
+        cancel: Option<&Cancellation>,
+    ) -> Result<(Self, CheckoutJournal)> {
+        read_ready_parts(c, ready, deletions, SourceKind::AdmittedOrdinary, cancel)
+    }
+}
+
+fn read_ready_parts(
+    c: &Connection,
+    ready: &ProviderTransitionIntentRecord,
+    deletions: &[RepoPath],
+    source: SourceKind,
+    cancel: Option<&Cancellation>,
+) -> Result<(ExpectedCheckout, CheckoutJournal)> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid(
@@ -369,11 +421,24 @@ pub(super) fn read_ready(
             files.push(file);
         }
     }
-    let image = match &ready.plan.source_prefix.source {
-        ImportSource::Provider { version, .. } => &version.effective_image_digest,
-        _ => return Err(invalid("checkout Ready requires provider prefix")),
+    let image = match (&ready.plan.source_prefix.source, source) {
+        (ImportSource::Provider { version, .. }, SourceKind::Provider)
+        | (
+            ImportSource::Ordinary {
+                private_schema: 9 | 10,
+                admission: Some(_),
+                version,
+                ..
+            },
+            SourceKind::AdmittedOrdinary,
+        ) => &version.effective_image_digest,
+        _ => {
+            return Err(invalid(
+                "checkout Ready origin differs from terminal reader",
+            ))
+        }
     };
-    let expected = expected_ready(ready, &files, deletions, image, cancel)?;
+    let expected = expected_ready_parts(ready, &files, deletions, image, source, cancel)?;
     let journal = super::sql::read(c, &expected, cancel)?;
     if !journal.is_complete() {
         return Err(invalid("checkout terminal journal is incomplete"));

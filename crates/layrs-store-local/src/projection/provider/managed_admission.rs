@@ -1,5 +1,5 @@
-//! Permanent admitted-import SQL DATA and caller-transaction writer. No ordinary
-//! route, opener, physical authority or reclamation policy is activated here.
+//! Permanent admitted-import SQL DATA and caller-transaction writers. No opener,
+//! physical authority or reclamation policy is activated here.
 use super::{
     cancellation,
     records::{
@@ -15,12 +15,15 @@ use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+mod ordinary_write;
 mod read;
 pub(super) mod record;
+pub(super) mod representations;
 pub(super) mod schema;
 #[cfg(test)]
 pub(in crate::projection::provider) mod tests;
 mod write;
+pub(super) use ordinary_write::admit_ordinary_ready;
 pub(super) use read::read_admitted_import;
 pub(super) use read::read_record;
 pub(in crate::projection) use read::VerifiedAdmittedImport;

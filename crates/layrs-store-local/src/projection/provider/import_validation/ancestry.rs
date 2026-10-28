@@ -34,7 +34,7 @@ pub(super) fn read_ancestry_rows(
         && !matches!(
             &prefix.source,
             ImportSource::Ordinary {
-                private_schema: 9,
+                private_schema: 9 | 10,
                 admission: Some(_),
                 ..
             }
@@ -170,13 +170,14 @@ pub(super) fn verify_historical_closures(
             6 => ImportDatabaseKind::Ordinary,
             7 => ImportDatabaseKind::SharedOrdinary,
             8 => ImportDatabaseKind::Provider,
-            9 if matches!(
-                &previous_prefix.source,
-                ImportSource::Ordinary {
-                    admission: Some(_),
-                    ..
-                }
-            ) =>
+            9 | 10
+                if matches!(
+                    &previous_prefix.source,
+                    ImportSource::Ordinary {
+                        admission: Some(_),
+                        ..
+                    }
+                ) =>
             {
                 ImportDatabaseKind::AdmittedOrdinary
             }

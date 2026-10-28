@@ -25,7 +25,7 @@ pub(in crate::projection::provider) use destination_prefix::read_admitted_destin
 #[cfg(test)]
 mod destination_prefix_tests;
 pub(in crate::projection::provider) use destination_prefix::{
-    read_destination_prefix, VerifiedDestinationPrefix,
+    read_destination_prefix, DestinationOriginKind, OrdinaryFrozenBasis, VerifiedDestinationPrefix,
 };
 mod provider_proof;
 #[cfg(test)]

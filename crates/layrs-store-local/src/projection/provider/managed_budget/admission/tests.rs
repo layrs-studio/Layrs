@@ -1,6 +1,69 @@
 use super::*;
 
 #[test]
+fn ordinary_admission_funds_the_exact_bounded_witness_without_growing_quota() {
+    let provider = admission_budget(4096, 1, 0).unwrap();
+    let ordinary = ordinary_admission_budget(4096, 1, 0, 100_000).unwrap();
+    assert_eq!(ordinary.witness_rows(), 100_000);
+    assert_eq!(ordinary.witness_bound(), 15_000_000);
+    assert_eq!(
+        ordinary.minimum_metadata(),
+        provider.minimum_metadata() + 15_000_000
+    );
+    assert!(ordinary
+        .require_metadata(provider.minimum_metadata())
+        .is_err());
+    assert!(ordinary
+        .require_quota(65536 + provider.minimum_metadata(), 65536)
+        .is_err());
+    assert!(ordinary_admission_budget(0, 0, 0, 100_001).is_err());
+    assert!(ordinary_admission_budget(0, 0, 0, u64::MAX).is_err());
+    let zero = ordinary_admission_budget(4096, 1, 0, 0).unwrap();
+    assert_eq!(zero, provider);
+}
+
+#[test]
+fn ordinary_admission_cost_rejects_missing_extra_or_mischarged_witness() {
+    let budget = ordinary_admission_budget(1234, 1, 1, 2).unwrap();
+    let actual = ordinary_admission_cost(100, 200, 4, 1024, 2, 300).unwrap();
+    assert_eq!(actual.witness_bytes(), 300);
+    assert_eq!(
+        actual.copy_peak_bytes().unwrap(),
+        2048 + actual.admission_bytes() + 300
+    );
+    budget
+        .require_actual(budget.minimum_metadata(), &actual)
+        .unwrap();
+    let missing = ordinary_admission_cost(100, 200, 4, 1024, 1, 150).unwrap();
+    let extra = ordinary_admission_cost(100, 200, 4, 1024, 3, 450).unwrap();
+    let provider = admission_cost(100, 200, 4, 1024).unwrap();
+    for other in [missing, extra, provider] {
+        assert!(budget
+            .require_actual(budget.minimum_metadata(), &other)
+            .is_err());
+    }
+    assert!(admission_budget(1234, 1, 1)
+        .unwrap()
+        .require_actual(budget.minimum_metadata(), &actual)
+        .is_err());
+    assert!(ordinary_admission_cost(100, 200, 4, 1024, 2, 299).is_err());
+    assert!(ordinary_admission_cost(100, 200, 4, 1024, 2, 301).is_err());
+    assert!(ordinary_admission_cost(100, 200, 4, 1024, 100_001, 15_000_150).is_err());
+}
+
+#[test]
+fn ordinary_admission_metadata_cap_includes_witness_separately_from_family_margin() {
+    let peak = ordinary_admission_budget(0, 0, 0, 100_000)
+        .unwrap()
+        .minimum_metadata();
+    let exact = ordinary_admission_budget(MAX_METADATA - peak, 0, 0, 100_000).unwrap();
+    assert_eq!(exact.minimum_metadata(), MAX_METADATA);
+    assert!(ordinary_admission_budget(MAX_METADATA - peak + 1, 0, 0, 100_000).is_err());
+    assert!(exact.require_remaining(MAX_METADATA, 0, 0).is_err());
+    exact.require_remaining(MAX_METADATA + 65536, 0, 0).unwrap();
+}
+
+#[test]
 fn admission_budget_retains_both_journals_and_full_ack_capacity() {
     let ready = 4096;
     let budget = admission_budget(ready, 1, 0).unwrap();

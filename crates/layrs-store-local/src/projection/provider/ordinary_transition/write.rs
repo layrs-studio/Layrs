@@ -209,7 +209,7 @@ pub(super) fn verify_prefix(
     let binding = actual_binding(marker, admission)?;
     let image = match &prefix.source {
         ImportSource::Ordinary {
-            private_schema: 9,
+            private_schema: 9 | 10,
             version,
             ..
         } => &version.effective_image_digest,
