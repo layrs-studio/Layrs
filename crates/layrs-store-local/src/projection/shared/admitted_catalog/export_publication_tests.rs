@@ -141,7 +141,8 @@ fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves
             .is_err());
             assert_eq!(installing::state(c), actual);
             assert_eq!(c.total_changes(), changes);
-            c.execute_batch("ROLLBACK").unwrap();
+            // The outer retained fixture owns the final transaction rollback.
+            assert!(!c.is_autocommit());
         });
     });
 }
@@ -277,7 +278,8 @@ fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incompl
                 inspect(c, family, retained, target, required, &p).member,
                 ExportPublicationMember::Initializing
             );
-            c.execute_batch("ROLLBACK").unwrap();
+            // The outer retained fixture owns the final transaction rollback.
+            assert!(!c.is_autocommit());
         });
     });
 }

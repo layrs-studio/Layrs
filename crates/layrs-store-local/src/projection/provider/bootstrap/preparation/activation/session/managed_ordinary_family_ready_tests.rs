@@ -1,7 +1,9 @@
 //! Genuine ordinary family publication after private C8 Ready. Only C's family
 //! member changes Initializing -> Ready; B remains Staging and C unadmitted.
-//! Withholding ACK follows successful OS close, not an OS close failure. Positive
-//! deletion/nested checkout, crashes and owner-loss recovery remain unqualified.
+//! Separate fresh fixtures cover acknowledged Updated with durable readback and
+//! withheld ACK replay. Withholding ACK follows successful OS close, not an OS
+//! close failure. Positive deletion/nested checkout, crashes and owner-loss
+//! recovery remain unqualified.
 use super::{
     managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
     managed_ordinary_ready_tests::{self as ready_witness, Physical, CURRENT},
@@ -247,11 +249,25 @@ fn managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_prom
             "::managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c"
         ),
         3000,
-        family_ready_recipe,
+        || family_ready_recipe(true),
     );
 }
 
-fn family_ready_recipe() {
+#[test]
+#[ignore = "ROOT source release and audited owned native child3000/outer3060 required"]
+fn managed_ordinary_family_ready_updates_then_replays_read_only_without_promoting_b_or_admitting_c()
+{
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_family_ready_updates_then_replays_read_only_without_promoting_b_or_admitting_c"
+        ),
+        3000,
+        || family_ready_recipe(false),
+    );
+}
+
+fn family_ready_recipe(withhold_close_ack: bool) {
     child::declare();
 
     // This helper creates a fresh owned fixture and genuinely admits B9.
@@ -429,7 +445,11 @@ fn family_ready_recipe() {
         &staging,
         &derived,
         &selection_payload,
-        &current,
+        ready_witness::ReadyContent {
+            base: &base,
+            history: &history,
+            current: &current,
+        },
         &required,
         &expected,
     );
@@ -482,20 +502,31 @@ fn family_ready_recipe() {
     assert_eq!(snapshot(&destination_database), before_c);
     assert_eq!(snapshot(&family_database), before_family);
 
-    close.withhold = true;
-    let error = match owner.publish_destination_family_ready(
+    close.withhold = withhold_close_ack;
+    let publication = owner.publish_destination_family_ready(
         &allocated,
         &staging,
         &protection,
         &checkout,
         &mut close,
         &cancel,
-    ) {
-        Ok(_) => panic!("family Ready close ACK was not withheld"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
-    assert_eq!(close.counts(), (1, 1, 1, 1));
+    );
+    if withhold_close_ack {
+        let error = match publication {
+            Ok(_) => panic!("family Ready close ACK was not withheld"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
+    } else {
+        // Returning Updated requires the production path's fresh catalog
+        // readback after COMMIT and positively acknowledged physical close.
+        let outcome = publication.unwrap();
+        assert_eq!(outcome.effect(), ExportPublicationEffect::Updated);
+        assert_eq!(outcome.ready(), &durable.ready);
+        assert_eq!(outcome.receipt(), &durable.receipt);
+    }
+    let expected_closes = (1, 1, 1, usize::from(withhold_close_ack));
+    assert_eq!(close.counts(), expected_closes);
     assert_eq!(close.physical_checks, 2);
 
     let committed = witness::trees(&root, &family_root, &destination_root, locks);
@@ -525,7 +556,7 @@ fn family_ready_recipe() {
     assert_eq!(outcome.effect(), ExportPublicationEffect::AlreadyReady);
     assert_eq!(outcome.ready(), &durable.ready);
     assert_eq!(outcome.receipt(), &durable.receipt);
-    assert_eq!(close.counts(), (1, 1, 1, 1));
+    assert_eq!(close.counts(), expected_closes);
     assert_eq!(close.physical_checks, 2);
     assert_eq!(
         witness::trees(&root, &family_root, &destination_root, locks),

@@ -215,6 +215,18 @@ pub(super) struct ReadyRows {
     pub(super) receipt: ProviderTransitionReceiptRecord,
     pub(super) rows: Database,
 }
+pub(super) struct ReadyContent<'a> {
+    pub(super) base: &'a FileManifest,
+    pub(super) history: &'a FileManifest,
+    pub(super) current: &'a FileManifest,
+}
+fn content_row(manifest: &FileManifest) -> Vec<Cell> {
+    vec![
+        text(manifest.file_id().as_str()),
+        text(manifest.id().as_str()),
+        number(manifest.byte_length()),
+    ]
+}
 #[allow(clippy::too_many_arguments)]
 pub(super) fn require_ready_rows(
     path: &Path,
@@ -222,10 +234,38 @@ pub(super) fn require_ready_rows(
     stage: &ProviderTransitionIntentRecord,
     derived: &ManagedPlanData,
     selection_payload: &[u8],
-    current: &FileManifest,
+    content: ReadyContent<'_>,
     required: &[FileManifest],
     expected: &ExpectedCheckout,
 ) -> ReadyRows {
+    // This fixture has three distinct contents, with only the historical
+    // mapping in the copied prefix. Check the full manifest representations
+    // independently of the planner's required rows and the Ready writer.
+    let fixture = [content.base, content.history, content.current];
+    assert_eq!(
+        fixture
+            .iter()
+            .map(|manifest| manifest.file_id())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert_eq!(required.len(), fixture.len());
+    assert_eq!(
+        required
+            .iter()
+            .map(|manifest| ((manifest.file_id(), manifest.id()), manifest))
+            .collect::<BTreeMap<_, _>>(),
+        fixture
+            .into_iter()
+            .map(|manifest| ((manifest.file_id(), manifest.id()), manifest))
+            .collect::<BTreeMap<_, _>>()
+    );
+    assert_eq!(
+        before["projection_content"],
+        vec![content_row(content.history)],
+        "copied prefix must contain exactly the historical fixture mapping"
+    );
     witness::read(path, |c| {
         assert_eq!(
             c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
@@ -393,11 +433,9 @@ pub(super) fn require_ready_rows(
         );
         suffix.insert(
             "projection_content",
-            vec![vec![
-                text(current.file_id().as_str()),
-                text(current.id().as_str()),
-                number(current.byte_length()),
-            ]],
+            // The selected base is protected but absent from copied history,
+            // just like current content: Ready must append both exact rows.
+            vec![content_row(content.base), content_row(content.current)],
         );
         suffix.insert(
             "projection_claims",
@@ -661,9 +699,11 @@ fn ready_recipe() {
         selection::encode(&selection::at(c, staging.local_generation).unwrap()).unwrap()
     });
 
-    assert!(!before_c["projection_content"]
-        .iter()
-        .any(|r| r[0] == text(current.file_id().as_str())));
+    assert_eq!(
+        before_c["projection_content"],
+        vec![content_row(&history)],
+        "copied prefix must contain exactly the historical fixture mapping"
+    );
 
     let final_path = destination_root.join(path.as_str());
     let Node::File((inode, _, _)) = &before.2[&final_path] else {
@@ -736,7 +776,11 @@ fn ready_recipe() {
         &staging,
         &derived,
         &selection_payload,
-        &current,
+        ReadyContent {
+            base: &base,
+            history: &history,
+            current: &current,
+        },
         &required,
         &expected,
     );
