@@ -99,7 +99,10 @@ impl OrdinaryReadyInspection {
         self.require_physical(cancel)
     }
 
-    pub(super) fn require_physical(&self, cancel: &Cancellation) -> Result<()> {
+    pub(in crate::projection::provider) fn require_physical(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<()> {
         self.pins.require_data(&self.data, cancel)?;
         self.cas
             .require(&self.data.binding, &self.data.required, cancel)?;
@@ -109,7 +112,10 @@ impl OrdinaryReadyInspection {
 
     /// Identity-only boundary for retained SQL scopes and post-COMMIT close.
     /// Full namespace checks remain outside every catalog/SQL scope.
-    pub(super) fn require_identity(&self, cancel: &Cancellation) -> Result<()> {
+    pub(in crate::projection::provider) fn require_identity(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<()> {
         self.pins.require_data(&self.data, cancel)?;
         self.cas.verify_identity(cancel)?;
         self.checkout
@@ -133,6 +139,17 @@ impl OrdinaryReadyInspection {
     }
     pub(in crate::projection::provider) fn required(&self) -> &[FileManifest] {
         &self.data.required
+    }
+    pub(in crate::projection::provider) fn snapshot(&self) -> &OwnedReadySnapshot {
+        &self.data
+    }
+    pub(in crate::projection::provider) fn database(&self) -> &database_io::DatabaseFile {
+        &self.pins.database
+    }
+    pub(in crate::projection::provider) fn family(
+        &self,
+    ) -> &crate::projection::shared::provider_access::FamilyAccess {
+        &self.pins.family
     }
 }
 

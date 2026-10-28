@@ -1,6 +1,14 @@
 # Fresh Ordinary Staging to Ready: bounded implementation proposal
 
-Source investigation, 28 October 2026. Not implemented or runtime-qualified.
+Source investigation, 28 October 2026. Implementation candidate r70 now exists
+as `OrdinaryStagingPromotion`, with extracted physical image kernels and two
+fresh-fixture recipes. Independent source review r70 found no actionable defect;
+build and workspace/all-targets check r71 pass. ROOT released seven exact r72
+recipes after matching all 661 retained build inputs. The first five regressions
+pass; the first native fails with stack overflow0xc00000fd after642.474s; the
+second is not run. Evidence is archived. r77 diagnoses the same case using new
+fixtures and test-only phase traces, with unchanged stack limits. No native
+qualification or stack-overflow fix is claimed.
 This follows the separate fresh Ready-to-Published adapter. It does not change
 that adapter's explicit refusal of SourceStaging. Paths below are relative to
 `crates/layrs-store-local/src/projection/`.
@@ -93,3 +101,35 @@ External namespace quiescence still applies to absent names and pre-existing
 writable mappings. Clean teardown is not crash recovery. Hot/cold journals,
 interrupted copying, failed native close quarantine and actual owner loss remain
 separate work. This note records source reasoning, not executable proof.
+
+## Next fresh entry before this adapter
+
+Read-only investigation after r72 launch identifies the closest missing step:
+actual B SourceStaging, C8 private Ready, family member Initializing. Publish
+only the family member Ready, then the existing fresh Staging adapter can run.
+This is a proposed clean-holder recovery unit, not an implemented capability.
+
+`managed_ready_reopen/ordinary_source.rs::OrdinaryExclusiveSource` already gives
+fresh B ownership. `ManagedReadyPins::open` supplies existing-file identity
+mechanics, but the current `OrdinaryReadyInspection` requires family Ready.
+A separate C inspection must authenticate the actual stored destination proof,
+FORMAT/database/control/member identities and Initializing state after B ownership;
+it must not weaken the existing terminal Ready constructor.
+
+`destination_ready/ordinary.rs::read_ordinary_checkout_ready_for_publication`
+already accepts Initializing or Ready with actual B Staging, full copied/private
+suffix, journal and protected family accounting. The exact member-state CAS is
+`shared/admitted_catalog/export_publication.rs::publish_export_ready`. Reuse
+these contracts after independent B image/source-closure reconstruction, exact
+plan/funding/union derivation and fresh C CAS/checkout verification. Retain all
+owners and physical proofs through family COMMIT and positive close; perform
+fresh readback afterward. Actual family Ready replay should need no writer.
+
+Earlier Copying/Staging/install/checkout phases still lack their own fresh
+physical entries even where SQL phase readers exist. Never reconstruct
+`ManagedDestinationAllocation` from paths: its contract forbids adoption after
+holder loss. Resource-free Planned cancellation exists; Planned with partial
+allocation artifacts lacks a durable destination proof and cannot use it.
+Hot/cold rollback journals are refused by clean_admission. Observable native
+close failure may retain process-lifetime quarantine; dropping a holder does not
+establish that it cleared. Those are separate prerequisites for crash recovery.

@@ -236,6 +236,23 @@ fn admit_and_close(
     }
 }
 
+/// Fresh admitted C10 roots/commitments only. The publication helper returns
+/// after positively closing B and dropping every original C/store holder;
+/// opening both former pins for writing independently checks that release.
+pub(super) fn released_source10() -> (PathBuf, AdmittedOrdinaryData) {
+    let f = with_admission_data(before_published, admit_and_close);
+    for pin in &f.pins {
+        drop(
+            OpenOptions::new()
+                .write(true)
+                .share_mode(7)
+                .open(pin)
+                .expect("released C10 setup must retain no checkout/CAS pin"),
+        );
+    }
+    (f.destination, f.destination_admission)
+}
+
 fn move_ancestor_checkouts(f: &Released) -> [(PathBuf, PathBuf); 2] {
     // canonicalize resolves the existing directories/junctions before checking
     // containment; destinations are fresh siblings of those resolved sources.

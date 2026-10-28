@@ -15,8 +15,13 @@ assertion is retained separately. Fresh-owner admission has passed corrected
 source review r65, build/check r64, two strict-read SQL regressions r66 and the
 native admission success with advanced B (785.869s). The final ACK/resolution
 native also passes (746.214s); all five r66 recipes passed and are archived.
-Fresh B Ready→Published has passed source review r67; compilation and runtime
-qualification remain separate. See the
+Fresh B Ready→Published passes all five r69 recipes; its bounded evidence is
+archived. Fresh B Staging→Ready passes source review r70 and build/check r71.
+The five r72 regressions pass; its first native fails with stack overflow and
+the second is not run. r77 runs phase diagnosis on fresh fixtures with unchanged
+stack limits. Ready quiescence r73 and the C10→D10 recipe r74 pass independent
+source review and compilation; source10 runtime remains unexecuted.
+See the
 [current handoff](worktrees-partial-vfs-resume-2026-10-28.md) for exact scope,
 archives and outstanding recovery/product work. The full programme remains open.
 

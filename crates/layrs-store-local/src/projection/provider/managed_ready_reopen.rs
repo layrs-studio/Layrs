@@ -29,7 +29,9 @@ pub(in crate::projection::provider) use ordinary::{
     OrdinaryReadyInspection, OrdinaryTerminalResolution,
 };
 mod ordinary_source;
-pub(in crate::projection::provider) use ordinary_source::OrdinaryAdmissionSource;
+pub(in crate::projection::provider) use ordinary_source::{
+    OrdinaryAdmissionSource, OrdinaryExclusiveSource,
+};
 mod ordinary_admission;
 pub(in crate::projection::provider) use ordinary_admission::{
     OrdinaryFreshAdmission, OrdinaryFreshAdmissionFailure,

@@ -1,0 +1,3566 @@
+{
+  "recordedUtc": "2026-10-28T17:14:50.673876+00:00",
+  "scope": "Fresh physical B Ready-to-Published after clean holder teardown, positive source close/readback and explicit writer-free actual-Published resolution. Only recorded results below are runtime evidence.",
+  "results": [
+    {
+      "test": "projection::provider::destination_ready::ordinary_tests::ordinary_source_publication_partitions_receipts_fences_ready_and_replays_historical_published",
+      "exit": 0,
+      "seconds": 24.177,
+      "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-fresh-publication-r69\\recipe-01",
+      "timeoutCleanup": null
+    },
+    {
+      "test": "projection::provider::destination_ready::autonomous::tests::autonomous_managed_ready_survives_source_removal_and_reads_ro",
+      "exit": 0,
+      "seconds": 0.873,
+      "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-fresh-publication-r69\\recipe-02",
+      "timeoutCleanup": null
+    },
+    {
+      "test": "projection::provider::destination_ready::autonomous::tests::autonomous_managed_ready_rejects_suffix_journal_phase_and_debit_corruption",
+      "exit": 0,
+      "seconds": 1.226,
+      "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-fresh-publication-r69\\recipe-03",
+      "timeoutCleanup": null
+    },
+    {
+      "test": "projection::provider::bootstrap::preparation::activation::session::managed_ordinary_fresh_publication_tests::managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer",
+      "exit": 0,
+      "seconds": 812.201,
+      "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-fresh-publication-r69\\recipe-04",
+      "timeoutCleanup": null
+    },
+    {
+      "test": "projection::provider::bootstrap::preparation::activation::session::managed_ordinary_fresh_publication_tests::managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer",
+      "exit": 0,
+      "seconds": 711.188,
+      "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-fresh-publication-r69\\recipe-05",
+      "timeoutCleanup": null
+    }
+  ],
+  "release": {
+    "bytes": 10524,
+    "sha256": "25e314dcf8cf97fa4a7e70d97740a3aee99b267bd8ec86f58e583f3220ecee57"
+  },
+  "limitations": [
+    "Source review r67 and artifact release are not runtime qualification.",
+    "Withheld ACK follows successful physical B writer close, not an actual OS/SQLite close failure or crash.",
+    "Clean holder teardown does not establish interrupted-copy recovery, hot-journal handling or general owner-loss recovery.",
+    "Fresh Staging/mismatched-receipt native refusal and changed later-B-suffix replay are not exercised by the two new recipes.",
+    "Fresh Ready current operational pending/history suffix rejection is not exercised; subsequent ROOT source audit is examining the absence of an explicit quiescence guard in that adapter.",
+    "Single README scenario and sampled physical pin controls; no general nested/deletion or C10-to-D-to-E qualification.",
+    "Binaries/disposable fixtures excluded and retained locally. Timings observed, not worst-case guarantees."
+  ],
+  "files": [
+    {
+      "path": "r69/autonomous_managed_ready_rejects_suffix_journal_phase_and_debit_corruption.log",
+      "bytes": 522,
+      "sha256": "66396163ab8c54d07187a7dad99b89ce3b8cfe52f02f4fa781c0a26772a0218c"
+    },
+    {
+      "path": "r69/autonomous_managed_ready_survives_source_removal_and_reads_ro.log",
+      "bytes": 496,
+      "sha256": "2a8adb66e179ba7e721bf252015b0ab952b8a05b4e7fbd049a669d9f2a696d5e"
+    },
+    {
+      "path": "r69/bound-inputs/artifact_preparation-prepare-ordinary-fresh-publication-artifacts-r69.py",
+      "bytes": 2035,
+      "sha256": "71072d3106c65cb821016cea7cc2c3f8fbec63000bf7d5b323c3715674f61679"
+    },
+    {
+      "path": "r69/bound-inputs/build-provider-ordinary-fresh-publication-build-r68.log",
+      "bytes": 54650,
+      "sha256": "e7eea4f0f0bb528084cb3e3e8b758930456bb801e1dc8d41fd101d0d611ed493"
+    },
+    {
+      "path": "r69/bound-inputs/diff-changes-r66-r69.diff",
+      "bytes": 53834,
+      "sha256": "bcbd5004ce75210d491157df28412864e510fa5a95fd67fd2168224515156f23"
+    },
+    {
+      "path": "r69/bound-inputs/host_audit-provider-ordinary-fresh-publication-host-audit-r69.py",
+      "bytes": 6483,
+      "sha256": "bfbe6a076867c1cc1f6bcf6245e574912c678dd85a7d017d3500053679957bb0"
+    },
+    {
+      "path": "r69/bound-inputs/manifest67-provider-ordinary-fresh-publication-review-r67-inputs.json",
+      "bytes": 5664,
+      "sha256": "3a658f04430e640b8bcd7db97f5a00beeeef2ded66ff20e90f5576af50fc51c5"
+    },
+    {
+      "path": "r69/bound-inputs/prior_release-ordinary-fresh-admission-source-release.json",
+      "bytes": 10186,
+      "sha256": "7f5ad4198d3743569591f99e4f19645ae727843b305ada99219d10927a1d6e6d"
+    },
+    {
+      "path": "r69/bound-inputs/prior_results-ordinary-fresh-admission-results.json",
+      "bytes": 13081,
+      "sha256": "0c173323dfb79bf41ce928e6708390e307b19b8150798ccb5dfa64db09adfeb2"
+    },
+    {
+      "path": "r69/bound-inputs/release_script-release-ordinary-fresh-publication-r69.py",
+      "bytes": 7275,
+      "sha256": "5256fbb2549f09eae833357ac615e5f6e73bf94fa8af3ff0dd2b665bc2025167"
+    },
+    {
+      "path": "r69/bound-inputs/review67-provider-ordinary-fresh-publication-critical-review-r67.json",
+      "bytes": 27351,
+      "sha256": "e9a08bbe6563f5c112db499ac6f48a41d8ad041dbb32221649c9dad01ea39796"
+    },
+    {
+      "path": "r69/bound-inputs/review_diff-provider-ordinary-fresh-publication-review-r67.diff",
+      "bytes": 53842,
+      "sha256": "b58e8e0b2e8e70b0ef8e153876a393a073384383252bf09a382de55665d7c38c"
+    },
+    {
+      "path": "r69/bound-inputs/runner-provider-ordinary-fresh-publication-run-r69.py",
+      "bytes": 3422,
+      "sha256": "d57ffe25e21ee6596d97678a6a206afed2f530081542af2991ac4a0ad127b199"
+    },
+    {
+      "path": "r69/bound-inputs/workspace_check-provider-ordinary-fresh-publication-check-r68.log",
+      "bytes": 582246,
+      "sha256": "89d978d57b9d374155cadd51fb21de6f8ebaa6fe997cd2dc262bfdae6b5977d3"
+    },
+    {
+      "path": "r69/changes-r66-r69.diff",
+      "bytes": 53834,
+      "sha256": "bcbd5004ce75210d491157df28412864e510fa5a95fd67fd2168224515156f23"
+    },
+    {
+      "path": "r69/host-disposition.json",
+      "bytes": 161723,
+      "sha256": "40b02cff67cb5bff50c46d980210b5ed389e9c5446de60ca928993d90a6039de"
+    },
+    {
+      "path": "r69/managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer.log",
+      "bytes": 825,
+      "sha256": "9d8403da68414e74a14ef27b0866525835dd098eb4a2cd65ab46ebb08a26d6a4"
+    },
+    {
+      "path": "r69/managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer.log",
+      "bytes": 841,
+      "sha256": "d719d933d3bccbcb5805ddc7ebb1ccfa5af18e0839663d3468befea43442dfce"
+    },
+    {
+      "path": "r69/ordinary-fresh-publication-results.json",
+      "bytes": 13425,
+      "sha256": "b57905fc7d771dbaec58a43f75598879b749b62fc78bb04987d9eb871a97e03a"
+    },
+    {
+      "path": "r69/ordinary-fresh-publication-source-release.json",
+      "bytes": 10524,
+      "sha256": "25e314dcf8cf97fa4a7e70d97740a3aee99b267bd8ec86f58e583f3220ecee57"
+    },
+    {
+      "path": "r69/ordinary_source_publication_partitions_receipts_fences_ready_and_replays_historical_published.log",
+      "bytes": 556,
+      "sha256": "3d25f83672bf43548e3d957a5115065c987a059970c8330bbc40369745e927f4"
+    },
+    {
+      "path": "r69/source/Cargo.lock",
+      "bytes": 81370,
+      "sha256": "d5eaf2e73b206df4e13ab887f4bfefff23b3bf1fbefb564c9a5d701fa25e57af"
+    },
+    {
+      "path": "r69/source/Cargo.toml",
+      "bytes": 927,
+      "sha256": "a0adae6335c3c82cedac2aa9981925da08b7c6553d1c96ccbfbeed3545e6a0b4"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/lib.rs",
+      "bytes": 33,
+      "sha256": "dc5c418f3e188e3f89849bc784e1c8d6eeb7982188a895b42009920affe3e296"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/projection.rs",
+      "bytes": 999,
+      "sha256": "8dd621c565f398335bd25fa6bee6d9ab98e4131040ed87f838ca3d346c26d359"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/projection/availability.rs",
+      "bytes": 3296,
+      "sha256": "318528e888347f1aa1e2ff6cc82a7d628140aa7dbcead9d3b43180c738bdae75"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/projection/model.rs",
+      "bytes": 4785,
+      "sha256": "d01ac651a048d013c084b4c778a2f071c586ac05fa1a34a84bb4d0c90863b052"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/projection/paths.rs",
+      "bytes": 6368,
+      "sha256": "a10f56769fd95893743c0202d9f311cae19300e7c69b756282d4444be3479332"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/projection/selection.rs",
+      "bytes": 8773,
+      "sha256": "269a26810276693098cfac408953e586ad1d99a0e270b5645ff510630d96cfed"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/admission.rs",
+      "bytes": 11805,
+      "sha256": "1d6756e69b3b7d16e3a68de15fe090e83a5298b371a92018a9708c1016b4cdc5"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/canonical.rs",
+      "bytes": 4817,
+      "sha256": "5755629fba8a150b792b519add94ef088df61ef729f7735c8795cc15490f95a2"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/content.rs",
+      "bytes": 14867,
+      "sha256": "b05078d8daa13986349b007a56fadaf01577d78e8c71a6ac21b9265bfb27ab57"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/content/stream.rs",
+      "bytes": 5184,
+      "sha256": "8b1f3f3048c487f83afedd1e0e09ade11d03a4286a201c63e79c67d1cb80f5df"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/diff.rs",
+      "bytes": 7780,
+      "sha256": "2e0a22b9cf8e909431fc9c570c8f8f7a914afdb139a4db99eba3b6d4262ada38"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/error.rs",
+      "bytes": 3610,
+      "sha256": "3c439a5074635aa2acf2edd12977eaa2558d81c524120dc9af2cc42898ea203f"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/ids.rs",
+      "bytes": 4904,
+      "sha256": "f3c582a399ccf7bb20d27f2bf9237c0ee13d01ce3f4ae6428ac4cc3d0c630c14"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/mod.rs",
+      "bytes": 1887,
+      "sha256": "a079990e8e0899719aac8a646b18fe0608360830f70f36988f9c0fc363cc5d73"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/path.rs",
+      "bytes": 2958,
+      "sha256": "bfed3fdd8b8b7d1637e9e50a1a4c8dd28a8ad84c144e4ce3ba248b29a733972c"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/release_events.rs",
+      "bytes": 9733,
+      "sha256": "27dd57057735097afab5cf7891f3d6e8b7c45e7a35bfd30bd481a32225d58fb9"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/repository.rs",
+      "bytes": 27205,
+      "sha256": "315a1fd5de075f314b4745bffd06f2f7b137ef5af6f9d772d1d5c4a135314835"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/repository/references.rs",
+      "bytes": 10451,
+      "sha256": "1aa64b6a5a38be7c013d50c09a976f74427f69ca668d1f1ee8165d73239e020f"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/serde_support.rs",
+      "bytes": 494,
+      "sha256": "8671f95d753b95afcaadde7dc424507064613bf757cf82c396479a51bf9ba246"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/step.rs",
+      "bytes": 8774,
+      "sha256": "4b6b2fe7bd5c0234952d7d9d7d1f3d772702ccd7b19fdfad8d8edb27309cdd54"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/src/scm/tree.rs",
+      "bytes": 12028,
+      "sha256": "7f39fdc354dfd69674e130e79429ae7c77773d6795b7d6e28b76bab18494561f"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/tests/scm_v1.rs",
+      "bytes": 17955,
+      "sha256": "428e04356f7a5e1a84750cebf0063af7fb4c5509f29db33fce408b1ef5ad8ef2"
+    },
+    {
+      "path": "r69/source/crates/layrs-core/tests/streaming_content.rs",
+      "bytes": 6291,
+      "sha256": "6c603c6e1dfb5b9555e23cb317734f00b66743d7055afcf4dbf5e9664ad6b923"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/lib.rs",
+      "bytes": 13,
+      "sha256": "f6d81ddaacc4c62b076ea22c6f4c84c475229c5be76d5b69c1e9c67f0699d699"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/error.rs",
+      "bytes": 8637,
+      "sha256": "eafe2d6b6b3bcc0d20716c01934285f78b6609b64ad867e56d2b2c74806b13df"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/heads.rs",
+      "bytes": 7230,
+      "sha256": "8609015c58ef9f8af456bc6bb7b02b8ba18a1561121402091f2e9e7ed400375e"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/mod.rs",
+      "bytes": 478,
+      "sha256": "5c05652bf38cf56aa47732421aed2cc14cbc85d6870ca072fdafcbf3b54e55eb"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/operation_dag.rs",
+      "bytes": 33157,
+      "sha256": "ec46b280bb23fb52470d7670beb6ea6b572c5a2b2db51f8a744e4198f8f94baa"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/selectors.rs",
+      "bytes": 12814,
+      "sha256": "93b4924199fca40a7a1be28841a63a1b4fdf4227f42dccb8a0968b06c02099c4"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/src/scm/step_dag.rs",
+      "bytes": 17045,
+      "sha256": "372950f826636f8a4ace5cd1a14c28e8b708ff027cdf54cb312d5fa7a90ca3e5"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/tests/scm_properties.rs",
+      "bytes": 15818,
+      "sha256": "f30ea29d0e681564fa3ef57a3eb87e46d9c905b55ec55b069c68ae4307cc2851"
+    },
+    {
+      "path": "r69/source/crates/layrs-graph/tests/scm_selectors.rs",
+      "bytes": 15614,
+      "sha256": "ad574bf1064fb1bf5d8368a0d2ea1e5a48c7a72ad7689b675d676e4c36f24301"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/examples/measure_worktree_audit.rs",
+      "bytes": 34851,
+      "sha256": "543ac5742f4111cebda6db7dd94b3c30f26e45c4b933661229122d7a3dcfd3c9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/anchored_export.rs",
+      "bytes": 15607,
+      "sha256": "b75bb0812d87db22b27698dc0306815c9ad85b69e1433e80130d1f64f773c571"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/anchored_export/checkpoint.rs",
+      "bytes": 3503,
+      "sha256": "6d20dea3667083d0eec04a3a03e468efbd4a38033cf672d1a6e878b04ed2c998"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/anchored_export/import_source.rs",
+      "bytes": 5811,
+      "sha256": "8c99b010a3d119436d5743f5a5a4b9479a27289f12624e4b5402bb7e08b11483"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/anchored_export/tests.rs",
+      "bytes": 15471,
+      "sha256": "3fb45860253ba4a536a0ff3d5d2ec99f2c47109ca48db4eb9cbf324ca416907c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/download_cache.rs",
+      "bytes": 15046,
+      "sha256": "9db62cccba7aceabc523db61805aa22cf0432d1e07b2d04f8e1a6b5dce8fe349"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/error.rs",
+      "bytes": 3868,
+      "sha256": "83360e5cfdca9f3758e286a669d41de08933a74039ecbfb7e8d682fa3df7d660"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/layout.rs",
+      "bytes": 7532,
+      "sha256": "c10c5fb41b371f0659321d70fc4b10bff9442f5558c303e94f520f1333f16c34"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/lib.rs",
+      "bytes": 474,
+      "sha256": "75bf94a091ae536e0d7d098e6aa3bc868ea2151e0f10cbcc650de49c94fa0fe6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/lock.rs",
+      "bytes": 5215,
+      "sha256": "1d303061da417e2241173d61eded8a3e1c2a52c1ea0c17b222b25c8f8dbb74ab"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection.rs",
+      "bytes": 14146,
+      "sha256": "736107caa0ba648794cd5059817bad6feb074cd9a72759b7a9fb30f0893f042f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/capture.rs",
+      "bytes": 9842,
+      "sha256": "fa53939492fcf3e22273ca77d176930023b34c405e12ca2ee0134d9b582a4d36"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/capture/scan.rs",
+      "bytes": 11260,
+      "sha256": "2c49c13dfc4461d0b90c15b320b6515b17d6cad9f84c102642ed81a32058f9c1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/capture/scan/tests.rs",
+      "bytes": 2771,
+      "sha256": "d4b5e5f35fca22a925aca0f796854d3542d241b73b1217e046fdfe6500827459"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/capture/storage.rs",
+      "bytes": 25690,
+      "sha256": "039236364887995078479d1f935edf797c83a4ea1a0361885ad0197230bc4e88"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/conversion.rs",
+      "bytes": 32898,
+      "sha256": "32bc0efd4621a076098aad85667098076b6287c26a220a4ae7f56ad3f2908dd8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/database.rs",
+      "bytes": 20778,
+      "sha256": "ddd2411268755a4fc50be8973e34acc4314a279cff224798397a67152e6e655e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/directory_move.rs",
+      "bytes": 28835,
+      "sha256": "dcbd2d2187ec032d29889cc3a8354c0c0b4a13602e5b0dcb2344e34321e287f0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/file.rs",
+      "bytes": 2895,
+      "sha256": "5eaecf57fdf0a7c5e0d86ab12fe12d2a7671f50aa287b90c009076c39d03fb94"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format.rs",
+      "bytes": 27054,
+      "sha256": "44afb6d184f7e87f453da446c31b9a520322940187e7fc201af93622db20007d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/connection.rs",
+      "bytes": 3501,
+      "sha256": "e827ecc0f71cfeb6e239f92725247bfbf78654bc08897c3ecc755638dcb965c2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/content_scope.rs",
+      "bytes": 4904,
+      "sha256": "3b2157b66a76e9601c874d798911dbc88e3a5825279b76cd8bb599767da4a080"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/family.rs",
+      "bytes": 11580,
+      "sha256": "0b45172dfd5c44ca2f5e94242573d95c5f52a8f0bc5783406f03483352441e9f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/recovery.rs",
+      "bytes": 12353,
+      "sha256": "d3a19fab176fa2679babafeefa2b1058755b9702cbc1ffe92e3b4fd713fe8603"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/recovery/admitted.rs",
+      "bytes": 6740,
+      "sha256": "747d72f5fa4490ccdaf2261700d4193da09b8ebb428147a977f29105e2ab4330"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/format/recovery/handle.rs",
+      "bytes": 10189,
+      "sha256": "635243c21a2c10a6695f24e6b8ebee889aa7475c0123a07cf8b764fa847bcdd2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/install.rs",
+      "bytes": 17479,
+      "sha256": "dd1ccac0d4fe47e59a6aa0e9398af70ac19cf5b664d80b13a414e0ec576c7a1f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/install/files.rs",
+      "bytes": 6013,
+      "sha256": "07f4ad2dfd06bb98c994d50381bd20af1eae76cdea150ab9f63cc2be8dce50cd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/maintenance.rs",
+      "bytes": 9142,
+      "sha256": "2953100869629a3f7f822cb65b4efe881e7ad97ac6e03adda77bb4da884d6b31"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/namespace.rs",
+      "bytes": 10931,
+      "sha256": "5c0c25f8f9f6ac913f74d503697b5317f36f9ed13853ff3090b3cd8a98241770"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/namespace/engine.rs",
+      "bytes": 23561,
+      "sha256": "a6d7fcd8138ce176243a812df1f03be1f1eb4b6f379a7cff88901fdcc7af4ca7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/offline.rs",
+      "bytes": 49990,
+      "sha256": "bda3ab9f6cafecbca8f7a35b5b1754b585e9cedeb3b3c76a9529e9d0ca93735a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider.rs",
+      "bytes": 13767,
+      "sha256": "a9038a080d9bd33bcb358771703da2b3ce0167e081be609192b476769ac6c33a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_catalog_io.rs",
+      "bytes": 4166,
+      "sha256": "05924c57caf6b57c483571530f090f71aa57de245729b5df038333d803e328e7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_ordinary.rs",
+      "bytes": 1751,
+      "sha256": "dc1ed002a549bc85f518bfdf272832aac75cad7551b5517d20e6a16548a2d3b5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_ordinary/data.rs",
+      "bytes": 7705,
+      "sha256": "0ddb9ba28f84773c1772b7117e280f889270ff2cd3374b28efcc40fb2f181544"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_ordinary/origins.rs",
+      "bytes": 4887,
+      "sha256": "55a51c48cbdc347c01c8bd54ca64ada381d2d2dc71b1f915dbf1ea7b40ea31f1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_ordinary/snapshot.rs",
+      "bytes": 941,
+      "sha256": "c8ff9885c21503768a45b7e23c621e9ddc6e6348fa55935e0c79b88bc9fca352"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_ordinary/tests.rs",
+      "bytes": 24269,
+      "sha256": "9d6cf861bdbe222180e0a73a911167e65f18c7dde2b08591c093714cdbc8e3ea"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_private_io.rs",
+      "bytes": 7893,
+      "sha256": "51a8fa36896a841f4862bd420e805a2fc7da44432912f2e5b958a31f4eef0b30"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_private_io/handle.rs",
+      "bytes": 4545,
+      "sha256": "d580090479a5223c4d2171df6543028136b89bdb303c13dd3d2070a8030fef6c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/admitted_private_io/validation.rs",
+      "bytes": 2840,
+      "sha256": "16cfbe47e748ac64e3c01630280f856736dadae408e112a0c2becce2bd59b3a8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/artifacts.rs",
+      "bytes": 20441,
+      "sha256": "478abc4a28d18d9eb4e4598642df9d39fba6ca6422c9c38b8fc2ffa10a693c36"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap.rs",
+      "bytes": 6648,
+      "sha256": "a2745d0e3c8a83ffc4ef78051b4ca95022d5f7ea4438cde04f42555cf41dd30f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/abandon.rs",
+      "bytes": 9938,
+      "sha256": "0905f70b36c9d0b9a3458c21f56078cc554819a3eed1b90c8fa75c8344a9d85c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/allocation.rs",
+      "bytes": 14666,
+      "sha256": "4aa58b94c3c439a2e14c0ff227f005b45270805a0a0d83b31fce320637825e88"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/catalog.rs",
+      "bytes": 9904,
+      "sha256": "8d416e79f7035943baadc50dee111159556a6953b5c45c255095c01b3ac7fa17"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/outcome.rs",
+      "bytes": 5924,
+      "sha256": "f8f6f6b31e68d6ed7157c495ef760c5c8615aa3393b58caae2fbdb13ba3734fd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation.rs",
+      "bytes": 14134,
+      "sha256": "4545fce038ba878e32afbcc446f5f1719e02f03bb42af8706bd7e54ba0f331ef"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation.rs",
+      "bytes": 14161,
+      "sha256": "46c9a0218f221d0ea94ced6e4800e219b875f735cb1799cf40556d06eaa2b8f9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture.rs",
+      "bytes": 15381,
+      "sha256": "f82559bc9bdf1bd2fd5196fe4b968d0abf094613d3001910e137a2b65da18584"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture/tests.rs",
+      "bytes": 22402,
+      "sha256": "a0d4dfcd6f38d671f5185c935726fbb0362860e805f1a8c0e3adfdb30a738011"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture/tests/crash.rs",
+      "bytes": 20052,
+      "sha256": "5882b8ce28b65a78e177b01b08f61e6cc8c23fe269a1b8511734661e1fd9ee0b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_image.rs",
+      "bytes": 13042,
+      "sha256": "1604f5ee1c53b4c3e8905d9cd99caf989f51f58de412e0e46fdd1d86125ae1b9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_image/tests.rs",
+      "bytes": 10546,
+      "sha256": "ecdd8ca6b005301dba6ddb052d9687fe63a8be30d01a61b1ab544dcd7da902c5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_sql.rs",
+      "bytes": 17767,
+      "sha256": "26531ed57db7e19db1d7c764ad2651ef9e714a17c222790b3b8a2dcc09d572f5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_sql/tests.rs",
+      "bytes": 8175,
+      "sha256": "f695da4fd5fa932bc26242d6ccabee7715f8a39a86ea3484b0149991aaf9589f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_state.rs",
+      "bytes": 6006,
+      "sha256": "e6bf64b42d9cf6df3933c4573a168e3f1f90cc58d1758d77797d0f9a21e569cd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_allocation.rs",
+      "bytes": 38965,
+      "sha256": "7d00aa358d8025f23bf1bdde2c99538b4c63c5a27929a75a0c4371b10bd9cb2e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_checkout_fs.rs",
+      "bytes": 34813,
+      "sha256": "87856438a706cca08d9bfbdc8bb58ad40d38886064b880dc08acf77028d2e70f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content.rs",
+      "bytes": 18895,
+      "sha256": "aeb6a2750d0f366c617f1377f8578b5450c092b704db2e53c6f261962f08dab1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/checkout.rs",
+      "bytes": 17068,
+      "sha256": "31f1373e1609ad23bf4670bc184c4ad0dd76de7add4a01c184ab5f5d26dbeee0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/exact.rs",
+      "bytes": 10702,
+      "sha256": "58a87b1a6e0ed108713de9dc8fae4364427ac64d9c3cdd3658e3a408ca4d6c4e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/protection.rs",
+      "bytes": 9486,
+      "sha256": "d1d3510d6293a11069b68eeb609e7d80f4190f09c67e670b2be35e6de247c60b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/publication.rs",
+      "bytes": 12173,
+      "sha256": "f6905ee02cce478cf1aa9483bbe66fb4c665137bd33fe2e0c726d7813f1181b5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/ready.rs",
+      "bytes": 13014,
+      "sha256": "37074d2f02bae65eee3f3aebc694b63de279cd1288931f5fffbfcdb0b223deee"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/ready_data.rs",
+      "bytes": 24553,
+      "sha256": "58b2691a724c354d6aa3a2c4c9491ad9133e110c5447762e2c16fd460670827e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+      "bytes": 21076,
+      "sha256": "8fb6d14a036a806b2262ef3f0b991481e4b471bd7241b77ebb8190b4644fe640"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_destination.rs",
+      "bytes": 17158,
+      "sha256": "a4792975683d8a9fa053f50cec6ee9954cd2505cdcc84b981823524c1fa11564"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image.rs",
+      "bytes": 20235,
+      "sha256": "d6d345a19cc4ee8a78d18f376c5961e258a62515192f9475817f943f3327bd28"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/stream.rs",
+      "bytes": 4109,
+      "sha256": "cbdd7c8c10641a0f01a2063c37e9d17a027dd1170ca846a293cda2e45016ca99"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/stream/tests.rs",
+      "bytes": 8206,
+      "sha256": "d9d1f01b04859b45fb019471c23817ebd9267d6ce1171708226692af8aa2ad61"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/tests.rs",
+      "bytes": 10997,
+      "sha256": "9fb13c39fc115657826da8ba5c1f7297bd9ae395667779f2dd00ad557b7a985a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_journal.rs",
+      "bytes": 16969,
+      "sha256": "f90fa7f581a495599da14fa9ef72056265ec208d821e528d638da45a031157b8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan.rs",
+      "bytes": 36962,
+      "sha256": "7643020430a01622ceaee507ac0f87708cb9654bad38978a6369289b5967798d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan/ordinary_tests.rs",
+      "bytes": 14847,
+      "sha256": "07912d4677f6de597f62b5b8a30ae16a1bdc90b5b8dbea59071a30fb416efdf3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan/tests.rs",
+      "bytes": 13135,
+      "sha256": "8615d3018ca937664cb83f71f3dc7aa89e38cc5e93916373b9f7f26dfda0f88a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_staging.rs",
+      "bytes": 16372,
+      "sha256": "298f4420fd9d78232aebd611a0e94a6268bf57ff408855fb01f15c0d4f7f4a37"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/ranges.rs",
+      "bytes": 7428,
+      "sha256": "6a89b84b349bdb4c00f8c305f13398e41451992e7c9aa10358bc44e550cd12ea"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/recovery_export.rs",
+      "bytes": 37501,
+      "sha256": "23eb87f7745652f1e6b45e26f25b7a76bf6ed4d385d826c3f22020d320774b68"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/recovery_export/tests.rs",
+      "bytes": 6442,
+      "sha256": "4a351eabd25ad193f5ee6693a9ccaf20b65632e7a193fe28fb88b9ce787ef4d0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/reopen.rs",
+      "bytes": 10736,
+      "sha256": "2bcc47881e9f2b7f89a3aea859e6e51bbe61708d0cb8b85e9aca50cff593ee07"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/report.rs",
+      "bytes": 8303,
+      "sha256": "12f83abe6195b50cf29cadec680248bb37426c2d08b71b6b1a40575b61258d29"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 17958,
+      "sha256": "b2be0304477072c340f3ce6748b2ac31431bc50bc12a8926e105ad5ad4c73586"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/capture_immutable_tests.rs",
+      "bytes": 9234,
+      "sha256": "4200182700fc0de833f3ff30c2afb7a812d63ce4df7e1e63aafdce146d18ac87"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_admission_tests.rs",
+      "bytes": 29840,
+      "sha256": "2be8549afb4965198a50adc57eba011054893e4d02e055ffc47406378929198d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_admitted_export_tests.rs",
+      "bytes": 14504,
+      "sha256": "f4e54db235d4205c76c88e1da372700098a378d6932348e21e6d9d81d2719f46"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_allocation_tests.rs",
+      "bytes": 17458,
+      "sha256": "3a6b6eb1967e01d525ca7697d9ab309f6b2129126e95c40b938b8711ab69764c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_checkout_tests.rs",
+      "bytes": 13655,
+      "sha256": "e57a9c87a03acb9eb0cccfbe2e31b7d8ca8835471193ab5554ecdcd14a4d10bf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_chunk_tests.rs",
+      "bytes": 8022,
+      "sha256": "2027763cf4875cb485f8fc90ae94a622c63952fcafcd80a36d2d32b23c860d25"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_content_tests.rs",
+      "bytes": 15938,
+      "sha256": "1707f56e08cd8795ec7f6fe82c9ece85edc1551704f66d386ac654744923de9c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_destination_tests.rs",
+      "bytes": 11731,
+      "sha256": "05c1f9535c61a45ec66b1ef4c0a3669e7ac94d44b0e24f4bd5481cd5f3e15711"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_exact_tests.rs",
+      "bytes": 17535,
+      "sha256": "dc864c7dc7313fc9dbb2d95781ef83915291b8d98d1b50e13a54f1166d070686"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_family_publication_tests.rs",
+      "bytes": 18480,
+      "sha256": "77aacc781327d1f3c4baa195104e17fdedb47b9b1919ebe74c736dedfebd7445"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_image_tests.rs",
+      "bytes": 5952,
+      "sha256": "4f9e0063a1490e6203dbd5ffed8a02d676029761d1790100305a22c14940d22e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_journal_tests.rs",
+      "bytes": 6853,
+      "sha256": "3da396c1ed44c8f50f2a3dccae46bf8d28bb15d8b20feda92564ce7d148a0c29"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_live_read_tests.rs",
+      "bytes": 4320,
+      "sha256": "21342915b938cf0036eea580fae8480da837fee9671195d24dd3c69b5a243b8e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_admission_tests.rs",
+      "bytes": 13654,
+      "sha256": "334b1264d27e281043d37bf96bfbfed244dc96fd43ee96adfe4a84481f24cf39"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_allocation_tests.rs",
+      "bytes": 25262,
+      "sha256": "27d9c7fc8320d39a88367e29d3ef74c97e2bf6dee5104bd74c84f35bf6815a72"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_autonomy_tests.rs",
+      "bytes": 20914,
+      "sha256": "294cae510bf82e65143c977f104d4fcc3193f6ff27a2f0ac285bca9e3e9abc80"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_checkout_tests.rs",
+      "bytes": 28420,
+      "sha256": "e2a9e3bce08a9e9c61ec7756041c46f529e6bd0b800311eec9c7b3b2f90b7cb3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_export_owner_tests.rs",
+      "bytes": 21264,
+      "sha256": "004f92e5f8cf73b0a893580e8594ff8213e41791f87b28ae56803aefc4305647"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs",
+      "bytes": 20848,
+      "sha256": "ff61a820b335d28d4f252659375bb63d8bffb21c5421fb6877c5020a0fa1df8c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_admission_tests.rs",
+      "bytes": 20826,
+      "sha256": "7f780a619ca687d73a883e1c479b88ccfd2cdffd962b1d0a2300b6bb05778aaf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_publication_tests.rs",
+      "bytes": 20426,
+      "sha256": "0fee42e16d6609ba2731e2c21d29d9d3691494a97b9379e9ab378345bbab1d8f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_installing_tests.rs",
+      "bytes": 40793,
+      "sha256": "fa50a6627d30a46b64df0c7f21726b80a73a72942586de994a20d85181fd2ed9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_metadata_tests.rs",
+      "bytes": 25382,
+      "sha256": "5e3a18960e46d7883ecbf901367eafad33fcafc9305716c21b8b2637df39c648"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_ready_tests.rs",
+      "bytes": 29618,
+      "sha256": "3213b62876a38d69bb3907646bb7613cbb9116564f676e28a4d205b82d175383"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_reservation_tests.rs",
+      "bytes": 24054,
+      "sha256": "f5139ecbb72a35fc206036513ee931e3918d2243b3cbeff6307ff8f64bae56c0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_source_intent_tests.rs",
+      "bytes": 15668,
+      "sha256": "acfdaf047aa3853d1299c9f87f7a1aa6927d8540ec746b32a53fa4e68f323e71"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_source_publication_tests.rs",
+      "bytes": 29563,
+      "sha256": "40bac6502990db61d66e3f3856a6e1b14465f28a49cbbc1becd45deafbef4227"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_staging_tests.rs",
+      "bytes": 23292,
+      "sha256": "828da6475052facd465eccff84fb17b54e109f801084e4bb3fd3b006a470677c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_post_publication_capture_tests.rs",
+      "bytes": 7657,
+      "sha256": "0f3375a50ba385f756010b17fccd4b617b4fa01593f967144e912c245e7d9874"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_protection_tests.rs",
+      "bytes": 19569,
+      "sha256": "6c867ba973f07e0d8e2d4f39572dc5f70bd75a2b2d49464a6a2365c6f2c41644"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ready_reopen_tests.rs",
+      "bytes": 11117,
+      "sha256": "c22e036cd950dac962dbc2073d3e0b54e0ef46ee1c5712f5f2a324c55db00ad2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ready_tests.rs",
+      "bytes": 25202,
+      "sha256": "78738d0e277119b014c52aa1f1b8570c0deaaca6a5bd0bfa16d35979a3f241b2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_restore_cancellation_tests.rs",
+      "bytes": 21594,
+      "sha256": "04399393d9542bed2bc32b92e76f14646f58df60e89edf90e15ec5cb4ff33495"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_restore_frontier_tests.rs",
+      "bytes": 5339,
+      "sha256": "ed3779f0240267f16f2da5186bf51d399c8af7c6125d7ab620dfbd473fbe8850"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_restore_recovery_tests.rs",
+      "bytes": 12019,
+      "sha256": "a14ac571d48949dd98010359c3cb3a033c60333b5379c2bd855a5a9ed3610320"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_source_publication_tests.rs",
+      "bytes": 25684,
+      "sha256": "f280888e4b2c0b031b9ab225959ff9fcb28794c4e3384a654faf147973de1eb4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_source_tests.rs",
+      "bytes": 4543,
+      "sha256": "22c808ffe58494ec72f9382cf695204d60294b6a3964dec3ce7c8054a3a84bea"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_staging_tests.rs",
+      "bytes": 23255,
+      "sha256": "3b0d6380da5ba372235889f4c574cf9c7da0b0e86cc23f5e4ccb4a235852a63b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/sql.rs",
+      "bytes": 9544,
+      "sha256": "ca0bf592d4b568fc4eebc5ffcecc049984a42278cfe9ec429b80766452f7ccd8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/tests.rs",
+      "bytes": 2124,
+      "sha256": "6d5019e33b1e34ba141167f40d357d9babbb71d5688d6953c72a2cfece8845ad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/ranges.rs",
+      "bytes": 9819,
+      "sha256": "c23a1e25021b6275e2492f30e36a07c2e33f1758a04490a6c20323d38c2f47e9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/reopen.rs",
+      "bytes": 7984,
+      "sha256": "6f72d84980a54f8dd0728bed70035987b64670d1f6a01c6febf78857aaacd19d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/report.rs",
+      "bytes": 12201,
+      "sha256": "963ecbfa1658a0fb8932c6063267eb2dd35f1902e71610fb3a86df51089e99da"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/sql.rs",
+      "bytes": 12175,
+      "sha256": "9956f6c2b4f93b6c918dda0d86bc49fcfe9492fa6e583199ffc931b1030b4b22"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/tests.rs",
+      "bytes": 5531,
+      "sha256": "e6790c082b8b5a79876c554dd093227354df4efc2f2bfd2b664d331a75b39a27"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/publication.rs",
+      "bytes": 12682,
+      "sha256": "9656d9684caf749873ef9d36a33d82495a0d45a26962f10c36631492c1e0f9a9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/receipt_io.rs",
+      "bytes": 5203,
+      "sha256": "4ed7b8aee8ab14553d35f72aeb04a0606129e2557fd541da70aa5c56c07c8f5b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/report.rs",
+      "bytes": 8008,
+      "sha256": "8e0af06d61f2734199a1b37e6e124048b840eb187f754a0ce3c72c665518a67a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/sql.rs",
+      "bytes": 16590,
+      "sha256": "cf50efe6967c8e167b45194113b8f8d88e5b34ac0d1d11367ee946941d366dad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests.rs",
+      "bytes": 24871,
+      "sha256": "7ce05de2aa231dd28571944bbc24628edefd52afe862091e65efae073faa700d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/activation.rs",
+      "bytes": 14648,
+      "sha256": "acf5d7b84f3863a161daa6861137829a8f7df5675fc83e583458f612b51952d8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/activation_maintenance.rs",
+      "bytes": 17267,
+      "sha256": "62d9add8a1b71cd78341b2d8ac9b6c07ac5aded4947b79548683fcb46a18ad70"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/activation_ranges.rs",
+      "bytes": 12478,
+      "sha256": "6edb34bab6028b8aab917134429b41774846db6f24dba3530c5c710bf745662f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/activation_reopen.rs",
+      "bytes": 11046,
+      "sha256": "efa39bf492a81fa0170880693010f72d2d59d56a22cf4a6d11d099e410c60a00"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/activation_session.rs",
+      "bytes": 7344,
+      "sha256": "0aa0c5defd375c6f438419d4cd32f038eb6a065dc08b8509f3d53c4e3eb8cace"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/capture_content.rs",
+      "bytes": 10641,
+      "sha256": "8c43c09304a38478fb1180f2639348a0b9031457a0ff1679d30cbf821cbc8c37"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/capture_family.rs",
+      "bytes": 21299,
+      "sha256": "cf8728fcbc07441bfe19940cdd74935c9f40230174292e70fbc5880efcae2181"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/capture_lock.rs",
+      "bytes": 3842,
+      "sha256": "71da29ef0718edc99a5043a21704c782bb2f5e83ed57c3bb5160775f27106f30"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/catalog.rs",
+      "bytes": 23227,
+      "sha256": "4b9d80151b796858a4aa218522a1df2985f4c9b39be76136f7507feb6d17b40b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/family_upgrade.rs",
+      "bytes": 14650,
+      "sha256": "14208e6430e0dc1d9b26e8f339ef0814c0288b92c3baef5497ded4c97f50b22c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/fixture.rs",
+      "bytes": 12524,
+      "sha256": "063e85ba3f5e934d26fc62b5ce2aa0602dc56a2f87210384eb1bade9331d3c8c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/hooks.rs",
+      "bytes": 14085,
+      "sha256": "fdb5af011e1fc9a96504c30d276dd25becef6d2024792702fba5a85760670348"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/preparation.rs",
+      "bytes": 12035,
+      "sha256": "5a08b96575b369e50590d383df8c7126cfc1b061cec281ed160b47093c0b6422"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/preparation_ranges.rs",
+      "bytes": 12135,
+      "sha256": "30aad3e0a36a84de47600f01bc93c10dfa16617c8bf9665ac6299f0fa023a9b9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/preparation_reopen.rs",
+      "bytes": 9611,
+      "sha256": "45ddb96637a9cacb2b27cf9c4ef7812037ca6bb2202f080720dd943aa08582d2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/process.rs",
+      "bytes": 74978,
+      "sha256": "c9db563c4989b93ca9bfdb7dba6bc7bcd1d05103884a5e3ecbb5349a32e1592d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/product_status.rs",
+      "bytes": 7765,
+      "sha256": "9b45c993b8bbc7f3c7dc7a53d7321fb52ac397ae9d9035776ef441157a22efe4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/recipes.rs",
+      "bytes": 109344,
+      "sha256": "111cf5f953f3ae0b78086ce60efbfec07860ce9053573b779fe7cf8cdf19b4db"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/recovery_export.rs",
+      "bytes": 5901,
+      "sha256": "a1f52f2808afbd4fe06a8db00dab0de9051026cdeb23fc61a3ae1d4626f30837"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/recovery_export_writer.rs",
+      "bytes": 2249,
+      "sha256": "96b6237eecdca90a94f923614e467c65a1f9c0c23ed41bfd569591ab49c961ad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/bootstrap/tests/transition_capture.rs",
+      "bytes": 14644,
+      "sha256": "56316bdc42265b23bd058c8e0ddb6fdc6bcfcac93ed3abe1ca929208fa4e6b55"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/cancellation.rs",
+      "bytes": 4433,
+      "sha256": "ec750f4ab1a58aa0fc544abd0d1e793e8003c2924cfaf1bb931899abc38c97dd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/capture_lock.rs",
+      "bytes": 6202,
+      "sha256": "d3a9269ad1b9b955f3270fea34a7ffb30fd581b801965af234228d3f7127908a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal.rs",
+      "bytes": 13571,
+      "sha256": "f2ce40104f8e107edeab344cefcc6796e135c176a86b0d292f25c60675a59b85"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/archive.rs",
+      "bytes": 5926,
+      "sha256": "f4e53d78ed3aa558b8607645f3a45303bae193069d1223c8b7abe59aa193e306"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/codec.rs",
+      "bytes": 7778,
+      "sha256": "f92f982ce55c1377a387a44107c32f465a534ce63d8d049648d7544beba4100e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/inventory.rs",
+      "bytes": 19193,
+      "sha256": "2c1c6eedfd5180cdaa6a08402424b31ccbbc59be3e518713814f2670a53bc8d7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/sql.rs",
+      "bytes": 12802,
+      "sha256": "e380de5a48454f73027c81c1905e9aaf441e97760fb922aefd617ec6c65d8bad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/tests.rs",
+      "bytes": 15385,
+      "sha256": "91b1c549e8f3cbd142993dd97048059f954c43bbff35daa13d6f8744281d8ba2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/tests/fixture.rs",
+      "bytes": 9109,
+      "sha256": "0b039013ee9db85c002fe76d9f7356eef425adc5726be7008ba52fd2c632b6a3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/checkout_journal/tests/ordinary.rs",
+      "bytes": 6371,
+      "sha256": "6bd093cfa74111a817c218709f93f001f44a2d2538a5293424eb87f81ff1af56"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/content_catalog.rs",
+      "bytes": 15630,
+      "sha256": "ae488f51341ae7ac2c778c203fba79ad8807c91f6bf999e31057df1cdbf8d991"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io.rs",
+      "bytes": 16830,
+      "sha256": "441e1cbc3aa0552641c51c04b8b70a5c5b5010ce11ed49a18a77a4a6e8dfa868"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/bare.rs",
+      "bytes": 15526,
+      "sha256": "ce15781fdcebfbeba404adad5fe71e3b3b2b2bfb0d6af89a79058bbc35f4108e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/sidecars.rs",
+      "bytes": 5635,
+      "sha256": "7015452898bfa565d5ae66f7fcec5b8454fd7bd76d6145e16daf8953f2f73a12"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/test_hooks.rs",
+      "bytes": 1515,
+      "sha256": "227220708877199517016d318529ba3e8b5e66809b7e760888f77e38a7416e82"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests.rs",
+      "bytes": 18710,
+      "sha256": "fe1462fe2723a2f8db1ab410acce7d327759386157c2bd151190c39a991ca8ef"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/forward.rs",
+      "bytes": 14748,
+      "sha256": "b519d165f7c669e926f2b462ae8bf9e0a2e4bcdb5ec9766ef4d09d5d8ec63d17"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/fresh_ordinary_support.rs",
+      "bytes": 1476,
+      "sha256": "146a34a0ca2e5092ddf52b864ea5141f6481f7b47c6790ff13a92a85da83a745"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/interruption.rs",
+      "bytes": 23492,
+      "sha256": "c2539f3f35027445228cb1777f683ac35825edae4a1d8d4c35eacd76b44e8480"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/interruption/r2.rs",
+      "bytes": 23476,
+      "sha256": "3df002a3315727d577a8d13304fdeb0ebe9b61c18e583868e73eb3bb1edf8e9e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/strict_read.rs",
+      "bytes": 6300,
+      "sha256": "4b40c0af971a0a35bcb01e8a6152ccc3649ac97aff89ed18b11a381e348f16f9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/database_io/tests/support.rs",
+      "bytes": 5290,
+      "sha256": "44d4a34e9542504e12d810f2c01a1a768db8fe09d1d6c2f11367b08d26c14460"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready.rs",
+      "bytes": 26502,
+      "sha256": "24b0a34d4d85d0a669572de3bde50f53046b02232f7557199d8483c37f0f9f63"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous.rs",
+      "bytes": 16396,
+      "sha256": "05ae8b20a8a43e13c4887070d76586d40210deeca07c1a69f997fc030c8398bf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/family_read.rs",
+      "bytes": 7023,
+      "sha256": "7695a16230891e75eeec2bb753f107c6e843fbfcca4d6cbe3016136513225031"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/inventory.rs",
+      "bytes": 8453,
+      "sha256": "39e35210f3907f7e183e99a12f814fd714576f3fb0a95398d34486801ac353a0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/tests.rs",
+      "bytes": 17650,
+      "sha256": "1d993376ddee3d0238f9537d7ac3b77179aa3777cd9126ba4ec3c9ed81af798d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/checkout_tests.rs",
+      "bytes": 15252,
+      "sha256": "77f0d2b0013decbba8c9b0b4849df65827963d597e7b03419ec6878582e54a36"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/data.rs",
+      "bytes": 12343,
+      "sha256": "6ea3cd8cc500f10b13e4bc197c5896c6acafcd709e9db32cfffe44625f92ae3e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/family.rs",
+      "bytes": 10416,
+      "sha256": "ce7dc458d65635ebb0e5e0e61ba7ebb4c13a7a7b9bd8ade636f373b57f92d832"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/historical.rs",
+      "bytes": 18627,
+      "sha256": "52530bd7759d7416b9490d915acaefb201e0a9a06cd4a3e3ac7d3e8656314a9d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs",
+      "bytes": 28474,
+      "sha256": "b3b27a1f73cf4031cdb4c0a8ccf7576d41ebc0ab5531d91ec71679ce2f51c292"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs",
+      "bytes": 75513,
+      "sha256": "43d3b4d2119a23d08f43176de632293305b99c73070ed6b13949f041347391bb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/publication_tests.rs",
+      "bytes": 4004,
+      "sha256": "27e9ebe92a4f038b0003650cbe8a47f6f73a393eb220d8e11841698acee29a86"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/read.rs",
+      "bytes": 9390,
+      "sha256": "e87e36986f49f86eba921307735e919a3b17d93d6441f6d03689e42dcccaceaf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/tests.rs",
+      "bytes": 17865,
+      "sha256": "58299255cb3f39820a952a8d5b740cb4395e6b4cba87a164f78af7215949cbe8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/tests/fixture.rs",
+      "bytes": 24998,
+      "sha256": "60cefb0d7ee0d6c16bcdb7c0146e1c25ffe4bdebfca17dc419e5864669a8e139"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_ready/tests/source.rs",
+      "bytes": 7460,
+      "sha256": "75f937eeff11ee8fa75d94a08284c15c83b59599ad1ad491cd086efae38959fe"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_sql.rs",
+      "bytes": 11006,
+      "sha256": "a9e597d453cbd7723950a84396a1142fd9c940d2094680e356ba25311e76c053"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_sql/tests.rs",
+      "bytes": 25394,
+      "sha256": "2db9eba4b36fd8c6226626151634242aac5aa2b019e9a981b5853e0bb7d60b39"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/destination_validation.rs",
+      "bytes": 17051,
+      "sha256": "4e4c6f5699b2b15a0f950ebffdff052ea113ed36e4dc931e85e3c1ab5627c80f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/family_upgrade.rs",
+      "bytes": 7075,
+      "sha256": "31f8bc11a15cf1f808d2c6b84f2267bc18caea5dd845258dbcc14e33051186af"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation.rs",
+      "bytes": 23953,
+      "sha256": "74e805f49d00db11ae537507b123f32fa08a92e1bbc118db5b6b603028e7e236"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/admitted_plan.rs",
+      "bytes": 9250,
+      "sha256": "9044b0985dacaf9f7c5348205c78309ea5fd559f51ec662b829434d69a77d258"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/ancestry.rs",
+      "bytes": 11955,
+      "sha256": "30083825303fe3bac0bb7676d6af7cd84e4e1da37b2aada608e920a2c9cfc252"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/copied.rs",
+      "bytes": 3649,
+      "sha256": "a2fb318f5298ecb372624ce076ea8d971f74a7eef4548524845cf920b6cc0a48"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/copy.rs",
+      "bytes": 14403,
+      "sha256": "c3c1e2d7f25642abd4124794d64e4fcb70ca3a872ee506921c9d2a6cff702dd8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/destination_prefix.rs",
+      "bytes": 26959,
+      "sha256": "6aca538ff41ab9e860af169109eb1d1a3e3231a076f0593f03060f86270f9252"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/destination_prefix/bounds.rs",
+      "bytes": 8048,
+      "sha256": "fd47d190c91b7f9a2d22518f0672628e26b104f3d9e17a7f14eb09828a882e40"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/destination_prefix_tests.rs",
+      "bytes": 14504,
+      "sha256": "04af8d3fd392980fed910cdb6b4b3270f541ff3e6967a633f445409e4913887a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/provider_proof.rs",
+      "bytes": 4857,
+      "sha256": "5f6c3425720eb684a72bf47abf87343c935bb58045460d6cb0294665fa8a0f91"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/publication_tests.rs",
+      "bytes": 10033,
+      "sha256": "4526e7f82aff7724a23ae77dbbed16f894c456b1a265e426c1d8eb4131e47f8a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/restore_copy_tests.rs",
+      "bytes": 14290,
+      "sha256": "74b342279daa0cc2fc92cbfc70622ece8501df3dcab67dcbfa64db635d47e1f8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/restore_history.rs",
+      "bytes": 22909,
+      "sha256": "c29927f57b9a16f4b95f6d090be58422a7ec93587c2a3229932eb61bbd7cba29"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/rows.rs",
+      "bytes": 9611,
+      "sha256": "2fe6d7e952b68da8fb544d908cf74097b01d4561295ed24a528ff0a459a057c4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/rows_tests.rs",
+      "bytes": 4434,
+      "sha256": "5ee973b8cdc3b15b387b6d2f80e55a310e60a3add21aa75d507310528039cb96"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/scoped.rs",
+      "bytes": 31861,
+      "sha256": "ff9a2747692c50557dbab8cd6fa466fae78dfbb33f7d044f0f39e5dfcd0a6865"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/scoped/base.rs",
+      "bytes": 4490,
+      "sha256": "1d67d5d0bece88638170e1a121715597abbae0e0a8c974e96da7178d9b33ca6b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/scoped/catalogs.rs",
+      "bytes": 9127,
+      "sha256": "446b69104a321e1a7a2ce2482e66d81fa217b1a68887ad146173dd634977dc06"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/source.rs",
+      "bytes": 25427,
+      "sha256": "bf855b6c7617590133a1ebd1da04e7dd9af307cc911a5a85b3b4b7a09c7f39db"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/tests.rs",
+      "bytes": 25266,
+      "sha256": "3ec4f1b0aa3247ae05b0432122f8862b93a171c6e66d6848984dc1034c24b8f0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/import_validation/two_imports.rs",
+      "bytes": 27922,
+      "sha256": "1a3e23d321112f2fa3ad8b4700e8bc3e5c5b398dfa88ad9beb56da8c118d1bb5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/journal.rs",
+      "bytes": 21361,
+      "sha256": "5aad4e259b1d2e6eb6c2c5dc0d7a5319321155a900aaa68c4213e61546757b8a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/journal/fixture.rs",
+      "bytes": 7299,
+      "sha256": "3003c4d6e097186de2db868a71fdce8b20d189137ce5f164b3b1b591b25ca763"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/journal/tests.rs",
+      "bytes": 36107,
+      "sha256": "7ee6765e0524fbb66876134b25c903e3fc724c98da22596146597b3d5c72afb4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission.rs",
+      "bytes": 1560,
+      "sha256": "5815e0e437ce4f78e69d5bbbda3783f7c14377b837a15f81a1365b6d24c3c9a0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/ordinary_write.rs",
+      "bytes": 10387,
+      "sha256": "2bd865e573960a2b2073295340ad4b66857bb84647f0785266041b63fa2bc77e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/read.rs",
+      "bytes": 20354,
+      "sha256": "7e3845582d83d33341c29efa928b9693117ea95d9463082bac372c0884866731"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/record.rs",
+      "bytes": 7793,
+      "sha256": "6347e71b6ae91cdfb1728d9915b1d9448ebc74f1bc0602ee248b415fdaa8b423"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/representations.rs",
+      "bytes": 8222,
+      "sha256": "02bdba4b95a56be6d3dcbfc5e25467526e1957aea4eed6c25595fd20c4520a4b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/schema.rs",
+      "bytes": 6481,
+      "sha256": "dadd020e5f516fb19543690fcac32c644da8d406c42cd16e195c91995f2c4670"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/tests.rs",
+      "bytes": 49147,
+      "sha256": "9b0804c4f6aa450a82483e3bf87b174a9c728ac9e8070d30aca534226965e9e1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/write.rs",
+      "bytes": 13655,
+      "sha256": "68a1a9b67b6896fc32cf706e3f81fc69025d2b1bf8cde95a57e2fa2106d83263"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_admission/write_tests.rs",
+      "bytes": 23066,
+      "sha256": "9d5689b7f91bd4fe7ba7fcc0c0b6560e7185fa68227014274bb6825f818ec2b7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_budget.rs",
+      "bytes": 10188,
+      "sha256": "2053414d49cf1b70282b1ea386e0ae897715f65e6085d863a6ef0e08f52e3b25"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_budget/admission.rs",
+      "bytes": 11038,
+      "sha256": "c759e7ec55bc157116cda265a23e71f46b2511addc150b5a952c6bb981fbb20a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_budget/admission/tests.rs",
+      "bytes": 8071,
+      "sha256": "e8e71a8b3a6b3e4aff44fbd14a91f843b2733948f8a8cb2b703b22a360fe6b2d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export.rs",
+      "bytes": 27806,
+      "sha256": "d7e17868c7d5b14e45a61ae0dc72bcc3e58e24af7856084a93f1956db7e4b86c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/admission.rs",
+      "bytes": 20087,
+      "sha256": "895a2ecfb7e4a57797e600f45bfa5483211c93905c699e4ac5bea95ddd63f969"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/allocation.rs",
+      "bytes": 46662,
+      "sha256": "ee2f1376d6e4a6e98e487fe2ad2d137f676560e0947aa0c57e374b8cd1e574c0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/budget.rs",
+      "bytes": 19654,
+      "sha256": "9716a38878cdb10532aebcc97eb4ddadab9fe5a8c9650acbb49a56e9f73ef7e2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/checkout.rs",
+      "bytes": 17905,
+      "sha256": "5ded3939a63355399fd9d26d409cf1aa82e5d1c9970225e43e243ff600251712"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/content.rs",
+      "bytes": 20959,
+      "sha256": "a1919255a7c48646c618c3ce6774891dd566777cb58059f0f9b5e21eb21e2608"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/copy.rs",
+      "bytes": 6590,
+      "sha256": "635be774f75de6aa11e0ebcf582d11f9ef7de5e47027a35dc2370d8e842d1a49"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/destination.rs",
+      "bytes": 5840,
+      "sha256": "1035a32b4c66608176d9ec92200c0a666a15b02b9c0e657027d17329f2459e4c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/image.rs",
+      "bytes": 17981,
+      "sha256": "b36bb332c828dbb3f240f9cb9eb087bd4b3f0902e3b079f4a529bc46ae50e076"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/installing.rs",
+      "bytes": 2026,
+      "sha256": "71835388d431ade4642d9637ffa14d073387afca8f0e60034c868579e359a4b1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/preallocation.rs",
+      "bytes": 5526,
+      "sha256": "3cda0c33fc390d97504a4a895ae3246bdd1777546c9f1e963d45b5ac962ba27d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/protection.rs",
+      "bytes": 8373,
+      "sha256": "fc97203a27471fd04f153a2fd0aacb311f47e6170aec6c7dd04cba902490f064"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/ready.rs",
+      "bytes": 32045,
+      "sha256": "541d00adf48af062aa9f229e489f70f81145e4f159ec4ccb2862418b02ac363d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/ready_data.rs",
+      "bytes": 28746,
+      "sha256": "726d6d617cef56eede902bde2f81223053e46b41049e2faacd006e06d2ee5cc9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/reservation.rs",
+      "bytes": 13732,
+      "sha256": "f2eb82aaef2ae2e26898fb661d0527b32685c25ca1885038bd838a296ce4e887"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/reserve_plan.rs",
+      "bytes": 6839,
+      "sha256": "eccb2500f326b2de6e2ba2adc9568e1b6c4575caf6c3baa95a4aff6ef11b7863"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/resident.rs",
+      "bytes": 20577,
+      "sha256": "db2c0aa86b19c4380bfd86774545a86c743e2b51c021ad072119c6babdcfc74e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/source_publication.rs",
+      "bytes": 25904,
+      "sha256": "b8b10e5099a1e777d3a587a7cbdd422169077e1b9b23baf8e1b11153a682322d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/staging.rs",
+      "bytes": 11880,
+      "sha256": "d692ae0ec68edb8d025bf8c372aa4d95c5c8a702ece9825bf3c7e8b2d3741c4c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_export/verification_cancellation.rs",
+      "bytes": 1331,
+      "sha256": "e751a62b699547a772ba2e083f72460ba3d922cc653605b653633eee72beea8f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen.rs",
+      "bytes": 7703,
+      "sha256": "74a63d43c75420c156949225755f6f4a9229fd429e99aa8bbb95e963b7943d84"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/admission.rs",
+      "bytes": 14771,
+      "sha256": "13ce41e71bf728a51875761d572b9f7445722bca9a0cc320dc263fcc3b909563"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary.rs",
+      "bytes": 16269,
+      "sha256": "f2794d35b3fc95f1888371c1099599f6ec28e40058665abf3b29122fa49cbd93"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_admission.rs",
+      "bytes": 16058,
+      "sha256": "2e91f8bb92f5e806e8c07f468e919f2a1af3b69a48ac5d133e5b51a20f06d682"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_publication.rs",
+      "bytes": 16145,
+      "sha256": "46743b25917e2549211947d469c82c380e3cbcd34f68d9a3c35263da45e85f87"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_source.rs",
+      "bytes": 8279,
+      "sha256": "6b6e5687e3eabb7f807dc1425e76b136850d06009ab93af954987cc65f7cd497"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/pins.rs",
+      "bytes": 8135,
+      "sha256": "a052e368627ad1da9a55c7040aaf0c69d0262ea95afd0f8b35b72977e7c62346"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination.rs",
+      "bytes": 19600,
+      "sha256": "3df63668e95a6d36682ce0ab85ada1fcad6bde86e090ccf4c7046ceba7b91b83"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination/checkout.rs",
+      "bytes": 1578,
+      "sha256": "c5a2a6154a0f20e0c91f7a2a32565820f0c352a13ead50731accc761d17d44c3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination/staging.rs",
+      "bytes": 3803,
+      "sha256": "e4c29803b41c4f75479bf79fd64afd44a72c7c32b09df62b63a5f81a74394c57"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination/tests.rs",
+      "bytes": 23219,
+      "sha256": "a7b70517cb4389156d60958b39b72ca607bd803c5492fbb6261f2a3eee695fd3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination/tests/checkout.rs",
+      "bytes": 16777,
+      "sha256": "e64e8d1dc0e0c19a5c0c5e675d999652d0a9d4098053b4b576837af5c8acaa8b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_destination/tests/staging.rs",
+      "bytes": 22818,
+      "sha256": "556ac28f27be45571ba176f499cd792b72b427a5e7ae5685aa933a17d4fe7f03"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_publication.rs",
+      "bytes": 10418,
+      "sha256": "8232e05c03da391460cc17cc54383fc30864a77b9e24b17fce3f92f3f31be4ea"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition.rs",
+      "bytes": 12462,
+      "sha256": "caf9e591087a667006b9ce71731f47b223aa3c353bf3ef8cc6f49b8ceee7dd1b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/allocation.rs",
+      "bytes": 9266,
+      "sha256": "b0058cf3e14bd9c2851d55bb3a5b3f91bf13ae9fc1943a3d3834d555c2753c27"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/allocation/tests.rs",
+      "bytes": 7555,
+      "sha256": "ec1f3b26b34801a29fd9b18a1799bbb45de062ba0b853ae731ada4dfb58e004e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/frontier.rs",
+      "bytes": 8021,
+      "sha256": "6cd91028017f536aff024e9e90398a343885a2980868124ae91c092d2f8a0589"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/publication.rs",
+      "bytes": 14925,
+      "sha256": "11b68eb326711f15713277d394b60fde4c7d5ff85163c4bd0974ee03c04ea31b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/receipts.rs",
+      "bytes": 6709,
+      "sha256": "5b603ce049aa9c4c42422cb5bca9ce7a58e599b4397ee9cdc4678e09574dcedc"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/staging.rs",
+      "bytes": 3911,
+      "sha256": "8b90dee445679901b1b9e63c8048ddc82db4807726c3774d417ecaacab7283ad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/write.rs",
+      "bytes": 9332,
+      "sha256": "f94edbf56e4ac0ee343a1f55aa2eb09ac5d899ace189a3ca4e6ba869e2fa6501"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ordinary_transition/write/tests.rs",
+      "bytes": 6737,
+      "sha256": "189f4179162e46fc639e4572fba8b9158108aafeea0b748e40ef121d423db666"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/process_profile.rs",
+      "bytes": 10645,
+      "sha256": "02f7acf0e147e85d0c9f0987582a5ec4e6016337fa11c866b278c352659be472"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/process_profile/tests.rs",
+      "bytes": 6298,
+      "sha256": "fec6d55967f03b281dd7e75ddeeee82b48025745a75faa712d51479382c82e86"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/process_profile/tests/child.rs",
+      "bytes": 3863,
+      "sha256": "a760407958434881f8f02a4d3f899c86e2d10e07cc0061062b9d6e669befee33"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/published_handoff.rs",
+      "bytes": 8586,
+      "sha256": "b7f0d640d9bee5e928c71e92eaab4efcd6e0fa9a31f8ce289321b9cb87075451"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records.rs",
+      "bytes": 2084,
+      "sha256": "9f961b74a8f4612779b00a686a0ac99ea684de60db09fad5e85f18ad53e0d26f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/activation.rs",
+      "bytes": 12611,
+      "sha256": "835963024a824f909739d008d2e2d08e785932f420d82e8ed16eae914bfec1d3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/activation/tests.rs",
+      "bytes": 10091,
+      "sha256": "a67aba8c9193b39c5af80229048ef26f4f2ed583a2742ceb8b00d27b7f978265"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/capture.rs",
+      "bytes": 19938,
+      "sha256": "af9b2ce6accfebaefb86f110e7b81e522c5a64ba8ef06b993e41679c6a89b041"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/capture/tests.rs",
+      "bytes": 15102,
+      "sha256": "250909e9a8f81df57d2eece9c9c91813123a29e23edf5bc6e8209f7c4a910ace"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/codec.rs",
+      "bytes": 6264,
+      "sha256": "2ed59f303f8c80288cc58006e6abb5a23f43437be2756e277be1c1f289042944"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/golden-r4.json",
+      "bytes": 41985,
+      "sha256": "4da5d813865643b61ec65e5f88453fb921d57abda029e7f24b286a2cdf0502e8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/import.rs",
+      "bytes": 43776,
+      "sha256": "76ac3c89cbbb6bdd0bce8ea5673826c1a552399491fe32b9b7c93c31c63cd98c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/import/tests.rs",
+      "bytes": 41146,
+      "sha256": "e5c8f57be6f4e296a1d16ea191295fde0eadb3f80ba227427f16cdd3352262ae"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/preparation.rs",
+      "bytes": 9273,
+      "sha256": "25de44590f272ae2e7bccfa20b7bcd0403a5b6bc77863fc1fa4ff42c8952c7dd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/preparation/tests.rs",
+      "bytes": 13976,
+      "sha256": "b47a5d29dbbdccb0e393d690850a57d4397af8441ddfb72ba003152515a3689d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/receipts.rs",
+      "bytes": 25853,
+      "sha256": "f83dffb48554124e8cf97a398de964b54570afbecb667444e5dfe91458b0f7dd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/rows.rs",
+      "bytes": 6807,
+      "sha256": "bf4e21f4105da2a2ad120ebf2f4ae346cd75a9d2c487f39338743f1e051a2e58"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/source.rs",
+      "bytes": 16566,
+      "sha256": "6dbb1570efcf972af34f13119edbf1e75bf3b1d4bc9ea34ae73aebe050f26ffb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/tests.rs",
+      "bytes": 82585,
+      "sha256": "b53a39d1366b5cd12806dbc675b6cd5fea60e88a065544da45a4548177934f81"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/transition.rs",
+      "bytes": 21631,
+      "sha256": "eddbe3e168891e458042616907df18b6c5472323a56a55d509ddd241aeff81c0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/records/transition/tests.rs",
+      "bytes": 15399,
+      "sha256": "6c1867f72fd26c8543585c8c72c282f0a88d749d2a1169dac1587fbb3db4df61"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/recovery.rs",
+      "bytes": 32480,
+      "sha256": "a37263873a68ba9612a5c07e473bc7a740f21fe5a21edbbf898503fb844aa1c9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/recovery/error.rs",
+      "bytes": 8249,
+      "sha256": "d73ba584e72c554d910730c1774dce621ccaef38428a14b0879bccca00b78db9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/recovery/test_hooks.rs",
+      "bytes": 1139,
+      "sha256": "d72d8400e9453053c365450c987195511f166f551fe772d6a37cae55bc9b8132"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/recovery/tests.rs",
+      "bytes": 22970,
+      "sha256": "ccba438c89ef084c0b32e3dc41511c74e8c712657b524ee1e96f33986225cf5d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/recovery/tests/fixture.rs",
+      "bytes": 17700,
+      "sha256": "476d382c25daa9993c942362fc8b76f09e4af0cd9e4ddee0931dc2b3f9a6da7a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/schema.rs",
+      "bytes": 7719,
+      "sha256": "d491b411349a73979e2cde4be1614293d683768f792aeee989b373c9a70c9295"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/ticket_input.rs",
+      "bytes": 3830,
+      "sha256": "4447c4f2940815888fcc19ebb2c3a2cef0005c6dd32ba43c56b5daff6b09e90d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_observation.rs",
+      "bytes": 21656,
+      "sha256": "84aee686d68fda684ebdd18d8072b149cc7b2f8b1fee7467a986f1486fff1378"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_observation/bounds.rs",
+      "bytes": 7518,
+      "sha256": "c9dbc8d8baa310ddf7edae21894a4a4a873deb4b2fefacd8a8e8ac272390b5cb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_observation/tests.rs",
+      "bytes": 21056,
+      "sha256": "af8f4afe5552f586e984ccdd3c553ed0d29c260b499dc1c22bfeb4742e935da9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile.rs",
+      "bytes": 16795,
+      "sha256": "3724e1d6b9e7be6f23d9466be5cba3f37625fd5d635dc19bae63cfdc4afa754d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile/image.rs",
+      "bytes": 12928,
+      "sha256": "5bd461b2bd05bc31fa6f34e45988c6dacfe1ba25c693b7541df5ac2975c16245"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile/image/binding.rs",
+      "bytes": 4031,
+      "sha256": "e959616e0f49f6f51aff805c5b395efd3076e4b4e0c3abd91318a359d9148bdb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile/image/binding/tests.rs",
+      "bytes": 6021,
+      "sha256": "7eb6c7af449edea457fb2524fb492cae6fcd6608395d8f46f388ad14334def64"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile/source.rs",
+      "bytes": 16470,
+      "sha256": "0db31dad3485b503cd7f74a5aeda12932fcbd3f29a2bc75926467afd84d19045"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_reconcile/tests.rs",
+      "bytes": 21061,
+      "sha256": "f3750295bae4caae26f1a0aaa593f5bfe409cc998eb2483ebdedf7a7d20795b0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_sql.rs",
+      "bytes": 7085,
+      "sha256": "657b667a8db60786830d3cd2c7d29e5371c64cea98a697007677a008e03d6cfa"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_sql/publication.rs",
+      "bytes": 6066,
+      "sha256": "dd518185f222e0e8c1422a17dce25310550d8ab47d07273ae5a107cda90979fc"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_sql/publication_tests.rs",
+      "bytes": 27681,
+      "sha256": "ea43b4fe0276c83ffe41384fd5b6cdb6a0910385e0920840286d624107c9a31c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/transition_sql/tests.rs",
+      "bytes": 10433,
+      "sha256": "10164f21e2fe19c5408c1c570cd078fb018887eea09420c1bfee5d2b1d8e6551"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation.rs",
+      "bytes": 48299,
+      "sha256": "82e9d1c80c4804af7ee7e3ec5a08b9d060c96e584a5beba90cffc5cefe7abdcc"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/active_tests.rs",
+      "bytes": 15269,
+      "sha256": "73c55b624f3e6c54856ca077badf84168c88b4b8dc2017c466e6ec8d3acc3e5c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/capture.rs",
+      "bytes": 18826,
+      "sha256": "e1fe0367d45af56d465a097c4e8b216f32b2357730ce4bd4326e80d37bc67489"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/capture/tests.rs",
+      "bytes": 29066,
+      "sha256": "bdb6572b19e0532fbb52a6a62f8e8336ba280399effba2a5f2c6812ecf657c6b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/preparation_tests.rs",
+      "bytes": 14225,
+      "sha256": "1ca1eb45b37813520eff48da50657cbcfe490a175c7e513804b1d77819b32998"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/tests.rs",
+      "bytes": 13556,
+      "sha256": "06ab6fb3fced29ba186fdf73231ed197ec6e1f6ac2b6e65b1b861c997a08fe57"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/tests/fixture.rs",
+      "bytes": 12504,
+      "sha256": "7eb52170cd161fb258f7c0dde85ab22cdd0541f929d48fc7648469f41f99e0a5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/tests/r2.rs",
+      "bytes": 18902,
+      "sha256": "3c1589f857e951198d904a9988c436c629d4be49d4f03d5e3895d842d7a824f9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/transition.rs",
+      "bytes": 7928,
+      "sha256": "f2a8c066bb11cb8aba4256768341abb5543a86d5bf610b3b40336166cc2404b6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/transition/publication.rs",
+      "bytes": 4415,
+      "sha256": "0ddedb33dd9fa57c792833397e73ee6f4e76f6011ea22d4d9b9de00df48e1a8d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/provider/validation/transition/tests.rs",
+      "bytes": 12781,
+      "sha256": "43d215835e06782c4d06b06bd0ed7458b764f0dd65a7ae8962dcfc5f93738785"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/publication.rs",
+      "bytes": 13850,
+      "sha256": "dd9077a9b044b90039ef1f0fb9ea33d66fc370f44c8634b061c345613ee1ab3e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/publication/storage.rs",
+      "bytes": 7952,
+      "sha256": "705ea087c03c01a8e41eec949d47e8b7298d6ad56d64807b44c0cf613c27e62c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/rebase.rs",
+      "bytes": 14183,
+      "sha256": "3d1891b1f8bdb4b22083118f25f73aae1f70b09500cb10bae8f8f637ad3281af"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/rebase/engine.rs",
+      "bytes": 22712,
+      "sha256": "410a0bd8636e5b474925b0c31c990b1d3f1c2ddc050dc1ffe7b9d522d9b5d7a6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/rebase/history.rs",
+      "bytes": 9163,
+      "sha256": "93c4aa85e5540efd5ae279868f0fa15927e4e639d6326f235e650542724c33a9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/rebase_preview.rs",
+      "bytes": 4223,
+      "sha256": "d717649a7dba304f2366fe607d289e76ff28f221da139b8b9dbbca434a879287"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/refresh.rs",
+      "bytes": 8974,
+      "sha256": "784dc5c005b637957e88be84c60ce25d4619ce009fbd5a6460ca9bea3a812872"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/refresh/files.rs",
+      "bytes": 3745,
+      "sha256": "956d8c902c4213ef9380bff25e508b4df2890ccb7e379340b46d0d9eec44179d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/refresh/history.rs",
+      "bytes": 2603,
+      "sha256": "57b7d8b81824b621167852d52badd797422fb2a9f0055484df71d3aec5b144f0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/refresh/plan.rs",
+      "bytes": 5391,
+      "sha256": "d078053b1698da1f6a65f2220e565195057456fc1ba5c6e6533f76d388a88d6a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/refresh/recovery.rs",
+      "bytes": 11751,
+      "sha256": "cb7b360a5796181aad9741bedb76fb2cf3a0419a6314c07f447c9a3a231a28cf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/restore.rs",
+      "bytes": 11250,
+      "sha256": "79ac92424d2e5db456e9d1efedcb33b8f70561a3c9c37f4a5ae73411460f43c9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/restore/engine.rs",
+      "bytes": 24507,
+      "sha256": "84003b473be1a52777f2f8ac6836fc2db2706e43b6197a16d475b8328107a30d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/restore/engine/recovery.rs",
+      "bytes": 13114,
+      "sha256": "c21a49ba2b060deff2f1524c077538a5373ed92a538fc5c5528aac9fff664920"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/restore/files.rs",
+      "bytes": 1615,
+      "sha256": "f180678f1b1d40688390795a6e7aae6265f199ad03fc7717834f655acf297eb8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/retention.rs",
+      "bytes": 25593,
+      "sha256": "e156dc597cc53e1548e0f5a27148f807807a057bbf48f109ab64dea0b76df669"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/retention/cancellation.rs",
+      "bytes": 9285,
+      "sha256": "214da55d53eaf00e04ff651e0cefa450865c53f408817acea9b0284dd42175f7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/retention/exact_tests.rs",
+      "bytes": 1392,
+      "sha256": "bd7dab234ace419455138fce7efd9b63e5aa898afed1475ff3ddf2f0f9f7d943"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/retention/staging.rs",
+      "bytes": 8258,
+      "sha256": "646cea15f1c5779c402e94f1632454857dee7fefd9287bfcfe89a50323e9a743"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/retention/staging/restore.rs",
+      "bytes": 8928,
+      "sha256": "42d27a55981d67f852a6a90785fac0d038149a83abc48adfc15d1e64b6a2169d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/selection.rs",
+      "bytes": 7141,
+      "sha256": "36a0f72c509efc88a66853d65e71d8b6fb597e14b8754490de2ccc222745e616"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared.rs",
+      "bytes": 37469,
+      "sha256": "78df4aad2ed525f1d9d11ed42d3022ad4131bf58f0ca63a836fe6f878cd7a768"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admission_tests.rs",
+      "bytes": 3865,
+      "sha256": "c3ed7197e7a9273298aed52001a75da3d2e755545a2e5d5d3f258cef61589264"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_access.rs",
+      "bytes": 9949,
+      "sha256": "4ce135edeb97feebf7e26a0f94515337c0900e59105d933fb39cb58987c6ca8f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+      "bytes": 25805,
+      "sha256": "35e733bd3eb0b2cea0fb711ec5675908b809d410068df7d7a4c3ad2354e805ba"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs",
+      "bytes": 37022,
+      "sha256": "3fe62f4ae8680a34e1b5e439d2da9af1d5c8960ea4a8d99d665be3e6725eb067"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs",
+      "bytes": 10298,
+      "sha256": "0814aedee09b7e5e627c3b35c5de1a92fd6f8765dda09dbfc7664a484753bade"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication_tests.rs",
+      "bytes": 12265,
+      "sha256": "455045382da2867544be3350befe6d4d2a5a9fbdb600463a3c72dade0da61a2b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_tests.rs",
+      "bytes": 29765,
+      "sha256": "5fe86573cf6a19cfe173fd717fff626c78182d50b1e1691eb2275f277bd261e6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/groups.rs",
+      "bytes": 5881,
+      "sha256": "3cdca2d0b2e67eb05f1e79c4a61de15908c563eaa35b555a0b119c802d71e70e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/installing_tests.rs",
+      "bytes": 20737,
+      "sha256": "fc335aadcf2cd87f865fa23290643043442a0b180b3ae349d0f4208072852568"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/protection_tests.rs",
+      "bytes": 17006,
+      "sha256": "eccc565fc57945db50d83dd1e6be44f003597dbfa32f241ea1e7ff33e61bbea5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready.rs",
+      "bytes": 8867,
+      "sha256": "bbb46146af9c4f5c8a957ddf5962bb56f2bd811e9d9462f6de5290cd67d76154"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready_tests.rs",
+      "bytes": 7617,
+      "sha256": "1059f0d1f352420e1a5a8ee3aaaf777212bdeeb2261cd6f4044c06e064faba59"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/admitted_catalog/tests.rs",
+      "bytes": 16153,
+      "sha256": "825ef685e8e94ab776ebdc49778bab28e0913ea336f5676d3b8bf149c78f729d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/content.rs",
+      "bytes": 27150,
+      "sha256": "8e512fdc57905ae5dc7c9d63fa8dec7155e627029e12a68cbcde01696898f439"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/content/exact_tests.rs",
+      "bytes": 7325,
+      "sha256": "d8591822a93476eb11041cfca29201356b639181fd6d3521a580a2e749ba394f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content.rs",
+      "bytes": 10422,
+      "sha256": "9d9a0035c5d242957b57e72554880d49f418f36064419f549b2ddf4d881b40b0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/journal.rs",
+      "bytes": 10456,
+      "sha256": "3b23799160c8e89bfe86772fec7683657f81863e41a5fb03cf9cddd7c6b90b47"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/publish.rs",
+      "bytes": 10759,
+      "sha256": "58f372cbf9a45154a8fa20154b175b0edcf764f6a5e34f51d538aea2aa181683"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/published_cas.rs",
+      "bytes": 7256,
+      "sha256": "71b0ea084bc3f0198e394978dea7c0786244c0ddde88b12374cf0039bfe6e383"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/published_cas_tests.rs",
+      "bytes": 6779,
+      "sha256": "4ca1f2447294e658ad221a5f36f86dd8fa1d0b4fd5df3f2b8cea376b339e0f60"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/spool.rs",
+      "bytes": 20547,
+      "sha256": "e6f6d2e85df386a46c5a6cde9be74936aecd0e3df2bb375299b82d252c84ffe4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/spool_tests.rs",
+      "bytes": 1455,
+      "sha256": "07d806416fed5fc04f019f2ab658326beceb1cd3cd7fb7d0577fbbee78db4f8b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/sql.rs",
+      "bytes": 31595,
+      "sha256": "d6a6c8dd12f8c96866070f455ace02cb4ad3208b07dd697a47cac6970a3fa9ef"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_content/tests.rs",
+      "bytes": 11996,
+      "sha256": "405fe303366b5813a578ab5d3ba18ab5dfb8f8dd8997e9c29b9da99999c81034"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_protection.rs",
+      "bytes": 11767,
+      "sha256": "da15e8058116c7e6285605a94f02342323a8c44f56cdaf36c026373894412c6e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/exact_protection/tests.rs",
+      "bytes": 12451,
+      "sha256": "6a77be3e3a6a57c3e8bc76dd407894571e7cd453be05a00d37d1bfc8aaf538eb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/maintenance.rs",
+      "bytes": 12209,
+      "sha256": "feb5c0f39a3117bd9d51ca62014dcd5759ae5241b5fc55a04f97d4677b03a024"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/maintenance/schema_tests.rs",
+      "bytes": 3688,
+      "sha256": "dcc918cdaa777ab8dbbb346762adb0deb5a805e9bf67bcf01c153ea4b8c9b1b6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_access.rs",
+      "bytes": 20192,
+      "sha256": "60b134df69e146911b6afea84bb2e2a5a085c86d02fe85cecfaefdc0247c4b7e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_capture.rs",
+      "bytes": 28210,
+      "sha256": "f914a6654da91c7f21630730385e05f4b351b57fa97e45585a5c422147b9d52a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_content.rs",
+      "bytes": 13967,
+      "sha256": "34ca331ef9e29251b6409666d0d0b9c674725f5e1ba47463dd90534cf179d487"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_content/exact_tests.rs",
+      "bytes": 3935,
+      "sha256": "df57d1699fd70d2a347673c1eaf2aa68d2530f9f73caced6823b4a96649e329f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import.rs",
+      "bytes": 18520,
+      "sha256": "9dae6fce9e1f8d000b924b422bbadb47e0dc42ec1c0a756256876d9fd7a7c330"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import/content.rs",
+      "bytes": 25647,
+      "sha256": "f700bb5f1ca6b40a2892e3bd5e75f13ebdf4ee8948e919edba68cee1e2d8ed4c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import/content/tests.rs",
+      "bytes": 8795,
+      "sha256": "3cfb0ab488906ff396326724bb6af4e2e1e4fb16466189c81867bdced191fc07"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import/publication.rs",
+      "bytes": 7458,
+      "sha256": "f551184cd809aaa05c6c95776ea77ad1270e9d840a74cbf3770c249380758be5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import/publication/tests.rs",
+      "bytes": 5745,
+      "sha256": "65292dc236cb20b11a02edf38e00e66d81d0e06aef755744af27864b1b2970eb"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/provider_import/source.rs",
+      "bytes": 17600,
+      "sha256": "4670a72af9792fd7022a5ed505f1fdf2003f27edb6bf71de5654dc71e6de2828"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/schema_v2.rs",
+      "bytes": 9434,
+      "sha256": "05894d923f2f975b6ca99b87ecaa3e4c89594be2cfea630c3d712912664109e6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/schema_v2/tests.rs",
+      "bytes": 9195,
+      "sha256": "95f83e80e7f8a6da99cd2ebe852ecc9696e81f03a1ee26716e872c61af34d887"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/staging.rs",
+      "bytes": 19307,
+      "sha256": "c1d9cab6b321bbe2744f8336b4adb904d10d3706ce4396c7b662fe40e9cfcb21"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/shared/staging/cancellation.rs",
+      "bytes": 21558,
+      "sha256": "7d549d6de34883514571bc1d611702ca81230d7d2e9b866768b7c61dea55109a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests.rs",
+      "bytes": 13279,
+      "sha256": "4e03c1188f0a7503403ddbfebb05eff198b9805ea7dfe25497f210dbc1a2b226"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/capture.rs",
+      "bytes": 6659,
+      "sha256": "5babb6bf34e3eb727089a86623d859ebfa7271df3789c4ff4f9a54cfee7d79e0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/capture_streaming.rs",
+      "bytes": 5457,
+      "sha256": "6261f4ca53bb11a6411d1cdbc32bb4fa07a0327ff3ba0d6396b360eb3634d249"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/directory_move.rs",
+      "bytes": 8501,
+      "sha256": "0d1613dd022bcffd482e3f68db2b0df3d1e17c117146569fa2eefb2b6b67b2a3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/directory_move_verifier.rs",
+      "bytes": 10381,
+      "sha256": "f31a0e1934ada73734c731d4432f1d3952b1e64cbafb72db2f333f2cec9f8f6d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/maintenance.rs",
+      "bytes": 2185,
+      "sha256": "dcc9b239e9af24e43a05192d19d9de3ef2a392c3ea767ef78f5b65b78dfb6f4c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/namespace.rs",
+      "bytes": 10248,
+      "sha256": "5d2b74681b20f4f13175b72b7cae29fbeb9699850566172008a716fb37e2e8f4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/publication.rs",
+      "bytes": 8044,
+      "sha256": "bbe7d0b890065e4412012dfe5981e5eaf470325841e2aec504ed47f5aecb1b11"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/rebase.rs",
+      "bytes": 17540,
+      "sha256": "25066f5a0cd1c25fe5db585349c601ea33e9d182c29286bc25a1b9cda1352094"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/refresh.rs",
+      "bytes": 12572,
+      "sha256": "e8e3ce4cd1b21b0f7e12e2b76348f22812633f920c884feb4e38d374b6bc0928"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/restore.rs",
+      "bytes": 9706,
+      "sha256": "259858227c37e335a9c34368f9f301040956c1297e6a088fc5ba43cefa9aa74d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/selection.rs",
+      "bytes": 19215,
+      "sha256": "84eb292a4be39cf98b23a93b907b4bbbdd7b544be2493342a7441d99f26a5106"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared.rs",
+      "bytes": 24158,
+      "sha256": "0107fd1c5240d467ce5c4a72253d0180d9455c989c314029b1ff47c609f3f3e0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/provider_schema.rs",
+      "bytes": 21740,
+      "sha256": "79baffc3bb478b706c731729ec90d677d3dee8f8c111d70de10a3df615ce97e6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/provider_schema/process.rs",
+      "bytes": 26321,
+      "sha256": "fa2c0e147f17aaea68d3c4a315a36162d87fd19ca30adf003fce5a6c67595ce7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/provider_schema/revisions.rs",
+      "bytes": 18238,
+      "sha256": "815cc5c65d7f70ce8d37b69e9737e9dd0c8d33b38baa14046d15f55117494bc4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/r2.rs",
+      "bytes": 21503,
+      "sha256": "9135979eaaa1381751d67561d225934ec0f99e728fe056d8e5f8b0a572335408"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/r3.rs",
+      "bytes": 19492,
+      "sha256": "30f4c907e5d0b81dcb53ad6b1671c36ccda2542e5a2db65c205b5464aea6fa7d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/r4.rs",
+      "bytes": 14952,
+      "sha256": "1d3ece8887cb418b5cb924ad31bd31e2f36f4cedda174280f3ad9c4ae9a7b5ba"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/recovery.rs",
+      "bytes": 18880,
+      "sha256": "ea386ccce45eb76f18bca2681bcae937700652adf546eb3dd02268c34cfad9b7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/shared/validation_seams.rs",
+      "bytes": 14981,
+      "sha256": "56bdab5b155b767476d897dc239cee6084d5e98b841f479561ab6585c1f170d5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/projection/tests/streaming_verifier.rs",
+      "bytes": 8955,
+      "sha256": "7f8e2020d79b4386934fd5a536ed3b45459f40ddc1e3c80555ecb1c4385cecca"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/acquisition.rs",
+      "bytes": 3638,
+      "sha256": "5e9857004238dfedcfc041510947f6538c85bd0f5e478140823982911d0c4173"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/acquisition_tests.rs",
+      "bytes": 9476,
+      "sha256": "3d63d1a8bebbb650269bed338b0b2308447570b1ed81edfc37fed77287df6629"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/admission.rs",
+      "bytes": 36678,
+      "sha256": "6b217494cd5ccf4a161440298040f32453cfc3e6d54210278e1309f2f6a13071"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/admission/closure.rs",
+      "bytes": 19065,
+      "sha256": "d96bee319d24f854f3adfa7727baf362105a3cd8c0256bd5706852496787b7be"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/admission/resolver.rs",
+      "bytes": 5980,
+      "sha256": "0dd13b644a13875250de60c221707a0418924916134353ec79ec769b36fb6453"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/admission/worktree_parents.rs",
+      "bytes": 9705,
+      "sha256": "b658abcd1866c846306d85d11cc78684431940cd2f7d9f34b946309cf14e4669"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/cas.rs",
+      "bytes": 36712,
+      "sha256": "64524b14b4fa8a295b13a16caf83e24db187cb6fd585fcc1120fd707caad395b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/cas/codec.rs",
+      "bytes": 7240,
+      "sha256": "8a675ac46c6c38cde24bd98605d9c6a588f18909c8f21b4416c51faed50f8f61"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/cas/paths.rs",
+      "bytes": 4720,
+      "sha256": "00f660db0476836d616c462f80234f34791ba1588991d3c883f21a2eb78ceef4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/checkout.rs",
+      "bytes": 19089,
+      "sha256": "13d0ec08b53722e46f7c97fe22ba593ec115ff9dfc10ad214fc4d269d887bcb1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/checkout/projection.rs",
+      "bytes": 3483,
+      "sha256": "81872c7f5de63076086cc9be5ddbf2fe2d8099e8d71c578958133f9b1293c487"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/checkout/streaming.rs",
+      "bytes": 8603,
+      "sha256": "6fa30fe57111a69a3c3d2a53b3fb352931567c6fa54eb303e9b3ff839c1349d2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/checkout_ignore.rs",
+      "bytes": 5688,
+      "sha256": "0933a613443cc662b2028841f01ed58eece7735b275da0e754b08f272c6fd3bc"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/checkout_paths.rs",
+      "bytes": 4380,
+      "sha256": "9cdf15c25ed50555c5b45eeac60e0357cd13813e4bbdec487ca73081bc5a44d8"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/compaction.rs",
+      "bytes": 8990,
+      "sha256": "e53337c08444696bf7d1aa470555a1d7536e1f9007d9c85b0e3f49223ed7f7a5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/compaction/database.rs",
+      "bytes": 6150,
+      "sha256": "2f79c2306c746f81045556f39621495e7c9f0375134e641188bdf0b7e3fcbe7c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/compaction/journal.rs",
+      "bytes": 6779,
+      "sha256": "068226b28679955a1f8f5d01ab12795c541ab1994bd0f0cb83e301aa7a6198f9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/format.rs",
+      "bytes": 23207,
+      "sha256": "2b91c8d0e4b7094f20eaa655fb45e59e15d63f908c06ec0db78f5647b0f1ba33"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/fsck.rs",
+      "bytes": 35352,
+      "sha256": "a5478600f62c36381fe755457894d65f5d29fe5cf7e23e1d20cb90566144d138"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/fsck/entities.rs",
+      "bytes": 13220,
+      "sha256": "08f4e93938f43df6e08c45373de2b5bf55710bb383f20bc6828ba50a3ec46f3b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/fsck/graphs.rs",
+      "bytes": 25161,
+      "sha256": "01ded5675c845191f88fc54c30e80b9a60bbcac07d7874e8fcdb022aa3883b96"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/fsck/integrity.rs",
+      "bytes": 16461,
+      "sha256": "2ea5641823a3d9b7dd08dfe4071c679fdea3c1332cc4ac0c7ccd915108bd9231"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/fsck/projections.rs",
+      "bytes": 16618,
+      "sha256": "24da0d6ee17a3b4ec8414834e5b739fe88efd5abf9b2dcf6d34eb99c9a0f4856"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/identity.rs",
+      "bytes": 6356,
+      "sha256": "4edebd4dd3e68781f7a1fee28a2386396b09fbcc7795f623033eaf00925ee5e3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/layout.rs",
+      "bytes": 15468,
+      "sha256": "e4bbfe2324dabf85a68a1544e93745269f8cc5b33a5de9921a3c2adf0decd6a6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/materialize.rs",
+      "bytes": 45175,
+      "sha256": "16179768a07d01ba8252ec01f6af3f9b1efcdc638d61daa8e80ed3b85be3ea90"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/materialize/lease.rs",
+      "bytes": 2678,
+      "sha256": "450cb75ec824586fffe2a89ccacf9d66fb46d4b0cda9663b485cb4b00d99c15a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/materialize/sources.rs",
+      "bytes": 3041,
+      "sha256": "55a57c855da3746812c0fff231a93d3fe9464b7afdea7e61d7d34b4b2f5460a1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/mod.rs",
+      "bytes": 2630,
+      "sha256": "57d25054b4c6f91ee46ed8d3b074e6c73dae9bfa42db415a7061ffdb6e231161"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/product_admission.rs",
+      "bytes": 13296,
+      "sha256": "98a8dcd5f387913dcf784b3173686e93f0e27747c4b492238e89213dd788c832"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read.rs",
+      "bytes": 18816,
+      "sha256": "e896ea7f0b4e1fc576ae558ab26ca5fa77b80e39ed6f61a9355dec9d2c9d9e58"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read/availability.rs",
+      "bytes": 9349,
+      "sha256": "fd1a5c71b7591d51c0a8bc00a597bed2cbb860a824cbe013d12b4143697d71ab"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read/history.rs",
+      "bytes": 5786,
+      "sha256": "18daeb91c681c1c882e57cadb915e324868e5ab2e44dc28ea738a43b1e73c2ca"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read/projections.rs",
+      "bytes": 17033,
+      "sha256": "7b44ab4017d3f19e67bd4f6cac385ddf5b3aa4be509b5efd1f260d70ebe530e9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read/reader.rs",
+      "bytes": 26473,
+      "sha256": "df96db7bdfdb22ec88aeeff27de8ae9e11b721145c454f2609243d7c782e1393"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/read/transactional.rs",
+      "bytes": 4579,
+      "sha256": "8c8a218f19ea74cce9acd5a342f1610f21a336bfd4f4408fd59f8e9610de2f1e"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/recovery.rs",
+      "bytes": 21251,
+      "sha256": "72a39004a2beefb4489c451cb9acb08d50e1f62fe60164cea556ccdce54bc7aa"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/recovery/records.rs",
+      "bytes": 14959,
+      "sha256": "947902b65400aa62e1d5cbdcc5749069808db5fcf9d074ae289149f8aa42d932"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/recovery/writer.rs",
+      "bytes": 26089,
+      "sha256": "88288a1ba360eb77596564c94a0d963a66aebf7fddb0cc7361e63649062a60bf"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/repository.rs",
+      "bytes": 53971,
+      "sha256": "d66f3bf5ab9a484a2481221bbcc43077bf958e1b6227371023fdb80c6236d17c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/repository/streaming.rs",
+      "bytes": 2831,
+      "sha256": "285f959946816576eb90b3520a21de25b19e5bd319dac39664b8eb49f7bce331"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/schema.rs",
+      "bytes": 2713,
+      "sha256": "511882139249ae5315e18fe7bb0fc3a625394b2fee2412f4a6ee8e535911ba81"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/sqlite.rs",
+      "bytes": 32142,
+      "sha256": "62595baf54f64d999bca5d911afcf381d2c8ae9724070d416057bab6b4396084"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/sqlite/tests.rs",
+      "bytes": 12221,
+      "sha256": "715668bad105a6f306d10a27d579c8be84fa15f7e22e1e2bcf87e87b7f8bf6a6"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/vfs_recovery.rs",
+      "bytes": 83862,
+      "sha256": "04f45d8e5a26754feb12eafa51c90b31a9fa32062c01c7b05022e9e96262ec12"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/worktree_audit.rs",
+      "bytes": 7850,
+      "sha256": "cda28604ab73eb307ab74064f9a50167b0cea34885c339db69a70536a595bf5a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/worktree_creation.rs",
+      "bytes": 8160,
+      "sha256": "40df254de0e5bf5a652956ace666f9f75951b010a244e363f9ac1aa5900b522b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/worktrees.rs",
+      "bytes": 16410,
+      "sha256": "8ca4dfa16d4397cb0552fa28e6302024a2bdd37bda0a0829885a88fcb3a4b58b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/scm_v1/write_batch.rs",
+      "bytes": 2902,
+      "sha256": "718d30603e430c963c790c768a7c3878c0d333449970ce3346673e8b3ba03d35"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs.rs",
+      "bytes": 19664,
+      "sha256": "18f24966bf2fea76f50fdd4c97e68cacdde1b50dd63329fc6497f55bcfe02eb2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/directory_move.rs",
+      "bytes": 9964,
+      "sha256": "83d1944ccd0ade35c0b0852398a6cd3b1abb5305ed2608c18bc53241cb53368d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/leaf.rs",
+      "bytes": 9331,
+      "sha256": "f684b615be9dec1d6aec83ca32d14db2eb3155078bcbe42deaffd4192e7f9c3c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/privacy.rs",
+      "bytes": 23275,
+      "sha256": "0c8ad75634f0e038e57e2c2f9580f44d9acd49f7e67d7f4b89bc5ebf6747f352"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/privacy_creation_tests.rs",
+      "bytes": 31359,
+      "sha256": "4ac39f9a78605ea440825d911e76b1bb50d0e978ffdf512a1e6fdab22974dc85"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/provider_control_interop_tests.rs",
+      "bytes": 21604,
+      "sha256": "f63d85f791172f71e628e40a4e1b3599dd8ef2757834e6bca1e406a746e3f364"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/unix.rs",
+      "bytes": 9975,
+      "sha256": "cf17eb992b6e25d5c7752dde2e0d3469e937e3780d6559ab15b08974e753a5b1"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/src/secure_fs/windows.rs",
+      "bytes": 14753,
+      "sha256": "943715fa97de64caea52d7cc6981ae92656af62e264c67cf3fd47cf1542b593d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/checkout_streaming.rs",
+      "bytes": 2939,
+      "sha256": "a866f52a5a48952023dfffd99f4df05d5ee31916970519799a8c6546b16a8af0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/download_cache.rs",
+      "bytes": 3721,
+      "sha256": "33f5bb9a338801b3865c1dd7086a079276b2bec3c9e3164bc33e4e73959bce3f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/measure_worktree_audit.rs",
+      "bytes": 406,
+      "sha256": "4a5a8d7c6d173cc65d56847879c56ac7cdb1c8a99bf74a519dcadd0f89ba4987"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/process_lock.rs",
+      "bytes": 8726,
+      "sha256": "546675cdef767d8bf8e2140c633f9ed138f1bb25e62abc229be48b7a02ec9e52"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_admission.rs",
+      "bytes": 17175,
+      "sha256": "4de90e447780697a0cdad1a84ffb29be55cbddf4d67dbf20cccf0420ab45d18a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_admission/budgets.rs",
+      "bytes": 13639,
+      "sha256": "1d5b6c084ba21a9d3214cb3956eef20cc8c44a3ed75088cdf3733446a1726a4c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_admission/closure.rs",
+      "bytes": 19766,
+      "sha256": "3984724b8b34e4670c4c82a5d6385baa2a3d5784b1776ba19d0e710bb325feda"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_admission/history.rs",
+      "bytes": 28008,
+      "sha256": "7703b7496a2ad450ed41438e34a265d7caab12095374dc9f68730fad0912beb2"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_admission/reads.rs",
+      "bytes": 11587,
+      "sha256": "544e6ae547b95375733acf3d2855f1c56d31fb0453cca71aec0bd4e39d0ed5a0"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_cas.rs",
+      "bytes": 21060,
+      "sha256": "07041d85d2d100c394a8c473bf6a9056b319fa90c484feb8f7d736a44cc81652"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_compaction.rs",
+      "bytes": 7403,
+      "sha256": "342dcf81dbb3f1142b461eef3d96982e3701aaf1d78c62bc17844ca4c720904b"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_concurrency.rs",
+      "bytes": 15809,
+      "sha256": "fe16791382e3f5bd555dcd8bfb6f86473fb2e460118d5f84d67bf33cf4ec0cd4"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_crash_reopen.rs",
+      "bytes": 3490,
+      "sha256": "739e6bd236c0fa758a8fd6cd30675d7517d199c76d47691a7a9636d983b5a759"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_format.rs",
+      "bytes": 16559,
+      "sha256": "c556e646d74c68aaea288ab706b1cbc0da484f62cb38c5d100dde18ec06e4e09"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_fsck.rs",
+      "bytes": 4539,
+      "sha256": "ba25d0769e6f40cd85efe3df0bd5bcb11b455521c3eecf1086b64784b4b8cc9d"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_fsck/integrity.rs",
+      "bytes": 10396,
+      "sha256": "171597e6b0e7d2dc68c2b47d1d9b18661e028cb97b393821ab7fd049b9c352fa"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_fsck/limits.rs",
+      "bytes": 8864,
+      "sha256": "c5d6eedef3302da98c58b9250804a8cd369e1ba9570a7c4b760a56671e437506"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_fsck/projections.rs",
+      "bytes": 7811,
+      "sha256": "67bda5455ee549f1149e67316ebc48757674a9b832f8e8e68388905862b7f88f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_fsck/reachability.rs",
+      "bytes": 25067,
+      "sha256": "1472b62f5d7b82ba91a07946281e65fed1a4ccb769c7afff2bbb509945e8f934"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_identity_history.rs",
+      "bytes": 3833,
+      "sha256": "d9a4a6bb5c6bce7f3f6b8533d4fd7be144e7e458a401ebdd539f88cd86550515"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_products.rs",
+      "bytes": 6467,
+      "sha256": "f169b876de01e074372cd214dc6d5e041b60e0246207fc6cf981f269b1134d55"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_recovery.rs",
+      "bytes": 8289,
+      "sha256": "fe2e9d603fead486833ec2901a2e92c44fe6d406f5afd5866d2f73002de420be"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_recovery/handlers.rs",
+      "bytes": 3962,
+      "sha256": "13877279a44b98e97bffa829b39526cf02de0c545a96f71f91532f2b6fcc1dd7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_recovery/journal.rs",
+      "bytes": 7202,
+      "sha256": "a86eb60ebee3eeff7823b319873bb9a871149f258306ca586a90ac6beb8f31e5"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_recovery/leases.rs",
+      "bytes": 16792,
+      "sha256": "20e9cbc97680f66ff31d5094a0e54889c5720bd47d9ce9097b0cbfafd1aaf57f"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_recovery/lifecycle.rs",
+      "bytes": 4832,
+      "sha256": "4174f6c18cde1a9075cbac7564ab10acf67393013462fd6edb7f18e9ec86a694"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_schema.rs",
+      "bytes": 14246,
+      "sha256": "f839200d3cc666d4f6c06ad7e338fa45aeed190efbc86b375a39de53c2cb621c"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_tx_reader.rs",
+      "bytes": 7142,
+      "sha256": "d6cda1ab79b5c12c78e7762b0526b61017f86dbdb5445e4201168be230f865a9"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_worktree_parents.rs",
+      "bytes": 21646,
+      "sha256": "f98de2963eca10cf02a5fc9117105f6aded6c26f0ae80acda982e5da82aeef56"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch.rs",
+      "bytes": 5418,
+      "sha256": "c0dd4a502d70f058f7fab921b4229b5594850f13e21f99eacfdc9edd62e5cdad"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch/atomic.rs",
+      "bytes": 18243,
+      "sha256": "47bbeea6dcc03333cc43390fdfda5664af67f4a151b4dcfb2bc8a7e4605d7752"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch/history.rs",
+      "bytes": 21211,
+      "sha256": "193774a7b5b3bcd2ff2cb1673e1afee332367d68757e526083f1256f4fcec49a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch/integrity.rs",
+      "bytes": 10160,
+      "sha256": "12d7f65ab351743de2cf711547ddf3af85ae1cda835a5291612fc48414437812"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch/publication.rs",
+      "bytes": 12876,
+      "sha256": "e926e06b7f18d1a2c67b352e0736d7922176d4e096fe3fa176628459cbed2029"
+    },
+    {
+      "path": "r69/source/crates/layrs-store-local/tests/scm_write_batch/streaming.rs",
+      "bytes": 4518,
+      "sha256": "c2562388db7b46380a45c91975cc262247fb713fc95e95e07807a903d22d8bf3"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/lib.rs",
+      "bytes": 43,
+      "sha256": "6a92e3f270a638342947b191755e4f2e32cecec7104f94a54b99d976a0d21d95"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/batch.rs",
+      "bytes": 16943,
+      "sha256": "5f92d12137eb3e306626b8f0326fb748aa917b52f33db9fb104f3d12e276b4dd"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/error.rs",
+      "bytes": 8745,
+      "sha256": "96098a1cf3991c98032510fec969d9253532ecb789a4eac40fd177a5e614bd34"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/maintenance.rs",
+      "bytes": 3849,
+      "sha256": "823d1f6281085595c3f8e79b68dbe7e771425e11b12b99bc7c9e952df2fd3568"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/mod.rs",
+      "bytes": 1422,
+      "sha256": "42924acd1dfe72335ca0e4192810aeee3fc82afadf1885ffe57eaf29c7bf1e60"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/product.rs",
+      "bytes": 5262,
+      "sha256": "2a48ddf836cbd93c98b23bb9946a953db3d31111fbac55735c45828fa0db605a"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/repository.rs",
+      "bytes": 6488,
+      "sha256": "2688964e90caf6f3885ead1b65412280a81112463bd2ab08838f9da9dff586e7"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/tests.rs",
+      "bytes": 28906,
+      "sha256": "0bc96b12351d829e26748cc0e19b8578cfffd78be0174700b0f411e1587f1a82"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/types.rs",
+      "bytes": 14155,
+      "sha256": "208b8bb25d8f43a643b3e3deffe0d15f94dc914161489ce0a6fd3549dc85c183"
+    },
+    {
+      "path": "r69/source/crates/layrs-store/src/scm/worktree_batch_tests.rs",
+      "bytes": 3295,
+      "sha256": "31617288793bc4499ed9767289f9224d3ef8a4f3b25f8cacb1b57e5619c2eeca"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/lib.rs",
+      "bytes": 106,
+      "sha256": "e85de217ed66a774b84ab2e79f6807b3a7c161f988619f30b71a675eb54633c1"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/authorization.rs",
+      "bytes": 5587,
+      "sha256": "d868e94421937d2776bd8c793200c3801f5586ebdc1a13ea4e90d47515853859"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/bootstrap.rs",
+      "bytes": 3007,
+      "sha256": "f0bb02498429d5918f4eb58ee1d90a62b23a93cf6b5fb2860af8c5fd4c349ebe"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/common.rs",
+      "bytes": 12205,
+      "sha256": "301cd39462c464aac95982a937dc900729bf2a24fcbe1748ff886039d4a0da7d"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/events.rs",
+      "bytes": 5957,
+      "sha256": "f4c40ebb6ac7bd56008ec504a768925e84d912b72605f1f8733aedd8b5cd123f"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/evidence.rs",
+      "bytes": 4067,
+      "sha256": "4c2ba0a4a4caf1da53a4cf66eebbb7234000f16f8a1ef9cc87223bbaf686c84a"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/mod.rs",
+      "bytes": 993,
+      "sha256": "6d9cab0c22f801db6f0ad62b6421f8c1a73395a17498924c0e808add160937ce"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/native_policy.rs",
+      "bytes": 12364,
+      "sha256": "b2d33918438631a55d5a92777302e0e038209177320d9d3f8172f31668a94f00"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/native_policy_v3.rs",
+      "bytes": 3338,
+      "sha256": "c318a728d26ee6d9d187f60f085928f60242e06efa293fe4424d5ceb20bf2087"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/native_policy_v3_tests.rs",
+      "bytes": 6461,
+      "sha256": "54e9e9df85d002c1d496c5b9b41d1ba8930c297ef0cfa28511f405eaea539af8"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/observations.rs",
+      "bytes": 3303,
+      "sha256": "664ee6fff7ecec188bddfd9747dcf7d0a1294292705a116101459f1fc9a041f1"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/path_patch.rs",
+      "bytes": 4521,
+      "sha256": "1897090bd39d0caf0e398a3e4955c1ba8c6665fa3d837f6ac845f2f27d59bc9b"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/path_patch_submission.rs",
+      "bytes": 1073,
+      "sha256": "baa023d481b7d1acb013043a35be4f49d580a50e54910127ed10f32436b3c490"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/path_patch_tests.rs",
+      "bytes": 2909,
+      "sha256": "c86a4cb790cf8d542be216269682038c5a31cb0e84d2f7be1bccb09283591ff1"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/plans.rs",
+      "bytes": 6677,
+      "sha256": "c4c59bfce071c93b7ce5800418eb25669debe1317583a0b668ebdfc1cd109749"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/products.rs",
+      "bytes": 34487,
+      "sha256": "913fe3156ee0bd9499dc9589003b4642750b17b3c09e2232cbfc1e0091f1965b"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/products/records.rs",
+      "bytes": 12832,
+      "sha256": "e5c09261b860ae4f93d3839a81ad679306de3aa54c7f24aa72a25fb321094b90"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/projection.rs",
+      "bytes": 3689,
+      "sha256": "a09a69d69dabebf2e3d49045faa0da8b8d33fe3d53dc788d997d410e8c9a7eae"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/receipt.rs",
+      "bytes": 7598,
+      "sha256": "68e29323cd5a975f9c1f954dc9309fdb8a6722a9640277f7ac29360c899b9a00"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/scoped_path_patch.rs",
+      "bytes": 9580,
+      "sha256": "ec214b6d7e80b90ccfbd99b1b87940c9537b87da494e8a0f454532f28385447e"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/scoped_review.rs",
+      "bytes": 3394,
+      "sha256": "2d74f0e124f0629f82cf98fc4e5f9fa3cfb0d2a48b5fd1ffd98c33b9b81137d3"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/transaction.rs",
+      "bytes": 9866,
+      "sha256": "37e88317975c62dbf361bbbd6037794cd26e40c7c6923bbf712ceefb715926f0"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/transaction_error.rs",
+      "bytes": 2904,
+      "sha256": "6b54a8668e1d85c68bff8ef87a33e95c65d1d331286732579dd09af112611199"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/validation.rs",
+      "bytes": 36217,
+      "sha256": "0d620a431d5587b27a16bc31460cf14c64e53f346355c7e4c34b03a522a2fff8"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/src/v3/validation/weave.rs",
+      "bytes": 6538,
+      "sha256": "77ea570e8615ec08ff953f872ef319a31f23dcf02cd7484233705319f5443e5a"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/tests/authorization_patch_snapshot.rs",
+      "bytes": 2842,
+      "sha256": "b71a2032f6eaf4f208df0dd23e41a3310c36472b6c8ff128721d0dd63b913b77"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/tests/policy_versions.rs",
+      "bytes": 3278,
+      "sha256": "9bb6d9200cfb0b47c00c9656901ebeeaff797175ba050e995721f3851bf203ec"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/tests/projection_access.rs",
+      "bytes": 1367,
+      "sha256": "287b8bef313f851ec1b48a312d5f30ec12764e228058d45a92475dc93bfcbc57"
+    },
+    {
+      "path": "r69/source/crates/layrs-sync/tests/sync_v3_contract.rs",
+      "bytes": 33096,
+      "sha256": "9e1d43ee98c9ce07967686fbbf40d0e6dc25e3f6bf7f5333c7a33034a46b2cbf"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/catalog.rs",
+      "bytes": 9628,
+      "sha256": "d08f25f9cb72782f90cfc48b47792e9e5269ed87168dd7b7f9d7918d0a5ce6f1"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/control.rs",
+      "bytes": 2487,
+      "sha256": "c96a78e69c13416a034c371d6286bec30d0c5b26aa0eb1c3aed891e17dfff790"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/control_directory.rs",
+      "bytes": 12307,
+      "sha256": "c0b56b1669bdfc3db3b2ac78b76048d702a6dcb34eaed7a9d0b6688ded2998a0"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/control_directory_tests.rs",
+      "bytes": 8393,
+      "sha256": "5fc596fb827edd2747604ddbcbf575ad03c1b3796bb43680505b4667aa88f1c6"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/evidence.rs",
+      "bytes": 2123,
+      "sha256": "82e41ffb2e7989f50aac65c16f46acd0bc449b7e7213b069a58ad329af7f7620"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/lib.rs",
+      "bytes": 4947,
+      "sha256": "1acf88078670b6ec1e0eab99ea0afca33955d1f3a1876694b339a6b737c0029e"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/range.rs",
+      "bytes": 1916,
+      "sha256": "ada8a051b582703f2b7ce54e090d7a1b522770b2e8e438eca7e90d8af370ea2a"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/registration.rs",
+      "bytes": 9057,
+      "sha256": "b3e9c9dc3cd6d4e6bdabafdbeabd7ec03931e478a55168d4a72781121f450cc1"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/registration_tests.rs",
+      "bytes": 7638,
+      "sha256": "3db4224fc9107663fff0d59889b1d733545aaef034b065424ce3475353591401"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/tests.rs",
+      "bytes": 10617,
+      "sha256": "b6ca67e2f17beb17374311a9c7712c6baf1634a3e5cc07082b64c37a8a84e1fb"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/api.rs",
+      "bytes": 3711,
+      "sha256": "a6fff956f59d616522cc0e82963d900985fb203abb397a4e3ee275793a6ccb08"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/attached.rs",
+      "bytes": 2914,
+      "sha256": "cb3dab6f9ec487c87809d9c56187c857976bf9d1cf0c394382a82130a1f2dca4"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/callback.rs",
+      "bytes": 18738,
+      "sha256": "e8cd257b58c0d2f8577021b225f316c1be6f4011be803d76d637375027cfc5b8"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/checkpoint.rs",
+      "bytes": 11844,
+      "sha256": "0a093e2a86c4724c009377daea046e3c470e04fa420c7508cd3a41cf6fa1d7dc"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control.rs",
+      "bytes": 5564,
+      "sha256": "ba25b2b6180a93986ab8b1ce96c01bb176c0b3c28571cb7530dcff493be14235"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_directory.rs",
+      "bytes": 19023,
+      "sha256": "cabe05d8891733da780ad617d0717e6388adb27cbe63e61b59106a8f8c096927"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_directory_io.rs",
+      "bytes": 18256,
+      "sha256": "d903277128f255c39ecc5b1f804037d24a293ba52e5c80f7d4e13bf421a4d0e8"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_directory_privacy.rs",
+      "bytes": 8478,
+      "sha256": "80d09bcdac30f0da05636ec32c4bc59873675c77b4df65d7facc1610114d7daa"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_directory_publish.rs",
+      "bytes": 18545,
+      "sha256": "cb0ef8c8dc9a3cfd0be860fc0d7daa60a39de0ee407af1b9c98219e2d3c26e48"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_stage_observation.rs",
+      "bytes": 10605,
+      "sha256": "ebe1a2128a2b21ac00b0341f392192782e54f2a22de7532129650a39ce199eca"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_stage_observation_fixture.rs",
+      "bytes": 12957,
+      "sha256": "68a4015f2a280be21f22e5f705a4ac27cad97d351e063d97f3efd4b13eb52e98"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_stage_observation_native.rs",
+      "bytes": 33809,
+      "sha256": "01d07ae2e9a1ac61697f9985c17cd9407dd006f52b2aa3e0f92cbf90968a65a6"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_stage_observation_registration.rs",
+      "bytes": 24490,
+      "sha256": "966469b309f69100b9f75ef83c5a3303f1e8cfd2abf7c42a074637c7e9b9af74"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/control_stage_observation_tests.rs",
+      "bytes": 3518,
+      "sha256": "fa8d1eebff3f4f75b43df8f83cfae562e8c5677ebb81dda23c9fb9865bdf664e"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/export.rs",
+      "bytes": 26700,
+      "sha256": "0e2437114c9dd9a39fdb0ff81402259ee56597eec5358d15662c5aa3ca2569ad"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/fs.rs",
+      "bytes": 13651,
+      "sha256": "eb6d1c232f10478dc805462821999de4536d8621ddfa918fb51465b3a1f09dce"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/mod.rs",
+      "bytes": 28728,
+      "sha256": "dd8f5329619c834bed8227d9d9e416029c628a56b5be295687c2e50ce28c98f9"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/ordinary_root.rs",
+      "bytes": 1628,
+      "sha256": "27bb561184b3eaf43695bad4c8d53b4cc8fa20b50ef3f4134f4fd239b5123c5c"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/population.rs",
+      "bytes": 14639,
+      "sha256": "555b869fa2d4ea54f79ec96c79db18f038b877a045c81319f318f75a6bdee6b9"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/provider_root.rs",
+      "bytes": 15261,
+      "sha256": "03b1402ce03fd85fde852d55d3760ff0791d46b4d7e068205c41a7b5b72ad132"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/publication.rs",
+      "bytes": 10202,
+      "sha256": "ec03904ec22d3e2e3aaf7e8072c7e29cfd825564fa486cd1eeb66607a3a84c38"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/raw.rs",
+      "bytes": 7853,
+      "sha256": "184819a5f0a230838bdfc96cefdd953a25be2023549248b45e0fd9e37fbf6bfc"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/root_probe.rs",
+      "bytes": 8456,
+      "sha256": "0e0b361c68556269f118271f1cfe511367ab8634192827ce4e3f6454f5576f42"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_acquisition.rs",
+      "bytes": 8357,
+      "sha256": "bc369ccc57d9f7be55240cb05e27641e03a22d553203d3807bcc65f1302cc673"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_fixture.rs",
+      "bytes": 11444,
+      "sha256": "c54f0843ecc8955b1910e1d2bee92c832b0f83bf4bddf53ae0e91197a3260c7c"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_lifetime.rs",
+      "bytes": 5204,
+      "sha256": "84feaed8d0ee1c0557242a0e9022abb585f9d7c90f8cda6d47cb5d08fe2a9d8c"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_metadata.rs",
+      "bytes": 21910,
+      "sha256": "e6f344b46b069cdc16e901d8045035746d2ee584ade80b3117e4d4162d3d4d74"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_negatives.rs",
+      "bytes": 7955,
+      "sha256": "3b16ac8cec7b98e7e7e99dc5e77f7d50e28bb26590690157f86ba7a1613bed65"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/stage2_tests.rs",
+      "bytes": 31760,
+      "sha256": "7099427237a1690031d55aca0ee062be124735840943db139a5fd870cfe9b09b"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/src/windows/visibility.rs",
+      "bytes": 8998,
+      "sha256": "32a094a777fe674703fdd7ac738c60c56b0e93c42f0e874fdb8a4dd25db8dea6"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/compatibility.rs",
+      "bytes": 10224,
+      "sha256": "c02ddd1a4fa9c2c7d1e27e9cce842c13bfc54f1f4fc89495f33f1d8419391769"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/control_close_window.rs",
+      "bytes": 30164,
+      "sha256": "db89ca2c74daa785ebd1508182cd9e20c8ecf53d5615ae93656a50f93006e9b6"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/control_close_window_r2.rs",
+      "bytes": 55696,
+      "sha256": "989a3faac0ed3e5486cb0400c26a25368c199e8e2b234c96c76fde34beb53bfb"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/control_directory.rs",
+      "bytes": 28488,
+      "sha256": "1fde1c79b5544b651e90df1f9f8e2d2777f19d1bdcf84060f7a4a5561125d7f1"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/control_directory_step1.rs",
+      "bytes": 65010,
+      "sha256": "799ba1a65c1cd413be696ed342fdef754bf457ce03024d1c85b3923dbc821d6c"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/control_handoff.rs",
+      "bytes": 17874,
+      "sha256": "af6910f56907ee379501b5d2e7211381e944a5a256f4207213e71bb238b1c1b0"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/export_parent.rs",
+      "bytes": 9195,
+      "sha256": "14048176879a8b96fb0923e2645e1bba8c66fd73e4e99ca01cd70b27f85f294c"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/support/seeded_partial.rs",
+      "bytes": 27319,
+      "sha256": "ab79d0a05093b84c13d0a540dfe0882a7fb222fce3041818945af28899c68c5d"
+    },
+    {
+      "path": "r69/source/crates/layrs-vfs/tests/windows_native.rs",
+      "bytes": 81364,
+      "sha256": "6ea8061d5814a61e81cd36bd1ca175561e07ce8abac153888ad2f3c065908717"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/bin/layrs-lens-worker.rs",
+      "bytes": 659,
+      "sha256": "25a5c77ef2944e99b0ac01d11aa7e60bcb413ac2a299d4f196c2b5d40086421c"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge.rs",
+      "bytes": 37151,
+      "sha256": "51e3caa38744607fd1262e586b08418f8c1adc652e2f4e029c8fc7203d7762c9"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/canonical.rs",
+      "bytes": 3086,
+      "sha256": "302515dbdd7628c2faa554f8ff333a56eea99a569203901bbdfbb984f2447a96"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/conflict_layout.rs",
+      "bytes": 6070,
+      "sha256": "1f07a182c3d399803c1e34a48289f10c73e464e6c6af4f003c08e03c942d6679"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/receipt.rs",
+      "bytes": 14568,
+      "sha256": "f01bb3c84747c8b607897b3d7757fcf766e5a71e7c19c433d16a16aff1eb66d4"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/renames.rs",
+      "bytes": 12041,
+      "sha256": "2b9eda0e759b0984d8d3e5130cb8674656ce3f16234854fabac3afeafcac8a5a"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/renames/model.rs",
+      "bytes": 7789,
+      "sha256": "8f546556829cfce7be3170041e8a76b03a2d6b323902bf8141727934b57c43b4"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/renames/shape.rs",
+      "bytes": 4485,
+      "sha256": "453b795fa658c12c647cce161fd41c72b591c651d6072ce6556d881588fbd84b"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/replay.rs",
+      "bytes": 4516,
+      "sha256": "d516c58539e8ff126f51d9e7a7223a6e1d56689c8310b7a055af541b5d882437"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/resolution.rs",
+      "bytes": 13602,
+      "sha256": "293a6b0c76735edb534009100983466b710b5a087c0ed50e8a2e94fbbb210ffb"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/semantic_blocks.rs",
+      "bytes": 12004,
+      "sha256": "c5335ba834f428d02aefc9b04a7028dafed63ea6c2e8599a49ce91cdb6759436"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/semantic_blocks/build.rs",
+      "bytes": 5405,
+      "sha256": "498d6a70d3a47b6fccc92561d91931f3bbb65ae41602bc0df82eb1bd5d0359c8"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/semantic_blocks/resolve.rs",
+      "bytes": 4816,
+      "sha256": "f9cc1f65626a00d0ef6cc622d7682112b60371e17ec9750f5952c27815290fb0"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/structural.rs",
+      "bytes": 11012,
+      "sha256": "0f7765c82c942d1dfc807fac2a4b7d827bf2269412fc881566d57e1356ec8475"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/tests.rs",
+      "bytes": 24815,
+      "sha256": "8de358125fdd836c6acfa2b311642db0f3f815fb593b81835001b6413bfc3a3f"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/tests/blocks.rs",
+      "bytes": 10433,
+      "sha256": "c4f1612406269003168000a77109a65d299680eb8d66679180aa92c71d4bfcf3"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/graph_merge/tests/renames.rs",
+      "bytes": 17727,
+      "sha256": "a7ba795bd8bd23625ef5a3e2625279299635fc06c819c3e44cd66b0b8e041cfa"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/lib.rs",
+      "bytes": 281,
+      "sha256": "ca50792b9fd35555ca07d1d8ef8d0827443faca428febb2d98ac14e6b6e62a97"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/reconciliation.rs",
+      "bytes": 13485,
+      "sha256": "cd4c05e64719a59c39a7f177c31f182fe2d1ae2bbf3a8e5420a06f4cc25a4d63"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/reconciliation/tests.rs",
+      "bytes": 9124,
+      "sha256": "2b98ebf3d2bf378bfff8e39e6ff999ab3de978a679e2a3676071dabd46c46111"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/wasm_host.rs",
+      "bytes": 38613,
+      "sha256": "a99aa99b950db72e4cb2fae2b9ee250b545a4ff2def246a7f1f116d160c2e998"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker.rs",
+      "bytes": 8017,
+      "sha256": "fa7a09e45b5ac97099b69464137b2904821430a0bd02e3d1762a67ec0082e6d3"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker/linux.rs",
+      "bytes": 8471,
+      "sha256": "6f0ca8b23ffd0b8ba359cd5831fd356c2df4194bf05e63e4bed118ae3d1be419"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker/linux_image.rs",
+      "bytes": 4300,
+      "sha256": "c414cbd22764c596c6271e2656f42049bff8af8e5e0276d3b6f3eea8e4885fe7"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker/linux_tests.rs",
+      "bytes": 4510,
+      "sha256": "d4afdc297021b5fe19f2747db8f94cdef4f168a76a4ce170b5fcac4e4ac4218f"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker/tests.rs",
+      "bytes": 4309,
+      "sha256": "92d859eecf7f96939df98d5b6ea2e0b1c91fd451d958f900993ce54fa9a9341d"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/src/worker/windows.rs",
+      "bytes": 10065,
+      "sha256": "fc432c9966d59dff26129ffddd6dcc66b31f4a5a0fb714167b75bfc0bcade6f2"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/tests/long_lines.rs",
+      "bytes": 7676,
+      "sha256": "f36ddc5bd273bf27fbe77253beda7ee51da587b2697296ac72abb6458f593910"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/tests/native_code_contract.rs",
+      "bytes": 5177,
+      "sha256": "151788deefc670446b46daba4226adfb12ab7a8e0ab41ac82f1e0569364790b7"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/tests/native_worker.rs",
+      "bytes": 6881,
+      "sha256": "af090b9c92bab53d437b6110e7b5fc1a52032f56ae535e54251b7902f4a742de"
+    },
+    {
+      "path": "r69/source/crates/layrs-weave/tests/profile_matrix.rs",
+      "bytes": 3771,
+      "sha256": "0bf8591afd68aefcae965dbd9e206d53ca4ed71459a174757e56f7e6348f4a4d"
+    },
+    {
+      "path": "r69/source/rust-toolchain.toml",
+      "bytes": 86,
+      "sha256": "5c7982434ce7dbe3a4ab4f12593cb73eb90097332a0d68f0145c2b9d0dc9b988"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 17958,
+      "sha256": "b2be0304477072c340f3ce6748b2ac31431bc50bc12a8926e105ad5ad4c73586"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_fresh_publication_tests.rs",
+      "bytes": 20426,
+      "sha256": "0fee42e16d6609ba2731e2c21d29d9d3691494a97b9379e9ab378345bbab1d8f"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_source_publication_tests.rs",
+      "bytes": 29563,
+      "sha256": "40bac6502990db61d66e3f3856a6e1b14465f28a49cbbc1becd45deafbef4227"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/database_io.rs",
+      "bytes": 16830,
+      "sha256": "441e1cbc3aa0552641c51c04b8b70a5c5b5010ce11ed49a18a77a4a6e8dfa868"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/database_io/sidecars.rs",
+      "bytes": 5635,
+      "sha256": "7015452898bfa565d5ae66f7fcec5b8454fd7bd76d6145e16daf8953f2f73a12"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/database_io/tests/fresh_ordinary_support.rs",
+      "bytes": 1476,
+      "sha256": "146a34a0ca2e5092ddf52b864ea5141f6481f7b47c6790ff13a92a85da83a745"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous.rs",
+      "bytes": 16396,
+      "sha256": "05ae8b20a8a43e13c4887070d76586d40210deeca07c1a69f997fc030c8398bf"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/family_read.rs",
+      "bytes": 7023,
+      "sha256": "7695a16230891e75eeec2bb753f107c6e843fbfcca4d6cbe3016136513225031"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_export/source_publication.rs",
+      "bytes": 25904,
+      "sha256": "b8b10e5099a1e777d3a587a7cbdd422169077e1b9b23baf8e1b11153a682322d"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_ready_reopen.rs",
+      "bytes": 7703,
+      "sha256": "74a63d43c75420c156949225755f6f4a9229fd429e99aa8bbb95e963b7943d84"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary.rs",
+      "bytes": 16269,
+      "sha256": "f2794d35b3fc95f1888371c1099599f6ec28e40058665abf3b29122fa49cbd93"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_admission.rs",
+      "bytes": 16058,
+      "sha256": "2e91f8bb92f5e806e8c07f468e919f2a1af3b69a48ac5d133e5b51a20f06d682"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_publication.rs",
+      "bytes": 16145,
+      "sha256": "46743b25917e2549211947d469c82c380e3cbcd34f68d9a3c35263da45e85f87"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/managed_ready_reopen/ordinary_source.rs",
+      "bytes": 8279,
+      "sha256": "6b6e5687e3eabb7f807dc1425e76b136850d06009ab93af954987cc65f7cd497"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/ordinary_transition/publication.rs",
+      "bytes": 14925,
+      "sha256": "11b68eb326711f15713277d394b60fde4c7d5ff85163c4bd0974ee03c04ea31b"
+    },
+    {
+      "path": "review-r67/crates/layrs-store-local/src/projection/provider/published_handoff.rs",
+      "bytes": 8586,
+      "sha256": "b7f0d640d9bee5e928c71e92eaab4efcd6e0fa9a31f8ce289321b9cb87075451"
+    },
+    {
+      "path": "support/package-ordinary-fresh-publication-20261028-r69.py",
+      "bytes": 5108,
+      "sha256": "1e3d66a3ca4daa6f5c9b0c84ef8d129f9b1b03133fb0a989bed7c6fa3e2756ce"
+    },
+    {
+      "path": "support/prepare-ordinary-fresh-publication-review-r67.py",
+      "bytes": 3444,
+      "sha256": "d8b5a87ec67bfb07a5b8321f3c75eb879b2cc3a677c82d1bb363da8ff20e6e66"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-publication-critical-review-r67.json",
+      "bytes": 27351,
+      "sha256": "e9a08bbe6563f5c112db499ac6f48a41d8ad041dbb32221649c9dad01ea39796"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-publication-review-r67-inputs.json",
+      "bytes": 5664,
+      "sha256": "3a658f04430e640b8bcd7db97f5a00beeeef2ded66ff20e90f5576af50fc51c5"
+    },
+    {
+      "path": "support/provider-ordinary-fresh-publication-review-r67.diff",
+      "bytes": 53842,
+      "sha256": "b58e8e0b2e8e70b0ef8e153876a393a073384383252bf09a382de55665d7c38c"
+    }
+  ],
+  "archive": {
+    "path": "ordinary-fresh-publication-evidence-20261028-r69.tar.gz",
+    "bytes": 2082137,
+    "sha256": "f84e1ff5e4a72611488e3fbcaaca499b3d67191136c4df7703b8ef06f75e35fc"
+  }
+}

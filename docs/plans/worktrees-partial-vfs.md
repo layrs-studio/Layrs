@@ -11,8 +11,12 @@ L'ancien échec r60 d'assertion reste conservé dans les preuves. L'admission
 depuis des holders entièrement frais a passé la revue corrigée r65 et la
 compilation/workspace r64. Les cinq recettes r66 passent : deux régressions
 SQL, autonomie C10, admission fraîche avec B avancé et ACK/résolution sans B.
-La reprise B Ready → Published avec nouveaux propriétaires a passé la revue
-source r67 ; sa compilation et sa qualification sont en cours.
+La reprise B Ready → Published avec nouveaux propriétaires passe les cinq
+recettes r69 ; les preuves sont archivées. La reprise fraîche B Staging → Ready
+passe la revue r70 et la compilation/workspace r71. Les cinq régressions r72
+passent ; le premier natif échoue sur un débordement de pile, le second n'est
+pas lancé. Le diagnostic r77 est en cours. La garde Ready r73 et le scénario
+C10→D10 r74 passent leurs revues source et la compilation, sans résultat natif.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 

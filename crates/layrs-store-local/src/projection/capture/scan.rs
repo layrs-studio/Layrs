@@ -1,7 +1,7 @@
 use super::*;
 use crate::secure_fs::{PinnedDirectory, PinnedFile};
 use layrs_core::{
-    projection::{EntryState, ProjectionEntry},
+    projection::{EntryState, ProjectionEntry, ProjectionSelection},
     scm::TreeEntryTarget,
 };
 use std::{
@@ -69,6 +69,34 @@ pub(in crate::projection) fn scan_readonly_with_scope(
     scan_with_mode(store, c, snapshot, scope, LeafOpen::Readonly, Some(&check))
 }
 
+/// Filesystem-only interpretation of selected readonly leaves. Snapshot and
+/// selection are DATA: the caller must independently authenticate their SQL
+/// provenance and retain its owner throughout this scan and any later effect.
+/// This function supplies no content scope, lease or mutation authority.
+#[cfg(windows)]
+pub(in crate::projection) fn scan_selected_readonly(
+    root_path: &Path,
+    snapshot: &ProjectionSnapshot,
+    selection: &ProjectionSelection,
+    cancel: &layrs_vfs::Cancellation,
+) -> Result<Scan> {
+    let check = || {
+        cancel
+            .check()
+            .map_err(super::super::provider::recovery::ProviderBootstrapCause::from)
+            .map_err(Into::into)
+    };
+    check_cancel(Some(&check))?;
+    selection.validate_snapshot(snapshot)?;
+    scan_selected_with_mode(
+        root_path,
+        snapshot,
+        selection,
+        LeafOpen::Readonly,
+        Some(&check),
+    )
+}
+
 #[derive(Clone, Copy)]
 enum LeafOpen {
     Capture,
@@ -100,8 +128,18 @@ fn scan_with_mode(
         super::super::provider::require_ordinary(c)?;
     }
     let selection = super::super::selection::for_scan(c, snapshot)?;
-    let root = PinnedDirectory::open(&store.root)?;
-    let present = namespace(&root, &store.root, snapshot, &selection, mode, cancel)?;
+    scan_selected_with_mode(&store.root, snapshot, &selection, mode, cancel)
+}
+
+fn scan_selected_with_mode(
+    root_path: &Path,
+    snapshot: &ProjectionSnapshot,
+    selection: &ProjectionSelection,
+    mode: LeafOpen,
+    cancel: CancellationCheck<'_>,
+) -> Result<Scan> {
+    let root = PinnedDirectory::open(root_path)?;
+    let present = namespace(&root, root_path, snapshot, selection, mode, cancel)?;
     let mut result = Scan {
         files: BTreeMap::new(),
         changes: Vec::new(),
@@ -182,7 +220,7 @@ fn scan_with_mode(
         }
         result.files.insert(path.to_owned(), actual);
     }
-    if namespace(&root, &store.root, snapshot, &selection, mode, cancel)? != present {
+    if namespace(&root, root_path, snapshot, selection, mode, cancel)? != present {
         return Err(invalid("checkout namespace changed during capture"));
     }
     root.verify_path_identity()?;

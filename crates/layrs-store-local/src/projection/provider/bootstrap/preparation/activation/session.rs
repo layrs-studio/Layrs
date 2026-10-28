@@ -501,6 +501,9 @@ mod managed_ordinary_fresh_admission_tests;
 #[cfg(all(test, windows))]
 #[path = "session/managed_ordinary_fresh_publication_tests.rs"]
 mod managed_ordinary_fresh_publication_tests;
+#[cfg(all(test, windows))]
+#[path = "session/managed_ordinary_fresh_staging_tests.rs"]
+mod managed_ordinary_fresh_staging_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_installing_tests.rs"]
 mod managed_ordinary_installing_tests;
@@ -514,6 +517,9 @@ mod managed_ordinary_ready_tests;
 mod managed_ordinary_reservation_tests;
 #[cfg(test)]
 mod managed_ordinary_source_intent_tests;
+#[cfg(all(test, windows))]
+#[path = "session/managed_ordinary_source10_export_tests.rs"]
+mod managed_ordinary_source10_export_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_source_publication_tests.rs"]
 mod managed_ordinary_source_publication_tests;

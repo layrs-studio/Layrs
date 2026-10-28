@@ -269,10 +269,17 @@ pub(super) struct AdmissionHooks {
     pub after_published: fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PublicationStop {
+    FamilyReady,
+    SourceReady,
+    Published,
+}
+
 struct PublicationHooks<F> {
     before_published: fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
     continuation: F,
-    stop_after_ready: bool,
+    stop: PublicationStop,
 }
 
 pub(super) fn with_admission_hooks(hooks: AdmissionHooks) {
@@ -288,7 +295,7 @@ pub(super) fn with_admission_data<T>(
     source_publication_inner(Some(PublicationHooks {
         before_published,
         continuation: after_published,
-        stop_after_ready: false,
+        stop: PublicationStop::Published,
     }))
     .unwrap()
 }
@@ -302,7 +309,25 @@ pub(super) fn with_source_ready_data<T>(
     source_publication_inner(Some(PublicationHooks {
         before_published: |_, _, _| {},
         continuation: after_ready,
-        stop_after_ready: true,
+        stop: PublicationStop::SourceReady,
+    }))
+    .unwrap()
+}
+
+/// Stop with genuine C8/family Ready while actual B remains Staging and has
+/// no outgoing Ready receipt. The callback must positively close B; only its
+/// owned DATA returns after all original source/C/store holders are released.
+pub(super) fn with_source_staging_data<T>(
+    after_family_ready: impl FnOnce(
+        OrdinaryManagedExport<'_>,
+        &PublicationFixture<'_>,
+        &Cancellation,
+    ) -> T,
+) -> T {
+    source_publication_inner(Some(PublicationHooks {
+        before_published: |_, _, _| {},
+        continuation: after_family_ready,
+        stop: PublicationStop::FamilyReady,
     }))
     .unwrap()
 }
@@ -612,6 +637,22 @@ fn source_publication_inner<T>(
         family_database: &family_database,
     };
 
+    if hooks
+        .as_ref()
+        .is_some_and(|hooks| hooks.stop == PublicationStop::FamilyReady)
+    {
+        // The genuine family Ready publication above is the last setup call.
+        // Neither SourceReady nor SourcePublished is reached on this route.
+        let hooks = hooks.take().unwrap();
+        let result = (hooks.continuation)(owner, &fixture, &cancel);
+        allocated.require_published(&staging.plan).unwrap();
+        drop(checkout);
+        drop(protection);
+        drop(allocated);
+        drop(store);
+        return Some(result);
+    }
+
     // Independently derive exact B DATA from the witnessed complete C Ready.
     // Only role and source-local generation change; Published then changes
     // only state. None of these expected records rewrite the stored B phase.
@@ -742,7 +783,9 @@ fn source_publication_inner<T>(
         previous_rows = rows;
         previous_trees = trees;
         if next.state == TransitionState::Ready
-            && hooks.as_ref().is_some_and(|hooks| hooks.stop_after_ready)
+            && hooks
+                .as_ref()
+                .is_some_and(|hooks| hooks.stop == PublicationStop::SourceReady)
         {
             // This is a true terminal branch of setup. In particular the
             // Published callback/driver below is never called on this route.

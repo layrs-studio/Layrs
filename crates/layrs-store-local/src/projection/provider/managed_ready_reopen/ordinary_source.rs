@@ -12,6 +12,60 @@ use crate::projection::provider::{
 };
 use rusqlite::Connection;
 
+/// Narrow owning source capability for fresh adapters outside this module.
+/// Its only constructor acquires Exclusive before a destination is opened;
+/// no shared holder, DATA or lock upgrade can construct it.
+pub(in crate::projection::provider) struct OrdinaryExclusiveSource {
+    source: OrdinaryAdmissionSource,
+}
+impl OrdinaryExclusiveSource {
+    pub(in crate::projection::provider) fn open(
+        root: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        Ok(Self {
+            source: OrdinaryAdmissionSource::open_exclusive(root, cancel)?,
+        })
+    }
+    pub(in crate::projection::provider) fn root(&self) -> &Path {
+        self.source.pins.checkout_path()
+    }
+    pub(in crate::projection::provider) fn marker(&self) -> &crate::projection::format::Marker {
+        &self.source.pins.marker
+    }
+    pub(in crate::projection::provider) fn database(&self) -> &database_io::DatabaseFile {
+        &self.source.pins.database
+    }
+    pub(in crate::projection::provider) fn require_identity(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        self.source.require_identity(cancel)
+    }
+    pub(in crate::projection::provider) fn require_snapshot(
+        &self,
+        c: &Connection,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        self.source.require_snapshot(c, cancel)
+    }
+    pub(in crate::projection::provider) fn require_ready_source(
+        &self,
+        ready: &ProviderTransitionIntentRecord,
+    ) -> Result<()> {
+        self.source.require_ready_source(ready)
+    }
+    pub(in crate::projection::provider) fn inspect_ready_destination(
+        &self,
+        root: &Path,
+        cancel: &Cancellation,
+    ) -> Result<OrdinaryReadyInspection> {
+        let pins = ManagedReadyPins::open(root, cancel)?;
+        self.source.require_destination(&pins, cancel)?;
+        OrdinaryReadyInspection::open_shared(pins, cancel)
+    }
+}
+
 /// Nonforgeable fresh source capability, acquired before any destination owner.
 /// The public constructor acquires a shared B owner. The private publication
 /// constructor acquires an exclusive owner independently, never by upgrade.

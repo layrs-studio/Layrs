@@ -41,6 +41,7 @@ mod source;
 use provider_proof::{ProviderModeBinding, ProviderProof};
 pub(in crate::projection::provider) use scoped::compute_scoped_closure;
 pub(in crate::projection) use scoped::read_scoped_closure;
+pub(in crate::projection::provider) use source::require_live_source_quiescence;
 pub(in crate::projection) use source::{read_source_metadata, SourceMetadata};
 
 /// A closed SQL DATA interpretation. Source image/bytes, family and native

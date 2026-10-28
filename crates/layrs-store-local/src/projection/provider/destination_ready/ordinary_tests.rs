@@ -1503,6 +1503,56 @@ fn exercise_source_publication(
         assert_eq!(dump(source), corrupt);
         source.execute_batch("ROLLBACK TO corrupt_source_ready; RELEASE corrupt_source_ready").unwrap();
     }
+    // Immutable incoming admission remains valid, but a live Ready source
+    // cannot publish or replay Ready with an unrepresented operational row.
+    for table in [
+        "projection_install",
+        "projection_refresh_pending",
+        "projection_namespace_pending",
+        "projection_restore_pending",
+        "projection_rebase_pending",
+    ] {
+        source
+            .execute_batch("SAVEPOINT ready_pending_operation")
+            .unwrap();
+        source
+            .execute(
+                &format!("INSERT INTO {table}(singleton,payload) VALUES(1,X'')"),
+                [],
+            )
+            .unwrap();
+        let corrupt = dump(source);
+        let changes = source.total_changes();
+        read_admitted_import(source, marker, None).unwrap();
+        let error = ordinary_transition::read_publication_state(source, marker, TX, None)
+            .err()
+            .expect("live Ready must refuse pending operations");
+        assert!(error.to_string().contains(table), "{error}");
+        let error = ordinary_transition::apply_published(
+            source,
+            marker,
+            &source_ready.intent,
+            ready,
+            receipt,
+            &capacity,
+            None,
+        )
+        .err()
+        .expect("Ready publication must refuse before its SQL effect");
+        assert!(error.to_string().contains(table), "{error}");
+        assert!(
+            ordinary_transition::apply_ready(
+                source, marker, staging, ready, receipt, &capacity, None,
+            )
+            .is_err(),
+            "Ready replay must not accept an operational pending row"
+        );
+        assert_eq!(source.total_changes(), changes);
+        assert_eq!(dump(source), corrupt);
+        source
+            .execute_batch("ROLLBACK TO ready_pending_operation; RELEASE ready_pending_operation")
+            .unwrap();
+    }
     // A capture-only advance also fences Ready even when the head is current.
     source
         .execute_batch("SAVEPOINT ready_capture_frontier")

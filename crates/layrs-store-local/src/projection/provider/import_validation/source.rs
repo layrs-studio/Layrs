@@ -528,6 +528,20 @@ pub(super) fn read_historical_metadata(
     })
 }
 
+/// Operational SQL refusal for an independently authenticated live source.
+/// This does not authenticate current bytes, a snapshot, or a source closure.
+/// Historical Published replay must not use this live-frontier requirement.
+pub(in crate::projection::provider) fn require_live_source_quiescence(
+    c: &Connection,
+    marker: &format::Marker,
+    kind: ImportDatabaseKind,
+    prefix: &ProviderImportPrefixRecord,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<()> {
+    let lineage = ancestry::read_ancestry(c, marker, kind, prefix, cancel)?;
+    require_quiescent_history(c, marker, kind, prefix, &lineage, cancel)
+}
+
 fn require_quiescent_history(
     c: &Connection,
     marker: &format::Marker,

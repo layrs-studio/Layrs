@@ -25,6 +25,10 @@ mod reserve_plan;
 mod resident;
 mod source_publication;
 mod staging;
+mod staging_reopen;
+pub(in crate::projection::provider) use staging_reopen::{
+    OrdinaryStagingPromotion, OrdinaryStagingPromotionFailure, OrdinaryStagingPromotionProgress,
+};
 #[cfg(test)]
 pub(super) mod verification_cancellation;
 

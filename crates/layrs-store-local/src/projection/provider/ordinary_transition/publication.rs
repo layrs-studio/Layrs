@@ -5,7 +5,9 @@
 //! No connection, physical C evidence, durable ACK or admission is created here.
 use super::*;
 use crate::projection::provider::{
-    managed_admission::read_admitted_import, transition_sql::SourceIntentEffect,
+    import_validation::{require_live_source_quiescence, ImportDatabaseKind},
+    managed_admission::read_admitted_import,
+    transition_sql::SourceIntentEffect,
 };
 use rusqlite::params;
 
@@ -107,6 +109,15 @@ pub(in crate::projection::provider) fn read_publication_state(
         TransitionState::Staging | TransitionState::Ready | TransitionState::Published
     ) {
         return Err(invalid("ordinary publication actual phase differs"));
+    }
+    if intent.state == TransitionState::Ready {
+        require_live_source_quiescence(
+            c,
+            marker,
+            ImportDatabaseKind::AdmittedOrdinary,
+            &intent.plan.source_prefix,
+            cancel,
+        )?;
     }
     let receipt = match intent.receipt_id.as_deref() {
         Some(id) => Some(ProviderTransitionReceiptRecord::decode(
@@ -233,6 +244,18 @@ fn apply(
         .iter()
         .find(|row| row.transaction_id == next.transaction_id)
         .ok_or_else(|| invalid("ordinary publication stored predecessor absent"))?;
+    // Ready is a live frontier, including a Ready replay. Reject pending or
+    // unrepresented operational history before any effect. Actual Published
+    // remains historical and may coexist with coherent later source work.
+    if current.state == TransitionState::Ready {
+        require_live_source_quiescence(
+            c,
+            marker,
+            ImportDatabaseKind::AdmittedOrdinary,
+            &current.plan.source_prefix,
+            cancel,
+        )?;
+    }
     if current == next {
         if before.outgoing_receipt(&receipt.digest()?)? != receipt {
             return Err(invalid("ordinary publication replay receipt differs"));

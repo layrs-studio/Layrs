@@ -4,7 +4,7 @@
 use crate::{
     projection::{
         capture::{
-            scan::{executable, scan_readonly_with_scope},
+            scan::{executable, scan_selected_readonly},
             CapturedFile, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES,
         },
         file, format, invalid,
@@ -49,8 +49,9 @@ pub(super) struct OrdinaryImageDeletion {
 }
 
 /// Owns no SQL connection, content scope or family lease. The operation owner
-/// must call full `revalidate` under its content scope before/after effects and
-/// each copy. Copy methods additionally check all retained leaf bytes and paths.
+/// must authenticate its SQL/owner separately and call full `revalidate` under
+/// its content scope, or `revalidate_parts` under its fresh source capability,
+/// before/after effects and each copy. Copy methods check retained leaf bytes.
 pub(super) struct OrdinaryExportImage {
     root: PinnedDirectory,
     root_path: PathBuf,
@@ -76,12 +77,35 @@ impl OrdinaryExportImage {
         check(cancel)?;
         scope.validate(c, store)?;
         let selection = selection::for_scan(c, snapshot)?;
-        bound_paths(snapshot, &selection, cancel)?;
-        let root = PinnedDirectory::open(&store.root)?;
-        if root.identity_token() != store.marker.checkout_identity() {
+        let image = Self::build_parts(&store.root, &store.marker, snapshot, &selection, cancel)?;
+        if selection::for_scan(c, snapshot)? != selection {
+            return Err(invalid(
+                "ordinary export selection changed during image build",
+            ));
+        }
+        scope.verify(c, store)?;
+        check(cancel)?;
+        Ok(image)
+    }
+
+    /// Physical image proof only. These bounded DATA arguments do not stand
+    /// in for authenticated source SQL, a content scope or an exclusive owner.
+    /// The fresh source caller must retain and revalidate those independently.
+    pub(super) fn build_parts(
+        root_path: &Path,
+        marker: &format::Marker,
+        snapshot: &ProjectionSnapshot,
+        selection: &ProjectionSelection,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        check(cancel)?;
+        selection.validate_snapshot(snapshot)?;
+        bound_paths(snapshot, selection, cancel)?;
+        let root = PinnedDirectory::open(root_path)?;
+        if root.identity_token() != marker.checkout_identity() {
             return Err(invalid("ordinary export root differs from FORMAT checkout"));
         }
-        let scan = scan_readonly_with_scope(store, c, snapshot, false, Some(scope), cancel)?;
+        let scan = scan_selected_readonly(root_path, snapshot, selection, cancel)?;
         if scan.files.len() > MAX_PATHS {
             return Err(invalid("ordinary export image exceeds path bound"));
         }
@@ -178,17 +202,17 @@ impl OrdinaryExportImage {
         let digest = image_digest(&files, &deletions)?;
         let mut image = Self {
             root,
-            root_path: store.root.clone(),
-            marker: store.marker.clone(),
+            root_path: root_path.to_owned(),
+            marker: marker.clone(),
             snapshot: snapshot.clone(),
-            selection,
+            selection: selection.clone(),
             scanned_files: scan.files,
             files,
             pins,
             deletions,
             digest,
         };
-        image.revalidate(store, c, scope, snapshot, cancel)?;
+        image.revalidate_parts(root_path, marker, snapshot, selection, cancel)?;
         Ok(image)
     }
 
@@ -202,27 +226,48 @@ impl OrdinaryExportImage {
     ) -> Result<()> {
         check(cancel)?;
         scope.validate(c, store)?;
-        if store.root != self.root_path
-            || store.marker != self.marker
+        let selection = selection::for_scan(c, snapshot)?;
+        self.revalidate_parts(&store.root, &store.marker, snapshot, &selection, cancel)?;
+        if selection::for_scan(c, snapshot)? != selection {
+            return Err(invalid(
+                "ordinary export selection changed during image validation",
+            ));
+        }
+        scope.verify(c, store)?;
+        check(cancel)
+    }
+
+    /// Complete namespace and retained-byte proof without SQL or borrowed
+    /// Access. The enclosing fresh owner must authenticate the exact arguments.
+    pub(super) fn revalidate_parts(
+        &mut self,
+        root_path: &Path,
+        marker: &format::Marker,
+        snapshot: &ProjectionSnapshot,
+        selection: &ProjectionSelection,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        check(cancel)?;
+        if root_path != self.root_path.as_path()
+            || marker != &self.marker
             || snapshot != &self.snapshot
-            || selection::for_scan(c, snapshot)? != self.selection
+            || selection != &self.selection
         {
             return Err(invalid(
                 "ordinary export owner, snapshot or selection changed",
             ));
         }
-        let before = scan_readonly_with_scope(store, c, snapshot, false, Some(scope), cancel)?;
+        let before = scan_selected_readonly(root_path, snapshot, selection, cancel)?;
         if before.files != self.scanned_files {
             return Err(invalid("ordinary export selected checkout image changed"));
         }
         self.verify_pins(cancel)?;
-        let after = scan_readonly_with_scope(store, c, snapshot, false, Some(scope), cancel)?;
+        let after = scan_selected_readonly(root_path, snapshot, selection, cancel)?;
         if after.files != self.scanned_files {
             return Err(invalid(
                 "ordinary export selected checkout changed during validation",
             ));
         }
-        scope.verify(c, store)?;
         check(cancel)
     }
 

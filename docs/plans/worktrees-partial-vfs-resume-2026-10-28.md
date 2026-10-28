@@ -1,5 +1,23 @@
 # Reprise du 28 octobre 2026
 
+## Dernier checkpoint — r72 échoué et archivé, diagnostic r77 actif
+
+Goal **actif**, programme complet ; aucun push/PR. Base des revues `e2a1ac4`.
+r66 admission fraîche et r69 publication fraîche : cinq PASS chacun, archives
+vérifiées. Reprise fraîche Staging : revue r70 sans défaut, build/check r71 PASS.
+Runner r72 **ROOT17382** terminé exit1 : cinq régressions PASS, premier natif
+FAIL101/Windows0xc00000fd après642,474s (stack overflow), second non atteint.
+Archive vérifiée. Aucun succès Staging natif revendiqué.
+
+Revues **r73/r74 terminées sans finding**, threads lus au résultat final.
+Garde Ready et recette C10→D10 compilées r75 ; instrumentation de diagnostic
+Staging uniquement test compilée/check r76. Runner **ROOT81989/r77 actif** :
+SQL Ready puis premier natif Staging avec traces et pile inchangée ; pas de
+source10 ni ACK Staging exécuté dans ce runner. Aucun autre build/test/SQL
+concurrent ; ne relancer aucun runner. Aucun agent/revue en attente.
+Les sections finales donnent hashes, chemins, périmètres et scripts déjà exécutés.
+Le reste de ce document conserve la chronologie des preuves, y compris échecs.
+
 L'utilisateur a explicitement demandé « reprends ! /goal resume ». La consigne
 d'arrêt nocturne est levée. Le programme complet reste à poursuivre, sans push
 ni PR. À la reprise, `get_goal` affiche encore `paused` ; l'API disponible ne
@@ -588,3 +606,231 @@ Pas de Cargo/build/SQL/natif concurrent avant terminaison. Les sources de la
 future reprise Staging peuvent avancer séparément du binaire retenu r69, en
 respectant la proposition dédiée et une nouvelle revue. Tous les agents natifs
 sont terminés ; aucune tâche T3 en attente. Goal actif ; pas de push/PR.
+
+Checkpoint local `e2a1ac460fb422b46b784796ce00f521443f6695` : candidat r67/r68,
+archives r66 et documentation conservés, stash original intact. Après lancement,
+les trois premières recettes SQL r69 passent :24,177s ;0,873s ;1,226s.
+Le natif `managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer`
+est en cours dans ROOT2313 ; le natif ACK B/résolution n'est pas encore atteint.
+Ne pas relancer le runner ni les scripts de préparation/release. La passation
+présente ce dernier état ; le binaire retenu reste celui accepté avant commit.
+
+## Reprise Staging en implémentation pendant r69
+
+Tour goal précédent = progrès réel (r66 cinq PASS, archive, commit candidat,
+r69 trois SQL PASS). Goal revérifié actif. ROOT2313 confirmé encore vivant par
+son handle ; pas de redémarrage ni autre exécution native/build simultanée.
+
+Trois agents GPT-6.1-Sol, sources disjointes :
+- `ordinary_fresh_image_parts` : `capture/scan.rs` et `managed_export/image.rs`,
+  extraction des kernels physiques sans contourner les anciens ContentScope ;
+- `ordinary_terminal_reopen` : nouveau `managed_export/staging_reopen.rs`,
+  wiring et interfaces minimales source exclusive/C inspection ;
+- `ordinary_c10_autonomy_recipe` : helper arrêt réel avant B Ready et nouveau
+  `session/managed_ordinary_fresh_staging_tests.rs`.
+
+API convenue : `OrdinaryStagingPromotion::open(B,C,transaction_id,cancel)` puis
+`promote_ready(self,close,cancel)` ; erreur garde `step/cause/held`, succès expose
+Ready/receipt/digest DATA. Construction strictement Staging. Aucun replay ou
+resolve de cet objet qui traiterait Ready comme Staging : après ACK incertain,
+libération explicite du holder puis driver distinct `OrdinaryReadyPublication`
+sur le vrai état. Les anciennes APIs Shared/Ready/Provider restent inchangées.
+Tests proposés : image B réellement modifiée puis restaurée avant acquisition
+réussie ; succès Ready exact ; ACK B refusé, arrêt des probes et ouverture fraîche
+du driver Ready après teardown. Pas de claim crash/OS close ou arbre complexe.
+
+Script `D:/Layrs/tmp/package-ordinary-fresh-publication-20261028-r69.py` préparé
+et parsé, NON exécuté ; attendre la terminaison de ROOT2313, même en échec.
+
+Progression r69 : natif publication fraîche et replay **PASS812,201s**.
+Dernier natif ACK B/résolution en cours dans ROOT2313. Les trois SQL passent.
+
+## Candidat Staging r70 intégré, revue source en cours
+
+Les trois agents ont terminé. Dix sources Rust changées : noyaux scan/image,
+driver `OrdinaryStagingPromotion`, wrapper `OrdinaryExclusiveSource`, getters
+fermés C, helper/tests et enregistrement du module. ROOT a préservé explicitement
+l'ingress PortableWindows, ajouté les contrôles positifs de snapshots/identités
+sur les trois bases et les vraies lectures B/C/famille après close positif.
+Rustfmt ciblé et diff-check passent. Aucune compilation ni recette r70 exécutée.
+
+Manifeste29 fichiers (10 changés,19 contexte) :
+`D:/Layrs/tmp/provider-ordinary-fresh-staging-review-r70-inputs.json`, SHA256
+`985ff127c0a1fb4d9931b7442e2f56d72f3cff29e9f615401e2a3d5a1282133b` ; diff SHA256
+`c8ce7873ac05dae2c60d5fab84d36e1f7cef2ede39a425d778fcf7492687e937`.
+Snapshot `.../provider-ordinary-fresh-staging-review-r70-source`, HEAD e2a1ac4.
+Le script de préparation a d'abord rencontré un mauvais chemin de contexte
+`writer_support.rs` (module en réalité dans `database_io/tests.rs`) ; snapshot
+partiel conservé et complété uniquement après égalité exacte de chaque fichier
+déjà présent. Manifeste/diff créés exclusivement une fois, aucun input altéré.
+
+Revue critique GPT-6-Astra xhigh lancée, cellule **ROOT372**, rapport attendu
+`D:/Layrs/tmp/provider-ordinary-fresh-staging-critical-review-r70.json`.
+Suivre l'appel en attente, sans polling de tâche déléguée. Les29 sources et HEAD
+restent figés. Après fin native r69 seulement, compilation du candidat possible ;
+aucune nouvelle exécution native sans comparaison/release ROOT correspondante.
+
+
+## Fin r69 et qualification Staging r72 en cours
+
+Le goal reste ACTIVE. ROOT2313 est terminé, exit0 : cinq recettes r69 PASS.
+Durées : SQL24,177s /0,873s /1,226s, publication fraîche812,201s,
+ACK B puis résolution Published711,188s. Archive créée et entièrement relue
+par hashes (sans réouvrir de fixture) :
+`ordinary-fresh-publication-evidence-20261028-r69.tar.gz`,702 fichiers,
+2082137 octets, SHA256
+`f84e1ff5e4a72611488e3fbcaaca499b3d67191136c4df7703b8ef06f75e35fc`.
+Inventory adjacent. Ne pas relancer le packaging r69 déjà exécuté.
+
+La revue critique r70 est terminée sans défaut concret ; thread lu jusqu'au
+message final/hasMore=false. Rapport
+`D:/Layrs/tmp/provider-ordinary-fresh-staging-critical-review-r70.json`.
+La compilation r71 passe36,26s, le check workspace/all-targets13,54s.
+74 warnings du lib-test, aucune erreur. ROOT accepte les seules sept recettes
+définies dans `ordinary-fresh-staging-source-release.json` :29 sources revues,
+7 sources supplémentaires,661 inputs build live/retenus concordants, exactement
+10 fichiers Rust changés depuis r69. EXE SHA256
+`2f8fd4ce31aa1ea0093c9db8f18a3b4c05a2b511ed5594349cc400009d176a55`,
+CodeView age132. Release SHA256
+`afe79b5c7455cced80165829ff84bad9d2c8701aa12b7e8ed10eeb069261bdb8`.
+
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-staging-run-r72.py r72`,
+session **ROOT17382**, artefacts
+`.layrs-local/validation/provider-ordinary-fresh-staging-20261028-r72`.
+Parent neuf `C:/Users/ALEXA/AppData/Local/Temp/layrs-provider-ordinary-fresh-staging-r72`.
+Trois tests purs scan/hash/cancel PASS0,411s /0,015s /0,015s ; refus capture
+ordinaire protected/unknown/alias/read-only PASS0,323s ; SQL publication
+ordinaire PASS23,821s. Premier natif fresh Staging/drift/succès en cours,
+second natif ACK/Ready handoff non atteint. Aucun autre build/test/SQL concurrent.
+Ne relancer ni préparation/release ni runner. Les sources futures ne changent
+pas le binaire retenu. Bounds3600/3660 proposés, toujours non mesurés ici.
+
+Deux agents natifs GPT-6.1-Sol avancent sans exécution :
+- `ready_quiescence_gap` : audit read-only de l'absence de garde opérationnelle
+  pending/history dans l'ancien adapter fresh Ready. Aucun contre-exemple
+  produit démontré ; possible refus de corruption à préciser. Staging r70
+  utilise déjà verify_source et sa garde quiescence complète.
+- `source10_nested_export_recipe` : uniquement nouveau test C10→D10 avec ajout
+  imbriqué et suppression, helpers source-publication/autonomy minimaux. ROOT
+  possède session.rs. Aucun changement production autorisé à cet agent.
+
+Le nouvel export doit obtenir une vraie observation writable d'absence via
+observe_absent_paths, capturer les vrais octets/effacement, puis exporter les
+preuves réelles. Pas de grants SQL ni capture forgée. Namespace preview/apply
+reste une lacune séparée (scan non scoped refuse9/10 et history non exportable).
+Les archives r69 et docs/candidat Staging restent à préserver en commit local ;
+pas de push/PR, stash original intact. Aucun jalon ne termine le programme.
+
+
+## Deux deltas suivants figés en revue r73/r74
+
+ROOT17382 continue le natif Staging r72 ; les cinq premières recettes PASS,
+pas encore de résultat du premier natif. Les nouveaux deltas ne changent pas
+le binaire retenu. Ne lancer aucun build/SQL/test concurrent.
+
+L'audit GPT-6.1-Sol a confirmé un contre-exemple SOURCE : B SourceReady correct
+plus `projection_install(1,X'')` pouvait atteindre la publication, faute de
+garde des opérations en attente. Aucune production de cette combinaison par
+une API normale ni perte de données observée n'est démontrée. ROOT a corrigé
+quatre fichiers : `import_validation.rs`, `import_validation/source.rs`,
+`ordinary_transition/publication.rs`, `destination_ready/ordinary_tests.rs`.
+Le helper require_live_source_quiescence relit l'ascendance puis réutilise
+require_quiescent_history, sans prétendre prouver une image. Il est appelé
+par read_publication_state et apply seulement si l'état stocké ACTUEL est
+Ready, avant rejeu ou effet. Published historique garde ses évolutions B
+cohérentes. Cinq savepoints testent install/refresh/namespace/restore/rebase
+pending, admission immuable encore valide, refus des lecteurs/écrivains Ready,
+absence de changements de lignes/total_changes. Sources seules, non compilées.
+
+Revue critique r73 en attente, cellule **ROOT404** (mode wait600000).
+Manifeste12 fichiers/4changés :
+`D:/Layrs/tmp/provider-ordinary-ready-quiescence-review-r73-inputs.json`, SHA
+`72cbc76bdd2733ba3bc68ca4a6eea2a1eaf319dee4aad231834f09a527c6570a` ; diff SHA
+`8dea99d60f8f9fd441aa541f02cfa76a95ad4e8e0f375d5b270dbb39178a7f14`.
+Rapport attendu `provider-ordinary-ready-quiescence-critical-review-r73.json`.
+Premier appel delegate refusé pour option inconnue reasoning_effort (aucun
+enfant créé) ; capacités relues après erreur, appel correct reasoningEffort
+xhigh, GPT-6-Astra. Suivre son next, pas de polling task/thread en attente.
+
+Agent source10 terminé. Nouveau test
+`session/managed_ordinary_source10_export_tests.rs`, helper DATA-only
+released_source10 dans autonomy_tests, module enregistré par ROOT session.rs.
+Aucun autre changement production. C10 public/observation absence explicite,
+addition imbriquée/capture puis suppression README/capture, export complet
+vers D, admission10, libération des holders, D puis C publics vérifiés.
+Assertions sur les origines B/C, octets des captures héritées, quatre manifests,
+deux dossiers, un fichier et suppression ; tables C stables sauf source/receipt.
+Proposition child5400/outer5460 non mesurée. Pas de D sans ancêtres, D→E, crash
+ou défaut réel de fermeture qualifié. Direct rustfmt seulement, pas de build.
+
+Revue critique r74 en attente, cellule **ROOT411** (mode wait600000).
+Manifeste18 fichiers/3changés :
+`D:/Layrs/tmp/provider-ordinary-source10-export-review-r74-inputs.json`, SHA
+`a1c6e84506eca97916dc4115d14713d205b6cfd4ecce53e4733a1e6641dc5fef` ; diff SHA
+`112b160e35f8edb1d69f19fed8dbae24f3e74c9dde1253dee5f09769c58ea3bb`.
+Rapport attendu `provider-ordinary-source10-export-critical-review-r74.json`.
+Les deux ensembles et HEAD e2a1ac4 restent figés jusqu'aux checks finaux.
+
+Script `D:/Layrs/tmp/package-ordinary-fresh-staging-20261028-r72.py` créé et
+parsable, NON exécuté ; attendre la terminaison effective ROOT17382. Le script
+de génération prepare-staging-package-script-r72.py est déjà exécuté.
+Agent ready_quiescence_gap réutilisé en read-only pour cartographier la prochaine
+reprise avant C/famille Ready, sans faux ManagedDestinationAllocation. Aucun
+autre agent natif actif. Goal actif ; pas de commit pendant les revues figées.
+
+
+## Échec natif r72 conservé ; diagnostic r77 lancé
+
+ROOT17382 est terminal exit1. Cinq tests PASS, premier natif exit101 en642,474s :
+le child Windows a quitté0xc00000fd, «has overflowed its stack». Aucun point
+de phase n'était journalisé après RETAINED_PROVIDER_FIXTURE (émis dès la
+création de fixture). L'échec ne prouve donc pas que open/promote ait été atteint.
+Second natif ACK non exécuté. Fixture échouée jamais rouverte/réparée/réutilisée.
+Archive r72 créée et vérifiée :717 fichiers,2178496 octets, SHA256
+`e69a40e9ba7d48acd58307c6954fd63289d2eacba85ca102e50f5af0a80cfa08`.
+`ordinary-fresh-staging-evidence-20261028-r72.tar.gz` et inventory adjacent.
+Ne pas relancer le packaging déjà exécuté.
+
+Les revues r73 et r74 sont terminées sans findings, intégrité début/fin PASS.
+Threads lus au dernier message, hasMore=false :
+- r73 child c0f55cb2-75d8-43b4-9b9b-4b8a098d8512, cellule404 fermée ;
+- r74 child44db4426-cf28-4f76-9071-29a5394746f5, cellule411 fermée.
+Build combiné r75 PASS20,42s. Le nouveau test source10 est compilé, non exécuté.
+Aucun agent natif ni délégué restant. Dernière investigation read-only : aucun
+cycle nouveau trouvé dans image/build/validate ; grands retours/frames debug
+possibles. Famille Initializing→Ready identifiée comme prochaine entrée fraîche,
+documentée dans le plan fresh-staging ; aucune implémentation ajoutée.
+
+Diagnostic offline ROOT : dumpbin /unwindinfo sur l'EXE r72 retenu (aucune
+exécution du binaire/fixture) puis parse des288601 entrées. Résumé local
+`D:/Layrs/tmp/ordinary-r72-stack-frames.json`. Frames nommées validate291960,
+open154088, closure test111816 octets ; certains monomorphs de setup >200k.
+Ce n'est ni une pile dynamique ni une preuve du site du crash. Premier parseur
+ne séparait pas les fonctions anonymes et surestimait des frames ; corrigé
+avant le résumé retenu/release. Raw dumpbin local exclu des archives volumineuses.
+Environnement ROOT RUST_MIN_STACK absent, r72 ne l'avait pas enregistré ; aucune
+valeur particulière du child r72 n'est déduite. Pas d'augmentation de pile.
+
+ROOT ajoute seulement des traces cfg(test) dans staging_reopen open/validate
+et quatre marqueurs de phases dans la première recette. Comparaison mécanique :
+retirer exactement ces lignes/helper retrouve intégralement le source r72.
+Aucune logique, limite, autorisation, assertion, cleanup ou budget changé.
+Build diagnostic r76 PASS10,13s, check workspace/all-targets PASS5,23s.
+Les sources runtime suivantes restent exactement r73/r74, sans autre modification.
+
+Release diagnostic r77 :662 inputs live/retenus, exactement9 fichiers changés
+depuis r72 (4garde Ready +3tests source10 +2traces), sources revues concordantes.
+EXE SHA256 `1d2cdbd0dc3674b80da6cc109fd28446aa109fc7f0f6e524b2ac90f2b1e4740a`,
+CodeView age134. Release SHA256
+`b1cbe86fcd701cb26a0d9ace6ee96578ef4ea81eb5e581daeaee10cd5625b21c`.
+Runner `D:/Layrs/tmp/provider-ordinary-staging-diagnostic-run-r77.py r77`,
+**ROOT81989**, artefacts
+`.layrs-local/validation/provider-ordinary-staging-diagnostic-20261028-r77`.
+Deux recettes uniquement : SQL Ready avec cinq nouveaux refus pending, puis
+premier natif Staging diagnostiqué. Parent C neuf, pile héritée enregistrée,
+child3600/outer3660, arrêt premier échec. Aucun build/test/SQL concurrent.
+Ne relancer ni préparation/release ni runner. Aucun succès natif/correctif de
+stack revendiqué. Source10 et ACK Staging exclus de cette exécution.
+
+Préserver ces sources/archives/docs dans un commit local de continuation,
+pas de push/PR ; stash original conservé. Goal actif, programme non terminé.
