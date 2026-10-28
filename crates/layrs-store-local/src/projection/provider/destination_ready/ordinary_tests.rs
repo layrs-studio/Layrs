@@ -1006,6 +1006,74 @@ fn exercise_ordinary_admission(
     }
     assert_eq!(admitted.archive().rows(), original_journal.as_slice());
     drop(admitted);
+    let terminal_installation =
+        crate::projection::shared::admitted_catalog::validate_terminal_ready_catalog(
+            family,
+            inputs.family_marker_bytes,
+            inputs.marker,
+            inputs.target.binding(),
+            inputs.data.required,
+            inputs.protection,
+            None,
+        )
+        .unwrap();
+    let detach_terminal = || {
+        read_admitted_import(destination, inputs.marker, None)
+            .unwrap()
+            .into_ordinary_terminal(inputs.data.required, terminal_installation, None)
+    };
+    let (terminal, terminal_expected, terminal_journal) = detach_terminal().unwrap();
+    assert_eq!(terminal.private_schema(), 10);
+    assert_eq!(terminal_expected.header(), expected.header());
+    assert_eq!(terminal_journal.rows(), original_journal.as_slice());
+    let terminal_before = dump(destination);
+    destination
+        .execute_batch("SAVEPOINT coherent_terminal_suffix")
+        .unwrap();
+    // A canonical local capture may share its predecessor's generation and
+    // content. The immutable ingress remains valid; only the terminal fence
+    // must reject this later SQL suffix, without needing dirty checkout bytes.
+    let mut patch = crate::projection::capture::storage::load_metadata_for_origin(
+        destination,
+        terminal.ready_capture_sequence(),
+        &inputs.marker.identity,
+        terminal.ready_generation(),
+    )
+    .unwrap();
+    patch.previous_patch_digest = Some(patch.digest.clone());
+    patch.sequence += 1;
+    patch.digest = patch.computed_digest().unwrap();
+    destination
+        .execute(
+            "INSERT INTO projection_captures VALUES(?1,?2,?3,?4)",
+            params![
+                patch.sequence,
+                patch.digest,
+                patch.projection_generation,
+                layrs_core::scm::canonical_json(&patch).unwrap()
+            ],
+        )
+        .unwrap();
+    let generic = read_admitted_import(destination, inputs.marker, None).unwrap();
+    assert_eq!(generic.private_schema(), 10);
+    let changed = dump(destination);
+    let changes = destination.total_changes();
+    match generic.into_ordinary_terminal(inputs.data.required, terminal_installation, None) {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains("terminal Ordinary10 table has missing or extra rows"),
+            "{error}"
+        ),
+        Ok(_) => panic!("terminal C10 accepted a coherent ordinary capture suffix"),
+    }
+    assert_eq!(destination.total_changes(), changes);
+    assert_eq!(dump(destination), changed);
+    destination
+        .execute_batch("ROLLBACK TO coherent_terminal_suffix; RELEASE coherent_terminal_suffix")
+        .unwrap();
+    assert_eq!(dump(destination), terminal_before);
+    detach_terminal().unwrap();
     for sql in [
         "DELETE FROM projection_import_representations WHERE manifest_id=?1",
         "UPDATE projection_import_representations SET bytes=bytes+1 WHERE manifest_id=?1",

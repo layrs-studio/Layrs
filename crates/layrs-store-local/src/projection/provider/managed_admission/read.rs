@@ -21,6 +21,229 @@ pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
     witness_column_bytes: u64,
 }
 impl VerifiedAdmittedImport<'_> {
+    /// Detach the real authenticated archive, never a reconstruction from its
+    /// summary. The generic admitted reader permits mutable ordinary tails;
+    /// this closed C10 entry additionally requires the unchanged terminal
+    /// inventory. Canonical manifests and installation DATA must come from
+    /// the independently validated complete family snapshot in this scope.
+    pub(in crate::projection::provider) fn into_ordinary_terminal(
+        self,
+        required: &[layrs_core::scm::FileManifest],
+        installation: crate::projection::shared::exact_content::ExactInstallState,
+        cancel: Option<&Cancellation>,
+    ) -> Result<(
+        super::super::admitted_ordinary::AdmittedOrdinaryData,
+        super::super::checkout_journal::ExpectedCheckout,
+        super::super::checkout_journal::CheckoutJournal,
+    )> {
+        use super::super::{destination_ready::ManagedReadyClaim, managed_budget};
+        use crate::projection::shared::exact_protection::ExactProtection;
+
+        cancellation::check(cancel)?;
+        if self.private_schema != 10
+            || self.prefix.origin()
+                != super::super::import_validation::DestinationOriginKind::Ordinary
+            || !self.outgoing.intents().is_empty()
+            || self.outgoing.receipt_count() != 0
+        {
+            return Err(invalid("terminal resolution requires unchanged Ordinary10"));
+        }
+        self.require_ordinary_terminal_inventory(cancel)?;
+        let mut witness: Vec<_> = required
+            .iter()
+            .map(|m| RequiredRepresentation {
+                file_id: m.file_id().clone(),
+                manifest_id: m.id().clone(),
+                bytes: m.byte_length(),
+            })
+            .collect();
+        witness.sort_unstable();
+        if witness != self.frozen.required {
+            return Err(invalid("terminal Ordinary10 canonical witness differs"));
+        }
+        let binding = &self.record.binding;
+        let protection = ExactProtection::new(
+            &binding.family_incarnation,
+            &binding.owner,
+            &binding.database_identity,
+            &binding.transaction_id,
+            required,
+            cancel,
+        )?;
+        if protection.id() != self.record.root_id {
+            return Err(invalid("terminal Ordinary10 protection differs"));
+        }
+        // Recompute the original admission capacity with actual immutable
+        // prefix metadata. A cheap read never shrinks its fixed peak budget.
+        let basis = self.prefix.ordinary_frozen()?;
+        let ready = self.ready();
+        let claim = ManagedReadyClaim {
+            root_id: self.record.root_id.clone(),
+            digest: self.record.root_id.clone(),
+            kind: "provider-import".into(),
+            owner: self.record.transaction_id.clone(),
+        };
+        let (source_size, destination_size) = managed_budget::original_staging_sizes(ready)?;
+        let base = managed_budget::base_metadata_floor(
+            self.prefix.metadata_bytes(self.connection, cancel)?,
+            basis.snapshot(),
+            basis.snapshot(),
+            &self.frozen.capture,
+            &ready.plan,
+            basis.selection(),
+            source_size,
+            destination_size,
+        )?;
+        let floor = managed_budget::complete_metadata_floor(
+            base,
+            ready,
+            self.receipt(),
+            &claim,
+            required,
+            cancel,
+        )?;
+        let budget = managed_budget::ordinary_admission_budget(
+            floor,
+            self.frozen.expected.files().len() as u64,
+            self.frozen.expected.directories().len() as u64,
+            required.len() as u64,
+        )?;
+        let baseline = managed_budget::quota(
+            required,
+            self.frozen.expected.files().iter().map(|f| f.bytes),
+            0,
+        )?;
+        let metadata = budget.require_quota(ready.plan.quota_bytes, baseline)?;
+        let cost = managed_budget::ordinary_admission_cost(
+            self.published.encode()?.len() as u64,
+            self.record.encode()?.len() as u64,
+            self.frozen.archive.count,
+            self.frozen.archive.bytes,
+            self.frozen.required.len() as u64,
+            self.witness_column_bytes,
+        )?;
+        budget.require_actual(metadata, &cost)?;
+        let remaining = installation
+            .remaining
+            .checked_sub(self.frozen.expected.header().file_bytes)
+            .ok_or_else(|| invalid("terminal Ordinary10 checkout envelope insufficient"))?;
+        budget.require_remaining(
+            remaining,
+            protection.payload().len() as u64,
+            required.len() as u64,
+        )?;
+        // This detached summary is itself obtained from the real interpreter
+        // in the same retained transaction. Only the authenticated expected
+        // inventory and journal below are moved; neither is synthesized.
+        let data = super::super::admitted_ordinary::inspect(self.connection, &self.marker, cancel)?;
+        cancellation::check(cancel)?;
+        Ok((data, self.frozen.expected, self.frozen.journal))
+    }
+
+    fn require_ordinary_terminal_inventory(&self, cancel: Option<&Cancellation>) -> Result<()> {
+        let c = self.connection;
+        if c.is_autocommit() {
+            return Err(invalid("terminal Ordinary10 transaction ended"));
+        }
+        let closure = &self.prefix.prefix().closure;
+        let add = |n: u64, extra: u64| {
+            n.checked_add(extra)
+                .filter(|n| *n <= 1_100_010)
+                .ok_or_else(|| invalid("terminal Ordinary10 row bound overflow"))
+        };
+        // Exact reference schema was already authenticated. Account for all
+        // tables, including operational tables, defaulting every other table
+        // to zero. Admission moves the complete prejournal into its archive.
+        let counts = [
+            ("projection_snapshots", add(closure.snapshots.count, 2)?),
+            ("projection_selections", add(closure.selections.count, 2)?),
+            ("projection_captures", add(closure.captures.count, 1)?),
+            ("projection_publications", closure.publications.count),
+            (
+                "projection_restore_history",
+                closure.restore_history.as_ref().map_or(0, |r| r.count),
+            ),
+            ("projection_provider_catalogs", closure.catalogs.count),
+            ("projection_provider_descriptors", closure.descriptors.count),
+            (
+                "projection_provider_activations",
+                closure.activation_maps.count,
+            ),
+            (
+                "projection_provider_transition_receipts",
+                add(closure.transition_receipts.count, 1)?,
+            ),
+            ("projection_provider_companions", closure.companions.count),
+            (
+                "projection_provider_companion_files",
+                closure.companion_files.count,
+            ),
+            (
+                "projection_provider_companion_deletions",
+                closure.companion_deletions.count,
+            ),
+            (
+                "projection_content",
+                add(
+                    closure.content_mappings.count,
+                    self.frozen.new_content.len() as u64,
+                )?,
+            ),
+            ("projection_meta", 1),
+            ("projection_head", 1),
+            ("projection_backend", 1),
+            ("projection_imports", 1),
+            ("projection_provider_transitions", 1),
+            ("projection_claims", 1),
+            ("projection_managed_admission", 1),
+            ("projection_import_checkout", self.frozen.archive.count),
+            (
+                "projection_import_representations",
+                self.frozen.required.len() as u64,
+            ),
+        ];
+        for (kind, name, _) in super::super::database_io::schema_inventory(c)? {
+            cancellation::check(cancel)?;
+            if kind != "table" {
+                continue;
+            }
+            let expected = counts
+                .iter()
+                .find(|(table, _)| *table == name)
+                .map_or(0, |(_, n)| *n);
+            let count: u64 = c.query_row(
+                &format!("SELECT count(*) FROM (SELECT 1 FROM \"{name}\" LIMIT ?1)"),
+                [add(expected, 1)?],
+                |r| r.get(0),
+            )?;
+            if count != expected {
+                return Err(invalid(
+                    "terminal Ordinary10 table has missing or extra rows",
+                ));
+            }
+        }
+        let (singleton, head, captures): (u64, u64, u64) = c.query_row(
+            "SELECT singleton,generation,(SELECT coalesce(max(sequence),0) FROM projection_captures) FROM projection_head",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if (singleton, head, captures) != (1, self.record.boundaries.ready_generation,
+            self.record.boundaries.ready_capture_sequence)
+            || !c.query_row(
+                "SELECT backend='ordinary' AND mount_id IS NULL FROM projection_backend WHERE singleton=1",
+                [], |r| r.get::<_, bool>(0),
+            )?
+            || c.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, u64>(0))? != 1
+            || c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)", [], |r| r.get::<_, bool>(0))?
+        {
+            return Err(invalid("terminal Ordinary10 frontier/backend/foreign keys differ"));
+        }
+        // Prefix scope authenticates every imported row; frozen Ready checks
+        // authenticate both local snapshots/selections, the capture, all new
+        // mappings, incoming intent/receipt, claim, witness and exact archive.
+        // The counts above exclude every coherent later suffix as well.
+        cancellation::check(cancel)
+    }
+
     pub(in crate::projection::provider) fn private_schema(&self) -> u32 {
         self.private_schema
     }

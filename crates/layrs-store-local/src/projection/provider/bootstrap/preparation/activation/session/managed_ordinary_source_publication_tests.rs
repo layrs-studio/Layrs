@@ -45,7 +45,7 @@ use std::{
 
 const LEAF: &str = "00000000000000000000000000000121";
 const TX: &str = "00000000000000000000000000000122";
-const HISTORY: &[u8] = b"ordinary source publication historical-only capture";
+pub(super) const HISTORY: &[u8] = b"ordinary source publication historical-only capture";
 
 fn snapshot(path: &Path) -> Database {
     witness::read(path, witness::database)
@@ -254,6 +254,7 @@ pub(super) struct PublicationFixture<'a> {
     pub required: &'a [FileManifest],
     pub expected: &'a ExpectedCheckout,
     pub source_marker: &'a format::Marker,
+    pub provider_source_root: &'a Path,
     pub source_root: &'a Path,
     pub source_database: &'a Path,
     pub destination_root: &'a Path,
@@ -268,21 +269,50 @@ pub(super) struct AdmissionHooks {
     pub after_published: fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
 }
 
+struct PublicationHooks<F> {
+    before_published: fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
+    after_published: F,
+}
+
 pub(super) fn with_admission_hooks(hooks: AdmissionHooks) {
-    source_publication_inner(Some(hooks));
+    with_admission_data(hooks.before_published, hooks.after_published);
+}
+
+/// The continuation must close its B owner. Its owned DATA escapes only after
+/// the helper has dropped every C checkout/CAS/allocation and store holder.
+pub(super) fn with_admission_data<T>(
+    before_published: fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
+    after_published: impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
+) -> T {
+    source_publication_inner(Some(PublicationHooks {
+        before_published,
+        after_published,
+    }))
+    .unwrap()
 }
 
 fn source_publication_recipe() {
-    source_publication_inner(None);
+    let _: Option<()> = source_publication_inner(
+        None::<
+            PublicationHooks<fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation)>,
+        >,
+    );
 }
 
-fn source_publication_inner(hooks: Option<AdmissionHooks>) {
+fn source_publication_inner<T>(
+    hooks: Option<
+        PublicationHooks<
+            impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
+        >,
+    >,
+) -> Option<T> {
     child::declare();
 
     // Independent fresh fixture: no r47/earlier database is reopened or reset.
     // The family recipe owns its capabilities through teardown, so its setup
     // cannot be shared by visibility alone; only its witnesses are reused.
-    let root = super::managed_restore_recovery_tests::admitted_destination();
+    let (root, provider_source_root) =
+        super::managed_restore_recovery_tests::admitted_destination_with_source();
     let store = ProjectionStore::open(&root).unwrap();
     let state = store.state().unwrap();
     let path = RepoPath::parse("README.md").unwrap();
@@ -557,6 +587,7 @@ fn source_publication_inner(hooks: Option<AdmissionHooks>) {
         required: &required,
         expected: &expected,
         source_marker: &store.marker,
+        provider_source_root: &provider_source_root,
         source_root: &root,
         source_database: &source_database,
         destination_root: &destination_root,
@@ -699,13 +730,13 @@ fn source_publication_inner(hooks: Option<AdmissionHooks>) {
     if let Some(hooks) = hooks {
         // The continuation owns the original B owner through its explicit
         // positive close. C allocation and byte proofs stay borrowed here.
-        (hooks.after_published)(owner, &fixture, &cancel);
+        let result = (hooks.after_published)(owner, &fixture, &cancel);
         allocated.require_published(&staging.plan).unwrap();
         drop(checkout);
         drop(protection);
         drop(allocated);
         drop(store);
-        return;
+        return Some(result);
     }
 
     // All four successful calls used the same live B owner and C protections.
@@ -747,4 +778,5 @@ fn source_publication_inner(hooks: Option<AdmissionHooks>) {
     );
     witness::verify_objects(&family_root, &required);
     drop(store);
+    None
 }

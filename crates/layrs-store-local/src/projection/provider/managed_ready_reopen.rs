@@ -1,5 +1,6 @@
 //! Independent physical inspection of the exact terminal managed Ready state.
-//! This route has no source, ordinary admission, writer, recovery or cleanup.
+//! Fresh Ordinary routes are read-only and require their own owner capability.
+//! No route performs recovery or cleanup.
 use super::{
     bootstrap::{verify_managed_ready_checkout, VerifiedCheckout},
     database_io::{self, ReadState},
@@ -23,6 +24,10 @@ use std::path::Path;
 
 mod pins;
 use pins::ManagedReadyPins;
+mod ordinary;
+pub(in crate::projection::provider) use ordinary::{
+    OrdinaryReadyInspection, OrdinaryTerminalResolution,
+};
 mod admission;
 pub(in crate::projection::provider) use admission::{
     AdmissionFailure, AdmissionStep, ManagedReadyAdmission,

@@ -52,13 +52,19 @@ impl RestoreFaults for Stop {
 }
 
 pub(super) fn admitted_destination() -> PathBuf {
+    admitted_destination_with_source().0
+}
+
+/// Fresh fixture path DATA only; all source/session holders are released by
+/// the staging helper before either checkout path escapes to the caller.
+pub(super) fn admitted_destination_with_source() -> (PathBuf, PathBuf) {
     let mut destination = None;
     super::managed_staging_tests::with_content_planned_bytes_then(
         b"provider base content",
         |_, session, attempt, planned| {
             super::managed_ready_reopen_tests::publish_destination(session, attempt, planned)
         },
-        |_, session, root| {
+        |fixture, session, root| {
             let cancel = Cancellation::default();
             let held = ManagedReadyAdmission::open(&root, &cancel).unwrap();
             let mut close = Close::default();
@@ -68,7 +74,7 @@ pub(super) fn admitted_destination() -> PathBuf {
                     panic!("admission {:?}: {}", failure.step, failure.cause)
                 });
             assert_eq!((close.opens, close.closes), (1, 1));
-            destination = Some(root);
+            destination = Some((root, fixture.checkout.clone()));
         },
     );
     destination.unwrap()

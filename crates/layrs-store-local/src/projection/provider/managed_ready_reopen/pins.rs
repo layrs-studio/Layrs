@@ -160,23 +160,41 @@ impl ManagedReadyPins {
         data: &OwnedReadySnapshot,
         cancel: &Cancellation,
     ) -> Result<()> {
+        self.require_parts(
+            &data.marker,
+            &data.ready,
+            &data.expected,
+            &data.binding,
+            cancel,
+        )
+    }
+
+    /// Physical comparisons shared by genuinely interpreted Ready8 and
+    /// admitted terminal10 DATA. This does not choose a SQL origin/layout.
+    pub(super) fn require_parts(
+        &self,
+        marker: &format::Marker,
+        ready: &ProviderTransitionIntentRecord,
+        expected: &ExpectedCheckout,
+        binding: &crate::projection::shared::exact_content::ExactBinding,
+        cancel: &Cancellation,
+    ) -> Result<()> {
         self.verify(cancel)?;
         let actual = self.family.writer_record()?;
-        let proof = data
-            .ready
+        let proof = ready
             .destination
             .as_ref()
             .ok_or_else(|| invalid("managed Ready destination DATA absent"))?;
-        if data.marker != self.marker
+        if *marker != self.marker
             || proof.format != self.marker
-            || self.control.identity_token() != data.expected.header().control_identity
+            || self.control.identity_token() != expected.header().control_identity
             || file::identity(self.format.file())? != proof.format_file_identity
             || self.database_pin.identity() != proof.private_database_identity
-            || data.binding.family_incarnation != actual.incarnation
-            || data.binding.family_root_identity != actual.root_identity
-            || data.binding.family_marker_digest != self.family.marker_digest()
+            || binding.family_incarnation != actual.incarnation
+            || binding.family_root_identity != actual.root_identity
+            || binding.family_marker_digest != self.family.marker_digest()
             || proof.family_marker_digest != self.family.marker_digest()
-            || data.binding.family_catalog_identity != actual.catalog_file_identity
+            || binding.family_catalog_identity != actual.catalog_file_identity
         {
             return Err(invalid("managed Ready SQL DATA differs from physical pins"));
         }

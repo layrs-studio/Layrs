@@ -4,6 +4,8 @@ L'utilisateur a explicitement demandé « reprends ! /goal resume ». La consign
 d'arrêt nocturne est levée. Le programme complet reste à poursuivre, sans push
 ni PR. À la reprise, `get_goal` affiche encore `paused` ; l'API disponible ne
 permet pas de réactiver ce statut. Cela ne retire pas l'autorisation de travailler.
+Mise à jour : après la nouvelle demande explicite « resume (sans arrêter le goal) »,
+`get_goal` confirme maintenant **active**. Le périmètre reste le programme complet.
 
 ## Ready et publication familiale
 
@@ -105,7 +107,7 @@ Session97632 terminée exit0 : nettoyage **PASS356,977s**, publication B
 Ready/Published et replays **PASS1438,083s**. Ne pas relancer ce parent.
 Les16tests courts r49 ne sont pas présentés comme des exécutions r51.
 
-## Lot C10 en source, non qualifié
+## Lot C10 : historique de préparation et qualification r56/r57
 
 Décision : admission Ordinary8→10 avec témoin complet local des triples, sans
 changer le schéma9 Provider. Voir la note `ordinary-autonomy-evidence-gap`.
@@ -169,9 +171,9 @@ Build libtest r57 PASS ;650sources comparées au lot r56, seul ce test diffère.
 EXE r57 SHA256 `2500ee6d6ac2bef1447535750f400d75e414434672823e6c1d3bfb30a2c1057e`,
 release ROOT SHA256 `3e62ff590f1ebd0b5e5e363a1ba1d67443c5e06c53c4177f46b41f72fb5fcc98`.
 Runner `D:/Layrs/tmp/provider-ordinary-admission10-run-r57.py`, session ROOT23741
-en cours : test complet SQL C10 **PASS42,332s**, premier natif admission commencé.
-Le second natif ACK/resolve suit seulement le succès du premier. Aucun PASS natif
-C10 n'est encore revendiqué. Les15PASS r56 ne sont pas rapportés comme exécutions r57.
+en cours : test complet SQL C10 **PASS42,332s**, premier natif admission
+**PASS1580,483s**, second natif ACK/resolve commencé. Ne pas conclure à un PASS
+du second scénario avant sa fin. Les15PASS r56 ne sont pas rapportés comme exécutions r57.
 Les scripts de préparation/release ont déjà tourné ; ne pas les relancer ni
 rouvrir les fixtures. Ne pas compiler ou lancer d'autres tests pendant les natifs.
 
@@ -202,3 +204,115 @@ Le programme reste incomplet : admission C10/autonomie,
 reprise après perte d'owner/crash, couverture native complémentaire, transitions,
 companions/expansion, CLI/Desktop et acceptation complète. Voir la passation
 nocturne et `worktrees-partial-vfs-ordinary-publication-next.md` pour le contrat.
+
+## Suite r58 en source pendant les natifs r57
+
+Commits locaux : `31d08d2` conserve le lot C10 revu et l'archive B publication ;
+`27fda1f` conserve la correction test-only de l'ordre des manifestes et le PASS SQL.
+Aucun push. Les scripts/builds r56/r57 ne doivent pas être relancés.
+
+Trois missions natives terminées, aucun build/test/SQL par les agents :
+`ordinary_c10_autonomy_recipe` (implémentation recette),
+`ordinary_ready_reopen_scope` (investigation),
+`ordinary_terminal_reopen` (implémentation production). ROOT a enregistré le
+module de test et intégré la résolution terminale au scénario d'autonomie.
+
+Nouveaux types `managed_ready_reopen::OrdinaryReadyInspection` (C8, owner Shared)
+et `OrdinaryTerminalResolution` (C10 inchangé, owner Exclusive), chacun `open`
+et `require`. C10 expose `admission_digest` et `admitted`. Aucun B ni writer ;
+les holders doivent être détruits avant l'ouverture ordinaire mutable.
+Le détachement consommant dans `managed_admission/read.rs` déplace l'ExpectedCheckout
+et le CheckoutJournal réellement authentifiés ; vérifie inventaire terminal exact,
+frontières, backend/FK, témoin complet et enveloppe inchangée. Les manifestations
+canoniques viennent du catalogue familial complet. Les scopes SQL ferment
+positivement avant les preuves physiques, puis une nouvelle lecture compare.
+La nouvelle admission C8 fraîche avec writer n'est pas implémentée dans ce lot.
+
+Recette proposée, non compilée/exécutée :
+`session::managed_ordinary_autonomy_tests::managed_ordinary_c10_reopens_and_captures_restores_after_all_holders_and_ancestors_release`
+(child3600/outer3660). Retour de DATA seulement après teardown complet ; chemins
+A/B déplacés uniquement après contrôle canonique et exclusion C/famille. Résolution
+C10 fraîche sans A/B, puis libération du holder et ouverture publique C, captures
+héritées/locales, restauration/inverse, B privé inchangé avec véritable handle et
+verrous frais. Le B privé doit rester accessible ; aucun saut silencieux du contrôle.
+Après mutations, bytes checkout d'origine rétablis avant le refus terminal attendu,
+puis ouverture ordinaire autorisée. Aucun crash, xClose réel défaillant ou D→E.
+
+Contre-revue SOURCE ONLY r58 terminée, cellule ROOT198 clôturée. Thread lu
+jusqu'au résultat final position133. Un finding medium R58-F1 : la capture
+initiale Ready de B est vide, le test lui demandait à tort des bytes README.
+Aucun défaut production concret établi. Huit sources conservées dans
+`D:/Layrs/tmp/provider-ordinary-terminal-review-r58-inputs.json`, SHA256
+`956681a52b5fd7b7b8f24f64202fa58cedd74b3be668779c20fe2e2d4fa57b0c`, diff SHA256
+`c8f29e0581a0fa3e0f5d518614de1937df644c62196ea365ac8e6294d702c18e`.
+HEAD de revue `27fda1f480e5986972bf628398fd51dc35c037ed`. Rapport reçu et lu :
+`D:/Layrs/tmp/provider-ordinary-terminal-critical-review-r58.json`.
+Pas de compilation avant fin des natifs ROOT23741. Les sources r58 restent
+séparées du binaire retenu r57. Le script d'archive
+`D:/Layrs/tmp/package-ordinary-admission10-20261028-r56-r57.py` est préparé mais
+NON exécuté ; attendre la fin du runner avant archivage et vérification.
+
+ROOT a corrigé R58-F1 dans le test uniquement : reconnaissance de la séquence
+Ready B réelle, identité B/importée et changes vide ; metadata/origines comparées
+pour toutes les captures, streaming seulement des replacements réels, présence
+explicite des bytes HISTORY et CURRENT. Aucune capture BASE inventée.
+Le test bloque aussi la base privée B avec un handle Windows read/share_mode(0)
+pendant toutes les opérations C ; une tentative de lecture doit échouer32.
+La comparaison indépendante du baseline B a lieu avant ce blocage et après
+libération finale du handle. Checkouts A/B toujours indisponibles.
+
+Contre-vérification r59 en cours, cellule ROOT208 ; portée étroite sur ce seul
+test et le guard. Huit fichiers conservés, sept inchangés par rapport à r58.
+Manifeste `D:/Layrs/tmp/provider-ordinary-terminal-review-r59-inputs.json`, SHA256
+`516a36965bf189c017b92b828c7fe20d43295da20ea42ccf04f0d97c9da73f93`, diff SHA256
+`4b12cbb803f328fbe0d8bb1c6b65e25bf9d868e3e08017560e261fa7b8d45262`.
+Rapport attendu `D:/Layrs/tmp/provider-ordinary-terminal-correction-review-r59.json`.
+Ne pas modifier les huit fichiers pendant cette revue.
+
+Séparément, ROOT a étendu le cas SQL dans `destination_ready/ordinary_tests.rs`
+(hors huit fichiers r59) : détachement terminal C10 positif sous le vrai catalogue
+familial, append d'une capture locale canonique dans un SAVEPOINT, lecteur générique
+acceptant la provenance puis refus par l'inventaire terminal, aucune écriture
+de réparation et rollback exact. Non compilé/exécuté ; à qualifier avant le natif
+d'autonomie coûteux. Les nouvelles sources restent indépendantes du binaire r57.
+
+## État courant : admission qualifiée, autonomie native r60 en cours
+
+Session ROOT23741 terminée **exit0**. Les trois recettes r57 passent : SQL
+42,332s, admission native 1580,483s, ACK retenu/résolution avec holder conservé
+1515,529s. Cela ne prouve pas une réouverture après teardown ni un crash.
+Archive r56/r57 créée et relue avec vérification de tous les hashes :
+`ordinary-admission10-evidence-20261028-r56-r57.tar.gz`, 1464 fichiers,
+4460786 octets, SHA256
+`d6ece1d7879f753a2442a323073d16694d550a827837917f5be4ea4dacf6b66f`.
+L'inventaire correspondant conserve le premier échec d'assertion r56.
+Le script d'archive a maintenant été exécuté ; ne pas le relancer.
+
+Contre-revue r59 terminée, thread final lu jusqu'à position34/hasMore=false :
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3A7fb2e0dd-9df4-47fd-a813-de6b205695da`.
+R58-F1 corrigé en source, aucun nouveau finding. Les huit fichiers concordent.
+ROOT accepte cette revue de source, sans lui attribuer de résultat runtime.
+
+Build libtest r60 **PASS36,91s** ; `cargo check --workspace --all-targets` PASS.
+Artefacts et 652 sources conservés dans
+`.layrs-local/validation/provider-ordinary-terminal-20261028-r60`.
+EXE SHA256 `c08e2b9d849c8d5044677ebf674b40ec86c7043715e0138c446824c491727e45`,
+CodeView age129, neuf checksums de startup vérifiés. Exactement neuf fichiers
+Rust diffèrent de r57 : huit revus r59 et le test SQL ajouté par ROOT.
+Release ROOT `ordinary-terminal-source-release.json`, SHA256
+`04c56c515ceb17a8540eadaf2575cad3a7c67329f99f8a99c5b35ec8ec1f09ce`.
+Ne pas relancer `release-ordinary-terminal-r60.py` : ses créations sont exclusives.
+
+Runner `D:/Layrs/tmp/provider-ordinary-terminal-run-r60.py r60`,
+**session ROOT48378 en cours**, parent C neuf, séquentiel stop premier échec :
+1. SQL C10 avec détachement terminal et refus sans réparation d'un suffixe
+   canonique : **PASS38,249s**.
+2. Natifs C10 fraîchement rouvert, capture/restauration sous indisponibilité A/B
+   et refus de lecture de la base B : **EN COURS**, child3600/outer3660.
+
+Aucun nouveau Cargo, SQL ou autre natif avant fin de cette session. Ne pas
+rouvrir la fixture. Les durées sont observées, jamais des garanties maximales.
+Le visuel demandé est affiché dans le chat, source conservée hors dépôt dans
+`D:/Layrs/outputs/avancement-worktrees-20261028.html`. Il n'arrête pas le goal.
+L'investigateur `ordinary_ready_reopen_scope` poursuit en lecture seule la
+recherche d'une capacité source B fraîche pour le futur writer d'admission C8.

@@ -479,8 +479,14 @@ mod managed_exact_tests;
 mod managed_family_publication_tests;
 #[cfg(test)]
 mod managed_live_read_tests;
+#[cfg(test)]
+#[path = "session/managed_ordinary_admission_tests.rs"]
+mod managed_ordinary_admission_tests;
 #[cfg(all(test, windows))]
 mod managed_ordinary_allocation_tests;
+#[cfg(test)]
+#[path = "session/managed_ordinary_autonomy_tests.rs"]
+mod managed_ordinary_autonomy_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_checkout_tests.rs"]
 mod managed_ordinary_checkout_tests;
@@ -505,9 +511,6 @@ mod managed_ordinary_source_intent_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_source_publication_tests.rs"]
 mod managed_ordinary_source_publication_tests;
-#[cfg(test)]
-#[path = "session/managed_ordinary_admission_tests.rs"]
-mod managed_ordinary_admission_tests;
 #[cfg(test)]
 mod managed_ordinary_staging_tests;
 #[cfg(test)]
