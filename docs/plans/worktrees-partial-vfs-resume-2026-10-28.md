@@ -161,9 +161,17 @@ EXE SHA256 `89b263834d7bf4ab9e76c7e55cce4fda2d2e2c3a6c08aa39646e9257826c3985`,
 CodeView age127, EXE/PDB et9sources startup liés. Release ROOT r56 SHA256
 `119fc59deb8eb5d66252f37caaaa3f688cd8f2a9a14afea7009370f2bb0294ca`.
 Runner `D:/Layrs/tmp/provider-ordinary-admission10-run-r56.py`, session ROOT57640
-en cours avec nouveau parent C: et exécution autorisée hors sandbox.
-18recettes :6pures,10SQL,2natives. Les15premières sont PASS ; le cas complet
-SQL Ordinary10 est en cours. Aucun PASS natif C10 n'est encore revendiqué.
+terminée exit1 :15premières recettes PASS, puis assertion de test incorrecte
+comparant l'union complète dans deux ordres différents (17,806s). Natifs non atteints.
+Correction ROOT test-only : trier le vecteur attendu par ManifestId pour comparer
+l'ordre réel de la racine ; aucune ligne perdue, aucune modification produit.
+Build libtest r57 PASS ;650sources comparées au lot r56, seul ce test diffère.
+EXE r57 SHA256 `2500ee6d6ac2bef1447535750f400d75e414434672823e6c1d3bfb30a2c1057e`,
+release ROOT SHA256 `3e62ff590f1ebd0b5e5e363a1ba1d67443c5e06c53c4177f46b41f72fb5fcc98`.
+Runner `D:/Layrs/tmp/provider-ordinary-admission10-run-r57.py`, session ROOT23741
+en cours : test complet SQL C10 **PASS42,332s**, premier natif admission commencé.
+Le second natif ACK/resolve suit seulement le succès du premier. Aucun PASS natif
+C10 n'est encore revendiqué. Les15PASS r56 ne sont pas rapportés comme exécutions r57.
 Les scripts de préparation/release ont déjà tourné ; ne pas les relancer ni
 rouvrir les fixtures. Ne pas compiler ou lancer d'autres tests pendant les natifs.
 

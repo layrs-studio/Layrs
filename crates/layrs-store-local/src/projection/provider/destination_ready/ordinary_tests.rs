@@ -868,7 +868,9 @@ fn exercise_ordinary_admission(
     let ready = read_ordinary_managed_ready(destination, inputs.marker, family, None).unwrap();
     let original_journal = ready.journal().rows().to_vec();
     assert_eq!(ready.origin(), DestinationOriginKind::Ordinary);
-    assert_eq!(ready.required(), inputs.data.required);
+    let mut expected_root_order = inputs.data.required.to_vec();
+    expected_root_order.sort_unstable_by(|left, right| left.id().cmp(right.id()));
+    assert_eq!(ready.required(), expected_root_order);
     assert!(ready
         .required()
         .iter()
