@@ -256,6 +256,7 @@ impl ExportReserveOnlyTarget {
                 family,
                 required,
                 ActiveRoot::Absent,
+                ExportPublicationMember::Initializing,
                 classified,
                 charged_chunks,
                 charged_manifests,
@@ -283,11 +284,72 @@ impl ExportReserveOnlyTarget {
             family,
             required,
             ActiveRoot::Protection(protection),
+            ExportPublicationMember::Initializing,
             classified,
             charged_chunks,
             charged_manifests,
             cancel,
         )
+    }
+
+    /// Closed parent Publication mode only, after all retained Published
+    /// groups and shared debit sets passed. Exact C root is mandatory here.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn validate_publication_and_classify(
+        &self,
+        c: &Connection,
+        retained: &AdmittedFamilyContext,
+        family: &FamilyMarker,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        member: ExportPublicationMember,
+        classified: &mut BTreeSet<String>,
+        charged_chunks: &mut BTreeSet<String>,
+        charged_manifests: &mut BTreeSet<String>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ExportProtectionState> {
+        let state = self.validate_active_and_classify(
+            c,
+            retained,
+            family,
+            required,
+            ActiveRoot::Protection(protection),
+            member,
+            classified,
+            charged_chunks,
+            charged_manifests,
+            cancel,
+        )?;
+        if state.root != ProtectionPresence::Present {
+            return Err(invalid("export publication exact protection absent"));
+        }
+        Ok(state)
+    }
+
+    /// Descriptive driver-authenticated Ready floor and checkout quantities.
+    /// Independently preserve M and the remaining logical reservation envelope.
+    pub(super) fn require_publication_envelope(
+        &self,
+        state: ExportProtectionState,
+        protection: &ExactProtection,
+        ready_floor: u64,
+        journal_maximum: u64,
+        checkout_bytes: u64,
+    ) -> Result<()> {
+        let floor = ready_floor
+            .checked_add(journal_maximum)
+            .filter(|n| *n <= MAX_METADATA)
+            .ok_or_else(|| invalid("export publication metadata envelope exceeds bound"))?;
+        if ready_floor < self.private_metadata_floor || journal_maximum == 0 {
+            return Err(invalid("export publication Ready floor/journal differs"));
+        }
+        protection.require_envelope(self.metadata_bytes, floor)?;
+        let remaining = state
+            .installation
+            .remaining
+            .checked_sub(checkout_bytes)
+            .ok_or_else(|| invalid("export publication checkout exceeds remaining quota"))?;
+        protection.require_envelope(remaining, floor)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -298,6 +360,7 @@ impl ExportReserveOnlyTarget {
         family: &FamilyMarker,
         required: &[FileManifest],
         root_mode: ActiveRoot<'_>,
+        member: ExportPublicationMember,
         classified: &mut BTreeSet<String>,
         charged_chunks: &mut BTreeSet<String>,
         charged_manifests: &mut BTreeSet<String>,
@@ -316,7 +379,7 @@ impl ExportReserveOnlyTarget {
             required,
             cancel,
         )?;
-        self.require_member(c, retained, family)?;
+        self.require_member_at(c, retained, family, member)?;
         let owner = self.binding.owner.as_str();
         let root = match root_mode {
             ActiveRoot::Absent => {
@@ -494,6 +557,16 @@ impl ExportReserveOnlyTarget {
         retained: &AdmittedFamilyContext,
         family: &FamilyMarker,
     ) -> Result<()> {
+        self.require_member_at(c, retained, family, ExportPublicationMember::Initializing)
+    }
+
+    fn require_member_at(
+        &self,
+        c: &Connection,
+        retained: &AdmittedFamilyContext,
+        family: &FamilyMarker,
+        expected: ExportPublicationMember,
+    ) -> Result<()> {
         self.binding.validate()?;
         self.marker.validate()?;
         let shared = self
@@ -544,7 +617,7 @@ impl ExportReserveOnlyTarget {
             [self.binding.owner.as_str()], |r|r.get(0))?;
         if !bounded {
             return Err(invalid(
-                "export target Initializing registration absent or exceeds bound",
+                "export target registration absent or exceeds bound",
             ));
         }
         let (path, database, marker, state): (String, String, Vec<u8>, String) = c.query_row(
@@ -555,10 +628,10 @@ impl ExportReserveOnlyTarget {
         if path != member_path
             || database != self.binding.database_identity
             || marker != marker_bytes
-            || state != "initializing"
+            || state != expected.sql()
         {
             return Err(invalid(
-                "export target registry differs from exact Initializing member",
+                "export target registry differs from exact expected member",
             ));
         }
         Ok(())

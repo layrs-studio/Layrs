@@ -1,5 +1,5 @@
-//! Private C Ready under an actual retained B Staging snapshot. This driver
-//! does not promote the family member, B's journal, or C's admission schema.
+//! Private C Ready and its separate family publication under actual retained
+//! B Staging. Neither operation promotes B's journal or C's admission schema.
 use super::{
     allocation::ManagedDestinationAllocation, checkout::OrdinaryCheckoutProof, content,
     protection::OrdinaryImportProtection, ready_data::OwnedOrdinaryReadyData, reservation,
@@ -21,7 +21,10 @@ use crate::{
             },
         },
         shared::{
-            admitted_catalog::{AdmittedFamilyContext, ExportReserveOnlyTarget},
+            admitted_catalog::{
+                AdmittedFamilyContext, ExportPublicationEffect, ExportPublicationMember,
+                ExportPublicationState, ExportReserveOnlyTarget,
+            },
             exact_protection::ProtectionPresence,
             provider_access::provider_import::source::OrdinarySourceInputs,
         },
@@ -45,6 +48,39 @@ impl OrdinaryReadyOutcome {
     }
     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
         &self.receipt
+    }
+}
+
+/// Acknowledged family member Ready DATA. The private C row stays Ready/C8;
+/// these records do not authorize B publication or C ordinary admission.
+pub(in crate::projection::provider) struct OrdinaryFamilyReadyOutcome {
+    effect: ExportPublicationEffect,
+    ready: ProviderTransitionIntentRecord,
+    receipt: ProviderTransitionReceiptRecord,
+}
+impl OrdinaryFamilyReadyOutcome {
+    pub(in crate::projection::provider) fn effect(&self) -> ExportPublicationEffect {
+        self.effect
+    }
+    pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
+        &self.ready
+    }
+    pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
+        &self.receipt
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReadyOperation {
+    Private,
+    FamilyPublication,
+}
+impl ReadyOperation {
+    fn gate_mode(self) -> SessionMode {
+        match self {
+            Self::Private => SessionMode::Shared,
+            Self::FamilyPublication => SessionMode::Exclusive,
+        }
     }
 }
 
@@ -81,6 +117,63 @@ impl OrdinaryManagedExport<'_> {
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
     ) -> Result<OrdinaryReadyOutcome> {
+        let (effect, ready, receipt) = self.with_ready_source(
+            destination,
+            staging,
+            protection,
+            checkout,
+            ReadyOperation::Private,
+            cancel,
+            |ready| ready.finalize(close, cancel),
+        )?;
+        Ok(OrdinaryReadyOutcome {
+            effect,
+            ready,
+            receipt,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection::provider) fn publish_destination_family_ready(
+        &mut self,
+        destination: &ManagedDestinationAllocation,
+        staging: &ProviderTransitionIntentRecord,
+        protection: &OrdinaryImportProtection,
+        checkout: &OrdinaryCheckoutProof,
+        close: &mut impl WriterCloseObserver,
+        cancel: &Cancellation,
+    ) -> Result<OrdinaryFamilyReadyOutcome> {
+        let (effect, ready, receipt) = self.with_ready_source(
+            destination,
+            staging,
+            protection,
+            checkout,
+            ReadyOperation::FamilyPublication,
+            cancel,
+            |ready| ready.publish_family(close, cancel),
+        )?;
+        Ok(OrdinaryFamilyReadyOutcome {
+            effect,
+            ready,
+            receipt,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_ready_source<T>(
+        &mut self,
+        destination: &ManagedDestinationAllocation,
+        staging: &ProviderTransitionIntentRecord,
+        protection: &OrdinaryImportProtection,
+        checkout: &OrdinaryCheckoutProof,
+        operation: ReadyOperation,
+        cancel: &Cancellation,
+        action: impl FnOnce(&mut ReadyContext<'_, '_>) -> CauseResult<T>,
+    ) -> Result<(
+        T,
+        ProviderTransitionIntentRecord,
+        ProviderTransitionReceiptRecord,
+    )> {
         check_cancel(cancel)?;
         destination.require_published(&staging.plan)?;
         let Self {
@@ -164,7 +257,7 @@ impl OrdinaryManagedExport<'_> {
                 let family = destination.family();
                 let gate = StoreLock::acquire_existing(
                     &family.root().join("metadata/catalog.lock"),
-                    SessionMode::Shared,
+                    operation.gate_mode(),
                 )
                 .map_err(Cause::from)?;
                 let checked = database_io::read_cancellable(&family.catalog, cancel, |catalog| {
@@ -175,15 +268,41 @@ impl OrdinaryManagedExport<'_> {
                         &closure,
                         &context,
                     );
-                    let protected = inputs.validate_export_protection(
-                        family,
-                        catalog,
-                        staging,
-                        &target,
-                        &required,
-                        protection.root(),
-                        Some(cancel),
-                    )?;
+                    let protected = match operation {
+                        ReadyOperation::Private => inputs.validate_export_protection(
+                            family,
+                            catalog,
+                            staging,
+                            &target,
+                            &required,
+                            protection.root(),
+                            Some(cancel),
+                        )?,
+                        ReadyOperation::FamilyPublication => {
+                            let ready_data = data.as_data(&required)?;
+                            let ready_inputs = OrdinaryReadyInputs {
+                                marker: &destination.proof().format,
+                                source_marker: &store.marker,
+                                source_staging: staging,
+                                closure: &closure,
+                                retained: &context,
+                                target: &target,
+                                protection: protection.root(),
+                                family_marker_bytes: family.marker_bytes(),
+                                metadata_floor: data.metadata_floor(),
+                                data: &ready_data,
+                            };
+                            inputs
+                                .read_export_publication(
+                                    family,
+                                    catalog,
+                                    staging,
+                                    &ready_inputs.publication_inputs(&expected),
+                                    Some(cancel),
+                                )?
+                                .protection
+                        }
+                    };
                     if protected.root != ProtectionPresence::Present {
                         return Err(cause_invalid("ordinary Ready requires durable protection"));
                     }
@@ -221,16 +340,16 @@ impl OrdinaryManagedExport<'_> {
                     checkout,
                 };
                 ready.revalidate_source(cancel)?;
-                let effect = ready.finalize(close, cancel)?;
+                let effect = action(&mut ready)?;
                 ready.revalidate_source(cancel)?;
-                if !ready.read_current(cancel)? {
+                if matches!(operation, ReadyOperation::Private) && !ready.read_current(cancel)? {
                     return Err(invalid("ordinary Ready durable readback lost Ready"));
                 }
-                Ok(OrdinaryReadyOutcome {
+                Ok((
                     effect,
-                    ready: ProviderTransitionIntentRecord::decode(&data.ready().encode()?)?,
-                    receipt: ProviderTransitionReceiptRecord::decode(&data.receipt().encode()?)?,
-                })
+                    ProviderTransitionIntentRecord::decode(&data.ready().encode()?)?,
+                    ProviderTransitionReceiptRecord::decode(&data.receipt().encode()?)?,
+                ))
             })();
             finish_snapshot(tx, result)
         })
@@ -328,6 +447,156 @@ impl ReadyContext<'_, '_> {
             metadata_floor: self.data.metadata_floor(),
             data: &data,
         })
+    }
+
+    /// Complete actual private C Ready plus the physical B/family wrapper.
+    /// The separate publication reader is required on both sides of the CAS;
+    /// the original private Ready path remains Initializing-only.
+    fn validate_publication(
+        &self,
+        destination: &Connection,
+        catalog: &Connection,
+        cancel: &Cancellation,
+    ) -> CauseResult<ExportPublicationState> {
+        let admitted = read_admitted_import(self.source, &self.store.marker, Some(cancel))?;
+        let source = OrdinarySourceInputs::new(
+            self.source,
+            &self.store.marker,
+            &admitted,
+            self.closure,
+            self.retained,
+        );
+        let state = self.with_inputs(|inputs| {
+            let state = source.read_export_publication(
+                self.destination.family(),
+                catalog,
+                self.staging,
+                &inputs.publication_inputs(self.expected),
+                Some(cancel),
+            )?;
+            destination_ready::read_ordinary_checkout_ready_for_publication(
+                self.source,
+                destination,
+                catalog,
+                inputs,
+                self.expected,
+                Some(cancel),
+            )?;
+            Ok(state)
+        })?;
+        let journal = checkout_journal::read(destination, self.expected, Some(cancel))?;
+        self.checkout
+            .require_parts(self.expected, &journal, cancel)?;
+        require_envelope(
+            self.data,
+            self.expected,
+            self.protection,
+            state.protection.installation.remaining,
+        )?;
+        resident::require_indexed(catalog, self.manifests, cancel)?;
+        self.boundary(cancel)?;
+        Ok(state)
+    }
+
+    fn publish_family(
+        &self,
+        close: &mut impl WriterCloseObserver,
+        cancel: &Cancellation,
+    ) -> CauseResult<ExportPublicationEffect> {
+        self.boundary(cancel)?;
+        let family = self.destination.family();
+        let gate = StoreLock::acquire_existing(
+            &family.root().join("metadata/catalog.lock"),
+            SessionMode::Exclusive,
+        )
+        .map_err(Cause::from)?;
+        // C's distinct read transaction and all physical witnesses remain live
+        // through each family scope, the sole CAS, positive close and readback.
+        let result = database_io::read_cancellable(
+            self.destination.destination_database(),
+            cancel,
+            |destination| {
+                let before = reservation::valid(database_io::read_cancellable(
+                    &family.catalog,
+                    cancel,
+                    |catalog| self.validate_publication(destination, catalog, cancel),
+                )?)?;
+                if before.member == ExportPublicationMember::Ready {
+                    return Ok(ExportPublicationEffect::AlreadyReady);
+                }
+                let admission = database_io::clean_admission(&family.catalog, false, |catalog| {
+                    if self.validate_publication(destination, catalog, cancel)? != before {
+                        return Err(cause_invalid(
+                            "ordinary family Ready predecessor changed before writer",
+                        ));
+                    }
+                    Ok(())
+                })?;
+                self.boundary(cancel)?;
+                let bare = admission.open(&family.catalog, close)?;
+                let written = (|| {
+                    admission.require_geometry(&bare)?;
+                    self.boundary(cancel)?;
+                    let catalog = bare.connection();
+                    catalog.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL; BEGIN IMMEDIATE")?;
+                    if self.validate_publication(destination, catalog, cancel)? != before {
+                        return Err(cause_invalid(
+                            "ordinary family Ready predecessor changed inside writer",
+                        ));
+                    }
+                    let effect = self.with_inputs(|inputs| {
+                        self.retained.publish_export_ready(
+                            catalog,
+                            family.marker_bytes(),
+                            &inputs.publication_inputs(self.expected),
+                            Some(cancel),
+                        )
+                    })?;
+                    let after = self.validate_publication(destination, catalog, cancel)?;
+                    if effect != ExportPublicationEffect::Updated
+                        || after.member != ExportPublicationMember::Ready
+                        || after.protection != before.protection
+                    {
+                        return Err(cause_invalid(
+                            "ordinary family Ready prospective publication differs",
+                        ));
+                    }
+                    self.boundary(cancel)?;
+                    catalog.execute_batch("COMMIT")?;
+                    Ok(effect)
+                })();
+                let written = if bare.connection().is_autocommit() {
+                    written
+                } else {
+                    reservation::combine(
+                        written,
+                        bare.connection()
+                            .execute_batch("ROLLBACK")
+                            .map_err(Cause::from),
+                    )
+                };
+                let effect = bare.finish_writer(written, close)?;
+                // No SQL follows an uncertain COMMIT/rollback/observed close.
+                self.boundary(cancel)?;
+                let after = reservation::valid(database_io::read_cancellable(
+                    &family.catalog,
+                    cancel,
+                    |catalog| self.validate_publication(destination, catalog, cancel),
+                )?)?;
+                if after.member != ExportPublicationMember::Ready
+                    || after.protection != before.protection
+                {
+                    return Err(cause_invalid(
+                        "ordinary family Ready durable publication differs",
+                    ));
+                }
+                Ok(effect)
+            },
+        )
+        .and_then(reservation::valid);
+        let post = self.boundary(cancel);
+        drop(gate);
+        reservation::combine(result, post)
     }
 
     // The discriminant is only a dispatch hint. Each arm validates the complete

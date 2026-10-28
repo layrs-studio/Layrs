@@ -1,0 +1,116 @@
+{
+  "revision": "r45",
+  "decision": "proposed only; not compiled, artifact-bound, released or executed",
+  "scope": "Complete ordinary family C Initializing->Ready publication with actual private C8 Ready and actual admitted B9 Staging retained. Three pure Ready regressions, three new publication SQL cases, nine Ready SQL regressions, one new native family writer ACK/replay scenario. No B Ready/Published, C9 admission/autonomy, positive deletion/nested native coverage, actual close failure or owner-loss recovery.",
+  "recipes": [
+    {
+      "name": "projection::provider::managed_export::ready_data::tests::ordinary_ready_overlay_keeps_current_exact_representation_and_preimage",
+      "kind": "pure",
+      "ignored": false,
+      "outer_seconds": 120
+    },
+    {
+      "name": "projection::provider::managed_export::ready_data::tests::ordinary_ready_deletion_requires_exact_preimage_and_observes_precancel",
+      "kind": "pure",
+      "ignored": false,
+      "outer_seconds": 120
+    },
+    {
+      "name": "projection::provider::destination_ready::ordinary::tests::unchanged_length_uses_exact_b_mapping_body_without_file_id_fallback",
+      "kind": "pure",
+      "ignored": false,
+      "outer_seconds": 120
+    },
+    {
+      "name": "projection::shared::admitted_catalog::export_publication::tests::export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::shared::admitted_catalog::export_publication::tests::export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::ordinary_tests::ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_replays_readonly",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::ordinary_tests::ordinary_ready_writer_preserves_restore_history_replays_readonly_and_refuses_corruption",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::tests::staged_ready_appends_exact_suffix_and_replays_without_writes",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::tests::ready_append_rolls_back_to_exact_staging_and_requires_fk_for_write",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::tests::staging_refuses_forged_claim_overlay_prefix_and_family_before_append",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::tests::ready_reader_refuses_prefix_suffix_mapping_claim_and_unrelated_tail",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::checkout_tests::complete_checkout_retains_exact_journal_and_replays_ready_without_writes",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::checkout_tests::checkout_ready_rollback_restores_complete_journal_and_staging",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::checkout_tests::checkout_ready_refuses_incomplete_foreign_and_aliased_identity_without_writes",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::destination_ready::checkout_tests::checkout_ready_refuses_a_canonical_inventory_unrelated_to_ready_patch",
+      "kind": "sql",
+      "ignored": true,
+      "child_seconds": 120,
+      "outer_seconds": 180
+    },
+    {
+      "name": "projection::provider::bootstrap::preparation::activation::session::managed_ordinary_family_ready_tests::managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c",
+      "kind": "native",
+      "ignored": true,
+      "child_seconds": 3000,
+      "outer_seconds": 3060
+    }
+  ]
+}

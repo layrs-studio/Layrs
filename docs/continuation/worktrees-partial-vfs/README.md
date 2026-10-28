@@ -1,5 +1,22 @@
 # Reprendre le programme Worktrees / partial VFS
 
+## Arrêt de nuit du 28 octobre — Ready reste non qualifié
+
+L'utilisateur a demandé l'arrêt après le test en cours. Voir la passation
+`docs/plans/worktrees-partial-vfs-night-handoff-2026-10-28.md` pour la reprise.
+Le natif r44 est terminal en échec après 1 125,762 s : son témoin complet refuse
+une ligne supplémentaire dans `projection_content`. Les trois tests purs et
+neuf SQL passent ; cela ne qualifie pas Ready. Aucun nouveau scénario long
+n'est lancé. L'attendu du témoin semble omettre un mapping de base sélectionnée,
+mais la correction et sa qualification restent à faire.
+
+Archive des tentatives non qualifiées r42–r44 : 1 991 fichiers, 6 012 342 octets,
+SHA-256 `707d891ccc625619378efdb59b1f87470fc027ecf7fcbcc8f061c537003c83c6`.
+Le lot suivant de publication familiale est écrit et relu en source, sans
+compilation ni runtime. Son test partage le témoin Ready à corriger et doit
+aussi couvrir le chemin Updated réussi avec relecture fraîche (observation E1).
+Les deux lots sont sauvegardés en commits locaux WIP distincts ; aucun push.
+
 ## Complément protection et copie ordinaires B → C — r39 à r41
 
 Les dix-huit recettes passent : trois tests purs sur r39, quatorze SQL sur r40,

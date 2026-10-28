@@ -10,7 +10,9 @@ use crate::projection::{
         ordinary_destination::{self, OrdinaryCopyInputs},
     },
     shared::{
-        admitted_catalog::{AdmittedFamilyContext, ExportReserveOnlyTarget},
+        admitted_catalog::{
+            AdmittedFamilyContext, ExportPublicationInputs, ExportReserveOnlyTarget,
+        },
         exact_protection::{ExactProtection, ProtectionPresence},
     },
 };
@@ -46,6 +48,23 @@ pub(super) struct OrdinaryBasis {
 }
 
 impl OrdinaryReadyInputs<'_> {
+    /// Expected publication DATA only; the outer reader still authenticates C.
+    pub(in crate::projection::provider) fn publication_inputs(
+        &self,
+        expected: &ExpectedCheckout,
+    ) -> ExportPublicationInputs<'_> {
+        ExportPublicationInputs {
+            target: self.target,
+            destination_ready: self.data.ready,
+            receipt: self.data.receipt,
+            required: self.data.required,
+            protection: self.protection,
+            ready_metadata_floor: self.metadata_floor,
+            checkout_journal_maximum_bytes: expected.maximum_encoded_bytes(),
+            checkout_file_bytes: expected.header().file_bytes,
+        }
+    }
+
     fn view<'a>(&'a self, source: &'a OrdinaryBasis) -> ReadyView<'a> {
         ReadyView {
             marker: self.marker,
@@ -56,7 +75,16 @@ impl OrdinaryReadyInputs<'_> {
     }
 }
 
+// Closed entry choice. Existing Ready writer/replay always uses PrivateReady.
+// Publication accepts only a complete actual C Ready under the full family walk.
+#[derive(Clone, Copy)]
+enum FamilyInterpretation {
+    PrivateReady,
+    Publication,
+}
+
 struct OrdinaryPrepared {
+    family: FamilyInterpretation,
     basis: OrdinaryBasis,
     suffix: PreparedData,
 }
@@ -81,6 +109,7 @@ pub(super) fn unchanged_bytes(
 }
 
 fn prepare(
+    family: FamilyInterpretation,
     source_c: &Connection,
     destination: &Connection,
     family_c: &Connection,
@@ -257,25 +286,49 @@ fn prepare(
             "ordinary Ready metadata floor differs from actual B/C pair",
         ));
     }
-    require_family(family_c, inputs, expected, cancel)?;
+    require_family(family, family_c, inputs, expected, cancel)?;
     cancellation::check(cancel)?;
-    Ok(OrdinaryPrepared { basis, suffix })
+    Ok(OrdinaryPrepared {
+        family,
+        basis,
+        suffix,
+    })
 }
 
 fn require_family(
+    interpretation: FamilyInterpretation,
     family_c: &Connection,
     inputs: &OrdinaryReadyInputs<'_>,
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
-    let (_, state) = inputs.retained.validate_export_protection(
-        family_c,
-        inputs.family_marker_bytes,
-        inputs.target,
-        inputs.data.required,
-        inputs.protection,
-        cancel,
-    )?;
+    let state = match interpretation {
+        FamilyInterpretation::PrivateReady => {
+            inputs
+                .retained
+                .validate_export_protection(
+                    family_c,
+                    inputs.family_marker_bytes,
+                    inputs.target,
+                    inputs.data.required,
+                    inputs.protection,
+                    cancel,
+                )?
+                .1
+        }
+        FamilyInterpretation::Publication => {
+            inputs
+                .retained
+                .read_export_publication(
+                    family_c,
+                    inputs.family_marker_bytes,
+                    &inputs.publication_inputs(expected),
+                    cancel,
+                )?
+                .1
+                .protection
+        }
+    };
     if state.root != ProtectionPresence::Present {
         return Err(invalid("ordinary Ready requires committed C protection"));
     }
@@ -369,7 +422,7 @@ fn read_prepared(
         Some(expected),
         cancel,
     )?;
-    require_family(family_c, inputs, expected, cancel)
+    require_family(prepared.family, family_c, inputs, expected, cancel)
 }
 
 pub(in crate::projection::provider) fn read_ordinary_checkout_ready(
@@ -380,7 +433,48 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_ready(
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
 ) -> Result<DestinationReady> {
-    let prepared = prepare(source_c, destination, family_c, inputs, expected, cancel)?;
+    let prepared = prepare(
+        FamilyInterpretation::PrivateReady,
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        cancel,
+    )?;
+    read_prepared(
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        &prepared,
+        cancel,
+    )?;
+    Ok(DestinationReady)
+}
+
+/// Complete actual C Ready reader for the one-row family publication boundary.
+/// The family member may be Initializing or Ready, but every retained group,
+/// reservation, exact C root, prefix, suffix and checkout row is still checked.
+/// This entry never writes C and never makes canonical Ready DATA an authority.
+pub(in crate::projection::provider) fn read_ordinary_checkout_ready_for_publication(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<DestinationReady> {
+    let prepared = prepare(
+        FamilyInterpretation::Publication,
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        cancel,
+    )?;
     read_prepared(
         source_c,
         destination,
@@ -404,7 +498,15 @@ pub(in crate::projection::provider) fn finalize_ordinary_checkout_or_replay(
     expected: &ExpectedCheckout,
     cancel: Option<&Cancellation>,
 ) -> Result<ReadyEffect> {
-    let prepared = prepare(source_c, destination, family_c, inputs, expected, cancel)?;
+    let prepared = prepare(
+        FamilyInterpretation::PrivateReady,
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        cancel,
+    )?;
     let (count, max_state): (u64, u64) = destination.query_row(
         "SELECT count(*),coalesce(max(length(CAST(state AS BLOB))),0) FROM (SELECT state FROM projection_provider_transitions LIMIT 2)",
         [], |r| Ok((r.get(0)?, r.get(1)?)),

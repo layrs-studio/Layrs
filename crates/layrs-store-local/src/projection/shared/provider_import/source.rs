@@ -208,6 +208,26 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         Ok(state)
     }
 
+    /// Full publication DATA interpretation under actual B Staging and the
+    /// pinned physical family. Actual complete C Ready and its retained pins
+    /// remain the publication driver's separate, simultaneous evidence.
+    pub(in crate::projection) fn read_export_publication(
+        &self,
+        family: &FamilyAccess,
+        c: &Connection,
+        intent: &ProviderTransitionIntentRecord,
+        inputs: &crate::projection::shared::admitted_catalog::ExportPublicationInputs<'_>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::admitted_catalog::ExportPublicationState> {
+        self.require_export_target(family, intent, inputs.target, cancel)?;
+        let (_, state) =
+            self.retained
+                .read_export_publication(c, family.marker_bytes(), inputs, cancel)?;
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
     fn require_export_target(
         &self,
         family: &FamilyAccess,

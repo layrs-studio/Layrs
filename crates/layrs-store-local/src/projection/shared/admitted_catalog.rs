@@ -29,6 +29,13 @@ pub(in crate::projection) use export::{
     ExportUsage,
 };
 
+#[path = "admitted_catalog/export_publication.rs"]
+mod export_publication;
+pub(in crate::projection) use export_publication::{
+    ExportPublicationEffect, ExportPublicationInputs, ExportPublicationMember,
+    ExportPublicationState,
+};
+
 struct CatalogParts {
     proof: AdmittedCatalogProof,
     export: Option<ExportReserveOnlyState>,
@@ -39,6 +46,12 @@ struct CatalogParts {
 
 // Closed DATA interpretations, never a switch granting physical authority.
 enum ExportCatalogTarget<'a> {
+    Publication {
+        target: &'a ExportReserveOnlyTarget,
+        required: &'a [FileManifest],
+        protection: &'a ExactProtection,
+        member: ExportPublicationMember,
+    },
     ReserveOnly(&'a ExportReserveOnlyTarget),
     Installing {
         target: &'a ExportReserveOnlyTarget,
@@ -440,6 +453,12 @@ impl AdmittedFamilyContext {
                 target,
                 required,
                 protection,
+            })
+            | Some(ExportCatalogTarget::Publication {
+                target,
+                required,
+                protection,
+                ..
             }) => {
                 protection.require_binding(target.binding(), required, cancel)?;
                 if known.contains_key(protection.id()) {
@@ -519,6 +538,27 @@ impl AdmittedFamilyContext {
         // join the final inventory. None preserves the strict ordinary policy.
         let (export, installation, protection) = match target {
             None => (None, None, None),
+            Some(ExportCatalogTarget::Publication {
+                target,
+                required,
+                protection,
+                member,
+            }) => (
+                None,
+                None,
+                Some(target.validate_publication_and_classify(
+                    c,
+                    self,
+                    &marker,
+                    required,
+                    protection,
+                    member,
+                    &mut groups,
+                    &mut charged_chunks,
+                    &mut charged_manifests,
+                    cancel,
+                )?),
+            ),
             Some(ExportCatalogTarget::ReserveOnly(target)) => (
                 Some(target.validate_and_classify(c, self, &marker, &mut groups, cancel)?),
                 None,

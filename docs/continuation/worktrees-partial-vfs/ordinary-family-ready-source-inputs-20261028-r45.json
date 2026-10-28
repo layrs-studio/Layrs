@@ -1,0 +1,84 @@
+{
+  "scope": "Source-only integrated ordinary family C Ready candidate; no compilation or runtime claim",
+  "head": "b3ceea9db7d153a20668e0a682523fbf55175206",
+  "branch": "feature/worktrees-partial-vfs",
+  "baseline": "18 staged private Ready sources match retained r44 modulo CRLF. r44 three pure/nine SQL pass; native session 57482 still active when review prepared. No runtime transferred to family publication.",
+  "files": [
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 17351,
+      "sha256": "e743d35debf4ca13d36426794f7e5e34cce45e0ef599729deeb36734d48aedf3",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs",
+      "bytes": 19532,
+      "sha256": "b89d75881e766e0a0ff91e31da9f938f83feb55a3d5cd4989ca5ae7cdc0d3d67",
+      "status": "new"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_ready_tests.rs",
+      "bytes": 28018,
+      "sha256": "d07feacd7302ec2c2ce7b62fb5eca3da49e0a31b3176e55e4a91fc2429de45b6",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/destination_ready.rs",
+      "bytes": 24918,
+      "sha256": "c108164b8d1824942ed5399fecc8d605df3d14bdc5c9abf1151d2a6245d4c19e",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs",
+      "bytes": 21509,
+      "sha256": "05b390a8b1f6192426991fed9cf76049f836c16335ea0a9e259e70930b4270ef",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs",
+      "bytes": 34938,
+      "sha256": "8321164af56a8b500803306be1c9e1e1362c4e7a1f82110cf6e7b23e668be2b0",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs",
+      "bytes": 32045,
+      "sha256": "541d00adf48af062aa9f229e489f70f81145e4f159ec4ccb2862418b02ac363d",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+      "bytes": 25557,
+      "sha256": "5deaa1e0f9123421662f0f1ad1ddfedfb54fe7a8bae44aee97bbc7186da30042",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs",
+      "bytes": 37006,
+      "sha256": "bffffdb725cb9287eef1fe57b00ec2197ebe822a1ca0e0e8634c2289e2b3c4c6",
+      "status": "modified"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs",
+      "bytes": 10293,
+      "sha256": "dfa74945f3756ae5da32dedfe0ec7bf2e12ec9b0a8417d46bbd9739e15494881",
+      "status": "new"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication_tests.rs",
+      "bytes": 12123,
+      "sha256": "508f40797ab785730222bb5ae425cdea22ef7500526d4148a8faba74f9773df2",
+      "status": "new"
+    },
+    {
+      "path": "crates/layrs-store-local/src/projection/shared/provider_import/source.rs",
+      "bytes": 14660,
+      "sha256": "865281ae81af98388156430d01012492c82125f6ef12fca4d5f4c9c4376f8ce6",
+      "status": "modified"
+    }
+  ],
+  "diff": {
+    "path": "D:\\Layrs\\tmp\\provider-ordinary-family-ready-review-r45.diff",
+    "sha256": "7a7965db3d37465254a9e3e876d83f45bfd5598d51cf73dbcaea21b825701c87"
+  }
+}

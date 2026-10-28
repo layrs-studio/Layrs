@@ -32,7 +32,8 @@ mod historical;
 mod ordinary;
 pub(in crate::projection::provider) use historical::{read_frozen_ready_rows, FrozenReadyRows};
 pub(in crate::projection::provider) use ordinary::{
-    finalize_ordinary_checkout_or_replay, read_ordinary_checkout_ready, OrdinaryReadyInputs,
+    finalize_ordinary_checkout_or_replay, read_ordinary_checkout_ready,
+    read_ordinary_checkout_ready_for_publication, OrdinaryReadyInputs,
 };
 mod read;
 pub(in crate::projection::provider) use autonomous::{

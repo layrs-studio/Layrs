@@ -5,6 +5,62 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
+## Current execution checkpoint — private Ready r43/r44
+
+28 October 2026. Qualified Protection/Checkout is committed as `b3ceea9`.
+The independent final r43 source/artifact review releases 13 recipes, 177
+selected paths and all 636 live/retained source inputs. Release SHA256:
+`2877a04c23541306285ca1ab62de81ff1841de83ad84d154859c8d8490922a2c`.
+It rechecks the three-file versioned-selection correction missed by the
+original critical r42 review. No r42 runtime was executed.
+
+r43 executes three pure recipes successfully. The first Ordinary SQL recipe
+fails during fixture plan construction because TX and LEAF are 34 hex
+characters rather than the required 32. No Ready writer or native scenario is
+reached. The failed fixture is preserved and is not reopened or reused.
+
+ROOT corrects only those two test constants. The normal test rebuild passes in
+25.62 s. r44 retains 636 source inputs, with exactly one changed test file and
+all production/native sources unchanged. EXE SHA256:
+`437b8244141062302c16395414f1c1a02297d4cfe8656b431234e74b1e9ef787`,
+CodeView age121. ROOT's narrow fixture addendum inherits the r43 review and
+binds the same 13 recipes; release SHA256:
+`6b3de5b46d13ceba37ae976f4553c8fab5fb0ba7135dba636a4b989ab011bf1f`.
+
+All three pure and nine SQL recipes pass on fresh r44 parents. The actual
+Ordinary SQL recipe includes nonempty restore history, a versioned selection
+digest distinct from FORMAT's initial hash, full Ready writer/read/replay and
+refusals without repair. The native recipe fails after 1125.762 s outer
+(1125.67 s child / 1125.74 s parent), exit101; ROOT session 57482 is terminal
+exit1. The complete-row witness rejects an extra projection_content row after
+the withheld successful private Ready close ACK, before the same-owner replay.
+Source inspection suggests its expected suffix omits a selected-base mapping:
+the helper anticipates only current content, while prepare_suffix adds all
+missing required FileIds. This remains an uncorrected qualification failure.
+No fixture was reopened and no long retry was started before the requested pause.
+
+The 18 Ready Rust files were indexed and matched retained r44 modulo CRLF. The
+next family-publication changes are separate and unqualified. They
+include the complete retained-family catalog mode, the closed actual C Ready
+publication reader and public SQL integration test. A physical family writer
+and native ACK/replay test are integrated. This next boundary must change
+only C's family member state; B remains Staging and C remains private8.
+
+The independent family source review finds no concrete defect in its twelve
+candidate files, with all hashes unchanged. It records evidence gap E1: the
+native ACK-loss/AlreadyReady case does not exercise successful Updated fresh
+readback. The family test also reuses the currently failing Ready row witness.
+Family compilation and runtime remain unproven; neither review is acceptance.
+
+The r43 input bindings (29 exact copies) and r44 bindings are retained before
+subsequent edits. The unqualified-attempt archive contains 1,991 verified files,
+6,012,342 bytes, SHA256
+`707d891ccc625619378efdb59b1f87470fc027ecf7fcbcc8f061c537003c83c6`:
+`ordinary-ready-attempts-evidence-20261028-r42-r44.tar.gz`. It includes the
+failures and does not claim Ready qualification. B Ready/Published, C9 admission/autonomy, real close failure,
+owner-loss recovery, positive deletion/nested native cases and later product
+stages remain incomplete.
+
 ## Qualified ReserveOnly checkpoint — r36/r37
 
 After Staging commit `6ccea26`, the dedicated ReserveOnly catalog validator,
@@ -201,6 +257,47 @@ Workspace all-targets check passes in 36.89 s after r41 ended. The proposed r42
 set contains three pure, nine SQL and one native recipe, child3000/outer3060 for
 the native case. Build/artifact release and runtime qualification remain pending;
 no C Ready runtime result is claimed by this source review.
+
+The qualified Protection/Checkout checkpoint is now local commit `b3ceea9`;
+the Ready source remains a separate unindexed lot. Its normal test build passes
+in 1m23s. r42 audit retains 636 inputs, nine startup sources and CodeView age119;
+EXE SHA256 `0c71a81eb30d7f2e9606d1aeaf92ea213205ac5c667ef2df65eeab34021183ed`.
+All eighteen source changes still match the independent critical review input
+manifest, SHA256 `ec71a3971092a3c2be6b1798c0ba8eda32356876f35a08388c467782045d26ec`.
+The full review result is retained at
+`D:/Layrs/tmp/provider-ordinary-ready-critical-review-20261028.json`, SHA256
+`fead27565f2ed4281613d58203d6f0dd17cb6fdb9f0e0b587d33dd58bd431fec`.
+Final recipe/artifact binding remains required before the proposed thirteen
+recipes run. The earlier three pure and fourteen SQL Protection/Checkout passes
+are not substituted for this new Ready qualification.
+
+### ROOT correction before Ready execution — r43
+
+No r42 recipe was executed. While tracing the next publication frontier, ROOT
+found that Ordinary Ready compared `selection::initial_digest` with the import
+version's selection digest. The latter is the latest authenticated SQL row's
+generation/snapshot-framed digest, as established in admitted_plan.rs and
+selection.rs. The initial FORMAT selection hash differs; the r42 reader would
+reject valid ordinary sources. The independent source review did not detect
+this issue. ROOT requested cancellation of the in-progress r42 artifact review.
+
+The correction retains the actual SQL selection digest in OrdinaryBasis after
+`selection::at` has authenticated it, compares it with ImportVersion, and uses
+that retained digest for Ready plan validation. An unchanged selection may
+come from a row older than the current head; no current-generation digest is
+manufactured. The existing SQL recipe explicitly proves the stored/versioned
+digest differs from the initial hash before its writer/read/replay assertions.
+Only destination_ready.rs, destination_ready/ordinary.rs and ordinary_tests.rs
+change. The corrected workspace all-targets check passes in 12.69 s. A fresh
+normal build/audit and final inspection of these corrections are required before
+any Ready runtime. Evidence: D:/Layrs/tmp/provider-ordinary-ready-selection-correction-r43.md.
+
+The corrected normal test build passes in 44.64 s. r43 audit retains all 636
+source inputs, nine startup sources and CodeView age120. EXE SHA256
+`4122096f6abe2654d3a6f94d1cbd9b62b409f57902eff833763591948fc877ec`.
+The preflight compares all inputs with r42: exactly the three corrected files
+change; 633 inputs are byte-identical. All thirteen proposed recipe names are
+bound statically to the new PE. Final review and execution remain pending.
 
 After Installing qualification, protect C and materialize its checkout under
 the same genuine B/C owners. Keep the current Installing/ReserveOnly gates

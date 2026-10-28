@@ -1,0 +1,131 @@
+{
+  "schema": "layrs.source-critical-review.v1",
+  "revision": "r45",
+  "scope": "Integrated ordinary family C Ready publication; source only",
+  "reviewer_instructions": "C:/Users/ALEXA/.codex/agents/change-critical-verifier.toml",
+  "repository": "D:/Layrs/layrs",
+  "branch": "feature/worktrees-partial-vfs",
+  "head": "b3ceea9db7d153a20668e0a682523fbf55175206",
+  "conclusion": "No concrete source defect identified in the reviewed candidate. Bounded source review only; no compilation, runtime, release, or acceptance assurance.",
+  "findings": [],
+  "hash_stability": {
+    "manifest": "D:/Layrs/tmp/provider-ordinary-family-ready-review-inputs-r45.json",
+    "manifest_sha256": "8ce883147220f782e5c0776f8085e79e2cdb79f83123ca5d5b5912f494fc2b89",
+    "diff": "D:/Layrs/tmp/provider-ordinary-family-ready-review-r45.diff",
+    "diff_sha256": "7a7965db3d37465254a9e3e876d83f45bfd5598d51cf73dbcaea21b825701c87",
+    "beginning": "All 12 file byte lengths and SHA256 values, manifest SHA256, diff SHA256, branch and HEAD matched the supplied bindings.",
+    "end_checked_at_utc": "2026-10-28T01:11:06.3902082Z",
+    "end": "All 12 file byte lengths and SHA256 values, manifest SHA256, diff SHA256, branch and HEAD still matched; no candidate drift observed.",
+    "per_file_commitments": "The 12 exact paths, byte lengths and SHA256 values are those in the hash-bound input manifest; every entry was checked independently at both boundaries.",
+    "baseline": "18 staged Rust paths compared against retained r44/source via read-only git show and source text reads; all matched with CRLF and terminal-newline presentation normalized.",
+    "diff_source_binding": {
+      "files": 12,
+      "hunks": 38,
+      "old_and_new_line_comparisons": 3274,
+      "mismatches": 0
+    },
+    "scope_selection": "Reviewed the nine manifest-listed unstaged Rust modifications plus three new Rust files against retained r44. Staged private Ready changes were baseline context. The unrelated unstaged documentation file was outside this review."
+  },
+  "checked_invariants": [
+    {
+      "invariant": "The only publication mutation is the exact C registry state CAS; B stays actual admitted B9 Staging and private C stays C8 Ready.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs:177-193,233-258",
+        "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs:193-242,455-599",
+        "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs:120-211,399-425"
+      ],
+      "analysis": "CAS binds owner, metadata path, database identity, FORMAT bytes and Initializing predecessor. Exact schema validation excludes additional triggers. Full pre/post readers remain mandatory. The publication driver opens C read-only and never invokes a private C writer or admission migration."
+    },
+    {
+      "invariant": "Canonical Ready/receipt DATA cannot substitute for actual B or C private SQL.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/shared/provider_import/source.rs:66-118,214-291",
+        "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs:138-290,399-425,459-485",
+        "crates/layrs-store-local/src/projection/provider/destination_ready/read.rs:24-230",
+        "crates/layrs-store-local/src/projection/provider/ordinary_destination.rs:75-148"
+      ],
+      "analysis": "The physical wrapper reauthenticates actual B admission, outgoing Staging row, closure and family identity. The distinct publication reader checks actual C schema, complete copied prefix, exact local suffix/receipt/claims/table inventory and complete checkout journal. The catalog-only API remains descriptive and is not treated as private proof."
+    },
+    {
+      "invariant": "Complete required union, exact root and accounting remain enforced across every retained group.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog.rs:389-631",
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs:296-448",
+        "crates/layrs-store-local/src/projection/shared/exact_content/sql.rs:364-455,694-764",
+        "crates/layrs-store-local/src/projection/shared/exact_protection.rs:139-268",
+        "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs:254-396"
+      ],
+      "analysis": "Only the exact C root is deferred in the existing root walk; it is still counted and subsequently required present with exact membership. All retained Published journals use the shared debit sets before C classification. Complete C Published coverage, global inventory/capacity, all reservations, unknown-group refusal, actual metadata floor, claim and checkout funding checks remain in place."
+    },
+    {
+      "invariant": "Old PrivateReady, ReserveOnly, Installing and Protected gates remain Initializing-only; Provider interpretation is not broadened.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs:78-84,298-330,428-506",
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs:244-291,554-635",
+        "crates/layrs-store-local/src/projection/shared/provider_import/source.rs:121-134,295-362"
+      ],
+      "analysis": "Publication has closed, separately named entry points. Private finalization and replay still select PrivateReady. Existing export gates pass Initializing explicitly. Strict None may accept independently valid foreign Ready roots; that behavior does not confer private C admission."
+    },
+    {
+      "invariant": "Physical B/C proof lifetimes and writer sequencing cover the publication boundary.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs:163-355,359-398,455-599",
+        "crates/layrs-store-local/src/projection/provider/managed_export/protection.rs:18-35",
+        "crates/layrs-store-local/src/projection/provider/managed_export/checkout.rs:24-42",
+        "crates/layrs-store-local/src/projection/provider/managed_export/allocation.rs:199-236",
+        "crates/layrs-store-local/src/projection/provider/managed_export.rs:559-569,693-702"
+      ],
+      "analysis": "B owner/source snapshot and image/CAS evidence remain live; C protection and checkout witnesses are borrowed throughout. The Exclusive family gate encloses the distinct C RO snapshot, family RO precheck, clean admission, FK ON Immediate writer, complete prospective checks, COMMIT, observed writer close and fresh full family readback. Success then revalidates source/image and finishes the B snapshot. Persistent owner.close remains explicit."
+    },
+    {
+      "invariant": "Failure-stop ordering prevents later validation SQL after uncertain writer completion, while enclosing cleanup remains required.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs:537-599,342-354",
+        "crates/layrs-store-local/src/projection/provider/database_io.rs:65-143,341-404",
+        "crates/layrs-store-local/src/projection/provider/database_io/bare.rs:162-187,388-407",
+        "crates/layrs-store-local/src/projection/provider/managed_export.rs:693-702"
+      ],
+      "analysis": "Writer errors are combined with explicit rollback when the transaction remains active and with the observed owned close. The question-mark return at finish_writer stops fresh family validation and outer source revalidation on failure. The already-open C RO scope still closes, the publication boundary check is evaluated, and B finish_snapshot still performs cleanup. This is a source control-flow conclusion, not evidence of actual OS failure handling."
+    },
+    {
+      "invariant": "Same-owner replay is fully validated and returns before any family writer; family promotion does not re-enter the old Initializing-only C reader.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs:271-304,343-346,519-536,581-599",
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs:240-246"
+      ],
+      "analysis": "Both the initial wrapper and publication action use the publication interpretation. AlreadyReady follows complete actual C/family validation and precedes clean admission/open. The post-action read_current call is restricted to the private operation, avoiding a staging-only family interpretation after promotion."
+    },
+    {
+      "invariant": "Proposed test source asserts the intended narrow effects and distinguishes DATA tests from physical proof.",
+      "evidence": [
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication_tests.rs:1-283",
+        "crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs:231-240,553-560,687-886",
+        "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs:54-92,254-561"
+      ],
+      "analysis": "Inspected two lower catalog SQL cases, the actual C Ready SQL integration case with nonempty restore history, and the new native recipe. Source assertions cover single-row change, rollback, FK OFF/read-only replay, corruption refusal, actual Staging-C refusal, full SQL/tree preservation, successful-close-only ACK withholding, same-owner zero-writer replay and continued ordinary C open refusal. No recipe was compiled or run."
+    }
+  ],
+  "evidence_observations": [
+    {
+      "id": "E1",
+      "classification": "Coverage limitation, not a demonstrated product defect",
+      "severity": "informational",
+      "locations": [
+        "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs:485-529",
+        "crates/layrs-store-local/src/projection/provider/managed_export/ready.rs:578-593"
+      ],
+      "trigger": "The proposed native scenario withholds acknowledgement immediately after the sole successful family writer close, then retries into AlreadyReady.",
+      "consequence": "Neither native call executes the successful Updated path through fresh family readback after finish_writer. SQL DATA tests cannot establish that physical success/readback path.",
+      "remaining_evidence": "ROOT should qualify a normal successful family publication returning Updated, including fresh full family readback, source/image revalidation and snapshot completion, in addition to the withheld-ACK replay scenario."
+    }
+  ],
+  "limitations": [
+    "No Cargo, build, SQL, native/test execution, --list, fixture opening, Git mutation, product edit, retained-artifact change, delegation, external sharing or publication was performed.",
+    "The only created file is this authorized review JSON. Reading Rust test/fixture helper source did not execute or open a fixture.",
+    "All 16 recipes remain proposed source. Candidate compilation, SQL behavior, native behavior and child3000/outer3060 bounds are unproven by this review.",
+    "The user-reported r44 three-pure/nine-SQL passes were not independently rechecked. The active r44 native session 57482 was not inspected or disturbed, and no baseline native result is transferred to r45.",
+    "Actual OS writer-close failure, commit/rollback failures, crash, owner-loss recovery, adversarial concurrency, positive native deletion/nested directories and nonempty native restore history remain unqualified.",
+    "This is a bounded source review, not exhaustive assurance or approval of execution, artifact release, publication or acceptance. ROOT retains fixes, compilation, final artifact review, acceptance and runtime ownership.",
+    "B Ready/Published and C9 autonomy are later scope, not defects for being absent here."
+  ]
+}

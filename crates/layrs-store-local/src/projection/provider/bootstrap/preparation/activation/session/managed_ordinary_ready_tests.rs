@@ -46,13 +46,13 @@ use std::{
 const LEAF: &str = "00000000000000000000000000000101";
 const TX: &str = "00000000000000000000000000000102";
 const HISTORY: &[u8] = b"ordinary Ready historical-only capture";
-const CURRENT: &[u8] = b"ordinary Ready uncaptured current bytes";
+pub(super) const CURRENT: &[u8] = b"ordinary Ready uncaptured current bytes";
 const WITHHELD_ACK: &str = "private C Ready successful close acknowledgement withheld";
 
-struct Physical {
-    file: PathBuf,
-    inode: String,
-    cas: PathBuf,
+pub(super) struct Physical {
+    pub(super) file: PathBuf,
+    pub(super) inode: String,
+    pub(super) cas: PathBuf,
 }
 fn require_write_blocked(path: &Path) {
     let error = OpenOptions::new()
@@ -67,7 +67,7 @@ fn require_write_blocked(path: &Path) {
     );
 }
 impl Physical {
-    fn require(&self) {
+    pub(super) fn require(&self) {
         assert_eq!(fs::read(&self.file).unwrap(), CURRENT);
         let metadata = fs::symlink_metadata(&self.file).unwrap();
         assert!(metadata.is_file());
@@ -210,13 +210,13 @@ fn family_initializing(
     });
 }
 
-struct ReadyRows {
-    ready: ProviderTransitionIntentRecord,
-    receipt: ProviderTransitionReceiptRecord,
-    rows: Database,
+pub(super) struct ReadyRows {
+    pub(super) ready: ProviderTransitionIntentRecord,
+    pub(super) receipt: ProviderTransitionReceiptRecord,
+    pub(super) rows: Database,
 }
 #[allow(clippy::too_many_arguments)]
-fn require_ready_rows(
+pub(super) fn require_ready_rows(
     path: &Path,
     before: &Database,
     stage: &ProviderTransitionIntentRecord,
