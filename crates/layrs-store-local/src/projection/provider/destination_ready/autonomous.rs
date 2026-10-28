@@ -25,6 +25,9 @@ pub(in crate::projection::provider) struct VerifiedManagedReady<'d, 'f> {
     required: Vec<FileManifest>,
     binding: ExactBinding,
     installation: ExactInstallState,
+    // Actual complete Ready floor before checkout journal bytes. Retained
+    // solely for autonomous source-publication capacity derivation.
+    metadata_floor: u64,
 }
 
 /// Detached bounded SQL DATA. This owns no transaction, filesystem object or
@@ -56,6 +59,45 @@ impl OwnedReadySnapshot {
     }
 }
 impl VerifiedManagedReady<'_, '_> {
+    /// Capacity DATA derived solely from this actual complete Ready snapshot:
+    /// true floor + Jmax, net of actual checkout bytes. No nominated quota or
+    /// caller-provided floor can manufacture publication funding.
+    pub(in crate::projection::provider) fn publication_capacity(
+        &self,
+        cancel: Option<&Cancellation>,
+    ) -> Result<super::super::ordinary_transition::PublicationCapacity> {
+        cancellation::check(cancel)?;
+        if self.origin() != DestinationOriginKind::Ordinary {
+            return Err(invalid(
+                "autonomous publication requires actual Ordinary Ready",
+            ));
+        }
+        let remaining = self
+            .installation
+            .remaining
+            .checked_sub(self.expected.header().file_bytes)
+            .ok_or_else(|| invalid("autonomous publication checkout envelope insufficient"))?;
+        let floor = self
+            .metadata_floor
+            .checked_add(self.expected.maximum_encoded_bytes())
+            .ok_or_else(|| invalid("autonomous publication Ready metadata overflow"))?;
+        let capacity = super::super::ordinary_transition::PublicationCapacity::new(
+            self.ready(),
+            self.receipt(),
+            floor,
+            remaining,
+        )?;
+        let protection = crate::projection::shared::exact_protection::ExactProtection::new(
+            &self.binding.family_incarnation,
+            &self.binding.owner,
+            &self.binding.database_identity,
+            &self.binding.transaction_id,
+            &self.required,
+            cancel,
+        )?;
+        protection.require_envelope(remaining, capacity.metadata_floor())?;
+        Ok(capacity)
+    }
     /// Move large inventories out of the retained SQL interpretation; only the
     /// two bounded canonical records are reconstructed. No authority escapes.
     pub(in crate::projection::provider) fn into_snapshot(self) -> Result<OwnedReadySnapshot> {
@@ -380,5 +422,6 @@ fn read_ready_origin<'d, 'f>(
         required: family.required,
         binding: family.binding,
         installation,
+        metadata_floor: floor,
     })
 }

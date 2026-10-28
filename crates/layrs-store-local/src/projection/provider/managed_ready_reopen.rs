@@ -1,4 +1,4 @@
-//! Independent physical inspection and admission of exact terminal managed Ready.
+//! Independent inspection, publication and admission of exact managed Ready.
 //! Fresh Ordinary routes require their own source/destination owner capabilities.
 //! No route performs recovery or cleanup.
 use super::{
@@ -33,6 +33,11 @@ pub(in crate::projection::provider) use ordinary_source::OrdinaryAdmissionSource
 mod ordinary_admission;
 pub(in crate::projection::provider) use ordinary_admission::{
     OrdinaryFreshAdmission, OrdinaryFreshAdmissionFailure,
+};
+mod ordinary_publication;
+pub(in crate::projection::provider) use ordinary_publication::{
+    OrdinaryReadyPublication, OrdinaryReadyPublicationEffect, OrdinaryReadyPublicationFailure,
+    OrdinaryReadyPublicationProgress,
 };
 mod admission;
 pub(in crate::projection::provider) use admission::{

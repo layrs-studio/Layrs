@@ -6,12 +6,14 @@ Branche de réalisation : `feature/worktrees-partial-vfs`.
 
 État du 28 octobre : la chaîne ordinaire B → C est qualifiée jusqu'à l'admission
 C10 et sa résolution avec preuves retenues (r56/r57). La réouverture terminale
-et l'autonomie C10 passent le test SQL r60 ; leur natif échoue sur une assertion
-attendant un refus privé alors que le refus familial intervient déjà. Ce test
-est corrigé, sans changement produit ; sa fin reste à qualifier. L'admission
+et l'autonomie C10 passent le test SQL r60 et le natif corrigé r66 (821,111s).
+L'ancien échec r60 d'assertion reste conservé dans les preuves. L'admission
 depuis des holders entièrement frais a passé la revue corrigée r65 et la
-compilation/workspace r64. Les deux régressions SQL r66 passent ; les trois
-scénarios natifs sont en cours séquentiels. Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
+compilation/workspace r64. Les cinq recettes r66 passent : deux régressions
+SQL, autonomie C10, admission fraîche avec B avancé et ACK/résolution sans B.
+La reprise B Ready → Published avec nouveaux propriétaires a passé la revue
+source r67 ; sa compilation et sa qualification sont en cours.
+Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 
 ## Résultat attendu

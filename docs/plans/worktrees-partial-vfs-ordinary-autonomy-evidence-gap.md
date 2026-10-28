@@ -68,4 +68,10 @@ Le témoin n'est pas un rowset hérité de la closure : D construit son propre t
 Le budget Ordinary doit charger explicitement le coût borné et réel du témoin.
 Les quotas des plans persistés restent immuables : refuser l'enveloppe insuffisante,
 sans augmentation ni consommation implicite d'une marge réservée séparément.
-Cette décision décrit le prochain lot ; aucune qualification C10 n'est acquise.
+Cette décision décrivait le prochain lot lors de sa rédaction. Le lot est
+maintenant implémenté et l'admission C8→10 avec preuves retenues a passé les
+recettes bornées r57. La réouverture et l'autonomie ont une preuve SQL r60 ;
+leur scénario natif corrigé est en cours r66. Cela ne qualifie ni les crashes,
+ni toutes les reprises avec nouveaux propriétaires. Consulter la
+[passation courante](worktrees-partial-vfs-resume-2026-10-28.md) pour les résultats
+exacts et leurs limites.

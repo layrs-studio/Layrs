@@ -5,7 +5,22 @@ Copying and Initializing registration. It does not qualify those preceding
 states or claim that C is Ready/admitted. The original full programme goal stays
 open through autonomous C, inherited inverses and all later product stages.
 
-## Current execution checkpoint — source publication r49/r51 PASS
+## Current checkpoint — C10 admission and autonomy, fresh-owner work
+
+28 October 2026: retained Ordinary8→10 admission and explicit resolution pass
+r57. The complete-union witness uses a distinct schema10; Provider8→9 remains
+unchanged. Fresh terminal resolution and public capture/restore pass SQL r60
+and the corrected native autonomy recipe r66 (821.111s). The failed r60 native
+assertion is retained separately. Fresh-owner admission has passed corrected
+source review r65, build/check r64, two strict-read SQL regressions r66 and the
+native admission success with advanced B (785.869s). The final ACK/resolution
+native also passes (746.214s); all five r66 recipes passed and are archived.
+Fresh B Ready→Published has passed source review r67; compilation and runtime
+qualification remain separate. See the
+[current handoff](worktrees-partial-vfs-resume-2026-10-28.md) for exact scope,
+archives and outstanding recovery/product work. The full programme remains open.
+
+## Previous checkpoint — source publication r49/r51 PASS
 
 28 October 2026: r49 3 pure+13 SQL PASS, r51 cleanup native356.977s and
 ordinary B Ready/Published native1438.083s PASS. Source publication preserves
@@ -14,8 +29,8 @@ the B owner closes positively. C remains unadmitted Ready8/family Ready.
 The native cleanup child240 timeout r49 and sandbox access denial r50 are
 retained alongside success. Archive2014files/5895640bytes SHA256
 `c3e18a26146fd1e1026225970e3ed6dad9fe5768e8eda57c5b4c52f93003ef66`.
-Next: Ordinary8→10 admission with permanent complete-union witness. Source
-review/build pending; no C10 runtime claim. Full programme remains open.
+At this historical checkpoint, Ordinary8→10 admission was the next pending
+unit; its later evidence is described above.
 
 ## Previous checkpoint — Ready and family publication r47 PASS
 

@@ -1,5 +1,14 @@
 # Ordinary B SourceReady / SourcePublished and C9: next implementation design
 
+> Historical investigation, superseded in part on 28 October 2026. Ordinary
+> admission now targets private schema **10**, with the bounded immutable union
+> witness described in [the autonomy decision](worktrees-partial-vfs-ordinary-autonomy-evidence-gap.md).
+> Provider8→9 remains separate. The retained B publication and C8→10 admission
+> paths have bounded runtime evidence (r51 and r57); the blockers listed below
+> describe the earlier source state, not the current implementation. See the
+> [current handoff](worktrees-partial-vfs-resume-2026-10-28.md) for qualification,
+> failures and remaining fresh-owner/recovery work.
+
 Read-only source investigation, 28 October 2026. Product root: `D:/Layrs/layrs`.
 All paths below are relative to that root; `P` abbreviates
 `crates/layrs-store-local/src/projection/provider/`, and `S` abbreviates

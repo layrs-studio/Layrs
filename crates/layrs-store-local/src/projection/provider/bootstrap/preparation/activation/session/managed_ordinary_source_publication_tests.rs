@@ -51,7 +51,7 @@ fn snapshot(path: &Path) -> Database {
     witness::read(path, witness::database)
 }
 
-fn ingress(c: &Connection, marker: &format::Marker) -> Vec<Vec<u8>> {
+pub(super) fn ingress(c: &Connection, marker: &format::Marker) -> Vec<Vec<u8>> {
     let admitted = read_admitted_import(c, marker, None).unwrap();
     vec![
         admitted.record().encode().unwrap(),
@@ -82,7 +82,7 @@ fn transition_row(intent: &ProviderTransitionIntentRecord) -> Vec<Cell> {
     ]
 }
 
-fn source(
+pub(super) fn source(
     path: &Path,
     marker: &format::Marker,
     expected: &ProviderTransitionIntentRecord,
@@ -135,7 +135,7 @@ fn source(
     })
 }
 
-fn only_source_rows_changed(
+pub(super) fn only_source_rows_changed(
     before: &Database,
     after: &Database,
     previous: &ProviderTransitionIntentRecord,
@@ -184,7 +184,7 @@ fn only_source_rows_changed(
     }
 }
 
-fn only_source_database_changed(
+pub(super) fn only_source_database_changed(
     before: &(Tree, Tree, Tree),
     after: &(Tree, Tree, Tree),
     database: &Path,
@@ -271,7 +271,8 @@ pub(super) struct AdmissionHooks {
 
 struct PublicationHooks<F> {
     before_published: fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
-    after_published: F,
+    continuation: F,
+    stop_after_ready: bool,
 }
 
 pub(super) fn with_admission_hooks(hooks: AdmissionHooks) {
@@ -286,7 +287,22 @@ pub(super) fn with_admission_data<T>(
 ) -> T {
     source_publication_inner(Some(PublicationHooks {
         before_published,
-        after_published,
+        continuation: after_published,
+        stop_after_ready: false,
+    }))
+    .unwrap()
+}
+
+/// Stop after the real SourceReady commit, closed readback and exact Ready
+/// replay. The callback consumes and must positively close the original B
+/// owner; only its owned DATA escapes after all C/store holders are dropped.
+pub(super) fn with_source_ready_data<T>(
+    after_ready: impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
+) -> T {
+    source_publication_inner(Some(PublicationHooks {
+        before_published: |_, _, _| {},
+        continuation: after_ready,
+        stop_after_ready: true,
     }))
     .unwrap()
 }
@@ -300,7 +316,7 @@ fn source_publication_recipe() {
 }
 
 fn source_publication_inner<T>(
-    hooks: Option<
+    mut hooks: Option<
         PublicationHooks<
             impl FnOnce(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
         >,
@@ -725,12 +741,26 @@ fn source_publication_inner<T>(
         previous = next;
         previous_rows = rows;
         previous_trees = trees;
+        if next.state == TransitionState::Ready
+            && hooks.as_ref().is_some_and(|hooks| hooks.stop_after_ready)
+        {
+            // This is a true terminal branch of setup. In particular the
+            // Published callback/driver below is never called on this route.
+            let hooks = hooks.take().unwrap();
+            let result = (hooks.continuation)(owner, &fixture, &cancel);
+            allocated.require_published(&staging.plan).unwrap();
+            drop(checkout);
+            drop(protection);
+            drop(allocated);
+            drop(store);
+            return Some(result);
+        }
     }
 
     if let Some(hooks) = hooks {
         // The continuation owns the original B owner through its explicit
         // positive close. C allocation and byte proofs stay borrowed here.
-        let result = (hooks.after_published)(owner, &fixture, &cancel);
+        let result = (hooks.continuation)(owner, &fixture, &cancel);
         allocated.require_published(&staging.plan).unwrap();
         drop(checkout);
         drop(protection);

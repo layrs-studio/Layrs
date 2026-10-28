@@ -34,21 +34,30 @@ impl OrdinaryReadyInspection {
     ) -> Result<Self> {
         cancel.check()?;
         let pins = ManagedReadyPins::open(root, cancel)?;
-        Self::open_pins(pins, SessionMode::Shared, cancel)
+        Self::open_pins(pins, SessionMode::Shared, false, cancel)
     }
 
     /// A separate acquisition, never an upgrade of a shared inspection. The
     /// fresh admission caller checks that these pins are distinct from B
     /// before attempting the exclusive C owner.
     pub(super) fn open_exclusive(pins: ManagedReadyPins, cancel: &Cancellation) -> Result<Self> {
-        Self::open_pins(pins, SessionMode::Exclusive, cancel)
+        Self::open_pins(pins, SessionMode::Exclusive, false, cancel)
     }
 
-    fn open_pins(pins: ManagedReadyPins, mode: SessionMode, cancel: &Cancellation) -> Result<Self> {
+    pub(super) fn open_shared(pins: ManagedReadyPins, cancel: &Cancellation) -> Result<Self> {
+        Self::open_pins(pins, SessionMode::Shared, true, cancel)
+    }
+
+    fn open_pins(
+        pins: ManagedReadyPins,
+        mode: SessionMode,
+        strict: bool,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
         cancel.check()?;
         let lifecycle = pins.family.lifecycle_lease()?;
         let owner = StoreLock::acquire_existing(&pins.metadata_path().join("layrs.lock"), mode)?;
-        let data = read_ready_snapshot(&pins, cancel)?;
+        let data = read_ready_snapshot_mode(&pins, strict, cancel)?;
         pins.require_data(&data, cancel)?;
         // All SQL scopes closed positively before any full byte/namespace I/O.
         let storage = ExactStorage::open(
@@ -67,7 +76,7 @@ impl OrdinaryReadyInspection {
         )?;
         cas.require(&data.binding, &data.required, cancel)?;
         checkout.require(&data.expected, &data.journal, cancel)?;
-        let current = read_ready_snapshot(&pins, cancel)?;
+        let current = read_ready_snapshot_mode(&pins, strict, cancel)?;
         data.require_same(&current)?;
         pins.require_data(&data, cancel)?;
         cas.require(&data.binding, &data.required, cancel)?;
@@ -270,6 +279,14 @@ fn read_ready_snapshot(
     pins: &ManagedReadyPins,
     cancel: &Cancellation,
 ) -> Result<OwnedReadySnapshot> {
+    read_ready_snapshot_mode(pins, false, cancel)
+}
+
+fn read_ready_snapshot_mode(
+    pins: &ManagedReadyPins,
+    strict: bool,
+    cancel: &Cancellation,
+) -> Result<OwnedReadySnapshot> {
     pins.verify(cancel)?;
     let result = {
         let _catalog = StoreLock::acquire_existing(
@@ -278,23 +295,19 @@ fn read_ready_snapshot(
         )?;
         pins.verify(cancel)?;
         // Lifecycle -> one C owner -> catalog. No lock reacquisition/upgrade.
-        let result = valid(database_io::read_cancellable(
-            &pins.database,
-            cancel,
-            |c| {
-                valid(database_io::read_cancellable(
-                    &pins.family.catalog,
-                    cancel,
-                    |family| {
-                        let data =
-                            read_ordinary_managed_ready(c, &pins.marker, family, Some(cancel))?
-                                .into_snapshot()?;
-                        pins.require_data(&data, cancel)?;
-                        Ok(data)
-                    },
-                )?)
-            },
-        )?)?;
+        let result = valid(read_ready_database(&pins.database, strict, cancel, |c| {
+            valid(read_ready_database(
+                &pins.family.catalog,
+                strict,
+                cancel,
+                |family| {
+                    let data = read_ordinary_managed_ready(c, &pins.marker, family, Some(cancel))?
+                        .into_snapshot()?;
+                    pins.require_data(&data, cancel)?;
+                    Ok(data)
+                },
+            )?)
+        })?)?;
         // A failed/unknown inner close prevents all further SQL; a failed
         // outer close prevents all following physical namespace verification.
         pins.verify(cancel)?;
@@ -302,6 +315,19 @@ fn read_ready_snapshot(
     };
     pins.require_data(&result, cancel)?;
     Ok(result)
+}
+
+fn read_ready_database<T>(
+    database: &database_io::DatabaseFile,
+    strict: bool,
+    cancel: &Cancellation,
+    validate: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> Result<ReadState<T>> {
+    if strict {
+        database_io::read_cancellable_strict(database, cancel, validate)
+    } else {
+        database_io::read_cancellable(database, cancel, validate)
+    }
 }
 
 fn read_terminal_snapshot(

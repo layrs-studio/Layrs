@@ -13,8 +13,9 @@ use crate::projection::provider::{
 use rusqlite::Connection;
 
 /// Nonforgeable fresh source capability, acquired before any destination owner.
-/// The shared B owner excludes ordinary writers. Historical Published can
-/// precede B's current coherent suffix; no current checkout image is pinned.
+/// The public constructor acquires a shared B owner. The private publication
+/// constructor acquires an exclusive owner independently, never by upgrade.
+/// Historical Published may precede B's current coherent suffix.
 pub(in crate::projection::provider) struct OrdinaryAdmissionSource {
     pub(super) pins: ManagedReadyPins,
     baseline: DurableAdmission,
@@ -27,13 +28,18 @@ impl OrdinaryAdmissionSource {
         root: &Path,
         cancel: &Cancellation,
     ) -> Result<Self> {
+        Self::open_with_mode(root, SessionMode::Shared, cancel)
+    }
+
+    pub(super) fn open_exclusive(root: &Path, cancel: &Cancellation) -> Result<Self> {
+        Self::open_with_mode(root, SessionMode::Exclusive, cancel)
+    }
+
+    fn open_with_mode(root: &Path, mode: SessionMode, cancel: &Cancellation) -> Result<Self> {
         cancel.check()?;
         let pins = ManagedReadyPins::open(root, cancel)?;
         let lifecycle = pins.family.lifecycle_lease()?;
-        let owner = StoreLock::acquire_existing(
-            &pins.metadata_path().join("layrs.lock"),
-            SessionMode::Shared,
-        )?;
+        let owner = StoreLock::acquire_existing(&pins.metadata_path().join("layrs.lock"), mode)?;
         pins.verify(cancel)?;
         if pins.control.identity_token() != pins.marker.store_identity() {
             return Err(invalid(

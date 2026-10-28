@@ -462,3 +462,129 @@ retenu, pas une panne OS ni un crash. L'investigateur ordinary_ready_reopen_scop
 étudie en lecture seule la future réouverture de B SourceReady et publication
 avec C8/famille Ready, sans réadopter l'allocation ni fabriquer l'image source.
 Cette investigation n'est pas une implémentation ni une qualification de reprise.
+
+## Suite source pendant r66 : reprise physique B Ready → Published
+
+Commit local `a2a5549` conserve le candidat admission fraîche, la correction
+strict-read et les preuves archivées r60. Aucun push. Goal toujours actif.
+
+L'investigation est terminée : `ordinary_transition::apply_published` vérifie
+déjà le vrai B Ready, son frontier et le reçu C exact sans reconstruire l'image
+B. Le driver retained est trop couplé à l'ancienne allocation pour servir à une
+réouverture fraîche. Le prochain adaptateur possède donc un nouvel owner B
+Exclusive, puis C Shared, avec vrais préflights et vérifications physiques.
+La capacité doit être recalculée depuis le lecteur autonome C complet
+(floor + Jmax, remaining net des octets checkout), jamais fournie par l'appelant.
+Les scopes C/famille utilisent le lecteur strict ; le close B positif précède
+tout readback. Une résolution explicite relit B Published sans writer ; elle
+refuse B Ready ou indisponible. Staging est explicitement hors de ce petit lot.
+
+Deux agents GPT-6.1-Sol réalisent des sources disjointes :
+`ordinary_terminal_reopen` possède l'adaptateur/les capacités ;
+`ordinary_c10_autonomy_recipe` possède le helper et les recettes natives.
+Le helper devra s'arrêter réellement après Ready, fermer B, laisser tous les
+holders sortir, puis retourner seulement des DATA. Le hook existant
+`before_published` ne suffit pas : il poursuit aujourd'hui vers Published.
+ROOT intègre, relit et qualifie. Aucune compilation/SQL/natif supplémentaire
+pendant ROOT7553 ; son EXE et ses 657 sources retenues restent immuables.
+Ces nouveaux changements ne sont pas encore compilés, revus ou qualifiés.
+
+Progression r66 : l'autonomie C10 corrigée **PASS821,111s**. Les assertions
+finales de réouverture publique et d'intégrité B sont cette fois atteintes.
+Le scénario admission fraîche avec B avancé est maintenant en cours ; le
+scénario ACK/résolution reste à exécuter. Session ROOT7553 toujours exclusive.
+Script d'archive `D:/Layrs/tmp/package-ordinary-fresh-admission-20261028-r66.py`
+préparé et parsé uniquement ; ne l'exécuter qu'après terminaison du runner.
+
+## Candidat reprise Ready r67 : revue source en cours
+
+Les deux agents d'implémentation ont terminé. ROOT a enregistré le module natif,
+relu le diff et renforcé les contrôles positifs d'observation des snapshots et
+identités des trois bases. Rustfmt ciblé et diff-check passent. Aucun build ni
+test du nouveau lot pendant r66. Les huit fichiers Rust changés et huit fichiers
+de contexte sont figés dans
+`D:/Layrs/tmp/provider-ordinary-fresh-publication-review-r67-source`.
+Manifeste `.../provider-ordinary-fresh-publication-review-r67-inputs.json`, SHA256
+`3a658f04430e640b8bcd7db97f5a00beeeef2ded66ff20e90f5576af50fc51c5` ; diff SHA256
+`b58e8e0b2e8e70b0ef8e153876a393a073384383252bf09a382de55665d7c38c`.
+HEAD attendu `a2a55497ee2dad70ca8098e59f5faf257ade2321`.
+Revue critique GPT-6-Astra xhigh lancée, cellule ROOT312 ; rapport attendu
+`D:/Layrs/tmp/provider-ordinary-fresh-publication-critical-review-r67.json`.
+Suivre le résultat de l'appel en attente, sans polling de la tâche déléguée.
+
+L'investigation du lot suivant Staging→Ready est également terminée et conservée
+dans [la proposition dédiée](worktrees-partial-vfs-ordinary-fresh-staging.md).
+Elle décrit une image B fraîche réelle et la réutilisation des kernels existants,
+sans faux Access ni allocation adoptée. Ce lot n'est pas implémenté ; ne pas le
+confondre avec le Ready→Published actuellement en revue.
+
+Progression runtime r66 : admission fraîche après libération de tous les
+holders et suffixe cohérent B **PASS785,869s**. Le dernier scénario
+`managed_ordinary_fresh_admission_withheld_c_ack_resolves_without_b_reads_or_identity_checks`
+vient de démarrer dans ROOT7553. Les quatre premières recettes r66 passent ;
+ni le lot complet ni l'archive r66 ne sont encore terminés.
+
+Revue critique r67 terminée : aucun défaut concret, 16 inputs et 10 dépendances
+supplémentaires concordants au début/à la fin. Thread lu jusqu'à position55,
+hasMore=false :
+`thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3Ad89f62d8-f972-4b89-8ff2-3c3bc204938f`.
+Rapport JSON ci-dessus lu intégralement. ROOT accepte cette revue de source,
+sans résultat de compilation ni runtime du candidat. Cellule312 terminée.
+
+Après terminaison de ROOT7553 seulement : build libtest et check workspace
+prévus sous logs `provider-ordinary-fresh-publication-build-r68.log` et
+`provider-ordinary-fresh-publication-check-r68.log` dans `D:/Layrs/tmp`.
+Scripts `prepare-ordinary-fresh-publication-artifacts-r69.py` et
+`release-ordinary-fresh-publication-r69.py` créés et parsés, NON exécutés.
+Ils vérifient les sources r67, les 659 inputs attendus, les deux logs de build,
+les cinq succès r66 et exactement huit changements avant de lier puis libérer
+trois recettes SQL existantes et les deux natives nouvelles. La release exige
+l'argument explicite ROOT `--root-accept-source-review`.
+
+Visuel actualisé montré inline : `D:/Layrs/outputs/avancement-worktrees-r66.html`,
+HTML preview inspecté puis html_render, sans serveur. C'est un instantané
+(avant retour de la revue r67), pas un suivi automatique.
+
+## r66 terminé : cinq recettes PASS, preuves archivées
+
+ROOT7553 est terminé **exit0**. Dernier scénario ACK/résolution **PASS746,214s**.
+Ordre complet : SQL strict0,534s ; SQL close BUSY0,118s ; autonomie C10
+821,111s ; admission fraîche B avancé785,869s ; ACK/résolution sans B746,214s.
+Le PASS porte sur ces recettes exactes et leurs limites, pas sur le programme.
+
+Archive créée et relue avec vérification de chaque empreinte :
+`docs/continuation/worktrees-partial-vfs/ordinary-fresh-admission-evidence-20261028-r66.tar.gz`,
+711 fichiers,2106092 octets, SHA256
+`0e13f4e378a8119793930f60059b0d9d6baa76d91c01bbc32503b6a96df30999`.
+Inventaire adjacent `ordinary-fresh-admission-inventory-20261028-r66.json`.
+Le script d'archive est déjà exécuté, ne pas le relancer. EXE/PDB et fixtures
+restent locaux et ne sont pas archivés ; aucun ancien état de fixture rouvert.
+
+Compilation r68 lancée après terminaison native, **session ROOT85188**,
+`cargo test -p layrs-store-local --lib --no-run`. Aucun test lancé. Vérifier
+son résultat avant workspace/check, liaison r69 et release ROOT.
+
+## État courant r69 : candidat compilé, exécution en cours
+
+Build libtest r68 **PASS32,43s**, workspace/all-targets **PASS12,89s**.
+ROOT85188 et ROOT7413 terminés exit0. Aucun changement Rust depuis r67.
+Artefacts r69 retenus :659 sources, neuf startup checksums, EXE/PDB concordants,
+CodeView age131. EXE SHA256
+`3ca51aa2fbdb45aae668135da2702f99ff831c1f792c05240b6335c624f43b99`.
+Les scripts de préparation et de release r69 sont maintenant exécutés ; ne pas
+les relancer. Les 16 inputs r67 et 10 dépendances supplémentaires concordent ;
+les huit seuls changements depuis r66 sont ceux revus. Release ROOT SHA256
+`25e314dcf8cf97fa4a7e70d97740a3aee99b267bd8ec86f58e583f3220ecee57`.
+
+Runner `D:/Layrs/tmp/provider-ordinary-fresh-publication-run-r69.py r69`,
+**session ROOT2313 en cours**, parent C neuf, séquentiel stop au premier échec :
+1. publication SQL Ordinary complète : en cours ;
+2. lecteur autonome Provider positif : non atteint ;
+3. refus autonome suffixe/journal/phase/débit : non atteint ;
+4. publication fraîche B Ready→Published puis replay : non atteinte ;
+5. ACK B refusé puis résolution Published nécessitant B : non atteinte.
+
+Pas de Cargo/build/SQL/natif concurrent avant terminaison. Les sources de la
+future reprise Staging peuvent avancer séparément du binaire retenu r69, en
+respectant la proposition dédiée et une nouvelle revue. Tous les agents natifs
+sont terminés ; aucune tâche T3 en attente. Goal actif ; pas de push/PR.
