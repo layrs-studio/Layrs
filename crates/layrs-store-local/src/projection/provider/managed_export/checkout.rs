@@ -272,27 +272,27 @@ impl<O: WriterCloseObserver> Catalog<'_, '_, O> {
             SessionMode::Shared,
         )
         .map_err(Cause::from)?;
-        let result = (|| {
-            reservation::valid(database_io::read_cancellable(
+        let result: CauseResult<Option<CheckoutJournal>> = (|| {
+            reservation::valid(database_io::read_cancellable_strict(
                 &family.catalog,
                 cancel,
                 |c| {
                     self.validate_catalog(c, cancel)?;
-                    protected.require(self, cancel)
+                    protected.verify_identity(cancel)
                 },
             )?)?;
-            let journal = reservation::valid(database_io::read_cancellable(
+            let journal = reservation::valid(database_io::read_cancellable_strict(
                 self.destination.destination_database(),
                 cancel,
                 |c| self.read_checkout_connection(c, expected, cancel),
             )?)?;
-            protected.require(self, cancel)?;
+            protected.verify_identity(cancel)?;
             Ok(journal)
         })();
-        let post = self.boundary(cancel);
         drop(gate);
-        let journal = reservation::combine(result, post)?;
+        let journal = result?;
         self.revalidate(cancel)?;
+        protected.require(self, cancel)?;
         Ok(journal)
     }
 
@@ -312,18 +312,19 @@ impl<O: WriterCloseObserver> Catalog<'_, '_, O> {
         )
         .map_err(Cause::from)?;
         let result = (|| {
-            reservation::valid(database_io::read_cancellable(
+            reservation::valid(database_io::read_cancellable_strict(
                 &family.catalog,
                 cancel,
                 |c| {
                     self.validate_catalog(c, cancel)?;
-                    protected.require(self, cancel)
+                    protected.verify_identity(cancel)
                 },
             )?)?;
             let file = self.destination.destination_database();
-            let before = reservation::valid(database_io::read_cancellable(file, cancel, |c| {
-                self.read_checkout_connection(c, expected, cancel)
-            })?)?;
+            let before =
+                reservation::valid(database_io::read_cancellable_strict(file, cancel, |c| {
+                    self.read_checkout_connection(c, expected, cancel)
+                })?)?;
             let already = match &mutation {
                 JournalMutation::Declare => before.is_some(),
                 JournalMutation::Advance { previous, next } => {
@@ -371,7 +372,7 @@ impl<O: WriterCloseObserver> Catalog<'_, '_, O> {
                 let bare = admission.open(file, self.close)?;
                 let written = (|| {
                     admission.require_geometry(&bare)?;
-                    protected.require(self, cancel)?;
+                    protected.verify_identity(cancel)?;
                     let c = bare.connection();
                     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL; BEGIN IMMEDIATE")?;
                     check(c)?;
@@ -389,12 +390,12 @@ impl<O: WriterCloseObserver> Catalog<'_, '_, O> {
                             cause_invalid("ordinary checkout prospective journal absent")
                         })?;
                     require_result(&mutation, &after)?;
-                    reservation::valid(database_io::read_cancellable(
+                    reservation::valid(database_io::read_cancellable_strict(
                         &family.catalog,
                         cancel,
                         |catalog| {
                             self.validate_catalog(catalog, cancel)?;
-                            protected.require(self, cancel)
+                            protected.verify_identity(cancel)
                         },
                     )?)?;
                     self.boundary(cancel)?;
@@ -414,24 +415,24 @@ impl<O: WriterCloseObserver> Catalog<'_, '_, O> {
                 bare.finish_writer(written, self.close)?;
             }
             // No SQL is reached on an unsuccessful write/rollback/close.
-            let after = reservation::valid(database_io::read_cancellable(file, cancel, |c| {
-                self.read_checkout_connection(c, expected, cancel)
-            })?)?
-            .ok_or_else(|| cause_invalid("ordinary checkout durable journal absent"))?;
+            let after =
+                reservation::valid(database_io::read_cancellable_strict(file, cancel, |c| {
+                    self.read_checkout_connection(c, expected, cancel)
+                })?)?
+                .ok_or_else(|| cause_invalid("ordinary checkout durable journal absent"))?;
             require_result(&mutation, &after)?;
-            reservation::valid(database_io::read_cancellable(
+            reservation::valid(database_io::read_cancellable_strict(
                 &family.catalog,
                 cancel,
                 |c| {
                     self.validate_catalog(c, cancel)?;
-                    protected.require(self, cancel)
+                    protected.verify_identity(cancel)
                 },
             )?)?;
             Ok(after)
         })();
-        let post = self.boundary(cancel);
         drop(gate);
-        let after = reservation::combine(result, post)?;
+        let after = result?;
         self.revalidate(cancel)?;
         protected.require(self, cancel)?;
         Ok(after)

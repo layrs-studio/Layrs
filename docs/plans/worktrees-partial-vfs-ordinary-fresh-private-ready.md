@@ -9,7 +9,11 @@ native failed in its setup receipt witness before the fresh driver. Four later
 natives were not reached. The failed run is archived. ROOT corrected the witness
 and split allocation timings; build/check r90 PASS, integrated review r89 found
 no concrete defect. ROOT75810/r91 now runs the retained corrected candidate:
-two affected SQL recipes PASS, first fresh private native in progress.
+two affected SQL recipes PASS, fresh private success/replay PASS585.368s and
+fresh private ACK/replay PASS571.530s. Retained private ACK PASS559.386s;
+family Updated PASS573.955s and family ACK PASS570.455s. ROOT75810/r91 is terminal
+exit0 with all seven recipes passed and archived. These outcomes do not establish
+actual native close failure, crash recovery or untested checkout shapes.
 Source review and build base: `f01f6b9518b71a3cfc309be3a2911c51599f2e79`.
 
 Review manifest: `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-review-r85-inputs.json`,
@@ -18,7 +22,8 @@ Review manifest: `D:/Layrs/tmp/provider-ordinary-fresh-private-ready-review-r85-
 Diff SHA256 `9f9d8b873a8274c6486f266c15331f3e3b95791cbb2a88d66ec62aa1a5f8f00e`.
 Baseline is the retained r84 source tree; unchanged context matched after newline
 normalization. ROOT73332/r84 finished with seven PASS results. ROOT38516/r88
-is terminal exit1; ROOT75810/r91 is the only active runtime. Never reuse r88
+is terminal exit1; ROOT75810/r91 is terminal exit0 with seven PASS. The separate
+checkout runner ROOT86893/r94 is now active. Never reuse r88
 fixtures or rerun its scripts. A fresh retained revision is required.
 
 Implemented interfaces: `read_ordinary_checkout_finalizable` returns a boxed

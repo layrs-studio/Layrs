@@ -78,6 +78,17 @@ impl OrdinaryExclusiveSource {
         OrdinaryFamilyResources::open_shared(pins, cancel)
     }
 
+    /// Fresh checkout population acquires a distinct C Exclusive immediately.
+    pub(in crate::projection::provider) fn inspect_checkout_destination(
+        &self,
+        root: &Path,
+        cancel: &Cancellation,
+    ) -> Result<OrdinaryCheckoutResources> {
+        let pins = ManagedReadyPins::open(root, cancel)?;
+        self.source.require_destination(&pins, cancel)?;
+        OrdinaryCheckoutResources::open_exclusive(pins, cancel)
+    }
+
     /// Private finalization needs its own Exclusive C acquisition from the
     /// start. Preserve the anti-alias/family preflight before that acquisition;
     /// no shared inspection or allocation can be upgraded/adopted here.

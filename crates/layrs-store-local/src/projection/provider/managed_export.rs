@@ -10,6 +10,11 @@ pub(in crate::projection::provider) use admission::{
 mod budget;
 mod checkout;
 pub(in crate::projection::provider) use checkout::OrdinaryCheckoutProof;
+mod checkout_reopen;
+pub(in crate::projection::provider) use checkout_reopen::{
+    CheckoutPopulationEffect, OrdinaryCheckoutPopulation, OrdinaryCheckoutPopulationFailure,
+    OrdinaryCheckoutPopulationProgress,
+};
 mod content;
 mod copy;
 mod destination;

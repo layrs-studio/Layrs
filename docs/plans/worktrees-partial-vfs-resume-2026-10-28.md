@@ -1,6 +1,37 @@
 # Reprise du 28 octobre 2026
 
-## Dernier checkpoint — r89 revu et compilé ; r91 deux SQL PASS, premier natif en cours
+## Dernier checkpoint — Ready r91 sept PASS ; checkout r94 en cours, cinq recettes tardives corrigées r96
+
+**Base du lot courant :** `0fa9954d7208117bcaa84b2a883265e3995da501`.
+Le checkpoint local suivant inclut les sources et preuves ci-dessous ; lire le
+HEAD actuel dans Git. Aucun changement de commit ne relance les recettes acquises.
+Le binaire retenu r94 est indépendant des ajouts r96 du worktree. Revues r92/r95
+terminées ; cellule733 fermée, thread r95 lu jusqu’à position70/hasMorefalse.
+Les cinq recettes tardives sont intégrées avec correctifs ROOT R95-F1/F2 ;
+elles ne sont pas encore compilées. Aucun nouveau delegate requis pour ces petits
+correctifs. Investigation SOURCE ONLY C13 companions terminée via agent natif
+programme_remaining_inventory ; périmètre concret consigné en fin de document.
+
+1. **ROOT75810 terminé exit0 : 7/7 PASS**, family Updated573,955s et ACK570,455s.
+   Packager r91 exécuté, archive700fichiers/4714666octets SHA256
+   0e80fa4b2c2524d6895892e496145f6b9e181f292c204009df53c4198223a215.
+   Build r93 ROOT10250 terminé101 : sept diagnostics E0282/E0283 au même
+   checkout.rs275. Annotation explicite corrigée r93b ; script exécuté UNE fois.
+   Build r93b ROOT28582 PASS37,38s, workspace/all-targets ROOT1448 PASS.
+   **ROOT86893/r94 ACTIF** : SQL étendu PASS44,665s et premier fresh checkout
+   PASS575,541s ; fresh DeclareACK en cours, puis OwnedACK et retained checkout.
+   Aucun autre build/SQL/natif tant que ce runner actif ; ne pas rouvrir fixtures.
+2. Revue r92 terminée, cellule677 fermée, thread lu jusqu’à position79/hasMorefalse.
+   R92-01 : faux témoin de blocage WRITE sur TEMP mutable, corrigé par ROOT dans
+   deux tests ; snapshot/diff/JSON r93 distincts. Rustfmt PASS, aucun build/runtime.
+   Archive r92 créée et vérifiée : ne pas réexécuter les scripts de gel/packaging.
+3. r94 release exécutée une fois, 672sources/14deltas et cinq recettes retenues.
+   À terminaison ROOT86893, conserver résultat et exécuter packager r94 UNE fois.
+   Ensuite compiler/qualifier seulement les cinq nouvelles recettes r96 corrigées,
+   en réutilisant preuves r94 pour code/tests inchangés. Ne pas relancer r91.
+4. Continuer les gaps de reprise (objets Declared sans ownership durable,
+   Verified/Publishing/rename-gap, partial TEMP, autres phases), puis les critères
+   L0–L9 du plan principal. Aucune réussite de lot ne clôt le goal complet.
 
 Goal **actif**, programme complet ; aucun push/PR. Base des revues `e2a1ac4`.
 r66 admission fraîche et r69 publication fraîche : cinq PASS chacun, archives
@@ -27,7 +58,9 @@ de test incomplet ; correction ROOT d'une ligne, build37,27s et check14,40s r87b
 PASS. **ROOT38516/r88 terminal exit1** : quatre SQL PASS, premier natif échoue
 dans le témoin des reçus hérités, avant le driver privé frais ; quatre natifs
 non atteints. Archive conservée, témoin corrigé en source. Lot r89 revu sans finding,
-build/check r90 PASS. ROOT75810/r91 actif : deux SQL PASS, premier natif en cours. Ne relancer
+build/check r90 PASS. ROOT75810/r91 actif : deux SQL et deux natifs privés frais PASS,
+retained privé ACK PASS559,386s, famille Updated en cours. Checkout r92 revu,
+R92-01 corrigé en source par ROOT ; compilation en attente. Ne relancer
 aucun runner/script déjà exécuté ; les sections finales donnent l'état exact.
 Les sections finales donnent hashes, chemins, périmètres et scripts déjà exécutés.
 Le reste de ce document conserve la chronologie des preuves, y compris échecs.
@@ -1376,3 +1409,357 @@ puis fresh ACK, retained private ACK, retained family Updated et ACK.
 Aucun build/SQL/natif concurrent. Aucun script r91 execute ne doit etre relance.
 Packager r91 prepare seulement; attendre terminal. Ne jamais rouvrir fixtures
 anciennes. Les edits sources suivants ne modifieront pas le binaire retenu r91.
+
+
+## Checkpoint local 0fa9954 ; premier natif privé r91 PASS ; r92 source gelée
+
+HEAD `0fa9954d7208117bcaa84b2a883265e3995da501` conserve les sept Rust r89,
+trois notes et archives r88/r89. Worktree propre juste après commit ; aucun
+push/PR, stash original inchangé. Les modifications suivantes sont hors r91.
+
+ROOT75810 reste actif. r91 : SQL9,494s et40,422s PASS ; premier natif privé
+fresh Staging→Ready/refus B/C drift/replay sans writer PASS585,368s. Second
+fresh privé ACK en cours ; retained private ACK, family Updated et family ACK
+restent à suivre. Ne pas compiler/tester en parallèle. Lire seulement logs,
+jamais les fixtures. Analyseur de phases exécuté une fois sur le premier natif
+terminal : `r91/phase-durations-first-native.json`,43phases. Total interne585,300s ;
+setup547,621s ; open4,582s + finalize11,512s ; replay avec témoins10,757s ; reste
+10,828s (refus/contrôles/handoff familial). Phases choisies disjointes : aucune
+somme parents+enfants. Cela mesure ce scénario unique, pas une borne ni une
+optimisation. Visuel affiché dans le chat, `D:/Layrs/outputs/test-time-breakdown-r91.html`.
+
+Deux agents natifs GPT-6.1-Sol terminés SOURCE ONLY :
+`implement_fresh_checkout` et `fresh_checkout_recipes`. API
+`OrdinaryCheckoutPopulation::open(B,C,tx,cancel)` puis consuming
+`populate_checkout(close,cancel)` ; Progress expected/journal/effect
+Updated|AlreadyComplete DATA ; Failure step/cause/held. B et C Exclusive dès
+ouverture, C CAS séparé, SQL actual Staging/familleInitializing/protection/funding,
+pending stage/dir/TEMP pins conservés dans failureholder, strict scopes et
+readback avant FS, complet vérifié physiquement sans writer. Pas de Ready,
+publication ou admission. Namespace initial contrôlé mécaniquement sans faux
+journal observé. Reconstruction et moteur dupliqués plutôt qu'extraction.
+Retained checkout corrigé en strict readers/result? avant post-probes ; protection
+physique avant/après gates, identité sous gate.
+
+Nouveaux fichiers : managed_export/checkout_reopen.rs,
+managed_ready_reopen/ordinary_checkout.rs,
+session/managed_ordinary_fresh_checkout_tests.rs. Exports/wiring et hook de
+fixture après genuine protect_content. Trois recettes :
+`managed_ordinary_fresh_checkout_refuses_drift_then_populates_absent_and_replays_without_writer`,
+`managed_ordinary_fresh_checkout_withheld_declare_ack_releases_then_reopens_and_completes`,
+`managed_ordinary_fresh_checkout_withheld_owned_ack_releases_then_reopens_and_completes`.
+Les fixtures ferment B et relâchent tous les anciens holders avant fresh open ;
+les reçus historiques B/C restent intégralement comparés. Limites child3600/
+outer3660 non mesurées. Flat README uniquement ; pas native Verified/Publishing,
+rename-gap, TEMP partiellement écrit, suppression positive ou nested directories.
+
+ROOT a complété `destination_ready/ordinary_tests.rs` : allDeclared,
+Publishing, C Copying canonique sans journal refusé, unique clé opaque refusée ;
+query-only/dumps/total_changes conservés. ROOT a étendu le natif retained
+`managed_ordinary_checkout_tests.rs` : ACK Declare original, zéro probes après
+ACK, contrôles positifs des routes observées ; wording SQLite-close précis.
+Ces modifications sont uniquement source, NON compilées/exécutées.
+
+Lot r92 gelé :14Rust changés dont3nouveaux,74sources sélectionnées. Manifeste
+`D:/Layrs/tmp/provider-ordinary-fresh-checkout-review-r92-inputs.json` SHA256
+`5e649c67ac6a67477f37d76992fc99fc416763a1dc91697eae7a9bc7b2e36978` ; diffSHA256
+`47ff4a36ca908ddcfa877ffd22ac85b312bf5b145ce6c512712368b54a0ecb21`.
+Snapshot `provider-ordinary-fresh-checkout-review-r92-source`, comparaison
+normalisée vs source retenue r91. Revue critique Astra xhigh démarrée, cellule
+functions.exec677 en attente de delegate_task(mode=wait,timeout600000). Ne pas
+poll task_status ; suivre résultat/next. Aucun autre sous-agent natif actif.
+Ne pas modifier sources/HEAD avant fin de cette revue. Rapport attendu
+`provider-ordinary-fresh-checkout-critical-review-r92.json`.
+
+La résolution du gap Declared + objet FS présent sans ownership durable reste
+ouverte : aucun droit d'adopter ou supprimer cet objet n'est ajouté. Les pannes
+réelles de fermeture, crash/perte d'owner, budget C10 à la frontière et le reste
+des lots L0–L9 restent à qualifier. Goal actif ; aucun jalon ne le clôture.
+
+
+## r91 deuxième privé frais PASS, session toujours active
+
+ROOT75810 : deuxième natif privé ACK/rejeu PASS571,530s. Total atteint :
+quatre PASS (deux SQL + deux natifs frais). Retained private ACK maintenant en
+cours, puis retained family Updated et ACK. Ne pas relancer ni compiler avant
+terminaison de ce handle. Analyseur exécuté sur le deuxième log terminal :
+`r91/phase-durations-second-native.json`. Aucune fixture ouverte par ROOT.
+
+Observation processus en lecture seule pendant la préparation du privé ACK :
+`r91/process-cpu-samples-private-ack.json`, chemin EXE exact et StartUtc liés.
+PID70512 :35,28125sCPU sur35,591s murales entre deux observations ; PID68440,
+wrapper,0sCPU sur le même intervalle. Ce relevé suggère une consommation proche
+d'un cœur logique sur cet intervalle ; il n'attribue pas le coût à une fonction
+et ne constitue ni profil de pile, ni preuve de cause I/O, ni gain mesuré.
+
+Revue r92 toujours en cours, sources/HEAD inchangés ; trois notes documentaires
+actualisées hors périmètre. Pas de compilation de r92. Goal actif.
+
+
+## Revue r92 achevée ; correction ROOT r93 test-only ; r91 cinq PASS
+
+ROOT75810 poursuit le runner retenu r91. Le retained private ACK passe en559,386s ;
+famille Updated puis ACK restent. Aucun autre Cargo/build/SQL/natif lancé.
+
+Rapport r92 terminé : un finding P2 R92-01 dans la recette ACK-Owned. Le handle
+TEMP mutable partage READ/WRITE/DELETE ; une deuxième ouverture WRITE/share7 est
+compatible et ne pouvait prouver sa rétention. Aucun autre défaut produit concret
+établi par la revue, sans garantie exhaustive. ROOT remplace ce témoin par une
+demande READ/share0 : refus tant que le holder conserve le handle, succès après
+drop explicite, même identité TEMP. Aucune permission/sharing production modifiée.
+Les contrôles B/CAS restent ceux de pins immutables. ROOT renforce aussi G5 avec
+témoins positifs B/C/famille par frontière et G6 avec comparaison structurée de
+Cleanup.primary → Validation(Invalid(ACK)), plutôt qu’une simple sous-chaîne.
+
+Deux fichiers de tests changent après le gel r92 ; les72 autres sources du gel
+restent identiques. `rustfmt --check` PASS. Correctif auto-revu ROOT, non revu
+indépendamment, non compilé/non exécuté. Source-only : aucune qualification du
+partage Windows ou de la reprise n’est encore revendiquée pour ce nouveau témoin.
+
+Archive originale r92 : `ordinary-fresh-checkout-source-review-20261028-r92.tar.gz`,
+84fichiers,334787octets,SHA256
+`94e11bf1a5c9a66ba0696c2f265befb9d07a541f5adc6c04a2ca330ccc7a30a3`.
+`package-ordinary-fresh-checkout-review-r92.py` exécuté une fois ; ne pas relancer.
+
+Correction : `D:/Layrs/tmp/provider-ordinary-fresh-checkout-root-correction-r93.json`,
+SHA256 `2790cd2bb49c76894136f84b058fe2297ff556eae03e747f2ce432c7240254be`.
+Diff6770octets,SHA256
+`15b4837a32c4d405b520bb48eea497720859dcf2033bac0640aac22ca8d04908`.
+Snapshot74sources : `provider-ordinary-fresh-checkout-root-correction-r93-source`.
+`record-ordinary-fresh-checkout-root-correction-r93.py` déjà exécuté une fois.
+
+Préparé, AST PASS mais NON exécuté :
+`D:/Layrs/tmp/prepare-and-release-ordinary-fresh-checkout-r94.py`.
+Attend r91 terminal7PASS+archive et build/check r93. Lie672sources,14deltas,
+revue r92+correction, binaire/PDB,1SQL+3fresh checkout+1retained checkout.
+Ne pas lancer tant que ROOT75810 actif. Le script exigera le HEAD0fa9954 courant.
+Les phases Verified/Publishing/rename-gap/partialTEMP et objets Declared sans
+ownership durable restent des lacunes distinctes ; programme/goal toujours actif.
+
+
+## Investigation suivante : coupures de copie, SOURCE ONLY
+
+Agent natif `checkout_remaining_recovery` terminé, aucun fichier modifié, aucune
+exécution/fixture. Aucun défaut concret établi dans les chemins étudiés. Après
+gel/rétention du binaire r94, tranche proposée sur la vraie fixture un fichier :
+
+- ACK SQLite close#4 : Verified, TEMP complet avec inode journalisé, final absent.
+  Reprise fraîche attendue : deux writers, puis replay sans writer.
+- ACK close#5 : Publishing, TEMP complet, final absent, parent exact. Reprise :
+  un writer, même inode, puis replay sans writer.
+- Refus AdmissionPoint::BeforeWritableOpen#6 : rename et sync déjà réussis,
+  SQL encore Publishing, TEMP absent, final avec ancien inode. Reprise : un
+  writer Published. Ne qualifie pas la panne entre rename et sync.
+- Négatifs allocation-gap authentiques : refus BeforeWritableOpen#2 après stage
+  créé ou #3 après TEMP créé. Après drop, objet présent/SQL Declared doit être
+  refusé et conservé, sans adoption ni suppression ni nouveau writer.
+
+Chaque recette doit observer journal/arborescence/inodes après drop explicite,
+conserver la cause primaire, comparer B/famille inchangés et C Staging sans
+receipt/admission. Les nombres de fermetures dépendent de cette fixture exacte ;
+ils ne remplacent pas les témoins SQL physiques. Owned autorise seulement l’inode
+exact et une réécriture depuis zéro. Verified exige les octets exacts ; Publishing
+exige exactement un nom TEMP/final et le parent exact, puis rehachage.
+
+Mid-copy : hooks DB insuffisants. Le driver donne directement fs::File au
+stream64KiB et CURRENT est minuscule. Un futur scénario authentique demande
+image >64KiB dès le setup et coupure test après écriture, ou sink préfixe/erreur.
+Exiger0<len(TEMP)<attendu, ligne Owned, inode identique, reprise depuis zéro.
+Écrire manuellement un TEMP partiel après Owned ne prouverait pas une interruption
+du driver. Une corruption de même longueur en Verified/Publishing peut être
+refusée au hachage dans populate, pas nécessairement dans open ; exiger zéro
+writer jusqu’au refus, sans imposer le mauvais point de rejet.
+
+Références : managed_export/checkout_reopen.rs317/385/414/492,
+activation/managed_checkout_fs.rs380/495/668/820,
+activation/managed_image/stream.rs91 ; aucune nouvelle autorité de reprise créée.
+
+
+## Inventaire actuel du programme après Ordinary — lecture indépendante
+
+Investigation native `programme_remaining_inventory` terminée en lecture seule,
+sans build/SQL/fixture/modification. Cet inventaire consolide les derniers états ;
+les « reste » historiques ne doivent pas provoquer des travaux déjà accomplis.
+
+1. Terminer r91/r94 puis reprises checkout Verified/Publishing/rename-gap/partial
+   TEMP et refus allocation-gap. Établir aussi les entrées fraîches amont
+   Copying/allocation/install/protection, sans reconstruire une capacité
+   ManagedDestinationAllocation depuis des chemins.
+2. Interruptions réelles : perte owner/crash, commit/close incertain, journaux
+   chauds, quarantaine et coupures install/protection. Réutiliser les barrières
+   des deux crashes Capture déjà qualifiés. Isoler la frontière exacte C10.
+3. Companions C13 : préserver créations inconnues, modifications readonly ou
+   révoquées et suppressions hors checkout ; protection/reçu avant readiness.
+   managed_plan.rs699 refuse encore les companions non vides. Recettes offline,
+   Capture/Restore et échec de préservation selon convergence.md434/526.
+4. Expansion Provider C14 : ancien travail/sélection préservés, nouveau map,
+   même Step/root, epoch retenu ou réobservation complète ; révocation ancien
+   chemin même avec cache hit et reprise par phase (convergence.md350/497/527).
+   L2 ordinaire HTTPS déjà acquis ne qualifie pas cette transition VFS.
+5. Préparation autorisée de contenu froid Provider : acquisition explicite,
+   dépendances Capture→Generation/map et autorité avant acceptation, offline
+   ensuite ; callbacks sans HTTP. session.rs238 expose actuellement connect,
+   disconnect,checkpoint,export,capture. Convergence C3/activation-checkpoint95.
+6. Lifecycle/GC/matrice FS : éviction/quotas/pins/fermeture, rename/delete,
+   handles/mmap/watchers/flush/disque plein/callback annulé/déconnexion en vol.
+   La fence GC de provider.rs174 sur layouts9/10 reste à conserver ou remplacer
+   par un contrat qualifié, jamais simplement enlever.
+7. Parcours produit Provider CLI/Desktop et vrais hosts : création/activation,
+   préparation/capture/conversion/expansion/récupération et états accessibles.
+   args/partial_provider.rs5 expose Status seulement ; main.rs61 déclare le
+   profil sur ce trajet. Réutiliser product-host-checkpoint35, qualifier nouvelles
+   routes/binaire ; UI distantes/partielles restent distinctes.
+8. L0/L6 : mesures comparables froid/chaud, 1/2agents, code/assets/mixte,
+   1k/10k/99k, dispersion/CPU/disque/réseau/verrous. Réutiliser pilotes32fichiers
+   PASS et baseline release1k/unagent ; candidat1k et baseline2agents incomplets.
+   Optimisation ancêtres HOLD sans gain prouvé, pas un préalable fonctionnel.
+9. L9 : recette intégrée deux variantes/captures/offline/crash/restart/conflit,
+   pression disque/ACL/migration/refus incompatible, contrôles pertinents et
+   runbooks/revue finale. Réutiliser preuves de modules inchangés à périmètre égal.
+
+Déjà acquis dans leurs périmètres : L7 HTTPS/Docker+Router/PostgreSQL avec revueR2
+(plan principal1202), WebView/Git natif1214, Capture Provider et deux crashes
+(capture-checkpoint48), admission/autonomieC10, publication fraîche, Staging,
+réexportC10→D10 et famille. Ne pas les réannoncer comme non implémentés.
+
+Limites externes actuelles : second volume Windows absent, symlink privilège1314,
+Linux/FUSE selon prérequis/recette propre, macOS non qualifié, opérateur humain
+indépendant si revendiqué. Aucun de ces points ne bloque les autres travaux
+fonctionnels Windows. Aucun pourcentage global de fin fiable n’en est déduit.
+
+Scripts r94 préparés NON exécutés : prepare-and-release-ordinary-fresh-checkout-r94.py
+et package-ordinary-fresh-checkout-20261028-r94.py ; AST PASS. Le retained checkout
+garde child2400/outer2460 ; les fresh gardent3600/3660. Après ROOT75810 terminal,
+archiver r91, compiler libtest puis workspace/all-targets en série dans logs
+provider-ordinary-fresh-checkout-{build,check}-r93.log. Traiter toute erreur avant
+release. Ne pas modifier les sources gelées74 avant ce build sans nouveau correctif
+traçable. HEAD0fa9954 doit rester pour le script r94 tel que préparé.
+
+
+## Proposition des cinq recettes tardives terminée, hors worktree
+
+Agent fresh_checkout_recipes terminé. Dossier :
+`D:/Layrs/tmp/ordinary-checkout-late-recipes-proposal/`.
+Candidat `managed_ordinary_fresh_checkout_tests.rs`, patch `late-recipes.patch`,
+pins `base.sha256.json`. +558/-0, base intégralement préservée. Rustfmt PASS,
+aucun build/test/SQL/natif ni modification du worktree. ROOT a parcouru les
+témoins ; revue indépendante et compilation restent à faire après intégration.
+
+Base SHA256715ddb14338022940820e7414aa08ef74ec2956bd9254a4f529849c59cadfed4.
+Candidat SHA2567a46519469be832b3c957b06d2cb9f5e2a3eed7249f15fd374494694bbd3431c.
+Patch SHA256f33689a3243c2bf46caa1c04f2723234cd5f83e8025def0d91a9f09bf96a5582.
+
+Trois recettes positives VerifiedACK4,PublishingACK5,BeforeWritableOpen6 rename-gap
+et deux négatives BeforeWritableOpen2/3 allocation Stage/TEMP. Writers de reprise
+2/1/1 ; étapes CommitReturned pour ACK, WriterOpenAttempted pour refus avant RW.
+Le témoin Stage share0 repose sur les droits FILE_ADD_FILE/ADD_SUBDIRECTORY du
+handle créateur effectivement conservé, pas sur un simple pin d’attributs.
+Il reste non exécuté. Les trois reprises exigent SQL/inode/parent/bytes exacts,
+replay sans writer, B/famille inchangés et C Staging. Les gaps exigent refus et
+préservation sans adoption/nettoyage ; ils ne prétendent pas terminer l’export.
+
+NE PAS appliquer avant rétention du binaire r94 : le build courant doit rester
+lié aux74sources r93. Après rétention, intégrer sous vérification baseSHA, relire
+le diff, revue critique source puis prochain build seulement après runtime r94
+terminal. Aucun nouveau hook produit, mid-copy/crash/native-close hors portée.
+
+
+## r91 terminal, r93b compilé, r94 lancé ; r95 corrigé et intégré r96
+
+Les7recettes r91 passent, archive créée/vérifiée une fois. Ne pas les relancer
+sans changement justifiant la régression. Le build r93 échoue101 sur une seule
+annotation de type (7diagnostics). `correct-ordinary-checkout-inference-r93b.py`
+EXÉCUTÉ une fois après fin r95. JSON SHA256
+a6504ef3b65199fdd39c10528558ef3c65582298a4183a86d156966426ddf457.
+Build r93b ROOT28582 PASS37,38s ; check ROOT1448 PASS13,78s. Logs conservés,
+échec r93 inclus dans bindings. Aucun autre changement produit de correction.
+
+`prepare-and-release-ordinary-fresh-checkout-r94.py` EXÉCUTÉ une fois, puis runner
+`provider-ordinary-fresh-checkout-run-r94.py r94` lancé sous **ROOT86893** avec
+accès hôte autorisé. SQL progress/family PASS44,665s ; premier fresh checkout
+en cours. Restent fresh DeclareACK,OwnedACK puis retained checkoutACK. Une seule
+exécution active, aucun autre build/SQL/natif. Pas de fixture r91 réouverte.
+
+r94 EXE82587648octets SHA256
+72d7e25655bc21ca5df7a486896878fa0771368780e62f620b3c1b58d89ae66b,
+CodeView621a98b1-e6bc-410a-9a0f-44ddcc208f5e/age139. Release SHA256
+669c97d204533804845bb157bcb65e6d16a80342db48a96f38ca275689139296.
+672sources,14deltas vsr91,5recettes. Packager r94 PRÉPARÉ/NON exécuté.
+
+r95 terminé, cellule733 fermée, thread lu jusqu’à70/hasMorefalse :
+thread:delegated-task:command%3Amcp%3A615e0744-3c02-40fd-a5ee-4bbd79d181f5%3Adelegate-task%3A1eb77803-230c-4060-968d-dd19c1e5f6d1.
+Deux findings test P2 : refus quelconque accepté après allocation (F1), reopen
+partiel hors garde writer (F2). Archive originale88fichiers342016octets SHA256
+9ae2227a38a73867bc10fdb69f8f3b1593bea13fa704847b5676fe9a5f0ea8cf.
+`package-ordinary-checkout-late-review-r95.py` EXÉCUTÉ une fois.
+
+ROOT a intégré le candidat puis corrigé F1/F2, sans nouveau delegate : F1 exige
+Cleanup.primary→Validation(Invalid) avec ensemble fermé des deux motifs namespace;
+F2 garde BeforeWritableOpen autour de fresh-resume-open, compte zéro, puis retire
+le garde avant les2/1writers attendus. Aucune instruction produit modifiée.
+`integrate-corrected-checkout-late-recipes-r96.py` EXÉCUTÉ une fois, rustfmt PASS.
+JSON correction SHA2566e06222636b5896ef865c2c32378592e4c1c843b80560435d2a1d6b92be17e31.
+Diff2940octets SHA25679d69ccf0d2d2e7364d3065b0e0c20dde1a3105d7cfa39034017488c8dbf6fa2.
+Fichier59411octets SHA256da0439cdf6f3653cfdc5881ff79df991252dfeddf55a225cc1e09236a9f28d9a.
+
+Contrôle post-intégration : UN seul input parmi672diffère du binaire r94, le
+fichier de tests append-only ; son préfixe r94 est byte-exact. Produit et anciennes
+recettes r94 inchangés. Les5nouvelles recettes attendent compilation après ROOT86893
+terminal, puis qualification ciblée sur un prochain binaire retenu. Les petits
+correctifs sont auto-revus ROOT, pas indépendamment revus ni encore exécutés.
+
+Consigne utilisateur réaffirmée : ne pas tourner en rond. Conserver les acquis,
+chaque étape ferme un manque explicite ; pas de nouveau cycle de revue générale
+ni réexécution des suites inchangées. Avancer aussi C13 companions pendant
+les attentes : investigation native bornée en cours, pas de nouveaux tests lancés.
+
+
+## C13 : prochain lot fonctionnel, investigation terminée
+
+Agent programme_remaining_inventory terminé, SOURCE ONLY sans édition/exécution.
+Réutiliser `provider/transition_reconcile` déjà câblé : classification overlay,
+recovery-only, révocation, suppressions, companions hérités et représentations
+multiples. source.rs27 lie closure/histoire/mappings, image.rs33 exige l’image
+complète ExportCheckpoint ; ces objets DATA ne fournissent aucune autorité native.
+Ne pas réécrire ce kernel. Réutiliser codecs v1 records/import.rs488/566,
+validation import_validation/scoped.rs456, copie des3tables copy.rs63,
+installation/protection exactes managed_content/exact.rs118 et ready_data.rs156.
+
+Blocages actifs : managed_image.rs432 refuse recovery-only avant hashes et474
+readonly modifié ; managed_plan.rs524 exige fresh==initial,205/699 refuse hérités,
+935 construit empty. Ready/autonomous/catalogues contiennent aussi refus empty.
+Ne pas retirer seulement ces guards : dériver un OwnedCompanionData authentifié
+avec header/rows/digests/manifests/coûts depuis reconcile et le checkpoint retenu,
+hasher tous les fichiers avec modes prouvés (règle unknown Windows capture/scan340).
+Installer union complète overlay+bases+historique+companions+préimages ; la recherche
+install_exact est actuellement limitée à image.files(). Garder companions hors
+checkout et hors Capture autorisée. Protéger avant Ready, mappings/claim/receipt
+dans transaction et validation autonome après arrêt Provider.
+
+La publication source écrit aussi un reçu avec FK companion_id→header
+(provider/schema15,transition_sql/publication113). Persister/valider les rows
+source avant ce reçu et compter leur metadata/protection/mapping. Budget complet
+avant effets, sans augmenter quota durable. La simple copie destination serait
+insuffisante. L’observation fraîche d’autorité doit être traitée explicitement,
+pas déguisée en suppression du contrôle fresh==initial.
+
+Deux intentions kernel sans codec durable aujourd’hui : FromAcceptedCapture
+(base effective déjà Absente) et SatisfiedDeletionIntentData (transition_reconcile60–90).
+v1/scoped654 exige une base présente ; ne pas forcer ces variantes dans v1. Définir
+leur codec versionné/provenance/compatibilité et tests avant de leur permettre Ready.
+Header v1 n’accepte que sources6/7/8 : origine Ordinary9/10 demande extension
+explicite ; companions hérités d’origine8 peuvent rester verbatim.
+
+Une tranche Provider8→Ordinary9 à sélection fixe et variantes v1 est réalisable
+d’abord, avec refus conservateur avant effets des variantes non encodables. Ce
+refus est uniquement un état intermédiaire autorisé par le contrat, pas une
+substitution à la fonctionnalité finale ni un motif de clôturer C13/le goal.
+Les codecs et nouveaux companions Ordinary9/10 restent dans le périmètre global.
+
+Recettes d’intégration nécessaires : conversion mixte avec inconnus/readonly/
+suppression recovery-only séparés de checkout/Capture ; déconnexion Provider puis
+open/capture/Restore Ordinary préparé ; interruption après protection et commit
+privé avant ACK ; préservation impossible/autorité changée/codec non supporté avec
+source conservée ; réexport companion préservant payloads/bases/mappings/claims.
+Réutiliser tests DATA transition_reconcile et admissions/restores existants,
+sans repartir de zéro ni refaire une revue générale de tout le programme.

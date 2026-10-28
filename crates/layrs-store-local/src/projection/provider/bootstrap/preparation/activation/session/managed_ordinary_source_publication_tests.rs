@@ -287,6 +287,25 @@ pub(super) struct CheckoutFixture<'a> {
     pub family_database: &'a Path,
 }
 
+/// Genuine completed content protection before any checkout declaration or
+/// filesystem population. No checkout proof or new transaction Ready/receipt
+/// exists; inherited ingress receipts remain intact.
+pub(super) struct ProtectedCheckoutFixture<'a> {
+    pub source_staging: &'a ProviderTransitionIntentRecord,
+    pub destination_staging: &'a ProviderTransitionIntentRecord,
+    pub protection: &'a OrdinaryImportProtection,
+    pub expected: &'a ExpectedCheckout,
+    pub current: &'a FileManifest,
+    pub required: &'a [FileManifest],
+    pub source_marker: &'a format::Marker,
+    pub source_root: &'a Path,
+    pub source_database: &'a Path,
+    pub destination_root: &'a Path,
+    pub destination_database: &'a Path,
+    pub family_root: &'a Path,
+    pub family_database: &'a Path,
+}
+
 pub(super) struct AdmissionHooks {
     pub before_published:
         fn(&mut OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation),
@@ -324,6 +343,7 @@ pub(super) fn with_admission_data<T>(
             stop: PublicationStop::Published,
         }),
         None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T>,
     )
     .unwrap()
 }
@@ -341,6 +361,7 @@ pub(super) fn with_source_ready_data<T>(
             stop: PublicationStop::SourceReady,
         }),
         None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T>,
     )
     .unwrap()
 }
@@ -362,6 +383,7 @@ pub(super) fn with_source_staging_data<T>(
             stop: PublicationStop::FamilyReady,
         }),
         None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T>,
     )
     .unwrap()
 }
@@ -383,6 +405,7 @@ pub(super) fn with_private_ready_data<T>(
             stop: PublicationStop::PrivateReady,
         }),
         None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T>,
     )
     .unwrap()
 }
@@ -400,6 +423,28 @@ pub(super) fn with_complete_checkout_data<T>(
             >,
         >,
         Some(after_checkout),
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T>,
+    )
+    .unwrap()
+}
+
+/// The callback positively closes B. Only owned DATA may escape, after this
+/// helper drops every original protection/allocation/image/store holder.
+pub(super) fn with_protected_checkout_data<T>(
+    after_protection: impl FnOnce(
+        OrdinaryManagedExport<'_>,
+        &ProtectedCheckoutFixture<'_>,
+        &Cancellation,
+    ) -> T,
+) -> T {
+    source_publication_inner(
+        None::<
+            PublicationHooks<
+                fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation) -> T,
+            >,
+        >,
+        None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T>,
+        Some(after_protection),
     )
     .unwrap()
 }
@@ -410,6 +455,7 @@ fn source_publication_recipe() {
             PublicationHooks<fn(OrdinaryManagedExport<'_>, &PublicationFixture<'_>, &Cancellation)>,
         >,
         None::<fn(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation)>,
+        None::<fn(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation)>,
     );
 }
 
@@ -421,6 +467,9 @@ fn source_publication_inner<T>(
     >,
     mut checkout_hook: Option<
         impl FnOnce(OrdinaryManagedExport<'_>, &CheckoutFixture<'_>, &Cancellation) -> T,
+    >,
+    mut protection_hook: Option<
+        impl FnOnce(OrdinaryManagedExport<'_>, &ProtectedCheckoutFixture<'_>, &Cancellation) -> T,
     >,
 ) -> Option<T> {
     child::declare();
@@ -579,6 +628,49 @@ fn source_publication_inner<T>(
     let protection = owner
         .protect_content(&allocated, &staging, &mut setup, &cancel)
         .unwrap();
+    if let Some(after_protection) = protection_hook.take() {
+        assert!(hooks.is_none() && checkout_hook.is_none());
+        let destination_root = allocated.root().to_owned();
+        let destination_database = allocated.destination_database().path().to_owned();
+        let family_database = family_root.join("metadata/catalog.sqlite3");
+        let expected = ExpectedCheckout::ordinary(&staging, &files, &[], &image, None).unwrap();
+        let destination_staging = witness::read(&destination_database, |c| {
+            let payload: Vec<u8> = c
+                .query_row(
+                    "SELECT payload FROM projection_provider_transitions WHERE id=?1",
+                    [&staging.transaction_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            ProviderTransitionIntentRecord::decode(&payload).unwrap()
+        });
+        assert_eq!(destination_staging.role, TransitionRole::Destination);
+        assert_eq!(destination_staging.state, TransitionState::Staging);
+        assert!(destination_staging.receipt_id.is_none());
+        let fixture = ProtectedCheckoutFixture {
+            source_staging: &staging,
+            destination_staging: &destination_staging,
+            protection: &protection,
+            expected: &expected,
+            current: &current,
+            required: &required,
+            source_marker: &store.marker,
+            source_root: &root,
+            source_database: &source_database,
+            destination_root: &destination_root,
+            destination_database: &destination_database,
+            family_root: &family_root,
+            family_database: &family_database,
+        };
+        phase.next("source-route.protected-checkout-continuation");
+        let result = after_protection(owner, &fixture, &cancel);
+        phase.next("source-route.protected-checkout-teardown");
+        allocated.require_published(&staging.plan).unwrap();
+        drop(protection);
+        drop(allocated);
+        drop(store);
+        return Some(result);
+    }
     phase.next("source-setup.copy-checkout");
     let checkout = owner
         .copy_checkout(&allocated, &staging, &protection, &mut setup, &cancel)

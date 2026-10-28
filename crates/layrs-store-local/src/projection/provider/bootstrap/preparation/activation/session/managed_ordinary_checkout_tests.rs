@@ -1,13 +1,18 @@
 //! Genuine B -> C protection and journal-first checkout under one retained
 //! ordinary owner. Withheld successful close ACKs are deliberate observation
 //! errors, not OS close failures, owner-loss recovery or crash qualification.
-use super::managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree};
+use super::{
+    managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
+    managed_ordinary_ready_tests::require_ready_read_controls,
+};
 use crate::projection::{
     provider::{
         checkout_journal::{
             self, CheckoutEntry, CheckoutFile, DirectoryState, ExpectedCheckout, FileState, RowKey,
         },
-        database_io::{WriterCloseObserver, WriterOpenPoint},
+        database_io::{
+            tests::fresh_ordinary_support::with_observer, WriterCloseObserver, WriterOpenPoint,
+        },
         managed_export::allocation,
         ordinary_destination::{staging::StageEffect, CopyEffect},
         process_profile::tests::child,
@@ -29,10 +34,12 @@ use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeI
 use layrs_vfs::Cancellation;
 use rusqlite::ffi;
 use std::{
+    cell::{Cell as Flag, RefCell},
     collections::BTreeSet,
     fs::{self, OpenOptions},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 const LEAF: &str = "000000000000000000000000000000f1";
@@ -51,6 +58,7 @@ struct Close {
     protected_chunk: Option<PathBuf>,
     pin_checks: usize,
     withheld_namespace: Option<(PathBuf, PathBuf)>,
+    after_withheld_ack: Rc<Flag<bool>>,
 }
 impl Close {
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -68,6 +76,19 @@ fn require_write_blocked(path: &Path) {
         Some(32),
         "actual C CAS immutable pins must refuse WRITE"
     );
+}
+
+pub(super) fn require_ack_primary(mut cause: &Cause, expected: &str) {
+    while let Cause::Cleanup { primary, .. } = cause {
+        cause = primary;
+    }
+    let Cause::Validation(error) = cause else {
+        panic!("expected the withheld ACK as the primary validation cause: {cause:?}")
+    };
+    let crate::projection::ProjectionStoreError::Invalid(message) = error.as_ref() else {
+        panic!("expected exact withheld ACK validation: {error:?}")
+    };
+    assert_eq!(message, expected);
 }
 impl WriterCloseObserver for Close {
     fn open_point(&mut self, point: WriterOpenPoint, raw: *mut ffi::sqlite3) -> CauseResult<()> {
@@ -92,7 +113,7 @@ impl WriterCloseObserver for Close {
         None
     }
     fn after_close(&mut self, succeeded: bool) -> Option<Cause> {
-        assert!(succeeded, "observer requires physically successful close");
+        assert!(succeeded, "observer requires SQLite connection close success; no native xClose/OS-close inference");
         self.closes += 1;
         if std::mem::take(&mut self.withhold) {
             let (stage, final_file) = self.withheld_namespace.as_ref().unwrap();
@@ -105,6 +126,7 @@ impl WriterCloseObserver for Close {
                 "no checkout file before Declare close acknowledgement"
             );
             self.withheld += 1;
+            self.after_withheld_ack.set(true);
             Some(invalid(WITHHELD_ACK))
         } else {
             None
@@ -509,12 +531,37 @@ fn managed_ordinary_checkout_protects_complete_union_and_replays_declared_close_
                 destination_root.join(expected.stage_relative_path()),
                 destination_root.join(path.as_str()),
             ));
-            let error =
-                match owner.copy_checkout(&allocated, &staging, &protected, &mut close, &cancel) {
-                    Ok(_) => panic!("Declare close ACK was not withheld"),
-                    Err(e) => e,
-                };
+            let after_ack = close.after_withheld_ack.clone();
+            let later_probes = Rc::new(Flag::new(0usize));
+            let observed_later = later_probes.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed_events = events.clone();
+            let failed = with_observer(
+                move |path, point| {
+                    observed_events.borrow_mut().push((path.to_owned(), point));
+                    if after_ack.get() {
+                        observed_later.set(observed_later.get() + 1);
+                        return Err(invalid("failed checkout Declare ACK forbids later observed SQL/identity/snapshot probes"));
+                    }
+                    Ok(())
+                },
+                || owner.copy_checkout(&allocated, &staging, &protected, &mut close, &cancel),
+            );
+            let error = match failed {
+                Ok(_) => panic!("Declare close ACK was not withheld"),
+                Err(e) => e,
+            };
             assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
+            let crate::projection::ProjectionStoreError::ProviderContent(cause) = &error else {
+                panic!("retained checkout must preserve its structured cause: {error:?}")
+            };
+            require_ack_primary(cause, WITHHELD_ACK);
+            assert_eq!(
+                later_probes.get(),
+                0,
+                "only mandatory cleanup may follow the withheld ACK"
+            );
+            require_ready_read_controls(&events.borrow(), &destination_database, &family_database);
             assert_eq!(close.counts(), (2, 2, 2, 1));
             assert_eq!(close.pin_checks, 2);
             let declared_trees = witness::trees(&root, &family, &destination_root, locks);

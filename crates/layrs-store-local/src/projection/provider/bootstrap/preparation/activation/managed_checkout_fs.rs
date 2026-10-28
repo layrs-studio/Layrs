@@ -93,6 +93,37 @@ impl CheckoutStorage {
         Ok(value)
     }
 
+    /// Mechanical pre-declaration check. Absence of SQL progress grants no
+    /// ownership over checkout names: only the pinned .layrs/FORMAT may exist.
+    pub(in crate::projection::provider) fn require_unstarted_namespace(
+        &self,
+        expected: &ExpectedCheckout,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        self.verify_binding(expected, cancel)?;
+        for (directory, allowed) in [(&self.root, ".layrs"), (&self.control, "FORMAT")] {
+            directory.verify_path_identity()?;
+            let path = if allowed == ".layrs" {
+                PathBuf::from(&expected.marker().checkout_root)
+            } else {
+                PathBuf::from(&expected.marker().checkout_root).join(".layrs")
+            };
+            let mut count = 0usize;
+            for entry in fs::read_dir(path)? {
+                cancel.check()?;
+                if count != 0 || entry?.file_name().as_os_str() != OsStr::new(allowed) {
+                    return Err(invalid("unstarted checkout namespace has unowned entry"));
+                }
+                count += 1;
+            }
+            if count != 1 {
+                return Err(invalid("unstarted checkout namespace binding absent"));
+            }
+            directory.verify_path_identity()?;
+        }
+        self.verify_binding(expected, cancel)
+    }
+
     fn verify_binding(&self, expected: &ExpectedCheckout, cancel: &Cancellation) -> Result<()> {
         cancel.check()?;
         if self.header != *expected.header()

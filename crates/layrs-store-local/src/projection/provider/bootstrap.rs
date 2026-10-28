@@ -7,7 +7,7 @@ mod preparation;
 pub(in crate::projection::provider) use preparation::activation::{
     copy_managed_chunk, copy_managed_file, derive_ordinary_data, hash_managed_file,
     recovery_image_digest, verify_managed_ready_checkout, CheckoutStorage, ImageDeletion,
-    ImageFile, ManagedPlanData, RequiredManifest, VerifiedCheckout,
+    ImageFile, ManagedPlanData, OwnedCheckoutFile, RequiredManifest, VerifiedCheckout,
 };
 mod publication;
 mod receipt_io;

@@ -499,6 +499,9 @@ mod managed_ordinary_family_ready_tests;
 #[path = "session/managed_ordinary_fresh_admission_tests.rs"]
 mod managed_ordinary_fresh_admission_tests;
 #[cfg(all(test, windows))]
+#[path = "session/managed_ordinary_fresh_checkout_tests.rs"]
+mod managed_ordinary_fresh_checkout_tests;
+#[cfg(all(test, windows))]
 #[path = "session/managed_ordinary_fresh_family_tests.rs"]
 mod managed_ordinary_fresh_family_tests;
 #[cfg(all(test, windows))]

@@ -31,8 +31,13 @@ Le premier natif r88 échoue dans un témoin des reçus hérités, avant la repr
 privée, et les quatre suivants ne sont pas atteints. Échec archivé et témoin
 corrigé ; compilation/workspace r90 passent. Le lecteur SQL de progression
 checkout (absent/partiel/complet) et ce correctif passent la revue r89. Deux SQL
-r91 passent ; le premier natif est en cours sous ROOT75810. Aucune reprise privée
-réussie revendiquée avant son résultat terminal.
+r91 passent ; les deux natifs privés frais réussissent en585,368s et571,530s.
+Le retained privé ACK passe en559,386s ; les deux recettes famille passent en
+573,955s et570,455s. ROOT75810/r91 termine exit0 : sept PASS archivés. La reprise
+de copie fraîche r92 est revue ; témoin TEMP corrigé r93, annotation de type r93b.
+Build/workspace r93b PASS. ROOT86893/r94 : SQL étendu PASS44,665s, natifs checkout
+en cours. Cinq recettes tardives supplémentaires sont revues et corrigées r96,
+sans compilation/runtime à ce stade.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 
