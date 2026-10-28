@@ -5,7 +5,10 @@ use super::{
     cancellation,
     managed_admission::ManagedAdmissionRecord,
     records::{
-        import::{AdmittedSourceBinding, ImportSource, ImportSourceReferences, ProviderImportKind},
+        import::{
+            AdmittedSourceBinding, ImportSource, ImportSourceReferences, ProviderImportKind,
+            ProviderTransitionReceiptRecord,
+        },
         transition::{
             ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
         },
@@ -19,24 +22,54 @@ use rusqlite::Connection;
 
 mod allocation;
 mod frontier;
+mod publication;
+mod receipts;
 mod staging;
 mod write;
 pub(super) use allocation::{apply_copying, require_allocation_capacity};
+pub(super) use publication::{
+    apply_published, apply_ready, read_publication_state, PublicationCapacity, PublicationState,
+};
+pub(super) use receipts::preflight as preflight_receipts;
 pub(super) use staging::{apply_staging, proposed as proposed_staging};
 pub(super) use write::{apply_planned, cancel_planned};
 
 const MAX_TRANSITIONS: u64 = 4096;
 const MAX_TRANSITION_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Called only after genuine incoming links and frozen admission validation in
+/// An exact disjoint receipt partition, constructed only after authenticating
+/// incoming ancestry. Receipt DATA is retained for proof revalidation as well
+/// as inventory accounting; outgoing receipts never become ancestry roots.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct OrdinaryOutgoing {
+    intents: Vec<ProviderTransitionIntentRecord>,
+    receipts: Vec<ProviderTransitionReceiptRecord>,
+}
+impl OrdinaryOutgoing {
+    pub(super) fn intents(&self) -> &[ProviderTransitionIntentRecord] {
+        &self.intents
+    }
+    pub(super) fn receipt_count(&self) -> u64 {
+        self.receipts.len() as u64
+    }
+    pub(super) fn receipt(&self, id: &str) -> CauseResult<&ProviderTransitionReceiptRecord> {
+        self.receipts
+            .iter()
+            .find(|receipt| receipt.digest().is_ok_and(|digest| digest == id))
+            .ok_or_else(|| invalid("ordinary publication exact outgoing receipt absent"))
+    }
+}
+
+/// Called only after genuine incoming links and ancestry authentication in
 /// this retained snapshot. This reader deliberately cannot call that admission
 /// reader, the planner or full source validator, which would recurse here.
 pub(super) fn read_outgoing(
     c: &Connection,
     marker: &format::Marker,
     admission: &ManagedAdmissionRecord,
+    incoming: &super::import_validation::VerifiedDestinationPrefix<'_>,
     cancel: Option<&Cancellation>,
-) -> CauseResult<Vec<ProviderTransitionIntentRecord>> {
+) -> CauseResult<OrdinaryOutgoing> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid(
@@ -45,8 +78,12 @@ pub(super) fn read_outgoing(
     }
     let binding = actual_binding(marker, admission)?;
     let outgoing = read_rows(c, Some(&admission.transaction_id), cancel)?;
+    let receipts = receipts::read_partition(c, incoming, &outgoing, cancel)?;
     if outgoing.is_empty() {
-        return Ok(outgoing);
+        return Ok(OrdinaryOutgoing {
+            intents: outgoing,
+            receipts,
+        });
     }
     let current = frontier::Current::read(c, admission, cancel)?;
     let mut live = false;
@@ -63,7 +100,10 @@ pub(super) fn read_outgoing(
         frontier::require_version(c, marker, admission, record, &current, cancel)?;
         if matches!(
             record.state,
-            TransitionState::Copying | TransitionState::Staging
+            TransitionState::Copying
+                | TransitionState::Staging
+                | TransitionState::Ready
+                | TransitionState::Published
         ) {
             allocation::require_destination(c, marker, admission, record)?;
         }
@@ -77,7 +117,10 @@ pub(super) fn read_outgoing(
         }
     }
     cancellation::check(cancel)?;
-    Ok(outgoing)
+    Ok(OrdinaryOutgoing {
+        intents: outgoing,
+        receipts,
+    })
 }
 
 /// An idle-route fence only. Genuine FORMAT/schema/admission validation remains
@@ -144,7 +187,10 @@ fn actual_binding(
 fn is_live(state: TransitionState) -> bool {
     matches!(
         state,
-        TransitionState::Planned | TransitionState::Copying | TransitionState::Staging
+        TransitionState::Planned
+            | TransitionState::Copying
+            | TransitionState::Staging
+            | TransitionState::Ready
     )
 }
 
@@ -157,15 +203,28 @@ fn require_shape(record: &ProviderTransitionIntentRecord) -> CauseResult<()> {
             TransitionState::Planned
                 | TransitionState::Copying
                 | TransitionState::Staging
+                | TransitionState::Ready
+                | TransitionState::Published
                 | TransitionState::Cancelled
         )
         || record.destination.is_some()
             != matches!(
                 record.state,
-                TransitionState::Copying | TransitionState::Staging
+                TransitionState::Copying
+                    | TransitionState::Staging
+                    | TransitionState::Ready
+                    | TransitionState::Published
             )
-        || record.reservation.is_some() != (record.state == TransitionState::Staging)
+        || record.reservation.is_some()
+            != matches!(
+                record.state,
+                TransitionState::Staging | TransitionState::Ready | TransitionState::Published
+            )
         || record.receipt_id.is_some()
+            != matches!(
+                record.state,
+                TransitionState::Ready | TransitionState::Published
+            )
         || record.plan.kind != ProviderImportKind::ManagedOrdinary
         || !prefix.supports_restore_history()
         || !matches!(

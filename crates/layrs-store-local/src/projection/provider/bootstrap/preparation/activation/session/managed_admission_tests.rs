@@ -292,6 +292,33 @@ fn managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_tran
             Err(crate::projection::invalid("owned ordinary operation failure"))
         });
         assert!(failed.unwrap_err().to_string().contains("owned ordinary operation failure"));
+        // An enclosing operation can fail after a separately owned close.
+        // Its cleanup must not start fresh admission validation SQL. Make the
+        // uncommitted admission invalid so ordinary finish() would add a
+        // validation error; the narrow error-only path must preserve exactly
+        // the operation error while rolling the mutation back and closing.
+        let access = format::access(&store, SessionMode::Exclusive).unwrap();
+        access.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        access.connection.execute("UPDATE projection_provider_transitions SET digest=?1", [format!("blake3:{}", "0".repeat(64))]).unwrap();
+        let failed: crate::projection::Result<()> = access.close_failed_operation(
+            crate::projection::invalid("enclosing publication operation failed"),
+        );
+        assert!(matches!(failed,
+            Err(crate::projection::ProjectionStoreError::Invalid(message))
+                if message == "enclosing publication operation failed"));
+        assert_eq!(store.state().unwrap(), state, "error-only cleanup rolls back and positively closes");
+        // A deliberately invalid ROLLBACK tests authority invalidation, not an
+        // OS rollback failure. Later validation must reject the poisoned token.
+        let mut access = format::access(&store, SessionMode::Exclusive).unwrap();
+        let failed = access.with_content(|c, scope| -> crate::projection::Result<()> {
+            assert!(c.is_autocommit());
+            let rollback = scope.rollback_transaction(c).unwrap_err();
+            assert!(scope.verify(c, &store).unwrap_err().to_string().contains("failed rollback"));
+            Err(rollback)
+        });
+        let failed: crate::projection::Result<()> = access.close_failed_operation(failed.unwrap_err());
+        assert!(matches!(failed, Err(crate::projection::ProjectionStoreError::Database(_))));
+        assert_eq!(store.state().unwrap(), state, "fresh preflight remains independent of poisoned clones");
         drop(store);
         let reopened = crate::projection::ProjectionStore::open(&root).unwrap();
         assert_eq!(reopened.state().unwrap(), state);

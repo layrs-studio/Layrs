@@ -15,7 +15,7 @@ pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
     published: ProviderTransitionIntentRecord,
     prefix: VerifiedDestinationPrefix<'a>,
     frozen: FrozenReadyRows,
-    outgoing: Vec<ProviderTransitionIntentRecord>,
+    outgoing: super::super::ordinary_transition::OrdinaryOutgoing,
     admission_column_bytes: u64,
 }
 impl VerifiedAdmittedImport<'_> {
@@ -23,7 +23,13 @@ impl VerifiedAdmittedImport<'_> {
         &self.record
     }
     pub(in crate::projection) fn outgoing(&self) -> &[ProviderTransitionIntentRecord] {
-        &self.outgoing
+        self.outgoing.intents()
+    }
+    pub(in crate::projection::provider) fn outgoing_receipt(
+        &self,
+        id: &str,
+    ) -> Result<&ProviderTransitionReceiptRecord> {
+        Ok(self.outgoing.receipt(id)?)
     }
     pub(in crate::projection::provider) fn source_published(
         &self,
@@ -146,8 +152,9 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
         prefix.receipt(),
         &published,
     )?;
-    let frozen = read_frozen_ready_rows(c, marker, &prefix, &record, &permit, cancel)?;
-    let outgoing = super::super::ordinary_transition::read_outgoing(c, marker, &record, cancel)?;
+    let outgoing =
+        super::super::ordinary_transition::read_outgoing(c, marker, &record, &prefix, cancel)?;
+    let frozen = read_frozen_ready_rows(c, marker, &prefix, &record, &permit, &outgoing, cancel)?;
     cancellation::check(cancel)?;
     Ok(VerifiedAdmittedImport {
         connection: c,

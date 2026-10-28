@@ -432,6 +432,16 @@ impl Access {
         let result = result.and_then(|value| self.verify().map(|_| value));
         self.connection.finish(result)
     }
+
+    /// A failed enclosing close forbids new validation probes on this path.
+    /// Keep owner/family pins until rollback and positive native close finish;
+    /// this entry accepts only an error and never acknowledges success.
+    pub(in crate::projection) fn close_failed_operation<T>(
+        self,
+        error: ProjectionStoreError,
+    ) -> Result<T> {
+        self.connection.close_failed_operation(error)
+    }
     pub fn verify(&self) -> Result<()> {
         self._boundaries.verify(&self.root, &self.marker)?;
         match &self.connection {

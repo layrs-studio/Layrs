@@ -29,6 +29,16 @@ impl DerefMut for PrivateConnection {
 }
 
 impl PrivateConnection {
+    pub(super) fn close_failed_operation<T>(self, error: ProjectionStoreError) -> Result<T> {
+        match self {
+            #[cfg(windows)]
+            Self::Admitted(handle) => handle
+                .close_failed_operation(error.into())
+                .map_err(store_cause),
+            Self::Legacy(connection) => Self::Legacy(connection).finish(Err(error)),
+        }
+    }
+
     pub(super) fn finish<T>(self, result: Result<T>) -> Result<T> {
         match self {
             #[cfg(windows)]

@@ -5,7 +5,8 @@ use crate::projection::{
     format,
     provider::{
         admitted_ordinary, import_validation::VerifiedImportClosure,
-        managed_admission::VerifiedAdmittedImport, records::import::AdmittedSourceBinding,
+        managed_admission::VerifiedAdmittedImport, ordinary_publication::OrdinaryPublicationSource,
+        records::import::AdmittedSourceBinding,
     },
     shared::admitted_catalog::AdmittedFamilyContext,
 };
@@ -228,6 +229,51 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         Ok(state)
     }
 
+    /// Phase-aware source-publication read for the same retained owner/current
+    /// frontier. The actual B row may be Staging, Ready or Published; original
+    /// Staging DATA is never presented as stored B. This is not the historical
+    /// Published handoff reader after B advances. Complete C Ready and physical
+    /// C/CAS/checkout pins remain independent simultaneous driver evidence.
+    pub(in crate::projection) fn read_export_source_publication(
+        &self,
+        family: &FamilyAccess,
+        c: &Connection,
+        source: &OrdinaryPublicationSource<'_>,
+        inputs: &crate::projection::shared::admitted_catalog::ExportPublicationInputs<'_>,
+        cancel: Option<&Cancellation>,
+    ) -> Result<crate::projection::shared::admitted_catalog::ExportPublicationState> {
+        if !std::ptr::eq(self.connection, source.connection())
+            || self.marker != source.marker()
+            || !std::ptr::eq(self.closure, source.closure())
+            || inputs.destination_ready != source.destination_ready()
+            || inputs.receipt != source.receipt()
+            || std::ptr::eq(self.connection, c)
+        {
+            return Err(invalid(
+                "ordinary source publication source/Ready binding differs",
+            ));
+        }
+        let actual = source.revalidate(cancel)?;
+        Self::require_export_target_binding(&actual, inputs.target)?;
+        // The driver supplies a fresh proof after every B CAS. require_private
+        // reinterprets it in this snapshot and rejects a stale outgoing row;
+        // shared code never bypasses the provider-private admission entry.
+        self.require_family_identity(family, &actual, cancel)?;
+        let (_, state) =
+            self.retained
+                .read_export_publication(c, family.marker_bytes(), inputs, cancel)?;
+        if state.member
+            != crate::projection::shared::admitted_catalog::ExportPublicationMember::Ready
+        {
+            return Err(invalid(
+                "ordinary source publication requires actual family Ready",
+            ));
+        }
+        family.verify()?;
+        cancellation::check(cancel)?;
+        Ok(state)
+    }
+
     fn require_export_target(
         &self,
         family: &FamilyAccess,
@@ -238,6 +284,14 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
         if intent.state != TransitionState::Staging {
             return Err(invalid("ordinary export source must be actual Staging"));
         }
+        Self::require_export_target_binding(intent, target)?;
+        self.require_family_identity(family, intent, cancel)
+    }
+
+    fn require_export_target_binding(
+        intent: &ProviderTransitionIntentRecord,
+        target: &crate::projection::shared::admitted_catalog::ExportReserveOnlyTarget,
+    ) -> Result<()> {
         let proof = intent
             .destination
             .as_ref()
@@ -256,7 +310,7 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
                 "ordinary export target differs from actual source intent",
             ));
         }
-        self.require_family_identity(family, intent, cancel)
+        Ok(())
     }
 
     fn require_family_identity(

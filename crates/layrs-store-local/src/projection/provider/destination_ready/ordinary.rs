@@ -8,10 +8,12 @@ use crate::projection::{
         import_validation::ImportDatabaseKind,
         managed_budget,
         ordinary_destination::{self, OrdinaryCopyInputs},
+        ordinary_publication::OrdinaryPublicationSource,
     },
     shared::{
         admitted_catalog::{
-            AdmittedFamilyContext, ExportPublicationInputs, ExportReserveOnlyTarget,
+            AdmittedFamilyContext, ExportPublicationInputs, ExportPublicationMember,
+            ExportReserveOnlyTarget,
         },
         exact_protection::{ExactProtection, ProtectionPresence},
     },
@@ -81,6 +83,13 @@ impl OrdinaryReadyInputs<'_> {
 enum FamilyInterpretation {
     PrivateReady,
     Publication,
+    SourcePublication,
+}
+
+// Closed actual-source authentication. Existing entries always select Staging.
+enum SourceAuthentication<'a, 'source> {
+    Staging,
+    Publication(&'a OrdinaryPublicationSource<'source>),
 }
 
 struct OrdinaryPrepared {
@@ -110,6 +119,7 @@ pub(super) fn unchanged_bytes(
 
 fn prepare(
     family: FamilyInterpretation,
+    authentication: SourceAuthentication<'_, '_>,
     source_c: &Connection,
     destination: &Connection,
     family_c: &Connection,
@@ -129,14 +139,32 @@ fn prepare(
             "ordinary Ready requires three distinct retained transactions",
         ));
     }
-    let source = OrdinaryCopyInputs::new(
-        source_c,
-        inputs.source_marker,
-        inputs.source_staging,
-        inputs.closure,
-    );
-    let staging = source.authenticate_staging_source(destination, inputs.marker, cancel)?;
-    // authenticate_staging_source does NOT read C. Its complete exact schema
+    let staging = match authentication {
+        SourceAuthentication::Staging => {
+            let source = OrdinaryCopyInputs::new(
+                source_c,
+                inputs.source_marker,
+                inputs.source_staging,
+                inputs.closure,
+            );
+            source.authenticate_staging_source(destination, inputs.marker, cancel)?
+        }
+        SourceAuthentication::Publication(source) => {
+            if !std::ptr::eq(source_c, source.connection())
+                || source.marker() != inputs.source_marker
+                || !std::ptr::eq(source.closure(), inputs.closure)
+                || source.staging() != inputs.source_staging
+                || source.destination_ready() != inputs.data.ready
+                || source.receipt() != inputs.data.receipt
+            {
+                return Err(invalid(
+                    "ordinary Ready publication inputs differ from closed source",
+                ));
+            }
+            source.authenticate_destination(destination, inputs.marker, cancel)?
+        }
+    };
+    // Source authentication does NOT read C. Its complete exact schema
     // must precede any C inventory/phase query, including on Ready replay.
     super::super::import_validation::require_schema(
         destination,
@@ -316,8 +344,8 @@ fn require_family(
                 )?
                 .1
         }
-        FamilyInterpretation::Publication => {
-            inputs
+        FamilyInterpretation::Publication | FamilyInterpretation::SourcePublication => {
+            let state = inputs
                 .retained
                 .read_export_publication(
                     family_c,
@@ -325,8 +353,15 @@ fn require_family(
                     &inputs.publication_inputs(expected),
                     cancel,
                 )?
-                .1
-                .protection
+                .1;
+            if matches!(interpretation, FamilyInterpretation::SourcePublication)
+                && state.member != ExportPublicationMember::Ready
+            {
+                return Err(invalid(
+                    "ordinary source publication requires actual family Ready",
+                ));
+            }
+            state.protection
         }
     };
     if state.root != ProtectionPresence::Present {
@@ -435,6 +470,7 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_ready(
 ) -> Result<DestinationReady> {
     let prepared = prepare(
         FamilyInterpretation::PrivateReady,
+        SourceAuthentication::Staging,
         source_c,
         destination,
         family_c,
@@ -468,6 +504,7 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_ready_for_publicat
 ) -> Result<DestinationReady> {
     let prepared = prepare(
         FamilyInterpretation::Publication,
+        SourceAuthentication::Staging,
         source_c,
         destination,
         family_c,
@@ -487,6 +524,138 @@ pub(in crate::projection::provider) fn read_ordinary_checkout_ready_for_publicat
     Ok(DestinationReady)
 }
 
+/// Actual bounded, decoded C Ready/receipt DATA from this complete read. No
+/// source, destination, family, physical pins or durable-close authority.
+pub(in crate::projection::provider) struct OrdinaryPublicationReady {
+    ready: ProviderTransitionIntentRecord,
+    receipt: ProviderTransitionReceiptRecord,
+}
+impl OrdinaryPublicationReady {
+    pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
+        &self.ready
+    }
+    pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
+        &self.receipt
+    }
+}
+
+/// Retained-owner/current-frontier publication reader. Authenticate actual B
+/// Staging/Ready/Published independently of the original Staging calculation
+/// DATA, then complete actual C Ready and the full family with member==Ready.
+/// Historical Published handoff after B advances uses a different reader.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn read_ordinary_ready_for_source_publication(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    source: &OrdinaryPublicationSource<'_>,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    cancel: Option<&Cancellation>,
+) -> Result<OrdinaryPublicationReady> {
+    let prepared = prepare(
+        FamilyInterpretation::SourcePublication,
+        SourceAuthentication::Publication(source),
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        cancel,
+    )?;
+    // Bound and decode the actual publication rows before the shared suffix
+    // comparator materializes those normalized receipt columns again.
+    let actual = read_publication_ready_data(destination, inputs, cancel)?;
+    read_prepared(
+        source_c,
+        destination,
+        family_c,
+        inputs,
+        expected,
+        &prepared,
+        cancel,
+    )?;
+    source.revalidate(cancel)?;
+    Ok(actual)
+}
+
+fn read_publication_ready_data(
+    c: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<OrdinaryPublicationReady> {
+    use super::super::records::{import::TransitionReceiptRowData, transition::TransitionRowData};
+    cancellation::check(cancel)?;
+    // Preflight every scalar and BLOB before materializing either row. The
+    // complete suffix read below additionally proves incoming ancestry receipt
+    // inventory; only C's own receipt is selected here.
+    let count: u64 = c.query_row(
+        "SELECT count(*) FROM (SELECT 1 FROM projection_provider_transitions LIMIT 2)",
+        [],
+        |row| row.get(0),
+    )?;
+    if count != 1 {
+        return Err(invalid(
+            "ordinary publication actual C transition cardinality differs",
+        ));
+    }
+    let malformed: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE length(CAST(id AS BLOB))=0 OR length(CAST(id AS BLOB))>128 OR length(CAST(role AS BLOB))>16 OR length(CAST(state AS BLOB))>16 OR length(CAST(digest AS BLOB))!=71 OR length(payload)=0 OR length(payload)>262144 OR coalesce(length(CAST(reservation AS BLOB)),0)>128 OR coalesce(length(CAST(receipt_id AS BLOB)),0)!=71)",
+        [], |row| row.get(0),
+    )?;
+    let receipt_id = inputs.data.receipt.digest()?;
+    let (receipt_count, malformed_receipt): (u64, bool) = c.query_row(
+        "SELECT count(*),coalesce(max(length(CAST(id AS BLOB))!=71 OR length(CAST(owner_identity_digest AS BLOB))!=71 OR length(CAST(transaction_id AS BLOB))=0 OR length(CAST(transaction_id AS BLOB))>128 OR coalesce(length(CAST(companion_id AS BLOB)),71)!=71 OR length(payload)=0 OR length(payload)>65536),0) FROM projection_provider_transition_receipts WHERE id=?1",
+        [&receipt_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if malformed || malformed_receipt || receipt_count != 1 {
+        return Err(invalid(
+            "ordinary publication actual C Ready/receipt exceeds bounds",
+        ));
+    }
+    let (id, role, state, generation, reservation, receipt_id, payload, digest):
+        (String, String, String, u64, Option<String>, Option<String>, Vec<u8>, String) = c.query_row(
+        "SELECT id,role,state,local_generation,reservation,receipt_id,payload,digest FROM projection_provider_transitions",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
+    )?;
+    let ready = ProviderTransitionIntentRecord::decode(&payload)?;
+    ready.require_row(TransitionRowData {
+        id: &id,
+        role: &role,
+        state: &state,
+        local_generation: generation,
+        reservation: reservation.as_deref(),
+        receipt_id: receipt_id.as_deref(),
+        payload: &payload,
+        digest: &digest,
+    })?;
+    let (id, owner, transaction, companion, payload):
+        (String, String, String, Option<String>, Vec<u8>) = c.query_row(
+        "SELECT id,owner_identity_digest,transaction_id,companion_id,payload FROM projection_provider_transition_receipts WHERE id=?1",
+        [inputs.data.receipt.digest()?], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+    )?;
+    let receipt = ProviderTransitionReceiptRecord::decode(&payload)?;
+    receipt.require_row(TransitionReceiptRowData {
+        id: &id,
+        owner_identity_digest: &owner,
+        transaction_id: &transaction,
+        companion_id: companion.as_deref(),
+        payload: &payload,
+    })?;
+    ready.require_receipt(&receipt)?;
+    if ready.role != TransitionRole::Destination
+        || ready.state != TransitionState::Ready
+        || &ready != inputs.data.ready
+        || &receipt != inputs.data.receipt
+    {
+        return Err(invalid(
+            "ordinary publication actual C Ready/receipt differs",
+        ));
+    }
+    cancellation::check(cancel)?;
+    Ok(OrdinaryPublicationReady { ready, receipt })
+}
+
 /// Atomic destination SQL effect only. Ready replay accepts a read-only caller
 /// transaction; every post-mutation error requires rollback. COMMIT/positive
 /// closes and physical pinned checkout/CAS verification remain with the driver.
@@ -500,6 +669,7 @@ pub(in crate::projection::provider) fn finalize_ordinary_checkout_or_replay(
 ) -> Result<ReadyEffect> {
     let prepared = prepare(
         FamilyInterpretation::PrivateReady,
+        SourceAuthentication::Staging,
         source_c,
         destination,
         family_c,

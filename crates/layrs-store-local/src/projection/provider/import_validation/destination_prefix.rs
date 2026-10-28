@@ -39,6 +39,12 @@ impl VerifiedDestinationPrefix<'_> {
     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
         &self.receipt
     }
+    /// Authenticated ancestry only, excluding this destination's own receipt.
+    pub(in crate::projection::provider) fn ancestor_receipts(
+        &self,
+    ) -> &[ProviderTransitionReceiptRecord] {
+        self.metadata.lineage.receipts()
+    }
     /// Detached ancestry DATA for a subsequent export, including this import.
     /// This does not establish live source or physical content authority.
     pub(in crate::projection::provider) fn export_segments(
@@ -256,6 +262,7 @@ pub(in crate::projection::provider) fn read_admitted_destination_prefix<'a>(
     // Fence the complete transition inventory before historical/FK readers.
     // Full outgoing interpretation still runs after incoming authentication.
     super::super::ordinary_transition::preflight_rows(c, cancel)?;
+    super::super::ordinary_transition::preflight_receipts(c, cancel)?;
     read_prefix_rows(c, marker, DestinationSchema::Admitted9(actual), cancel)
 }
 

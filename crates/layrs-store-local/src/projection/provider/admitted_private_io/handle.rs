@@ -78,6 +78,13 @@ impl AdmittedPrivateHandle {
         self.close_result(result)
     }
 
+    /// Close after a failed enclosing operation without starting admission SQL.
+    /// The error cannot become success. Rollback, pin verification and observed
+    /// native close still run through the same cleanup/quarantine machinery.
+    pub(in crate::projection) fn close_failed_operation<T>(self, cause: Cause) -> Result<T> {
+        self.close_result(Err(cause))
+    }
+
     /// Setup may have failed its geometry check, before SQL was permitted.
     /// Preserve that original error and close without starting validation SQL.
     pub(super) fn fail_setup(self, cause: Cause) -> Result<Self> {

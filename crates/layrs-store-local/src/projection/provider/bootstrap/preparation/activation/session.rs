@@ -482,28 +482,31 @@ mod managed_live_read_tests;
 #[cfg(all(test, windows))]
 mod managed_ordinary_allocation_tests;
 #[cfg(test)]
-mod managed_ordinary_export_owner_tests;
-#[cfg(test)]
 #[path = "session/managed_ordinary_checkout_tests.rs"]
 mod managed_ordinary_checkout_tests;
 #[cfg(test)]
-#[path = "session/managed_ordinary_installing_tests.rs"]
-mod managed_ordinary_installing_tests;
-#[cfg(test)]
-#[path = "session/managed_ordinary_ready_tests.rs"]
-mod managed_ordinary_ready_tests;
+mod managed_ordinary_export_owner_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_family_ready_tests.rs"]
 mod managed_ordinary_family_ready_tests;
 #[cfg(test)]
+#[path = "session/managed_ordinary_installing_tests.rs"]
+mod managed_ordinary_installing_tests;
+#[cfg(test)]
 mod managed_ordinary_metadata_tests;
+#[cfg(test)]
+#[path = "session/managed_ordinary_ready_tests.rs"]
+mod managed_ordinary_ready_tests;
 #[cfg(test)]
 #[path = "session/managed_ordinary_reservation_tests.rs"]
 mod managed_ordinary_reservation_tests;
 #[cfg(test)]
-mod managed_ordinary_staging_tests;
-#[cfg(test)]
 mod managed_ordinary_source_intent_tests;
+#[cfg(test)]
+#[path = "session/managed_ordinary_source_publication_tests.rs"]
+mod managed_ordinary_source_publication_tests;
+#[cfg(test)]
+mod managed_ordinary_staging_tests;
 #[cfg(test)]
 mod managed_post_publication_capture_tests;
 #[cfg(test)]

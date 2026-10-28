@@ -17,6 +17,7 @@ mod ready_data;
 mod reservation;
 mod reserve_plan;
 mod resident;
+mod source_publication;
 mod staging;
 #[cfg(test)]
 pub(super) mod verification_cancellation;
@@ -566,7 +567,10 @@ impl OrdinaryManagedExport<'_> {
             .take()
             .ok_or_else(|| invalid("ordinary export owner already finalized"))?;
         // Keep self.image and all file pins alive until observable SQL close.
-        access.run(|_| result)
+        match result {
+            Ok(value) => access.run(|_| Ok(value)),
+            Err(error) => access.close_failed_operation(error),
+        }
     }
 }
 

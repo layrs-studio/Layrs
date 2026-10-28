@@ -39,7 +39,7 @@ const HISTORY: &[u8] = b"ordinary family publication historical-only capture";
 const WITHHELD_ACK: &str = "ordinary family Ready successful close acknowledgement withheld";
 
 #[derive(Default)]
-struct Close {
+pub(super) struct Close {
     opens: usize,
     raw: usize,
     closes: usize,
@@ -97,10 +97,10 @@ impl WriterCloseObserver for Close {
 fn snapshot(path: &Path) -> Database {
     witness::read(path, witness::database)
 }
-fn text(value: &str) -> Cell {
+pub(super) fn text(value: &str) -> Cell {
     Cell::Text(value.as_bytes().to_vec())
 }
-fn copy_cell(cell: &Cell) -> Cell {
+pub(super) fn copy_cell(cell: &Cell) -> Cell {
     match cell {
         Cell::Null => Cell::Null,
         Cell::Integer(v) => Cell::Integer(*v),
@@ -110,7 +110,7 @@ fn copy_cell(cell: &Cell) -> Cell {
     }
 }
 
-fn family(
+pub(super) fn family(
     path: &Path,
     stage: &ProviderTransitionIntentRecord,
     required: &[FileManifest],

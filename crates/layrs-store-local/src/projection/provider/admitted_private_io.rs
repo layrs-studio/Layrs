@@ -37,6 +37,12 @@ pub(in crate::projection) struct DurableAdmission {
     inner: Arc<DurableInner>,
 }
 impl DurableAdmission {
+    /// A caller-owned transaction failed its explicit rollback. Invalidate all
+    /// retained clones before any later validation or cleanup can retry it.
+    pub(in crate::projection) fn invalidate_after_failed_rollback(&self) {
+        self.inner.rollback_failed.store(true, Ordering::Release);
+    }
+
     pub(in crate::projection) fn data(&self) -> &AdmittedOrdinaryData {
         &self.inner.data
     }

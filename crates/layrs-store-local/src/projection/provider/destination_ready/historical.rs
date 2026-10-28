@@ -28,6 +28,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
     prefix: &VerifiedDestinationPrefix<'_>,
     record: &ManagedAdmissionRecord,
     permit: &Schema9Permit<'_>,
+    outgoing: &super::super::ordinary_transition::OrdinaryOutgoing,
     cancel: Option<&Cancellation>,
 ) -> Result<FrozenReadyRows> {
     permit.require(c, marker, cancel)?;
@@ -144,6 +145,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
                 .transition_receipts
                 .count
                 .checked_add(1)
+                .and_then(|n| n.checked_add(outgoing.receipt_count()))
                 .ok_or_else(|| invalid("admitted receipt count overflow"))?,
         ),
         ("projection_provider_companions", closure.companions.count),

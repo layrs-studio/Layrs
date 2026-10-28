@@ -16,6 +16,31 @@ pub(in crate::projection) struct ContentScope<'a> {
 }
 
 impl<'a> ContentScope<'a> {
+    /// Observe a caller transaction's one explicit rollback and poison retained
+    /// admitted authority on failure, as admission-owned snapshots already do.
+    /// No validation query is issued by this cleanup operation.
+    pub(in crate::projection) fn rollback_transaction(&self, c: &Connection) -> Result<()> {
+        let result = c.execute_batch("ROLLBACK").map_err(Into::into);
+        #[cfg(windows)]
+        if result.is_err() {
+            if let Some(admission) = &self.admission {
+                admission.invalidate_after_failed_rollback();
+            }
+        }
+        result
+    }
+
+    /// Recheck retained filesystem identities without starting validation SQL.
+    /// This does not authenticate admission, recovery state or content bytes;
+    /// those checks remain the enclosing operation's separate responsibility.
+    pub(in crate::projection) fn verify_identity(&self, store: &ProjectionStore) -> Result<()> {
+        if self.marker != &store.marker || self.root != store.root {
+            return Err(invalid("content scope differs from owning projection"));
+        }
+        self.boundaries.verify(self.root, self.marker)?;
+        verify_boundaries(self.root, self.marker, self.metadata, self.database)
+    }
+
     pub(super) fn new(
         marker: &'a Marker,
         root: &'a Path,
