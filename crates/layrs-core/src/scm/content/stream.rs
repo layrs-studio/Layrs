@@ -60,12 +60,14 @@ impl FileManifestBuilder {
         if self.failed {
             return Err(invalid("builder previously failed"));
         }
+        // Every chunk id and the FileId were hashed here from the same bytes.
         FileManifest::new(
             FileId::from_digest(self.hash.finalize()),
             self.bytes,
             self.chunking,
             self.chunks,
         )
+        .map(FileManifest::into_proven)
     }
 }
 

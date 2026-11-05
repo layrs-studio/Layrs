@@ -40,10 +40,17 @@ pub trait AdmissionResolver {
     fn device_exists(&self, id: &DeviceId) -> bool;
 }
 
+/// A manifest built in this process from the bytes it hashed is proven
+/// (`FileManifest::is_proven`); its chunks' presence and admission are still
+/// required by closure. Any other manifest is verified by re-reading its
+/// chunks in order.
 pub fn validate_file_manifest_admission(
     manifest: &FileManifest,
     resolver: &impl AdmissionResolver,
 ) -> Result<()> {
+    if manifest.is_proven() {
+        return Ok(());
+    }
     manifest.verify_chunks(|id| resolver.chunk_bytes(id))
 }
 

@@ -93,11 +93,82 @@ pub trait ScmReader: Send + Sync {
     ) -> Result<Option<ReleasePublication>>;
 
     fn file_availability(&self, id: &FileId) -> Result<FileAvailability>;
+    /// Whether the File is recorded present with a valid manifest. Stores that
+    /// verify content on installation may answer from metadata without
+    /// re-hashing chunks; the default performs full `file_availability`.
+    /// Never use this as proof that bytes are intact: verify them at use.
+    fn file_present_metadata(&self, id: &FileId) -> Result<bool> {
+        Ok(matches!(self.file_availability(id)?, FileAvailability::Present(_)))
+    }
+    /// Manifest ids of a present File, possibly from metadata only; the
+    /// default performs full `file_availability`. Empty when absent.
+    fn file_manifest_ids_metadata(&self, id: &FileId) -> Result<Vec<FileManifestId>> {
+        Ok(match self.file_availability(id)? {
+            FileAvailability::Present(available) => available.verified_manifest_ids().to_vec(),
+            FileAvailability::Absent => Vec::new(),
+        })
+    }
+    /// `file_present_metadata` for many Files: the present ones. Stores may
+    /// answer in batches; the default asks File by File.
+    fn files_present_metadata(
+        &self,
+        files: &[&FileId],
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        let mut present = std::collections::BTreeSet::new();
+        for file in files {
+            if self.file_present_metadata(file)? {
+                present.insert((*file).clone());
+            }
+        }
+        Ok(present)
+    }
+    /// For each File present with a manifest durably admitted to `space`, its
+    /// lexicographically smallest such manifest, from metadata (as
+    /// `file_manifest_ids_metadata` then `object_admitted_metadata`). Files
+    /// without one, or whose metadata a backend cannot answer in bulk, are
+    /// absent: callers fall back to the per-File path, which reports errors.
+    fn admitted_manifests_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeMap<FileId, FileManifestId>> {
+        let mut admitted = std::collections::BTreeMap::new();
+        for file in files {
+            for manifest in self.file_manifest_ids_metadata(file)? {
+                let object = StoreObjectId::FileManifest(manifest.clone());
+                if self.object_admitted_metadata(&object, space)? {
+                    admitted.insert((*file).clone(), manifest);
+                    break;
+                }
+            }
+        }
+        Ok(admitted)
+    }
+    /// Whether the Tree is installed, from metadata where the Store verified
+    /// it on installation; the default reads it. Never proof of intact bytes.
+    fn tree_present_metadata(&self, id: &TreeId) -> Result<bool> {
+        Ok(self.get_tree(id)?.is_some())
+    }
+    /// Whether the chunk is installed. Stores that verify content on
+    /// installation may answer from metadata without reading the bytes; the
+    /// default reads the chunk. Never proof that bytes are intact at use.
+    fn chunk_present_metadata(&self, id: &ChunkId) -> Result<bool> {
+        Ok(self.get_chunk(id)?.is_some())
+    }
     fn object_admitted_to_space(
         &self,
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool>;
+    /// Durable admission from metadata only (admission row and object row),
+    /// without re-reading the object. Defaults to `object_admitted_to_space`.
+    fn object_admitted_metadata(
+        &self,
+        object_id: &StoreObjectId,
+        space_id: &SpaceId,
+    ) -> Result<bool> {
+        self.object_admitted_to_space(object_id, space_id)
+    }
     fn is_step_ancestor(&self, ancestor: &StepId, descendant: &StepId) -> Result<bool>;
     fn operation_reaches_step(&self, operation_id: &OperationId, step_id: &StepId) -> Result<bool>;
 

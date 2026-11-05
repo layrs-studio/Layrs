@@ -25,8 +25,8 @@ pub use admission::{
 };
 pub use canonical::{canonical_json, domain_separated_bytes};
 pub use content::{
-    Chunk, ChunkingDescriptor, FileChunk, FileManifest, FileManifestBuilder, FileManifestVerifier,
-    FileState,
+    BASE_CHUNK_BYTES, Chunk, ChunkingDescriptor, FileChunk, FileManifest, FileManifestBuilder,
+    FileManifestVerifier, FileState, MAX_FIXED_CHUNK_BYTES, fixed_chunk_bytes, fixed_chunking,
 };
 pub use error::{Result, ScmError};
 pub use ids::{
