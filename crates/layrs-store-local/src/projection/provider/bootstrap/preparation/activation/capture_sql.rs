@@ -58,10 +58,20 @@ fn private(
     Ok(value)
 }
 
-fn family(held: &outcome::PublicationPins, proof: &PrivateCaptureProof) -> CauseResult<()> {
+fn family(
+    held: &outcome::PublicationPins,
+    proof: &PrivateCaptureMutationValidation,
+) -> CauseResult<()> {
     let state = database_io::read(&held.family.catalog, |c| {
-        held.family
-            .validate_capture_catalog(c, &held.artifacts.allocation, proof, None)
+        held.family.validate_source_companion_catalog(
+            c,
+            &held.artifacts.allocation,
+            &crate::projection::shared::source_companion::SourceCompanionFamilyContext {
+                publication: proof.publication(),
+                pending: None,
+            },
+            None,
+        )
     })?;
     if valid_read(state)? != ActivationRegistration::Ready {
         return Err(invalid("capture family owner is not ready"));
@@ -94,7 +104,7 @@ fn observe_locked(
         private(c, held, root, mount, activation)
     })?;
     let value = valid_read(state)?;
-    family(held, value.capture())?;
+    family(held, &value)?;
     boundary(held, root)?;
     Ok(value)
 }
@@ -168,7 +178,7 @@ fn write(
         verify(successor.capture())?;
         // This prospective family check also proves an installed mapping or
         // already durable protection before the private COMMIT is attempted.
-        family(held, successor.capture())?;
+        family(held, &successor)?;
         if let Some(checkpoint) = checkpoint {
             checkpoint_boundary(checkpoint, held, root)?;
         }

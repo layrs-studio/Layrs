@@ -28,6 +28,9 @@ pub(in crate::projection) fn plan_admitted_import(
     // This fences the actual admitted schema and FORMAT, and follows the database's own
     // incoming admission before using any caller-selected outgoing DATA.
     let admitted = read_admitted_import(c, marker, cancel)?;
+    if admitted.ready().plan.denial_coverage.is_some() {
+        return Err(invalid("admitted denial re-export is not integrated"));
+    }
     format::validate_identity(&destination)?;
     codec::raw_digest(image_digest)?;
     if destination == marker.identity {
@@ -67,6 +70,7 @@ pub(in crate::projection) fn plan_admitted_import(
         destination_identity: destination,
         ancestry_root_receipt: Some(binding.incoming_receipt_id.clone()),
         closure: ImportClosure {
+            denial_observations: None,
             snapshots: provisional_rowset(snapshot_count),
             selections: provisional_rowset(selection_count),
             captures: provisional_rowset(version.capture_count),

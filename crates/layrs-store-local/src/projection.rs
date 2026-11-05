@@ -3,9 +3,9 @@
 //! network access or synthesize incomplete SCM Operations.
 mod capture;
 pub use capture::{
-    CAPTURE_CHUNK_BYTES, CaptureFaults, CapturePoint, CapturedChange, CapturedFile, CapturedPatch,
-    CapturedTarget, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES, MAX_PATCH_BYTES, NoCaptureFaults,
-    VerifiedCapturedFile,
+    CaptureFaults, CapturePoint, CapturedChange, CapturedFile, CapturedPatch, CapturedTarget,
+    NoCaptureFaults, VerifiedCapturedFile, CAPTURE_CHUNK_BYTES, MAX_CAPTURE_BYTES,
+    MAX_CAPTURE_FILE_BYTES, MAX_PATCH_BYTES,
 };
 mod database;
 mod directory_move;
@@ -16,60 +16,46 @@ mod format;
 mod install;
 mod offline;
 mod provider;
-pub use provider::{
-    NoProviderSchemaUpgradeFaults, PROJECTION_PROVIDER_SCHEMA_VERSION,
-    PROVIDER_CATALOG_AGGREGATE_MAX_BYTES, PROVIDER_CATALOG_MAX_BYTES,
-    PROVIDER_CATALOG_MAX_DESCRIPTORS, PROVIDER_COMPANION_AGGREGATE_MAX_BYTES,
-    PROVIDER_COMPANION_MAX_DELETIONS, PROVIDER_COMPANION_MAX_FILES, PROVIDER_DESCRIPTOR_MAX_BYTES,
-    ProviderSchemaUpgradeFaults, ProviderSchemaUpgradePoint,
-};
 #[cfg(windows)]
 pub use provider::{
-    OrdinaryManagedExport,
-    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
+    declare_provider_sqlite_process_profile, read_provider_ticket_document, OrdinaryManagedExport,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
     ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
-    ProviderActiveOpenFailure, ProviderActiveReopened, ProviderActiveRangeFailure,
+    ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+    ProviderBootstrapAttempt, ProviderBootstrapBinding, ProviderBootstrapCatalog,
+    ProviderBootstrapCause, ProviderBootstrapCreate, ProviderBootstrapFailure,
+    ProviderBootstrapFailureKind, ProviderBootstrapInspection, ProviderBootstrapPhase,
+    ProviderBootstrapReceipt, ProviderBootstrapRecovery, ProviderBootstrapSource,
+    ProviderBootstrapSqlWrite, ProviderBootstrapState, ProviderBootstrapWriteEffect,
+    ProviderBootstrapWriteReport, ProviderBootstrapWriteReportProvenance,
+    ProviderBootstrapWriteState, ProviderBootstrapWriteStep, ProviderBootstrapWriterOperation,
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
+    ProviderCatalogDescriptor, ProviderControlCommitDisposition, ProviderControlLocation,
+    ProviderControlPublicationOutcome, ProviderControlPublished, ProviderControlWithheld,
+    ProviderDatabaseInspection, ProviderDatabaseScope, ProviderDatabaseStatus, ProviderFormatState,
+    ProviderJournalRefusal, ProviderPreparationFailure, ProviderPreparationFailureKind,
+    ProviderPreparationOutcome, ProviderPreparationSqlPhase, ProviderPreparationWithheld,
+    ProviderPreparationWriteEffect, ProviderPreparationWriteReport,
+    ProviderPreparationWriteReportProvenance, ProviderPreparationWriteState,
+    ProviderPreparationWriteStep, ProviderPrepared, ProviderPreparedBinding,
+    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
+    ProviderReceiptReference, ProviderRecoveryEffect, ProviderRecoveryEffectState,
     ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
     ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
     ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
-    ProviderRecoveryExportStep,
-    ProviderPreparedOpenFailure, ProviderPreparedReopened, ProviderRangeFailure,
-    ProviderBootstrapSource, ProviderSourceDescriptor,
-    ProviderBootstrapCatalog, ProviderCatalogDescriptor,
-    ProviderBootstrapAttempt,
-    ProviderBootstrapWriterOperation,
-    ProviderBootstrapWriteReportProvenance,
-    ProviderBootstrapReceipt,
-    ProviderBootstrapCreate,
-    ProviderBootstrapSqlWrite,
-    ProviderBootstrapWriteStep,
-    ProviderBootstrapWriteState,
-    ProviderBootstrapWriteEffect,
-    ProviderBootstrapWriteReport,
-    ProviderControlPublicationOutcome,
-    ProviderControlCommitDisposition,
-    ProviderControlPublished,
-    ProviderControlWithheld,
-    ProviderPreparationFailure, ProviderPreparationFailureKind,
-    ProviderPreparationOutcome, ProviderPreparationSqlPhase,
-    ProviderPreparationWithheld, ProviderPreparationWriteEffect,
-    ProviderPreparationWriteReport, ProviderPreparationWriteState,
-    ProviderPreparationWriteStep, ProviderPreparationWriteReportProvenance,
-    ProviderPrepared,
-    PROVIDER_SQLITE_SOURCE_ID, ProviderBootstrapBinding, ProviderBootstrapCause,
-    ProviderBootstrapFailure, ProviderBootstrapFailureKind, ProviderBootstrapInspection,
-    ProviderBootstrapPhase, ProviderBootstrapRecovery, ProviderBootstrapState,
-    ProviderControlLocation, ProviderDatabaseInspection, ProviderDatabaseScope,
-    ProviderDatabaseStatus, ProviderFormatState, ProviderJournalRefusal,
-    ProviderPreparedBinding, ProviderReceiptReference, ProviderRecoveryEffect,
-    ProviderRecoveryEffectState, ProviderRollbackTrigger, ProviderSqliteBuildProfile,
-    ProviderSqliteProcessDeclaration,
-    ProviderSqliteProfileError, declare_provider_sqlite_process_profile,
-    read_provider_ticket_document,
+    ProviderRecoveryExportStep, ProviderRollbackTrigger, ProviderSourceDescriptor,
+    ProviderSqliteBuildProfile, ProviderSqliteProcessDeclaration, ProviderSqliteProfileError,
+    ProviderTransitionSource, PROVIDER_SQLITE_SOURCE_ID,
+};
+pub use provider::{
+    NoProviderSchemaUpgradeFaults, ProviderSchemaUpgradeFaults, ProviderSchemaUpgradePoint,
+    PROJECTION_PROVIDER_SCHEMA_VERSION, PROVIDER_CATALOG_AGGREGATE_MAX_BYTES,
+    PROVIDER_CATALOG_MAX_BYTES, PROVIDER_CATALOG_MAX_DESCRIPTORS,
+    PROVIDER_COMPANION_AGGREGATE_MAX_BYTES, PROVIDER_COMPANION_MAX_DELETIONS,
+    PROVIDER_COMPANION_MAX_FILES, PROVIDER_DESCRIPTOR_MAX_BYTES,
 };
 mod refresh;
 mod retention;
@@ -125,7 +111,10 @@ pub enum ProjectionStoreError {
     Io(io::Error),
     Database(rusqlite::Error),
     Invalid(String),
-    Stale { expected: u64, actual: u64 },
+    Stale {
+        expected: u64,
+        actual: u64,
+    },
     #[cfg(windows)]
     ProviderBootstrap(Box<ProviderBootstrapFailure>),
     #[cfg(windows)]
@@ -278,7 +267,7 @@ impl ProjectionStore {
     pub fn state(&self) -> Result<VersionedProjection> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access: &mut format::Access| -> Result<_> {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let result = database::current(&access.connection)?;
             access.verify()?;
             Ok(result)
@@ -334,14 +323,19 @@ impl ProjectionStore {
                 [generation],
             )?;
             // Validate pinned directory/file identities before making SQL durable.
-            format::verify_boundaries(&self.root, &self.marker, &access.metadata, &access.database)?;
+            format::verify_boundaries(
+                &self.root,
+                &self.marker,
+                &access.metadata,
+                &access.database,
+            )?;
             tx.commit()?;
             access.verify()?;
             Ok(VersionedProjection {
                 generation,
                 digest,
                 snapshot: next.clone(),
-        })
+            })
         })
     }
 }

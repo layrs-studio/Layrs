@@ -2,7 +2,7 @@
 //! reader fail closed, including readers holding an already-open store handle.
 use super::*;
 use layrs_core::projection::ProjectionSelection;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 pub(super) const SQL: &str = "CREATE TABLE projection_selections(generation INTEGER PRIMARY KEY REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,digest TEXT NOT NULL CHECK(length(digest)=64),payload BLOB NOT NULL CHECK(length(payload)<=16777216)) STRICT;";
 
@@ -98,7 +98,7 @@ impl ProjectionStore {
     pub fn state_with_selection(&self) -> Result<(VersionedProjection, ProjectionSelection)> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access: &mut format::Access| -> Result<_> {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let state = database::current(&access.connection)?;
             let selection = current(&access.connection)?;
             selection.validate_snapshot(&state.snapshot)?;

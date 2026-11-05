@@ -445,3 +445,58 @@ owned!(
         });
     }
 );
+
+owned!(
+    ready_refuses_companion_without_closed_data_and_incomplete_union_before_append,
+    {
+        with_fixture(|s, c, family, f, closure| {
+            let before = c.total_changes();
+            let original = f.data();
+            let subset = &f.required[..f.required.len() - 1];
+            let bad_union = ManagedReadyData {
+                required: subset,
+                ..f.data()
+            };
+            let inputs = f.inputs(closure, &bad_union);
+            assert!(finalize_staged_or_replay(s, c, family, &inputs, None).is_err());
+            assert_eq!(c.total_changes(), before);
+            assert!(!c.query_row("SELECT EXISTS(SELECT 1 FROM projection_provider_transition_receipts WHERE transaction_id=?1)",[f.staging.transaction_id.as_str()],|r|r.get::<_,bool>(0)).unwrap());
+            let mut staging =
+                ProviderTransitionIntentRecord::decode(&f.staging.encode().unwrap()).unwrap();
+            staging.plan.companion_id = Some(format!("blake3:{}", "7".repeat(64)));
+            let mut ready =
+                ProviderTransitionIntentRecord::decode(&staging.encode().unwrap()).unwrap();
+            ready.state = TransitionState::Ready;
+            let mut receipt =
+                ProviderTransitionReceiptRecord::decode(&f.receipt.encode().unwrap()).unwrap();
+            receipt.companion_id = staging.plan.companion_id.clone();
+            receipt.transition_plan_digest = staging.plan.digest().unwrap();
+            receipt.owner_identity_digest = staging
+                .destination
+                .as_ref()
+                .unwrap()
+                .owner_digest(&staging.plan)
+                .unwrap();
+            receipt.destination_proof_digest = staging
+                .destination
+                .as_ref()
+                .unwrap()
+                .digest(&staging.plan)
+                .unwrap();
+            ready.receipt_id = Some(receipt.digest().unwrap());
+            let bad_rows = ManagedReadyData {
+                ready: &ready,
+                receipt: &receipt,
+                ..original
+            };
+            let base = f.inputs(closure, &bad_rows);
+            let inputs = ManagedReadyInputs {
+                staging: &staging,
+                ..base
+            };
+            assert!(finalize_staged_or_replay(s, c, family, &inputs, None).is_err());
+            assert_eq!(c.total_changes(), before);
+            strict_staging(c, f, closure);
+        });
+    }
+);

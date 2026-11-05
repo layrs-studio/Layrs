@@ -13,11 +13,15 @@ mod managed_image;
 mod managed_journal;
 mod managed_plan;
 pub(in crate::projection::provider) use capture_image::hash_reader as hash_managed_file;
+pub(in crate::projection::provider) use managed_image::complete::{
+    plan as plan_complete_managed_image, VerifiedCompleteManagedImage,
+};
 pub(in crate::projection::provider) use managed_image::stream::{
     copy_verified as copy_managed_file, copy_verified_chunk as copy_managed_chunk,
 };
 pub(in crate::projection::provider) use managed_plan::{
-    derive_ordinary_data, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest,
+    derive_ordinary_data, derive_reconciled_data, derive_reconciled_denial_data,
+    require_manifest_union, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest,
 };
 mod managed_staging;
 mod ranges;
@@ -59,6 +63,7 @@ pub use report::{
 };
 pub use session::{
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+    ProviderTransitionSource,
 };
 
 pub enum ProviderActivationOutcome {

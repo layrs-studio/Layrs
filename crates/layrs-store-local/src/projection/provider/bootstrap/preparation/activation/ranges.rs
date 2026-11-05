@@ -184,10 +184,13 @@ pub(super) fn read(
         manifest = None;
     }
     let family = database_io::read_cancellable(&held.family.catalog, cancel, |c| {
-        if held.family.validate_capture_catalog(
+        if held.family.validate_source_companion_catalog(
             c,
             &held.artifacts.allocation,
-            &inspected.capture,
+            &crate::projection::shared::source_companion::SourceCompanionFamilyContext {
+                publication: &inspected,
+                pending: None,
+            },
             Some(cancel),
         )? != ActivationRegistration::Ready
         {

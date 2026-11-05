@@ -15,17 +15,17 @@ use crate::projection::provider::records::preparation::{
 use std::{path::Path, sync::Arc};
 
 pub use activation::{
-    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderActivationFailure, ProviderActivationFailureKind, ProviderActivationOutcome,
     ProviderActivationSqlPhase, ProviderActivationWithheld, ProviderActivationWriteEffect,
     ProviderActivationWriteReport, ProviderActivationWriteReportProvenance,
     ProviderActivationWriteState, ProviderActivationWriteStep, ProviderActive,
     ProviderActiveOpenFailure, ProviderActiveRangeFailure, ProviderActiveReopened,
     ProviderActiveSession, ProviderActiveSessionCause, ProviderActiveSessionWithheld,
+    ProviderCaptureAcknowledgement, ProviderCaptureFailure, ProviderCaptureStep,
     ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
     ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
     ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
-    ProviderRecoveryExportStep,
+    ProviderRecoveryExportStep, ProviderTransitionSource,
 };
 pub use ranges::ProviderRangeFailure;
 pub use reopen::{ProviderPreparedOpenFailure, ProviderPreparedReopened};

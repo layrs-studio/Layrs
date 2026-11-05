@@ -28,6 +28,22 @@ pub(super) fn ready_suffix(
     checkout: Option<&super::super::checkout_journal::ExpectedCheckout>,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
+    // The current document is distinct from the inherited prefix. Authenticate
+    // its complete body and the observation that the suffix stores, on every
+    // Ready read; a compact v2 receipt alone is never sufficient.
+    if let Some(body) =
+        super::super::destination_coverage::read_current(c, inputs.data.ready, cancel)?
+    {
+        let plan = &inputs.data.ready.plan;
+        body.require_observation_rows(
+            inputs.data.observation,
+            inputs.selection(),
+            plan.observation.generation,
+            &plan.observation.snapshot_digest,
+            &plan.observation.selection_digest,
+            cancel,
+        )?;
+    }
     let checkout_rows = match checkout {
         None => 0,
         Some(expected) => {
@@ -43,6 +59,16 @@ pub(super) fn ready_suffix(
     };
     let closure = &inputs.prefix.closure;
     let counts = [
+        (
+            "projection_observations",
+            add(
+                closure
+                    .denial_observations
+                    .as_ref()
+                    .map_or(0, |rows| rows.count),
+                u64::from(inputs.data.ready.plan.denial_coverage.is_some()),
+            )?,
+        ),
         ("projection_snapshots", add(closure.snapshots.count, 2)?),
         ("projection_selections", add(closure.selections.count, 2)?),
         ("projection_captures", add(closure.captures.count, 1)?),
@@ -64,14 +90,23 @@ pub(super) fn ready_suffix(
             "projection_provider_transition_receipts",
             add(closure.transition_receipts.count, 1)?,
         ),
-        ("projection_provider_companions", closure.companions.count),
+        (
+            "projection_provider_companions",
+            add(closure.companions.count, u64::from(inputs.has_companion()))?,
+        ),
         (
             "projection_provider_companion_files",
-            closure.companion_files.count,
+            add(
+                closure.companion_files.count,
+                inputs.companion_header().map_or(0, |h| h.file_count),
+            )?,
         ),
         (
             "projection_provider_companion_deletions",
-            closure.companion_deletions.count,
+            add(
+                closure.companion_deletions.count,
+                inputs.companion_header().map_or(0, |h| h.deletion_count),
+            )?,
         ),
         (
             "projection_content",
@@ -148,7 +183,7 @@ pub(super) fn ready_suffix(
             "SELECT EXISTS(SELECT 1 FROM projection_snapshots WHERE generation=?1 AND digest=?2 AND parent_digest=?3 AND payload=?4)",
             params![generation,digest,parent,bytes], |r| r.get(0),
         )?;
-        let selection_payload = selection::encode(inputs.source.selection())?;
+        let selection_payload = selection::encode(inputs.selection())?;
         let selection_digest = database::digest(generation, Some(digest), &selection_payload);
         let selected: bool = c.query_row(
             "SELECT EXISTS(SELECT 1 FROM projection_selections WHERE generation=?1 AND digest=?2 AND payload=?3)",
@@ -181,6 +216,13 @@ pub(super) fn ready_suffix(
         "SELECT EXISTS(SELECT 1 FROM projection_claims WHERE root_id=?1 AND digest=?2 AND kind=?3 AND owner=?4)",
         params![claim.root_id,claim.digest,claim.kind,claim.owner], |r| r.get::<_,bool>(0),
     )? { return Err(invalid("destination Ready private import claim differs")); }
+    if let Some(companion) = inputs.companion {
+        companion.rows.require_new_rows(c, cancel)?;
+        companion.rows.require_inherited_rows(c, cancel)?;
+    }
+    if let Some(retained) = inputs.retained_companion {
+        retained.require_rows(c, cancel)?;
+    }
     let receipt = inputs.data.receipt;
     let (id, owner, tx, companion, bytes): (String,String,String,Option<String>,Vec<u8>) = c.query_row(
         "SELECT id,owner_identity_digest,transaction_id,companion_id,payload FROM projection_provider_transition_receipts WHERE id=?1 AND length(payload)<=65536",

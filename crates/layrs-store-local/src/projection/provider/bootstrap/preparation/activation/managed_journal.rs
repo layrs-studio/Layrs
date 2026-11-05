@@ -14,6 +14,21 @@ use crate::projection::provider::{
 };
 use layrs_vfs::Cancellation;
 
+pub(super) mod denial_plan;
+pub(super) mod denial_recovery;
+pub(super) mod denial_start;
+
+/// Legacy allocation has no retained current-document/funding scope. Reject
+/// coverage before acquiring locks or creating destination artifacts.
+pub(super) fn require_legacy_allocation(
+    intent: &ProviderTransitionIntentRecord,
+) -> CauseResult<()> {
+    if intent.plan.denial_coverage.is_some() {
+        return Err(invalid("managed allocation requires a denial-aware driver"));
+    }
+    Ok(())
+}
+
 fn valid<T>(state: database_io::ReadState<T>) -> CauseResult<T> {
     match state {
         database_io::ReadState::Valid(value) => Ok(value),
@@ -61,7 +76,7 @@ fn family(
     state: &PrivateActiveTransitionValidation,
     cancel: &Cancellation,
 ) -> CauseResult<()> {
-    let registration = valid(database_io::read_cancellable(
+    let registration = valid(database_io::read_cancellable_strict(
         &held.family.catalog,
         cancel,
         |c| {
@@ -90,6 +105,7 @@ pub(super) fn observe_planned(
     planned: &ProviderTransitionIntentRecord,
     cancel: &Cancellation,
 ) -> CauseResult<()> {
+    require_legacy_allocation(planned)?;
     if planned.role != TransitionRole::Source
         || planned.state != TransitionState::Planned
         || planned.destination.is_some()
@@ -115,6 +131,7 @@ pub(super) fn observe_copying(
     copying: &ProviderTransitionIntentRecord,
     cancel: &Cancellation,
 ) -> CauseResult<()> {
+    require_legacy_allocation(copying)?;
     if copying.role != TransitionRole::Source
         || copying.state != TransitionState::Copying
         || copying.destination.is_none()
@@ -144,7 +161,7 @@ fn observe_unregistered_source(
     cancel.check()?;
     attempt.verify(&held.artifacts, &held.family)?;
     boundary(held, root)?;
-    let state = valid(database_io::read_cancellable(
+    let state = valid(database_io::read_cancellable_strict(
         &held.artifacts.database,
         cancel,
         |c| {
@@ -184,7 +201,7 @@ fn observe_unregistered_source(
     )?)?;
     require_next(&state, planned)?;
     family(held, &state, cancel)?;
-    let registered = valid(database_io::read_cancellable(
+    let registered = valid(database_io::read_cancellable_strict(
         &held.family.catalog,
         cancel,
         |c| {
@@ -227,6 +244,7 @@ pub(super) fn begin(
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<SourceIntentEffect> {
+    require_legacy_allocation(next)?;
     if next.role != TransitionRole::Source
         || next.state != TransitionState::Planned
         || next.destination.is_some()
@@ -251,6 +269,49 @@ pub(super) fn begin(
         None,
         next,
         Some(image),
+        None,
+        close,
+        cancel,
+    )
+}
+
+pub(super) fn begin_complete(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    image: &mut managed_image::complete::VerifiedCompleteManagedImage<'_, '_>,
+    next: &ProviderTransitionIntentRecord,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<SourceIntentEffect> {
+    require_legacy_allocation(next)?;
+    if next.role != TransitionRole::Source
+        || next.state != TransitionState::Planned
+        || next.destination.is_some()
+        || next.reservation.is_some()
+        || next.receipt_id.is_some()
+    {
+        return Err(invalid(
+            "managed source begin requires a fresh Planned intent",
+        ));
+    }
+    attempt.verify(&held.artifacts, &held.family)?;
+    let ImportSource::Provider { version, .. } = &next.plan.source_prefix.source else {
+        return Err(invalid("managed source begin requires provider source"));
+    };
+    image.revalidate(cancel)?;
+    image.require_retained(root, &version.effective_image_digest, cancel)?;
+    write(
+        held,
+        root,
+        mount,
+        activation,
+        attempt,
+        None,
+        next,
+        Some(image.retained()),
         None,
         close,
         cancel,
@@ -303,6 +364,8 @@ pub(super) fn bind_allocation(
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<SourceIntentEffect> {
+    require_legacy_allocation(previous)?;
+    require_legacy_allocation(next)?;
     if previous.role != TransitionRole::Source
         || previous.state != TransitionState::Planned
         || previous.destination.is_some()
@@ -351,6 +414,8 @@ pub(super) fn stage_source(
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<SourceIntentEffect> {
+    require_legacy_allocation(copying)?;
+    require_legacy_allocation(staging)?;
     staging.require_transition(copying)?;
     if copying.role != TransitionRole::Source
         || copying.state != TransitionState::Copying
@@ -410,7 +475,7 @@ fn write(
         Ok(())
     };
     let inspect = |c: &Connection| private(c, held, root, mount, activation, cancel);
-    let initial = valid(database_io::read_cancellable(
+    let initial = valid(database_io::read_cancellable_strict(
         &held.artifacts.database,
         cancel,
         inspect,
@@ -450,8 +515,9 @@ fn write(
     })();
     // Any uncertain commit/close ends this attempt. No readback or subsequent
     // effect is permitted until a separate retry obtains fresh read admission.
+    let result = managed_destination::rollback(bare.connection(), result);
     let effect = bare.finish_writer(result, close)?;
-    let durable = valid(database_io::read_cancellable(
+    let durable = valid(database_io::read_cancellable_strict(
         &held.artifacts.database,
         cancel,
         inspect,

@@ -195,7 +195,7 @@ impl ProjectionStore {
         }
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access: &mut format::Access| -> Result<_> {
-        database::require_idle(&access.connection)?;
+        access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
         let mut statement=access.connection.prepare(
             "SELECT sequence FROM projection_captures WHERE sequence<?1 ORDER BY sequence DESC LIMIT ?2")?;
         let sequences = statement
@@ -207,8 +207,12 @@ impl ProjectionStore {
         let next_before =
             (sequences.len() > usize::from(limit)).then(|| sequences[usize::from(limit) - 1]);
         let mut captures = Vec::new();
+        drop(statement);
         for sequence in sequences.into_iter().take(usize::from(limit)) {
-            captures.push(capture::storage::load(&access.connection, self, sequence)?);
+            // Admitted provenance is interpreted only through the borrowed scope.
+            captures.push(access.with_content(|c, scope| {
+                capture::storage::load_with_scope(c, self, sequence, Some(scope))
+            })?);
         }
         access.verify()?;
         Ok(ProjectionHistoryPage {

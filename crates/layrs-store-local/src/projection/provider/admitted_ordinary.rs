@@ -45,3 +45,20 @@ pub(in crate::projection) fn inspect(
         data::detach(marker, &proof, cancel)
     })
 }
+
+/// Bounded dispatch hint only, never authority: whether the stored admission
+/// record's SourcePublished declares C14 denial coverage. A caller acting on
+/// `true` must still run the complete `inspect`; `false` keeps the legacy
+/// live-transition guards, which themselves refuse an undeclared C14 image.
+pub(in crate::projection) fn declares_denial(c: &Connection) -> Result<bool> {
+    let present: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='projection_managed_admission')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok(false);
+    }
+    let (_, published, _) = super::managed_admission::read_record(c, None)?;
+    Ok(published.plan.denial_coverage.is_some())
+}

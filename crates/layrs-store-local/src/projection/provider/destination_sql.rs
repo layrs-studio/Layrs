@@ -30,6 +30,53 @@ pub(in crate::projection::provider) fn initialize_empty(
     intent: &ProviderTransitionIntentRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
+    initialize_empty_inner(
+        c, marker, source, allocation, prepared, activation, prefix, intent, None, cancel,
+    )
+}
+
+/// The current document belongs to this transition, outside the inherited
+/// prefix rowset. Persist it atomically with the initial destination intent.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn initialize_empty_with_current(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    current: &super::destination_coverage::SourceCurrentDeniedCoverage<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    initialize_empty_inner(
+        c,
+        marker,
+        source,
+        allocation,
+        prepared,
+        activation,
+        prefix,
+        intent,
+        Some(current),
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn initialize_empty_inner(
+    c: &Connection,
+    marker: &format::Marker,
+    source: &ProviderBootstrapSource,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    activation: &ProviderActivationRecord,
+    prefix: &ProviderImportPrefixRecord,
+    intent: &ProviderTransitionIntentRecord,
+    current: Option<&super::destination_coverage::SourceCurrentDeniedCoverage<'_>>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid(
@@ -39,6 +86,15 @@ pub(in crate::projection::provider) fn initialize_empty(
     destination_validation::require_inputs(
         marker, source, allocation, prepared, activation, prefix, intent,
     )?;
+    match (intent.plan.denial_coverage.as_ref(), current) {
+        (None, None) => {}
+        (Some(_), Some(current)) => current.require_destination(intent, cancel)?,
+        _ => {
+            return Err(invalid(
+                "destination initialization requires exact current document scope",
+            ))
+        }
+    }
     let foreign_keys: u64 = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     let version: u64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if foreign_keys != 1 || version != 0 || !database_io::schema_inventory(c)?.is_empty() {
@@ -85,6 +141,9 @@ pub(in crate::projection::provider) fn initialize_empty(
         VALUES(?1,'destination','copying',0,NULL,NULL,?2,?3)",
         params![intent.transaction_id, intent.encode()?, intent.digest()?],
     )?;
+    if let Some(current) = current {
+        current.copy_fresh_into(c, intent, cancel)?;
+    }
     destination_validation::read_empty(
         c, marker, source, allocation, prepared, activation, prefix, intent, cancel,
     )?;
@@ -117,6 +176,14 @@ pub(in crate::projection::provider) fn promote_or_replay_copied(
         ));
     }
     proof.require_source_connection(source_connection)?;
+    if intent.plan.denial_coverage.is_some() {
+        let foreign_keys: u64 = destination.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        if foreign_keys != 1 {
+            return Err(invalid(
+                "current document prefix copy requires foreign keys",
+            ));
+        }
+    }
     // A typed reader can fail because of SQLite or an uncertain reference
     // close, not just because this is the other state. Never swallow its error.
     super::import_validation::require_schema(

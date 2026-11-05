@@ -4,8 +4,9 @@
 //! The caller must retain its validated source transaction, complete native
 //! checkpoint, byte verification and whole-scope authority observations around
 //! use of this result. In particular a cached preimage never grants access.
-//! The new recovery intents require a future durable codec/receipt protocol;
-//! they cannot be passed implicitly to the old bootstrap or deletion codecs.
+//! New recovery intents have an explicit companion_v2 header protocol through
+//! companions::OwnedCompanionData; they still cannot be passed implicitly to
+//! the legacy managed bootstrap/deletion codecs or treated as Ready evidence.
 use super::{
     cancellation,
     import_validation::VerifiedImportClosure,
@@ -27,8 +28,10 @@ use layrs_core::{
 use layrs_vfs::Cancellation;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(in crate::projection::provider) mod companions;
 mod image;
 mod source;
+pub(in crate::projection::provider) mod source_sql;
 pub(super) use image::{CompleteSourceImageData, ImageFileData};
 pub(super) use source::{InheritedCompanionData, ReconcileSourceData};
 
@@ -111,7 +114,7 @@ pub(super) struct TransitionReconcileData<'a> {
 /// representation and persist ALL intent variants before publishing Ready.
 pub(super) fn reconcile<'a>(
     source: &'a ReconcileSourceData<'a>,
-    image: &CompleteSourceImageData<'a>,
+    image: &CompleteSourceImageData<'_, '_>,
     observation: &TransitionObservationData,
     cancel: Option<&Cancellation>,
 ) -> Result<TransitionReconcileData<'a>> {
@@ -153,6 +156,33 @@ pub(super) fn reconcile<'a>(
             },
         )?;
     }
+    // V2 artifacts retain alternate exact representations outside the current
+    // image. Re-export must not collapse these to projection_content's FileId PK.
+    for artifact in source.inherited {
+        cancellation::check(cancel)?;
+        if let super::records::companion_v2::CompanionHeaderRef::V2(header) = artifact.header {
+            for representation in &header.preserved_representations {
+                add_representation(
+                    &mut union,
+                    RepresentationData {
+                        file_id: representation.file_id.clone(),
+                        manifest_id: representation.manifest_id.clone(),
+                        bytes: representation.bytes,
+                    },
+                )?;
+            }
+        }
+    }
+    for (file, (manifest, bytes)) in &source.original_descriptors {
+        add_representation(
+            &mut union,
+            RepresentationData {
+                file_id: file.clone(),
+                manifest_id: manifest.clone(),
+                bytes: *bytes,
+            },
+        )?;
+    }
     for file in image.entries.values().filter_map(|e| e.file.as_ref()) {
         add_representation(&mut union, representation(file.manifest))?;
     }
@@ -182,11 +212,21 @@ pub(super) fn reconcile<'a>(
             executable: f.executable,
         });
         let relocated = actual_entry.is_some_and(|e| e.relocated);
+        let fresh_entry = fresh_entries.get(&path).copied();
+        // Unchanged bytes still belong to the original complete image. Skip
+        // their companion only when C can reconstruct them from its checkout.
+        // A Reserved file or Tree frontier removes that representation even
+        // though it is not a local edit; preserve it through the companion.
+        let retained_in_checkout = observation.selection().includes(&path)
+            && fresh_fences.check_path(path.as_str()).is_ok()
+            && fresh_entry
+                .is_some_and(|entry| entry.state != EntryState::Reserved && state(entry) == actual);
         // Includes accepted work unchanged since Capture AND deletion of a
         // captured creation whose remote generation was already Absent.
         if actual == original
             && actual == effective
             && !relocated
+            && retained_in_checkout
             && original_entry.is_some_and(|entry| {
                 source.input.selection.includes(&path) && entry.state != EntryState::Reserved
             })
@@ -207,7 +247,6 @@ pub(super) fn reconcile<'a>(
                 && (entry.state == EntryState::Absent || state(entry).is_some())
         }) && old_fences.check_path(path.as_str()).is_ok()
             && !relocated;
-        let fresh_entry = fresh_entries.get(&path).copied();
         let authorized = source_eligible
             && observation.selection().includes(&path)
             && fresh_fences.check_path(path.as_str()).is_ok()

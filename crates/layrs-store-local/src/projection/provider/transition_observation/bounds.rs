@@ -58,9 +58,30 @@ impl PathBudget {
         snapshot: &ProjectionSnapshot,
         cancel: Option<&Cancellation>,
     ) -> Result<()> {
+        self.snapshot_with_denied(snapshot, &[], cancel)
+    }
+    pub(super) fn snapshot_with_denied(
+        &mut self,
+        snapshot: &ProjectionSnapshot,
+        denied: &[DeniedPathData],
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        cancellation::check(cancel)?;
+        // The fresh visible and denied paths describe one namespace. Source,
+        // selection and descriptor copies retain their own count/byte bounds;
+        // all categories still contribute to the shared index-work budget.
+        let count = snapshot
+            .entries
+            .len()
+            .checked_add(denied.len())
+            .ok_or_else(|| invalid("transition observation path count exceeds bound"))?;
         self.paths(
-            snapshot.entries.len(),
-            snapshot.entries.iter().map(|entry| &entry.path),
+            count,
+            snapshot
+                .entries
+                .iter()
+                .map(|entry| &entry.path)
+                .chain(denied.iter().map(|item| &item.path)),
             cancel,
         )?;
         codec::preflight(snapshot, codec::SNAPSHOT_MAX)?;
@@ -82,13 +103,6 @@ impl PathBudget {
         // input; settle the serialized budget BEFORE that clone/canonical Vec.
         codec::preflight(selection, codec::SELECTION_MAX - 128)?;
         Ok(())
-    }
-    pub(super) fn denied(
-        &mut self,
-        denied: &[DeniedPathData],
-        cancel: Option<&Cancellation>,
-    ) -> Result<()> {
-        self.paths(denied.len(), denied.iter().map(|item| &item.path), cancel)
     }
     pub(super) fn descriptors(
         &mut self,
@@ -122,6 +136,9 @@ impl PathBudget {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 struct Count {
     bytes: u64,

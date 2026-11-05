@@ -276,10 +276,15 @@ fn hot_populated_eight_owner_restores_committed_evidence_but_reclaims_nothing() 
         vec![ProjectionRecoveryReason::WorktreeRollback]
     );
     assert_bytes(&db(&owner), &spilled);
-    // Maintenance is the existing explicit, metadata-only hot rollback route.
-    // It cannot proceed from rollback to accepting/interpreting provider rows.
-    assert_fence(family.evict_unretained(), "provider evidence");
-    assert_fence(family.reconcile_retention(), "provider evidence");
+    // Maintenance opens owners strictly read-only (no hot rollback authority
+    // since 34ec205): it refuses the unreadable owner before any reclamation
+    // and leaves the spilled image and journal untouched.
+    assert_hot_refusal(family.evict_unretained());
+    assert_hot_refusal(family.reconcile_retention());
+    assert_bytes(&db(&owner), &spilled);
+    // Test-only SQLite rollback through a writer restores committed evidence;
+    // nothing below may have been reclaimed by the refused maintenance.
+    drop(database::connect(&db(&owner), true).unwrap());
     let c = database::connect(&db(&owner), false).unwrap();
     assert_eq!(
         c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))

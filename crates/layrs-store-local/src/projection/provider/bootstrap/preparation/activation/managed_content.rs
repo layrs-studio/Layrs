@@ -3,11 +3,20 @@
 //! This lease exposes no general catalog, cleanup, installation or protection API.
 use super::*;
 mod checkout;
+mod companion;
+pub(super) use companion::CompanionPins;
+mod denial;
+pub(super) use denial::commit_denial;
+pub(super) use denial::DenialPins;
+#[cfg(test)]
+#[path = "managed_content/companion_guards.rs"]
+mod companion_guards;
 mod exact;
 mod protection;
 mod publication;
 mod ready;
 mod ready_data;
+mod source_protection;
 mod source_publication;
 use crate::projection::{
     provider::{
@@ -21,7 +30,7 @@ use crate::projection::{
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             Record,
         },
-        validation::PrivateActiveCaptureValidation,
+        validation::PrivateActivePublicationValidation,
     },
     shared::provider_access::provider_import::content::{
         ImportContentInputs, ImportContentReservation, ImportContentState, ImportReservationEffect,
@@ -33,20 +42,22 @@ use layrs_vfs::Cancellation;
 /// Mutable image access cannot escape the retained checkpoint. All other
 /// fields are fixed inputs; every operation reinterprets their private SQL and
 /// family state under short owner/catalog gates before admitting any effect.
-pub(super) struct ManagedImportLease<'h, 'd, 'a, 'c> {
+pub(super) struct ManagedImportLease<'h, 'i, 'd, 'a, 'c> {
     held: &'h outcome::PublicationPins,
     root: &'h layrs_vfs::ProviderRootGuard,
     mount: &'h ProviderActiveMountRecord,
     activation: &'h ProviderActivationRecord,
     attempt: &'h CaptureAttemptLock,
     destination: &'h managed_allocation::ManagedDestinationAllocation<'d>,
-    image: &'h mut managed_image::VerifiedManagedImage<'a, 'c>,
+    image: companion::ManagedImage<'i, 'a, 'c>,
+    companion: Option<companion::CompanionLeaseData<'h>>,
+    denial: Option<denial::DenialLeaseData<'h>>,
     staging: &'h ProviderTransitionIntentRecord,
     manifests: &'h [FileManifest],
     fresh: &'h ProjectionSnapshot,
 }
 
-impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
+impl<'h, 'i, 'd, 'a, 'c> ManagedImportLease<'h, 'i, 'd, 'a, 'c> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open(
         held: &'h outcome::PublicationPins,
@@ -55,7 +66,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         activation: &'h ProviderActivationRecord,
         attempt: &'h CaptureAttemptLock,
         destination: &'h managed_allocation::ManagedDestinationAllocation<'d>,
-        image: &'h mut managed_image::VerifiedManagedImage<'a, 'c>,
+        image: &'i mut managed_image::VerifiedManagedImage<'a, 'c>,
         staging: &'h ProviderTransitionIntentRecord,
         manifests: &'h [FileManifest],
         fresh: &'h ProjectionSnapshot,
@@ -68,7 +79,9 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             activation,
             attempt,
             destination,
-            image,
+            image: companion::ManagedImage::Legacy(image),
+            companion: None,
+            denial: None,
             staging,
             manifests,
             fresh,
@@ -97,6 +110,22 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
 
     fn require_intent(&self) -> CauseResult<()> {
         self.staging.validate_fields()?;
+        if self.companion.is_some() && self.denial.is_some()
+            || self.staging.plan.denial_coverage.is_some() != self.retained_coverage().is_some()
+        {
+            return Err(invalid(
+                "managed content requires matching closed denial mode",
+            ));
+        }
+        if let Some(data) = &self.denial {
+            if data.rows.header().is_some()
+                || self.staging.plan.companion_id.is_some()
+                || self.staging.plan.companion_files.count != 0
+                || self.staging.plan.companion_deletions.count != 0
+            {
+                return Err(invalid("plain denial lease refuses companion rows"));
+            }
+        }
         if self.staging.role != TransitionRole::Source
             || self.staging.state != TransitionState::Staging
             || self.staging.plan.kind != ProviderImportKind::ManagedOrdinary
@@ -125,7 +154,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
 
     fn inputs<'p>(
         &'p self,
-        proof: &'p PrivateActiveCaptureValidation,
+        proof: &'p PrivateActivePublicationValidation,
         destination_staging: &'p ProviderTransitionIntentRecord,
     ) -> CauseResult<ImportContentInputs<'p>> {
         Ok(ImportContentInputs {
@@ -142,17 +171,53 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             source_staging: self.staging,
             destination_staging,
             required: self.manifests,
+            source_context: self.retained_source_context(proof),
         })
+    }
+
+    fn retained_coverage(
+        &self,
+    ) -> Option<&crate::projection::provider::records::denied_coverage::DerivedDeniedCoverage> {
+        self.companion
+            .as_ref()
+            .and_then(|data| data.coverage)
+            .or_else(|| self.denial.as_ref().map(|data| data.coverage))
+    }
+
+    fn retained_rows(
+        &self,
+    ) -> Option<&crate::projection::provider::transition_reconcile::companions::OwnedCompanionData>
+    {
+        self.companion
+            .as_ref()
+            .map(|data| data.publication.rows())
+            .or_else(|| self.denial.as_ref().map(|data| data.rows))
+    }
+
+    fn retained_source_context<'p>(
+        &'p self,
+        full: &'p PrivateActivePublicationValidation,
+    ) -> Option<crate::projection::shared::source_companion::SourceCompanionFamilyContext<'p>> {
+        match (&self.companion, &self.denial) {
+            (Some(data), None) => Some(data.context(full)),
+            (None, Some(_)) => Some(
+                crate::projection::shared::source_companion::SourceCompanionFamilyContext {
+                    publication: full,
+                    pending: None,
+                },
+            ),
+            _ => None,
+        }
     }
 
     fn read_family(
         &self,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination_staging: &ProviderTransitionIntentRecord,
         cancel: &Cancellation,
     ) -> CauseResult<ImportContentState> {
         let inputs = self.inputs(proof, destination_staging)?;
-        managed_destination::valid(database_io::read_cancellable(
+        managed_destination::valid(database_io::read_cancellable_strict(
             &self.held.family.catalog,
             cancel,
             |c| {
@@ -181,7 +246,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         &self,
         cancel: &Cancellation,
         action: impl FnOnce(
-            &PrivateActiveCaptureValidation,
+            &PrivateActivePublicationValidation,
             &ProviderTransitionIntentRecord,
         ) -> CauseResult<T>,
     ) -> CauseResult<T> {
@@ -192,7 +257,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         &self,
         cancel: &Cancellation,
         action: impl FnOnce(
-            &PrivateActiveCaptureValidation,
+            &PrivateActivePublicationValidation,
             &ProviderTransitionIntentRecord,
             u64,
         ) -> CauseResult<T>,
@@ -206,6 +271,32 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
     /// cannot nominate arbitrary filesystem paths for checkout writes.
     fn expected_checkout(&self, cancel: &Cancellation) -> CauseResult<ExpectedCheckout> {
         cancel.check()?;
+        if let Some(rows) = self.retained_rows() {
+            let files = rows
+                .authorized_files()
+                .iter()
+                .map(|f| CheckoutFile {
+                    path: f.path.clone(),
+                    manifest_id: f.manifest_id.clone(),
+                    file_id: f.file_id.clone(),
+                    bytes: f.bytes,
+                    executable: f.executable,
+                })
+                .collect::<Vec<_>>();
+            let deleted = rows
+                .overlay()
+                .iter()
+                .filter(|c| c.replacement.is_none())
+                .map(|c| c.path.clone())
+                .collect::<Vec<_>>();
+            return ExpectedCheckout::new(
+                self.staging,
+                &files,
+                &deleted,
+                self.image.digest(),
+                Some(cancel),
+            );
+        }
         let files: Vec<_> = self
             .image
             .files()
@@ -241,7 +332,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         expected: &ExpectedCheckout,
         cancel: &Cancellation,
         action: impl FnOnce(
-            &PrivateActiveCaptureValidation,
+            &PrivateActivePublicationValidation,
             &ProviderTransitionIntentRecord,
             u64,
             Option<CheckoutJournal>,
@@ -261,7 +352,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         checkout: Option<&ExpectedCheckout>,
         cancel: &Cancellation,
         action: impl FnOnce(
-            &PrivateActiveCaptureValidation,
+            &PrivateActivePublicationValidation,
             &ProviderTransitionIntentRecord,
             u64,
             Option<CheckoutJournal>,
@@ -276,15 +367,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             true,
         )?;
         self.boundary(cancel)?;
-        managed_destination::with_source(
-            self.held,
-            self.root,
-            self.mount,
-            self.activation,
-            self.attempt,
-            self.staging,
-            self.destination,
-            cancel,
+        self.with_source(cancel,
             |source_c, proof, closure| {
                 self.image.require_owner(
                     self.root,
@@ -293,16 +376,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                 )?;
                 // Do not treat a matching union digest as proof that the
                 // caller supplied the whole source/history/current-image set.
-                let derived = managed_plan::rederive_reservation(
-                    source_c,
-                    closure,
-                    self.image,
-                    proof,
-                    self.fresh,
-                    self.staging,
-                    self.manifests,
-                    cancel,
-                )?;
+                let derived = self.rederive(source_c, closure, proof, cancel)?;
                 let destination_staging = managed_destination::destination_intent(self.staging)?;
                 let prepared = self
                     .held
@@ -310,7 +384,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                     .prepared
                     .as_ref()
                     .ok_or_else(|| invalid("managed content source prepared receipt absent"))?;
-                let journal = managed_destination::valid(database_io::read_cancellable(
+                let journal = managed_destination::valid(database_io::read_cancellable_strict(
                     self.destination.destination_database(),
                     cancel,
                     |c| {
@@ -405,7 +479,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
 
     fn reserve_under_authority(
         &self,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination_staging: &ProviderTransitionIntentRecord,
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
@@ -456,6 +530,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
             c.execute_batch("COMMIT")?;
             Ok(effect)
         })();
+        let result = source_protection::rollback(bare.connection(), result);
         bare.finish_writer(result, close)
     }
 
@@ -485,4 +560,100 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         self.boundary(cancel)?;
         Ok(effect)
     }
+}
+
+/// Actual Store commit boundary for a retained complete source and closed
+/// observation. Client-core acquisition/revalidation must finish before this
+/// is entered. This API is internal, not an HTTP/CLI authorization adapter.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_companion<'h, 'i, 'd, 'a, 'c>(
+    held: &'h outcome::PublicationPins,
+    root: &'h layrs_vfs::ProviderRootGuard,
+    mount: &'h ProviderActiveMountRecord,
+    activation: &'h ProviderActivationRecord,
+    attempt: &'h CaptureAttemptLock,
+    destination: &'h managed_allocation::ManagedDestinationAllocation<'d>,
+    image: &'i mut managed_image::complete::VerifiedCompleteManagedImage<'a, 'c>,
+    staging: &'h ProviderTransitionIntentRecord,
+    publication: &'h crate::projection::provider::source_companion::SourceCompanionPublication<'h>,
+    anchor: &'h session::ProviderTransitionSource<'h>,
+    observation: &'h crate::projection::provider::transition_observation::TransitionObservationData,
+    metadata: u64,
+    pins: &mut CompanionPins<'h>,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<crate::projection::provider::records::import::ProviderTransitionReceiptRecord> {
+    let mut lease = ManagedImportLease::open_companion_with_progress(
+        held,
+        root,
+        mount,
+        activation,
+        attempt,
+        destination,
+        image,
+        staging,
+        publication,
+        anchor,
+        observation,
+        metadata,
+        Some(pins),
+        cancel,
+    )?;
+    lease.with_published_companion(pins, close, cancel, |_lease, family, _source| {
+        Ok(
+            crate::projection::provider::records::import::ProviderTransitionReceiptRecord::decode(
+                &family.receipt().encode()?,
+            )?,
+        )
+    })
+}
+
+/// Denial-aware Store boundary. The live anchor must have been acquired before
+/// Planned and the caller retains the same closed body, image and retry pins.
+/// Client/remote authority acquisition is separate; no compact reference grants it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_denial_companion<'h, 'i, 'd, 'a, 'c>(
+    held: &'h outcome::PublicationPins,
+    root: &'h layrs_vfs::ProviderRootGuard,
+    mount: &'h ProviderActiveMountRecord,
+    activation: &'h ProviderActivationRecord,
+    attempt: &'h CaptureAttemptLock,
+    destination: &'h managed_allocation::ManagedDestinationAllocation<'d>,
+    image: &'i mut managed_image::complete::VerifiedCompleteManagedImage<'a, 'c>,
+    staging: &'h ProviderTransitionIntentRecord,
+    publication: &'h crate::projection::provider::source_companion::SourceCompanionPublication<'h>,
+    anchor: &'h session::ProviderTransitionSource<'h>,
+    observation: &'h crate::projection::provider::transition_observation::TransitionObservationData,
+    metadata: u64,
+    coverage: &'h crate::projection::provider::records::denied_coverage::DerivedDeniedCoverage,
+    prospective: &crate::projection::provider::source_companion::ProspectiveCompanionCost,
+    pins: &mut CompanionPins<'h>,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<crate::projection::provider::records::import::ProviderTransitionReceiptRecord> {
+    let mut lease = ManagedImportLease::open_denial_companion_with_progress(
+        held,
+        root,
+        mount,
+        activation,
+        attempt,
+        destination,
+        image,
+        staging,
+        publication,
+        anchor,
+        observation,
+        metadata,
+        coverage,
+        prospective,
+        Some(pins),
+        cancel,
+    )?;
+    lease.with_published_companion(pins, close, cancel, |_lease, family, _source| {
+        Ok(
+            crate::projection::provider::records::import::ProviderTransitionReceiptRecord::decode(
+                &family.receipt().encode()?,
+            )?,
+        )
+    })
 }

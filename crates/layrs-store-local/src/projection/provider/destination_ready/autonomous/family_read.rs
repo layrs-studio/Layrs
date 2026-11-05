@@ -238,6 +238,18 @@ pub(super) fn read_at_member(
         quota_bytes: ready.plan.quota_bytes,
     };
     exact.validate()?;
+    // These are family retention DATA only. No historical B database/native
+    // path is reopened and C's own private claim/root remains mandatory.
+    shared::source_companion::retained_namespace(c, cancel, |source| {
+        let b = &source.binding.destination;
+        if b.owner == exact.owner && b.transaction_id == exact.transaction_id {
+            if *b != exact {
+                return Err(invalid("autonomous source retention C binding differs"));
+            }
+            source.require_union(&root.manifests, cancel)?;
+        }
+        Ok(())
+    })?;
     Ok(FamilyData {
         marker_bytes,
         required: root.manifests,

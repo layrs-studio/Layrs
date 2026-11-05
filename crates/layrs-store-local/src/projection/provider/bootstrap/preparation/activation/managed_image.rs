@@ -19,6 +19,9 @@ use std::io::{self, Read, Write};
 
 pub(in crate::projection::provider) mod stream;
 
+#[path = "managed_image/complete.rs"]
+pub(in crate::projection::provider) mod complete;
+
 /// Immutable source manifests are borrowed rather than duplicating the fixed
 /// catalog. Only hashed native replacements own new manifest metadata.
 pub(super) enum ManagedManifest<'a> {

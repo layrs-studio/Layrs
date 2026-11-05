@@ -205,6 +205,7 @@ fn source_fixture(c: &Connection) -> (format::Marker, ProviderImportPrefixRecord
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             snapshots: rowset(1),
             selections: rowset(1),
             captures: rowset(1),

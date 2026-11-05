@@ -348,14 +348,16 @@ fn ordinary_alias_refusal(store: &ProjectionStore, family: &Path) {
 }
 
 #[test]
-#[ignore = "ROOT source release and audited fresh C: fixture required; child1200 / outer1260"]
+#[ignore = "ROOT source release and audited fresh C: fixture required; child2400 / outer2460"]
 fn managed_admitted_restore_cancels_prejournal_and_partial_installations_then_retries() {
+    // 2026-10-27 r22: 929s. r204: phase 6/10 at the 1200s budget after the
+    // admitted readers grew; the budget, not the protocol, was exceeded.
     child::run(
         concat!(
             module_path!(),
             "::managed_admitted_restore_cancels_prejournal_and_partial_installations_then_retries"
         ),
-        1200,
+        2400,
         || {
             child::declare();
             let root = super::managed_restore_recovery_tests::admitted_destination();

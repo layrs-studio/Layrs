@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 mod admitted_plan;
 pub(in crate::projection) use admitted_plan::plan_admitted_import;
 mod ancestry;
+pub(in crate::projection::provider) use ancestry::read_ancestry;
 mod copied;
 mod copy;
 mod destination_prefix;
@@ -37,6 +38,7 @@ mod restore_history;
 mod rows;
 pub(in crate::projection::provider) use rows::content_mapping_rowset_data;
 mod scoped;
+pub(in crate::projection::provider) use scoped::validate_outgoing_companion;
 mod source;
 use provider_proof::{ProviderModeBinding, ProviderProof};
 pub(in crate::projection::provider) use scoped::compute_scoped_closure;
@@ -432,7 +434,9 @@ fn bind_provider_inputs(
     })
 }
 
-pub(in crate::projection::provider) use copied::require_exact_copied_rows;
+pub(in crate::projection::provider) use copied::{
+    require_exact_copied_rows, require_exact_copied_rows_with_current,
+};
 pub(in crate::projection) use copy::copy_verified_prefix;
 
 /// Evidence-bearing family of the connection supplied to `require_schema`.

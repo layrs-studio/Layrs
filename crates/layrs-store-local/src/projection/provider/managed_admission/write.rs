@@ -9,9 +9,7 @@ use super::super::{
     published_handoff::PublishedForReady,
 };
 use super::*;
-use crate::projection::{
-    capture::storage::load_metadata_for_origin, shared::exact_protection::ExactProtection,
-};
+use crate::projection::shared::exact_protection::ExactProtection;
 use layrs_core::scm::FileManifest;
 use rusqlite::params;
 
@@ -40,10 +38,57 @@ pub(in crate::projection::provider) fn admit_ready(
     published: &PublishedForReady<'_, '_>,
     cancel: Option<&Cancellation>,
 ) -> Result<AdmissionWriteEffect> {
+    admit_ready_with_coverage(
+        c,
+        marker,
+        family_c,
+        source_c,
+        ready,
+        published,
+        AdmissionCoverage::Legacy,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn admit_denial_ready(
+    c: &Connection,
+    marker: &format::Marker,
+    family_c: &Connection,
+    source_c: &Connection,
+    ready: &VerifiedManagedReady<'_, '_>,
+    published: &PublishedForReady<'_, '_>,
+    cancel: Option<&Cancellation>,
+) -> Result<AdmissionWriteEffect> {
+    admit_ready_with_coverage(
+        c,
+        marker,
+        family_c,
+        source_c,
+        ready,
+        published,
+        AdmissionCoverage::Denial,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_ready_with_coverage(
+    c: &Connection,
+    marker: &format::Marker,
+    family_c: &Connection,
+    source_c: &Connection,
+    ready: &VerifiedManagedReady<'_, '_>,
+    published: &PublishedForReady<'_, '_>,
+    coverage: AdmissionCoverage,
+    cancel: Option<&Cancellation>,
+) -> Result<AdmissionWriteEffect> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid("managed admission requires caller transaction"));
     }
+    coverage.require(ready.ready(), ready.receipt())?;
+    coverage.require(published.published(), published.receipt())?;
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == 9 {
         read_admitted_import(c, marker, cancel)?;
@@ -62,6 +107,7 @@ pub(in crate::projection::provider) fn admit_ready(
     ready.require(c, family_c, cancel)?;
     published.require(source_c, cancel)?;
     let snapshot = read_managed_ready(c, marker, family_c, cancel)?.into_snapshot()?;
+    coverage.require(&snapshot.ready, &snapshot.receipt)?;
     let prefix = read_destination_prefix(c, marker, cancel)?;
     let intent = &snapshot.ready;
     if published.receipt() != &snapshot.receipt
@@ -134,33 +180,10 @@ pub(in crate::projection::provider) fn admit_ready(
         published.published(),
     )?;
     let payload = record.encode()?;
-    let observation = prefix.source()?.initial();
-    let placement = super::super::records::activation::activation_snapshot(prefix.source()?)?;
-    let capture = load_metadata_for_origin(
-        c,
-        intent.plan.capture_sequence,
-        &marker.identity,
-        intent.plan.placement_generation,
-    )?;
-    let (source_size, destination_size) = managed_budget::original_staging_sizes(intent)?;
-    let base = managed_budget::base_metadata_floor(
-        prefix.metadata_bytes(c, cancel)?,
-        observation,
-        &placement,
-        &capture,
-        &intent.plan,
-        prefix.source()?.selection(),
-        source_size,
-        destination_size,
-    )?;
-    let floor = managed_budget::complete_metadata_floor(
-        base,
-        intent,
-        &snapshot.receipt,
-        &claim,
-        &snapshot.required,
-        cancel,
-    )?;
+    // The complete actual Ready reader already charged its real observation,
+    // placement, selection, current denial document and companion rows. Do not
+    // reconstruct a legacy original-source floor for a fresh C14 observation.
+    let floor = snapshot.metadata_floor;
     let budget = managed_budget::admission_budget(
         floor,
         snapshot.expected.files().len() as u64,

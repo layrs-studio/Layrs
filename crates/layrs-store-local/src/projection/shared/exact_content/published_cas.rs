@@ -39,6 +39,59 @@ impl PublishedCasProof {
         Ok(())
     }
 
+    /// Copy one exact member from the retained, already verified immutable CAS
+    /// handles. No source callback, SQL, hydration or alternate representation.
+    pub(in crate::projection) fn copy_exact_file(
+        &self,
+        binding: &ExactBinding,
+        required: &[FileManifest],
+        manifest: &FileManifest,
+        output: &mut dyn std::io::Write,
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        self.require(binding, required, cancel)?;
+        if !required.iter().any(|m| m == manifest) {
+            return Err(invalid("pinned CAS copy outside exact union"));
+        }
+        let mut full = blake3::Hasher::new();
+        full.update(b"layrs-file-v1\0");
+        let mut total = 0u64;
+        let mut scratch = [0u8; 65536];
+        for part in manifest.chunks() {
+            let name = object_name(part.chunk_id().as_str())?;
+            let pin = self
+                .objects
+                .get(&(false, name.to_owned()))
+                .ok_or_else(|| invalid("pinned CAS chunk absent"))?;
+            let mut reader = pin.file();
+            reader.seek(SeekFrom::Start(0))?;
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"layrs-chunk-v1\0");
+            let mut remaining = part.byte_length();
+            while remaining != 0 {
+                cancel.check()?;
+                let count = remaining.min(scratch.len() as u64) as usize;
+                reader.read_exact(&mut scratch[..count])?;
+                hash.update(&scratch[..count]);
+                full.update(&scratch[..count]);
+                output.write_all(&scratch[..count])?;
+                remaining -= count as u64;
+                total += count as u64;
+            }
+            if reader.read(&mut [0u8; 1])? != 0
+                || format!("blake3:{}", hash.finalize()) != part.chunk_id().as_str()
+            {
+                return Err(invalid("pinned CAS checkout chunk differs"));
+            }
+        }
+        if total != manifest.byte_length()
+            || format!("blake3:{}", full.finalize()) != manifest.file_id().as_str()
+        {
+            return Err(invalid("pinned CAS checkout FileId differs"));
+        }
+        self.require(binding, required, cancel)
+    }
+
     /// No SQL and no byte read. Identity checks retain the lifecycle and pins;
     /// callers must not cache this proof across unrelated filesystem effects.
     pub(in crate::projection) fn require(
@@ -55,6 +108,95 @@ impl PublishedCasProof {
             ));
         }
         Ok(())
+    }
+}
+
+/// Independently verified existing offline bytes. This is deliberately not a
+/// Published installation/receipt/protection witness. It performs no SQL or
+/// creation, and retains ordinary immutable CAS handles through later effects.
+pub(in crate::projection) struct ResidentCasProof {
+    storage: ExactStorage,
+    required: Vec<FileManifest>,
+    objects: BTreeMap<(bool, String), PinnedFile>,
+}
+pub(in crate::projection) fn pin_resident_cas(
+    storage: ExactStorage,
+    required: &[FileManifest],
+    cancel: &Cancellation,
+) -> Result<ResidentCasProof> {
+    let mut result = ResidentCasProof {
+        storage,
+        required: required.to_vec(),
+        objects: BTreeMap::new(),
+    };
+    for manifest in required {
+        cancel.check()?;
+        verify_manifest(&result.storage, &mut result.objects, manifest, cancel)?;
+    }
+    result.verify(cancel)?;
+    Ok(result)
+}
+impl ResidentCasProof {
+    pub(in crate::projection) fn verify(&self, cancel: &Cancellation) -> Result<()> {
+        self.storage.verify()?;
+        for ((manifest, name), pin) in &self.objects {
+            cancel.check()?;
+            require_same_file(
+                if *manifest {
+                    &self.storage.manifests
+                } else {
+                    &self.storage.chunks
+                },
+                name,
+                pin,
+            )?;
+        }
+        Ok(())
+    }
+    pub(in crate::projection) fn read_exact_at(
+        &self,
+        file: &FileId,
+        offset: u64,
+        output: &mut [u8],
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        self.verify(cancel)?;
+        let manifest = self
+            .required
+            .iter()
+            .find(|m| m.file_id() == file)
+            .ok_or_else(|| invalid("offline source FileId has no retained resident-byte owner"))?;
+        let end = offset
+            .checked_add(output.len() as u64)
+            .filter(|end| *end <= manifest.byte_length())
+            .ok_or_else(|| invalid("offline resident source range differs"))?;
+        let mut copied = 0usize;
+        for chunk in manifest.chunks() {
+            let chunk_end = chunk
+                .offset()
+                .checked_add(chunk.byte_length())
+                .ok_or_else(|| invalid("offline resident chunk range overflow"))?;
+            let start = offset.max(chunk.offset());
+            let stop = end.min(chunk_end);
+            if start >= stop {
+                continue;
+            }
+            let name = object_name(chunk.chunk_id().as_str())?;
+            let pin = self
+                .objects
+                .get(&(false, name.to_owned()))
+                .ok_or_else(|| invalid("offline resident pinned chunk absent"))?;
+            let count = usize::try_from(stop - start)
+                .map_err(|_| invalid("offline resident copy bound"))?;
+            let mut reader = pin.file();
+            reader.seek(SeekFrom::Start(start - chunk.offset()))?;
+            reader.read_exact(&mut output[copied..copied + count])?;
+            copied += count;
+        }
+        if copied != output.len() {
+            return Err(invalid("offline source pinned range incomplete"));
+        }
+        self.verify(cancel)
     }
 }
 

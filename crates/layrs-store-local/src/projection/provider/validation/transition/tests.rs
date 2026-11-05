@@ -67,6 +67,7 @@ fn planned(
         inherited_segments: rowset(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: rowset(2),
             selections: rowset(1),
@@ -90,6 +91,7 @@ fn planned(
         state: TransitionState::Planned,
         local_generation: activated.generation,
         plan: TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix_id,
             source_prefix: prefix,

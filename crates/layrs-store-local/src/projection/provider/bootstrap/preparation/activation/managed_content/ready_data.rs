@@ -12,6 +12,7 @@ use crate::projection::{
     provider::{
         destination_ready::{ManagedReadyClaim, ManagedReadyData, ManagedReadyOverlay},
         records::{
+            denied_coverage::DerivedDeniedCoverage,
             import::{
                 ImportRowset, ImportSource, ProviderImportKind, ProviderImportPrefixRecord,
                 ProviderTransitionReceiptRecord,
@@ -46,7 +47,195 @@ impl OwnedReadyData {
         protection: &ExactProtection,
         cancel: &Cancellation,
     ) -> Result<Self> {
+        if source_staging.plan.companion_id.is_some()
+            || source_staging.plan.companion_files.count != 0
+            || source_staging.plan.companion_deletions.count != 0
+        {
+            return Err(invalid("legacy Ready constructor refuses companions"));
+        }
+        Self::build(
+            derived,
+            source_staging,
+            image.digest(),
+            image.files(),
+            image.deletions(),
+            required,
+            protection,
+            None,
+            None,
+            cancel,
+        )
+    }
+
+    pub(super) fn new_companion(
+        derived: ManagedPlanData,
+        source_staging: &ProviderTransitionIntentRecord,
+        image_digest: &str,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        rows: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        Self::new_companion_inner(
+            derived,
+            source_staging,
+            image_digest,
+            required,
+            protection,
+            rows,
+            None,
+            cancel,
+        )
+    }
+
+    /// Closed C14 DATA; the caller must retain and revalidate actual source/C
+    /// SQL bodies independently. This constructor grants no Ready authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_companion_with_coverage(
+        derived: ManagedPlanData,
+        source_staging: &ProviderTransitionIntentRecord,
+        image_digest: &str,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        rows: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+        coverage: &DerivedDeniedCoverage,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        Self::new_companion_inner(
+            derived,
+            source_staging,
+            image_digest,
+            required,
+            protection,
+            rows,
+            Some(coverage),
+            cancel,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_companion_inner(
+        derived: ManagedPlanData,
+        source_staging: &ProviderTransitionIntentRecord,
+        image_digest: &str,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        rows: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+        coverage: Option<&DerivedDeniedCoverage>,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        let header = rows
+            .header()
+            .ok_or_else(|| invalid("companion Ready requires closed new header"))?;
+        header.require_prefix(&source_staging.plan.source_prefix)?;
+        if source_staging.plan.companion_id.as_deref() != Some(header.digest()?.as_str())
+            || source_staging.plan.companion_files.count != header.file_count
+            || source_staging.plan.companion_files.digest != header.files_digest
+            || source_staging.plan.companion_deletions.count != header.deletion_count
+            || source_staging.plan.companion_deletions.digest != header.deletions_digest
+            || derived.capture.changes != rows.overlay()
+            || required != rows.manifests()
+        {
+            return Err(invalid("companion Ready closed rows/union differ"));
+        }
+        Self::build(
+            derived,
+            source_staging,
+            image_digest,
+            &[],
+            &[],
+            required,
+            protection,
+            Some(rows),
+            coverage,
+            cancel,
+        )
+    }
+
+    /// Complete C14 rows with no new companion/header. They still define the
+    /// authorized overlay/checkout and the full exact protected union.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_denial(
+        derived: ManagedPlanData,
+        source_staging: &ProviderTransitionIntentRecord,
+        image_digest: &str,
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        rows: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+        coverage: &DerivedDeniedCoverage,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
+        if rows.header().is_some()
+            || source_staging.plan.companion_id.is_some()
+            || source_staging.plan.companion_files.count != 0
+            || source_staging.plan.companion_deletions.count != 0
+            || derived.capture.changes != rows.overlay()
+            || required != rows.manifests()
+        {
+            return Err(invalid("plain denial Ready closed rows/union differ"));
+        }
+        let mut owned = Self::build(
+            derived,
+            source_staging,
+            image_digest,
+            &[],
+            &[],
+            required,
+            protection,
+            Some(rows),
+            Some(coverage),
+            cancel,
+        )?;
+        // Without s, C's immutable metadata envelope must already cover the
+        // future B receipt and both B terminal projections before C Ready.
+        let mut source_ready = ProviderTransitionIntentRecord::decode(&source_staging.encode()?)?;
+        source_ready.state = TransitionState::Ready;
+        source_ready.receipt_id = Some(owned.receipt.digest()?);
+        source_ready.require_transition(source_staging)?;
+        source_ready.require_receipt(&owned.receipt)?;
+        let mut published = ProviderTransitionIntentRecord::decode(&source_ready.encode()?)?;
+        published.state = TransitionState::Published;
+        published.require_transition(&source_ready)?;
+        published.require_receipt(&owned.receipt)?;
+        owned.metadata_floor = super::source_publication::source_metadata_floor(
+            owned.metadata_floor,
+            &source_ready,
+            &published,
+            &owned.receipt,
+        )?;
+        if owned.metadata_floor > owned.derived.quota_bytes {
+            return Err(invalid(
+                "plain denial Ready source publication envelope insufficient",
+            ));
+        }
+        Ok(owned)
+    }
+
+    fn build(
+        derived: ManagedPlanData,
+        source_staging: &ProviderTransitionIntentRecord,
+        image_digest: &str,
+        files: &[ManagedFile<'_>],
+        deletions: &[ManagedDeletion],
+        required: &[FileManifest],
+        protection: &ExactProtection,
+        companions: Option<
+            &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+        >,
+        coverage: Option<&DerivedDeniedCoverage>,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
         cancel.check()?;
+        if source_staging.plan.denial_coverage.is_some() != coverage.is_some() {
+            return Err(invalid("Ready constructor denial coverage mode differs"));
+        }
+        let denial_coverage = match coverage {
+            Some(body) => {
+                body.record().require_intent(source_staging, Some(cancel))?;
+                Some(body.record().reference()?)
+            }
+            None => None,
+        };
         if derived.capture.changes.len() > 1024
             || derived.required_manifests.len() > 100_000
             || required.len() > 100_000
@@ -74,8 +263,7 @@ impl OwnedReadyData {
             || derived.quota_bytes != derived.plan.quota_bytes
             || derived.plan.kind != ProviderImportKind::ManagedOrdinary
             || derived.plan.companion_id.is_some()
-            || derived.plan.companion_files.count != 0
-            || derived.plan.companion_deletions.count != 0
+                != companions.and_then(|rows| rows.header()).is_some()
         {
             return Err(invalid(
                 "Ready data differs from exact managed source Staging",
@@ -90,7 +278,7 @@ impl OwnedReadyData {
         else {
             return Err(invalid("Ready data requires provider prefix"));
         };
-        if image.digest() != version.effective_image_digest
+        if image_digest != version.effective_image_digest
             || version.generation.checked_add(1) != Some(derived.plan.observation.generation)
             || derived.plan.observation.generation.checked_add(1)
                 != Some(derived.plan.placement_generation)
@@ -123,7 +311,12 @@ impl OwnedReadyData {
             || derived.observation.observed_policy_set_id != derived.plan.observation.policy_set_id
             || derived.observation.observed_authorization_epoch
                 != derived.plan.observation.authorization_epoch
-            || derived.plan.observation.selection_digest != version.selection_digest
+            || derived.plan.observation.selection_digest
+                != coverage
+                    .map_or(&version.selection_digest, |body| {
+                        &body.record().observation_selection_digest
+                    })
+                    .as_str()
             || derived.capture.schema_version != "layrs.projection-capture.v1"
             || derived.capture.identity != prefix.destination_identity
             || derived.capture.sequence != derived.plan.capture_sequence
@@ -135,13 +328,39 @@ impl OwnedReadyData {
         {
             return Err(invalid("Ready data snapshot or capture commitments differ"));
         }
-        let overlay = build_overlay(
-            &derived.capture,
-            image.files(),
-            image.deletions(),
-            required,
-            cancel,
-        )?;
+        let overlay = match companions {
+            None => build_overlay(&derived.capture, files, deletions, required, cancel)?,
+            Some(rows) => {
+                let mut overlay = Vec::with_capacity(derived.capture.changes.len());
+                for change in &derived.capture.changes {
+                    cancel.check()?;
+                    let file = rows
+                        .authorized_files()
+                        .iter()
+                        .find(|f| f.path == change.path);
+                    let manifest_id = match (&change.replacement, file) {
+                        (Some(r), Some(f))
+                            if r.file_id == f.file_id
+                                && r.bytes == f.bytes
+                                && r.executable == f.executable =>
+                        {
+                            Some(f.manifest_id.clone())
+                        }
+                        (None, None) => None,
+                        _ => {
+                            return Err(invalid(
+                                "companion Ready overlay escaped authorized checkout",
+                            ))
+                        }
+                    };
+                    overlay.push(ManagedReadyOverlay {
+                        path: change.path.clone(),
+                        manifest_id,
+                    });
+                }
+                overlay
+            }
+        };
         require_overlay(&derived, &overlay, cancel)?;
         let destination_staging = managed_destination::destination_intent(source_staging)?;
         let destination = destination_staging
@@ -168,7 +387,13 @@ impl OwnedReadyData {
         }
         let plan = &derived.plan;
         let receipt = ProviderTransitionReceiptRecord {
-            schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
+            schema_version: if denial_coverage.is_some() {
+                "layrs.projection-provider-transition-receipt.v2"
+            } else {
+                "layrs.projection-provider-transition-receipt.v1"
+            }
+            .into(),
+            denial_coverage,
             owner_identity_digest: destination.owner_digest(plan)?,
             transaction_id: source_staging.transaction_id.clone(),
             transition_plan_digest: plan.digest()?,

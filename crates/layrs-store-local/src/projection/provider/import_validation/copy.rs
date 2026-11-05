@@ -79,6 +79,11 @@ fn layout(kind: Kind) -> Layout {
             select_key: "SELECT file_id,manifest_id,bytes FROM projection_content WHERE file_id=?1",
             key_columns: 1,
         },
+        Kind::DenialObservations => Layout {
+            insert: "INSERT INTO projection_observations(digest,payload) VALUES(?1,?2)",
+            select_key: "SELECT digest,payload FROM projection_observations WHERE digest=?1",
+            key_columns: 1,
+        },
         Kind::RestoreHistory => Layout {
             insert: "INSERT INTO projection_restore_history(operation_id,capture_sequence,payload) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
             select_key: "SELECT operation_id,capture_sequence,payload FROM projection_restore_history WHERE operation_id=?1",
@@ -178,7 +183,7 @@ fn require_copied_references(
         Kind::CompanionFiles | Kind::CompanionDeletions => {
             require_reference(destination, COMPANION_ID, &row[0])?;
         }
-        Kind::Companions | Kind::ContentMappings => {}
+        Kind::Companions | Kind::ContentMappings | Kind::DenialObservations => {}
     }
     Ok(())
 }
@@ -196,6 +201,9 @@ fn visit(
     let mut rows = statement.query(spec.params)?;
     while let Some(row) = rows.next()? {
         super::super::cancellation::check(cancel)?;
+        if spec.kind == Kind::DenialObservations {
+            rows::require_denial_row(row)?;
+        }
         let mut values = Vec::with_capacity(row.as_ref().column_count());
         for column in 0..row.as_ref().column_count() {
             let value = row.get_ref(column)?;
@@ -238,6 +246,16 @@ pub(in crate::projection) fn copy_verified_prefix(
             "import copy requires separate retained transactions",
         ));
     }
+    if prefix.closure.denial_observations.is_some() {
+        for c in [source, destination] {
+            let foreign_keys: i64 = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+            if foreign_keys != 1 {
+                return Err(invalid(
+                    "import denial copy requires source and destination foreign keys",
+                ));
+            }
+        }
+    }
     let source_identity = match &prefix.source {
         ImportSource::Ordinary { identity, .. } | ImportSource::Provider { identity, .. } => {
             identity
@@ -275,18 +293,11 @@ pub(in crate::projection) fn copy_verified_prefix(
             for spec in specs {
                 visit(source, destination, spec, false, false, cancel)?;
             }
-            // The scope's digest order differs from FK insert order: companions
-            // must exist before the receipts that reference them.
-            for index in [0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 7, 11] {
-                visit(source, destination, &specs[index], true, false, cancel)?;
-                if specs[index].kind == Kind::Captures {
-                    // Restore rows reference captures and are absent from the
-                    // twelve-rowset legacy format.
-                    if let Some(restore) =
-                        specs.iter().find(|spec| spec.kind == Kind::RestoreHistory)
-                    {
-                        visit(source, destination, restore, true, false, cancel)?;
-                    }
+            // Commitments retain their versioned order. Copy dependencies use
+            // a separate order: documents must exist before dependent receipts.
+            for kind in COPY_ORDER {
+                if let Some(spec) = specs.iter().find(|spec| spec.kind == kind) {
+                    visit(source, destination, spec, true, false, cancel)?;
                 }
             }
             let preflight = rows::preflight(destination, specs, cancel)?;
@@ -301,3 +312,24 @@ pub(in crate::projection) fn copy_verified_prefix(
         },
     )
 }
+
+const COPY_ORDER: [Kind; 14] = [
+    Kind::Snapshots,
+    Kind::Selections,
+    Kind::Captures,
+    Kind::RestoreHistory,
+    Kind::Publications,
+    Kind::Catalogs,
+    Kind::Descriptors,
+    Kind::ActivationMaps,
+    Kind::Companions,
+    Kind::CompanionFiles,
+    Kind::CompanionDeletions,
+    Kind::DenialObservations,
+    Kind::TransitionReceipts,
+    Kind::ContentMappings,
+];
+
+#[cfg(test)]
+#[path = "copy/denial_tests.rs"]
+mod denial_tests;

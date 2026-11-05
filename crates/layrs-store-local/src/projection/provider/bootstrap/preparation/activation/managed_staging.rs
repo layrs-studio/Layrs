@@ -35,7 +35,7 @@ enum SourcePhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DestinationPhase {
+pub(super) enum DestinationPhase {
     Copying,
     Staging,
 }
@@ -78,7 +78,7 @@ fn current_source_phase(
     managed_destination::valid(state)
 }
 
-fn destination_intents(
+pub(super) fn destination_intents(
     copying: &ProviderTransitionIntentRecord,
     staging: &ProviderTransitionIntentRecord,
 ) -> CauseResult<(
@@ -150,7 +150,7 @@ fn family_staging(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn read_destination(
+pub(super) fn read_destination(
     c: &Connection,
     held: &outcome::PublicationPins,
     proof: &PrivateActiveCaptureValidation,
@@ -287,6 +287,7 @@ fn destination_stage(
         c.execute_batch("COMMIT")?;
         Ok(effect)
     })();
+    let result = managed_destination::rollback(bare.connection(), result);
     let effect = bare.finish_writer(result, close)?;
     let durable = managed_destination::valid(database_io::read_cancellable(file, cancel, |c| {
         read_destination(c, held, proof, closure, copying, staging, cancel)
@@ -317,6 +318,8 @@ pub(super) fn stage(
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<ManagedStagingEffect> {
+    managed_journal::require_legacy_allocation(copying)?;
+    managed_journal::require_legacy_allocation(staging)?;
     staging.require_transition(copying)?;
     if copying.role != TransitionRole::Source
         || copying.state != TransitionState::Copying
@@ -385,6 +388,171 @@ pub(super) fn stage(
                 copying,
                 staging,
                 image,
+                destination,
+                close,
+                cancel,
+            )?
+        }
+        SourcePhase::Staging => SourceIntentEffect::AlreadyPresent,
+    };
+    let destination_effect = {
+        let _locks = held
+            .family
+            .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
+        managed_destination::with_source(
+            held,
+            root,
+            mount,
+            activation,
+            attempt,
+            staging,
+            destination,
+            cancel,
+            |source_c, proof, closure| {
+                image.require_owner(
+                    root,
+                    &proof.active.source,
+                    &proof.active.activated.snapshot,
+                )?;
+                destination_stage(
+                    held,
+                    destination,
+                    source_c,
+                    proof,
+                    closure,
+                    copying,
+                    staging,
+                    close,
+                    cancel,
+                )
+            },
+        )?
+    };
+    {
+        let _locks = held
+            .family
+            .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
+        managed_destination::with_source(
+            held,
+            root,
+            mount,
+            activation,
+            attempt,
+            staging,
+            destination,
+            cancel,
+            |_c, proof, closure| {
+                image.require_owner(
+                    root,
+                    &proof.active.source,
+                    &proof.active.activated.snapshot,
+                )?;
+                family_staging(held, proof, staging, cancel)?;
+                let current = managed_destination::valid(database_io::read_cancellable(
+                    destination.destination_database(),
+                    cancel,
+                    |c| read_destination(c, held, proof, closure, copying, staging, cancel),
+                )?)?;
+                if current != DestinationPhase::Staging {
+                    return Err(invalid("managed staging final destination differs"));
+                }
+                Ok(())
+            },
+        )?;
+    }
+    managed_destination::boundary(held, root, attempt, staging, destination, cancel)?;
+    Ok(ManagedStagingEffect {
+        source: source_effect,
+        destination: destination_effect,
+    })
+}
+
+/// Complete-checkpoint counterpart. Legacy stage retains its strict image guard.
+pub(super) fn stage_complete(
+    held: &outcome::PublicationPins,
+    root: &layrs_vfs::ProviderRootGuard,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    attempt: &CaptureAttemptLock,
+    copying: &ProviderTransitionIntentRecord,
+    staging: &ProviderTransitionIntentRecord,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+    image: &mut managed_image::complete::VerifiedCompleteManagedImage<'_, '_>,
+    manifests: &[FileManifest],
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<ManagedStagingEffect> {
+    managed_journal::require_legacy_allocation(copying)?;
+    managed_journal::require_legacy_allocation(staging)?;
+    staging.require_transition(copying)?;
+    if copying.role != TransitionRole::Source
+        || copying.state != TransitionState::Copying
+        || staging.state != TransitionState::Staging
+        || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
+        || copying.destination.as_ref() != Some(destination.proof())
+        || staging.destination.as_ref() != Some(destination.proof())
+    {
+        return Err(invalid("managed staging source plan/proof differs"));
+    }
+    let ImportSource::Provider { version, .. } = &copying.plan.source_prefix.source else {
+        return Err(invalid("managed staging requires provider source"));
+    };
+    image.revalidate(cancel)?;
+    image.require_retained(root, &version.effective_image_digest, cancel)?;
+    managed_plan::require_manifest_union(&copying.plan, manifests)?;
+    let phase = {
+        let _locks = held
+            .family
+            .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
+        managed_destination::boundary(held, root, attempt, copying, destination, cancel)?;
+        current_source_phase(held, root, mount, activation, copying, staging, cancel)?
+    };
+    let source_effect = match phase {
+        SourcePhase::Copying => {
+            // The preflight owns short exclusive gates but reads no image bytes.
+            {
+                let _locks = held
+                    .family
+                    .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
+                managed_destination::with_source(
+                    held,
+                    root,
+                    mount,
+                    activation,
+                    attempt,
+                    copying,
+                    destination,
+                    cancel,
+                    |_c, proof, closure| {
+                        image.require_owner(
+                            root,
+                            &proof.active.source,
+                            &proof.active.activated.snapshot,
+                        )?;
+                        family_copying(held, proof, copying, cancel)?;
+                        let copied = managed_destination::valid(database_io::read_cancellable(
+                            destination.destination_database(),
+                            cancel,
+                            |c| read_destination(c, held, proof, closure, copying, staging, cancel),
+                        )?)?;
+                        if copied != DestinationPhase::Copying {
+                            return Err(invalid(
+                                "source Copying requires destination CopiedPrefix",
+                            ));
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            managed_journal::stage_source(
+                held,
+                root,
+                mount,
+                activation,
+                attempt,
+                copying,
+                staging,
+                image.retained(),
                 destination,
                 close,
                 cancel,

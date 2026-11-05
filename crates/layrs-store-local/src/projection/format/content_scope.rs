@@ -2,6 +2,14 @@
 use super::*;
 use rusqlite::Connection;
 
+/// Authenticated fixed Ready frontier of a C14 admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::projection) struct DenialReady {
+    pub generation: u64,
+    pub capture_sequence: u64,
+    pub digest: String,
+}
+
 pub(in crate::projection) struct ContentScope<'a> {
     marker: &'a Marker,
     root: &'a Path,
@@ -16,6 +24,74 @@ pub(in crate::projection) struct ContentScope<'a> {
 }
 
 impl<'a> ContentScope<'a> {
+    pub(in crate::projection) fn preflight_local_capture(
+        &self,
+        c: &Connection,
+        store: &ProjectionStore,
+        state: &VersionedProjection,
+        changes: &[capture::CapturedChange],
+    ) -> Result<()> {
+        self.validate(c, store)?;
+        #[cfg(windows)]
+        if let Some(admission) = &self.admission {
+            admission.preflight_local_capture(c, self.marker, state, changes)?;
+        }
+        Ok(())
+    }
+
+    /// Fixed C14 Ready frontier as authenticated admission DATA. None for a
+    /// legacy, non-denial or non-Windows scope. This performs no SQL.
+    pub(in crate::projection) fn denial_ready(&self) -> Option<DenialReady> {
+        #[cfg(windows)]
+        if let Some(admission) = &self.admission {
+            let data = admission.data();
+            if data.ready().plan.denial_coverage.is_some() {
+                return Some(DenialReady {
+                    generation: data.ready_generation(),
+                    capture_sequence: data.ready_capture_sequence(),
+                    digest: data.ready().plan.placement_digest.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Fund a local C14 Restore's forced append before its first durable
+    /// effect. Legacy and non-denial scopes keep their existing behavior.
+    pub(in crate::projection) fn preflight_local_restore(
+        &self,
+        c: &Connection,
+        store: &ProjectionStore,
+        state: &VersionedProjection,
+        plan: &restore::LocalRestorePlan,
+    ) -> Result<()> {
+        self.validate(c, store)?;
+        #[cfg(windows)]
+        if let Some(admission) = &self.admission {
+            admission.preflight_local_restore(c, self.marker, state, plan)?;
+        }
+        #[cfg(not(windows))]
+        let _ = (state, plan);
+        Ok(())
+    }
+
+    pub(in crate::projection) fn has_live_export(
+        &self,
+        c: &Connection,
+        store: &ProjectionStore,
+    ) -> Result<bool> {
+        self.validate(c, store)?;
+        #[cfg(windows)]
+        {
+            if let Some(admission) = &self.admission {
+                return admission.has_live(c, self.marker).map_err(Into::into);
+            }
+            return provider::ordinary_transition::has_live(c);
+        }
+        #[cfg(not(windows))]
+        Ok(false)
+    }
+
     /// Observe a caller transaction's one explicit rollback and poison retained
     /// admitted authority on failure, as admission-owned snapshots already do.
     /// No validation query is issued by this cleanup operation.

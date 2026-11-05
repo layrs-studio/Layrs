@@ -68,6 +68,7 @@ fn prefix(
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: row(2),
             selections: row(1),
@@ -180,6 +181,7 @@ fn publication_closure_keeps_modes_distinct_and_refuses_stale_terminal_scope() {
                 state: TransitionState::Planned,
                 local_generation: 1,
                 plan: TransitionPlan {
+                    denial_coverage: None,
                     kind: ProviderImportKind::ManagedOrdinary,
                     source_prefix_id: prefix.digest().unwrap(),
                     source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap())

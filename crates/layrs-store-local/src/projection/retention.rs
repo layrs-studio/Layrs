@@ -7,7 +7,8 @@ mod staging;
 use crate::secure_fs::PinnedFile;
 #[cfg(windows)]
 pub(in crate::projection) use cancellation::{
-    cancel_admitted_with_access, restore_cancellation_preflight, RestoreCancellationData,
+    cancel_admitted_with_access, restore_cancellation_preflight, LocalCaptureCancellation,
+    LocalRestoreScope, RestoreCancellationData,
 };
 #[cfg(all(windows, test))]
 pub(in crate::projection) use cancellation::{
@@ -35,6 +36,24 @@ CREATE TABLE projection_conversion(singleton INTEGER PRIMARY KEY CHECK(singleton
 #[cfg(test)]
 #[path = "retention/exact_tests.rs"]
 mod exact_tests;
+
+/// Largest budget `reserve_checkout_with_scope` can request for one restore:
+/// three file classes of `checkout_requirements` (changed result, preimages,
+/// replacements), each <=1024 files and <=4GiB, plus old+new staging bytes.
+pub(in crate::projection) const MAX_RESTORE_BUDGET_BYTES: u64 = 65536
+    + 2 * MAX_CAPTURE_BYTES
+    + 3 * (MAX_CAPTURE_BYTES
+        + 1024 * (2048 + 256)
+        + MAX_CAPTURE_BYTES.div_ceil(CAPTURE_CHUNK_BYTES as u64) * 256);
+
+/// Validate the one restore prejournal row against its owning operation.
+#[cfg(windows)]
+pub(in crate::projection) fn require_restore_staging(
+    c: &Connection,
+    operation: &str,
+) -> Result<bool> {
+    Ok(staging::read_restore(c, Some(operation))?.is_some())
+}
 
 pub(super) fn budget_for(files: &[CapturedFile], extra: u64) -> Result<u64> {
     let mut ids = BTreeSet::new();

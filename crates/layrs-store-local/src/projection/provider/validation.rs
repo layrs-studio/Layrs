@@ -17,10 +17,12 @@ use layrs_core::{
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 mod capture;
+pub(in crate::projection) mod source_companion;
 mod transition;
 #[cfg(test)]
 pub(in crate::projection::provider) use capture::tests::active_fixture;
 pub(in crate::projection) use capture::{CaptureContentProof, PrivateCaptureProof};
+pub(super) use transition::{preflight_denial_start, preflight_source_transition_update};
 
 pub(super) enum PrivateValidation {
     Uninitialized,
@@ -56,13 +58,23 @@ pub(super) struct PrivateActiveTransitionValidation {
 }
 /// Explicit outgoing publication DATA. Terminal receipts remain visible and
 /// are not silently presented as the source's incoming import ancestry.
-pub(super) struct PrivateActivePublicationValidation {
+pub(in crate::projection) struct PrivateActivePublicationValidation {
     pub(super) active: PrivateActiveValidation,
     pub(super) capture: PrivateCaptureProof,
     pub(super) transitions: Vec<records::transition::ProviderTransitionIntentRecord>,
     pub(super) receipts: Vec<records::import::ProviderTransitionReceiptRecord>,
+    pub(in crate::projection) companions: source_companion::SourceCompanionPrivateProof,
 }
 impl PrivateActivePublicationValidation {
+    pub(in crate::projection) fn capture_data(&self) -> &PrivateCaptureProof {
+        &self.capture
+    }
+    pub(in crate::projection) fn source_transitions(
+        &self,
+    ) -> &[records::transition::ProviderTransitionIntentRecord] {
+        &self.transitions
+    }
+
     /// Borrow from the complete publication proof for an explicitly terminal-
     /// aware import verifier. This does not erase its outgoing receipts or
     /// convert it into ordinary admission or capture mutation authority.
@@ -107,6 +119,15 @@ pub(in crate::projection) struct PrivateCaptureMutationValidation {
     full: PrivateActivePublicationValidation,
 }
 impl PrivateCaptureMutationValidation {
+    pub(super) fn from_publication(full: PrivateActivePublicationValidation) -> Result<Self> {
+        Ok(Self {
+            full: full.require_no_pending_transition()?,
+        })
+    }
+    pub(in crate::projection) fn publication(&self) -> &PrivateActivePublicationValidation {
+        &self.full
+    }
+
     pub(super) fn active(&self) -> &PrivateActiveValidation {
         &self.full.active
     }
@@ -126,9 +147,96 @@ impl PrivateCaptureMutationValidation {
     pub(super) fn require_same_publications(&self, other: &Self) -> Result<()> {
         if self.full.transitions != other.full.transitions
             || self.full.receipts != other.full.receipts
+            || self.full.companions != other.full.companions
         {
             return Err(invalid(
                 "capture mutation changed source publication history",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Compare the original no-pending source to one exact transition's live
+    /// state. Prior publication/companion history stays byte-exact; only this
+    /// transaction may append its independently validated terminal artifacts.
+    pub(in crate::projection::provider) fn require_transition_predecessor(
+        &self,
+        full: &PrivateActivePublicationValidation,
+        staging: &records::transition::ProviderTransitionIntentRecord,
+    ) -> Result<()> {
+        let tx = staging.transaction_id.as_str();
+        if self.full.transitions.iter().any(|r| r.transaction_id == tx)
+            || !self
+                .full
+                .transitions
+                .iter()
+                .eq(full.transitions.iter().filter(|r| r.transaction_id != tx))
+            || !self
+                .full
+                .receipts
+                .iter()
+                .eq(full.receipts.iter().filter(|r| r.transaction_id != tx))
+            || !self.full.companions.groups().iter().eq(full
+                .companions
+                .groups()
+                .iter()
+                .filter(|r| r.transaction != tx))
+        {
+            return Err(invalid(
+                "transition changed retained source publication history",
+            ));
+        }
+        let current = full
+            .transitions
+            .iter()
+            .find(|r| r.transaction_id == tx)
+            .ok_or_else(|| invalid("retained transition absent"))?;
+        if current.plan != staging.plan
+            || current.destination != staging.destination
+            || current.local_generation != staging.local_generation
+            || current.role != staging.role
+            || current.reservation != staging.reservation
+            || !matches!(
+                current.state,
+                records::transition::TransitionState::Staging
+                    | records::transition::TransitionState::Ready
+                    | records::transition::TransitionState::Published
+            )
+        {
+            return Err(invalid("retained transition original prefix/plan differs"));
+        }
+        let a = &self.full.active;
+        let b = &full.active;
+        let x = &self.full.capture;
+        let y = &full.capture;
+        if a.mount != b.mount
+            || a.activation != b.activation
+            || a.source.commitment() != b.source.commitment()
+            || a.activated.generation != b.activated.generation
+            || a.activated.digest != b.activated.digest
+            || a.activated.snapshot != b.activated.snapshot
+            || x.transactions != y.transactions
+            || x.receipts != y.receipts
+            || x.patches != y.patches
+            || !x
+                .content
+                .iter()
+                .map(|r| (&r.file_id, &r.manifest_id, r.bytes))
+                .eq(y
+                    .content
+                    .iter()
+                    .map(|r| (&r.file_id, &r.manifest_id, r.bytes)))
+            || !x
+                .claims
+                .iter()
+                .map(|r| (&r.root_id, &r.digest, &r.kind, &r.owner))
+                .eq(y
+                    .claims
+                    .iter()
+                    .map(|r| (&r.root_id, &r.digest, &r.kind, &r.owner)))
+        {
+            return Err(invalid(
+                "transition changed retained complete source predecessor",
             ));
         }
         Ok(())
@@ -189,9 +297,8 @@ pub(super) fn private_active_capture_mutation_with_source(
         expected_binding,
         expected_root_id,
         cancel,
-    )?
-    .require_no_pending_transition()?;
-    Ok(PrivateCaptureMutationValidation { full })
+    )?;
+    PrivateCaptureMutationValidation::from_publication(full)
 }
 /// Complete readable Active DATA, including interpreted source intentions.
 /// It grants neither a capture write nor transition publication.
@@ -552,6 +659,9 @@ pub(super) fn private_active_transition_with_source(
         &capture,
         cancel,
     )?;
+    let mut capture = capture;
+    capture.denial_reservations =
+        transition::coverage_funding(c, allocation, &transitions, cancel)?;
     Ok(PrivateActiveTransitionValidation {
         active: PrivateActiveValidation {
             mount,
@@ -590,7 +700,8 @@ pub(super) fn private_active_publication_with_source(
     };
     // This must precede capture::validate's global FK traversal.
     transition::preflight_publication(c, cancel)?;
-    let capture = capture::validate(c, allocation, &mount, &activation, &activated, cancel)?;
+    source_companion::preflight(c, cancel)?;
+    let history = capture::read_history(c, allocation, &mount, &activation, &activated, cancel)?;
     let (transitions, receipts) = transition::validate_publication(
         c,
         allocation,
@@ -598,9 +709,15 @@ pub(super) fn private_active_publication_with_source(
         &activation,
         &activated,
         &source,
-        &capture,
+        &history,
         cancel,
     )?;
+    let companions = source_companion::validate(c, allocation, &transitions, &receipts, cancel)?;
+    let references = companions.references()?;
+    let capture = capture::finish(c, history, &references, cancel)?;
+    let mut capture = capture;
+    capture.denial_reservations =
+        transition::coverage_funding(c, allocation, &transitions, cancel)?;
     Ok(PrivateActivePublicationValidation {
         active: PrivateActiveValidation {
             mount,
@@ -611,6 +728,7 @@ pub(super) fn private_active_publication_with_source(
         capture,
         transitions,
         receipts,
+        companions,
     })
 }
 
@@ -771,8 +889,19 @@ fn private_interpret(
     // Account for every table before any potentially unbounded FK traversal.
     for table in EMPTY_TABLES {
         if (mode.active() && table == "projection_provider_activations")
-            || (mode.transition() && table == "projection_provider_transitions")
-            || (mode.publication() && table == "projection_provider_transition_receipts")
+            || (mode.transition()
+                && matches!(
+                    table,
+                    "projection_provider_transitions" | "projection_observations"
+                ))
+            || (mode.publication()
+                && matches!(
+                    table,
+                    "projection_provider_transition_receipts"
+                        | "projection_provider_companions"
+                        | "projection_provider_companion_files"
+                        | "projection_provider_companion_deletions"
+                ))
             || (mode.capture()
                 && matches!(
                     table,

@@ -100,6 +100,7 @@ fn prefix(
         inherited_segments: row(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: row(2),
             selections: row(1),

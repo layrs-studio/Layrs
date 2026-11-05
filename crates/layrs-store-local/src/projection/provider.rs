@@ -32,6 +32,7 @@ pub use bootstrap::{
     ProviderRecoveryExportClass, ProviderRecoveryExportDeletion, ProviderRecoveryExportFailure,
     ProviderRecoveryExportFile, ProviderRecoveryExportGap, ProviderRecoveryExportGapKind,
     ProviderRecoveryExportOutcome, ProviderRecoveryExportReport, ProviderRecoveryExportStep,
+    ProviderTransitionSource,
 };
 #[cfg(windows)]
 pub use records::{ProviderBootstrapSource, ProviderSourceDescriptor};
@@ -46,6 +47,10 @@ mod checkout_journal;
 pub(in crate::projection) mod content_catalog;
 #[cfg(windows)]
 pub(super) mod database_io;
+#[cfg(windows)]
+mod denied_coverage_storage;
+#[cfg(windows)]
+pub(in crate::projection::provider) mod destination_coverage;
 #[cfg(windows)]
 mod destination_ready;
 #[cfg(windows)]
@@ -76,6 +81,8 @@ pub use managed_export::OrdinaryManagedExport;
 mod managed_ready_reopen;
 #[cfg(windows)]
 mod published_handoff;
+#[cfg(windows)]
+pub(in crate::projection) mod source_companion;
 #[cfg(windows)]
 mod ticket_input;
 #[cfg(windows)]

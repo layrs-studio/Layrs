@@ -236,7 +236,7 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
     ) -> ProviderResult<Registration> {
-        match self.validate_catalog_inner(c, a, cancel, false, None)? {
+        match self.validate_catalog_inner(c, a, cancel, false, None, None, None, None)? {
             CatalogRegistration::Absent => Ok(Registration::Absent),
             CatalogRegistration::Initializing => Ok(Registration::Initializing),
             CatalogRegistration::Ready => Err(provider_invalid(
@@ -255,7 +255,7 @@ impl FamilyAccess {
         a: &AllocationRecord,
         cancel: Option<&layrs_vfs::Cancellation>,
     ) -> ProviderResult<ActivationRegistration> {
-        match self.validate_catalog_inner(c, a, cancel, true, None)? {
+        match self.validate_catalog_inner(c, a, cancel, true, None, None, None, None)? {
             CatalogRegistration::Initializing => Ok(ActivationRegistration::Initializing),
             CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
             CatalogRegistration::Absent => Err(provider_invalid(
@@ -273,7 +273,7 @@ impl FamilyAccess {
         proof: &crate::projection::provider::validation::PrivateCaptureProof,
         cancel: Option<&layrs_vfs::Cancellation>,
     ) -> ProviderResult<ActivationRegistration> {
-        match self.validate_catalog_inner(c, a, cancel, true, Some(proof))? {
+        match self.validate_catalog_inner(c, a, cancel, true, Some(proof), None, None, None)? {
             CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
             _ => Err(provider_invalid(
                 "capture requires exact ready family owner",
@@ -281,6 +281,88 @@ impl FamilyAccess {
         }
     }
 
+    /// Same complete actual private proof as capture admission, with one exact
+    /// prospective funding binding kept outside that proof. The caller must
+    /// first prove the requested private transaction AND document absent using
+    /// the complete private reader under these same held gates. This permits
+    /// only its exact family reservation gap; it grants no body/intent repair.
+    pub(in crate::projection) fn validate_capture_catalog_with_pending_denial(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        proof: &crate::projection::provider::validation::PrivateCaptureProof,
+        pending: &crate::projection::shared::source_denial::SourceDeniedCoverageReservation,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(proof),
+            None,
+            Some(pending),
+            None,
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "pending source denial requires exact ready family owner",
+            )),
+        }
+    }
+
+    pub(in crate::projection) fn validate_source_companion_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        context: &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(context.publication.capture_data()),
+            Some(context),
+            None,
+            None,
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "source companion requires exact Ready B family owner",
+            )),
+        }
+    }
+    /// Recovery-only exact exception. The caller retains the actual complete
+    /// source snapshot proving this transaction AND document absent, the
+    /// compact receipt's native pin, owner/capture lock and exclusive gates.
+    pub(in crate::projection) fn validate_source_denial_recovery_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        context: &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        release: &crate::projection::shared::source_denial::SourceDeniedCoverageRelease,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(context.publication.capture_data()),
+            Some(context),
+            None,
+            Some(release),
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "denial recovery requires exact Ready owner",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn validate_catalog_inner(
         &self,
         c: &Connection,
@@ -288,8 +370,24 @@ impl FamilyAccess {
         cancel: Option<&layrs_vfs::Cancellation>,
         allow_ready: bool,
         capture: Option<&crate::projection::provider::validation::PrivateCaptureProof>,
+        source_companion: Option<
+            &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        >,
+        pending_denial: Option<
+            &crate::projection::shared::source_denial::SourceDeniedCoverageReservation,
+        >,
+        release_denial: Option<
+            &crate::projection::shared::source_denial::SourceDeniedCoverageRelease,
+        >,
     ) -> ProviderResult<CatalogRegistration> {
         crate::projection::provider::cancellation::check(cancel)?;
+        if ((pending_denial.is_some() || release_denial.is_some()) && capture.is_none())
+            || (pending_denial.is_some() && release_denial.is_some())
+        {
+            return Err(provider_invalid(
+                "pending source denial requires complete actual private proof",
+            ));
+        }
         let schema = require_provider_catalog_schema(c, cancel)?;
         crate::projection::provider::cancellation::check(cancel)?;
         let (count, length): (u64, u64) = c.query_row(
@@ -371,7 +469,16 @@ impl FamilyAccess {
             }
         };
         if let Some(proof) = capture {
-            provider_capture::validate(self, c, a, proof, cancel)?;
+            provider_capture::validate_with_companions(
+                self,
+                c,
+                a,
+                proof,
+                source_companion,
+                pending_denial,
+                release_denial,
+                cancel,
+            )?;
         } else {
             for sql in [
                 "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",

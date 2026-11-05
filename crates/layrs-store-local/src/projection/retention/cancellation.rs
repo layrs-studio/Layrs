@@ -5,8 +5,78 @@ use super::*;
 pub(in crate::projection) struct RestoreCancellationData {
     generation: u64,
     digest: String,
+    capture: Option<LocalCaptureCancellation>,
+    restore: Option<LocalRestoreScope>,
     budget: Option<Budget>,
     staging: Option<staging::RestoreStage>,
+}
+
+/// Detached local C14 Restore scope minted only from authenticated admission
+/// DATA and an already canonical `restore:<id>` operation. Private fields
+/// prevent a raw operation string from minting a C14 writer.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::projection) struct LocalRestoreScope {
+    admission_digest: String,
+    identity: ProjectionIdentity,
+    operation: String,
+    ready_generation: u64,
+    ready_capture_sequence: u64,
+    placement_digest: String,
+}
+
+impl LocalRestoreScope {
+    pub(in crate::projection) fn for_denial(
+        admitted: &provider::admitted_ordinary::AdmittedOrdinaryData,
+        operation: &str,
+    ) -> Result<Option<Self>> {
+        if admitted.ready().plan.denial_coverage.is_none() {
+            return Ok(None);
+        }
+        restore_id(operation)?;
+        Ok(Some(Self {
+            admission_digest: admitted.admission_digest().to_owned(),
+            identity: admitted.marker().identity.clone(),
+            operation: operation.to_owned(),
+            ready_generation: admitted.ready_generation(),
+            ready_capture_sequence: admitted.ready_capture_sequence(),
+            placement_digest: admitted.ready().plan.placement_digest.clone(),
+        }))
+    }
+
+    pub(in crate::projection) fn matches(
+        &self,
+        admitted: &provider::admitted_ordinary::AdmittedOrdinaryData,
+    ) -> bool {
+        admitted.ready().plan.denial_coverage.is_some()
+            && self.admission_digest == admitted.admission_digest()
+            && self.identity == admitted.marker().identity
+            && self.ready_generation == admitted.ready_generation()
+            && self.ready_capture_sequence == admitted.ready_capture_sequence()
+            && self.placement_digest == admitted.ready().plan.placement_digest
+    }
+}
+
+/// Detached cancellation scope derived only from a fully authenticated admitted
+/// import and its actual Capture base. Private fields prevent a raw operation
+/// string minting this scope; C14 and mutable legacy bases remain distinct.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::projection) struct LocalCaptureCancellation {
+    admission_digest: String,
+    identity: ProjectionIdentity,
+    operation: String,
+    base: CaptureCancellationBase,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CaptureCancellationBase {
+    DenialReady,
+    LegacyHead,
+}
+
+impl LocalCaptureCancellation {
+    pub(in crate::projection) fn operation(&self) -> &str {
+        &self.operation
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,6 +89,46 @@ struct Budget {
 }
 
 impl RestoreCancellationData {
+    pub(in crate::projection) fn requires_denial_capture_handle(&self) -> bool {
+        self.capture
+            .as_ref()
+            .is_some_and(|capture| capture.base == CaptureCancellationBase::DenialReady)
+    }
+
+    pub(in crate::projection) fn has_budget(&self) -> bool {
+        self.budget.is_some()
+    }
+
+    pub(in crate::projection) fn requires_denial_restore_handle(&self) -> bool {
+        self.restore.is_some()
+    }
+
+    pub(in crate::projection) fn matches_local_restore(
+        &self,
+        admitted: &provider::admitted_ordinary::AdmittedOrdinaryData,
+    ) -> bool {
+        self.restore.as_ref().is_some_and(|scope| {
+            scope.matches(admitted)
+                && self
+                    .budget
+                    .as_ref()
+                    .is_some_and(|budget| budget.operation == scope.operation)
+        })
+    }
+
+    pub(in crate::projection) fn matches_local_capture(
+        &self,
+        admitted: &provider::admitted_ordinary::AdmittedOrdinaryData,
+    ) -> bool {
+        self.capture.as_ref().is_some_and(|capture| {
+            capture.base == CaptureCancellationBase::DenialReady
+                && capture.admission_digest == admitted.admission_digest()
+                && capture.identity == admitted.marker().identity
+                && capture.operation
+                    == format!("capture:{}", admitted.ready().plan.placement_digest)
+        })
+    }
+
     pub(in crate::projection) fn validate_family(
         &self,
         lease: &shared::Lease,
@@ -30,13 +140,22 @@ impl RestoreCancellationData {
             ));
         }
         if let Some(budget) = &self.budget {
-            lease.preflight_restore_cancellation(
-                &store.marker,
-                &budget.reservation,
-                &budget.operation,
-                budget.bytes,
-                budget.committed,
-            )?;
+            match &self.capture {
+                Some(capture) => lease.preflight_capture_cancellation(
+                    &store.marker,
+                    &budget.reservation,
+                    capture,
+                    budget.bytes,
+                    budget.committed,
+                )?,
+                None => lease.preflight_restore_cancellation(
+                    &store.marker,
+                    &budget.reservation,
+                    &budget.operation,
+                    budget.bytes,
+                    budget.committed,
+                )?,
+            }
         }
         Ok(())
     }
@@ -53,7 +172,7 @@ impl RestoreCancellationData {
 /// validation snapshot. This function only reads bounded private DATA.
 pub(in crate::projection) fn restore_cancellation_preflight(
     c: &Connection,
-    _store: &ProjectionStore,
+    store: &ProjectionStore,
 ) -> Result<RestoreCancellationData> {
     if c.is_autocommit() {
         return Err(invalid(
@@ -68,7 +187,26 @@ pub(in crate::projection) fn restore_cancellation_preflight(
             "admitted restore cancellation requires admitted private9 or private10",
         ));
     }
-    database::require_mutable(c)?;
+    let actual = provider::admitted_ordinary::inspect(c, &store.marker, None)?;
+    let mut capture =
+        actual
+            .ready()
+            .plan
+            .denial_coverage
+            .as_ref()
+            .map(|_| LocalCaptureCancellation {
+                admission_digest: actual.admission_digest().to_owned(),
+                identity: actual.marker().identity.clone(),
+                operation: format!("capture:{}", actual.ready().plan.placement_digest),
+                base: CaptureCancellationBase::DenialReady,
+            });
+    // The complete C14 reader already requires the fixed Ready generation,
+    // exact immutable import and owned local Capture/Restore journals. Legacy
+    // cancellation retains its ordinary live/publication guards.
+    if capture.is_none() {
+        database::require_mutable(c)?;
+    }
+    let mut restore = None;
     if c.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_preparations WHERE status='acquiring')",
         [],
@@ -115,7 +253,47 @@ pub(in crate::projection) fn restore_cancellation_preflight(
             "SELECT operation,reservation,bytes,witness,state FROM projection_budgets WHERE singleton=1",
             [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         )?;
-        restore_id(&operation)?;
+        if capture.is_some() && operation.starts_with("restore:") {
+            // C14 local Restore before its journal: only the budget, its
+            // prejournal and staging may be cancelled. An accepted journal
+            // must finish through resume_restore.
+            if c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projection_restore_pending)",
+                [],
+                |r| r.get::<_, bool>(0),
+            )? {
+                return Err(invalid(
+                    "C14 Restore cancellation cannot cancel an accepted journal",
+                ));
+            }
+            restore = LocalRestoreScope::for_denial(&actual, &operation)?;
+            capture = None;
+        } else if let Some(capture) = &capture {
+            if operation != capture.operation {
+                return Err(invalid("Capture cancellation operation differs from Ready"));
+            }
+        } else if operation.starts_with("capture:") {
+            // A legacy admitted worktree may have advanced beyond its import
+            // Ready generation. Bind only this real current, canonical base;
+            // the immutable admission above still authenticates its ingress.
+            let current = database::current(c)?;
+            if current.generation != generation
+                || current.digest != digest
+                || operation != format!("capture:{}", current.digest)
+            {
+                return Err(invalid(
+                    "Capture cancellation operation differs from current base",
+                ));
+            }
+            capture = Some(LocalCaptureCancellation {
+                admission_digest: actual.admission_digest().to_owned(),
+                identity: actual.marker().identity.clone(),
+                operation: operation.clone(),
+                base: CaptureCancellationBase::LegacyHead,
+            });
+        } else {
+            restore_id(&operation)?;
+        }
         if !valid_digest(&witness)
             || !reservation.is_ascii()
             || reservation.chars().any(char::is_control)
@@ -140,6 +318,9 @@ pub(in crate::projection) fn restore_cancellation_preflight(
         })
     };
     let staging = staging::read_restore(c, budget.as_ref().map(|b| b.operation.as_str()))?;
+    if capture.is_some() && staging.is_some() {
+        return Err(invalid("Capture cancellation cannot own checkout staging"));
+    }
     if budget.as_ref().is_some_and(|b| b.committed) && staging.is_some() {
         return Err(invalid(
             "committed restore cancellation still owns checkout staging",
@@ -148,6 +329,8 @@ pub(in crate::projection) fn restore_cancellation_preflight(
     Ok(RestoreCancellationData {
         generation,
         digest,
+        capture,
+        restore,
         budget,
         staging,
     })
@@ -233,9 +416,14 @@ fn cancel_with_faults(
             // reservations. It performs no settlement or artifact mutation.
             return Ok(());
         };
-        lease.cancel_restore_installations(
-            &store.marker, &budget.reservation, &budget.operation, budget.bytes, budget.committed,
-        )?;
+        match &data.capture {
+            Some(capture) => lease.cancel_capture_installations(
+                &store.marker, &budget.reservation, capture, budget.bytes, budget.committed,
+            )?,
+            None => lease.cancel_restore_installations(
+                &store.marker, &budget.reservation, &budget.operation, budget.bytes, budget.committed,
+            )?,
+        }
         faults(RestoreCancellationPoint::InstallationsCleared)?;
         if let Some(stage) = &data.staging {
             stage.cancel(&access.connection, store, faults)?;

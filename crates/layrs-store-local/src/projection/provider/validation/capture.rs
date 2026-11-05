@@ -10,7 +10,7 @@ use crate::projection::{
 };
 use layrs_core::{
     projection::{EntryState, ReservedPaths},
-    scm::{FileId, FileManifestId, TreeEntryTarget, canonical_json},
+    scm::{canonical_json, FileId, FileManifestId, TreeEntryTarget},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +26,18 @@ pub(in crate::projection) struct PrivateCaptureProof {
     pub patches: Vec<CapturedPatch>,
     pub content: Vec<CaptureContentProof>,
     pub claims: Vec<CaptureClaimProof>,
+    // Populated only by the complete Transition/Publication interpreter from
+    // actual retained document rows. Capture-only admission leaves this empty.
+    pub(super) denial_reservations:
+        Vec<crate::projection::shared::source_denial::SourceDeniedCoverageReservation>,
+}
+
+impl PrivateCaptureProof {
+    pub(in crate::projection) fn denial_reservations(
+        &self,
+    ) -> &[crate::projection::shared::source_denial::SourceDeniedCoverageReservation] {
+        &self.denial_reservations
+    }
 }
 
 pub(in crate::projection) struct CaptureContentProof {
@@ -121,14 +133,22 @@ fn captured_change_authority(
     Ok(())
 }
 
-pub(super) fn validate(
+/// Internal bounded DATA, never a capture or publication authority.
+pub(super) struct CaptureHistoryData {
+    pub(super) transactions: Vec<ProviderCaptureTransactionRecord>,
+    receipts: Vec<ProviderCaptureReceiptRecord>,
+    pub(super) patches: Vec<CapturedPatch>,
+    staged_files: BTreeMap<String, u64>,
+    stage_by_id: BTreeMap<String, (String, BTreeSet<String>)>,
+}
+pub(super) fn read_history(
     c: &Connection,
     allocation: &AllocationRecord,
     mount: &ProviderActiveMountRecord,
     activation: &ProviderActivationRecord,
     activated: &VersionedProjection,
     cancel: Option<&Cancellation>,
-) -> Result<PrivateCaptureProof> {
+) -> Result<CaptureHistoryData> {
     super::super::cancellation::check(cancel)?;
     fence(
         c,
@@ -359,6 +379,45 @@ pub(super) fn validate(
             return Err(invalid("provider capture row lacks accepted transaction"));
         }
     }
+    Ok(CaptureHistoryData {
+        transactions,
+        receipts,
+        patches,
+        staged_files,
+        stage_by_id,
+    })
+}
+
+pub(super) fn validate(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    mount: &ProviderActiveMountRecord,
+    activation: &ProviderActivationRecord,
+    activated: &VersionedProjection,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateCaptureProof> {
+    let history = read_history(c, allocation, mount, activation, activated, cancel)?;
+    finish(
+        c,
+        history,
+        &super::source_companion::OutgoingReferences::default(),
+        cancel,
+    )
+}
+
+pub(super) fn finish(
+    c: &Connection,
+    history: CaptureHistoryData,
+    outgoing: &super::source_companion::OutgoingReferences,
+    cancel: Option<&Cancellation>,
+) -> Result<PrivateCaptureProof> {
+    let CaptureHistoryData {
+        transactions,
+        receipts,
+        patches,
+        staged_files,
+        stage_by_id,
+    } = history;
     let mut content = Vec::new();
     let mut represented = BTreeSet::new();
     {
@@ -371,6 +430,21 @@ pub(super) fn validate(
             let bytes: u64 = row.get(2)?;
             FileId::parse(file_id.clone()).map_err(|e| invalid(e.to_string()))?;
             FileManifestId::parse(manifest_id.clone()).map_err(|e| invalid(e.to_string()))?;
+            if !staged_files.contains_key(&file_id) {
+                if outgoing.content.get(&file_id) != Some(&(manifest_id, bytes)) {
+                    return Err(invalid(
+                        "provider content has no capture or outgoing companion reference",
+                    ));
+                }
+                continue;
+            }
+            if outgoing
+                .content
+                .get(&file_id)
+                .is_some_and(|expected| expected != &(manifest_id.clone(), bytes))
+            {
+                return Err(invalid("shared capture/companion sticky mapping differs"));
+            }
             if bytes > MAX_CAPTURE_FILE_BYTES || staged_files.get(&file_id) != Some(&bytes) {
                 return Err(invalid("provider content lacks a staged replacement"));
             }
@@ -405,6 +479,12 @@ pub(super) fn validate(
             let digest: String = row.get(1)?;
             let kind: String = row.get(2)?;
             let owner: String = row.get(3)?;
+            if kind == "provider-companion" {
+                if outgoing.claims.get(&root_id) != Some(&(digest, owner)) {
+                    return Err(invalid("provider companion claim is unowned or differs"));
+                }
+                continue;
+            }
             if kind != "provider-capture"
                 || root_id != digest
                 || !stage_by_id.contains_key(&owner)
@@ -448,6 +528,7 @@ pub(super) fn validate(
     }
     super::super::cancellation::check(cancel)?;
     Ok(PrivateCaptureProof {
+        denial_reservations: Vec::new(),
         transactions,
         receipts,
         patches,

@@ -392,19 +392,35 @@ fn managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_tran
         checkpoint("final-trees:begin");
         assert_eq!(witnesses(&root, &family), before);
         checkpoint("final-trees:verified");
+        checkpoint("ordinary-observation:begin");
+        let observed_store = crate::projection::ProjectionStore::open(&root).unwrap();
+        let selected = observed_store.selection().unwrap();
+        let observation = observed_store.record_version_observation(&state.snapshot, &selected).unwrap();
+        assert!(matches!(observation, layrs_core::projection::ProjectionVersion::Remote { .. }));
+        assert_eq!(observed_store.state().unwrap(), state);
+        drop(observed_store);
+        let after_observation = crate::projection::ProjectionStore::open(&root).unwrap();
+        assert_eq!(after_observation.state().unwrap(), state);
+        assert_eq!(after_observation.selection().unwrap(), selected);
+        // Replay must read the committed observation without locking the store.
+        assert_eq!(after_observation.record_version_observation(&state.snapshot, &selected).unwrap(), observation);
+        drop(after_observation);
+        checkpoint("ordinary-observation:committed-reopened-and-replayed");
         checkpoint("recipe:done");
     });
 }
 
 #[test]
-#[ignore = "UNQUALIFIED ordinary Admitted9 mutable cycle; ROOT source release, owned child480 / outer540 required"]
+#[ignore = "UNQUALIFIED ordinary Admitted9 mutable cycle; ROOT source release, owned child900 / outer960 required"]
 fn managed_admitted_ordinary_edit_capture_restore_without_source() {
+    // r202: legacy Capture cancellation phases pushed the cycle past 480s
+    // (second restore began at ~459s); the budget, not the protocol, failed.
     child::run(
         concat!(
             module_path!(),
             "::managed_admitted_ordinary_edit_capture_restore_without_source"
         ),
-        480,
+        900,
         || {
             use crate::projection::{ProjectionStore, RestoreSource};
             use layrs_core::{
@@ -505,6 +521,82 @@ fn managed_admitted_ordinary_edit_capture_restore_without_source() {
             let coverage = store.availability(&request).unwrap();
             assert!(coverage.available && coverage.prepared);
             assert_eq!(coverage.paths[0].manifest_id.as_ref(), Some(&exact));
+
+            // Legacy Capture follows the actual mutable head, rather than the
+            // immutable import Ready generation used by the C14-only route.
+            let mut advanced = state.snapshot.clone();
+            advanced.observed_authorization_epoch = advanced
+                .observed_authorization_epoch
+                .checked_add(1)
+                .unwrap();
+            let state = store.compare_and_swap(state.generation, &advanced).unwrap();
+            assert!(state.generation > baseline.ready_generation());
+            assert_ne!(state.digest, baseline.ready().plan.placement_digest);
+
+            struct BeforeCaptureCommit;
+            impl crate::projection::capture::CaptureFaults for BeforeCaptureCommit {
+                fn check(
+                    &self,
+                    point: crate::projection::capture::CapturePoint,
+                ) -> std::io::Result<()> {
+                    if point == crate::projection::capture::CapturePoint::BeforeCommit {
+                        Err(std::io::Error::other(
+                            "injected legacy Capture before COMMIT",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            let previous = store.latest_captured_patch().unwrap();
+            fs::write(
+                root.join(path.as_str()),
+                b"legacy Capture interrupted input",
+            )
+            .unwrap();
+            let failure = store
+                .capture_patch_with_faults(state.generation, &BeforeCaptureCommit)
+                .unwrap_err();
+            assert!(
+                failure
+                    .to_string()
+                    .contains("injected legacy Capture before COMMIT"),
+                "{failure}"
+            );
+            assert_eq!(store.latest_captured_patch().unwrap(), previous);
+            let changed_input = b"legacy Capture input changed after interruption";
+            fs::write(root.join(path.as_str()), changed_input).unwrap();
+            let failure = store.capture_patch(state.generation).unwrap_err();
+            assert!(
+                failure
+                    .to_string()
+                    .contains("shared quota reservation pending"),
+                "{failure}"
+            );
+            store.cancel_shared_reservation().unwrap();
+            assert_eq!(fs::read(root.join(path.as_str())).unwrap(), changed_input);
+            assert_eq!(store.latest_captured_patch().unwrap(), previous);
+            let private_database = store
+                .marker
+                .shared
+                .as_ref()
+                .unwrap()
+                .metadata_path
+                .join("projection.sqlite3");
+            let family_database = store
+                .marker
+                .shared
+                .as_ref()
+                .unwrap()
+                .root
+                .join("metadata/catalog.sqlite3");
+            let witness = database_io::tests::support::witness;
+            let private_after_cancel = witness(&private_database);
+            let family_after_cancel = witness(&family_database);
+            store.cancel_shared_reservation().unwrap();
+            assert_eq!(witness(&private_database), private_after_cancel);
+            assert_eq!(witness(&family_database), family_after_cancel);
+
             let first_bytes = b"ordinary destination edit A: retained after source removal";
             fs::write(root.join(path.as_str()), first_bytes).unwrap();
             let first = store.capture_patch(state.generation).unwrap();

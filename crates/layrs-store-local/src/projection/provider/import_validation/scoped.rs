@@ -18,6 +18,8 @@ use rusqlite::ToSql;
 use std::collections::{BTreeMap, BTreeSet};
 mod base;
 pub(super) mod catalogs;
+mod companions_v2;
+pub(super) mod denial_history;
 
 const EMPTY_COUNT: &str = "SELECT 0,0";
 const EMPTY_ROWS: &str = "SELECT 0 WHERE 0";
@@ -125,6 +127,9 @@ pub(super) fn with_scope<T>(
             (version.generation, version.capture_count)
         }
     };
+    let denial_ids = denial_history::derive(c, prefix, scope, cancel)?;
+    let denial_ids_json = ids_json(&denial_ids)?;
+    let denials: [&dyn ToSql; 1] = [&denial_ids_json];
     let mut all_catalog_ids = scope.catalog_ids.clone();
     let activation_records = if kind.has_provider_history() {
         derive_catalog_scope(c, scope.activation_ids, &mut all_catalog_ids, cancel)?
@@ -210,7 +215,7 @@ pub(super) fn with_scope<T>(
     let companions: [&dyn ToSql; 1] = [&companion_ids];
     let content: [&dyn ToSql; 1] = [&content_ids];
     let empty: [&dyn ToSql; 0] = [];
-    let mut specs = Vec::with_capacity(13);
+    let mut specs = Vec::with_capacity(14);
     macro_rules! add {
         ($kind:expr, $preflight:expr, $rows:expr, $params:expr) => {
             specs.push(Spec {
@@ -323,9 +328,27 @@ pub(super) fn with_scope<T>(
             max_bytes: 512 * 1024 * 1024,
         });
     }
+    if prefix.closure.denial_observations.is_some() {
+        if kind == ImportDatabaseKind::Ordinary {
+            add!(Kind::DenialObservations, EMPTY_COUNT, EMPTY_ROWS, &empty);
+        } else {
+            add!(
+                Kind::DenialObservations,
+                denial_history::PREFLIGHT_SQL,
+                denial_history::ROWS_SQL,
+                &denials
+            );
+        }
+    }
     let preflight = rows::preflight(c, &specs, cancel)?;
     let closure = rows::stream(c, &specs, &preflight, cancel)?;
-    if closure.catalogs.count != all_catalog_ids.len() as u64
+    if closure.denial_observations.as_ref().map(|rows| rows.count)
+        != prefix
+            .closure
+            .denial_observations
+            .as_ref()
+            .map(|_| denial_ids.len() as u64)
+        || closure.catalogs.count != all_catalog_ids.len() as u64
         || closure.descriptors.count != catalog_validation.descriptor_count
         || closure.activation_maps.count != scope.activation_ids.len() as u64
         || closure.transition_receipts.count != scope.receipt_ids.len() as u64
@@ -427,11 +450,14 @@ fn derive_companion_scope(
     cancel: Option<&Cancellation>,
 ) -> CauseResult<()> {
     let ids = ids_json(scope.companion_ids)?;
-    let (count, header_bytes): (u64, u64) = c.query_row(
-        "SELECT count(*),coalesce(sum(length(payload)),0) FROM projection_provider_companions WHERE id IN (SELECT value FROM json_each(?1))",
-        [&ids], |r| Ok((r.get(0)?, r.get(1)?)),
+    let (count, header_bytes, largest_header): (u64, u64, u64) = c.query_row(
+        "SELECT count(*),coalesce(sum(length(payload)),0),coalesce(max(length(payload)),0) FROM projection_provider_companions WHERE id IN (SELECT value FROM json_each(?1))",
+        [&ids], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    if count != scope.companion_ids.len() as u64 || header_bytes > 64 * 1024 * 1024 {
+    if count != scope.companion_ids.len() as u64
+        || header_bytes > 64 * 1024 * 1024
+        || largest_header > 64 * 1024
+    {
         return Err(invalid(
             "import companion header scope missing or oversized",
         ));
@@ -460,7 +486,37 @@ fn derive_companion_scope(
             "SELECT file_count,deletion_count,files_digest,deletions_digest,payload FROM projection_provider_companions WHERE id=?1",
             [id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
         )?;
-        let header = ProviderCompanionHeaderRecord::decode(&payload)?;
+        let header =
+            match super::super::records::companion_v2::CompanionHeaderRecord::decode(&payload)? {
+                super::super::records::companion_v2::CompanionHeaderRecord::V1(header) => header,
+                super::super::records::companion_v2::CompanionHeaderRecord::V2(header) => {
+                    if header.digest()? != *id
+                        || header.file_count != file_count
+                        || header.deletion_count != deletion_count
+                        || header.files_digest != files_digest
+                        || header.deletions_digest != deletions_digest
+                        || header.encode()? != payload
+                    {
+                        return Err(invalid("import companion v2 SQL header differs"));
+                    }
+                    let receipt = scope
+                        .receipts
+                        .iter()
+                        .find(|receipt| receipt.companion_id.as_deref() == Some(id))
+                        .ok_or_else(|| invalid("import companion v2 has no canonical receipt"))?;
+                    companions_v2::validate(
+                        c,
+                        id,
+                        &header,
+                        receipt,
+                        scope.lineage,
+                        content_ids,
+                        catalog_ids,
+                        cancel,
+                    )?;
+                    continue;
+                }
+            };
         header.require_row(CompanionHeaderRowData {
             id,
             file_count,
@@ -691,4 +747,152 @@ fn require_content_mapping(
         return Err(invalid("import exact content mapping projection differs"));
     }
     Ok(())
+}
+
+/// Called only after the canonical historical scope has been authenticated.
+/// V1 has no alternate-reference payload; V2 retains its complete immutable
+/// exact set even after no current image path refers to those representations.
+pub(super) fn companion_representations(
+    c: &Connection,
+    ids: &BTreeSet<String>,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<Vec<super::super::managed_admission::RequiredRepresentation>> {
+    use super::super::{managed_admission::RequiredRepresentation, records::companion_v2::*};
+    let mut exact = BTreeMap::new();
+    let mut lengths = BTreeMap::new();
+    let mut owners = BTreeMap::new();
+    for id in ids {
+        super::super::cancellation::check(cancel)?;
+        // The preceding scope validation checked row cardinality, scalar
+        // projections, canonical bytes, receipt/provenance and the aggregate.
+        // Repeat the per-header bound in SQL before allocating its BLOB.
+        let payload: Vec<u8> = c.query_row(
+            "SELECT payload FROM projection_provider_companions WHERE id=?1 AND length(payload)<=65536",
+            [id], |r| r.get(0),
+        )?;
+        let header = CompanionHeaderRecord::decode(&payload)?;
+        if header.as_ref().digest()? != *id {
+            return Err(invalid(
+                "inherited companion exact reference header differs",
+            ));
+        }
+        if let CompanionHeaderRecord::V2(header) = header {
+            for row in header.preserved_representations {
+                super::super::cancellation::check(cancel)?;
+                let key = (row.file_id.clone(), row.manifest_id.clone());
+                if exact.len() >= 100_000 && !exact.contains_key(&key) {
+                    return Err(invalid("inherited companion exact union exceeds bound"));
+                }
+                if lengths
+                    .insert(row.file_id.clone(), row.bytes)
+                    .is_some_and(|old| old != row.bytes)
+                    || owners
+                        .insert(row.manifest_id.clone(), row.file_id.clone())
+                        .is_some_and(|old| old != row.file_id)
+                    || exact
+                        .insert(key, row.bytes)
+                        .is_some_and(|old| old != row.bytes)
+                {
+                    return Err(invalid("inherited companion exact representation conflict"));
+                }
+            }
+        }
+        // V1's scalar representations/preimages are already in the exact
+        // authenticated copied FileId mappings. Do not synthesize v2 payloads.
+    }
+    Ok(exact
+        .into_iter()
+        .map(|((file_id, manifest_id), bytes)| RequiredRepresentation {
+            file_id,
+            manifest_id,
+            bytes,
+        })
+        .collect())
+}
+
+/// Outgoing B proof uses the original INCOMING lineage only. It never calls
+/// verify_source_publication and never extends any frozen prefix selector.
+pub(in crate::projection::provider) fn validate_outgoing_companion(
+    c: &Connection,
+    marker: &format::Marker,
+    id: &str,
+    header: &super::super::records::companion_v2::CompanionHeaderV2,
+    receipt: &ProviderTransitionReceiptRecord,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<BTreeSet<String>> {
+    let lineage = super::ancestry::read_ancestry(
+        c,
+        marker,
+        ImportDatabaseKind::Provider,
+        &receipt.source_prefix,
+        cancel,
+    )?;
+    let mut content = BTreeSet::new();
+    let mut catalogs = BTreeSet::new();
+    companions_v2::validate_mode(
+        c,
+        id,
+        header,
+        receipt,
+        &lineage,
+        &mut content,
+        &mut catalogs,
+        cancel,
+        true,
+    )?;
+    // source-only dependencies must be included even where an earlier sticky
+    // check needed no selector mutation.
+    for intent in &header.intents {
+        if let Some(a) = intent.accepted() {
+            content.insert(
+                a.change
+                    .expected
+                    .as_ref()
+                    .ok_or_else(|| invalid("outgoing preimage absent"))?
+                    .file_id
+                    .to_string(),
+            );
+        }
+    }
+    Ok(content)
+}
+
+/// Only a schema-specific ancestry reader or fully interpreted destination
+/// prefix provides this lineage. No alternate schema bypass is exposed.
+pub(super) fn validate_local_companion_in_lineage(
+    c: &Connection,
+    id: &str,
+    header: &super::super::records::companion_v2::CompanionHeaderV2,
+    receipt: &ProviderTransitionReceiptRecord,
+    lineage: &ProvenanceIndex,
+    cancel: Option<&Cancellation>,
+) -> CauseResult<BTreeSet<String>> {
+    let mut content = BTreeSet::new();
+    let mut catalogs = BTreeSet::new();
+    companions_v2::validate_mode(
+        c,
+        id,
+        header,
+        receipt,
+        lineage,
+        &mut content,
+        &mut catalogs,
+        cancel,
+        false,
+    )?;
+    // source-only dependencies must be included even where an earlier sticky
+    // check needed no selector mutation.
+    for intent in &header.intents {
+        if let Some(a) = intent.accepted() {
+            content.insert(
+                a.change
+                    .expected
+                    .as_ref()
+                    .ok_or_else(|| invalid("outgoing preimage absent"))?
+                    .file_id
+                    .to_string(),
+            );
+        }
+    }
+    Ok(content)
 }

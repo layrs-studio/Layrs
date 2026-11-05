@@ -51,9 +51,10 @@ impl ProviderProof<'_> {
             return Err(invalid("import publication proof row count exceeds bound"));
         }
         let mut hash = blake3::Hasher::new();
-        hash.update(b"layrs-provider-import-publication-proof-v1\0");
+        hash.update(b"layrs-provider-import-publication-proof-v2\0");
         hash_rows(&proof.transitions, &mut hash, cancel)?;
         hash_rows(&proof.receipts, &mut hash, cancel)?;
+        proof.companions.hash_into(&mut hash, cancel)?;
         Ok(ProviderModeBinding::Publication(format!(
             "blake3:{}",
             hash.finalize()
@@ -97,7 +98,8 @@ impl ProviderProof<'_> {
         let (_, old_activation, old_source, old_activated, old_captures) = proof.import_parts();
         let (_, current_activation, current_source, current_activated, current_captures) =
             current.import_parts();
-        if self.mode_binding(cancel)? != ProviderProof::Publication(&current).mode_binding(cancel)?
+        if self.mode_binding(cancel)?
+            != ProviderProof::Publication(&current).mode_binding(cancel)?
             || old_activation.digest()? != current_activation.digest()?
             || source_commitment_digest(old_source)? != source_commitment_digest(current_source)?
             || old_activated.generation != current_activated.generation

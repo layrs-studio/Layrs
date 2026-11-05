@@ -129,6 +129,11 @@ pub(super) fn read_partition(
                 return Err(invalid("ordinary authenticated incoming receipt changed"));
             }
         } else {
+            if receipt.denial_coverage.is_some() {
+                return Err(invalid(
+                    "ordinary outgoing denial receipt reader is not integrated",
+                ));
+            }
             owners
                 .get(&id)
                 .ok_or_else(|| invalid("ordinary receipt has no exact terminal owner"))?

@@ -81,6 +81,7 @@ fn fixture() -> Data {
         inherited_segments: row(1),
         ancestry_root_receipt: Some(TOKEN.into()),
         closure: ImportClosure {
+            denial_observations: None,
             snapshots: row(4),
             selections: row(1),
             captures: row(2),

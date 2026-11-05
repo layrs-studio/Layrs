@@ -6,6 +6,9 @@ use super::super::{
 };
 use super::*;
 
+mod c14_capture;
+mod c14_restore;
+
 /// Frozen ingress evidence plus exact representation references. This proves
 /// neither a current family root nor canonical current manifests/CAS bytes.
 pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
@@ -21,6 +24,236 @@ pub(in crate::projection) struct VerifiedAdmittedImport<'a> {
     witness_column_bytes: u64,
 }
 impl VerifiedAdmittedImport<'_> {
+    /// Closed terminal C14 DATA, with the actual archived checkout moved out
+    /// only after exact private inventory, canonical family union and complete
+    /// admission capacity checks. This grants no ordinary mutation authority.
+    pub(in crate::projection::provider) fn into_denial_terminal(
+        self,
+        required: &[layrs_core::scm::FileManifest],
+        installation: crate::projection::shared::exact_content::ExactInstallState,
+        cancel: Option<&Cancellation>,
+    ) -> Result<(
+        super::super::admitted_ordinary::AdmittedOrdinaryData,
+        super::super::checkout_journal::ExpectedCheckout,
+        super::super::checkout_journal::CheckoutJournal,
+    )> {
+        use super::super::{destination_ready::ManagedReadyClaim, managed_budget};
+        use crate::projection::shared::exact_protection::ExactProtection;
+
+        cancellation::check(cancel)?;
+        if self.private_schema != 9
+            || self.prefix.origin()
+                != super::super::import_validation::DestinationOriginKind::Provider
+            || !matches!(
+                self.prefix.prefix().source,
+                ImportSource::Provider {
+                    private_schema: 8,
+                    ..
+                }
+            )
+            || self.ready().plan.denial_coverage.is_none()
+            || self.receipt().denial_coverage.is_none()
+            || !self.outgoing.intents().is_empty()
+            || self.outgoing.receipt_count() != 0
+            || self.witness_column_bytes != 0
+        {
+            return Err(invalid(
+                "terminal denial resolution requires unchanged Provider9 C14",
+            ));
+        }
+        self.require_denial_terminal_inventory(cancel)?;
+        let mut witness: Vec<_> = required
+            .iter()
+            .map(|m| RequiredRepresentation {
+                file_id: m.file_id().clone(),
+                manifest_id: m.id().clone(),
+                bytes: m.byte_length(),
+            })
+            .collect();
+        witness.sort_unstable();
+        if witness != self.frozen.required {
+            return Err(invalid("terminal denial canonical witness differs"));
+        }
+        let binding = &self.record.binding;
+        let protection = ExactProtection::new(
+            &binding.family_incarnation,
+            &binding.owner,
+            &binding.database_identity,
+            &binding.transaction_id,
+            required,
+            cancel,
+        )?;
+        if protection.id() != self.record.root_id {
+            return Err(invalid("terminal denial protection differs"));
+        }
+        let ready = self.ready();
+        let claim = ManagedReadyClaim {
+            root_id: self.record.root_id.clone(),
+            digest: self.record.root_id.clone(),
+            kind: "provider-import".into(),
+            owner: self.record.transaction_id.clone(),
+        };
+        // The historical reader authenticates the actual fresh observation,
+        // placement, selection, current document and local companion columns.
+        // Complete that basis with these canonical manifests, excluding Jmax.
+        let floor = managed_budget::complete_metadata_floor(
+            self.frozen
+                .metadata_basis_floor
+                .ok_or_else(|| invalid("terminal denial metadata basis absent"))?,
+            ready,
+            self.receipt(),
+            &claim,
+            required,
+            cancel,
+        )?;
+        let budget = managed_budget::admission_budget(
+            floor,
+            self.frozen.expected.files().len() as u64,
+            self.frozen.expected.directories().len() as u64,
+        )?;
+        let baseline = managed_budget::quota(
+            required,
+            self.frozen.expected.files().iter().map(|file| file.bytes),
+            0,
+        )?;
+        let metadata = budget.require_quota(ready.plan.quota_bytes, baseline)?;
+        let cost = managed_budget::admission_cost(
+            self.published.encode()?.len() as u64,
+            self.record.encode()?.len() as u64,
+            self.frozen.archive.count,
+            self.frozen.archive.bytes,
+        )?;
+        budget.require_actual(metadata, &cost)?;
+        let remaining = installation
+            .remaining
+            .checked_sub(self.frozen.expected.header().file_bytes)
+            .ok_or_else(|| invalid("terminal denial checkout envelope insufficient"))?;
+        budget.require_remaining(
+            remaining,
+            protection.payload().len() as u64,
+            required.len() as u64,
+        )?;
+        let data = super::super::admitted_ordinary::inspect(self.connection, &self.marker, cancel)?;
+        cancellation::check(cancel)?;
+        Ok((data, self.frozen.expected, self.frozen.journal))
+    }
+
+    fn require_denial_terminal_inventory(&self, cancel: Option<&Cancellation>) -> Result<()> {
+        let c = self.connection;
+        if c.is_autocommit() {
+            return Err(invalid("terminal denial transaction ended"));
+        }
+        let add = |n: u64, extra: u64| {
+            n.checked_add(extra)
+                .filter(|n| *n <= 1_100_010)
+                .ok_or_else(|| invalid("terminal denial row bound overflow"))
+        };
+        let counts = self.denial_terminal_counts()?;
+        for (kind, name, _) in super::super::database_io::schema_inventory(c)? {
+            cancellation::check(cancel)?;
+            if kind != "table" {
+                continue;
+            }
+            let expected = counts
+                .iter()
+                .find(|(table, _)| *table == name)
+                .map_or(0, |(_, n)| *n);
+            let count: u64 = c.query_row(
+                &format!("SELECT count(*) FROM (SELECT 1 FROM \"{name}\" LIMIT ?1)"),
+                [add(expected, 1)?],
+                |r| r.get(0),
+            )?;
+            if count != expected {
+                return Err(invalid("terminal denial table has missing or extra rows"));
+            }
+        }
+        let (singleton, head, captures): (u64, u64, u64) = c.query_row(
+            "SELECT singleton,generation,(SELECT coalesce(max(sequence),0) FROM projection_captures) FROM projection_head",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if (singleton, head, captures) != (1, self.record.boundaries.ready_generation, self.record.boundaries.ready_capture_sequence)
+            || !c.query_row("SELECT backend='ordinary' AND mount_id IS NULL FROM projection_backend WHERE singleton=1", [], |r| r.get::<_, bool>(0))?
+            || c.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, u64>(0))? != 1
+            || c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)", [], |r| r.get::<_, bool>(0))?
+        {
+            return Err(invalid("terminal denial frontier/backend/foreign keys differ"));
+        }
+        cancellation::check(cancel)
+    }
+
+    fn denial_terminal_counts(&self) -> Result<Vec<(&'static str, u64)>> {
+        let closure = &self.prefix.prefix().closure;
+        let plan = &self.ready().plan;
+        let add = |n: u64, extra: u64| {
+            n.checked_add(extra)
+                .filter(|n| *n <= 1_100_010)
+                .ok_or_else(|| invalid("terminal denial row bound overflow"))
+        };
+        // Exact reference schema is already authenticated. Every table outside
+        // this frozen inventory must be empty, including operational journals,
+        // later ordinary effects and outgoing transitions/receipts.
+        Ok(vec![
+            (
+                "projection_observations",
+                add(
+                    closure.denial_observations.as_ref().map_or(0, |r| r.count),
+                    1,
+                )?,
+            ),
+            ("projection_snapshots", add(closure.snapshots.count, 2)?),
+            ("projection_selections", add(closure.selections.count, 2)?),
+            ("projection_captures", add(closure.captures.count, 1)?),
+            ("projection_publications", closure.publications.count),
+            (
+                "projection_restore_history",
+                closure.restore_history.as_ref().map_or(0, |r| r.count),
+            ),
+            ("projection_provider_catalogs", closure.catalogs.count),
+            ("projection_provider_descriptors", closure.descriptors.count),
+            (
+                "projection_provider_activations",
+                closure.activation_maps.count,
+            ),
+            (
+                "projection_provider_transition_receipts",
+                add(closure.transition_receipts.count, 1)?,
+            ),
+            (
+                "projection_provider_companions",
+                add(
+                    closure.companions.count,
+                    u64::from(plan.companion_id.is_some()),
+                )?,
+            ),
+            (
+                "projection_provider_companion_files",
+                add(closure.companion_files.count, plan.companion_files.count)?,
+            ),
+            (
+                "projection_provider_companion_deletions",
+                add(
+                    closure.companion_deletions.count,
+                    plan.companion_deletions.count,
+                )?,
+            ),
+            (
+                "projection_content",
+                add(
+                    closure.content_mappings.count,
+                    self.frozen.new_content.len() as u64,
+                )?,
+            ),
+            ("projection_meta", 1),
+            ("projection_head", 1),
+            ("projection_backend", 1),
+            ("projection_imports", 1),
+            ("projection_provider_transitions", 1),
+            ("projection_claims", 1),
+            ("projection_managed_admission", 1),
+            ("projection_import_checkout", self.frozen.archive.count),
+        ])
+    }
+
     /// Detach the real authenticated archive, never a reconstruction from its
     /// summary. The generic admitted reader permits mutable ordinary tails;
     /// this closed C10 entry additionally requires the unchanged terminal
@@ -396,7 +629,7 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
         }
     };
     cancellation::check(cancel)?;
-    Ok(VerifiedAdmittedImport {
+    let verified = VerifiedAdmittedImport {
         connection: c,
         marker: marker.clone(),
         record,
@@ -407,7 +640,19 @@ pub(in crate::projection::provider) fn read_admitted_import<'a>(
         admission_column_bytes,
         private_schema: permit.private_schema(),
         witness_column_bytes,
-    })
+    };
+    if verified.ready().plan.denial_coverage.is_some() {
+        if permit.layout() != schema::AdmittedLayout::Provider9
+            || !verified.outgoing.intents().is_empty()
+            || verified.outgoing.receipt_count() != 0
+        {
+            return Err(invalid(
+                "admitted denial requires Provider9 without outgoing transitions",
+            ));
+        }
+        verified.require_local_capture_suffix(cancel)?;
+    }
+    Ok(verified)
 }
 
 /// Bounded canonical admission metadata only. This neither follows incoming
@@ -439,6 +684,19 @@ pub(in crate::projection::provider) fn read_record(
         return Err(invalid("admitted record SQL projection differs"));
     }
     let published = ProviderTransitionIntentRecord::decode(&source_body)?;
+    if published.plan.denial_coverage.is_some()
+        && !matches!(
+            published.plan.source_prefix.source,
+            ImportSource::Provider {
+                private_schema: 8,
+                ..
+            }
+        )
+    {
+        return Err(invalid(
+            "admitted denial requires Provider8 source provenance",
+        ));
+    }
     if published.role != TransitionRole::Source
         || published.state != TransitionState::Published
         || published.digest()? != source_digest

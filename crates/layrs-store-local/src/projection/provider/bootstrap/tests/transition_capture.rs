@@ -137,6 +137,7 @@ pub(in crate::projection::provider::bootstrap) fn planned_for_image(
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: empty(2),
             selections: empty(1),
@@ -183,6 +184,7 @@ pub(in crate::projection::provider::bootstrap) fn planned_for_image(
         state: TransitionState::Planned,
         local_generation: activated.generation,
         plan: TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix_id,
             source_prefix: prefix,

@@ -27,9 +27,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod autonomous;
 mod data;
+mod denial;
 mod family;
 mod historical;
 mod ordinary;
+mod retained_companion;
 pub(in crate::projection::provider) use historical::{read_frozen_ready_rows, FrozenReadyRows};
 pub(in crate::projection::provider) use ordinary::{
     finalize_ordinary_checkout_or_replay, read_ordinary_checkout_finalizable,
@@ -66,6 +68,25 @@ pub(in crate::projection::provider) struct ManagedReadyData<'a> {
     pub ready: &'a ProviderTransitionIntentRecord,
     pub claims: &'a [ManagedReadyClaim],
 }
+/// Closed reconciliation DATA plus the real pending B root. The caller still
+/// owns physical C checkout/CAS and the complete source checkpoint.
+#[derive(Clone, Copy)]
+pub(in crate::projection::provider) struct ManagedCompanionReadyData<'a> {
+    pub rows: &'a super::transition_reconcile::companions::OwnedCompanionData,
+    pub observation: &'a super::transition_observation::TransitionObservationData,
+    pub source_context:
+        crate::projection::shared::source_companion::SourceCompanionFamilyContext<'a>,
+}
+/// Closed fresh observation without a new companion group. The full source
+/// context authenticates d; it must not contain a pending preservation root s.
+#[derive(Clone, Copy)]
+pub(in crate::projection::provider) struct ManagedDenialReadyData<'a> {
+    pub rows: &'a super::transition_reconcile::companions::OwnedCompanionData,
+    pub observation: &'a super::transition_observation::TransitionObservationData,
+    pub coverage: &'a super::records::denied_coverage::DerivedDeniedCoverage,
+    pub source_context:
+        crate::projection::shared::source_companion::SourceCompanionFamilyContext<'a>,
+}
 pub(in crate::projection::provider) struct ManagedReadyInputs<'a> {
     pub marker: &'a format::Marker,
     pub source: &'a ProviderBootstrapSource,
@@ -76,6 +97,8 @@ pub(in crate::projection::provider) struct ManagedReadyInputs<'a> {
     pub staging: &'a ProviderTransitionIntentRecord,
     pub closure: &'a VerifiedImportClosure,
     pub family_marker_bytes: &'a [u8],
+    pub companion: Option<ManagedCompanionReadyData<'a>>,
+    pub denial: Option<ManagedDenialReadyData<'a>>,
     pub data: &'a ManagedReadyData<'a>,
 }
 
@@ -86,6 +109,140 @@ struct ReadyView<'a> {
     source: ReadySource<'a>,
     prefix: &'a ProviderImportPrefixRecord,
     data: &'a ManagedReadyData<'a>,
+    companion: Option<&'a ManagedCompanionReadyData<'a>>,
+    retained_companion: Option<&'a retained_companion::RetainedCompanionReadyData>,
+    denial: Option<&'a ManagedDenialReadyData<'a>>,
+    retained_denial: Option<&'a denial::RetainedDenialReadyData>,
+}
+
+impl ReadyView<'_> {
+    fn selection(&self) -> &layrs_core::projection::ProjectionSelection {
+        if let Some(data) = self.denial {
+            return data.observation.selection();
+        }
+        if let Some(data) = self.retained_denial {
+            return data.selection();
+        }
+        match (self.companion, self.retained_companion) {
+            (Some(c), None) => c.observation.selection(),
+            (None, Some(c)) => c.selection(),
+            _ => self.source.selection(),
+        }
+    }
+    fn has_companion(&self) -> bool {
+        self.companion.is_some() || self.retained_companion.is_some()
+    }
+    fn has_fresh_observation(&self) -> bool {
+        self.has_companion() || self.denial.is_some() || self.retained_denial.is_some()
+    }
+    fn companion_header(&self) -> Option<&super::records::companion_v2::CompanionHeaderV2> {
+        self.companion
+            .and_then(|c| c.rows.header())
+            .or_else(|| self.retained_companion.map(|c| c.header()))
+    }
+    fn companion_mapping(&self, file: &FileId) -> Option<&(FileManifestId, u64)> {
+        self.companion
+            .and_then(|c| c.rows.source_mappings().get(file))
+            .or_else(|| self.retained_companion.and_then(|c| c.mapping(file)))
+    }
+    fn require_companion(&self, cancel: Option<&Cancellation>) -> Result<()> {
+        let modes = usize::from(self.companion.is_some())
+            + usize::from(self.retained_companion.is_some())
+            + usize::from(self.denial.is_some())
+            + usize::from(self.retained_denial.is_some());
+        if modes > 1 {
+            return Err(invalid("Ready observation modes overlap"));
+        }
+        if let Some(data) = self.denial {
+            return denial::require_live(data, self.data, self.prefix, cancel);
+        }
+        if let Some(data) = self.retained_denial {
+            return data.require_data(self.data, self.prefix, cancel);
+        }
+        if let Some(retained) = self.retained_companion {
+            if self.companion.is_some() {
+                return Err(invalid("Ready companion modes overlap"));
+            }
+            return retained.require_data(self.data, self.prefix, cancel);
+        }
+        let Some(c) = self.companion else {
+            if self.data.ready.plan.denial_coverage.is_some() {
+                return Err(invalid(
+                    "Ready denial plan requires explicit observation mode",
+                ));
+            }
+            if self.data.ready.plan.companion_id.is_some()
+                || self.data.ready.plan.companion_files.count != 0
+                || self.data.ready.plan.companion_deletions.count != 0
+            {
+                return Err(invalid("strict Ready DATA refuses new companions"));
+            }
+            return self.source.require_snapshots(self.data);
+        };
+        cancellation::check(cancel)?;
+        if self.data.ready.plan.denial_coverage.is_some() {
+            // This is expected DATA only. SQL entry readers independently
+            // require the stored body before accepting or writing Ready.
+            let body =
+                super::records::denied_coverage::TransitionDeniedCoverageRecord::from_observation(
+                    self.prefix,
+                    &self.data.ready.transaction_id,
+                    c.observation,
+                    cancel,
+                )?;
+            body.require_intent(self.data.ready, cancel)?;
+        } else if c.observation.binding().denied_path_count != 0 {
+            return Err(invalid(
+                "companion Ready observation, overlay or full union differs",
+            ));
+        }
+        if c.rows.manifests() != self.data.required
+            || c.rows.overlay() != self.data.capture.changes
+            || c.observation.snapshot() != self.data.observation
+        {
+            return Err(invalid(
+                "companion Ready observation, overlay or full union differs",
+            ));
+        }
+        if self.data.ready.plan.denial_coverage.is_some() {
+            c.rows
+                .require_denial_plan_observation(self.prefix, c.observation)?;
+        } else {
+            c.rows
+                .require_plan_observation(self.prefix, c.observation)?;
+        }
+        let header = c
+            .rows
+            .header()
+            .ok_or_else(|| invalid("companion Ready header absent"))?;
+        header.require_prefix(self.prefix)?;
+        header.require_receipt(self.data.receipt)?;
+        let plan = &self.data.ready.plan;
+        if plan.companion_id.as_deref() != Some(header.digest()?.as_str())
+            || plan.companion_files.count != header.file_count
+            || plan.companion_files.digest != header.files_digest
+            || plan.companion_deletions.count != header.deletion_count
+            || plan.companion_deletions.digest != header.deletions_digest
+        {
+            return Err(invalid("companion Ready plan rowset commitments differ"));
+        }
+        let mut placement = c.observation.snapshot().clone();
+        for entry in &mut placement.entries {
+            if c.observation.selection().includes(&entry.path)
+                && entry.state != layrs_core::projection::EntryState::Reserved
+                && matches!(
+                    entry.target,
+                    Some(layrs_core::scm::TreeEntryTarget::File { .. })
+                )
+            {
+                entry.state = layrs_core::projection::EntryState::Materialized;
+            }
+        }
+        if &placement != self.data.placement {
+            return Err(invalid("companion Ready exact placement differs"));
+        }
+        Ok(())
+    }
 }
 
 /// Each entry wrapper authenticates its own source before constructing this
@@ -250,6 +407,10 @@ impl ManagedReadyInputs<'_> {
             source: ReadySource::Provider(self.source),
             prefix: self.prefix,
             data: self.data,
+            companion: self.companion.as_ref(),
+            retained_companion: None,
+            denial: self.denial.as_ref(),
+            retained_denial: None,
         }
     }
 }
@@ -267,6 +428,16 @@ struct PreparedData {
     /// Only mappings absent from the immutable imported scope. Historical
     /// FileId-primary-key choices are never replaced by another representation.
     new_content: Vec<(String, String, u64)>,
+}
+
+pub(in crate::projection::provider) fn validate_ready_data(
+    source_c: &Connection,
+    destination: &Connection,
+    family_c: &Connection,
+    inputs: &ManagedReadyInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    data::prepare(source_c, destination, family_c, inputs, cancel).map(|_| ())
 }
 
 /// Strict Ready suffix reader. The Staging reader remains unchanged and still
@@ -530,7 +701,9 @@ fn require_checkout_inventory(
     let mut changes = 0usize;
     for entry in &inputs.data.placement.entries {
         cancellation::check(cancel)?;
-        if !inputs.source.selection().includes(&entry.path) {
+        if !inputs.selection().includes(&entry.path)
+            || (inputs.has_fresh_observation() && entry.state == EntryState::Reserved)
+        {
             continue;
         }
         let base = match &entry.target {
@@ -570,10 +743,41 @@ fn require_checkout_inventory(
                 }
             }
         } else if let Some((file_id, executable)) = base {
-            let bytes =
-                inputs
-                    .source
-                    .unchanged_bytes(&entry.path, file_id, executable, &required)?;
+            let bytes = if let Some(data) = inputs.denial {
+                data.observation
+                    .descriptors()
+                    .iter()
+                    .find(|d| {
+                        d.path == entry.path && &d.file_id == file_id && d.executable == executable
+                    })
+                    .ok_or_else(|| invalid("plain denial Ready unchanged descriptor absent"))?
+                    .bytes
+            } else if let Some(data) = inputs.retained_denial {
+                data.length(file_id)?
+            } else {
+                match (inputs.companion, inputs.retained_companion) {
+                    (None, None) => inputs.source.unchanged_bytes(
+                        &entry.path,
+                        file_id,
+                        executable,
+                        &required,
+                    )?,
+                    (Some(c), None) => {
+                        c.observation
+                            .descriptors()
+                            .iter()
+                            .find(|d| {
+                                d.path == entry.path
+                                    && &d.file_id == file_id
+                                    && d.executable == executable
+                            })
+                            .ok_or_else(|| invalid("companion Ready unchanged descriptor absent"))?
+                            .bytes
+                    }
+                    (None, Some(c)) => c.length(file_id)?,
+                    _ => return Err(invalid("Ready companion modes overlap")),
+                }
+            };
             Some((file_id, executable, bytes, None))
         } else {
             None
@@ -649,7 +853,7 @@ fn append_suffix(
         )? != 1 {
             return Err(invalid("destination Ready snapshot insert differs"));
         }
-        selection::insert(destination, generation, inputs.source.selection())?;
+        selection::insert(destination, generation, inputs.selection())?;
     }
     for (file_id, manifest_id, bytes) in &prepared.new_content {
         cancellation::check(cancel)?;
@@ -671,6 +875,13 @@ fn append_suffix(
         "INSERT INTO projection_claims(root_id,digest,kind,owner) VALUES(?1,?2,?3,?4)",
         params![claim.root_id, claim.digest, claim.kind, claim.owner],
     )?;
+    if let Some(companion) = inputs.companion {
+        // Identical closed rows precede THIS database's own receipt, in this
+        // same Ready transaction. B's private rows are still absent.
+        companion
+            .rows
+            .insert_source_mappings_and_rows(destination, cancel)?;
+    }
     let receipt = inputs.data.receipt;
     destination.execute(
         "INSERT INTO projection_provider_transition_receipts(id,owner_identity_digest,transaction_id,companion_id,payload) VALUES(?1,?2,?3,?4,?5)",

@@ -50,7 +50,7 @@ pub(in crate::projection::provider::validation) fn validate_publication(
     activation: &ProviderActivationRecord,
     activated: &VersionedProjection,
     source: &ProviderBootstrapSource,
-    capture: &PrivateCaptureProof,
+    capture: &super::super::capture::CaptureHistoryData,
     cancel: Option<&Cancellation>,
 ) -> Result<(
     Vec<ProviderTransitionIntentRecord>,
@@ -64,7 +64,8 @@ pub(in crate::projection::provider::validation) fn validate_publication(
         activation,
         activated,
         source,
-        capture,
+        &capture.transactions,
+        &capture.patches,
         View::Publication,
         cancel,
     )?;

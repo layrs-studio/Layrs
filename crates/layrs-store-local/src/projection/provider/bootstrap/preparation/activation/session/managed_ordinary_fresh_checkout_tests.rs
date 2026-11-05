@@ -59,6 +59,172 @@ const WITHHELD_ACK: &str = "fresh checkout SQLite close acknowledgement delibera
 const B_DRIFT: &[u8] = b"changed actual B bytes refuse fresh checkout";
 const FOREIGN: &[u8] = b"foreign checkout file must never be adopted";
 
+fn require_copy_io_primary(cause: &Cause) {
+    use crate::projection::provider::managed_export::checkout_copy_probe::InjectedCopyError;
+    match cause {
+        Cause::Cleanup { primary, .. } => require_copy_io_primary(primary),
+        Cause::Io(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::Other);
+            assert!(error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<InjectedCopyError>()));
+        }
+        other => panic!("original typed copy I/O error required: {other}"),
+    }
+}
+
+#[test]
+#[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
+fn managed_ordinary_fresh_checkout_partial_write_retains_owned_inode_and_restarts_copy() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_partial_write_retains_owned_inode_and_restarts_copy"
+        ),
+        3600,
+        || {
+            use crate::projection::provider::managed_export::checkout_copy_probe;
+            let _total = child::phase("fresh-checkout-partial-write.total");
+            let f = fixture();
+            let before = trees(&f);
+            let cancel = Cancellation::default();
+            let mut phase = child::phase("fresh-checkout-partial-write.open");
+            let held = OrdinaryCheckoutPopulation::open(
+                &f.source,
+                &f.destination,
+                &f.source_staging.transaction_id,
+                &cancel,
+            )
+            .unwrap_or_else(|e| panic!("fresh partial-write open: {e}"));
+            require_owners(&f);
+            let prefix = CURRENT.len() / 2;
+            assert!(0 < prefix && prefix < CURRENT.len());
+            let mut close = Close::new(&f, None);
+            phase.next("fresh-checkout-partial-write.real-sink-failure");
+            // Only the real Owned copy sink is shortened. Write::write_all writes
+            // this prefix to its actual TEMP, then receives the typed I/O error.
+            // There is no caller-created TEMP or post-failure byte mutation.
+            let (result, observed) = checkout_copy_probe::with_prefix_failure(prefix, || {
+                held.populate_checkout(&mut close, &cancel)
+            });
+            let OrdinaryCheckoutPopulationFailure { step, cause, held } = result
+                .err()
+                .expect("real short-write/error must stop checkout population");
+            assert_eq!(observed.written, prefix);
+            assert_eq!(observed.errors, 1);
+            require_copy_io_primary(&cause);
+            let primary = cause.to_string();
+            assert_eq!(step, AdmissionStep::ReadScopesClosed);
+            // Declare, Stage Owned and File Owned have acknowledged SQLite closes;
+            // neither Verified nor Publishing may be committed after the copy error.
+            assert_eq!(close.counts, (3, 3, 3, 0));
+            close.require_pins();
+            require_owners(&f);
+            let temp = temporary(&f);
+            let temp_identity =
+                crate::projection::provider::database_io::tests::support::witness(&temp).0;
+            assert_eq!(fs::read(&temp).unwrap(), &CURRENT[..prefix]);
+            assert!(!final_path(&f).exists());
+            require_mutable_handle(&temp, false, true);
+            phase.next("fresh-checkout-partial-write.explicit-holder-release");
+            drop(held);
+            require_released(&f);
+            require_mutable_handle(&temp, false, false);
+            require_rows(&f);
+            let partial = trees(&f);
+            let Node::Directory(stage_identity) = &partial.2[&stage_path(&f)] else {
+                panic!("actual owned stage directory required")
+            };
+            let Node::File((actual_inode, actual_bytes, _)) = &partial.2[&temp] else {
+                panic!("actual partial TEMP required")
+            };
+            assert_eq!(actual_inode, &temp_identity);
+            assert_eq!(*actual_bytes, prefix as u64);
+            assert!(*actual_bytes < f.expected.files()[0].bytes);
+            witness::read(&f.destination_database, |c| {
+                let journal = checkout_journal::read(c, &f.expected, None).unwrap();
+                assert_eq!(journal.rows().len(), 3);
+                assert!(!journal.is_complete());
+                assert_eq!(
+                    journal.row(RowKey::Header).unwrap(),
+                    &f.expected.declared_row(RowKey::Header).unwrap()
+                );
+                assert!(matches!(&journal.row(RowKey::Stage).unwrap().entry,
+                CheckoutEntry::Stage { state: DirectoryState::Owned { identity } } if identity == stage_identity));
+                assert!(matches!(&journal.row(RowKey::File(0)).unwrap().entry,
+                CheckoutEntry::File { file, state: FileState::Owned { inode }, .. }
+                    if inode == &temp_identity && file == &f.expected.files()[0]));
+            });
+            only_checkout_changed(
+                &f,
+                &before,
+                &partial,
+                BTreeSet::from([stage_path(&f), temp.clone()]),
+            );
+            phase.next("fresh-checkout-partial-write.fresh-open-without-writer");
+            let open_writers = Rc::new(Cell::new(0usize));
+            let observed_open_writers = open_writers.clone();
+            let reopened = with_writer_probe(
+                move |_, point| {
+                    if point == AdmissionPoint::BeforeWritableOpen {
+                        observed_open_writers.set(observed_open_writers.get() + 1);
+                        return Err(invalid("partial TEMP reopen must not open a writer"));
+                    }
+                    Ok(())
+                },
+                || {
+                    OrdinaryCheckoutPopulation::open(
+                        &f.source,
+                        &f.destination,
+                        &f.source_staging.transaction_id,
+                        &cancel,
+                    )
+                },
+            )
+            .unwrap_or_else(|e| panic!("fresh partial TEMP reopen: {e}"));
+            assert_eq!(open_writers.get(), 0);
+            assert_eq!(
+                trees(&f),
+                partial,
+                "open cannot repair or truncate the partial TEMP"
+            );
+            require_owners(&f);
+            let mut resumed_close = Close::new(&f, None);
+            phase.next("fresh-checkout-partial-write.resume-copy-from-start");
+            // The scoped sink fault has been removed. The production Owned route
+            // must rewrite from zero and publish the original journal-owned inode.
+            let completed = reopened
+                .populate_checkout(&mut resumed_close, &cancel)
+                .unwrap_or_else(|e| panic!("partial TEMP resume {:?}: {}", e.step, e.cause));
+            assert_eq!(completed.effect(), CheckoutPopulationEffect::Updated);
+            assert_eq!(resumed_close.counts, (3, 3, 3, 0));
+            phase.next("fresh-checkout-partial-write.complete-witness");
+            require_complete(&f, Some(completed.journal()));
+            let complete = trees(&f);
+            assert_eq!(
+                &complete.2[&stage_path(&f)],
+                &Node::Directory(stage_identity.clone())
+            );
+            let Node::File((final_inode, _, _)) = &complete.2[&final_path(&f)] else {
+                panic!("actual published file required")
+            };
+            assert_eq!(final_inode, &temp_identity);
+            drop(completed);
+            require_released(&f);
+            only_checkout_changed(
+                &f,
+                &before,
+                &trees(&f),
+                BTreeSet::from([stage_path(&f), final_path(&f)]),
+            );
+            phase.next("fresh-checkout-partial-write.complete-replay");
+            replay_without_writer(&f, &cancel);
+            assert_eq!(cause.to_string(), primary);
+            require_copy_io_primary(&cause);
+        },
+    );
+}
+
 fn snapshot(path: &Path) -> Database {
     witness::read(path, witness::database)
 }

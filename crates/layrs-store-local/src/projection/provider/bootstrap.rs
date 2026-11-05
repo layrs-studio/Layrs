@@ -2,12 +2,15 @@
 mod abandon;
 mod allocation;
 mod catalog;
+pub(in crate::projection::provider) mod denial_receipt;
 mod outcome;
 mod preparation;
 pub(in crate::projection::provider) use preparation::activation::{
-    copy_managed_chunk, copy_managed_file, derive_ordinary_data, hash_managed_file,
-    recovery_image_digest, verify_managed_ready_checkout, CheckoutStorage, ImageDeletion,
-    ImageFile, ManagedPlanData, OwnedCheckoutFile, RequiredManifest, VerifiedCheckout,
+    copy_managed_chunk, copy_managed_file, derive_ordinary_data, derive_reconciled_data,
+    derive_reconciled_denial_data, hash_managed_file, plan_complete_managed_image,
+    recovery_image_digest, require_manifest_union, verify_managed_ready_checkout, CheckoutStorage,
+    ImageDeletion, ImageFile, ManagedPlanData, OwnedCheckoutFile, RequiredManifest,
+    VerifiedCheckout, VerifiedCompleteManagedImage,
 };
 mod publication;
 mod receipt_io;
@@ -53,7 +56,7 @@ pub use preparation::{
     ProviderRecoveryExportCause, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
     ProviderRecoveryExportFailure, ProviderRecoveryExportFile, ProviderRecoveryExportGap,
     ProviderRecoveryExportGapKind, ProviderRecoveryExportOutcome, ProviderRecoveryExportReport,
-    ProviderRecoveryExportStep,
+    ProviderRecoveryExportStep, ProviderTransitionSource,
 };
 use report::WriteContext;
 pub use report::{

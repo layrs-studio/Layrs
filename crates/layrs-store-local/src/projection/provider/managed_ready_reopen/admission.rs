@@ -5,7 +5,10 @@ use super::*;
 use crate::projection::{
     provider::{
         database_io::WriterCloseObserver,
-        managed_admission::{admit_ready, read_admitted_import, AdmissionWriteEffect},
+        managed_admission::{
+            admit_denial_ready, admit_ready, read_admitted_import,
+            require_ready_admission_capacity, AdmissionCoverage, AdmissionWriteEffect,
+        },
         published_handoff::{read_published_for_ready, PublicationSource},
         records::Record,
     },
@@ -115,6 +118,43 @@ impl ManagedReadyAdmission {
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
     ) -> std::result::Result<String, AdmissionFailure> {
+        self.commit_coverage(
+            source_file,
+            source,
+            source_boundary,
+            close,
+            cancel,
+            AdmissionCoverage::Legacy,
+        )
+    }
+
+    pub(in crate::projection::provider) fn commit_denial(
+        self,
+        source_file: &database_io::DatabaseFile,
+        source: PublicationSource<'_>,
+        source_boundary: impl Fn() -> Result<()>,
+        close: &mut impl WriterCloseObserver,
+        cancel: &Cancellation,
+    ) -> std::result::Result<String, AdmissionFailure> {
+        self.commit_coverage(
+            source_file,
+            source,
+            source_boundary,
+            close,
+            cancel,
+            AdmissionCoverage::Denial,
+        )
+    }
+
+    fn commit_coverage(
+        self,
+        source_file: &database_io::DatabaseFile,
+        source: PublicationSource<'_>,
+        source_boundary: impl Fn() -> Result<()>,
+        close: &mut impl WriterCloseObserver,
+        cancel: &Cancellation,
+        coverage: AdmissionCoverage,
+    ) -> std::result::Result<String, AdmissionFailure> {
         let mut step = AdmissionStep::Validating;
         let result = self.commit_inner(
             source_file,
@@ -123,6 +163,7 @@ impl ManagedReadyAdmission {
             close,
             cancel,
             &mut step,
+            coverage,
         );
         match result {
             Ok(digest) => Ok(digest),
@@ -142,8 +183,10 @@ impl ManagedReadyAdmission {
         close: &mut impl WriterCloseObserver,
         cancel: &Cancellation,
         step: &mut AdmissionStep,
+        coverage: AdmissionCoverage,
     ) -> Result<String> {
         let held = &self.inspection;
+        coverage.require(&held.data.ready, &held.data.receipt)?;
         held.require(cancel)?;
         source_boundary()?;
         // Rebind the actual file inode to the independently interpreted source
@@ -183,7 +226,10 @@ impl ManagedReadyAdmission {
                                     Some(cancel),
                                 )?
                                 .into_snapshot()?;
+                                coverage.require(&fresh.ready, &fresh.receipt)?;
                                 held.data.require_same(&fresh)?;
+                                require_ready_admission_capacity(&fresh, Some(cancel))?;
+                                coverage.require(published.published(), published.receipt())?;
                                 published.require(source_c, Some(cancel))
                             })?;
                         self.require_physical(cancel)?;
@@ -197,7 +243,11 @@ impl ManagedReadyAdmission {
                             let ready =
                                 read_managed_ready(c, &held.pins.marker, family_c, Some(cancel))?;
                             *step = AdmissionStep::MutationAttempted;
-                            if admit_ready(
+                            let writer = match coverage {
+                                AdmissionCoverage::Legacy => admit_ready,
+                                AdmissionCoverage::Denial => admit_denial_ready,
+                            };
+                            if writer(
                                 c,
                                 &held.pins.marker,
                                 family_c,

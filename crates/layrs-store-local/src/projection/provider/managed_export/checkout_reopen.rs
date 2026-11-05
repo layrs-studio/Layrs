@@ -388,6 +388,11 @@ impl OrdinaryCheckoutPopulation {
                                 piece,
                                 cancel,
                             )?;
+                            #[cfg(test)]
+                            let mut observed_output =
+                                super::checkout_copy_probe::Output::new(output);
+                            #[cfg(test)]
+                            let output = &mut observed_output;
                             self.image
                                 .copy_file(&file.path, &manifest, output, cancel)
                                 .map_err(Cause::from)?;

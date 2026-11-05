@@ -47,6 +47,8 @@ pub(in crate::projection::provider) struct OwnedReadySnapshot {
     pub(in crate::projection::provider) required: Vec<FileManifest>,
     pub(in crate::projection::provider) binding: ExactBinding,
     pub(in crate::projection::provider) installation: ExactInstallState,
+    /// Complete Ready metadata floor before checkout journal bytes. SQL DATA only.
+    pub(in crate::projection::provider) metadata_floor: u64,
 }
 impl OwnedReadySnapshot {
     pub(in crate::projection::provider) fn require_same(&self, current: &Self) -> Result<()> {
@@ -58,6 +60,7 @@ impl OwnedReadySnapshot {
             || self.required != current.required
             || self.binding != current.binding
             || self.installation != current.installation
+            || self.metadata_floor != current.metadata_floor
         {
             return Err(invalid("detached managed Ready SQL snapshot changed"));
         }
@@ -118,6 +121,7 @@ impl VerifiedManagedReady<'_, '_> {
             required: self.required,
             binding: self.binding,
             installation: self.installation,
+            metadata_floor: self.metadata_floor,
         })
     }
     /// These getters expose interpreted DATA, not physical authority.
@@ -330,9 +334,10 @@ fn read_private_ready_parts<'d>(
     if version.generation.checked_add(1) != Some(plan.observation.generation)
         || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
         || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
-        || plan.companion_id.is_some()
-        || plan.companion_files.count != 0
-        || plan.companion_deletions.count != 0
+        || (origin != DestinationOriginKind::Provider
+            && (plan.companion_id.is_some()
+                || plan.companion_files.count != 0
+                || plan.companion_deletions.count != 0))
     {
         return Err(invalid("autonomous Ready local boundaries differ"));
     }
@@ -373,12 +378,47 @@ fn read_private_ready_parts<'d>(
         }
     };
     let copied = prefix.copied_content_mappings(c, cancel)?;
+    let retained = if plan.companion_id.is_some() {
+        Some(super::retained_companion::RetainedCompanionReadyData::read(
+            c,
+            actual_marker,
+            &prefix,
+            &family.required,
+            &expected,
+            cancel,
+        )?)
+    } else {
+        None
+    };
+    let retained_denial = if plan.denial_coverage.is_some() && plan.companion_id.is_none() {
+        Some(super::denial::RetainedDenialReadyData::read(
+            c,
+            &prefix,
+            &family.required,
+            &expected,
+            cancel,
+        )?)
+    } else {
+        None
+    };
+
+    let mut inherited = prefix.inherited_companion_representations(c, cancel)?;
+    if let Some(local) = &retained {
+        inherited.extend(local.header().preserved_representations.iter().map(|r| {
+            RequiredRepresentation {
+                file_id: r.file_id.clone(),
+                manifest_id: r.manifest_id.clone(),
+                bytes: r.bytes,
+            }
+        }));
+    }
     let lengths = match origin {
         DestinationOriginKind::Provider => {
             inventory::require_union(
                 prefix.source()?,
                 &copied,
                 &expected,
+                &inherited,
                 &family.required,
                 cancel,
             )?;
@@ -401,18 +441,27 @@ fn read_private_ready_parts<'d>(
                 prefix.ordinary_frozen()?,
                 &copied,
                 &expected,
+                &inherited,
                 &rows,
                 cancel,
             )?
         }
     };
     let overlay = inventory::overlay(&capture, &expected, cancel)?;
-    inventory::require_image(&capture, &expected, &version.effective_image_digest, cancel)?;
+    if retained.is_none() && retained_denial.is_none() {
+        inventory::require_image(&capture, &expected, &version.effective_image_digest, cancel)?;
+    }
     let (observation, placement) = match origin {
-        DestinationOriginKind::Provider => (
-            prefix.source()?.initial().clone(),
-            super::super::records::activation::activation_snapshot(prefix.source()?)?,
-        ),
+        DestinationOriginKind::Provider => match &retained {
+            Some(rows) => (rows.observation().clone(), rows.placement().clone()),
+            None => match &retained_denial {
+                Some(rows) => (rows.observation().clone(), rows.placement().clone()),
+                None => (
+                    prefix.source()?.initial().clone(),
+                    super::super::records::activation::activation_snapshot(prefix.source()?)?,
+                ),
+            },
+        },
         DestinationOriginKind::Ordinary => (
             prefix.ordinary_frozen()?.snapshot().clone(),
             prefix.ordinary_frozen()?.snapshot().clone(),
@@ -440,6 +489,10 @@ fn read_private_ready_parts<'d>(
         },
         prefix: prefix.prefix(),
         data: &data,
+        companion: None,
+        retained_companion: retained.as_ref(),
+        denial: None,
+        retained_denial: retained_denial.as_ref(),
     };
     let prepared = super::data::prepare_suffix(&view, &copied, cancel)?;
     super::read::ready_suffix(c, &view, &prepared, Some(&expected), cancel)?;
@@ -452,15 +505,20 @@ fn read_private_ready_parts<'d>(
         cancel,
     )?;
     let (source_size, destination_size) = managed_budget::original_staging_sizes(ready)?;
-    let base = managed_budget::base_metadata_floor(
+    let coverage_cost = super::super::destination_coverage::read_current(c, ready, cancel)?
+        .as_ref()
+        .map(|body| managed_budget::DeniedCoverageCost::new(ready, body, cancel))
+        .transpose()?;
+    let base = managed_budget::base_metadata_floor_with_coverage(
         prefix.metadata_bytes(c, cancel)?,
         &observation,
         &placement,
         &capture,
         plan,
-        view.source.selection(),
+        view.selection(),
         source_size,
         destination_size,
+        coverage_cost.as_ref(),
     )?;
     let baseline = managed_budget::quota(
         &family.required,
@@ -477,8 +535,12 @@ fn read_private_ready_parts<'d>(
             "managed reservation metadata envelope insufficient",
         ));
     }
+    let retained_floor = match &retained {
+        Some(rows) => managed_budget::add_metadata(base, rows.metadata_bytes()?)?,
+        None => base,
+    };
     let floor = managed_budget::complete_metadata_floor(
-        base,
+        retained_floor,
         ready,
         prefix.receipt(),
         &claims[0],

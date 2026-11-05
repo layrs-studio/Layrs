@@ -11,6 +11,12 @@ pub(in crate::projection) mod activation;
 pub(in crate::projection) mod capture;
 #[path = "records/codec.rs"]
 pub(super) mod codec;
+#[path = "records/companion_v2.rs"]
+pub(in crate::projection) mod companion_v2;
+#[path = "records/denial_start.rs"]
+pub(in crate::projection) mod denial_start;
+#[path = "records/denied_coverage.rs"]
+pub(in crate::projection) mod denied_coverage;
 #[path = "records/import.rs"]
 pub(in crate::projection) mod import;
 #[path = "records/preparation.rs"]
@@ -24,9 +30,9 @@ pub(in crate::projection) mod source;
 #[path = "records/transition.rs"]
 pub(in crate::projection) mod transition;
 
-use crate::projection::{Result, invalid};
+use crate::projection::{invalid, Result};
 use layrs_core::scm::canonical_json;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub(in crate::projection) use receipts::*;
 pub use receipts::{PreparedBinding, ProviderBootstrapBinding, ReceiptRef};

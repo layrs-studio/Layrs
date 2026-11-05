@@ -53,6 +53,7 @@ fn prefix() -> ProviderImportPrefixRecord {
         inherited_segments: imported(0),
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: imported(3),
             selections: imported(1),
@@ -79,6 +80,7 @@ fn intent() -> ProviderTransitionIntentRecord {
         state: TransitionState::Planned,
         local_generation: 2,
         plan: TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix_id,
             source_prefix: prefix,
@@ -140,6 +142,47 @@ fn proof(record: &ProviderTransitionIntentRecord) -> TransitionDestinationProof 
 }
 fn copy(record: &ProviderTransitionIntentRecord) -> ProviderTransitionIntentRecord {
     ProviderTransitionIntentRecord::decode(&record.encode().unwrap()).unwrap()
+}
+
+fn receipt(staging: &ProviderTransitionIntentRecord) -> ProviderTransitionReceiptRecord {
+    let prefix =
+        ProviderImportPrefixRecord::decode(&staging.plan.source_prefix.encode().unwrap()).unwrap();
+    ProviderTransitionReceiptRecord {
+        denial_coverage: None,
+        schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
+        owner_identity_digest: staging
+            .destination
+            .as_ref()
+            .unwrap()
+            .owner_digest(&staging.plan)
+            .unwrap(),
+        transaction_id: TX.into(),
+        source_prefix_id: staging.plan.source_prefix_id.clone(),
+        transition_plan_digest: staging.plan.digest().unwrap(),
+        destination_proof_digest: staging
+            .destination
+            .as_ref()
+            .unwrap()
+            .digest(&staging.plan)
+            .unwrap(),
+        source_prefix: prefix,
+        parent_receipt_id: None,
+        source_identity: identity("source"),
+        destination_identity: identity("destination"),
+        imported_max_generation: 2,
+        destination_observation_generation: staging.plan.observation.generation,
+        destination_observation_digest: staging.plan.observation.snapshot_digest.clone(),
+        destination_placement_generation: staging.plan.placement_generation,
+        destination_placement_digest: staging.plan.placement_digest.clone(),
+        imported_capture_count: 0,
+        destination_capture_sequence: staging.plan.capture_sequence,
+        destination_capture_digest: staging.plan.capture_digest.clone(),
+        protected_manifests: imported(0),
+        content_mappings: imported(0),
+        companion_id: None,
+        companion_files: imported(0),
+        companion_deletions: imported(0),
+    }
 }
 
 #[test]
@@ -295,43 +338,7 @@ fn ready_is_bound_to_exact_prefix_receipt_and_observation() {
     staging.state = TransitionState::Staging;
     staging.reservation = Some(staging.reservation_operation().unwrap());
     staging.destination = Some(proof(&staging));
-    let prefix =
-        ProviderImportPrefixRecord::decode(&staging.plan.source_prefix.encode().unwrap()).unwrap();
-    let receipt = ProviderTransitionReceiptRecord {
-        schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
-        owner_identity_digest: staging
-            .destination
-            .as_ref()
-            .unwrap()
-            .owner_digest(&staging.plan)
-            .unwrap(),
-        transaction_id: TX.into(),
-        source_prefix_id: staging.plan.source_prefix_id.clone(),
-        transition_plan_digest: staging.plan.digest().unwrap(),
-        destination_proof_digest: staging
-            .destination
-            .as_ref()
-            .unwrap()
-            .digest(&staging.plan)
-            .unwrap(),
-        source_prefix: prefix,
-        parent_receipt_id: None,
-        source_identity: identity("source"),
-        destination_identity: identity("destination"),
-        imported_max_generation: 2,
-        destination_observation_generation: staging.plan.observation.generation,
-        destination_observation_digest: staging.plan.observation.snapshot_digest.clone(),
-        destination_placement_generation: staging.plan.placement_generation,
-        destination_placement_digest: staging.plan.placement_digest.clone(),
-        imported_capture_count: 0,
-        destination_capture_sequence: staging.plan.capture_sequence,
-        destination_capture_digest: staging.plan.capture_digest.clone(),
-        protected_manifests: imported(0),
-        content_mappings: imported(0),
-        companion_id: None,
-        companion_files: imported(0),
-        companion_deletions: imported(0),
-    };
+    let receipt = receipt(&staging);
     let mut ready = copy(&staging);
     ready.state = TransitionState::Ready;
     ready.receipt_id = Some(receipt.digest().unwrap());
@@ -395,4 +402,176 @@ fn bounds_and_roles_reject_impossible_destination_history() {
     let mut huge = intent();
     huge.plan.working_overlay.count = MAX_ROWS + 1;
     assert!(huge.encode().is_err());
+}
+
+fn denial_reference() -> DeniedCoverageRef {
+    DeniedCoverageRef {
+        id: ID.into(),
+        count: 1,
+        path_bytes: 10,
+        rows_digest: ID.into(),
+    }
+}
+
+#[test]
+fn legacy_intent_and_plan_keep_exact_closed_bytes_and_domains() {
+    let value = intent();
+    let plan = json!({
+        "kind": "managedOrdinary", "sourcePrefixId": value.plan.source_prefix_id,
+        "sourcePrefix": prefix(), "destinationParent": "C:\\destination-parent",
+        "destinationParentIdentity": DIR, "destinationLeafNonce": LEAF,
+        "observation": { "stepId": ID, "rootTreeId": ID, "policySetId": ID,
+            "authorizationEpoch": 1, "generation": 3, "snapshotDigest": RAW, "selectionDigest": RAW },
+        "placementGeneration": 4, "placementDigest": RAW, "captureSequence": 1,
+        "captureDigest": ID, "workingOverlay": {"count": 0, "digest": ID},
+        "companionId": null, "companionFiles": {"count": 0, "digest": ID},
+        "companionDeletions": {"count": 0, "digest": ID},
+        "protectedManifests": {"count": 0, "digest": ID}, "quotaBytes": 0
+    });
+    let plan_bytes = layrs_core::scm::canonical_json(&plan).unwrap();
+    assert_eq!(
+        codec::encode(&value.plan, ProviderTransitionIntentRecord::MAX_BYTES).unwrap(),
+        plan_bytes
+    );
+    assert_eq!(
+        value.plan.digest().unwrap(),
+        codec::hash(PLAN_DOMAIN, &plan_bytes)
+    );
+    let legacy = json!({ "schemaVersion": SCHEMA, "transactionId": TX, "role": "source",
+        "state": "planned", "localGeneration": 2, "plan": plan,
+        "destination": null, "reservation": null, "receiptId": null });
+    let bytes = layrs_core::scm::canonical_json(&legacy).unwrap();
+    assert_eq!(value.encode().unwrap(), bytes);
+    assert_eq!(value.digest().unwrap(), codec::hash(DOMAIN, &bytes));
+    assert_eq!(
+        ProviderTransitionIntentRecord::decode(&bytes).unwrap(),
+        value
+    );
+}
+
+#[test]
+fn v2_intent_requires_closed_nonnull_coverage_and_preserves_duplicate_detection() {
+    let mut value = intent();
+    value.schema_version = SCHEMA_V2.into();
+    value.plan.denial_coverage = Some(denial_reference());
+    let bytes = value.encode().unwrap();
+    assert!(bytes.len() < ProviderTransitionIntentRecord::MAX_BYTES);
+    assert_eq!(
+        ProviderTransitionIntentRecord::decode(&bytes).unwrap(),
+        value
+    );
+    assert_eq!(value.digest().unwrap(), codec::hash(DOMAIN_V2, &bytes));
+    let plan_bytes = codec::encode(&value.plan, ProviderTransitionIntentRecord::MAX_BYTES).unwrap();
+    assert_eq!(
+        value.plan.digest().unwrap(),
+        codec::hash(PLAN_DOMAIN_V2, &plan_bytes)
+    );
+    assert_ne!(
+        value.plan.digest().unwrap(),
+        codec::hash(PLAN_DOMAIN, &plan_bytes)
+    );
+    let wire = serde_json::to_value(&value).unwrap();
+    for malformed in 0..6 {
+        let mut wrong = wire.clone();
+        match malformed {
+            0 => {
+                wrong["plan"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("denialCoverage");
+            }
+            1 => wrong["plan"]["denialCoverage"] = serde_json::Value::Null,
+            2 => wrong["schemaVersion"] = SCHEMA.into(),
+            3 => wrong["plan"]["denialCoverage"]["unexpected"] = true.into(),
+            4 => {
+                wrong["plan"]["denialCoverage"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("rowsDigest");
+            }
+            _ => wrong["unexpected"] = true.into(),
+        }
+        let bytes = layrs_core::scm::canonical_json(&wrong).unwrap();
+        assert!(serde_json::from_slice::<ProviderTransitionIntentRecord>(&bytes).is_err());
+        assert!(ProviderTransitionIntentRecord::decode(&bytes).is_err());
+    }
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let reference = serde_json::to_string(&denial_reference()).unwrap();
+    for duplicate in [
+        format!("{{\"schemaVersion\":\"{SCHEMA_V2}\",{}", &text[1..]),
+        text.replacen(
+            "\"denialCoverage\":",
+            &format!("\"denialCoverage\":{reference},\"denialCoverage\":"),
+            1,
+        ),
+        text.replacen(
+            "\"rowsDigest\":",
+            &format!("\"rowsDigest\":\"{ID}\",\"rowsDigest\":"),
+            1,
+        ),
+    ] {
+        assert!(serde_json::from_str::<ProviderTransitionIntentRecord>(&duplicate).is_err());
+    }
+    // Legacy decoding cannot accept even a null extension under its old name.
+    let mut legacy_null = serde_json::to_value(intent()).unwrap();
+    legacy_null["plan"]["denialCoverage"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<ProviderTransitionIntentRecord>(legacy_null).is_err());
+    let mut bare_extra = serde_json::to_value(&value.plan).unwrap();
+    bare_extra["unexpected"] = true.into();
+    assert!(serde_json::from_value::<TransitionPlan>(bare_extra).is_err());
+    let mut bare = serde_json::to_value(&value.plan).unwrap();
+    bare["denialCoverage"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<TransitionPlan>(bare).is_err());
+    value.schema_version = SCHEMA.into();
+    assert!(value.encode().is_err());
+    value.plan.denial_coverage = None;
+    value.schema_version = SCHEMA_V2.into();
+    assert!(value.encode().is_err());
+}
+
+#[test]
+fn v2_ready_receipt_and_cas_require_the_exact_version_and_entire_reference() {
+    let mut staging = intent();
+    staging.schema_version = SCHEMA_V2.into();
+    staging.plan.denial_coverage = Some(denial_reference());
+    staging.state = TransitionState::Staging;
+    staging.reservation = Some(staging.reservation_operation().unwrap());
+    staging.destination = Some(proof(&staging));
+    let mut receipt = receipt(&staging);
+    receipt.schema_version = "layrs.projection-provider-transition-receipt.v2".into();
+    receipt.denial_coverage = staging.plan.denial_coverage.clone();
+    let mut ready = copy(&staging);
+    ready.state = TransitionState::Ready;
+    ready.receipt_id = Some(receipt.digest().unwrap());
+    ready.require_transition(&staging).unwrap();
+    ready.require_receipt(&receipt).unwrap();
+    for field in 0..4 {
+        let mut changed =
+            ProviderTransitionReceiptRecord::decode(&receipt.encode().unwrap()).unwrap();
+        let reference = changed.denial_coverage.as_mut().unwrap();
+        match field {
+            0 => reference.id = ID.replace('1', "2"),
+            1 => reference.count += 1,
+            2 => reference.path_bytes += 1,
+            _ => reference.rows_digest = ID.replace('1', "2"),
+        }
+        // Even repair every compact digest that otherwise links this forged
+        // receipt: the whole coverage reference must independently match.
+        let mut forged = copy(&ready);
+        forged.receipt_id = Some(changed.digest().unwrap());
+        assert!(forged.require_receipt(&changed).is_err());
+        forged.plan.denial_coverage = changed.denial_coverage.clone();
+        assert!(forged.require_transition(&ready).is_err());
+    }
+    let mut downgraded =
+        ProviderTransitionReceiptRecord::decode(&receipt.encode().unwrap()).unwrap();
+    downgraded.schema_version = "layrs.projection-provider-transition-receipt.v1".into();
+    downgraded.denial_coverage = None;
+    let mut forged = copy(&ready);
+    forged.receipt_id = Some(downgraded.digest().unwrap());
+    assert!(forged.require_receipt(&downgraded).is_err());
+    let mut changed_version = copy(&staging);
+    changed_version.schema_version = SCHEMA.into();
+    changed_version.plan.denial_coverage = None;
+    assert!(changed_version.require_transition(&staging).is_err());
 }

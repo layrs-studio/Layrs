@@ -10,6 +10,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+mod transition_source;
+pub use transition_source::ProviderTransitionSource;
+
 struct LocalSource {
     held: outcome::PublicationPins,
     root: layrs_vfs::ProviderRootGuard,
@@ -184,7 +187,45 @@ impl ProviderActiveSession {
         String,
         crate::projection::provider::managed_ready_reopen::AdmissionFailure,
     > {
+        self.admit_destination_with_coverage(
+            destination,
+            close,
+            cancel,
+            crate::projection::provider::managed_admission::AdmissionCoverage::Legacy,
+        )
+    }
+
+    /// Explicit C14 handoff. This selects the denial admission protocol while
+    /// retaining the same genuine source scopes as the legacy adapter.
+    pub(in crate::projection::provider) fn admit_denial_ready_destination(
+        &self,
+        destination: crate::projection::provider::managed_ready_reopen::ManagedReadyAdmission,
+        close: &mut impl crate::projection::provider::database_io::WriterCloseObserver,
+        cancel: &Cancellation,
+    ) -> std::result::Result<
+        String,
+        crate::projection::provider::managed_ready_reopen::AdmissionFailure,
+    > {
+        self.admit_destination_with_coverage(
+            destination,
+            close,
+            cancel,
+            crate::projection::provider::managed_admission::AdmissionCoverage::Denial,
+        )
+    }
+
+    fn admit_destination_with_coverage(
+        &self,
+        destination: crate::projection::provider::managed_ready_reopen::ManagedReadyAdmission,
+        close: &mut impl crate::projection::provider::database_io::WriterCloseObserver,
+        cancel: &Cancellation,
+        coverage: crate::projection::provider::managed_admission::AdmissionCoverage,
+    ) -> std::result::Result<
+        String,
+        crate::projection::provider::managed_ready_reopen::AdmissionFailure,
+    > {
         use crate::projection::provider::{
+            managed_admission::AdmissionCoverage,
             managed_ready_reopen::{AdmissionFailure, AdmissionStep},
             published_handoff::PublicationSource,
         };
@@ -213,26 +254,37 @@ impl ProviderActiveSession {
                     step: AdmissionStep::Validating,
                     cause,
                     held: destination,
-                })
+                });
             }
         };
-        destination.commit(
-            &held.artifacts.database,
-            PublicationSource {
-                allocation: &held.artifacts.allocation,
-                prepared,
-                binding: &held.binding,
-                root_id: self.source.root.registration().root_id(),
-            },
-            || {
-                cancel.check()?;
-                held.artifacts.verify(&held.family)?;
-                self.source.root.revalidate()?;
-                Ok(())
-            },
-            close,
-            cancel,
-        )
+        let source = PublicationSource {
+            allocation: &held.artifacts.allocation,
+            prepared,
+            binding: &held.binding,
+            root_id: self.source.root.registration().root_id(),
+        };
+        let source_boundary = || -> CauseResult<()> {
+            cancel.check()?;
+            held.artifacts.verify(&held.family)?;
+            self.source.root.revalidate()?;
+            Ok(())
+        };
+        match coverage {
+            AdmissionCoverage::Legacy => destination.commit(
+                &held.artifacts.database,
+                source,
+                source_boundary,
+                close,
+                cancel,
+            ),
+            AdmissionCoverage::Denial => destination.commit_denial(
+                &held.artifacts.database,
+                source,
+                source_boundary,
+                close,
+                cancel,
+            ),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -554,3 +606,14 @@ mod managed_source_publication_tests;
 #[cfg(test)]
 #[path = "session/managed_journal_tests.rs"]
 mod managed_journal_tests;
+
+#[cfg(test)]
+#[path = "session/c14_denial_start_tests.rs"]
+mod c14_denial_start_tests;
+
+#[cfg(test)]
+#[path = "session/c13_complete_ready_tests.rs"]
+mod c13_complete_ready_tests;
+#[cfg(test)]
+#[path = "session/c13_provider_preservation_tests.rs"]
+mod c13_provider_preservation_tests;

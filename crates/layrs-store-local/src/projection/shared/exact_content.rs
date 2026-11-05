@@ -27,7 +27,9 @@ mod tests;
 
 pub(in crate::projection) use journal::{ExactRecord, Phase};
 pub(in crate::projection) use publish::publish;
-pub(in crate::projection) use published_cas::{verify_published_cas, PublishedCasProof};
+pub(in crate::projection) use published_cas::{
+    pin_resident_cas, verify_published_cas, PublishedCasProof, ResidentCasProof,
+};
 pub(in crate::projection) use spool::{finish_piece, prepare_piece, verify_staged, OwnedPiece};
 pub(in crate::projection) use sql::{
     validate_installations, validate_protected_installations, ExactInstallState,

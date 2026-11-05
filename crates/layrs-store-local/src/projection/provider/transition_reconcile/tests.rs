@@ -138,6 +138,7 @@ impl Data {
                 digest: format!("blake3:{}", segments.finalize()),
             },
             closure: ImportClosure {
+                denial_observations: None,
                 restore_history: None,
                 snapshots: row(8),
                 selections: row(1),
@@ -637,3 +638,6 @@ fn same_file_multiple_manifest_representations_are_not_collapsed_and_new_grant_d
     assert!(output.representations.contains(&representation(&data.b)));
     assert!(output.representations.contains(&representation(&other)));
 }
+
+#[path = "tests/companions.rs"]
+mod companion_codec_recipes;

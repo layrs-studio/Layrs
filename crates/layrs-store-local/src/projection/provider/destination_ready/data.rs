@@ -84,9 +84,12 @@ pub(super) fn prepare_at_member(
         || staging.reservation.as_deref() != Some(staging.reservation_operation()?.as_str())
         || staging.plan.kind != ProviderImportKind::ManagedOrdinary
         || staging.plan.source_prefix != *inputs.prefix
-        || staging.plan.companion_id.is_some()
-        || staging.plan.companion_files.count != 0
-        || staging.plan.companion_deletions.count != 0
+        || staging.plan.companion_id.is_some() != inputs.companion.is_some()
+        || (inputs.denial.is_some() && inputs.companion.is_some())
+        || (inputs.denial.is_some() && staging.plan.denial_coverage.is_none())
+        || (staging.plan.denial_coverage.is_some()
+            && inputs.companion.is_none()
+            && inputs.denial.is_none())
     {
         return Err(invalid("destination Ready staged plan differs"));
     }
@@ -110,6 +113,104 @@ pub(super) fn prepare_at_member(
         return Err(invalid("destination Ready source closure differs"));
     }
     ready.require_receipt(inputs.data.receipt)?;
+    if let Some(body) =
+        super::super::destination_coverage::read_current(destination, staging, cancel)?
+    {
+        body.require_observation_rows(
+            inputs.data.observation,
+            inputs.view().selection(),
+            staging.plan.observation.generation,
+            &staging.plan.observation.snapshot_digest,
+            &staging.plan.observation.selection_digest,
+            cancel,
+        )?;
+    }
+    if let Some(companion) = &inputs.companion {
+        inputs
+            .closure
+            .require_publication_inputs(companion.source_context.publication)?;
+        let full = companion.source_context.publication;
+        if !std::ptr::eq(inputs.source, &full.active.source)
+            || !std::ptr::eq(inputs.activation, &full.active.activation)
+        {
+            return Err(invalid("companion Ready complete source proof differs"));
+        }
+        let root = companion
+            .source_context
+            .pending
+            .ok_or_else(|| invalid("companion Ready exact pending B root absent"))?;
+        let source_staging = full
+            .source_transitions()
+            .iter()
+            .find(|i| i.transaction_id == staging.transaction_id)
+            .ok_or_else(|| invalid("companion Ready original source transition absent"))?;
+        if source_staging.plan != staging.plan {
+            return Err(invalid("companion Ready original source plan differs"));
+        }
+        root.require_plan(inputs.allocation, source_staging, cancel)?;
+        root.require_union(inputs.data.required, cancel)?;
+        crate::projection::shared::source_companion::classify_source_groups(
+            family_c,
+            inputs.allocation,
+            Some(&companion.source_context),
+            cancel,
+        )?;
+        if root.inspect(family_c, cancel)?
+            != crate::projection::shared::source_companion::SourceCompanionPresence::Protected
+        {
+            return Err(invalid("companion Ready requires actual B protected root"));
+        }
+    }
+    if let Some(mode) = &inputs.denial {
+        if mode.source_context.pending.is_some() {
+            return Err(invalid("plain denial Ready refuses pending companion root"));
+        }
+        let full = mode.source_context.publication;
+        inputs.closure.require_publication_inputs(full)?;
+        if !std::ptr::eq(inputs.source, &full.active.source)
+            || !std::ptr::eq(inputs.activation, &full.active.activation)
+        {
+            return Err(invalid("plain denial Ready complete source proof differs"));
+        }
+        let source = full
+            .source_transitions()
+            .iter()
+            .find(|i| i.transaction_id == staging.transaction_id)
+            .ok_or_else(|| invalid("plain denial Ready source transition absent"))?;
+        if source.plan != staging.plan || source.destination != staging.destination {
+            return Err(invalid("plain denial Ready source plan differs"));
+        }
+        mode.coverage.record().require_intent(source, cancel)?;
+        let actual = super::super::denied_coverage_storage::read_required(
+            source_c,
+            source
+                .plan
+                .denial_coverage
+                .as_ref()
+                .ok_or_else(|| invalid("plain denial Ready source body reference absent"))?,
+            cancel,
+        )?;
+        if actual.encode()? != mode.coverage.record().encode()? {
+            return Err(invalid("plain denial Ready actual source body differs"));
+        }
+        let funding =
+            crate::projection::shared::source_denial::SourceDeniedCoverageReservation::new(
+                inputs.allocation,
+                source,
+                &actual,
+                cancel,
+            )?;
+        if !full.capture.denial_reservations().contains(&funding) {
+            return Err(invalid("plain denial Ready full source funding differs"));
+        }
+        funding.require_retained(family_c, cancel)?;
+        crate::projection::shared::source_companion::classify_source_groups(
+            family_c,
+            inputs.allocation,
+            Some(&mode.source_context),
+            cancel,
+        )?;
+    }
     let copied = inputs
         .closure
         .copied_content_mappings(source_c, inputs.prefix, cancel)?;
@@ -135,9 +236,7 @@ pub(super) fn prepare_suffix(
     if ready.role != TransitionRole::Destination
         || ready.state != TransitionState::Ready
         || ready.plan.kind != ProviderImportKind::ManagedOrdinary
-        || ready.plan.companion_id.is_some()
-        || ready.plan.companion_files.count != 0
-        || ready.plan.companion_deletions.count != 0
+        || ready.plan.companion_id.is_some() != inputs.has_companion()
         || ready
             .destination
             .as_ref()
@@ -146,8 +245,19 @@ pub(super) fn prepare_suffix(
         return Err(invalid("destination Ready suffix binding differs"));
     }
     let version = inputs.source.version(inputs.prefix)?;
-    inputs.source.require_snapshots(inputs.data)?;
+    inputs.require_companion(cancel)?;
     let plan = &inputs.data.ready.plan;
+    // v1 commits the source selection; v2 commits the selection at the fresh
+    // observation's own generation/snapshot, as derived by the normalizer.
+    let selection_digest = if plan.denial_coverage.is_some() {
+        database::digest(
+            plan.observation.generation,
+            Some(&plan.observation.snapshot_digest),
+            &selection::encode(inputs.selection())?,
+        )
+    } else {
+        inputs.source.selection_digest(inputs.prefix)?
+    };
     if version.generation.checked_add(1) != Some(plan.observation.generation)
         || plan.observation.generation.checked_add(1) != Some(plan.placement_generation)
         || version.capture_count.checked_add(1) != Some(plan.capture_sequence)
@@ -156,7 +266,7 @@ pub(super) fn prepare_suffix(
         || plan.observation.policy_set_id != inputs.data.observation.observed_policy_set_id
         || plan.observation.authorization_epoch
             != inputs.data.observation.observed_authorization_epoch
-        || plan.observation.selection_digest != inputs.source.selection_digest(inputs.prefix)?
+        || plan.observation.selection_digest != selection_digest
     {
         return Err(invalid(
             "destination Ready local boundaries or snapshots differ",
@@ -188,12 +298,10 @@ pub(super) fn prepare_suffix(
         return Err(invalid("destination Ready snapshot commitments differ"));
     }
     inputs
-        .source
         .selection()
         .validate_snapshot(inputs.data.observation)
         .map_err(|e| invalid(e.to_string()))?;
     inputs
-        .source
         .selection()
         .validate_snapshot(inputs.data.placement)
         .map_err(|e| invalid(e.to_string()))?;
@@ -305,11 +413,18 @@ pub(super) fn prepare_suffix(
     let mut mapped = BTreeSet::new();
     for manifest in required.values() {
         if !copied.contains_key(manifest.file_id()) && mapped.insert(manifest.file_id()) {
-            new_content.push((
-                manifest.file_id().to_string(),
-                manifest.id().to_string(),
-                manifest.byte_length(),
-            ));
+            let (id, bytes) = inputs
+                .companion_mapping(manifest.file_id())
+                .map_or((manifest.id(), manifest.byte_length()), |(id, bytes)| {
+                    (id, *bytes)
+                });
+            if !required
+                .get(&(manifest.file_id(), id))
+                .is_some_and(|m| m.byte_length() == bytes)
+            {
+                return Err(invalid("companion Ready sticky mapping outside full union"));
+            }
+            new_content.push((manifest.file_id().to_string(), id.to_string(), bytes));
         }
     }
     cancellation::check(cancel)?;

@@ -24,15 +24,15 @@ pub(super) struct ImageEntryData<'a> {
 /// Closed metadata inventory tied to the ENTIRE borrowed native export.
 /// There is no production constructor taking a caller-selected Vec of paths.
 /// Native namespace stability, byte hashing and quiescence remain external.
-pub(in crate::projection::provider) struct CompleteSourceImageData<'a> {
+pub(in crate::projection::provider) struct CompleteSourceImageData<'a, 'c> {
     pub(super) source_prefix_id: String,
     pub(super) entries: BTreeMap<RepoPath, ImageEntryData<'a>>,
-    _checkpoint: Option<&'a ExportCheckpoint<'a>>,
+    _checkpoint: Option<&'a ExportCheckpoint<'c>>,
 }
-impl<'a> CompleteSourceImageData<'a> {
+impl<'a, 'c> CompleteSourceImageData<'a, 'c> {
     pub(in crate::projection::provider) fn from_checkpoint(
         source: &ReconcileSourceData<'_>,
-        checkpoint: &'a ExportCheckpoint<'a>,
+        checkpoint: &'a ExportCheckpoint<'c>,
         files: &[ImageFileData<'a>],
         cancel: Option<&Cancellation>,
     ) -> Result<Self> {
@@ -76,6 +76,10 @@ impl<'a> CompleteSourceImageData<'a> {
             let original = checkpoint.original_path(&entry.path)?;
             let relocated = original.as_ref().is_some_and(|path| path != &entry.path);
             let actual = match &entry.evidence {
+                // Exports and reconciliation never admit a file from its listing.
+                CaptureEvidence::Vouched { .. } => {
+                    return Err(invalid("export evidence must be inspected, not listed"))
+                }
                 CaptureEvidence::Immutable {
                     file_id,
                     size,
@@ -295,7 +299,7 @@ pub(super) fn from_test_inventory<'a>(
     source: &ReconcileSourceData<'_>,
     files: &[ImageFileData<'a>],
     deleted: &[RepoPath],
-) -> Result<CompleteSourceImageData<'a>> {
+) -> Result<CompleteSourceImageData<'a, 'a>> {
     preflight_files(files, None)?;
     path_budget(deleted.iter().map(|p| p.as_str()))?;
     let mut entries = BTreeMap::new();

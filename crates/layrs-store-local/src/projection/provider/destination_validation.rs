@@ -320,6 +320,8 @@ fn read_state(
             | "projection_provider_transitions" => Some(1),
             "projection_snapshots" | "projection_selections" if copied.is_some() => None,
             "projection_snapshots" | "projection_selections" => Some(1),
+            "projection_observations" if copied.is_some() => None,
+            "projection_observations" => Some(u64::from(intent.plan.denial_coverage.is_some())),
             "projection_captures"
             | "projection_publications"
             | "projection_provider_catalogs"
@@ -439,8 +441,26 @@ fn read_state(
     if &observed != intent {
         return Err(invalid("destination intent differs from expected phase"));
     }
+    let current = super::destination_coverage::read_current(c, &observed, cancel)?;
+    if let Some(body) = &current {
+        if body.path_semantics != source.initial().path_semantics
+            || body.step_id != source.initial().base_step_id
+            || body.root_tree_id != source.initial().base_root_tree_id
+        {
+            return Err(invalid(
+                "destination current document source namespace differs",
+            ));
+        }
+    }
     if let Some(proof) = copied {
-        import_validation::require_exact_copied_rows(c, marker, prefix, proof, cancel)?;
+        import_validation::require_exact_copied_rows_with_current(
+            c,
+            marker,
+            prefix,
+            proof,
+            current.as_ref(),
+            cancel,
+        )?;
     }
     cancellation::check(cancel)?;
     match phase {

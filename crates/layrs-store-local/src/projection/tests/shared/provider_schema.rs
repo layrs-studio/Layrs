@@ -14,6 +14,16 @@ fn assert_fence<T>(result: Result<T>, expected: &str) {
     }
 }
 
+fn assert_hot_refusal<T>(result: Result<T>) {
+    match result {
+        Err(error) => assert!(
+            database::readonly_rollback(&error),
+            "expected hot-journal refusal, got {error}"
+        ),
+        Ok(_) => panic!("maintenance succeeded over a hot owner journal"),
+    }
+}
+
 fn db(store: &ProjectionStore) -> PathBuf {
     store
         .marker

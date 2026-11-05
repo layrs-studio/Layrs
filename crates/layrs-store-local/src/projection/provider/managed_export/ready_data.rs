@@ -222,6 +222,7 @@ impl OwnedOrdinaryReadyData {
         }
         let plan = &derived.plan;
         let receipt = ProviderTransitionReceiptRecord {
+            denial_coverage: None,
             schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
             owner_identity_digest: destination.owner_digest(plan)?,
             transaction_id: source_staging.transaction_id.clone(),

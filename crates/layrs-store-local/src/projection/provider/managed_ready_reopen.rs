@@ -24,6 +24,8 @@ use std::path::Path;
 
 mod pins;
 use pins::ManagedReadyPins;
+mod denial_terminal;
+pub(in crate::projection::provider) use denial_terminal::DenialTerminalResolution;
 mod ordinary;
 pub(in crate::projection::provider) use ordinary::{
     OrdinaryReadyInspection, OrdinaryTerminalResolution,

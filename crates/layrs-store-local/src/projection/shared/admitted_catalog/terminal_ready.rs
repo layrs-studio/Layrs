@@ -96,6 +96,35 @@ pub(in crate::projection) fn validate_terminal_ready_catalog(
     if journal_count > MAX_MANIFESTS {
         return Err(invalid("terminal Ready family journal count exceeds bound"));
     }
+    // Classify every B companion namespace without opening B. It neither
+    // supplies C authority nor participates in C's exact debit/charged sets.
+    super::super::source_companion::retained_namespace(c, cancel, |source| {
+        let b = &source.binding.destination;
+        if b.family_incarnation != family.incarnation
+            || b.family_root_identity != family.root_identity
+            || b.family_catalog_identity != family.database_identity
+            || b.family_marker_digest != digest
+        {
+            return Err(invalid("terminal Ready source retention family differs"));
+        }
+        let id = super::source_destination_root_id(c, b)?;
+        if id == protection.id() {
+            if *b != *binding {
+                return Err(invalid(
+                    "terminal Ready B retention names a different C binding",
+                ));
+            }
+            source.require_union(required, cancel)?;
+        } else {
+            let (actual, manifests, member) = read_group(c, &id, None, cancel)?;
+            if actual != *b {
+                return Err(invalid("terminal Ready foreign B/C retention differs"));
+            }
+            source.require_union(&manifests, cancel)?;
+            require_member(c, &family, marker, b, &member)?;
+        }
+        Ok(())
+    })?;
     let mut roots = BTreeSet::new();
     let mut groups = BTreeSet::new();
     let mut charged_chunks = BTreeSet::new();

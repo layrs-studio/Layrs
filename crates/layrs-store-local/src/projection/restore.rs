@@ -8,6 +8,9 @@ mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
 pub(in crate::projection) use engine::imported_history_preview;
+#[cfg(windows)]
+pub(in crate::projection) use engine::{local_history_preview, local_pending_preview};
+pub(in crate::projection) use engine::LocalRestorePlan;
 pub(super) use engine::{verify_history, verify_history_with_scope};
 use layrs_core::{
     projection::EntryState,
@@ -93,7 +96,7 @@ impl ProjectionStore {
     ) -> Result<RestorePreview> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access: &mut format::Access| -> Result<_> {
-            database::require_mutable(&access.connection)?;
+            access.with_content(|c, scope| database::require_mutable_with_scope(c, self, scope))?;
             let state = database::current(&access.connection)?;
             if state.generation != expected_generation {
                 return Err(invalid("restore projection changed"));
@@ -204,6 +207,12 @@ fn targets(
     source: &RestoreSource,
     scope: Option<&format::ContentScope<'_>>,
 ) -> Result<BTreeMap<RepoPath, Option<CapturedFile>>> {
+    // C14: only the local post-Ready suffix may be sourced. The immutable Ready
+    // capture, imported captures/history and remote versions stay closed.
+    let denial = scope.and_then(|scope| scope.denial_ready());
+    if let Some(ready) = &denial {
+        require_local_source(c, store, source, ready, scope)?;
+    }
     match source {
         RestoreSource::Version { version, paths } => {
             offline::restore_targets_with_scope(c, store, version, paths, scope)
@@ -236,6 +245,85 @@ fn targets(
         }
     }
 }
+fn require_local_source(
+    c: &Connection,
+    store: &ProjectionStore,
+    source: &RestoreSource,
+    ready: &format::DenialReady,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<()> {
+    let sequence = match source {
+        // The fixed, fully retained Ready image (discarding local work) or a
+        // post-Ready local Capture addressed as a Version (product offline route,
+        // whose digest the version resolver verifies).
+        RestoreSource::Version { version, .. } => {
+            use layrs_core::projection::ProjectionVersion;
+            let own = &store.identity().worktree_id;
+            let local = match version {
+                ProjectionVersion::Generation {
+                    worktree_id,
+                    generation,
+                    digest,
+                } => worktree_id == own && *generation == ready.generation && *digest == ready.digest,
+                ProjectionVersion::Capture {
+                    worktree_id,
+                    sequence,
+                    ..
+                } => worktree_id == own && *sequence > ready.capture_sequence,
+                ProjectionVersion::Remote { .. } => false,
+            };
+            if !local {
+                return Err(invalid(
+                    "C14 local Restore accepts only the fixed Ready version, post-Ready Capture or local inverse sources",
+                ));
+            }
+            return Ok(());
+        }
+        RestoreSource::Capture { sequence, .. } => *sequence,
+        RestoreSource::Inverse { operation_id } => {
+            engine::history_with_scope(c, store, operation_id, scope)?
+                .ok_or_else(|| invalid("restore operation unknown"))?
+                .1
+                .sequence
+        }
+    };
+    if sequence <= ready.capture_sequence {
+        return Err(invalid(
+            "C14 local Restore source precedes fixed Ready capture frontier",
+        ));
+    }
+    Ok(())
+}
+
+/// Full-checkout diff a restore's forced capture appends: snapshot order, only
+/// scanned leaves, equal targets skipped (the scan.rs change derivation).
+fn resulting_changes(
+    snapshot: &ProjectionSnapshot,
+    resulting: &BTreeMap<String, Option<CapturedFile>>,
+) -> Vec<CapturedChange> {
+    let mut changes = Vec::new();
+    for entry in &snapshot.entries {
+        let Some(actual) = resulting.get(entry.path.as_str()) else {
+            continue;
+        };
+        let expected = entry.target.as_ref().and_then(|t| match t {
+            layrs_core::scm::TreeEntryTarget::File { file_id } => Some((file_id, entry.executable)),
+            _ => None,
+        });
+        if actual.as_ref().map(|f| (&f.file_id, f.executable)) != expected {
+            changes.push(CapturedChange {
+                path: entry.path.clone(),
+                expected: expected.map(|(id, executable)| capture::CapturedTarget {
+                    file_id: id.clone(),
+                    executable,
+                }),
+                replacement: actual.clone(),
+            });
+        }
+    }
+    changes
+}
+
 fn preview(
     store: &ProjectionStore,
     c: &Connection,
@@ -243,6 +331,16 @@ fn preview(
     source: &RestoreSource,
     scope: Option<&format::ContentScope<'_>>,
 ) -> Result<RestorePreview> {
+    preview_with_changes(store, c, state, source, scope).map(|(preview, _)| preview)
+}
+
+fn preview_with_changes(
+    store: &ProjectionStore,
+    c: &Connection,
+    state: &VersionedProjection,
+    source: &RestoreSource,
+    scope: Option<&format::ContentScope<'_>>,
+) -> Result<(RestorePreview, Vec<CapturedChange>)> {
     let after = targets(c, store, source, scope)?;
     validate_paths(&state.snapshot, &after)?;
     let scan = capture::scan::scan_with_scope(store, c, &state.snapshot, false, scope)?;
@@ -265,25 +363,14 @@ fn preview(
         return Err(invalid("selected capture already matches checkout"));
     }
     // Validate the eventual patch budget before any filesystem mutation.
-    let mut changed = 0usize;
+    let changes = resulting_changes(&state.snapshot, &resulting);
     let mut total = 0u64;
-    for entry in &state.snapshot.entries {
-        if let Some(actual) = resulting.get(entry.path.as_str()) {
-            let expected = entry.target.as_ref().and_then(|t| match t {
-                layrs_core::scm::TreeEntryTarget::File { file_id } => {
-                    Some((file_id, entry.executable))
-                }
-                _ => None,
-            });
-            if actual.as_ref().map(|f| (&f.file_id, f.executable)) != expected {
-                changed += 1;
-                total = total
-                    .checked_add(actual.as_ref().map_or(0, |f| f.bytes))
-                    .ok_or_else(|| invalid("restore size overflow"))?;
-            }
-        }
+    for change in &changes {
+        total = total
+            .checked_add(change.replacement.as_ref().map_or(0, |f| f.bytes))
+            .ok_or_else(|| invalid("restore size overflow"))?;
     }
-    if changed > 1024 || total > MAX_CAPTURE_BYTES {
+    if changes.len() > 1024 || total > MAX_CAPTURE_BYTES {
         return Err(invalid("restore would exceed capture budget"));
     }
     let mut value = RestorePreview {
@@ -306,5 +393,5 @@ fn preview(
         digest: String::new(),
     };
     value.digest = preview_digest(&value)?;
-    Ok(value)
+    Ok((value, changes))
 }

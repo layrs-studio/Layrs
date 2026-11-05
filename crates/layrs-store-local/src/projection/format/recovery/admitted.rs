@@ -45,7 +45,18 @@ pub(super) fn cancel_access(
         pin,
         boundaries,
         binding,
-        true,
+        |preflight, data: &retention::RestoreCancellationData| {
+            if !data.has_budget() {
+                // Completed cancellation replay has no mutation to perform.
+                preflight.into_handle(false)
+            } else if data.requires_denial_capture_handle() {
+                preflight.into_local_capture_cancel_handle(data)
+            } else if data.requires_denial_restore_handle() {
+                preflight.into_local_restore_cancel_handle(data)
+            } else {
+                preflight.into_handle(true)
+            }
+        },
         |c| retention::restore_cancellation_preflight(c, store).map_err(Into::into),
         |data, lease| {
             data.validate_family(lease, store)?;
@@ -83,7 +94,7 @@ pub(super) fn inspection_access(
         pin,
         boundaries,
         binding,
-        false,
+        |preflight, ()| preflight.into_handle(false),
         |_| Ok(()),
         |(), _| Ok(()),
         |handle, ()| handle.with_validation(|_| Ok(())),
@@ -108,7 +119,13 @@ pub(super) fn restore_access(
         pin,
         boundaries,
         binding,
-        true,
+        |preflight, data: &restore::RestoreRecoveryData| {
+            if data.requires_denial_restore_handle() {
+                preflight.into_local_restore_recovery_handle(data)
+            } else {
+                preflight.into_handle(true)
+            }
+        },
         |c| restore::recovery_preflight(c, store).map_err(Into::into),
         |data, lease| data.validate_family(lease, store),
         |handle, baseline| {
@@ -136,7 +153,7 @@ fn open_access<T>(
     pin: DatabasePin,
     boundaries: PreliminaryPins,
     binding: RecoveryBinding,
-    write: bool,
+    open_handle: impl FnOnce(AdmittedPreflight, &T) -> CauseResult<AdmittedPrivateHandle>,
     validate_private: impl FnOnce(&Connection) -> CauseResult<T>,
     validate_family: impl FnOnce(&T, &shared::Lease) -> Result<()>,
     validate_fresh: impl FnOnce(&AdmittedPrivateHandle, &T) -> CauseResult<()>,
@@ -165,7 +182,7 @@ fn open_access<T>(
     boundaries.verify(&store.root, &store.marker)?;
     verify_boundaries(&store.root, &store.marker, &metadata, &pin)?;
     verify_binding(&store.root, &store.marker, &pin, family.as_ref(), &binding)?;
-    let handle = preflight.into_handle(write)?;
+    let handle = open_handle(preflight, &data)?;
     if let Err(error) = validate_fresh(&handle, &data) {
         return handle.finish(Err(error)).map_err(Into::into);
     }

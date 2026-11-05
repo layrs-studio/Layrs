@@ -13,12 +13,28 @@ use crate::projection::{
 pub(in crate::projection::provider::bootstrap::preparation::activation) struct ManagedPrivateReady<
     'p,
 > {
-    data: OwnedReadyData,
+    data: std::sync::Arc<OwnedReadyData>,
     protected: &'p ManagedImportProtection,
     checkout: &'p ManagedCheckoutProof,
 }
 
-impl ManagedPrivateReady<'_> {
+impl<'p> ManagedPrivateReady<'p> {
+    /// Retained DATA is not SQL authority. Consumers independently validate
+    /// both Ready scopes before returning a reconstructed publication proof.
+    pub(super) fn retained_data(&self) -> std::sync::Arc<OwnedReadyData> {
+        std::sync::Arc::clone(&self.data)
+    }
+    pub(super) fn from_retained(
+        data: std::sync::Arc<OwnedReadyData>,
+        protected: &'p ManagedImportProtection,
+        checkout: &'p ManagedCheckoutProof,
+    ) -> Self {
+        Self {
+            data,
+            protected,
+            checkout,
+        }
+    }
     pub(super) fn physical_parts(&self) -> (&ManagedImportProtection, &ManagedCheckoutProof) {
         (self.protected, self.checkout)
     }
@@ -34,7 +50,7 @@ impl ManagedPrivateReady<'_> {
     }
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn require_physical(
         &self,
-        lease: &ManagedImportLease<'_, '_, '_, '_>,
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
         self.protected.require(lease, cancel)?;
@@ -42,7 +58,7 @@ impl ManagedPrivateReady<'_> {
     }
 }
 
-impl ManagedImportLease<'_, '_, '_, '_> {
+impl ManagedImportLease<'_, '_, '_, '_, '_> {
     /// Unlike content/copy authority, this distinct boundary interprets both
     /// destination Staging and its exact Ready suffix, never skips validation.
     fn with_ready_context<T>(
@@ -60,117 +76,89 @@ impl ManagedImportLease<'_, '_, '_, '_> {
             true,
         )?;
         self.boundary(cancel)?;
-        let result = managed_destination::with_source(
-            self.held,
-            self.root,
-            self.mount,
-            self.activation,
-            self.attempt,
-            self.staging,
-            self.destination,
-            cancel,
-            |source_c, proof, closure| {
-                self.image.require_owner(
-                    self.root,
-                    &proof.active.source,
-                    &proof.active.activated.snapshot,
-                )?;
-                let derived = managed_plan::rederive_reservation(
-                    source_c,
-                    closure,
-                    self.image,
-                    proof,
-                    self.fresh,
-                    self.staging,
-                    self.manifests,
-                    cancel,
-                )?;
-                let owned = OwnedReadyData::new(
-                    derived,
-                    self.staging,
-                    self.image,
-                    self.manifests,
-                    protected.root(),
-                    cancel,
-                )?;
-                let data = owned.as_data(self.manifests)?;
-                let prepared = self
-                    .held
-                    .artifacts
-                    .prepared
-                    .as_ref()
-                    .ok_or_else(|| invalid("Ready source prepared receipt absent"))?;
-                let inputs = ManagedReadyInputs {
-                    marker: &self.destination.proof().format,
-                    source: &proof.active.source,
-                    allocation: &self.held.artifacts.allocation,
-                    prepared,
-                    activation: &proof.active.activation,
-                    prefix: &self.staging.plan.source_prefix,
-                    staging: owned.destination_staging(),
-                    closure,
-                    family_marker_bytes: self.held.family.marker_bytes(),
-                    data: &data,
-                };
-                let content = self.inputs(proof, owned.destination_staging())?;
-                let binding = self.exact_binding()?;
-                let value = managed_destination::valid(database_io::read_cancellable(
-                    &self.held.family.catalog,
-                    cancel,
-                    |family_c| {
-                        let before = self.held.family.validate_import_protection(
-                            family_c,
-                            &content,
-                            &binding,
-                            protected.root(),
-                            owned.metadata_floor(),
-                            Some(cancel),
-                        )?;
-                        if before.root != ProtectionPresence::Present {
-                            return Err(invalid(
-                                "Ready requires exact published family protection",
-                            ));
-                        }
-                        let metadata = owned
-                            .metadata_floor()
-                            .checked_add(checkout.expected().maximum_encoded_bytes())
-                            .ok_or_else(|| invalid("Ready retained metadata envelope overflow"))?;
-                        let remaining = before
-                            .installation
-                            .remaining
-                            .checked_sub(checkout.expected().header().file_bytes)
-                            .ok_or_else(|| {
-                                invalid("Ready retained checkout envelope insufficient")
-                            })?;
-                        protected.root().require_envelope(remaining, metadata)?;
-                        protected.require(self, cancel)?;
-                        checkout.require_physical(self, cancel)?;
-                        let value = action(source_c, family_c, &inputs)?;
-                        let after = self.held.family.validate_import_protection(
-                            family_c,
-                            &content,
-                            &binding,
-                            protected.root(),
-                            owned.metadata_floor(),
-                            Some(cancel),
-                        )?;
-                        if after != before {
-                            return Err(invalid("Ready changed family content accounting"));
-                        }
-                        protected.require(self, cancel)?;
-                        checkout.require_physical(self, cancel)?;
-                        Ok(value)
-                    },
-                )?)?;
-                self.image.require_owner(
-                    self.root,
-                    &proof.active.source,
-                    &proof.active.activated.snapshot,
-                )?;
-                self.boundary(cancel)?;
-                Ok((value, owned))
-            },
-        )?;
+        let result = self.with_source(cancel, |source_c, proof, closure| {
+            self.image.require_owner(
+                self.root,
+                &proof.active.source,
+                &proof.active.activated.snapshot,
+            )?;
+            let derived = self.rederive(source_c, closure, proof, cancel)?;
+            let owned = self.ready_data(derived, protected.root(), cancel)?;
+            let data = owned.as_data(self.manifests)?;
+            let prepared = self
+                .held
+                .artifacts
+                .prepared
+                .as_ref()
+                .ok_or_else(|| invalid("Ready source prepared receipt absent"))?;
+            let inputs = ManagedReadyInputs {
+                marker: &self.destination.proof().format,
+                source: &proof.active.source,
+                allocation: &self.held.artifacts.allocation,
+                prepared,
+                activation: &proof.active.activation,
+                prefix: &self.staging.plan.source_prefix,
+                staging: owned.destination_staging(),
+                closure,
+                family_marker_bytes: self.held.family.marker_bytes(),
+                data: &data,
+                companion: self.ready_companion(proof),
+                denial: self.ready_denial(proof),
+            };
+            let content = self.inputs(proof, owned.destination_staging())?;
+            let binding = self.exact_binding()?;
+            let value = managed_destination::valid(database_io::read_cancellable_strict(
+                &self.held.family.catalog,
+                cancel,
+                |family_c| {
+                    let before = self.held.family.validate_import_protection(
+                        family_c,
+                        &content,
+                        &binding,
+                        protected.root(),
+                        owned.metadata_floor(),
+                        Some(cancel),
+                    )?;
+                    if before.root != ProtectionPresence::Present {
+                        return Err(invalid("Ready requires exact published family protection"));
+                    }
+                    let metadata = owned
+                        .metadata_floor()
+                        .checked_add(checkout.expected().maximum_encoded_bytes())
+                        .ok_or_else(|| invalid("Ready retained metadata envelope overflow"))?;
+                    let remaining = before
+                        .installation
+                        .remaining
+                        .checked_sub(checkout.expected().header().file_bytes)
+                        .ok_or_else(|| invalid("Ready retained checkout envelope insufficient"))?;
+                    protected.root().require_envelope(remaining, metadata)?;
+                    protected.require(self, cancel)?;
+                    checkout.require_physical(self, cancel)?;
+                    let value = action(source_c, family_c, &inputs)?;
+                    let after = self.held.family.validate_import_protection(
+                        family_c,
+                        &content,
+                        &binding,
+                        protected.root(),
+                        owned.metadata_floor(),
+                        Some(cancel),
+                    )?;
+                    if after != before {
+                        return Err(invalid("Ready changed family content accounting"));
+                    }
+                    protected.require(self, cancel)?;
+                    checkout.require_physical(self, cancel)?;
+                    Ok(value)
+                },
+            )?)?;
+            self.image.require_owner(
+                self.root,
+                &proof.active.source,
+                &proof.active.activated.snapshot,
+            )?;
+            self.boundary(cancel)?;
+            Ok((value, owned))
+        })?;
         protected.require(self, cancel)?;
         checkout.require_physical(self, cancel)?;
         Ok(result)
@@ -192,7 +180,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     ready_or_staging(source_c, c, family_c, inputs, checkout, cancel)
                 };
                 let file = self.destination.destination_database();
-                let before = managed_destination::valid(database_io::read_cancellable(
+                let before = managed_destination::valid(database_io::read_cancellable_strict(
                     file, cancel, check,
                 )?)?;
                 if before {
@@ -234,12 +222,13 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     c.execute_batch("COMMIT")?;
                     Ok(effect)
                 })();
+                let result = super::source_protection::rollback(bare.connection(), result);
                 bare.finish_writer(result, close)
             })?;
         // Destination writer, family read and source read have all closed.
         let (_, confirmed) =
             self.with_ready_context(protected, checkout, cancel, |source_c, family_c, inputs| {
-                managed_destination::valid(database_io::read_cancellable(
+                managed_destination::valid(database_io::read_cancellable_strict(
                     self.destination.destination_database(),
                     cancel,
                     |c| {
@@ -257,7 +246,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
         protected.require(self, cancel)?;
         checkout.require_physical(self, cancel)?;
         Ok(ManagedPrivateReady {
-            data: confirmed,
+            data: std::sync::Arc::new(confirmed),
             protected,
             checkout,
         })
@@ -273,6 +262,7 @@ fn ready_or_staging(
     cancel: &Cancellation,
 ) -> CauseResult<bool> {
     let expected = checkout.expected();
+    destination_ready::validate_ready_data(source_c, destination, family_c, inputs, Some(cancel))?;
     crate::projection::provider::import_validation::require_schema(
         destination,
         inputs.marker,

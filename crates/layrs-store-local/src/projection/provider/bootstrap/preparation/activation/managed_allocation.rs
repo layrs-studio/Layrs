@@ -51,6 +51,83 @@ pub(super) struct ManagedAllocationEffect {
     pub(super) confirmed: bool,
 }
 
+/// Only these retained authorities can admit filesystem effects. In particular,
+/// a caller-supplied callback cannot replace either source admission protocol.
+enum AllocationAuthority<'b, 'h, 'i, 'a, 'c> {
+    Legacy {
+        source_root: &'b layrs_vfs::ProviderRootGuard,
+        mount: &'b ProviderActiveMountRecord,
+        activation: &'b ProviderActivationRecord,
+        attempt: &'b CaptureAttemptLock,
+    },
+    Denial(&'b mut managed_journal::denial_start::PendingDenialStart<'h, 'i, 'a, 'c>),
+}
+
+impl AllocationAuthority<'_, '_, '_, '_, '_> {
+    fn require_allocation_route(
+        &self,
+        planned: &ProviderTransitionIntentRecord,
+    ) -> CauseResult<()> {
+        match self {
+            Self::Legacy { .. } => managed_journal::require_legacy_allocation(planned),
+            Self::Denial(_) => Ok(()),
+        }
+    }
+
+    fn observe_planned(
+        &mut self,
+        held: &outcome::PublicationPins,
+        planned: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        match self {
+            Self::Legacy {
+                source_root,
+                mount,
+                activation,
+                attempt,
+            } => managed_journal::observe_planned(
+                held,
+                source_root,
+                mount,
+                activation,
+                attempt,
+                planned,
+                cancel,
+            ),
+            Self::Denial(owner) => owner.observe_planned_allocation(held, planned, cancel),
+        }
+    }
+
+    fn observe_copying(
+        &mut self,
+        held: &outcome::PublicationPins,
+        copying: &ProviderTransitionIntentRecord,
+        destination: &ManagedDestinationAllocation<'_>,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        match self {
+            Self::Legacy {
+                source_root,
+                mount,
+                activation,
+                attempt,
+            } => managed_journal::observe_copying(
+                held,
+                source_root,
+                mount,
+                activation,
+                attempt,
+                copying,
+                cancel,
+            ),
+            Self::Denial(owner) => {
+                owner.observe_copying_allocation(held, copying, destination, cancel)
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct PartialPins<'a> {
     lifecycle: Option<crate::lock::StoreLock>,
@@ -350,29 +427,46 @@ impl ManagedDestinationAllocation<'_> {
         copying: &ProviderTransitionIntentRecord,
         cancel: &Cancellation,
     ) -> std::result::Result<ManagedFormatPublication, ManagedFormatPublicationFailure> {
-        let mut effects = Vec::with_capacity(5);
-        let result = self.publish_format_inner(
-            source_root,
-            mount,
-            activation,
-            attempt,
+        self.publish_format_with_authority(
+            AllocationAuthority::Legacy {
+                source_root,
+                mount,
+                activation,
+                attempt,
+            },
             copying,
             cancel,
-            &mut effects,
-        );
+        )
+    }
+
+    /// Publish only while the retained denial start revalidates the actual
+    /// funded source and the exact same allocation at every source boundary.
+    pub(super) fn publish_format_denial(
+        &mut self,
+        owner: &mut managed_journal::denial_start::PendingDenialStart<'_, '_, '_, '_>,
+        copying: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+    ) -> std::result::Result<ManagedFormatPublication, ManagedFormatPublicationFailure> {
+        self.publish_format_with_authority(AllocationAuthority::Denial(owner), copying, cancel)
+    }
+
+    fn publish_format_with_authority(
+        &mut self,
+        mut authority: AllocationAuthority<'_, '_, '_, '_, '_>,
+        copying: &ProviderTransitionIntentRecord,
+        cancel: &Cancellation,
+    ) -> std::result::Result<ManagedFormatPublication, ManagedFormatPublicationFailure> {
+        let mut effects = Vec::with_capacity(5);
+        let result = self.publish_format_inner(&mut authority, copying, cancel, &mut effects);
         match result {
             Ok(state) => Ok(ManagedFormatPublication { state, effects }),
             Err(cause) => Err(ManagedFormatPublicationFailure { cause, effects }),
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn publish_format_inner(
         &mut self,
-        source_root: &layrs_vfs::ProviderRootGuard,
-        mount: &ProviderActiveMountRecord,
-        activation: &ProviderActivationRecord,
-        attempt: &CaptureAttemptLock,
+        authority: &mut AllocationAuthority<'_, '_, '_, '_, '_>,
         copying: &ProviderTransitionIntentRecord,
         cancel: &Cancellation,
         effects: &mut Vec<ManagedFormatEffect>,
@@ -388,7 +482,7 @@ impl ManagedDestinationAllocation<'_> {
                 "managed FORMAT publication requires exact source Copying",
             ));
         }
-        self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+        self.observed_copying(authority, copying, cancel)?;
         self.verify(&copying.plan)?;
         self.require_fresh_namespace()?;
         let bytes = self.proof.format.bytes()?;
@@ -397,7 +491,7 @@ impl ManagedDestinationAllocation<'_> {
         }
         let final_path = self.root_path.join(".layrs/FORMAT");
         if self.owner_lock.is_none() {
-            self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+            self.observed_copying(authority, copying, cancel)?;
             let index = publication_arm(
                 effects,
                 ManagedFormatStep::OwnerLock,
@@ -413,12 +507,12 @@ impl ManagedDestinationAllocation<'_> {
             self.verify(&copying.plan)?;
             self.require_fresh_namespace()?;
         }
-        self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+        self.observed_copying(authority, copying, cancel)?;
         self.require_fresh_namespace()?;
         match self.format_location()? {
             FormatLocation::Final => {
                 self.require_format_bytes(FormatLocation::Final, &bytes, cancel)?;
-                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.observed_copying(authority, copying, cancel)?;
                 let index = publication_arm(effects, ManagedFormatStep::ParentSync, &final_path);
                 self.control.sync()?;
                 effects[index].confirmed = true;
@@ -434,14 +528,7 @@ impl ManagedDestinationAllocation<'_> {
                     return Err(invalid("managed temporary FORMAT has unknown bytes"));
                 }
                 if prefix.len() < bytes.len() {
-                    self.observed_copying(
-                        source_root,
-                        mount,
-                        activation,
-                        attempt,
-                        copying,
-                        cancel,
-                    )?;
+                    self.observed_copying(authority, copying, cancel)?;
                     self.require_fresh_namespace()?;
                     let index = publication_arm(
                         effects,
@@ -454,7 +541,7 @@ impl ManagedDestinationAllocation<'_> {
                         .write_all(&bytes[prefix.len()..])?;
                     effects[index].confirmed = true;
                 }
-                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.observed_copying(authority, copying, cancel)?;
                 self.require_fresh_namespace()?;
                 let index = publication_arm(
                     effects,
@@ -464,7 +551,7 @@ impl ManagedDestinationAllocation<'_> {
                 self.temporary_format.file().sync_all()?;
                 effects[index].confirmed = true;
                 self.require_format_bytes(FormatLocation::Temporary, &bytes, cancel)?;
-                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.observed_copying(authority, copying, cancel)?;
                 self.require_fresh_namespace()?;
                 let index = publication_arm(effects, ManagedFormatStep::Rename, &final_path);
                 if self
@@ -478,7 +565,7 @@ impl ManagedDestinationAllocation<'_> {
                     .into());
                 }
                 effects[index].confirmed = true;
-                self.observed_copying(source_root, mount, activation, attempt, copying, cancel)?;
+                self.observed_copying(authority, copying, cancel)?;
                 let index = publication_arm(effects, ManagedFormatStep::ParentSync, &final_path);
                 self.control.sync()?;
                 effects[index].confirmed = true;
@@ -533,22 +620,11 @@ impl ManagedDestinationAllocation<'_> {
 
     fn observed_copying(
         &self,
-        source_root: &layrs_vfs::ProviderRootGuard,
-        mount: &ProviderActiveMountRecord,
-        activation: &ProviderActivationRecord,
-        attempt: &CaptureAttemptLock,
+        authority: &mut AllocationAuthority<'_, '_, '_, '_, '_>,
         copying: &ProviderTransitionIntentRecord,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
-        managed_journal::observe_copying(
-            self.held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            copying,
-            cancel,
-        )
+        authority.observe_copying(self.held, copying, self, cancel)
     }
 
     fn read_format_bytes(
@@ -653,12 +729,55 @@ pub(super) fn allocate<'a>(
     planned: &'a ProviderTransitionIntentRecord,
     cancel: &Cancellation,
 ) -> std::result::Result<ManagedDestinationAllocation<'a>, ManagedAllocationFailure<'a>> {
+    allocate_with_authority(
+        session,
+        held,
+        AllocationAuthority::Legacy {
+            source_root,
+            mount,
+            activation,
+            attempt,
+        },
+        planned,
+        cancel,
+    )
+}
+
+/// Allocate from the retained funded denial start. The authority borrow ends
+/// on return; only the session and publication pins are retained by the result.
+pub(super) fn allocate_denial<'a>(
+    session: &'a Session,
+    held: &'a outcome::PublicationPins,
+    owner: &mut managed_journal::denial_start::PendingDenialStart<'_, '_, '_, '_>,
+    planned: &ProviderTransitionIntentRecord,
+    cancel: &Cancellation,
+) -> std::result::Result<ManagedDestinationAllocation<'a>, ManagedAllocationFailure<'a>> {
+    allocate_with_authority(
+        session,
+        held,
+        AllocationAuthority::Denial(owner),
+        planned,
+        cancel,
+    )
+}
+
+fn allocate_with_authority<'a>(
+    session: &'a Session,
+    held: &'a outcome::PublicationPins,
+    mut authority: AllocationAuthority<'_, '_, '_, '_, '_>,
+    planned: &ProviderTransitionIntentRecord,
+    cancel: &Cancellation,
+) -> std::result::Result<ManagedDestinationAllocation<'a>, ManagedAllocationFailure<'a>> {
     let target =
         PathBuf::from(&planned.plan.destination_parent).join(&planned.plan.destination_leaf_nonce);
     let mut pins = PartialPins::default();
     let mut effects = Vec::with_capacity(7);
     let result = (|| -> CauseResult<(TransitionDestinationProof, String, PathBuf, String)> {
         cancel.check()?;
+        authority.require_allocation_route(planned)?;
+        if let AllocationAuthority::Denial(owner) = &authority {
+            owner.require_allocation_session(session)?;
+        }
         planned.validate_fields()?;
         if planned.role != TransitionRole::Source
             || planned.state != TransitionState::Planned
@@ -680,15 +799,7 @@ pub(super) fn allocate<'a>(
         // Retain lifecycle before the first source observation, closing the
         // gap between source admission and the first filesystem effect.
         pins.lifecycle = Some(held.family.lifecycle_lease()?);
-        managed_journal::observe_planned(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            cancel,
-        )?;
+        authority.observe_planned(held, planned, cancel)?;
         let parent_path = Path::new(&planned.plan.destination_parent);
         let guard = session.guard_export_parent(parent_path)?;
         if guard.root() != parent_path
@@ -726,16 +837,7 @@ pub(super) fn allocate<'a>(
         }
         pins.parent = Some(parent);
         pins.worktrees = Some(held.family.writer_worktrees()?);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let root_index = arm(&mut effects, ManagedAllocationStep::Root, target.clone());
         pins.root = Some(
@@ -745,16 +847,7 @@ pub(super) fn allocate<'a>(
                 .create_new_child(OsStr::new(&planned.plan.destination_leaf_nonce))?,
         );
         confirm(&mut effects, root_index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let control_path = target.join(".layrs");
         let index = arm(&mut effects, ManagedAllocationStep::Control, control_path);
@@ -765,16 +858,7 @@ pub(super) fn allocate<'a>(
                 .create_new_private_child(OsStr::new(".layrs"))?,
         );
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let member_path = held
             .family
@@ -797,16 +881,7 @@ pub(super) fn allocate<'a>(
                 .create_new_private_child(member_name)?,
         );
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let metadata_path = member_path.join("metadata");
         let index = arm(
@@ -821,16 +896,7 @@ pub(super) fn allocate<'a>(
                 .create_new_private_child(OsStr::new("metadata"))?,
         );
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let index = arm(
             &mut effects,
@@ -845,16 +911,7 @@ pub(super) fn allocate<'a>(
         );
         let lock_identity = file::identity(pins.lock.as_ref().unwrap().file())?;
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let database_path = metadata_path.join("projection.sqlite3");
         let index = arm(
@@ -871,16 +928,7 @@ pub(super) fn allocate<'a>(
         drop(creator); // No DELETE creator handle may coexist with later SQLite.
         pins.database = Some(DatabaseFile::open(database_path, &database_identity)?);
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let format_name = format!("FORMAT.pending-{}", planned.plan.destination_leaf_nonce);
         let temporary_format_path = target.join(".layrs").join(&format_name);
@@ -897,16 +945,7 @@ pub(super) fn allocate<'a>(
         let format_file_identity = file::identity(temporary_format.file())?;
         pins.temporary_format = Some(temporary_format);
         confirm(&mut effects, index);
-        boundary(
-            held,
-            source_root,
-            mount,
-            activation,
-            attempt,
-            planned,
-            &pins,
-            cancel,
-        )?;
+        boundary(held, &mut authority, planned, &pins, cancel)?;
 
         let format = marker(
             held,
@@ -985,10 +1024,7 @@ pub(super) fn allocate<'a>(
 
 fn boundary(
     held: &outcome::PublicationPins,
-    source_root: &layrs_vfs::ProviderRootGuard,
-    mount: &ProviderActiveMountRecord,
-    activation: &ProviderActivationRecord,
-    attempt: &CaptureAttemptLock,
+    authority: &mut AllocationAuthority<'_, '_, '_, '_, '_>,
     planned: &ProviderTransitionIntentRecord,
     pins: &PartialPins<'_>,
     cancel: &Cancellation,
@@ -1014,15 +1050,7 @@ fn boundary(
     {
         pin.verify_path_identity()?;
     }
-    managed_journal::observe_planned(
-        held,
-        source_root,
-        mount,
-        activation,
-        attempt,
-        planned,
-        cancel,
-    )
+    authority.observe_planned(held, planned, cancel)
 }
 
 fn marker(

@@ -12,6 +12,7 @@ pub(in crate::projection::provider::destination_ready) fn require_ordinary_union
     source: &OrdinaryFrozenBasis,
     copied: &BTreeMap<FileId, (FileManifestId, u64)>,
     expected: &ExpectedCheckout,
+    inherited: &[RequiredRepresentation],
     required: &[RequiredRepresentation],
     cancel: Option<&Cancellation>,
 ) -> Result<BTreeMap<FileId, u64>> {
@@ -29,6 +30,7 @@ pub(in crate::projection::provider::destination_ready) fn require_ordinary_union
     }
     let selected = allowed.clone();
     allowed.extend(copied.keys().cloned());
+    allowed.extend(inherited.iter().map(|row| row.file_id.clone()));
     allowed.extend(expected.files().iter().map(|file| file.file_id.clone()));
     let mut exact = BTreeMap::new();
     let mut lengths = BTreeMap::new();
@@ -61,6 +63,14 @@ pub(in crate::projection::provider::destination_ready) fn require_ordinary_union
             ));
         }
     }
+    for row in inherited {
+        cancellation::check(cancel)?;
+        if exact.get(&(&row.file_id, &row.manifest_id)) != Some(&row.bytes) {
+            return Err(invalid(
+                "ordinary frozen inherited companion representation absent",
+            ));
+        }
+    }
     for file in expected.files() {
         cancellation::check(cancel)?;
         if exact.get(&(&file.file_id, &file.manifest_id)) != Some(&file.bytes) {
@@ -76,6 +86,7 @@ pub(super) fn require_union(
     source: &ProviderBootstrapSource,
     copied: &BTreeMap<FileId, (FileManifestId, u64)>,
     expected: &ExpectedCheckout,
+    inherited: &[RequiredRepresentation],
     required: &[FileManifest],
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
@@ -103,6 +114,17 @@ pub(super) fn require_union(
             .is_some_and(|old| old != file.bytes)
         {
             return Err(invalid("autonomous Ready current length differs"));
+        }
+    }
+    for row in inherited {
+        cancellation::check(cancel)?;
+        if union
+            .insert((row.file_id.clone(), row.manifest_id.clone()), row.bytes)
+            .is_some_and(|old| old != row.bytes)
+        {
+            return Err(invalid(
+                "autonomous Ready inherited companion length differs",
+            ));
         }
     }
     if required.len() != union.len() {

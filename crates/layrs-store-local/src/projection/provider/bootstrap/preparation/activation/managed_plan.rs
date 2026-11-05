@@ -11,6 +11,7 @@ use crate::projection::{
         import_validation::VerifiedImportClosure,
         records::{
             activation::activation_snapshot,
+            denied_coverage::DerivedDeniedCoverage,
             import::{ImportSource, ProviderImportKind, ProviderImportPrefixRecord},
             transition::{TransitionObservation, TransitionPlan, TransitionRowset},
             ProviderBootstrapSource, Record,
@@ -74,7 +75,8 @@ pub(in crate::projection::provider) struct ManagedPlanData {
     pub(in crate::projection::provider) required_manifests: Vec<RequiredManifest>,
     pub(in crate::projection::provider) quota_bytes: u64,
     pub(in crate::projection::provider) transaction_id: String,
-    // Populated only by rederivation against the original retained source SQL.
+    // Populated by candidate derivation or admission against retained source SQL.
+    // This DATA floor alone does not grant allocation or publication authority.
     pub(in crate::projection::provider) validated_metadata_floor: Option<u64>,
 }
 
@@ -409,7 +411,7 @@ pub(super) fn selection_rows_metadata(
     crate::projection::provider::managed_budget::selection_rows_metadata(selection)
 }
 
-fn require_catalog_representable(
+pub(super) fn require_catalog_representable(
     manifests: &[FileManifest],
     cancel: &layrs_vfs::Cancellation,
 ) -> Result<()> {
@@ -471,7 +473,7 @@ fn rowset<T: Serialize>(domain: &[u8], rows: &[T]) -> Result<TransitionRowset> {
 
 /// Bind the exact supplied representations to the immutable planned union.
 /// This verifies metadata only, not bytes, family availability or write rights.
-pub(super) fn require_manifest_union(
+pub(in crate::projection::provider) fn require_manifest_union(
     plan: &TransitionPlan,
     supplied: &[FileManifest],
 ) -> Result<()> {
@@ -554,6 +556,8 @@ pub(super) fn derive_data(
         historical,
         supplied,
         metadata_bytes,
+        None,
+        None,
     )
 }
 
@@ -653,7 +657,197 @@ pub(in crate::projection::provider) fn derive_ordinary_data(
         historical,
         supplied,
         metadata_bytes,
+        None,
+        None,
     )
+}
+
+/// Companion-aware immutable plan DATA. Unlike the legacy adapter, its input
+/// is the closed reconcile owner, not arbitrary recovery rows. The active
+/// driver must retain source/native/authority proofs and rederive this before
+/// reservation and every publication boundary; this result grants none.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn derive_reconciled_data(
+    prefix: &ProviderImportPrefixRecord,
+    owner: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+    observed: &crate::projection::provider::transition_observation::TransitionObservationData,
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+) -> Result<ManagedPlanData> {
+    derive_reconciled_parts(
+        prefix,
+        owner,
+        observed,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        None,
+    )
+}
+
+/// Closed denial-aware counterpart. The complete observation and sealed body
+/// are bound before any plan is returned; no positive absence is synthesized.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn derive_reconciled_denial_data(
+    prefix: &ProviderImportPrefixRecord,
+    owner: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+    observed: &crate::projection::provider::transition_observation::TransitionObservationData,
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    coverage: &DerivedDeniedCoverage,
+) -> Result<ManagedPlanData> {
+    coverage
+        .record()
+        .require_observation(prefix, transaction_id, observed, None)?;
+    derive_reconciled_parts(
+        prefix,
+        owner,
+        observed,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        Some(coverage),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_reconciled_parts(
+    prefix: &ProviderImportPrefixRecord,
+    owner: &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+    observed: &crate::projection::provider::transition_observation::TransitionObservationData,
+    destination: ProjectionIdentity,
+    parent: &str,
+    parent_identity: &str,
+    leaf_nonce: &str,
+    transaction_id: &str,
+    coverage: Option<&DerivedDeniedCoverage>,
+) -> Result<ManagedPlanData> {
+    if coverage.is_some() {
+        owner.require_denial_plan_observation(prefix, observed)?;
+    } else {
+        owner.require_plan_observation(prefix, observed)?;
+    }
+    if prefix.kind != ProviderImportKind::ManagedOrdinary {
+        return Err(invalid(
+            "reconciled ordinary plan requires managed conversion",
+        ));
+    }
+    let (identity, version) = match &prefix.source {
+        ImportSource::Ordinary {
+            identity, version, ..
+        }
+        | ImportSource::Provider {
+            identity, version, ..
+        } => (identity, version),
+    };
+    if version.generation.checked_add(1) != Some(observed.binding().generation) {
+        return Err(invalid(
+            "reconciled ordinary observation generation is not contiguous",
+        ));
+    }
+    let fresh = observed.snapshot();
+    let selection = observed.selection();
+    let mut placement = fresh.clone();
+    for entry in &mut placement.entries {
+        if selection.includes(&entry.path)
+            && entry.state != EntryState::Reserved
+            && matches!(entry.target, Some(TreeEntryTarget::File { .. }))
+        {
+            entry.state = EntryState::Materialized;
+        }
+    }
+    let entries: BTreeMap<_, _> = fresh.entries.iter().map(|e| (&e.path, e)).collect();
+    let manifests: BTreeMap<_, _> = owner.manifests().iter().map(|m| (m.id(), m)).collect();
+    let mut files = Vec::with_capacity(owner.authorized_files().len());
+    for file in owner.authorized_files() {
+        let entry = entries
+            .get(&file.path)
+            .ok_or_else(|| invalid("reconciled ordinary authorized path missing"))?;
+        let manifest = manifests
+            .get(&file.manifest_id)
+            .copied()
+            .ok_or_else(|| invalid("reconciled ordinary exact representation missing"))?;
+        if manifest.file_id() != &file.file_id || manifest.byte_length() != file.bytes {
+            return Err(invalid("reconciled ordinary authorized manifest differs"));
+        }
+        let expected = match &entry.target {
+            Some(TreeEntryTarget::File { file_id }) => Some((file_id.clone(), entry.executable)),
+            None if entry.state == EntryState::Absent => None,
+            _ => return Err(invalid("reconciled ordinary expected base unsupported")),
+        };
+        files.push(ImageFile {
+            path: &file.path,
+            manifest,
+            executable: file.executable,
+            expected,
+        });
+    }
+    let mut deletions = Vec::new();
+    for change in owner.overlay().iter().filter(|c| c.replacement.is_none()) {
+        let base = change
+            .expected
+            .as_ref()
+            .ok_or_else(|| invalid("reconciled ordinary refuses None-to-None Capture"))?;
+        deletions.push(ImageDeletion {
+            path: &change.path,
+            base: &base.file_id,
+            executable: base.executable,
+        });
+    }
+    let bases = observed
+        .descriptors()
+        .iter()
+        .map(|d| &d.manifest)
+        .collect::<Vec<_>>();
+    let union = owner
+        .representations()
+        .iter()
+        .map(|r| RequiredManifest {
+            file_id: r.file_id.clone(),
+            manifest_id: r.manifest_id.clone(),
+            bytes: r.bytes,
+        })
+        .collect::<Vec<_>>();
+    let data = derive_kernel(
+        prefix,
+        identity,
+        fresh,
+        &placement,
+        selection,
+        &version.selection_digest,
+        &bases,
+        &files,
+        &deletions,
+        destination,
+        parent,
+        parent_identity,
+        leaf_nonce,
+        transaction_id,
+        &union,
+        owner.manifests(),
+        owner.metadata_bytes(),
+        Some(owner),
+        coverage.map(|coverage| (coverage, observed)),
+    )?;
+    if data.observation_digest != observed.binding().snapshot_digest
+        || data.capture.changes != owner.overlay()
+        || data.quota_bytes != owner.quota_bytes()
+    {
+        return Err(invalid(
+            "reconciled ordinary plan observation/overlay/budget differs",
+        ));
+    }
+    Ok(data)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,7 +869,24 @@ fn derive_kernel(
     historical: &[RequiredManifest],
     supplied: &[FileManifest],
     metadata_bytes: u64,
+    companions: Option<
+        &crate::projection::provider::transition_reconcile::companions::OwnedCompanionData,
+    >,
+    denial: Option<(
+        &DerivedDeniedCoverage,
+        &crate::projection::provider::transition_observation::TransitionObservationData,
+    )>,
 ) -> Result<ManagedPlanData> {
+    if let Some((coverage, observed)) = denial {
+        coverage
+            .record()
+            .require_observation(prefix, transaction_id, observed, None)?;
+        if observed.snapshot() != fresh || observed.selection() != selection {
+            return Err(invalid(
+                "managed denial kernel observation/selection differs",
+            ));
+        }
+    }
     format::validate_identity(source_identity)?;
     format::validate_identity(&destination)?;
     let source_prefix_id = prefix.digest()?;
@@ -696,9 +907,10 @@ fn derive_kernel(
         || destination.origin != source_identity.origin
         || destination.principal_id != source_identity.principal_id
         || version.effective_image_digest.len() != 64
-        || prefix.closure.companions.count != 0
-        || prefix.closure.companion_files.count != 0
-        || prefix.closure.companion_deletions.count != 0
+        || (companions.is_none()
+            && (prefix.closure.companions.count != 0
+                || prefix.closure.companion_files.count != 0
+                || prefix.closure.companion_deletions.count != 0))
         || transaction_id.is_empty()
         || transaction_id.len() > 128
         || transaction_id.contains('\0')
@@ -777,6 +989,17 @@ fn derive_kernel(
         if !selection.includes(&entry.path) {
             if file.is_some() || deletion.is_some() {
                 return Err(invalid("managed image includes excluded path"));
+            }
+            continue;
+        }
+        if entry.state == EntryState::Reserved {
+            // Reconciliation preserves denied PRESENT bytes as companions,
+            // never as a working file or an authorized deletion in C. Only
+            // the typed reconciled owner can admit this reserved observation.
+            if companions.is_none() || entry.writable || file.is_some() || deletion.is_some() {
+                return Err(invalid(
+                    "managed reserved path cannot carry checkout effects",
+                ));
             }
             continue;
         }
@@ -910,6 +1133,21 @@ fn derive_kernel(
     let protected_manifests = rowset(MANIFEST_DOMAIN, &required_manifests)?;
     let quota_bytes = quota(supplied, image_files, metadata_bytes)?;
     let empty = rowset(b"layrs-provider-managed-companion-empty-v1\0", &[] as &[u8])?;
+    let (companion_id, companion_files, companion_deletions) =
+        match companions.and_then(|c| c.header()) {
+            Some(header) => (
+                Some(header.digest()?),
+                TransitionRowset {
+                    count: header.file_count,
+                    digest: header.files_digest.clone(),
+                },
+                TransitionRowset {
+                    count: header.deletion_count,
+                    digest: header.deletions_digest.clone(),
+                },
+            ),
+            None => (None, empty.clone(), empty),
+        };
     let observation_record = TransitionObservation {
         step_id: observation.base_step_id.clone(),
         root_tree_id: observation.base_root_tree_id.clone(),
@@ -917,9 +1155,15 @@ fn derive_kernel(
         authorization_epoch: observation.observed_authorization_epoch,
         generation: observation_generation,
         snapshot_digest: observation_digest.clone(),
-        selection_digest: version.selection_digest.clone(),
+        selection_digest: denial.map_or_else(
+            || version.selection_digest.clone(),
+            |(_, observed)| observed.binding().selection_digest.clone(),
+        ),
     };
     let plan = TransitionPlan {
+        denial_coverage: denial
+            .map(|(coverage, _)| coverage.record().reference())
+            .transpose()?,
         kind: ProviderImportKind::ManagedOrdinary,
         source_prefix_id,
         source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode()?)?,
@@ -932,9 +1176,9 @@ fn derive_kernel(
         capture_sequence,
         capture_digest: capture.digest.clone(),
         working_overlay,
-        companion_id: None,
-        companion_files: empty.clone(),
-        companion_deletions: empty,
+        companion_id,
+        companion_files,
+        companion_deletions,
         protected_manifests,
         quota_bytes,
     };
@@ -994,3 +1238,7 @@ mod tests;
 #[cfg(test)]
 #[path = "managed_plan/ordinary_tests.rs"]
 mod ordinary_tests;
+
+#[cfg(test)]
+#[path = "managed_plan/denial_tests.rs"]
+mod denial_tests;

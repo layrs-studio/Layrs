@@ -4,24 +4,31 @@ use super::*;
 use crate::projection::shared::exact_content::{self, ExactBinding, ExactCatalog, ExactStorage};
 use layrs_core::scm::FileManifestId;
 
-struct Catalog<'s, 'h, 'd, 'a, 'c, O: WriterCloseObserver> {
-    lease: &'s ManagedImportLease<'h, 'd, 'a, 'c>,
+struct Catalog<'s, 'h, 'i, 'd, 'a, 'c, O: WriterCloseObserver> {
+    lease: &'s ManagedImportLease<'h, 'i, 'd, 'a, 'c>,
     close: &'s mut O,
 }
 
-impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AdmissionPhase {
+    Reservation,
+    Installation,
+    Protected,
+}
+
+impl<'h, 'i, 'd, 'a, 'c> ManagedImportLease<'h, 'i, 'd, 'a, 'c> {
     /// Opening admits either untouched reservation state or typed installation
     /// progress. reserve_plan keeps its separate, strict reserve-only reader.
     pub(super) fn read_admission(
         &self,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination_staging: &ProviderTransitionIntentRecord,
         metadata_floor: u64,
         cancel: &Cancellation,
-    ) -> CauseResult<()> {
+    ) -> CauseResult<AdmissionPhase> {
         let inputs = self.inputs(proof, destination_staging)?;
         let binding = self.exact_binding()?;
-        managed_destination::valid(database_io::read_cancellable(
+        managed_destination::valid(database_io::read_cancellable_strict(
             &self.held.family.catalog,
             cancel,
             |c| {
@@ -54,6 +61,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                         metadata_floor,
                         Some(cancel),
                     )?;
+                    Ok(AdmissionPhase::Protected)
                 } else if installing {
                     self.held.family.validate_import_installation(
                         c,
@@ -61,12 +69,13 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                         &binding,
                         Some(cancel),
                     )?;
+                    Ok(AdmissionPhase::Installation)
                 } else {
                     self.held
                         .family
                         .validate_import_content(c, &inputs, Some(cancel))?;
+                    Ok(AdmissionPhase::Reservation)
                 }
-                Ok(())
             },
         )?)
     }
@@ -124,9 +133,9 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         self.rehash(cancel)?;
         let mut attempt = exact_content::prepare(&mut Catalog { lease: self, close }, id, cancel)?;
         let manifest = attempt.manifest().clone();
-        // A historical representation may already be fully resident. Missing
-        // historical bytes require their separately authorized source; a cache
-        // candidate with the same FileId cannot replace this ManifestId.
+        // The complete image owns exact offline pins for required historical
+        // representations; the legacy producer remains current-image-only.
+        // A different ManifestId with the same FileId cannot replace this one.
         let current_path = self
             .image
             .files()
@@ -142,17 +151,14 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                 )?;
                 let Some(mut piece) = piece else { break };
                 if piece.needs_produce() {
-                    let path = current_path.as_ref().ok_or_else(|| {
-                        invalid("exact historical content unavailable from retained current image")
-                    })?;
                     let ordinal = piece.ordinal();
-                    piece.produce(
-                        |sink| {
-                            self.image
-                                .copy_exact_chunk(path, &manifest, ordinal, sink, cancel)
-                        },
-                        cancel,
-                    )?;
+                    piece.produce(|sink| match &mut self.image {
+                        super::companion::ManagedImage::Complete(image) => image.copy_required_chunk(&manifest, ordinal, sink, cancel),
+                        super::companion::ManagedImage::Legacy(image) => {
+                            let path = current_path.as_ref().ok_or_else(|| invalid("exact historical content unavailable from retained current image"))?;
+                            image.copy_exact_chunk(path, &manifest, ordinal, sink, cancel)
+                        }
+                    }, cancel)?;
                 }
                 exact_content::finish_piece(
                     &mut Catalog { lease: self, close },
@@ -174,7 +180,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
     }
 }
 
-impl<O: WriterCloseObserver> ExactCatalog for Catalog<'_, '_, '_, '_, '_, O> {
+impl<O: WriterCloseObserver> ExactCatalog for Catalog<'_, '_, '_, '_, '_, '_, O> {
     fn expected_manifest(&self, id: &FileManifestId) -> CauseResult<FileManifest> {
         self.lease
             .manifests
@@ -215,7 +221,7 @@ impl<O: WriterCloseObserver> ExactCatalog for Catalog<'_, '_, '_, '_, '_, O> {
                     .validate_import_installation(c, &inputs, &binding, Some(cancel))
             };
             if !write {
-                return managed_destination::valid(database_io::read_cancellable(
+                return managed_destination::valid(database_io::read_cancellable_strict(
                     file,
                     cancel,
                     |c| {
@@ -245,13 +251,14 @@ impl<O: WriterCloseObserver> ExactCatalog for Catalog<'_, '_, '_, '_, '_, O> {
                 c.execute_batch("COMMIT")?;
                 Ok(value)
             })();
+            let result = super::source_protection::rollback(bare.connection(), result);
             bare.finish_writer(result, close)
         })?;
         // The source read close is now known positive. No acknowledgement can
         // escape an uncertain enclosing close or skip complete fresh readback.
         lease.with_authority(cancel, |proof, destination_staging| {
             let inputs = lease.inputs(proof, destination_staging)?;
-            managed_destination::valid(database_io::read_cancellable(
+            managed_destination::valid(database_io::read_cancellable_strict(
                 &lease.held.family.catalog,
                 cancel,
                 |c| {

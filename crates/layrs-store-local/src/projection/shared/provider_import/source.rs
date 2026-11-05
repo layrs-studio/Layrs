@@ -21,6 +21,8 @@ pub(in crate::projection) struct ProviderSourceInputs<'p> {
     prepared: &'p PreparedRecord,
     activation: &'p ProviderActivationRecord,
     capture: &'p PrivateCaptureProof,
+    source_context:
+        Option<&'p crate::projection::shared::source_companion::SourceCompanionFamilyContext<'p>>,
 }
 
 /// Construct only inside the ordinary owner's retained source callback. None
@@ -111,7 +113,8 @@ impl<'p, 'db> OrdinarySourceInputs<'p, 'db> {
                 admission: &admission,
             })?;
         let ImportSource::Ordinary {
-            private_schema: 9 | 10, ..
+            private_schema: 9 | 10,
+            ..
         } = &intent.plan.source_prefix.source
         else {
             return Err(invalid("ordinary import requires admitted private9 source"));
@@ -358,9 +361,27 @@ impl<'p, 'db> ImportSourceInputs<'p, 'db> {
             prepared,
             activation,
             capture,
+            source_context: None,
         })
     }
 
+    pub(super) fn provider_with_companions(
+        allocation: &'p AllocationRecord,
+        prepared: &'p PreparedRecord,
+        activation: &'p ProviderActivationRecord,
+        capture: &'p PrivateCaptureProof,
+        source_context: Option<
+            &'p crate::projection::shared::source_companion::SourceCompanionFamilyContext<'p>,
+        >,
+    ) -> Self {
+        Self::Provider(ProviderSourceInputs {
+            allocation,
+            prepared,
+            activation,
+            capture,
+            source_context,
+        })
+    }
     pub(super) fn require_family(
         &self,
         family: &FamilyAccess,
@@ -375,9 +396,22 @@ impl<'p, 'db> ImportSourceInputs<'p, 'db> {
         let marker = match self {
             Self::Provider(source) => {
                 family.require_allocation(source.allocation)?;
-                if family.validate_capture_catalog(c, source.allocation, source.capture, cancel)?
-                    != ActivationRegistration::Ready
-                {
+                let phase = if let Some(context) = source.source_context {
+                    if !std::ptr::eq(source.capture, context.publication.capture_data()) {
+                        return Err(invalid(
+                            "source family context discarded the complete private proof",
+                        ));
+                    }
+                    family.validate_source_companion_catalog(
+                        c,
+                        source.allocation,
+                        context,
+                        cancel,
+                    )?
+                } else {
+                    family.validate_capture_catalog(c, source.allocation, source.capture, cancel)?
+                };
+                if phase != ActivationRegistration::Ready {
                     return Err(invalid("import source family is not Ready"));
                 }
                 intent

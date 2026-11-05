@@ -341,6 +341,21 @@ pub(super) fn current(c: &Connection) -> Result<VersionedProjection> {
 pub(super) fn require_idle(c: &Connection) -> Result<()> {
     #[cfg(windows)]
     provider::ordinary_transition::require_no_live(c)?;
+    require_no_filesystem_pending(c)
+}
+
+pub(super) fn require_idle_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    scope: &format::ContentScope<'_>,
+) -> Result<()> {
+    if scope.has_live_export(c, store)? {
+        return Err(invalid("ordinary source has a live managed export intent"));
+    }
+    require_no_filesystem_pending(c)
+}
+
+fn require_no_filesystem_pending(c: &Connection) -> Result<()> {
     let pending: bool =
         c.query_row("SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_restore_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending)", [], |r| {
             r.get(0)
@@ -354,6 +369,19 @@ pub(super) fn require_idle(c: &Connection) -> Result<()> {
 }
 pub(super) fn require_mutable(c: &Connection) -> Result<()> {
     require_idle(c)?;
+    require_no_publication_pending(c)
+}
+
+pub(super) fn require_mutable_with_scope(
+    c: &Connection,
+    store: &ProjectionStore,
+    scope: &format::ContentScope<'_>,
+) -> Result<()> {
+    require_idle_with_scope(c, store, scope)?;
+    require_no_publication_pending(c)
+}
+
+fn require_no_publication_pending(c: &Connection) -> Result<()> {
     let pending: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_publication_pending)",
         [],

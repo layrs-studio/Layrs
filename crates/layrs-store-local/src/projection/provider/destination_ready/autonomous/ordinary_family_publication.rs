@@ -203,6 +203,7 @@ impl VerifiedOrdinaryFamilyPublication {
             required: snapshot.family.required,
             binding: snapshot.family.binding,
             installation: self.state.protection.installation,
+            metadata_floor: snapshot.metadata_floor,
         })
     }
 }

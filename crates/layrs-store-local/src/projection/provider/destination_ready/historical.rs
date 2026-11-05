@@ -13,6 +13,8 @@ use super::super::{
 use super::*;
 use serde::Serialize;
 
+mod c14;
+
 pub(in crate::projection::provider) struct FrozenReadyRows {
     pub required: Vec<RequiredRepresentation>,
     pub expected: ExpectedCheckout,
@@ -20,6 +22,12 @@ pub(in crate::projection::provider) struct FrozenReadyRows {
     pub archive: ArchiveCommitment,
     pub capture: CapturedPatch,
     pub new_content: Vec<RequiredRepresentation>,
+    /// Family-independent Ready basis: base_metadata_floor_with_coverage plus
+    /// actual local companion metadata. Excludes complete_metadata_floor's
+    /// receipt/claim/current-Ready-intent/mapping columns and checkout Jmax. A caller
+    /// must complete it with authenticated canonical manifests before budgeting.
+    /// Present only for C14 terminal interpretation; legacy readers do not need it.
+    pub metadata_basis_floor: Option<u64>,
 }
 
 pub(in crate::projection::provider) fn read_frozen_ready_rows(
@@ -42,30 +50,41 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
     ) {
         return Err(invalid("admitted Ready frozen origin/layout differs"));
     }
-    if plan.companion_id.is_some()
-        || plan.companion_files.count != 0
-        || plan.companion_deletions.count != 0
+    let current = c14::read_snapshots(c, prefix, permit, cancel)?;
+    if current.is_none()
+        && (plan.companion_id.is_some()
+            || plan.companion_files.count != 0
+            || plan.companion_deletions.count != 0)
     {
         return Err(invalid("admitted managed Ready companions unsupported"));
     }
-    let (observation, placement, selected, selection_digest) = match prefix.origin() {
-        DestinationOriginKind::Provider => {
-            let source = prefix.source()?;
-            (
-                source.initial(),
-                super::super::records::activation::activation_snapshot(source)?,
-                source.selection(),
-                source.commitment().selection_digest.as_str(),
-            )
-        }
-        DestinationOriginKind::Ordinary => {
-            let source = prefix.ordinary_frozen()?;
-            (
-                source.snapshot(),
-                source.snapshot().clone(),
-                source.selection(),
-                source.selection_digest(),
-            )
+    let (observation, placement, selected, selection_digest) = if let Some(rows) = &current {
+        (
+            &rows.observation,
+            rows.placement.clone(),
+            &rows.selected,
+            rows.selection_digest.as_str(),
+        )
+    } else {
+        match prefix.origin() {
+            DestinationOriginKind::Provider => {
+                let source = prefix.source()?;
+                (
+                    source.initial(),
+                    super::super::records::activation::activation_snapshot(source)?,
+                    source.selection(),
+                    source.commitment().selection_digest.as_str(),
+                )
+            }
+            DestinationOriginKind::Ordinary => {
+                let source = prefix.ordinary_frozen()?;
+                (
+                    source.snapshot(),
+                    source.snapshot().clone(),
+                    source.selection(),
+                    source.selection_digest(),
+                )
+            }
         }
     };
     let observation_bytes = observation
@@ -170,20 +189,57 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
                 .and_then(|n| n.checked_add(outgoing.receipt_count()))
                 .ok_or_else(|| invalid("admitted receipt count overflow"))?,
         ),
-        ("projection_provider_companions", closure.companions.count),
+        (
+            "projection_observations",
+            closure
+                .denial_observations
+                .as_ref()
+                .map_or(0, |rows| rows.count)
+                .checked_add(u64::from(current.is_some()))
+                .ok_or_else(|| invalid("admitted denial document count overflow"))?,
+        ),
+        (
+            "projection_provider_companions",
+            closure
+                .companions
+                .count
+                .checked_add(u64::from(current.is_some() && plan.companion_id.is_some()))
+                .ok_or_else(|| invalid("admitted companion count overflow"))?,
+        ),
         (
             "projection_provider_companion_files",
-            closure.companion_files.count,
+            closure
+                .companion_files
+                .count
+                .checked_add(if current.is_some() {
+                    plan.companion_files.count
+                } else {
+                    0
+                })
+                .ok_or_else(|| invalid("admitted companion files count overflow"))?,
         ),
         (
             "projection_provider_companion_deletions",
-            closure.companion_deletions.count,
+            closure
+                .companion_deletions
+                .count
+                .checked_add(if current.is_some() {
+                    plan.companion_deletions.count
+                } else {
+                    0
+                })
+                .ok_or_else(|| invalid("admitted companion deletions count overflow"))?,
         ),
         ("projection_provider_mounts", 0),
         ("projection_provider_capture_transactions", 0),
         ("projection_provider_capture_receipts", 0),
         ("projection_conversion", 0),
     ] {
+        // Ordinary offline observations are a mutable tail in legacy stores.
+        // Only C14 terminal mode requires the complete table to be immutable.
+        if table == "projection_observations" && current.is_none() {
+            continue;
+        }
         cancellation::check(cancel)?;
         let count: u64 = c.query_row(
             &format!("SELECT count(*) FROM (SELECT 1 FROM {table} LIMIT ?1)"),
@@ -230,8 +286,14 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
         return Err(invalid("admitted checkout archive commitment differs"));
     }
     let copied = prefix.copied_content_mappings(c, cancel)?;
+    let mut inherited = prefix.inherited_companion_representations(c, cancel)?;
+    if current.is_some() {
+        inherited.extend(c14::local_preserved(c, prefix, cancel)?);
+    }
     let required = match prefix.origin() {
-        DestinationOriginKind::Provider => required(prefix.source()?, &copied, &expected, cancel)?,
+        DestinationOriginKind::Provider => {
+            required(prefix.source()?, &copied, &expected, &inherited, cancel)?
+        }
         DestinationOriginKind::Ordinary => {
             let rows =
                 super::super::managed_admission::representations::read_import_representations(
@@ -241,6 +303,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
                 prefix.ordinary_frozen()?,
                 &copied,
                 &expected,
+                &inherited,
                 &rows,
                 cancel,
             )?;
@@ -259,7 +322,25 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
             "admitted exact required representation union differs",
         ));
     }
-    require_inventory(prefix, &placement, &capture, &expected, &required, cancel)?;
+    let retained = c14::read_retained(
+        c,
+        marker,
+        prefix,
+        &required,
+        &expected,
+        current.as_ref(),
+        cancel,
+    )?;
+    require_inventory(
+        prefix,
+        &placement,
+        selected,
+        current.is_some(),
+        &capture,
+        &expected,
+        &required,
+        cancel,
+    )?;
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Overlay<'a> {
@@ -290,17 +371,33 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
     {
         return Err(invalid("admitted Ready overlay commitment differs"));
     }
-    super::autonomous::inventory::require_image(
-        &capture,
-        &expected,
-        &version.effective_image_digest,
-        cancel,
-    )?;
+    if current.is_none() {
+        super::autonomous::inventory::require_image(
+            &capture,
+            &expected,
+            &version.effective_image_digest,
+            cancel,
+        )?;
+    }
     let mut mapped = BTreeSet::new();
     let mut new_content = Vec::new();
     for row in &required {
         if !copied.contains_key(&row.file_id) && mapped.insert(&row.file_id) {
             cancellation::check(cancel)?;
+            let row = retained
+                .as_ref()
+                .and_then(|local| local.mapping(&row.file_id))
+                .map_or_else(
+                    || row.clone(),
+                    |(manifest_id, bytes)| RequiredRepresentation {
+                        file_id: row.file_id.clone(),
+                        manifest_id: manifest_id.clone(),
+                        bytes: *bytes,
+                    },
+                );
+            if required.binary_search(&row).is_err() {
+                return Err(invalid("admitted companion sticky mapping outside union"));
+            }
             if !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_content WHERE file_id=?1 AND manifest_id=?2 AND bytes=?3)",params![row.file_id.as_str(),row.manifest_id.as_str(),row.bytes],|r|r.get::<_,bool>(0))? {return Err(invalid("admitted Ready content mapping differs"));}
             new_content.push(row.clone());
         }
@@ -308,6 +405,20 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
     // Preserve this exact claim among later ordinary claims. Never require a
     // singleton claim set or reinterpret an ordinary operation's prejournal.
     if !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_claims WHERE root_id=?1 AND digest=?1 AND kind='provider-import' AND owner=?2)",params![record.root_id,record.transaction_id],|r|r.get::<_,bool>(0))? {return Err(invalid("admitted import retention claim differs"));}
+    let metadata_basis_floor = if current.is_some() {
+        Some(c14::metadata_basis_floor(
+            c,
+            prefix,
+            observation,
+            &placement,
+            selected,
+            &capture,
+            retained.as_ref(),
+            cancel,
+        )?)
+    } else {
+        None
+    };
     Ok(FrozenReadyRows {
         required,
         expected,
@@ -315,6 +426,7 @@ pub(in crate::projection::provider) fn read_frozen_ready_rows(
         archive,
         capture,
         new_content,
+        metadata_basis_floor,
     })
 }
 
@@ -339,6 +451,7 @@ fn required(
     source: &ProviderBootstrapSource,
     copied: &BTreeMap<FileId, (FileManifestId, u64)>,
     expected: &ExpectedCheckout,
+    inherited: &[RequiredRepresentation],
     cancel: Option<&Cancellation>,
 ) -> Result<Vec<RequiredRepresentation>> {
     let mut rows = BTreeMap::new();
@@ -370,6 +483,9 @@ fn required(
     for file in expected.files() {
         add(&file.file_id, &file.manifest_id, file.bytes)?;
     }
+    for row in inherited {
+        add(&row.file_id, &row.manifest_id, row.bytes)?;
+    }
     Ok(rows
         .into_iter()
         .map(|((file_id, manifest_id), bytes)| RequiredRepresentation {
@@ -383,16 +499,14 @@ fn required(
 fn require_inventory(
     prefix: &VerifiedDestinationPrefix<'_>,
     placement: &ProjectionSnapshot,
+    selected: &layrs_core::projection::ProjectionSelection,
+    fresh: bool,
     capture: &CapturedPatch,
     expected: &ExpectedCheckout,
     required: &[RequiredRepresentation],
     cancel: Option<&Cancellation>,
 ) -> Result<()> {
     use layrs_core::{projection::EntryState, scm::TreeEntryTarget};
-    let selected = match prefix.origin() {
-        DestinationOriginKind::Provider => prefix.source()?.selection(),
-        DestinationOriginKind::Ordinary => prefix.ordinary_frozen()?.selection(),
-    };
     let lengths: BTreeMap<_, _> = required
         .iter()
         .map(|row| (&row.file_id, row.bytes))
@@ -402,7 +516,7 @@ fn require_inventory(
     let mut changes = 0usize;
     for entry in &placement.entries {
         cancellation::check(cancel)?;
-        if !selected.includes(&entry.path) {
+        if !selected.includes(&entry.path) || (fresh && entry.state == EntryState::Reserved) {
             continue;
         }
         let base = match &entry.target {
@@ -434,6 +548,9 @@ fn require_inventory(
             }
         } else if let Some((file_id, executable)) = base {
             let bytes = match prefix.origin() {
+                DestinationOriginKind::Provider if fresh => *lengths
+                    .get(file_id)
+                    .ok_or_else(|| invalid("admitted fresh unchanged representation absent"))?,
                 DestinationOriginKind::Provider => {
                     let source = prefix.source()?;
                     let descriptor = source

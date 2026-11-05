@@ -306,6 +306,49 @@ pub(in crate::projection::provider) fn with_admitted_source_family_sql(
     });
 }
 
+/// Exercise the same canonical observation columns as the public offline API.
+/// This is SQL reader evidence only; the native recipe covers commit and reopen.
+pub(in crate::projection::provider) fn assert_legacy_observation_tail(
+    c: &Connection,
+    marker: &format::Marker,
+) {
+    let before = read_admitted_import(c, marker, None).unwrap();
+    assert!(before.ready().plan.denial_coverage.is_none());
+    let snapshot: Vec<u8> = c.query_row("SELECT payload FROM projection_snapshots WHERE generation=(SELECT generation FROM projection_head)", [], |r| r.get(0)).unwrap();
+    let selected = selection::current(c).unwrap();
+    let value = json!({"snapshot": serde_json::from_slice::<ProjectionSnapshot>(&snapshot).unwrap(), "selection": selected});
+    let digest = crate::projection::shared::digest(&value).unwrap();
+    c.execute_batch("SAVEPOINT legacy_observation_regression")
+        .unwrap();
+    assert_eq!(
+        c.execute(
+            "INSERT INTO projection_observations VALUES(?1,?2)",
+            params![digest, canonical_json(&value).unwrap()]
+        )
+        .unwrap(),
+        1
+    );
+    before.require(c, None).unwrap();
+    let fresh = read_admitted_import(c, marker, None).unwrap();
+    assert_eq!(
+        fresh.record().digest().unwrap(),
+        before.record().digest().unwrap()
+    );
+    assert_eq!(fresh.private_schema(), before.private_schema());
+    drop(fresh);
+    c.execute_batch(
+        "ROLLBACK TO legacy_observation_regression; RELEASE legacy_observation_regression",
+    )
+    .unwrap();
+}
+
+owned!(
+    admitted_legacy_provider9_preserves_offline_observation_tail,
+    {
+        with_private9(|c, f| assert_legacy_observation_tail(c, &f.marker));
+    }
+);
+
 fn with_private9(body: impl FnOnce(&Connection, &Fixture)) {
     let source = BareConnection::reference().unwrap();
     let destination = BareConnection::reference().unwrap();

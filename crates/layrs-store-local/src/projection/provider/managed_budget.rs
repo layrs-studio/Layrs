@@ -20,10 +20,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod admission;
+mod denial;
 pub(super) use admission::{
     admission_budget, admission_cost, ordinary_admission_budget, ordinary_admission_cost,
     AdmissionBudget, AdmissionCost,
 };
+pub(in crate::projection::provider) use denial::DeniedCoverageCost;
 
 const MAX_METADATA: u64 = 1073741824;
 
@@ -190,10 +192,38 @@ pub(super) fn base_metadata_floor(
     source_intent: IntentSize,
     destination_intent: IntentSize,
 ) -> Result<u64> {
+    base_metadata_floor_with_coverage(
+        copied_bytes,
+        observation,
+        placement,
+        capture,
+        plan,
+        selected,
+        source_intent,
+        destination_intent,
+        None,
+    )
+}
+
+/// The copied prefix already charges inherited documents. Only the current
+/// transition's complete document is added here for C. B has a separate fixed
+/// reservation before Planned; this floor never supplies that funding.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn base_metadata_floor_with_coverage(
+    copied_bytes: u64,
+    observation: &ProjectionSnapshot,
+    placement: &ProjectionSnapshot,
+    capture: &CapturedPatch,
+    plan: &super::records::transition::TransitionPlan,
+    selected: &ProjectionSelection,
+    source_intent: IntentSize,
+    destination_intent: IntentSize,
+    coverage: Option<&DeniedCoverageCost>,
+) -> Result<u64> {
     let version = match &plan.source_prefix.source {
         ImportSource::Provider { version, .. } | ImportSource::Ordinary { version, .. } => version,
     };
-    let mut minimum = copied_bytes;
+    let mut minimum = denial::add_current_document(copied_bytes, plan, coverage)?;
     for bytes in [
         observation
             .canonical_bytes()
@@ -288,3 +318,173 @@ pub(super) fn content_mapping_metadata(
     }
     Ok(bytes)
 }
+
+/// Pure conservative C Ready and admission peak before physical C allocation.
+/// Payload maxima are the existing closed codecs; scalar/row costs use the
+/// exact available plan, observation, selection, capture and manifest union.
+/// No destination FORMAT/proof, Ready record or funding capability is invented.
+/// Inherited documents are already in copied_bytes; current is charged once.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::projection::provider) fn prospective_denial_metadata_floor(
+    copied_bytes: u64,
+    observation: &ProjectionSnapshot,
+    placement: &ProjectionSnapshot,
+    capture: &CapturedPatch,
+    planned: &ProviderTransitionIntentRecord,
+    selected: &ProjectionSelection,
+    required: &[FileManifest],
+    coverage: &DeniedCoverageCost,
+    cancel: Option<&Cancellation>,
+) -> Result<u64> {
+    cancellation::check(cancel)?;
+    planned.validate_fields()?;
+    if planned.role != TransitionRole::Source
+        || planned.state != TransitionState::Planned
+        || planned.destination.is_some()
+        || planned.reservation.is_some()
+        || planned.receipt_id.is_some()
+        || planned.plan.denial_coverage.is_none()
+        || planned.plan.kind != super::records::import::ProviderImportKind::ManagedOrdinary
+    {
+        return Err(invalid(
+            "prospective denial sizing requires unallocated v2 source Planned",
+        ));
+    }
+    planned.encode()?;
+    let plan = &planned.plan;
+    super::bootstrap::require_manifest_union(plan, required)?;
+    let version = plan.source_prefix.source.version();
+    let observation_bytes = observation
+        .canonical_bytes()
+        .map_err(|e| invalid(e.to_string()))?;
+    let placement_bytes = placement
+        .canonical_bytes()
+        .map_err(|e| invalid(e.to_string()))?;
+    selected
+        .validate_snapshot(observation)
+        .map_err(|e| invalid(e.to_string()))?;
+    selected
+        .validate_snapshot(placement)
+        .map_err(|e| invalid(e.to_string()))?;
+    if observation.base_step_id != plan.observation.step_id
+        || observation.base_root_tree_id != plan.observation.root_tree_id
+        || observation.observed_policy_set_id != plan.observation.policy_set_id
+        || observation.observed_authorization_epoch != plan.observation.authorization_epoch
+        || placement.base_step_id != observation.base_step_id
+        || placement.base_root_tree_id != observation.base_root_tree_id
+        || crate::projection::database::digest(
+            plan.observation.generation,
+            Some(&version.snapshot_digest),
+            &observation_bytes,
+        ) != plan.observation.snapshot_digest
+        || crate::projection::database::digest(
+            plan.placement_generation,
+            Some(&plan.observation.snapshot_digest),
+            &placement_bytes,
+        ) != plan.placement_digest
+        || crate::projection::database::digest(
+            plan.observation.generation,
+            Some(&plan.observation.snapshot_digest),
+            &selection::encode(selected)?,
+        ) != plan.observation.selection_digest
+        || capture.sequence != plan.capture_sequence
+        || capture.previous_patch_digest != version.capture_head
+        || capture.projection_generation != plan.placement_generation
+        || capture.projection_digest != plan.placement_digest
+        || capture.identity != plan.source_prefix.destination_identity
+        || capture.digest != plan.capture_digest
+        || capture.computed_digest()? != capture.digest
+    {
+        return Err(invalid(
+            "prospective denial sizing rows differ from immutable plan",
+        ));
+    }
+    // These are sizing projections, not ProviderTransitionIntentRecords. The
+    // real Staging/Ready bodies require physical destination identities later.
+    let transaction_bytes = planned.transaction_id.len() as u64;
+    let reservation_bytes = planned.reservation_operation()?.len() as u64;
+    let staging_size = |role_bytes| -> Result<IntentSize> {
+        Ok(IntentSize {
+            payload: ProviderTransitionIntentRecord::MAX_BYTES as u64,
+            scalars: [transaction_bytes, role_bytes, 7, 8, reservation_bytes, 71]
+                .into_iter()
+                .try_fold(0, add_metadata)?,
+        })
+    };
+    let base = base_metadata_floor_with_coverage(
+        copied_bytes,
+        observation,
+        placement,
+        capture,
+        plan,
+        selected,
+        staging_size(6)?,
+        staging_size(11)?,
+        Some(coverage),
+    )?;
+    let mut minimum = base;
+    // Match complete_metadata_floor's columns without constructing its future
+    // receipt/claim/Ready objects. ExactProtection's IDs are raw 64-byte hashes;
+    // this managed claim's kind and owner are fixed by the current transaction.
+    for bytes in [
+        ProviderTransitionReceiptRecord::MAX_BYTES as u64,
+        71,
+        71,
+        transaction_bytes,
+        plan.companion_id.as_ref().map_or(0, |id| id.len() as u64),
+        64,
+        64,
+        "provider-import".len() as u64,
+        transaction_bytes,
+        ProviderTransitionIntentRecord::MAX_BYTES as u64,
+        transaction_bytes,
+        11,
+        5,
+        8,
+        reservation_bytes,
+        71,
+        71,
+        content_mapping_metadata(required, cancel)?,
+    ] {
+        minimum = add_metadata(minimum, bytes)?;
+    }
+    if plan.companion_id.is_none() {
+        // No independent source-companion envelope s exists. Keep the source
+        // publication peak in the plan's existing metadata allowance, matching
+        // source_metadata_floor without inventing future terminal records.
+        for bytes in [
+            71,
+            71,
+            transaction_bytes,
+            ProviderTransitionReceiptRecord::MAX_BYTES as u64,
+        ] {
+            minimum = add_metadata(minimum, bytes)?;
+        }
+        for state_bytes in [5, 9] {
+            for bytes in [
+                transaction_bytes,
+                6,
+                state_bytes,
+                8,
+                reservation_bytes,
+                71,
+                ProviderTransitionIntentRecord::MAX_BYTES as u64,
+                71,
+            ] {
+                minimum = add_metadata(minimum, bytes)?;
+            }
+        }
+    }
+    cancellation::check(cancel)?;
+    // Admission copies the checkout journal before deleting its operational
+    // rows and adds permanent provenance. Fund this peak before Planned fixes
+    // the quota; later readers must never grow an undersized reservation.
+    Ok(
+        admission::denial_admission_budget(minimum, placement, selected, capture, cancel)?
+            .minimum_metadata(),
+    )
+}
+
+#[cfg(test)]
+#[path = "managed_budget/denial_start_tests.rs"]
+mod denial_start_tests;

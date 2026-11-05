@@ -81,6 +81,11 @@ pub(super) fn read_ancestry_rows(
                 [&current], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )?;
         let receipt = ProviderTransitionReceiptRecord::decode(&payload)?;
+        if receipt.denial_coverage.is_some() && prefix.closure.denial_observations.is_none() {
+            return Err(invalid(
+                "inherited denial receipt requires prefix v3 transport",
+            ));
+        }
         receipt.require_row(TransitionReceiptRowData {
             id: &current,
             owner_identity_digest: &owner,

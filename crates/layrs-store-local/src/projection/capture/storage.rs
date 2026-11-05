@@ -13,6 +13,9 @@ use std::{
     path::Path,
 };
 
+#[cfg(all(windows, test))]
+mod batch_tests;
+
 pub(super) fn persist(
     c: &mut Connection,
     store: &ProjectionStore,
@@ -32,6 +35,9 @@ pub(super) fn persist_with_scope(
     scope: Option<&format::ContentScope<'_>>,
 ) -> Result<CapturedPatch> {
     validate_content_scope(c, store, scope)?;
+    if let Some(scope) = scope {
+        scope.preflight_local_capture(c, store, state, &scan.changes)?;
+    }
     let files = scan
         .changes
         .iter()
@@ -141,9 +147,11 @@ fn persist_transaction(
         return Err(invalid("checkout changed while storing partial capture"));
     }
     c.execute("INSERT INTO projection_captures(sequence,digest,projection_generation,payload) VALUES(?1,?2,?3,?4)",params![sequence,patch.digest,state.generation,payload])?;
-    // Includes hashes of existing deduplicated blobs: corruption never becomes a successful capture.
-    validate_with_bytes(c, store, &patch, true, scope)?;
     retention::finish_budget(c, store)?;
+    // Final validation sees the committed budget state before COMMIT, so the
+    // transient WRITE/active exception cannot admit unreferenced claims.
+    // Existing deduplicated bytes are also hashed before acknowledgement.
+    validate_with_bytes(c, store, &patch, true, scope)?;
     Ok(patch)
 }
 pub(in crate::projection) fn load(
@@ -206,6 +214,172 @@ pub(in crate::projection) fn load_metadata_for_origin(
     Ok(patch)
 }
 
+/// Stream a fixed-generation origin tail under the caller's retained snapshot.
+/// The immutable snapshot, selection and Reserved paths are interpreted once;
+/// every canonical patch, predecessor and change still receives full validation.
+/// This carries DATA only and never dispatches through admission provenance.
+#[cfg(test)]
+pub(in crate::projection) fn visit_metadata_range_for_origin(
+    c: &Connection,
+    first: u64,
+    last: u64,
+    identity: &ProjectionIdentity,
+    generation: u64,
+    expected_digest: &str,
+    check_cancel: impl FnMut() -> Result<()>,
+    mut visit: impl FnMut(&CapturedPatch) -> Result<()>,
+) -> Result<()> {
+    visit_metadata_range_for_origin_with_base(
+        c,
+        first,
+        last,
+        identity,
+        generation,
+        expected_digest,
+        check_cancel,
+        |patch, _| visit(patch),
+    )
+}
+
+/// The walk also lends the already interpreted fixed-generation base, so local
+/// Restore journals are checked against it without a second snapshot load.
+pub(in crate::projection) fn visit_metadata_range_for_origin_with_base(
+    c: &Connection,
+    first: u64,
+    last: u64,
+    identity: &ProjectionIdentity,
+    generation: u64,
+    expected_digest: &str,
+    mut check_cancel: impl FnMut() -> Result<()>,
+    mut visit: impl FnMut(&CapturedPatch, &ProjectionSnapshot) -> Result<()>,
+) -> Result<()> {
+    if first > last {
+        return Ok(());
+    }
+    if c.is_autocommit() || first == 0 || last - first >= 100_000 {
+        return Err(invalid("origin Capture range requires a retained snapshot"));
+    }
+    check_cancel()?;
+    let (digest, snapshot) = load_capture_base(c, generation)?;
+    if digest != expected_digest {
+        return Err(invalid("capture base projection changed"));
+    }
+    let reserved = snapshot.reserved_paths()?;
+    let mut previous = if first == 1 {
+        None
+    } else {
+        Some(c.query_row(
+            "SELECT digest FROM projection_captures WHERE sequence=?1",
+            [first - 1],
+            |r| r.get::<_, String>(0),
+        )?)
+    };
+    let mut query = c.prepare(
+        "SELECT sequence,length(payload),digest,projection_generation,payload FROM projection_captures WHERE sequence>=?1 AND sequence<=?2 ORDER BY sequence",
+    )?;
+    let mut rows = query.query(params![first, last])?;
+    for sequence in first..=last {
+        check_cancel()?;
+        let row = rows
+            .next()?
+            .ok_or_else(|| invalid("capture origin range has a missing sequence"))?;
+        let actual_sequence: u64 = row.get(0)?;
+        let length: u64 = row.get(1)?;
+        if actual_sequence != sequence || length > MAX_DOCUMENT as u64 {
+            return Err(invalid(
+                "capture origin range sequence or document bound differs",
+            ));
+        }
+        let bytes: Vec<u8> = row.get(4)?;
+        let patch = decode_record(sequence, row.get(2)?, row.get(3)?, &bytes)?;
+        validate_patch_header(&patch)?;
+        if &patch.identity != identity
+            || patch.projection_generation != generation
+            || patch.projection_digest != digest
+            || patch.previous_patch_digest != previous
+        {
+            return Err(invalid("capture escaped its verified origin range"));
+        }
+        validate_changes(&patch, &snapshot, &reserved, |_| Ok(()))?;
+        visit(&patch, &snapshot)?;
+        previous = Some(patch.digest);
+    }
+    if rows.next()?.is_some() {
+        return Err(invalid("capture origin range has extra sequences"));
+    }
+    check_cancel()
+}
+
+/// Exact canonical payload a subsequent ordinary Capture would append, or None
+/// for its existing same-image deduplication branch. The caller supplies only
+/// already scanned changes and retains/validates the actual private snapshot.
+/// This plans bytes and row growth; it grants no writer or content authority.
+pub(in crate::projection) fn local_capture_append_payload(
+    c: &Connection,
+    state: &VersionedProjection,
+    identity: &ProjectionIdentity,
+    changes: &[CapturedChange],
+) -> Result<Option<Vec<u8>>> {
+    append_payload(c, state, identity, changes, true)
+}
+
+/// Exact canonical payload a local Restore finish appends. Restore always
+/// advances the capture frontier (`persist_restore_in_transaction_with_scope`
+/// never reuses the previous patch), so this never returns a dedup branch.
+pub(in crate::projection) fn local_restore_append_payload(
+    c: &Connection,
+    state: &VersionedProjection,
+    identity: &ProjectionIdentity,
+    changes: &[CapturedChange],
+) -> Result<Vec<u8>> {
+    append_payload(c, state, identity, changes, false)?
+        .ok_or_else(|| invalid("local Restore append cannot deduplicate"))
+}
+
+fn append_payload(
+    c: &Connection,
+    state: &VersionedProjection,
+    identity: &ProjectionIdentity,
+    changes: &[CapturedChange],
+    deduplicate: bool,
+) -> Result<Option<Vec<u8>>> {
+    let sequence: Option<u64> =
+        c.query_row("SELECT MAX(sequence) FROM projection_captures", [], |r| {
+            r.get(0)
+        })?;
+    let previous = sequence.map(|n| load_record(c, n)).transpose()?;
+    if deduplicate
+        && previous.as_ref().is_some_and(|patch| {
+            &patch.identity == identity
+                && patch.projection_digest == state.digest
+                && patch.changes.as_slice() == changes
+        })
+    {
+        return Ok(None);
+    }
+    let sequence = sequence
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|n| *n <= i64::MAX as u64)
+        .ok_or_else(|| invalid("capture sequence exhausted"))?;
+    let mut patch = CapturedPatch {
+        schema_version: "layrs.projection-capture.v1".into(),
+        sequence,
+        previous_patch_digest: previous.map(|patch| patch.digest),
+        projection_generation: state.generation,
+        projection_digest: state.digest.clone(),
+        identity: identity.clone(),
+        changes: changes.to_vec(),
+        digest: String::new(),
+    };
+    patch.digest = patch.computed_digest()?;
+    let payload = canonical_json(&patch).map_err(invalid)?;
+    if payload.len() > MAX_DOCUMENT {
+        return Err(invalid("capture document exceeds8MiB"));
+    }
+    Ok(Some(payload))
+}
+
 fn load_record(c: &Connection, sequence: u64) -> Result<CapturedPatch> {
     let length: u64 = c.query_row(
         "SELECT length(payload) FROM projection_captures WHERE sequence=?1",
@@ -220,11 +394,20 @@ fn load_record(c: &Connection, sequence: u64) -> Result<CapturedPatch> {
         [sequence],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let patch: CapturedPatch = serde_json::from_slice(&bytes).map_err(invalid)?;
+    decode_record(sequence, digest, generation, &bytes)
+}
+
+fn decode_record(
+    sequence: u64,
+    digest: String,
+    generation: u64,
+    bytes: &[u8],
+) -> Result<CapturedPatch> {
+    let patch: CapturedPatch = serde_json::from_slice(bytes).map_err(invalid)?;
     if patch.sequence != sequence
         || patch.projection_generation != generation
         || patch.digest != digest
-        || canonical_json(&patch).map_err(invalid)? != bytes
+        || canonical_json(&patch).map_err(invalid)?.as_slice() != bytes
     {
         return Err(invalid("capture identity or canonical document mismatch"));
     }
@@ -269,15 +452,9 @@ fn validate_record(
     c: &Connection,
     patch: &CapturedPatch,
     validate_origin: impl FnOnce() -> Result<()>,
-    mut validate_content: impl FnMut(&CapturedFile) -> Result<()>,
+    validate_content: impl FnMut(&CapturedFile) -> Result<()>,
 ) -> Result<()> {
-    if patch.schema_version != "layrs.projection-capture.v1"
-        || patch.sequence == 0
-        || patch.digest != patch.computed_digest()?
-        || patch.changes.len() > 1024
-    {
-        return Err(invalid("capture digest, identity or schema mismatch"));
-    }
+    validate_patch_header(patch)?;
     validate_origin()?;
     let prior: Option<String> = if patch.sequence == 1 {
         None
@@ -291,9 +468,29 @@ fn validate_record(
     if prior != patch.previous_patch_digest {
         return Err(invalid("capture history chain mismatch"));
     }
+    let (digest, snapshot) = load_capture_base(c, patch.projection_generation)?;
+    if digest != patch.projection_digest {
+        return Err(invalid("capture base projection changed"));
+    }
+    let reserved = snapshot.reserved_paths()?;
+    validate_changes(patch, &snapshot, &reserved, validate_content)
+}
+
+fn validate_patch_header(patch: &CapturedPatch) -> Result<()> {
+    if patch.schema_version != "layrs.projection-capture.v1"
+        || patch.sequence == 0
+        || patch.digest != patch.computed_digest()?
+        || patch.changes.len() > 1024
+    {
+        return Err(invalid("capture digest, identity or schema mismatch"));
+    }
+    Ok(())
+}
+
+fn load_capture_base(c: &Connection, generation: u64) -> Result<(String, ProjectionSnapshot)> {
     let length: u64 = c.query_row(
         "SELECT length(payload) FROM projection_snapshots WHERE generation=?1",
-        [patch.projection_generation],
+        [generation],
         |r| r.get(0),
     )?;
     if length > 64 * 1024 * 1024 {
@@ -301,12 +498,10 @@ fn validate_record(
     }
     let (digest, parent, bytes): (String, Option<String>, Vec<u8>) = c.query_row(
         "SELECT digest,parent_digest,payload FROM projection_snapshots WHERE generation=?1",
-        [patch.projection_generation],
+        [generation],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    if digest != patch.projection_digest
-        || digest != database::digest(patch.projection_generation, parent.as_deref(), &bytes)
-    {
+    if digest != database::digest(generation, parent.as_deref(), &bytes) {
         return Err(invalid("capture base projection changed"));
     }
     let snapshot: ProjectionSnapshot = serde_json::from_slice(&bytes).map_err(invalid)?;
@@ -315,8 +510,16 @@ fn validate_record(
     }
     // Capture replay is checked against the selection at its immutable base,
     // never against a later expansion or the current live checkout.
-    selection::at(c, patch.projection_generation)?.validate_snapshot(&snapshot)?;
-    let reserved = snapshot.reserved_paths()?;
+    selection::at(c, generation)?.validate_snapshot(&snapshot)?;
+    Ok((digest, snapshot))
+}
+
+fn validate_changes(
+    patch: &CapturedPatch,
+    snapshot: &ProjectionSnapshot,
+    reserved: &layrs_core::projection::ReservedPaths,
+    mut validate_content: impl FnMut(&CapturedFile) -> Result<()>,
+) -> Result<()> {
     let mut previous = None;
     let mut total = 0u64;
     for change in &patch.changes {

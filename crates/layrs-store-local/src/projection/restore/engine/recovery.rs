@@ -13,9 +13,19 @@ pub(in crate::projection) struct RestoreRecoveryData {
     root_id: String,
     root_digest: String,
     representations: BTreeSet<(FileId, FileManifestId, u64)>,
+    /// Present only for a C14 image: the fresh preflight compares it too.
+    local: Option<retention::LocalRestoreScope>,
 }
 
 impl RestoreRecoveryData {
+    pub(in crate::projection) fn requires_denial_restore_handle(&self) -> bool {
+        self.local.is_some()
+    }
+
+    pub(in crate::projection) fn local_scope(&self) -> Option<&retention::LocalRestoreScope> {
+        self.local.as_ref()
+    }
+
     /// Call only after the independently closed private preflight has admitted
     /// this owner's family. No catalog writer, cancellation or settlement.
     pub(in crate::projection) fn validate_family(
@@ -132,7 +142,19 @@ fn read_pending(c: &Connection, store: &ProjectionStore) -> Result<RestoreRecove
             "admitted restore recovery requires admitted private9 or private10",
         ));
     }
-    crate::projection::provider::ordinary_transition::require_no_live(c)?;
+    // C14 has no ordinary outgoing reader; its complete admitted reader owns
+    // the pending journal instead. The declaration is only a dispatch hint.
+    let denial = if crate::projection::provider::admitted_ordinary::declares_denial(c)? {
+        let admitted =
+            crate::projection::provider::admitted_ordinary::inspect(c, &store.marker, None)?;
+        if admitted.ready().plan.denial_coverage.is_none() {
+            return Err(invalid("admitted denial declaration differs from Ready"));
+        }
+        Some(admitted)
+    } else {
+        crate::projection::provider::ordinary_transition::require_no_live(c)?;
+        None
+    };
     let conflicts: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM projection_install) OR EXISTS(SELECT 1 FROM projection_refresh_pending) OR EXISTS(SELECT 1 FROM projection_namespace_pending) OR EXISTS(SELECT 1 FROM projection_publication_pending) OR EXISTS(SELECT 1 FROM projection_rebase_pending) OR EXISTS(SELECT 1 FROM projection_prejournal) OR EXISTS(SELECT 1 FROM projection_preparations WHERE status='acquiring')",
         [], |r| r.get(0),
@@ -172,6 +194,45 @@ fn read_pending(c: &Connection, store: &ProjectionStore) -> Result<RestoreRecove
         return Err(invalid("pending restore targets an excluded path"));
     }
     let operation = format!("restore:{}", expected.operation_id);
+    let local = match &denial {
+        None => None,
+        Some(admitted) => {
+            let suffix = match &expected.source {
+                RestoreSource::Version { version, .. } => match version {
+                    layrs_core::projection::ProjectionVersion::Generation {
+                        worktree_id,
+                        generation,
+                        digest,
+                    } => {
+                        *worktree_id == store.identity().worktree_id
+                            && *generation == admitted.ready_generation()
+                            && *digest == admitted.ready().plan.placement_digest
+                    }
+                    layrs_core::projection::ProjectionVersion::Capture {
+                        worktree_id,
+                        sequence,
+                        ..
+                    } => {
+                        *worktree_id == store.identity().worktree_id
+                            && *sequence > admitted.ready_capture_sequence()
+                    }
+                    layrs_core::projection::ProjectionVersion::Remote { .. } => false,
+                },
+                RestoreSource::Capture { sequence, .. } => {
+                    *sequence > admitted.ready_capture_sequence()
+                }
+                // The admitted reader already proved an inverse names local history.
+                RestoreSource::Inverse { .. } => true,
+            };
+            if !suffix
+                || state.generation != admitted.ready_generation()
+                || state.digest != admitted.ready().plan.placement_digest
+            {
+                return Err(invalid("pending C14 Restore escaped fixed Ready scope"));
+            }
+            retention::LocalRestoreScope::for_denial(admitted, &operation)?
+        }
+    };
     let (count, oversized): (u64, bool) = c.query_row(
         "SELECT count(*),coalesce(max(length(CAST(operation AS BLOB))>128 OR length(CAST(reservation AS BLOB))=0 OR length(CAST(reservation AS BLOB))>128 OR length(CAST(witness AS BLOB))!=64),0) FROM projection_budgets",
         [], |r| Ok((r.get(0)?, r.get(1)?)),
@@ -241,6 +302,7 @@ fn read_pending(c: &Connection, store: &ProjectionStore) -> Result<RestoreRecove
         root_id,
         root_digest,
         representations,
+        local,
     })
 }
 

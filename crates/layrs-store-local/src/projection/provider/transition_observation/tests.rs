@@ -83,6 +83,7 @@ impl Source {
                 },
                 ancestry_root_receipt: None,
                 closure: ImportClosure {
+                    denial_observations: None,
                     restore_history: None,
                     snapshots: row(8),
                     selections: row(1),
@@ -228,6 +229,61 @@ fn reobserved_expansion_accepts_new_generation_and_revoked_original_access() {
         data.authority_data(),
         AuthorityObservationData::ReobservedExpandedScope { .. }
     ));
+}
+
+#[test]
+fn normalization_binds_the_actual_versioned_import_prefix() {
+    let source = Source::new();
+    for restore_history in [false, true] {
+        let (mut prefix, selection_snapshot) = source.prefix(7);
+        if restore_history {
+            prefix.schema_version = "layrs.projection-provider-import-prefix.v2".into();
+            prefix.closure.restore_history = Some(ImportRowset {
+                count: 0,
+                digest: TOKEN.into(),
+            });
+            let ImportSource::Ordinary {
+                checkout_identity, ..
+            } = &mut prefix.source
+            else {
+                unreachable!()
+            };
+            *checkout_identity = Some("fs:v1:0000000000000001:0000000000000002".into());
+        }
+        prefix.validate_fields().unwrap();
+        let canonical_prefix_id = prefix.digest().unwrap();
+        let legacy_domain_id = codec::hash(
+            "layrs-projection-provider-import-prefix-v1",
+            &prefix.encode().unwrap(),
+        );
+        assert_eq!(canonical_prefix_id == legacy_domain_id, !restore_history);
+        let fresh = source.fresh();
+        let authority = reobserved(&fresh);
+        let data = TransitionObservationData::normalize(
+            SourceObservationData {
+                prefix: &prefix,
+                identity: &source.identity,
+                snapshot: &source.snapshot,
+                snapshot_parent_digest: Some(PARENT),
+                selection: &source.selected,
+                selection_generation: 7,
+                selection_snapshot_digest: &selection_snapshot,
+            },
+            source.destination.clone(),
+            8,
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData::default(),
+            authority,
+            None,
+        )
+        .unwrap();
+        assert_eq!(data.binding().source_prefix_id, canonical_prefix_id);
+        if restore_history {
+            assert_ne!(data.binding().source_prefix_id, legacy_domain_id);
+        }
+    }
 }
 
 #[test]
@@ -630,4 +686,60 @@ fn historical_selection_anchor_is_supported_and_large_rules_stop_before_normaliz
             layrs_vfs::Error::Cancelled
         ))
     ));
+}
+
+#[test]
+fn normalization_rejects_combined_visible_and_denied_count_before_duplicate_checks() {
+    let source = Source::new();
+    let fresh = source.fresh();
+    assert_eq!(fresh.entries.len(), 1);
+    let mode = reobserved(&fresh);
+    let coverage = ObservationCoverageData {
+        denied_paths: (0..100_000)
+            .map(|_| DeniedPathData { path: p("denied") })
+            .collect(),
+    };
+    assert!(error(source.normalize(
+        fresh,
+        source.selected.clone(),
+        vec![source.descriptor("README.md")],
+        coverage,
+        mode,
+    ))
+    .contains("path count exceeds bound"));
+}
+
+#[test]
+fn normalization_rejects_combined_visible_and_denied_bytes_before_scope_checks() {
+    let source = Source::new();
+    let fresh = source.fresh();
+    assert_eq!(fresh.entries.len(), 1);
+    let mode = reobserved(&fresh);
+    const DENIED_COUNT: usize = 99_999;
+    const PATH_BYTES: usize = 8 * 1024 * 1024;
+    let width = PATH_BYTES / DENIED_COUNT;
+    let remainder = PATH_BYTES % DENIED_COUNT;
+    let denied_paths: Vec<_> = (0..DENIED_COUNT)
+        .map(|index| {
+            let length = width + usize::from(index < remainder);
+            DeniedPathData {
+                path: p(&format!("{index:06}-{}", "x".repeat(length - 7))),
+            }
+        })
+        .collect();
+    assert_eq!(
+        denied_paths
+            .iter()
+            .map(|row| row.path.as_str().len())
+            .sum::<usize>(),
+        PATH_BYTES
+    );
+    assert!(error(source.normalize(
+        fresh,
+        source.selected.clone(),
+        vec![source.descriptor("README.md")],
+        ObservationCoverageData { denied_paths },
+        mode,
+    ))
+    .contains("path bytes exceed bound"));
 }

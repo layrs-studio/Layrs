@@ -43,6 +43,21 @@ fn require_ready(
 ) -> Result<()> {
     cancellation::check(cancel)?;
     let ready = inputs.destination_ready;
+    if ready.plan.companion_id.is_some() {
+        let context = inputs
+            .content
+            .source_context
+            .as_ref()
+            .ok_or_else(|| invalid("companion C Ready requires full B source context"))?;
+        let root = context
+            .pending
+            .ok_or_else(|| invalid("companion C Ready requires B fixed retention"))?;
+        root.require_plan(
+            inputs.content.allocation,
+            inputs.content.source_staging,
+            cancel,
+        )?;
+    }
     ready.require_transition(inputs.content.destination_staging)?;
     if ready.role != TransitionRole::Destination || ready.state != TransitionState::Ready {
         return Err(invalid(
@@ -123,6 +138,21 @@ impl FamilyAccess {
         cancel: Option<&Cancellation>,
     ) -> Result<ImportPublicationState> {
         require_ready(inputs, cancel)?;
+        if inputs.destination_ready.plan.companion_id.is_some() {
+            let root = inputs
+                .content
+                .source_context
+                .as_ref()
+                .and_then(|s| s.pending)
+                .ok_or_else(|| invalid("C receipt B protection scope absent"))?;
+            if root.inspect(c, cancel)?
+                != crate::projection::shared::source_companion::SourceCompanionPresence::Protected
+            {
+                return Err(invalid(
+                    "C receipt requires B protection before either receipt",
+                ));
+            }
+        }
         let phase = member_phase(c, binding.owner.as_str(), cancel)?;
         let checked = self.validate_import_protection_at_member(
             c,

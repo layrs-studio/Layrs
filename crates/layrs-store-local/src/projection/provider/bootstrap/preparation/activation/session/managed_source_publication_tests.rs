@@ -410,6 +410,7 @@ fn managed_source_ready_ack_refusal_retries_published_then_replays_without_write
                             '_,
                             '_,
                             '_,
+                            '_,
                         >,
                          expected: &ProviderTransitionIntentRecord| {
                             private.require_physical(lease, &cancel).unwrap();

@@ -2,7 +2,9 @@
 //! These codecs authenticate no SQL rowset, source store, native root or claim.
 use super::{
     activation::{owner_identity_digest, ProviderActivationRecord},
-    codec, invalid, AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt,
+    codec,
+    denied_coverage::DeniedCoverageRef,
+    invalid, AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt,
     ReceiptBindingCheck, ReceiptRef, Record,
 };
 use crate::projection::{format, ProjectionIdentity, Result};
@@ -14,6 +16,8 @@ const PREFIX_SCHEMA: &str = "layrs.projection-provider-import-prefix.v1";
 const PREFIX_DOMAIN: &str = "layrs-projection-provider-import-prefix-v1";
 const PREFIX_SCHEMA_V2: &str = "layrs.projection-provider-import-prefix.v2";
 const PREFIX_DOMAIN_V2: &str = "layrs-projection-provider-import-prefix-v2";
+const PREFIX_SCHEMA_V3: &str = "layrs.projection-provider-import-prefix.v3";
+const PREFIX_DOMAIN_V3: &str = "layrs-projection-provider-import-prefix-v3";
 const COMPANION_SCHEMA: &str = "layrs.projection-provider-companion.v1";
 const COMPANION_DOMAIN: &str = "layrs-projection-provider-companion-v1";
 const FILE_SCHEMA: &str = "layrs.projection-provider-companion-file.v1";
@@ -23,6 +27,8 @@ const DELETION_DOMAIN: &str = "layrs-projection-provider-companion-deletion-v1";
 const FILES_DOMAIN: &str = "layrs-projection-provider-companion-files-v1";
 const DELETIONS_DOMAIN: &str = "layrs-projection-provider-companion-deletions-v1";
 const RECEIPT_SCHEMA: &str = "layrs.projection-provider-transition-receipt.v1";
+const RECEIPT_SCHEMA_V2: &str = "layrs.projection-provider-transition-receipt.v2";
+const RECEIPT_DOMAIN_V2: &str = "layrs-projection-provider-transition-receipt-v2";
 const RECEIPT_DOMAIN: &str = "layrs-projection-provider-transition-receipt-v1";
 const SEGMENTS_DOMAIN: &str = "layrs-projection-provider-import-segments-v1";
 const MAX_ROWS: u64 = 1_000_000;
@@ -54,8 +60,7 @@ impl ImportRowset {
 }
 
 /// Fixed-size header, never inline imported history or namespace rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::projection) struct ImportClosure {
     pub snapshots: ImportRowset,
     pub selections: ImportRowset,
@@ -70,8 +75,9 @@ pub(in crate::projection) struct ImportClosure {
     pub companion_files: ImportRowset,
     pub companion_deletions: ImportRowset,
     pub content_mappings: ImportRowset,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_history: Option<ImportRowset>,
+    /// Inherited immutable denial documents only; excludes the current plan document.
+    pub denial_observations: Option<ImportRowset>,
 }
 impl ImportClosure {
     fn validate(&self) -> Result<()> {
@@ -90,7 +96,11 @@ impl ImportClosure {
             &self.content_mappings,
         ];
         let mut total = 0u64;
-        for rowset in rowsets.into_iter().chain(self.restore_history.iter()) {
+        for rowset in rowsets
+            .into_iter()
+            .chain(self.restore_history.iter())
+            .chain(self.denial_observations.iter())
+        {
             rowset.validate()?;
             total = codec::add(total, rowset.count)?;
         }
@@ -246,8 +256,7 @@ impl ImportSource {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::projection) struct ProviderImportPrefixRecord {
     pub schema_version: String,
     pub kind: ProviderImportKind,
@@ -281,8 +290,18 @@ impl Record for ProviderImportPrefixRecord {
             ImportSource::Provider { .. } => self.supports_restore_history(),
         };
         match self.schema_version.as_str() {
-            PREFIX_SCHEMA if self.closure.restore_history.is_none() && !has_checkout => {}
-            PREFIX_SCHEMA_V2 if self.closure.restore_history.is_some() && has_checkout => {}
+            PREFIX_SCHEMA
+                if self.closure.restore_history.is_none()
+                    && self.closure.denial_observations.is_none()
+                    && !has_checkout => {}
+            PREFIX_SCHEMA_V2
+                if self.closure.restore_history.is_some()
+                    && self.closure.denial_observations.is_none()
+                    && has_checkout => {}
+            PREFIX_SCHEMA_V3
+                if self.closure.restore_history.is_some()
+                    && self.closure.denial_observations.is_some()
+                    && has_checkout => {}
             _ => {
                 return Err(invalid(
                     "import prefix version/restore history fields differ",
@@ -341,7 +360,10 @@ impl ProviderImportPrefixRecord {
     /// Old prefixes cannot authorize restore rows, including provider origins
     /// whose bootstrap binding already contains a checkout identity.
     pub fn supports_restore_history(&self) -> bool {
-        self.schema_version == PREFIX_SCHEMA_V2
+        matches!(
+            self.schema_version.as_str(),
+            PREFIX_SCHEMA_V2 | PREFIX_SCHEMA_V3
+        )
     }
     pub fn authenticated_checkout_identity(&self) -> Result<Option<&str>> {
         self.validate_fields()?;
@@ -362,6 +384,7 @@ impl ProviderImportPrefixRecord {
         let domain = match self.schema_version.as_str() {
             PREFIX_SCHEMA => PREFIX_DOMAIN,
             PREFIX_SCHEMA_V2 => PREFIX_DOMAIN_V2,
+            PREFIX_SCHEMA_V3 => PREFIX_DOMAIN_V3,
             _ => return Err(invalid("import prefix schemaVersion mismatch")),
         };
         Ok(codec::hash(domain, &bytes))
@@ -771,8 +794,7 @@ pub(in crate::projection) fn ordered_companion_rowset(
     Ok(format!("blake3:{}", h.finalize()))
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::projection) struct ProviderTransitionReceiptRecord {
     pub schema_version: String,
     pub owner_identity_digest: String,
@@ -801,11 +823,22 @@ pub(in crate::projection) struct ProviderTransitionReceiptRecord {
     /// `ProviderCompanionHeaderRecord.files_digest/deletions_digest`.
     pub companion_files: ImportRowset,
     pub companion_deletions: ImportRowset,
+    pub denial_coverage: Option<DeniedCoverageRef>,
 }
 impl Record for ProviderTransitionReceiptRecord {
     const MAX_BYTES: usize = 64 * 1024;
     fn validate_fields(&self) -> Result<()> {
-        codec::schema(&self.schema_version, RECEIPT_SCHEMA)?;
+        match (self.schema_version.as_str(), self.denial_coverage.is_some()) {
+            (RECEIPT_SCHEMA, false) | (RECEIPT_SCHEMA_V2, true) => {}
+            _ => {
+                return Err(invalid(
+                    "transition receipt version/denial coverage differs",
+                ))
+            }
+        }
+        if let Some(reference) = &self.denial_coverage {
+            reference.validate()?;
+        }
         codec::digest_token(&self.owner_identity_digest)?;
         codec::digest_token(&self.transition_plan_digest)?;
         codec::digest_token(&self.destination_proof_digest)?;
@@ -866,8 +899,17 @@ impl Record for ProviderTransitionReceiptRecord {
     }
 }
 impl ProviderTransitionReceiptRecord {
+    pub fn supports_denied_coverage(&self) -> bool {
+        self.schema_version == RECEIPT_SCHEMA_V2
+    }
     pub fn digest(&self) -> Result<String> {
-        Ok(codec::hash(RECEIPT_DOMAIN, &self.encode()?))
+        let bytes = self.encode()?;
+        let domain = match self.schema_version.as_str() {
+            RECEIPT_SCHEMA => RECEIPT_DOMAIN,
+            RECEIPT_SCHEMA_V2 => RECEIPT_DOMAIN_V2,
+            _ => return Err(invalid("transition receipt schemaVersion mismatch")),
+        };
+        Ok(codec::hash(domain, &bytes))
     }
     pub fn require_row(&self, row: TransitionReceiptRowData<'_>) -> Result<()> {
         if row.id != self.digest()?
@@ -1056,3 +1098,6 @@ pub(in crate::projection) fn imported_segments_rowset(
         digest: format!("blake3:{}", hasher.finalize()),
     })
 }
+
+#[path = "import/wire.rs"]
+mod wire;

@@ -11,14 +11,6 @@ enum ReadProof {
     Strict(validation::PrivateActiveCaptureValidation),
     Live(validation::PrivateActivePublicationValidation),
 }
-impl ReadProof {
-    fn capture(&self) -> &validation::PrivateCaptureProof {
-        match self {
-            Self::Strict(proof) => &proof.capture,
-            Self::Live(proof) => &proof.capture,
-        }
-    }
-}
 
 pub(super) fn read(
     held: &outcome::PublicationPins,
@@ -102,13 +94,22 @@ fn read_mode(
     }
     .map_err(preparation_report::Failure::private)?;
     let private = read_state(state, ProviderDatabaseScope::PrivateMetadata)?;
-    let inspect_family = |c: &Connection| {
-        held.family.validate_capture_catalog(
+    let inspect_family = |c: &Connection| match &private {
+        ReadProof::Strict(proof) => held.family.validate_capture_catalog(
             c,
             &held.artifacts.allocation,
-            private.capture(),
+            &proof.capture,
             cancel,
-        )
+        ),
+        ReadProof::Live(proof) => held.family.validate_source_companion_catalog(
+            c,
+            &held.artifacts.allocation,
+            &crate::projection::shared::source_companion::SourceCompanionFamilyContext {
+                publication: proof,
+                pending: None,
+            },
+            cancel,
+        ),
     };
     let state = match cancel {
         Some(cancel) => database_io::read_cancellable(&held.family.catalog, cancel, inspect_family),

@@ -207,6 +207,7 @@ impl Fixture {
             },
             ancestry_root_receipt: None,
             closure: ImportClosure {
+                denial_observations: None,
                 restore_history: None,
                 snapshots: row(2),
                 selections: row(1),
@@ -300,6 +301,7 @@ impl Fixture {
             digest: commitment(b"layrs-provider-managed-companion-empty-v1\0", &[]),
         };
         let plan = TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix.digest().unwrap(),
             source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
@@ -364,6 +366,7 @@ impl Fixture {
         let plan = &staging.plan;
         let proof = staging.destination.as_ref().unwrap();
         let receipt = ProviderTransitionReceiptRecord {
+            denial_coverage: None,
             schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
             owner_identity_digest: proof.owner_digest(plan).unwrap(),
             transaction_id: TX.into(),
@@ -466,6 +469,8 @@ impl Fixture {
             closure,
             family_marker_bytes: &self.family_marker,
             data,
+            companion: None,
+            denial: None,
         }
     }
 

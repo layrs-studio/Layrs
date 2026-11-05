@@ -52,6 +52,7 @@ fn planned() -> ProviderTransitionIntentRecord {
         inherited_segments: rowset(1),
         ancestry_root_receipt: Some(TOKEN.into()),
         closure: ImportClosure {
+            denial_observations: None,
             snapshots: rowset(4),
             selections: rowset(1),
             captures: rowset(1),
@@ -79,6 +80,7 @@ fn planned() -> ProviderTransitionIntentRecord {
         state: TransitionState::Planned,
         local_generation: 3,
         plan: TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix.digest().unwrap(),
             source_prefix: prefix,

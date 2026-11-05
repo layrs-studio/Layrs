@@ -237,8 +237,220 @@ fn ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_re
     });
 }
 
+#[test]
+#[ignore = "ROOT source release and audited ordinary C10 floor SQL child120/outer180 required; proposed unmeasured"]
+fn ordinary_checkout_progress_isolates_future_c10_metadata_floor_at_one_byte_boundary() {
+    let test = concat!(
+        module_path!(),
+        "::ordinary_checkout_progress_isolates_future_c10_metadata_floor_at_one_byte_boundary"
+    );
+    child::run(test, 120, || {
+        child::declare();
+        // Each call creates its own genuine admitted-B SQL fixture. Neither
+        // case reuses a mutated plan, receipt, reservation or journal binding.
+        for at_floor in [false, true] {
+            exercise_ready_sql_phases(false, false, false, Some(at_floor));
+        }
+    });
+}
+
+// Independent layout arithmetic for this exact one-file/no-directory recipe.
+// Do not call AdmissionBudget: its minimum is the guard under test.
+fn independent_c10_floor(ready_floor: u64, representations: usize) -> u64 {
+    assert!((1..=100_000).contains(&representations));
+    let archive = 3 * (8192u64 + 128 + 64 + 71 + 5);
+    let admission = 4 * 71 + 4 * 8 + 262_144 + 65_536;
+    assert_eq!(2 * archive + admission, 378_756);
+    ready_floor
+        .checked_add(378_756)
+        .and_then(|bytes| bytes.checked_add(150 * representations as u64))
+        .filter(|bytes| *bytes <= 1024 * 1024 * 1024)
+        .expect("one-file C10 metadata bound must remain representable")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exercise_c10_floor_sql(
+    source: &Connection,
+    destination: &Connection,
+    family: &Connection,
+    inputs: &OrdinaryReadyInputs<'_>,
+    expected: &ExpectedCheckout,
+    base_floor: u64,
+    q0: u64,
+    at_floor: bool,
+) {
+    assert_eq!(expected.files().len(), 1);
+    assert!(expected.directories().is_empty());
+    assert!(expected.deletions().is_empty());
+    assert_eq!(
+        expected.header().image_digest,
+        inputs
+            .source_staging
+            .plan
+            .source_prefix
+            .source
+            .version()
+            .effective_image_digest
+    );
+    assert_eq!(expected.header().file_bytes, expected.files()[0].bytes);
+    assert_eq!(inputs.data.capture.changes.len(), 1);
+    let threshold = independent_c10_floor(inputs.metadata_floor, inputs.data.required.len());
+    let quota = inputs.source_staging.plan.quota_bytes;
+    let metadata = quota.checked_sub(q0).unwrap();
+    assert_eq!(metadata, threshold - u64::from(!at_floor));
+
+    // Recompute Q0 independently of managed_budget::quota before using it to
+    // isolate the metadata guard. Content may already exist in B's CAS group.
+    let mut exact_q0 = 65_536u64 + expected.header().file_bytes;
+    for manifest in inputs.data.required {
+        let payload = canonical_json(manifest).unwrap().len() as u64;
+        let overhead = 2 * payload + 8192 + 2048 + 256 * manifest.chunks().len() as u64;
+        exact_q0 = exact_q0
+            .checked_add(manifest.byte_length())
+            .unwrap()
+            .checked_add(overhead)
+            .unwrap();
+    }
+    assert_eq!(q0, exact_q0);
+    let h = (inputs.protection.payload().len() as u64)
+        .checked_add(256 * inputs.data.required.len() as u64)
+        .unwrap()
+        .checked_add(65_536)
+        .unwrap();
+    assert!(
+        metadata >= h.checked_add(base_floor).unwrap(),
+        "the earlier target guard must pass"
+    );
+
+    // Derive D from this fixture's durable exact-journal records, then require
+    // the precise reservation identity Q-D. Never edit remaining in isolation.
+    let debit = {
+        let mut statement = family.prepare(
+            "SELECT payload FROM exact_installations WHERE reservation=?1 ORDER BY manifest_id LIMIT 100001",
+        ).unwrap();
+        let payloads = statement
+            .query_map([&inputs.target.binding().reservation], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(payloads.len(), inputs.data.required.len());
+        payloads.iter().fold(0u64, |sum, payload| {
+            let record: serde_json::Value = serde_json::from_slice(payload).unwrap();
+            assert_eq!(record["phase"], "published");
+            sum.checked_add(record["debitBytes"].as_u64().unwrap())
+                .unwrap()
+        })
+    };
+    let remaining: u64 = family
+        .query_row(
+            "SELECT remaining FROM reservations WHERE id=?1 AND owner=?2 AND operation=?3",
+            params![
+                inputs.target.binding().reservation,
+                inputs.target.binding().owner.as_str(),
+                inputs.target.binding().operation
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, quota.checked_sub(debit).unwrap());
+    let after_checkout = q0
+        .checked_add(metadata)
+        .unwrap()
+        .checked_sub(debit)
+        .unwrap()
+        .checked_sub(expected.header().file_bytes)
+        .unwrap();
+    assert_eq!(
+        after_checkout,
+        remaining.checked_sub(expected.header().file_bytes).unwrap()
+    );
+    let ready_needed = h
+        .checked_add(inputs.metadata_floor)
+        .unwrap()
+        .checked_add(expected.maximum_encoded_bytes())
+        .unwrap();
+    assert!(
+        after_checkout >= ready_needed,
+        "the current Ready8 envelope must pass"
+    );
+    assert!(
+        after_checkout >= h.checked_add(threshold).unwrap(),
+        "both cases must already satisfy the later C10 remaining guard"
+    );
+
+    let source_before = dump(source);
+    let destination_before = dump(destination);
+    let family_before = dump(family);
+    destination
+        .execute_batch("SAVEPOINT ready8_positive_control")
+        .unwrap();
+    assert_eq!(
+        finalize_ordinary_checkout_or_replay(source, destination, family, inputs, expected, None)
+            .unwrap(),
+        ReadyEffect::Finalized
+    );
+    read_ordinary_checkout_ready(source, destination, family, inputs, expected, None).unwrap();
+    destination
+        .execute_batch("ROLLBACK TO ready8_positive_control; RELEASE ready8_positive_control")
+        .unwrap();
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
+
+    let changes = (
+        source.total_changes(),
+        destination.total_changes(),
+        family.total_changes(),
+    );
+    source.execute_batch("PRAGMA query_only=ON").unwrap();
+    destination.execute_batch("PRAGMA query_only=ON").unwrap();
+    family.execute_batch("PRAGMA query_only=ON").unwrap();
+    let observed =
+        read_ordinary_checkout_progress(source, destination, family, inputs, expected, None);
+    if at_floor {
+        let journal = observed
+            .unwrap()
+            .expect("the complete SQL journal is present");
+        assert!(journal.is_complete());
+        assert_eq!(
+            journal.rows(),
+            checkout_journal::read(destination, expected, None)
+                .unwrap()
+                .rows()
+        );
+    } else {
+        let error = observed
+            .err()
+            .expect("T-1 must reach the C10 metadata guard");
+        assert!(matches!(
+            &error,
+            super::super::recovery::error::ProviderBootstrapCause::Validation(_)
+        ));
+        assert_eq!(
+            error.to_string(),
+            invalid("admission fixed metadata envelope insufficient or exceeds 1GiB").to_string()
+        );
+    }
+    assert_eq!(
+        (
+            source.total_changes(),
+            destination.total_changes(),
+            family.total_changes()
+        ),
+        changes
+    );
+    assert_eq!(dump(source), source_before);
+    assert_eq!(dump(destination), destination_before);
+    assert_eq!(dump(family), family_before);
+    source.execute_batch("PRAGMA query_only=OFF").unwrap();
+    destination.execute_batch("PRAGMA query_only=OFF").unwrap();
+    family.execute_batch("PRAGMA query_only=OFF").unwrap();
+}
+
 fn exercise_ready_sql(publication: bool) {
-    exercise_ready_sql_phases(publication, false, false);
+    exercise_ready_sql_phases(publication, false, false, None);
 }
 
 #[test]
@@ -247,7 +459,7 @@ fn ordinary_source_publication_partitions_receipts_fences_ready_and_replays_hist
     let test = concat!(module_path!(), "::ordinary_source_publication_partitions_receipts_fences_ready_and_replays_historical_published");
     child::run(test, 120, || {
         child::declare();
-        exercise_ready_sql_phases(false, true, false);
+        exercise_ready_sql_phases(false, true, false, None);
     });
 }
 
@@ -258,11 +470,234 @@ fn ordinary_autonomy_keeps_uncopied_selected_base_and_current_representations_th
     let test = concat!(module_path!(), "::ordinary_autonomy_keeps_uncopied_selected_base_and_current_representations_through_admission10");
     child::run(test, 120, || {
         child::declare();
-        exercise_ready_sql_phases(false, false, true);
+        exercise_ready_sql_phases(false, false, true, None);
     });
 }
 
-fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autonomy: bool) {
+// Pure preparation shared by the existing SQL recipes and the C10 boundary
+// recipe. No connection, journal effect or family mutation is accepted here.
+struct ReadySqlPreparation {
+    derived: bootstrap::ManagedPlanData,
+    planned: ProviderTransitionIntentRecord,
+    target_marker: format::Marker,
+    copying: ProviderTransitionIntentRecord,
+    staging: ProviderTransitionIntentRecord,
+    destination_staging: ProviderTransitionIntentRecord,
+    expected: ExpectedCheckout,
+    base_floor: u64,
+    protection: ExactProtection,
+    receipt: ProviderTransitionReceiptRecord,
+    ready: ProviderTransitionIntentRecord,
+    overlay: Vec<ManagedReadyOverlay>,
+    claims: [ManagedReadyClaim; 1],
+    floor: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_ready_sql_data(
+    marker: &format::Marker,
+    prefix: &ProviderImportPrefixRecord,
+    current: &ProjectionSnapshot,
+    selected: &layrs_core::projection::ProjectionSelection,
+    base: &FileManifest,
+    files: &[ImageFile<'_>],
+    historical: &[RequiredManifest],
+    required: &[FileManifest],
+    destination_identity: crate::projection::ProjectionIdentity,
+    image: &str,
+    copied_bytes: u64,
+    family_marker_digest: &str,
+    metadata: u64,
+) -> Box<ReadySqlPreparation> {
+    assert_eq!(
+        files.len(),
+        1,
+        "this SQL fixture has exactly one image file"
+    );
+    let version = prefix.source.version();
+    let image_manifest = files[0].manifest;
+    let derived = bootstrap::derive_ordinary_data(
+        prefix,
+        current,
+        selected,
+        &version.selection_digest,
+        &[base],
+        files,
+        &[],
+        destination_identity.clone(),
+        "C:\\ordinary-ready-parent",
+        "fs:v1:0000000000000001:0000000000000040",
+        LEAF,
+        TX,
+        historical,
+        required,
+        metadata,
+    )
+    .unwrap();
+    let planned = ProviderTransitionIntentRecord {
+        schema_version: "layrs.projection-provider-transition-intent.v1".into(),
+        transaction_id: TX.into(),
+        role: TransitionRole::Source,
+        state: TransitionState::Planned,
+        local_generation: version.generation,
+        plan: serde_json::from_slice(&canonical_json(&derived.plan).unwrap()).unwrap(),
+        destination: None,
+        reservation: None,
+        receipt_id: None,
+    };
+    let mut value = serde_json::to_value(marker).unwrap();
+    value["identity"] = serde_json::to_value(&destination_identity).unwrap();
+    value["checkoutRoot"] = format!("C:\\ordinary-ready-parent\\{LEAF}").into();
+    value["checkoutIdentity"] = "fs:v1:0000000000000001:0000000000000041".into();
+    value["storeIdentity"] = "fs:v1:0000000000000001:0000000000000042".into();
+    value["metadataIdentity"] = "fs:v1:0000000000000001:0000000000000043".into();
+    value["importDigest"] = prefix.digest().unwrap().into();
+    value["shared"]["metadataPath"] = marker
+        .shared
+        .as_ref()
+        .unwrap()
+        .root
+        .join("worktrees")
+        .join(
+            blake3::hash(destination_identity.worktree_id.as_str().as_bytes())
+                .to_hex()
+                .to_string(),
+        )
+        .join("metadata")
+        .to_str()
+        .unwrap()
+        .into();
+    value["shared"]["databaseIdentity"] = "1:0:9000".into();
+    let target_marker = format::parse_marker_bytes(&canonical_json(&value).unwrap()).unwrap();
+    let mut copying = ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
+    copying.state = TransitionState::Copying;
+    copying.destination = Some(TransitionDestinationProof {
+        backend: TransitionBackendKind::Ordinary,
+        format: target_marker.clone(),
+        private_database_identity: "1:0:9000".into(),
+        format_file_identity: "1:0:9001".into(),
+        family_marker_digest: family_marker_digest.to_owned(),
+        native_control_identity_hex: None,
+        native_root_identity: None,
+    });
+    let staging = ordinary_transition::proposed_staging(&copying).unwrap();
+    let mut destination_staging =
+        ProviderTransitionIntentRecord::decode(&staging.encode().unwrap()).unwrap();
+    destination_staging.role = TransitionRole::Destination;
+    destination_staging.local_generation = 0;
+    destination_staging.validate_fields().unwrap();
+    let checkout_files = [CheckoutFile {
+        path: files[0].path.clone(),
+        manifest_id: image_manifest.id().clone(),
+        file_id: image_manifest.file_id().clone(),
+        bytes: image_manifest.byte_length(),
+        executable: files[0].executable,
+    }];
+    let expected =
+        ExpectedCheckout::ordinary(&destination_staging, &checkout_files, &[], image, None)
+            .unwrap();
+    let base_floor = managed_budget::base_metadata_floor(
+        copied_bytes,
+        &derived.observation,
+        &derived.placement,
+        &derived.capture,
+        &derived.plan,
+        selected,
+        managed_budget::intent_size(&staging).unwrap(),
+        managed_budget::intent_size(&destination_staging).unwrap(),
+    )
+    .unwrap();
+    let proof = copying.destination.as_ref().unwrap();
+    let shared = target_marker.shared.as_ref().unwrap();
+    let protection = ExactProtection::new(
+        &shared.incarnation,
+        &target_marker.identity.worktree_id,
+        &shared.database_identity,
+        TX,
+        required,
+        None,
+    )
+    .unwrap();
+    let rowset = |r: &super::super::records::transition::TransitionRowset| ImportRowset {
+        count: r.count,
+        digest: r.digest.clone(),
+    };
+    let receipt = ProviderTransitionReceiptRecord {
+        denial_coverage: None,
+        schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
+        owner_identity_digest: proof.owner_digest(&derived.plan).unwrap(),
+        transaction_id: TX.into(),
+        transition_plan_digest: derived.plan.digest().unwrap(),
+        destination_proof_digest: proof.digest(&derived.plan).unwrap(),
+        source_prefix_id: prefix.digest().unwrap(),
+        source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
+        parent_receipt_id: prefix.ancestry_root_receipt.clone(),
+        source_identity: marker.identity.clone(),
+        destination_identity,
+        imported_max_generation: version.generation,
+        destination_observation_generation: derived.plan.observation.generation,
+        destination_observation_digest: derived.observation_digest.clone(),
+        destination_placement_generation: derived.plan.placement_generation,
+        destination_placement_digest: derived.placement_digest.clone(),
+        imported_capture_count: version.capture_count,
+        destination_capture_sequence: derived.plan.capture_sequence,
+        destination_capture_digest: derived.capture.digest.clone(),
+        protected_manifests: rowset(&derived.plan.protected_manifests),
+        content_mappings: prefix.closure.content_mappings.clone(),
+        companion_id: None,
+        companion_files: rowset(&derived.plan.companion_files),
+        companion_deletions: rowset(&derived.plan.companion_deletions),
+    };
+    let mut ready =
+        ProviderTransitionIntentRecord::decode(&destination_staging.encode().unwrap()).unwrap();
+    ready.state = TransitionState::Ready;
+    ready.receipt_id = Some(receipt.digest().unwrap());
+    let overlay: Vec<_> = derived
+        .capture
+        .changes
+        .iter()
+        .map(|change| ManagedReadyOverlay {
+            path: change.path.clone(),
+            manifest_id: change
+                .replacement
+                .as_ref()
+                .map(|_| image_manifest.id().clone()),
+        })
+        .collect();
+    let claims = [ManagedReadyClaim {
+        root_id: protection.id().into(),
+        digest: protection.id().into(),
+        kind: "provider-import".into(),
+        owner: TX.into(),
+    }];
+    let floor = managed_budget::complete_metadata_floor(
+        base_floor, &ready, &receipt, &claims[0], required, None,
+    )
+    .unwrap();
+    Box::new(ReadySqlPreparation {
+        derived,
+        planned,
+        target_marker,
+        copying,
+        staging,
+        destination_staging,
+        expected,
+        base_floor,
+        protection,
+        receipt,
+        ready,
+        overlay,
+        claims,
+        floor,
+    })
+}
+
+fn exercise_ready_sql_phases(
+    publication: bool,
+    source_publication: bool,
+    autonomy: bool,
+    c10_boundary: Option<bool>,
+) {
     with_admitted_source_family_sql(|source, marker, supplied, family, family_marker| {
         let actual = admitted_ordinary::inspect(source, marker, None).unwrap();
         let retained = AdmittedFamilyContext::new(&actual).unwrap();
@@ -437,73 +872,73 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             executable: entry.executable,
             expected: Some((base_id.clone(), entry.executable)),
         }];
-        let derived = bootstrap::derive_ordinary_data(
-            &prefix,
-            &current.snapshot,
-            &selected,
-            &version.selection_digest,
-            &[base],
-            &files,
-            &[],
-            destination_identity.clone(),
-            "C:\\ordinary-ready-parent",
-            "fs:v1:0000000000000001:0000000000000040",
-            LEAF,
-            TX,
-            &historical,
-            &required,
-            4 * 1024 * 1024,
-        )
-        .unwrap();
-        assert_eq!(derived.capture.changes.len(), if autonomy { 0 } else { 1 });
-        let planned = ProviderTransitionIntentRecord {
-            schema_version: "layrs.projection-provider-transition-intent.v1".into(),
-            transaction_id: TX.into(),
-            role: TransitionRole::Source,
-            state: TransitionState::Planned,
-            local_generation: version.generation,
-            plan: serde_json::from_slice(&canonical_json(&derived.plan).unwrap()).unwrap(),
-            destination: None,
-            reservation: None,
-            receipt_id: None,
-        };
-        ordinary_transition::apply_planned(source, marker, &prefix, &planned, None).unwrap();
-        let mut value = serde_json::to_value(marker).unwrap();
-        value["identity"] = serde_json::to_value(&destination_identity).unwrap();
-        value["checkoutRoot"] = format!("C:\\ordinary-ready-parent\\{LEAF}").into();
-        value["checkoutIdentity"] = "fs:v1:0000000000000001:0000000000000041".into();
-        value["storeIdentity"] = "fs:v1:0000000000000001:0000000000000042".into();
-        value["metadataIdentity"] = "fs:v1:0000000000000001:0000000000000043".into();
-        value["importDigest"] = prefix.digest().unwrap().into();
-        value["shared"]["metadataPath"] = marker
-            .shared
-            .as_ref()
-            .unwrap()
-            .root
-            .join("worktrees")
-            .join(
-                blake3::hash(destination_identity.worktree_id.as_str().as_bytes())
-                    .to_hex()
-                    .to_string(),
+        let copied_bytes = closure.metadata_bytes(source, &prefix, None).unwrap();
+        let prepare = |metadata| {
+            prepare_ready_sql_data(
+                marker,
+                &prefix,
+                &current.snapshot,
+                &selected,
+                base,
+                &files,
+                &historical,
+                &required,
+                destination_identity.clone(),
+                image,
+                copied_bytes,
+                &retained.binding().family_marker_digest,
+                metadata,
             )
-            .join("metadata")
-            .to_str()
-            .unwrap()
-            .into();
-        value["shared"]["databaseIdentity"] = "1:0:9000".into();
-        let target_marker = format::parse_marker_bytes(&canonical_json(&value).unwrap()).unwrap();
-        let mut copying =
-            ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
-        copying.state = TransitionState::Copying;
-        copying.destination = Some(TransitionDestinationProof {
-            backend: TransitionBackendKind::Ordinary,
-            format: target_marker.clone(),
-            private_database_identity: "1:0:9000".into(),
-            format_file_identity: "1:0:9001".into(),
-            family_marker_digest: retained.binding().family_marker_digest.clone(),
-            native_control_identity_hex: None,
-            native_root_identity: None,
-        });
+        };
+        let mut prepared = prepare(4 * 1024 * 1024);
+        if let Some(at_floor) = c10_boundary {
+            assert!(!publication && !source_publication && !autonomy);
+            let mut widths = BTreeSet::new();
+            let mut stable = false;
+            // Q fits i64, hence has at most 19 decimal digits. All changing
+            // digests have fixed width; only Q's decimal width affects F.
+            // A nonfinal repeated width would contradict that invariant.
+            for _ in 0..20 {
+                assert_eq!(prepared.expected.files().len(), 1);
+                assert!(prepared.expected.directories().is_empty());
+                assert_eq!(prepared.expected.header().image_digest, image);
+                let threshold = independent_c10_floor(prepared.floor, required.len());
+                let metadata = threshold - u64::from(!at_floor);
+                let actual = prepared.derived.quota_bytes
+                    - managed_budget::quota(&required, [image_manifest.byte_length()], 0).unwrap();
+                if metadata == actual {
+                    stable = true;
+                    break;
+                }
+                assert!(
+                    widths.insert(prepared.derived.quota_bytes.to_string().len()),
+                    "C10 sizing width repeated before stability"
+                );
+                prepared = prepare(metadata);
+            }
+            assert!(
+                stable,
+                "bounded decimal-width sizing must converge before effects"
+            );
+        }
+        let ReadySqlPreparation {
+            derived,
+            planned,
+            target_marker,
+            copying,
+            staging,
+            destination_staging,
+            expected,
+            base_floor,
+            protection,
+            receipt,
+            ready,
+            overlay,
+            claims,
+            floor,
+        } = *prepared;
+        assert_eq!(derived.capture.changes.len(), if autonomy { 0 } else { 1 });
+        ordinary_transition::apply_planned(source, marker, &prefix, &planned, None).unwrap();
         ordinary_transition::apply_copying(source, marker, &prefix, &copying, None).unwrap();
         let bare = BareConnection::reference().unwrap();
         let c = bare.connection();
@@ -516,36 +951,17 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             None,
         )
         .unwrap();
-        let staging = ordinary_transition::proposed_staging(&copying).unwrap();
         ordinary_transition::apply_staging(source, marker, &prefix, &staging, None).unwrap();
         let source_input = OrdinaryCopyInputs::new(source, marker, &staging, &closure);
         ordinary_destination::staging::apply_staging(c, &target_marker, &source_input, None)
             .unwrap();
-        let destination_staging = source_input
-            .authenticate_staging_source(c, &target_marker, None)
-            .unwrap();
-        let checkout_files = [CheckoutFile {
-            path: entry.path.clone(),
-            manifest_id: image_manifest.id().clone(),
-            file_id: image_manifest.file_id().clone(),
-            bytes: image_manifest.byte_length(),
-            executable: entry.executable,
-        }];
-        let expected =
-            ExpectedCheckout::ordinary(&destination_staging, &checkout_files, &[], image, None)
-                .unwrap();
+        assert_eq!(
+            source_input
+                .authenticate_staging_source(c, &target_marker, None)
+                .unwrap(),
+            destination_staging
+        );
         complete(c, &expected);
-        let base_floor = managed_budget::base_metadata_floor(
-            closure.metadata_bytes(source, &prefix, None).unwrap(),
-            &derived.observation,
-            &derived.placement,
-            &derived.capture,
-            &derived.plan,
-            &selected,
-            managed_budget::intent_size(&staging).unwrap(),
-            managed_budget::intent_size(&destination_staging).unwrap(),
-        )
-        .unwrap();
         let q0 = managed_budget::quota(&required, [image_manifest.byte_length()], 0).unwrap();
         let target = ExportReserveOnlyTarget::new(
             &retained,
@@ -578,71 +994,12 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             .reserve_export_only(family, family_marker, &target, None)
             .unwrap();
         published_group(family, target.binding(), &required, false);
-        let proof = copying.destination.as_ref().unwrap();
-        let binding = target.binding();
-        let protection = ExactProtection::new(
-            &binding.family_incarnation,
-            &binding.owner,
-            &binding.database_identity,
-            &binding.transaction_id,
-            &required,
-            None,
-        )
-        .unwrap();
+        protection
+            .require_binding(target.binding(), &required, None)
+            .unwrap();
         retained
             .protect_export(family, family_marker, &target, &required, &protection, None)
             .unwrap();
-        let rowset = |r: &super::super::records::transition::TransitionRowset| ImportRowset {
-            count: r.count,
-            digest: r.digest.clone(),
-        };
-        let receipt = ProviderTransitionReceiptRecord {
-            schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
-            owner_identity_digest: proof.owner_digest(&derived.plan).unwrap(),
-            transaction_id: TX.into(),
-            transition_plan_digest: derived.plan.digest().unwrap(),
-            destination_proof_digest: proof.digest(&derived.plan).unwrap(),
-            source_prefix_id: prefix.digest().unwrap(),
-            source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
-            parent_receipt_id: prefix.ancestry_root_receipt.clone(),
-            source_identity: marker.identity.clone(),
-            destination_identity,
-            imported_max_generation: version.generation,
-            destination_observation_generation: derived.plan.observation.generation,
-            destination_observation_digest: derived.observation_digest.clone(),
-            destination_placement_generation: derived.plan.placement_generation,
-            destination_placement_digest: derived.placement_digest.clone(),
-            imported_capture_count: version.capture_count,
-            destination_capture_sequence: derived.plan.capture_sequence,
-            destination_capture_digest: derived.capture.digest.clone(),
-            protected_manifests: rowset(&derived.plan.protected_manifests),
-            content_mappings: prefix.closure.content_mappings.clone(),
-            companion_id: None,
-            companion_files: rowset(&derived.plan.companion_files),
-            companion_deletions: rowset(&derived.plan.companion_deletions),
-        };
-        let mut ready =
-            ProviderTransitionIntentRecord::decode(&destination_staging.encode().unwrap()).unwrap();
-        ready.state = TransitionState::Ready;
-        ready.receipt_id = Some(receipt.digest().unwrap());
-        let overlay: Vec<_> = derived
-            .capture
-            .changes
-            .iter()
-            .map(|change| ManagedReadyOverlay {
-                path: change.path.clone(),
-                manifest_id: change
-                    .replacement
-                    .as_ref()
-                    .map(|_| image_manifest.id().clone()),
-            })
-            .collect();
-        let claims = [ManagedReadyClaim {
-            root_id: protection.id().into(),
-            digest: protection.id().into(),
-            kind: "provider-import".into(),
-            owner: TX.into(),
-        }];
         let data = ManagedReadyData {
             observation: &derived.observation,
             placement: &derived.placement,
@@ -653,10 +1010,6 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             ready: &ready,
             claims: &claims,
         };
-        let floor = managed_budget::complete_metadata_floor(
-            base_floor, &ready, &receipt, &claims[0], &required, None,
-        )
-        .unwrap();
         let mut inputs = OrdinaryReadyInputs {
             marker: &target_marker,
             source_marker: marker,
@@ -669,6 +1022,14 @@ fn exercise_ready_sql_phases(publication: bool, source_publication: bool, autono
             metadata_floor: floor,
             data: &data,
         };
+        if let Some(at_floor) = c10_boundary {
+            exercise_c10_floor_sql(
+                source, c, family, &inputs, &expected, base_floor, q0, at_floor,
+            );
+            c.execute_batch("ROLLBACK").unwrap();
+            bare.finish(Ok(())).unwrap();
+            return;
+        }
         if publication {
             exercise_finalizable_sql(source, c, family, &inputs, &expected);
             assert!(read_ordinary_private_ready(c, &target_marker, family, None).is_err());
@@ -1842,6 +2203,10 @@ fn exercise_ordinary_admission(
     assert_eq!(terminal.private_schema(), 10);
     assert_eq!(terminal_expected.header(), expected.header());
     assert_eq!(terminal_journal.rows(), original_journal.as_slice());
+    crate::projection::provider::managed_admission::tests::assert_legacy_observation_tail(
+        destination,
+        inputs.marker,
+    );
     let terminal_before = dump(destination);
     destination
         .execute_batch("SAVEPOINT coherent_terminal_suffix")

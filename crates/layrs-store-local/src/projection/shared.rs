@@ -18,6 +18,10 @@ pub(super) mod provider_access;
 pub(super) mod provider_content;
 #[cfg(windows)]
 pub(in crate::projection) mod schema_v2;
+#[cfg(windows)]
+pub(in crate::projection) mod source_companion;
+#[cfg(windows)]
+pub(in crate::projection) mod source_denial;
 mod staging;
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};

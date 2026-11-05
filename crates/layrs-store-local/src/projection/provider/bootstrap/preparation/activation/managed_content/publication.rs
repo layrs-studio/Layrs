@@ -20,7 +20,28 @@ pub(in crate::projection::provider::bootstrap::preparation::activation) struct M
     private: &'p ManagedPrivateReady<'b>,
 }
 
-impl ManagedFamilyReady<'_, '_> {
+impl<'p, 'b> ManagedFamilyReady<'p, 'b> {
+    /// Both actual C Ready scopes and B's exact publication phase are checked
+    /// again before this candidate escapes. Retained DATA alone grants nothing.
+    pub(super) fn reopen_companion(
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
+        private: &'p ManagedPrivateReady<'b>,
+        source: &super::source_protection::ManagedSourceCompanionProtection<'_, '_>,
+        cancel: &Cancellation,
+    ) -> CauseResult<Self> {
+        let candidate = Self { private };
+        lease.require_retained_family_ready(&candidate, source, cancel)?;
+        Ok(candidate)
+    }
+    pub(super) fn reopen_denial(
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
+        private: &'p ManagedPrivateReady<'b>,
+        cancel: &Cancellation,
+    ) -> CauseResult<Self> {
+        let candidate = Self { private };
+        lease.require_retained_denial_family_ready(&candidate, cancel)?;
+        Ok(candidate)
+    }
     pub(super) fn private_ready(&self) -> &ManagedPrivateReady<'_> {
         self.private
     }
@@ -31,7 +52,7 @@ impl ManagedFamilyReady<'_, '_> {
     }
 }
 
-impl ManagedImportLease<'_, '_, '_, '_> {
+impl ManagedImportLease<'_, '_, '_, '_, '_> {
     fn with_family_publication_source<T>(
         &self,
         private: &ManagedPrivateReady<'_>,
@@ -52,40 +73,16 @@ impl ManagedImportLease<'_, '_, '_, '_> {
             true,
         )?;
         self.boundary(cancel)?;
-        let value = managed_destination::with_source(
-            self.held,
-            self.root,
-            self.mount,
-            self.activation,
-            self.attempt,
-            self.staging,
-            self.destination,
-            cancel,
-            |source_c, proof, closure| {
+        let value =
+            self.with_source(cancel, |source_c, proof, closure| {
                 self.image.require_owner(
                     self.root,
                     &proof.active.source,
                     &proof.active.activated.snapshot,
                 )?;
-                let derived = managed_plan::rederive_reservation(
-                    source_c,
-                    closure,
-                    self.image,
-                    proof,
-                    self.fresh,
-                    self.staging,
-                    self.manifests,
-                    cancel,
-                )?;
+                let derived = self.rederive(source_c, closure, proof, cancel)?;
                 let (protected, _) = private.physical_parts();
-                let owned = OwnedReadyData::new(
-                    derived,
-                    self.staging,
-                    self.image,
-                    self.manifests,
-                    protected.root(),
-                    cancel,
-                )?;
+                let owned = self.ready_data(derived, protected.root(), cancel)?;
                 if owned.ready() != private.ready_intent() || owned.receipt() != private.receipt() {
                     return Err(invalid("family publication private Ready proof differs"));
                 }
@@ -105,6 +102,8 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     closure,
                     family_marker_bytes: self.held.family.marker_bytes(),
                     data: &data,
+                    companion: self.ready_companion(proof),
+                    denial: self.ready_denial(proof),
                 };
                 let publication = ImportPublicationInputs {
                     content: self.inputs(proof, owned.destination_staging())?,
@@ -115,7 +114,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                 private.require_physical(self, cancel)?;
                 // Retain the destination read transaction through the family
                 // COMMIT. Its positive close is part of acknowledgement.
-                let result = managed_destination::valid(database_io::read_cancellable(
+                let result = managed_destination::valid(database_io::read_cancellable_strict(
                     self.destination.destination_database(),
                     cancel,
                     |destination_c| {
@@ -137,8 +136,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                 private.require_physical(self, cancel)?;
                 self.boundary(cancel)?;
                 Ok(result)
-            },
-        )?;
+            })?;
         private.require_physical(self, cancel)?;
         Ok(value)
     }
@@ -233,7 +231,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     )
                 };
                 let file = &self.held.family.catalog;
-                let before = managed_destination::valid(database_io::read_cancellable(
+                let before = managed_destination::valid(database_io::read_cancellable_strict(
                     file, cancel, check,
                 )?)?;
                 if before.member == ImportPublicationMember::Ready {
@@ -276,6 +274,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     c.execute_batch("COMMIT")?;
                     Ok(())
                 })();
+                let result = super::source_protection::rollback(bare.connection(), result);
                 bare.finish_writer(result, close)
             },
         )?;
@@ -284,7 +283,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
             private,
             cancel,
             |source_c, destination_c, inputs, publication, binding, floor| {
-                let state = managed_destination::valid(database_io::read_cancellable(
+                let state = managed_destination::valid(database_io::read_cancellable_strict(
                     &self.held.family.catalog,
                     cancel,
                     |c| {

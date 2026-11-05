@@ -366,11 +366,22 @@ impl ProviderContext {
     fn validate(&self, c: &Connection) -> CauseResult<()> {
         self.family.verify()?;
         self.artifacts.verify(&self.family)?;
-        if self
-            .family
-            .validate_capture_catalog(c, &self.allocation, self.proof.capture(), None)?
-            != ActivationRegistration::Ready
-        {
+        let registration = match &self.proof {
+            ContextProof::Strict(proof) => {
+                self.family
+                    .validate_capture_catalog(c, &self.allocation, proof, None)?
+            }
+            ContextProof::Publication(proof) => self.family.validate_source_companion_catalog(
+                c,
+                &self.allocation,
+                &crate::projection::shared::source_companion::SourceCompanionFamilyContext {
+                    publication: proof.publication(),
+                    pending: None,
+                },
+                None,
+            )?,
+        };
+        if registration != ActivationRegistration::Ready {
             return Err(invalid(
                 "provider content requires ready family capture state",
             ));

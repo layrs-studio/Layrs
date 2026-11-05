@@ -2,7 +2,7 @@ use super::*;
 mod connection;
 pub(in crate::projection) use connection::PrivateConnection;
 mod content_scope;
-pub(in crate::projection) use content_scope::{content_family, ContentScope};
+pub(in crate::projection) use content_scope::{content_family, ContentScope, DenialReady};
 mod family;
 mod recovery;
 use crate::{
@@ -277,7 +277,8 @@ pub(super) fn open(root: &Path) -> Result<ProjectionStore> {
     let result = ProjectionStore { root, marker };
     // Upgrade the exact legacy schema under the store's exclusive lock before
     // any shared reader validates the new schema.
-    access(&result, SessionMode::Exclusive)?.run(|_| Ok(()))?;
+    access_with_settlement(&result, SessionMode::Exclusive, true, AccessPurpose::Open)?
+        .run(|_| Ok(()))?;
     let current = result.state()?;
     validate_platform(&current.snapshot)?;
     Ok(result)
@@ -476,7 +477,40 @@ impl Access {
     }
 }
 pub(super) fn access(store: &ProjectionStore, mode: SessionMode) -> Result<Access> {
-    access_with_settlement(store, mode, true)
+    access_with_settlement(store, mode, true, AccessPurpose::General)
+}
+
+#[derive(Clone, Copy)]
+enum AccessPurpose {
+    General,
+    // Legacy schema migration still holds the exclusive owner lock; admitted
+    // databases need only a clean read handle and must never receive a writer.
+    Open,
+    LocalCapture,
+    LocalRestore,
+}
+
+/// Explicitly scoped to the public local Capture operation. Generic exclusive
+/// access retains its C14 refusal for every other mutator.
+pub(super) fn access_for_local_capture(store: &ProjectionStore) -> Result<Access> {
+    access_with_settlement(
+        store,
+        SessionMode::Exclusive,
+        true,
+        AccessPurpose::LocalCapture,
+    )
+}
+
+/// Explicitly scoped to the public local Restore apply. Its C14 writer exists
+/// only after the authenticated reader accepted the local Capture/Restore
+/// suffix; generic exclusive access retains its C14 refusal.
+pub(super) fn access_for_local_restore(store: &ProjectionStore) -> Result<Access> {
+    access_with_settlement(
+        store,
+        SessionMode::Exclusive,
+        true,
+        AccessPurpose::LocalRestore,
+    )
 }
 
 /// Explicit managed retry/cancellation must not settle another ordinary
@@ -486,13 +520,14 @@ pub(in crate::projection) fn access_for_managed_export_retry(
     store: &ProjectionStore,
     mode: SessionMode,
 ) -> Result<Access> {
-    access_with_settlement(store, mode, false)
+    access_with_settlement(store, mode, false, AccessPurpose::General)
 }
 
 fn access_with_settlement(
     store: &ProjectionStore,
     mode: SessionMode,
     settle_ordinary: bool,
+    purpose: AccessPurpose,
 ) -> Result<Access> {
     let mut family = shared::for_store_discovery(store)?;
     let metadata_path = store.marker.metadata_path(&store.root);
@@ -527,7 +562,25 @@ fn access_with_settlement(
             .admit(preflight.data())?;
         boundaries.verify(&store.root, &marker)?;
         verify_boundaries(&store.root, &marker, &metadata, &database)?;
-        let handle = preflight.into_handle(mode == SessionMode::Exclusive)?;
+        let read_only_open = matches!(purpose, AccessPurpose::Open)
+            && preflight.data().ready().plan.denial_coverage.is_some();
+        // Non-C14 admitted Restore keeps the generic writer and settlement.
+        let purpose = match purpose {
+            AccessPurpose::LocalRestore
+                if preflight.data().ready().plan.denial_coverage.is_none() =>
+            {
+                AccessPurpose::General
+            }
+            purpose => purpose,
+        };
+        let handle = match purpose {
+            AccessPurpose::General => preflight.into_handle(mode == SessionMode::Exclusive)?,
+            AccessPurpose::Open => {
+                preflight.into_handle(!read_only_open && mode == SessionMode::Exclusive)?
+            }
+            AccessPurpose::LocalCapture => preflight.into_local_capture_handle()?,
+            AccessPurpose::LocalRestore => preflight.into_local_restore_handle()?,
+        };
         let result = Access {
             connection: PrivateConnection::Admitted(handle),
             metadata,
@@ -543,7 +596,18 @@ fn access_with_settlement(
             result.verify()?;
             if settle_ordinary
                 && mode == SessionMode::Exclusive
-                && !provider::ordinary_transition::has_live(&result.connection)?
+                && !read_only_open
+                && !match purpose {
+                    AccessPurpose::General | AccessPurpose::Open => {
+                        provider::ordinary_transition::has_live(&result.connection)?
+                    }
+                    AccessPurpose::LocalCapture | AccessPurpose::LocalRestore => match &result.connection {
+                        PrivateConnection::Admitted(handle) => handle
+                            .admission()
+                            .has_live(&result.connection, &result.marker)?,
+                        PrivateConnection::Legacy(_) => unreachable!("admitted dispatch"),
+                    },
+                }
             {
                 retention::settle_with_lease(&result.connection, store, result.family.as_ref())?;
             }

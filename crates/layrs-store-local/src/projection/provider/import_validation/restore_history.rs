@@ -153,9 +153,15 @@ mod tests {
                 },
             },
             destination_identity: destination,
-            inherited_segments: rowset(0),
+            // Segment validation recomputes the exact empty-ancestry commitment;
+            // a placeholder digest is not a valid fixture for it.
+            inherited_segments: crate::projection::provider::records::import::imported_segments_rowset(
+                &[],
+            )
+            .unwrap(),
             ancestry_root_receipt: None,
             closure: ImportClosure {
+                denial_observations: None,
                 snapshots: rowset(1),
                 selections: rowset(1),
                 captures: rowset(1),

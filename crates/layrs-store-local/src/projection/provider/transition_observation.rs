@@ -25,7 +25,9 @@ use layrs_vfs::Cancellation;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod bounds;
+mod stored;
 use bounds::PathBudget;
+pub(super) use stored::require_stored_namespace;
 
 /// Exact borrowed source DATA supplied by the separately validated history
 /// adapter. This is not evidence of a retained transaction or source ownership.
@@ -125,11 +127,10 @@ impl TransitionObservationData {
         let mut budget = PathBudget::default();
         budget.snapshot(source.snapshot, cancel)?;
         budget.selection(source.selection, cancel)?;
-        budget.snapshot(&snapshot, cancel)?;
+        budget.snapshot_with_denied(&snapshot, &coverage.denied_paths, cancel)?;
         budget.selection(&selected, cancel)?;
         budget.descriptors(&descriptors, cancel)?;
-        budget.denied(&coverage.denied_paths, cancel)?;
-        let prefix_bytes = source.prefix.encode()?;
+        let source_prefix_id = source.prefix.digest()?;
         let (identity, version) = match &source.prefix.source {
             ImportSource::Ordinary {
                 identity, version, ..
@@ -413,10 +414,7 @@ impl TransitionObservationData {
         drop(denied);
         Ok(Self {
             binding: ObservationBindingData {
-                source_prefix_id: codec::hash(
-                    "layrs-projection-provider-import-prefix-v1",
-                    &prefix_bytes,
-                ),
+                source_prefix_id,
                 source_identity: identity.clone(),
                 destination_identity,
                 source_generation: version.generation,

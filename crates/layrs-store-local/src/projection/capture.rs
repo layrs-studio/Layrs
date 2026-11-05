@@ -75,6 +75,9 @@ impl ProjectionStore {
     /// Capture known writable leaves only. Unknown paths require a fresh explicit
     /// server observation; local absence never grants permission to create.
     /// This performs no network I/O and does not modify checkout files.
+    /// An error can follow a durable commit (including retention settlement
+    /// contention). Inspect the latest capture or retry the unchanged image;
+    /// exact retry deduplicates instead of appending a second patch.
     pub fn capture_patch(&self, expected_generation: u64) -> Result<CapturedPatch> {
         self.capture_patch_with_faults(expected_generation, &NoCaptureFaults)
     }
@@ -83,9 +86,9 @@ impl ProjectionStore {
         expected_generation: u64,
         faults: &dyn CaptureFaults,
     ) -> Result<CapturedPatch> {
-        let access = format::access(self, SessionMode::Exclusive)?;
+        let access = format::access_for_local_capture(self)?;
         access.run(|access| {
-            database::require_mutable(&access.connection)?;
+            access.with_content(|c, scope| database::require_mutable_with_scope(c, self, scope))?;
             let state = database::current(&access.connection)?;
             if state.generation != expected_generation {
                 return Err(ProjectionStoreError::Stale {
@@ -108,13 +111,20 @@ impl ProjectionStore {
                 storage::persist_with_scope(c, self, &state, captured, faults, Some(scope))
             })?;
             access.verify()?;
+            #[cfg(windows)]
+            if matches!(&access.connection, format::PrivateConnection::Admitted(handle)
+                if handle.admission().data().ready().plan.denial_coverage.is_some())
+            {
+                retention::settle_with_lease(&access.connection, self, access.family.as_ref())?;
+                access.verify()?;
+            }
             Ok(result)
         })
     }
     pub fn captured_patch(&self, sequence: u64) -> Result<CapturedPatch> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access| {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let patch = access.with_content(|c, scope| {
                 storage::load_with_scope(c, self, sequence, Some(scope))
             })?;
@@ -125,7 +135,7 @@ impl ProjectionStore {
     pub fn latest_captured_patch(&self) -> Result<Option<CapturedPatch>> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access| {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let sequence: Option<u64> = access.connection.query_row(
                 "SELECT MAX(sequence) FROM projection_captures",
                 [],
@@ -150,7 +160,7 @@ impl ProjectionStore {
     ) -> Result<()> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access| {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let patch = access.with_content(|c, scope| {
                 storage::load_with_scope(c, self, sequence, Some(scope))
             })?;
@@ -177,7 +187,7 @@ impl ProjectionStore {
     ) -> Result<VerifiedCapturedFile> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access| {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let patch = storage::load_metadata(&access.connection, self, sequence)?;
             let file = replacement(&patch, path)?;
             let manifest = access.with_content(|c, scope| {
@@ -210,7 +220,7 @@ impl ProjectionStore {
     ) -> Result<()> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access| {
-            database::require_idle(&access.connection)?;
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let patch = storage::load_metadata(&access.connection, self, verified.sequence)?;
             let file = replacement(&patch, &verified.path)?;
             if patch.digest != verified.capture_digest

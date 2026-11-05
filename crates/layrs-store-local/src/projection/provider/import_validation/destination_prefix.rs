@@ -13,6 +13,7 @@ use super::super::records::{
 use super::*;
 use layrs_core::projection::{ProjectionSelection, ProjectionSnapshot};
 use layrs_core::scm::{FileId, FileManifestId};
+use std::collections::BTreeSet;
 mod bounds;
 
 /// A destination transaction's historical DATA, deliberately distinct from a
@@ -79,6 +80,25 @@ impl VerifiedDestinationPrefix<'_> {
         &self,
     ) -> &[ProviderTransitionReceiptRecord] {
         self.metadata.lineage.receipts()
+    }
+    /// Authenticate a current companion against this actual schema-checked
+    /// destination prefix, including a frozen admitted Provider9 prefix.
+    pub(in crate::projection::provider) fn validate_local_companion(
+        &self,
+        c: &Connection,
+        id: &str,
+        header: &super::super::records::companion_v2::CompanionHeaderV2,
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<BTreeSet<String>> {
+        self.require_prefix_scope(c, cancel)?;
+        super::scoped::validate_local_companion_in_lineage(
+            c,
+            id,
+            header,
+            &self.receipt,
+            &self.metadata.lineage,
+            cancel,
+        )
     }
     /// Detached ancestry DATA for a subsequent export, including this import.
     /// This does not establish live source or physical content authority.
@@ -221,6 +241,30 @@ impl VerifiedDestinationPrefix<'_> {
                     }
                 }
                 Ok(mappings)
+            },
+        )
+    }
+
+    /// Exact immutable inherited companion references. These are historical
+    /// DATA, never current checkout paths or proof of resident/protected CAS.
+    /// Reinterpret the authenticated incoming scope before loading any payload.
+    pub(in crate::projection::provider) fn inherited_companion_representations(
+        &self,
+        c: &Connection,
+        cancel: Option<&Cancellation>,
+    ) -> CauseResult<Vec<super::super::managed_admission::RequiredRepresentation>> {
+        self.require_prefix_scope(c, cancel)?;
+        scoped::with_scope(
+            c,
+            self.metadata.kind,
+            &self.prefix,
+            &scoped::ScopeView::from_metadata(&self.metadata),
+            cancel,
+            |_, closure| {
+                if closure != &self.prefix.closure {
+                    return Err(invalid("inherited companion SQL scope differs"));
+                }
+                scoped::companion_representations(c, &self.metadata.companion_ids, cancel)
             },
         )
     }
@@ -369,6 +413,22 @@ fn read_prefix_rows<'a>(
     }
     let ready = read_ready_link(c, &schema)?;
     ready.require_prefix(&prefix)?;
+    if ready.plan.denial_coverage.is_some()
+        && (!matches!(
+            &schema,
+            DestinationSchema::Ready8 | DestinationSchema::Admitted(_, AdmittedLayout::Provider9)
+        ) || !matches!(
+            &prefix.source,
+            ImportSource::Provider {
+                private_schema: 8,
+                ..
+            }
+        ))
+    {
+        return Err(invalid(
+            "denial prefix requires Ready8 or admitted Provider9 from Provider8",
+        ));
+    }
     if ready.role != TransitionRole::Destination
         || ready.state != TransitionState::Ready
         || ready
@@ -386,6 +446,9 @@ fn read_prefix_rows<'a>(
             .ok_or_else(|| invalid("destination prefix receipt missing"))?,
     )?;
     ready.require_receipt(&receipt)?;
+    // Authenticate the cheap role/state/FORMAT/receipt links before loading the
+    // bounded current body, which is distinct from the inherited closure.
+    super::super::destination_coverage::read_current(c, &ready, cancel)?;
     if let DestinationSchema::Admitted(_, layout) = &schema {
         if !matches!(
             (&prefix.source, layout),

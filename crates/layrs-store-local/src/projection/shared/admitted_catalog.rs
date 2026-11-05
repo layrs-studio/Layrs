@@ -474,6 +474,29 @@ impl AdmittedFamilyContext {
             }
             _ => None,
         };
+        // Independently classify B's retained metadata groups. This performs no
+        // B open and does not make them members of C's exact debit inventory.
+        super::source_companion::retained_namespace(c, cancel, |source| {
+            let b = &source.binding.destination;
+            if b.family_incarnation != marker.incarnation
+                || b.family_root_identity != marker.root_identity
+                || b.family_catalog_identity != marker.database_identity
+                || b.family_marker_digest != digest
+            {
+                return Err(invalid("retained source group family identity differs"));
+            }
+            let croot = source_destination_root_id(c, b)?;
+            let (actual, required, member) =
+                read_group(c, &croot, known.get(croot.as_str()).copied(), cancel)?;
+            source.require_union(&required, cancel)?;
+            if actual != *b {
+                return Err(invalid(
+                    "retained source group names a different C exact binding",
+                ));
+            }
+            require_member(c, &marker, &self.primary.marker, b, &member)?;
+            Ok(())
+        })?;
         let mut groups = BTreeSet::new();
         let mut roots = BTreeSet::new();
         let mut owned = None;
@@ -659,3 +682,23 @@ mod protection_tests;
 #[cfg(test)]
 #[path = "admitted_catalog/terminal_ready_tests.rs"]
 mod terminal_ready_tests;
+
+fn source_destination_root_id(
+    c: &Connection,
+    b: &crate::projection::shared::exact_content::ExactBinding,
+) -> Result<String> {
+    let operation = format!("provider-import:{}", b.transaction_id);
+    let n: u64 = c.query_row(
+        "SELECT count(*) FROM roots WHERE operation=?1 AND owner=?2",
+        rusqlite::params![operation, b.owner.as_str()],
+        |r| r.get(0),
+    )?;
+    if n != 1 {
+        return Err(invalid("retained B source group lacks unique C root"));
+    }
+    Ok(c.query_row(
+        "SELECT id FROM roots WHERE operation=?1 AND owner=?2 AND length(CAST(id AS BLOB))=64",
+        rusqlite::params![operation, b.owner.as_str()],
+        |r| r.get(0),
+    )?)
+}

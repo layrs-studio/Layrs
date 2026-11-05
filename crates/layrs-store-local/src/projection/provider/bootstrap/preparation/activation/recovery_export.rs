@@ -279,6 +279,10 @@ pub(super) fn plan(
         });
         let writable = entry.is_some_and(|e| e.writable);
         match &observation.evidence {
+            // Exports and reconciliation never admit a file from its listing.
+            CaptureEvidence::Vouched { .. } => {
+                return Err(invalid("export evidence must be inspected, not listed"))
+            }
             CaptureEvidence::Deleted { base } => {
                 if observation.original_path.is_some() {
                     return Err(invalid("recovery export deleted entry has native origin"));

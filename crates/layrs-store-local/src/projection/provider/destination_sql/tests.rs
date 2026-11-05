@@ -19,6 +19,9 @@ use crate::projection::provider::{
 };
 use layrs_core::scm::WorktreeId;
 
+#[path = "current_tests.rs"]
+mod current_tests;
+
 const TOKEN: &str = "blake3:1111111111111111111111111111111111111111111111111111111111111111";
 const RAW: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const LEAF: &str = "00000000000000000000000000000001";
@@ -87,6 +90,7 @@ fn inputs(source: &Connection) -> Inputs {
         },
         ancestry_root_receipt: None,
         closure: ImportClosure {
+            denial_observations: None,
             restore_history: None,
             snapshots: row(2),
             selections: row(1),
@@ -119,6 +123,7 @@ fn inputs(source: &Connection) -> Inputs {
         state: TransitionState::Copying,
         local_generation: 0,
         plan: TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix.digest().unwrap(),
             source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
@@ -361,6 +366,63 @@ fn empty_ingress_refuses_marker_backend_and_foreign_rows() {
             assert!(inspect(c, &data).is_err());
             c.execute_batch("ROLLBACK TO foreign_row; RELEASE foreign_row; COMMIT")
                 .unwrap();
+            destination.finish(Ok(())).unwrap();
+            source.finish(Ok(())).unwrap();
+        },
+    );
+}
+
+#[test]
+#[ignore = "owned audited Windows SQLite process; required current body missing"]
+fn empty_ingress_refuses_v2_when_required_current_body_is_missing() {
+    child::run(
+        concat!(
+            module_path!(),
+            "::empty_ingress_refuses_v2_when_required_current_body_is_missing"
+        ),
+        120,
+        || {
+            child::declare();
+            let source = BareConnection::reference().unwrap();
+            let mut data = inputs(source.connection());
+            let destination = BareConnection::reference().unwrap();
+            let c = destination.connection();
+            c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
+                .unwrap();
+            initialize(c, &data).unwrap();
+            inspect(c, &data).unwrap();
+            let legacy = data.intent.encode().unwrap();
+            c.execute_batch("SAVEPOINT unsupported_v2").unwrap();
+            data.intent.schema_version = "layrs.projection-provider-transition-intent.v2".into();
+            data.intent.plan.denial_coverage = Some(
+                crate::projection::provider::records::denied_coverage::DeniedCoverageRef {
+                    id: TOKEN.into(),
+                    count: 0,
+                    path_bytes: 0,
+                    rows_digest: TOKEN.into(),
+                },
+            );
+            data.intent.validate_fields().unwrap();
+            c.execute(
+                "UPDATE projection_provider_transitions SET payload=?1,digest=?2",
+                rusqlite::params![data.intent.encode().unwrap(), data.intent.digest().unwrap()],
+            )
+            .unwrap();
+            let changes = c.total_changes();
+            let error = inspect(c, &data)
+                .err()
+                .expect("v2 without its actual body accepted");
+            assert!(matches!(error,
+                crate::projection::provider::recovery::error::ProviderBootstrapCause::Validation(ref cause)
+                if matches!(cause.as_ref(), crate::projection::ProjectionStoreError::Invalid(message)
+                    if message == "destination EmptyIngress table cardinality differs")
+            ));
+            assert_eq!(changes, c.total_changes());
+            c.execute_batch("ROLLBACK TO unsupported_v2; RELEASE unsupported_v2")
+                .unwrap();
+            data.intent = ProviderTransitionIntentRecord::decode(&legacy).unwrap();
+            inspect(c, &data).unwrap();
+            c.execute_batch("ROLLBACK").unwrap();
             destination.finish(Ok(())).unwrap();
             source.finish(Ok(())).unwrap();
         },

@@ -2,6 +2,9 @@
 //! Call only inside the caller's read-only catalog transaction and held gates.
 use super::super::{content::Protection, *};
 use super::FamilyAccess;
+use crate::projection::shared::source_denial::{
+    SourceDeniedCoveragePresence, SourceDeniedCoverageRelease, SourceDeniedCoverageReservation,
+};
 use crate::{
     projection::provider::{
         records::{capture::ProviderCaptureState, AllocationRecord},
@@ -66,8 +69,166 @@ pub(super) fn validate(
     proof: &PrivateCaptureProof,
     cancellation: Option<&Cancellation>,
 ) -> Result<()> {
+    validate_with_companions(family, c, allocation, proof, None, None, None, cancellation)
+}
+
+pub(in crate::projection) fn classify_denial_reservations(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    proof: &PrivateCaptureProof,
+    cancellation: Option<&Cancellation>,
+) -> Result<std::collections::BTreeSet<String>> {
+    classify_denial_funding(
+        c,
+        allocation,
+        proof.denial_reservations(),
+        None,
+        None,
+        cancellation,
+    )
+}
+
+fn require_denial_owner(
+    allocation: &AllocationRecord,
+    funding: &SourceDeniedCoverageReservation,
+) -> Result<()> {
+    let binding = funding.binding();
+    if binding.source_owner != allocation.format.identity.worktree_id
+        || binding.source_database != allocation.private.database_file_identity
+        || binding.family_incarnation != allocation.family.incarnation
+        || binding.family_root_identity != allocation.family.root_identity
+        || binding.family_catalog_identity != allocation.family.catalog_file_identity
+        || binding.family_marker_digest != allocation.family.marker_digest
+    {
+        return Err(invalid("source denial funding proof owner/family differs"));
+    }
+    Ok(())
+}
+
+fn classify_denial_funding(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    actual: &[SourceDeniedCoverageReservation],
+    pending: Option<&SourceDeniedCoverageReservation>,
+    release: Option<&SourceDeniedCoverageRelease>,
+    cancellation: Option<&Cancellation>,
+) -> Result<std::collections::BTreeSet<String>> {
+    cancel(cancellation)?;
+    if pending.is_some() && release.is_some() {
+        return Err(invalid(
+            "denial funding and recovery scopes cannot be combined",
+        ));
+    }
+    let mut denial_reservations = std::collections::BTreeSet::new();
+    for funding in actual {
+        cancel(cancellation)?;
+        require_denial_owner(allocation, funding)?;
+        if !denial_reservations.insert(funding.operation().to_owned()) {
+            return Err(invalid("source denial funding proof repeats operation"));
+        }
+        // The complete private reader derives this binding from actual bodies.
+        funding.require_retained(c, cancellation)?;
+    }
+    if let Some(pending) = pending {
+        cancel(cancellation)?;
+        require_denial_owner(allocation, pending)?;
+        // A prospective binding cannot replace a conflicting actual private
+        // transaction, even if its newly hashed operation has no family row.
+        if actual.iter().any(|funding| {
+            (funding.binding().transaction_id == pending.binding().transaction_id
+                || funding.operation() == pending.operation())
+                && funding != pending
+        }) {
+            return Err(invalid("pending source denial contradicts actual funding"));
+        }
+        match pending.read_presence(c, cancellation)? {
+            SourceDeniedCoveragePresence::Absent => {}
+            SourceDeniedCoveragePresence::Reserved => {
+                pending.require_present(c, cancellation)?;
+                denial_reservations.insert(pending.operation().to_owned());
+            }
+        }
+    }
+    if let Some(release) = release {
+        let binding = release.binding();
+        if binding.source_owner != allocation.format.identity.worktree_id
+            || binding.source_database != allocation.private.database_file_identity
+            || binding.family_incarnation != allocation.family.incarnation
+            || binding.family_root_identity != allocation.family.root_identity
+            || binding.family_catalog_identity != allocation.family.catalog_file_identity
+            || binding.family_marker_digest != allocation.family.marker_digest
+            || actual.iter().any(|funding| {
+                funding.binding().transaction_id == binding.transaction_id
+                    || funding.binding().document.id == binding.document.id
+                    || funding.operation() == release.operation()
+            })
+        {
+            return Err(invalid(
+                "denial release conflicts with actual source funding",
+            ));
+        }
+        // This exact row is accepted only inside the explicit recovery scope.
+        // The release token cannot fund any write or become actual proof.
+        if release.read_presence(c, cancellation)? == SourceDeniedCoveragePresence::Reserved {
+            denial_reservations.insert(release.operation().to_owned());
+        }
+    }
+    Ok(denial_reservations)
+}
+
+/// DATA/SQL seam only: use the real classifier and owner reservation gate with
+/// no capture attempts or companion groups. It constructs no private proof,
+/// FamilyAccess, native identity or filesystem capability.
+#[cfg(test)]
+pub(in crate::projection) fn classify_denial_reservations_for_test(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    actual: &[SourceDeniedCoverageReservation],
+    pending: Option<&SourceDeniedCoverageReservation>,
+    cancellation: Option<&Cancellation>,
+) -> Result<std::collections::BTreeSet<String>> {
+    let classified = classify_denial_funding(c, allocation, actual, pending, None, cancellation)?;
+    validate_reservations(
+        c,
+        allocation.format.identity.worktree_id.as_str(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &crate::projection::shared::source_companion::ClassifiedSourceGroups {
+            reservations: Default::default(),
+            roots: Default::default(),
+        },
+        &classified,
+        cancellation,
+    )?;
+    Ok(classified)
+}
+
+pub(super) fn validate_with_companions(
+    family: &FamilyAccess,
+    c: &Connection,
+    allocation: &AllocationRecord,
+    proof: &PrivateCaptureProof,
+    context: Option<&crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>>,
+    pending_denial: Option<&SourceDeniedCoverageReservation>,
+    release_denial: Option<&SourceDeniedCoverageRelease>,
+    cancellation: Option<&Cancellation>,
+) -> Result<()> {
     cancel(cancellation)?;
     family.verify()?;
+    let source_groups = crate::projection::shared::source_companion::classify_source_groups(
+        c,
+        allocation,
+        context,
+        cancellation,
+    )?;
+    let denial_reservations = classify_denial_funding(
+        c,
+        allocation,
+        proof.denial_reservations(),
+        pending_denial,
+        release_denial,
+        cancellation,
+    )?;
     let owner = allocation.format.identity.worktree_id.as_str();
     let mut attempts = BTreeMap::<&str, Attempt<'_>>::new();
     let mut reservations = BTreeMap::<&str, &str>::new();
@@ -144,7 +305,15 @@ pub(super) fn validate(
             cancellation,
         )?;
     }
-    validate_reservations(c, owner, &attempts, &reservations, cancellation)?;
+    validate_reservations(
+        c,
+        owner,
+        &attempts,
+        &reservations,
+        &source_groups,
+        &denial_reservations,
+        cancellation,
+    )?;
     validate_installations(
         family,
         c,
@@ -160,6 +329,7 @@ pub(super) fn validate(
         proof,
         &attempts,
         &content,
+        &source_groups,
         cancellation,
     )?;
     family.verify()?;
@@ -171,6 +341,8 @@ fn validate_reservations(
     owner: &str,
     attempts: &BTreeMap<&str, Attempt<'_>>,
     reservations: &BTreeMap<&str, &str>,
+    source_groups: &crate::projection::shared::source_companion::ClassifiedSourceGroups,
+    denial_reservations: &std::collections::BTreeSet<String>,
     cancellation: Option<&Cancellation>,
 ) -> Result<()> {
     // Reservation IDs are family-global. An expected ID owned by somebody
@@ -196,7 +368,7 @@ fn validate_reservations(
     if count > MAX_ROOTS as u64 {
         return Err(invalid("provider capture reservation count exceeds bound"));
     }
-    let oversized: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1 AND (length(CAST(id AS BLOB))>128 OR length(CAST(operation AS BLOB))>81))", [owner], |r| r.get(0))?;
+    let oversized: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1 AND (length(CAST(id AS BLOB))>128 OR length(CAST(operation AS BLOB))>128))", [owner], |r| r.get(0))?;
     if oversized {
         return Err(invalid("provider capture reservation text exceeds bound"));
     }
@@ -209,6 +381,9 @@ fn validate_reservations(
         let id: String = row.get(0)?;
         let op: String = row.get(1)?;
         let remaining: u64 = row.get(2)?;
+        if source_groups.reservations.contains(&id) || denial_reservations.contains(&id) {
+            continue;
+        }
         let transaction = reservations
             .get(id.as_str())
             .ok_or_else(|| invalid("provider capture has unproven family reservation"))?;
@@ -401,6 +576,7 @@ fn validate_roots(
     proof: &PrivateCaptureProof,
     attempts: &BTreeMap<&str, Attempt<'_>>,
     content: &BTreeMap<&str, (&str, u64)>,
+    source_groups: &crate::projection::shared::source_companion::ClassifiedSourceGroups,
     cancellation: Option<&Cancellation>,
 ) -> Result<()> {
     let owner = allocation.format.identity.worktree_id.as_str();
@@ -412,7 +588,7 @@ fn validate_roots(
     if count > MAX_ROOTS as u64 {
         return Err(invalid("provider capture root count exceeds bound"));
     }
-    let (oversized, total): (bool, u64) = c.query_row("SELECT coalesce(max(length(CAST(id AS BLOB))!=64 OR length(CAST(digest AS BLOB))!=64 OR length(CAST(operation AS BLOB))!=81 OR length(CAST(database_identity AS BLOB))>512 OR length(payload)>16777216),0),coalesce(sum(length(payload)),0) FROM (SELECT id,digest,operation,database_identity,payload FROM roots WHERE owner=?1 LIMIT 4097)", [owner], |r| Ok((r.get(0)?,r.get(1)?)))?;
+    let (oversized, total): (bool, u64) = c.query_row("SELECT coalesce(max(length(CAST(id AS BLOB))!=64 OR length(CAST(digest AS BLOB))!=64 OR length(CAST(operation AS BLOB))>128 OR length(CAST(database_identity AS BLOB))>512 OR length(payload)>16777216),0),coalesce(sum(length(payload)),0) FROM (SELECT id,digest,operation,database_identity,payload FROM roots WHERE owner=?1 LIMIT 4097)", [owner], |r| Ok((r.get(0)?,r.get(1)?)))?;
     if oversized || total > 128 * 1024 * 1024 {
         return Err(invalid("provider capture root row exceeds bound"));
     }
@@ -422,6 +598,9 @@ fn validate_roots(
     while let Some(row) = rows.next()? {
         cancel(cancellation)?;
         let id: String = row.get(0)?;
+        if source_groups.roots.contains(&id) {
+            continue;
+        }
         let digest: String = row.get(1)?;
         let op: String = row.get(2)?;
         let db: String = row.get(3)?;

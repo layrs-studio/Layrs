@@ -6,6 +6,7 @@ use crate::projection::{
     provider::{
         capture_lock::CaptureAttemptLock,
         database_io::{self, WriterCloseObserver},
+        destination_coverage::SourceCurrentDeniedCoverage,
         destination_sql, destination_validation,
         import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
         records::{
@@ -86,7 +87,7 @@ pub(super) fn with_source<T>(
     ) -> CauseResult<T>,
 ) -> CauseResult<T> {
     boundary(held, root, attempt, copying, destination, cancel)?;
-    let read = database_io::read_cancellable(&held.artifacts.database, cancel, |c| {
+    let read = database_io::read_cancellable_strict(&held.artifacts.database, cancel, |c| {
         let state = validation::private_active_transition_with_source(
             c,
             &held.artifacts.allocation,
@@ -167,7 +168,7 @@ fn family_register(
             Some(cancel),
         )
     };
-    let before = valid(database_io::read_cancellable(
+    let before = valid(database_io::read_cancellable_strict(
         &held.family.catalog,
         cancel,
         check,
@@ -197,8 +198,9 @@ fn family_register(
         c.execute_batch("COMMIT")?;
         Ok(effect)
     })();
+    let result = rollback(bare.connection(), result);
     let effect = bare.finish_writer(result, close)?;
-    let durable = valid(database_io::read_cancellable(
+    let durable = valid(database_io::read_cancellable_strict(
         &held.family.catalog,
         cancel,
         check,
@@ -301,6 +303,23 @@ pub(super) fn destination_intent(
     Ok(intent)
 }
 
+fn require_current_scope(
+    copying: &ProviderTransitionIntentRecord,
+    current: Option<&SourceCurrentDeniedCoverage<'_>>,
+    cancel: &Cancellation,
+) -> CauseResult<()> {
+    match (copying.plan.denial_coverage.as_ref(), current) {
+        (None, None) => Ok(()),
+        (Some(_), Some(current)) => {
+            current.require_destination(&destination_intent(copying)?, Some(cancel))?;
+            Ok(())
+        }
+        _ => Err(invalid(
+            "managed destination current document scope differs",
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn copy_destination(
     held: &outcome::PublicationPins,
@@ -309,12 +328,14 @@ fn copy_destination(
     source_c: &Connection,
     proof: &PrivateActiveCaptureValidation,
     closure: &VerifiedImportClosure,
+    current: Option<&SourceCurrentDeniedCoverage<'_>>,
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<DestinationSqlState> {
+    require_current_scope(copying, current, cancel)?;
     let file = destination.destination_database();
     database_io::validate_native_filename(file.path())?;
-    let prior = database_io::read_cancellable(file, cancel, |c| {
+    let prior = database_io::read_cancellable_strict(file, cancel, |c| {
         inspect_destination(c, held, proof, closure, copying, cancel)
     })?;
     let ingress = match prior {
@@ -356,17 +377,31 @@ fn copy_destination(
             .ok_or_else(|| invalid("managed source P absent"))?;
         let activation = &proof.active.activation;
         if fresh {
-            destination_sql::initialize_empty(
-                c,
-                marker,
-                &proof.active.source,
-                a,
-                p,
-                activation,
-                prefix,
-                &intent,
-                Some(cancel),
-            )?;
+            match current {
+                Some(current) => destination_sql::initialize_empty_with_current(
+                    c,
+                    marker,
+                    &proof.active.source,
+                    a,
+                    p,
+                    activation,
+                    prefix,
+                    &intent,
+                    current,
+                    Some(cancel),
+                )?,
+                None => destination_sql::initialize_empty(
+                    c,
+                    marker,
+                    &proof.active.source,
+                    a,
+                    p,
+                    activation,
+                    prefix,
+                    &intent,
+                    Some(cancel),
+                )?,
+            }
         } else if inspect_destination(c, held, proof, closure, copying, cancel)? != Ingress::Empty {
             return Err(invalid(
                 "managed destination EmptyIngress changed before copy",
@@ -392,6 +427,7 @@ fn copy_destination(
             DestinationSqlState::EmptyCopied
         })
     })();
+    let result = rollback(bare.connection(), result);
     bare.finish_writer(result, close)
 }
 
@@ -410,16 +446,8 @@ pub(super) fn register_and_copy(
     close: &mut impl WriterCloseObserver,
     cancel: &Cancellation,
 ) -> CauseResult<ManagedDestinationSqlEffect> {
-    if copying.role != TransitionRole::Source
-        || copying.state != TransitionState::Copying
-        || copying.reservation.is_some()
-        || copying.receipt_id.is_some()
-        || copying.destination.as_ref() != Some(destination.proof())
-    {
-        return Err(invalid(
-            "managed destination requires exact unreserved source Copying",
-        ));
-    }
+    managed_journal::require_legacy_allocation(copying)?;
+    require_copying(copying, destination)?;
     let _locks = held
         .family
         .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
@@ -452,6 +480,7 @@ pub(super) fn register_and_copy(
                 source_c,
                 proof,
                 closure,
+                None,
                 close,
                 cancel,
             )
@@ -467,36 +496,7 @@ pub(super) fn register_and_copy(
         destination,
         cancel,
         |_source_c, proof, closure| {
-            let catalog = valid(database_io::read_cancellable(
-                &held.family.catalog,
-                cancel,
-                |c| {
-                    held.family.validate_import_initializing(
-                        c,
-                        &held.artifacts.allocation,
-                        held.artifacts
-                            .prepared
-                            .as_ref()
-                            .ok_or_else(|| invalid("managed source P absent"))?,
-                        &proof.active.activation,
-                        &proof.capture,
-                        copying,
-                        Some(cancel),
-                    )
-                },
-            )?)?;
-            if catalog != ImportRegistration::Initializing {
-                return Err(invalid("managed destination family readback differs"));
-            }
-            let copied = valid(database_io::read_cancellable(
-                destination.destination_database(),
-                cancel,
-                |c| inspect_destination(c, held, proof, closure, copying, cancel),
-            )?)?;
-            if copied != Ingress::Copied {
-                return Err(invalid("managed destination CopiedPrefix readback differs"));
-            }
-            Ok(())
+            require_copied_readback(held, copying, destination, proof, closure, cancel)
         },
     )?;
     boundary(held, root, attempt, copying, destination, cancel)?;
@@ -504,4 +504,146 @@ pub(super) fn register_and_copy(
         family,
         destination: destination_state,
     })
+}
+
+/// The retained denial start revalidates its full source and family authority
+/// around each nested writer close. No body insertion is allowed on replay.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn register_and_copy_denial(
+    held: &outcome::PublicationPins,
+    owner: &mut managed_journal::denial_start::PendingDenialStart<'_, '_, '_, '_>,
+    copying: &ProviderTransitionIntentRecord,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+    close: &mut impl WriterCloseObserver,
+    cancel: &Cancellation,
+) -> CauseResult<ManagedDestinationSqlEffect> {
+    require_copying(copying, destination)?;
+    if copying.plan.denial_coverage.is_none() {
+        return Err(invalid(
+            "managed denial destination requires current coverage",
+        ));
+    }
+    // Rehash the complete retained image before acquiring source/family gates.
+    owner.prepare_destination_copy(held, copying, destination, cancel)?;
+    let _locks = held
+        .family
+        .locks(&held.artifacts.allocation.format.identity.worktree_id, true)?;
+    let family = owner.with_copying_destination_source(
+        held,
+        copying,
+        destination,
+        true,
+        cancel,
+        |_source_c, proof, _closure, current| {
+            require_current_scope(copying, Some(current), cancel)?;
+            family_register(held, copying, proof, close, cancel)
+        },
+    )?;
+    let destination_state = owner.with_copying_destination_source(
+        held,
+        copying,
+        destination,
+        false,
+        cancel,
+        |source_c, proof, closure, current| {
+            copy_destination(
+                held,
+                copying,
+                destination,
+                source_c,
+                proof,
+                closure,
+                Some(current),
+                close,
+                cancel,
+            )
+        },
+    )?;
+    owner.with_copying_destination_source(
+        held,
+        copying,
+        destination,
+        false,
+        cancel,
+        |_source_c, proof, closure, current| {
+            require_current_scope(copying, Some(current), cancel)?;
+            require_copied_readback(held, copying, destination, proof, closure, cancel)
+        },
+    )?;
+    Ok(ManagedDestinationSqlEffect {
+        family,
+        destination: destination_state,
+    })
+}
+
+fn require_copying(
+    copying: &ProviderTransitionIntentRecord,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+) -> CauseResult<()> {
+    if copying.role != TransitionRole::Source
+        || copying.state != TransitionState::Copying
+        || copying.reservation.is_some()
+        || copying.receipt_id.is_some()
+        || copying.destination.as_ref() != Some(destination.proof())
+    {
+        return Err(invalid(
+            "managed destination requires exact unreserved source Copying",
+        ));
+    }
+    Ok(())
+}
+
+fn require_copied_readback(
+    held: &outcome::PublicationPins,
+    copying: &ProviderTransitionIntentRecord,
+    destination: &managed_allocation::ManagedDestinationAllocation<'_>,
+    proof: &PrivateActiveCaptureValidation,
+    closure: &VerifiedImportClosure,
+    cancel: &Cancellation,
+) -> CauseResult<()> {
+    let catalog = valid(database_io::read_cancellable_strict(
+        &held.family.catalog,
+        cancel,
+        |c| {
+            held.family.validate_import_initializing(
+                c,
+                &held.artifacts.allocation,
+                held.artifacts
+                    .prepared
+                    .as_ref()
+                    .ok_or_else(|| invalid("managed source P absent"))?,
+                &proof.active.activation,
+                &proof.capture,
+                copying,
+                Some(cancel),
+            )
+        },
+    )?)?;
+    if catalog != ImportRegistration::Initializing {
+        return Err(invalid("managed destination family readback differs"));
+    }
+    let copied = valid(database_io::read_cancellable_strict(
+        destination.destination_database(),
+        cancel,
+        |c| inspect_destination(c, held, proof, closure, copying, cancel),
+    )?)?;
+    if copied != Ingress::Copied {
+        return Err(invalid("managed destination CopiedPrefix readback differs"));
+    }
+    Ok(())
+}
+
+/// Roll back a failed owned SQL operation before any enclosing connection
+/// scope closes. Preserve both primary and rollback failure, with no retry.
+pub(super) fn rollback<T>(c: &Connection, result: CauseResult<T>) -> CauseResult<T> {
+    match result {
+        Err(primary) if !c.is_autocommit() => match c.execute_batch("ROLLBACK") {
+            Ok(()) => Err(primary),
+            Err(close) => Err(Cause::Cleanup {
+                primary: Box::new(primary),
+                close: Box::new(close.into()),
+            }),
+        },
+        other => other,
+    }
 }

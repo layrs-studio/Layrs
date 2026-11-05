@@ -74,6 +74,10 @@ impl OrdinaryReadyInputs<'_> {
             source: ReadySource::Ordinary(source),
             prefix: &self.source_staging.plan.source_prefix,
             data: self.data,
+            companion: None,
+            retained_companion: None,
+            denial: None,
+            retained_denial: None,
         }
     }
 }
@@ -711,6 +715,11 @@ fn read_publication_ready_data(
         [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
     )?;
     let ready = ProviderTransitionIntentRecord::decode(&payload)?;
+    if ready.plan.denial_coverage.is_some() {
+        return Err(invalid(
+            "ordinary Ready denial coverage reader is not integrated",
+        ));
+    }
     ready.require_row(TransitionRowData {
         id: &id,
         role: &role,
@@ -727,6 +736,9 @@ fn read_publication_ready_data(
         [inputs.data.receipt.digest()?], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
     )?;
     let receipt = ProviderTransitionReceiptRecord::decode(&payload)?;
+    if receipt.denial_coverage.is_some() {
+        return Err(invalid("ordinary denial receipt reader is not integrated"));
+    }
     receipt.require_row(TransitionReceiptRowData {
         id: &id,
         owner_identity_digest: &owner,

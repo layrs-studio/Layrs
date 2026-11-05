@@ -57,6 +57,145 @@ fn decode(bytes: &[u8]) -> Result<Journal> {
     }
     Ok(journal)
 }
+/// Forced-append funding DATA for one local C14 Restore. Private fields: only
+/// `local_restore_plan` derives it from a reviewed, recomputed preview.
+pub(in crate::projection) struct LocalRestorePlan {
+    operation: String,
+    source: RestoreSource,
+    changes: Vec<CapturedChange>,
+    files: Vec<CapturedFile>,
+    journal_bound: u64,
+}
+impl LocalRestorePlan {
+    pub(in crate::projection) fn operation(&self) -> &str {
+        &self.operation
+    }
+    pub(in crate::projection) fn source(&self) -> &RestoreSource {
+        &self.source
+    }
+    /// Exact full-checkout diff the finish transaction appends.
+    pub(in crate::projection) fn changes(&self) -> &[CapturedChange] {
+        &self.changes
+    }
+    /// Distinct preimages, restored targets and forced-capture replacements.
+    pub(in crate::projection) fn files(&self) -> &[CapturedFile] {
+        &self.files
+    }
+    /// Upper bound of the canonical pending/history journal payload.
+    pub(in crate::projection) fn journal_bound(&self) -> u64 {
+        self.journal_bound
+    }
+}
+
+fn local_restore_plan(
+    expected: &RestorePreview,
+    changes: Vec<CapturedChange>,
+) -> Result<LocalRestorePlan> {
+    let mut seen = std::collections::BTreeSet::new();
+    let files = expected
+        .before
+        .values()
+        .chain(expected.after.values())
+        .flatten()
+        .chain(changes.iter().filter_map(|change| change.replacement.as_ref()))
+        .filter(|file| seen.insert(file.file_id.clone()))
+        .cloned()
+        .collect();
+    Ok(LocalRestorePlan {
+        operation: format!("restore:{}", expected.operation_id),
+        source: expected.source.clone(),
+        changes,
+        files,
+        journal_bound: journal_upper_bound(expected)?,
+    })
+}
+
+/// Canonical journal length with every runtime witness at its maximum width:
+/// u128 staging timestamp, fixed-width directory token and u64 identity pairs
+/// (wider than Windows u32 triples). Digits/colons need no JSON escaping.
+fn journal_upper_bound(preview: &RestorePreview) -> Result<u64> {
+    let identity = format!("{}:{}", u64::MAX, u64::MAX);
+    let witnesses = |files: &BTreeMap<RepoPath, Option<CapturedFile>>| {
+        files
+            .iter()
+            .filter(|(_, file)| file.is_some())
+            .map(|(path, _)| (path.clone(), identity.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let journal = Journal {
+        schema_version: "layrs.projection-restore.v1".into(),
+        preview: preview.clone(),
+        directory: format!("restore-{}-{}", preview.operation_id, u128::MAX),
+        directory_identity: format!("fs:v1:{:016x}:{:016x}", u64::MAX, u64::MAX),
+        old_identity: witnesses(&preview.before),
+        new_identity: witnesses(&preview.after),
+    };
+    Ok(encode(&journal)?.len() as u64)
+}
+
+/// DATA-only interpretation of a local C14 history journal against its own
+/// authenticated forced capture and the fixed Ready snapshot.
+#[cfg(windows)]
+pub(in crate::projection) fn local_history_preview(
+    bytes: &[u8],
+    id: &str,
+    capture: &CapturedPatch,
+    base: &ProjectionSnapshot,
+    destination: &RestoreDestination,
+) -> Result<RestorePreview> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(invalid("restore history exceeds8MiB"));
+    }
+    let journal = decode(bytes)?;
+    if journal.preview.destination.as_ref() != Some(destination) {
+        return Err(invalid("local restore history destination differs"));
+    }
+    validate_history_preview(&journal, id, capture, base)?;
+    Ok(journal.preview)
+}
+
+/// DATA-only interpretation of the one pending local C14 journal.
+#[cfg(windows)]
+pub(in crate::projection) fn local_pending_preview(
+    bytes: &[u8],
+    base: &ProjectionSnapshot,
+    generation: u64,
+    digest: &str,
+    destination: &RestoreDestination,
+) -> Result<RestorePreview> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(invalid("restore journal exceeds8MiB"));
+    }
+    let journal = decode(bytes)?;
+    if journal.preview.destination.as_ref() != Some(destination)
+        || journal.preview.projection_generation != generation
+        || journal.preview.projection_digest != digest
+    {
+        return Err(invalid("local pending restore escaped fixed Ready scope"));
+    }
+    validate_paths(base, &journal.preview.before)?;
+    validate_paths(base, &journal.preview.after)?;
+    Ok(journal.preview)
+}
+
+/// C14 dispatch from the access's authenticated admission DATA (no SQL);
+/// legacy and non-denial stores keep their unscoped mutable guards.
+fn require_mutable(access: &mut format::Access, store: &ProjectionStore) -> Result<bool> {
+    let local = match &access.connection {
+        #[cfg(windows)]
+        format::PrivateConnection::Admitted(handle) => {
+            handle.admission().data().ready().plan.denial_coverage.is_some()
+        }
+        _ => false,
+    };
+    if local {
+        access.with_content(|c, scope| database::require_mutable_with_scope(c, store, scope))?;
+    } else {
+        database::require_mutable(&access.connection)?;
+    }
+    Ok(local)
+}
+
 pub(super) fn apply(
     store: &ProjectionStore,
     expected: &RestorePreview,
@@ -65,10 +204,10 @@ pub(super) fn apply(
     if preview_digest(expected)? != expected.digest {
         return Err(invalid("restore preview digest mismatch"));
     }
-    let access = format::access(store, SessionMode::Exclusive)?;
+    let access = format::access_for_local_restore(store)?;
     access.run(|access: &mut format::Access| -> Result<_> {
         validate_destination(store, expected)?;
-        database::require_mutable(&access.connection)?;
+        let local = require_mutable(access, store)?;
         if let Some((journal, capture)) = access.with_content(|c, scope| {
             history_with_scope(c, store, &expected.operation_id, Some(scope))
         })? {
@@ -82,14 +221,22 @@ pub(super) fn apply(
             });
         }
         let state = database::current(&access.connection)?;
-        let mut actual = access
-            .with_content(|c, scope| preview(store, c, &state, &expected.source, Some(scope)))?;
+        let (mut actual, resulting) = access.with_content(|c, scope| {
+            preview_with_changes(store, c, &state, &expected.source, Some(scope))
+        })?;
         actual.operation_id = expected.operation_id.clone();
         actual.digest = preview_digest(&actual)?;
         if actual != *expected {
             return Err(invalid("restore preview is stale"));
         }
         retention::require_no_staging(&access.connection, store)?;
+        if local {
+            // Restore never deduplicates its capture: prove the forced append,
+            // journal, history row, claims and mappings all fit before the
+            // first reservation, staging or filesystem effect.
+            let plan = local_restore_plan(expected, resulting)?;
+            access.with_content(|c, scope| scope.preflight_local_restore(c, store, &state, &plan))?;
+        }
         let changes = expected
             .after
             .iter()
@@ -238,7 +385,14 @@ pub(super) fn apply(
             Ok(())
         })?;
         faults.check(RestorePoint::JournalDurable)?;
-        finish(store, access, &journal, faults)
+        let receipt = finish(store, access, &journal, faults)?;
+        if local {
+            // As local Capture: a committed C14 budget never lingers after an
+            // acknowledged apply. Non-C14 callers keep explicit settlement.
+            retention::settle_with_lease(&access.connection, store, access.family.as_ref())?;
+            access.verify()?;
+        }
+        Ok(receipt)
     })
 }
 pub(super) fn resume(store: &ProjectionStore) -> Result<RestoreReceipt> {
@@ -623,4 +777,94 @@ pub(in crate::projection) fn verify_history_with_scope(
         count += 1;
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod local_bound_tests {
+    use super::*;
+    use layrs_core::scm::{FileId, SpaceId, StoreId, WorktreeId};
+
+    fn preview(paths: usize) -> RestorePreview {
+        let identity = ProjectionIdentity {
+            store_id: StoreId::parse("store:bound").unwrap(),
+            worktree_id: WorktreeId::parse("worktree:bound").unwrap(),
+            space_id: SpaceId::parse("space:bound").unwrap(),
+            origin: "https://example.test".into(),
+            principal_id: "principal:bound".into(),
+        };
+        let file = |n: usize| {
+            Some(CapturedFile {
+                file_id: FileId::from_bytes(&n.to_le_bytes()),
+                executable: false,
+                bytes: n as u64,
+            })
+        };
+        let path = |n: usize| RepoPath::parse(&format!("dir/file-{n:04}.txt")).unwrap();
+        let mut value = RestorePreview {
+            operation_id: format!("{}-{}", u128::MAX, u32::MAX),
+            destination: Some(RestoreDestination {
+                identity,
+                checkout_identity: "checkout:bound".into(),
+            }),
+            source: RestoreSource::Capture {
+                sequence: 2,
+                paths: (0..paths).map(path).collect(),
+            },
+            projection_generation: 1,
+            projection_digest: "a".repeat(64),
+            checkout_digest: format!("blake3:{}", "b".repeat(64)),
+            after_checkout_digest: format!("blake3:{}", "c".repeat(64)),
+            before: (0..paths).map(|n| (path(n), file(n))).collect(),
+            after: (0..paths).map(|n| (path(n), file(n + paths))).collect(),
+            digest: String::new(),
+        };
+        value.digest = preview_digest(&value).unwrap();
+        value
+    }
+
+    #[test]
+    fn journal_upper_bound_dominates_windows_identities() {
+        for paths in [1, 7, 1024] {
+            let preview = preview(paths);
+            let bound = journal_upper_bound(&preview).unwrap();
+            // Widest real witnesses: u128 staging nanos, a fixed-width token
+            // and Windows u32 identity triples (narrower than the u64 pairs).
+            let real = Journal {
+                schema_version: "layrs.projection-restore.v1".into(),
+                preview: preview.clone(),
+                directory: format!("restore-{}-{}", preview.operation_id, u128::MAX),
+                directory_identity: format!("fs:v1:{:016x}:{:016x}", 1u64, 2u64),
+                old_identity: preview
+                    .before
+                    .keys()
+                    .map(|p| (p.clone(), format!("{}:{}:{}", u32::MAX, u32::MAX, u32::MAX)))
+                    .collect(),
+                new_identity: preview
+                    .after
+                    .keys()
+                    .map(|p| (p.clone(), format!("{}:{}:{}", u32::MAX, u32::MAX, u32::MAX)))
+                    .collect(),
+            };
+            let actual = encode(&real).unwrap().len() as u64;
+            assert!(actual <= bound, "{actual} > {bound}");
+            assert!(bound - actual <= 9 * 2 * paths as u64, "bound is not tight");
+            decode(&encode(&real).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn local_restore_plan_counts_distinct_files_and_forced_capture_changes() {
+        let preview = preview(3);
+        let changes = vec![CapturedChange {
+            path: RepoPath::parse("dir/file-0000.txt").unwrap(),
+            expected: None,
+            replacement: preview.after.values().next().unwrap().clone(),
+        }];
+        let plan = local_restore_plan(&preview, changes.clone()).unwrap();
+        assert_eq!(plan.operation(), format!("restore:{}", preview.operation_id));
+        assert_eq!(plan.changes(), changes.as_slice());
+        // 3 preimages + 3 targets; the forced replacement is already a target.
+        assert_eq!(plan.files().len(), 6);
+        assert_eq!(plan.journal_bound(), journal_upper_bound(&preview).unwrap());
+    }
 }

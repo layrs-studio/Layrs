@@ -79,6 +79,68 @@ pub(in crate::projection::provider) fn admission_budget(
     })
 }
 
+/// Future C14 archive peak from actual selected placement and overlay DATA.
+/// Count only final checkout files and their unique parents; no destination
+/// identity, journal, receipt or physical proof is synthesized for sizing.
+pub(super) fn denial_admission_budget(
+    ready_metadata_bound: u64,
+    placement: &layrs_core::projection::ProjectionSnapshot,
+    selected: &layrs_core::projection::ProjectionSelection,
+    capture: &crate::projection::capture::CapturedPatch,
+    cancel: Option<&layrs_vfs::Cancellation>,
+) -> Result<AdmissionBudget> {
+    use layrs_core::{projection::EntryState, scm::TreeEntryTarget};
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut files = BTreeSet::new();
+    for entry in &placement.entries {
+        super::cancellation::check(cancel)?;
+        if selected.includes(&entry.path)
+            && entry.state != EntryState::Reserved
+            && matches!(entry.target, Some(TreeEntryTarget::File { .. }))
+        {
+            files.insert(entry.path.as_str());
+        }
+        if files.len() as u64 > MAX_FILES {
+            return Err(invalid("admission checkout inventory count exceeds bound"));
+        }
+    }
+    for change in &capture.changes {
+        super::cancellation::check(cancel)?;
+        if change.replacement.is_some() {
+            files.insert(change.path.as_str());
+        } else {
+            files.remove(change.path.as_str());
+        }
+    }
+    if files.len() as u64 > MAX_FILES {
+        return Err(invalid("admission checkout inventory count exceeds bound"));
+    }
+    let mut dirs = BTreeMap::new();
+    let mut path_bytes = 0u64;
+    for path in &files {
+        super::cancellation::check(cancel)?;
+        for (end, _) in path.match_indices('/') {
+            let parent = &path[..end];
+            let key = parent.to_uppercase();
+            if let Some(prior) = dirs.get(&key) {
+                if prior != &parent {
+                    return Err(invalid("admission checkout parent spelling aliases"));
+                }
+                continue;
+            }
+            if dirs.len() as u64 >= MAX_DIRECTORIES {
+                return Err(invalid("admission checkout inventory count exceeds bound"));
+            }
+            path_bytes = path_bytes
+                .checked_add(parent.len() as u64)
+                .filter(|bytes| *bytes <= MAX_ARCHIVE_BYTES)
+                .ok_or_else(|| invalid("admission checkout parent metadata exceeds bound"))?;
+            dirs.insert(key, parent);
+        }
+    }
+    admission_budget(ready_metadata_bound, files.len() as u64, dirs.len() as u64)
+}
+
 /// Ordinary10 reserves its complete immutable representation witness in M.
 /// This does not consume the separately funded family protection margin.
 pub(in crate::projection::provider) fn ordinary_admission_budget(

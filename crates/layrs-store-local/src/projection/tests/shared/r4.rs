@@ -175,12 +175,13 @@ fn retained_handle_refuses_valid_family_marker_drift_before_hot_catalog_rollback
     reject_all(&handle);
     assert!(ProjectionStore::recover_databases(store.checkout_root(), &before.binding).is_err());
     r2::assert_unchanged_database(&fs::read(&catalog).unwrap(), &spilled);
-    assert!(
-        ProjectionStore::recover_databases(store.checkout_root(), &replacement.binding)
-            .unwrap()
-            .recovery
-            .is_empty()
-    );
+    // Since b52b95a no binding grants hot family-catalog rollback: an unreadable
+    // catalog cannot establish its recovery contract. The valid replacement
+    // binding is refused too, and the spilled catalog stays byte-identical.
+    let error = ProjectionStore::recover_databases(store.checkout_root(), &replacement.binding)
+        .unwrap_err();
+    assert!(database::readonly_rollback(&error), "{error}");
+    r2::assert_unchanged_database(&fs::read(&catalog).unwrap(), &spilled);
 }
 
 fn assert_schema5_fixture(db: &Path) {

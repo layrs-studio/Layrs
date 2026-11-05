@@ -36,7 +36,7 @@ impl ManagedCheckoutProof {
     }
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn require_physical(
         &self,
-        lease: &ManagedImportLease<'_, '_, '_, '_>,
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
         if lease.expected_checkout(cancel)?.header() != self.expected.header() {
@@ -55,7 +55,7 @@ enum JournalMutation<'a> {
     },
 }
 
-impl ManagedImportLease<'_, '_, '_, '_> {
+impl ManagedImportLease<'_, '_, '_, '_, '_> {
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn copy_checkout(
         &mut self,
         protected: &ManagedImportProtection,
@@ -150,8 +150,12 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                         // path can never rewrite Verified or final files.
                         let output =
                             storage.begin_write(&expected, &journal, &mut piece, cancel)?;
-                        self.image
-                            .copy_exact_file(&file.path, &manifest, output, cancel)?;
+                        if self.companion.is_some() || self.denial.is_some() {
+                            protected.copy_file(self, &manifest, output, cancel)?;
+                        } else {
+                            self.image
+                                .copy_exact_file(&file.path, &manifest, output, cancel)?;
+                        }
                         let next = storage.verify_temp(&expected, &journal, &piece, cancel)?;
                         journal = self.checkout_mutation(
                             &expected,
@@ -207,7 +211,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
     pub(super) fn require_checkout_protection(
         &self,
         expected: &ExpectedCheckout,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination: &ProviderTransitionIntentRecord,
         metadata_floor: u64,
         cancel: &Cancellation,
@@ -244,7 +248,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
     fn checkout_destination(
         &self,
         c: &Connection,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination: &ProviderTransitionIntentRecord,
         closure: &VerifiedImportClosure,
         expected: &ExpectedCheckout,
@@ -399,6 +403,7 @@ impl ManagedImportLease<'_, '_, '_, '_> {
                     c.execute_batch("COMMIT")?;
                     Ok(())
                 })();
+                let result = super::source_protection::rollback(bare.connection(), result);
                 bare.finish_writer(result, close)
             },
         )?;

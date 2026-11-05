@@ -1,7 +1,8 @@
-//! Pure schema-8 transition intent DATA. This codec reads no SQL or filesystem,
+//! Closed v1/v2 transition intent DATA. This codec reads no SQL or filesystem,
 //! and proves neither permissions, resident bytes, native READY nor publication.
 use super::{
     codec,
+    denied_coverage::DeniedCoverageRef,
     import::{
         ImportRowset, ImportSource, ProviderImportKind, ProviderImportPrefixRecord,
         ProviderTransitionReceiptRecord,
@@ -14,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const SCHEMA: &str = "layrs.projection-provider-transition-intent.v1";
+const SCHEMA_V2: &str = "layrs.projection-provider-transition-intent.v2";
+const DOMAIN_V2: &str = "layrs-projection-provider-transition-intent-v2";
+const PLAN_DOMAIN_V2: &str = "layrs-projection-provider-transition-plan-v2";
 const DOMAIN: &str = "layrs-projection-provider-transition-intent-v1";
 const PLAN_DOMAIN: &str = "layrs-projection-provider-transition-plan-v1";
 const DESTINATION_DOMAIN: &str = "layrs-projection-provider-transition-destination-v1";
@@ -102,8 +106,7 @@ impl TransitionObservation {
 
 /// Immutable intent. `source_prefix` is a compact historical header, not the
 /// imported rows. Its digest is bound before any destination directory exists.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::projection) struct TransitionPlan {
     pub kind: ProviderImportKind,
     pub source_prefix_id: String,
@@ -122,6 +125,8 @@ pub(in crate::projection) struct TransitionPlan {
     pub companion_deletions: TransitionRowset,
     pub protected_manifests: TransitionRowset,
     pub quota_bytes: u64,
+    /// Required on the v2 wire; never inline the negative path inventory.
+    pub denial_coverage: Option<DeniedCoverageRef>,
 }
 impl TransitionPlan {
     /// Includes the embedded source prefix and every immutable transition
@@ -130,7 +135,11 @@ impl TransitionPlan {
         codec::preflight(self, ProviderTransitionIntentRecord::MAX_BYTES)?;
         self.validate()?;
         Ok(codec::hash(
-            PLAN_DOMAIN,
+            if self.denial_coverage.is_some() {
+                PLAN_DOMAIN_V2
+            } else {
+                PLAN_DOMAIN
+            },
             &codec::encode(self, ProviderTransitionIntentRecord::MAX_BYTES)?,
         ))
     }
@@ -156,6 +165,9 @@ impl TransitionPlan {
         }
     }
     fn validate(&self) -> Result<()> {
+        if let Some(reference) = &self.denial_coverage {
+            reference.validate()?;
+        }
         self.source_prefix.encode()?;
         format::validate_identity(self.source_identity())?;
         codec::digest_token(&self.source_prefix_id)?;
@@ -334,8 +346,7 @@ impl TransitionDestinationProof {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::projection) struct ProviderTransitionIntentRecord {
     pub schema_version: String,
     pub transaction_id: String,
@@ -343,17 +354,20 @@ pub(in crate::projection) struct ProviderTransitionIntentRecord {
     pub state: TransitionState,
     pub local_generation: u64,
     pub plan: TransitionPlan,
-    #[serde(deserialize_with = "codec::required_option")]
     pub destination: Option<TransitionDestinationProof>,
-    #[serde(deserialize_with = "codec::required_option")]
     pub reservation: Option<String>,
-    #[serde(deserialize_with = "codec::required_option")]
     pub receipt_id: Option<String>,
 }
 impl Record for ProviderTransitionIntentRecord {
     const MAX_BYTES: usize = 256 * 1024;
     fn validate_fields(&self) -> Result<()> {
-        codec::schema(&self.schema_version, SCHEMA)?;
+        match (
+            self.schema_version.as_str(),
+            self.plan.denial_coverage.is_some(),
+        ) {
+            (SCHEMA, false) | (SCHEMA_V2, true) => {}
+            _ => return Err(invalid("transition intent version/denial coverage differs")),
+        }
         codec::transaction(&self.transaction_id)?;
         self.plan.validate()?;
         if self.local_generation > i64::MAX as u64
@@ -413,7 +427,13 @@ impl ProviderTransitionIntentRecord {
     }
 
     pub fn digest(&self) -> Result<String> {
-        Ok(codec::hash(DOMAIN, &self.encode()?))
+        let bytes = self.encode()?;
+        let domain = match self.schema_version.as_str() {
+            SCHEMA => DOMAIN,
+            SCHEMA_V2 => DOMAIN_V2,
+            _ => return Err(invalid("transition intent schemaVersion mismatch")),
+        };
+        Ok(codec::hash(domain, &bytes))
     }
     pub fn require_row(&self, row: TransitionRowData<'_>) -> Result<()> {
         if row.id != self.transaction_id
@@ -441,7 +461,9 @@ impl ProviderTransitionIntentRecord {
         self.validate_fields()?;
         receipt.validate_fields()?;
         receipt.require_prefix(&self.plan.source_prefix)?;
-        if self.receipt_id.as_deref() != Some(receipt.digest()?.as_str())
+        if self.plan.denial_coverage != receipt.denial_coverage
+            || (self.schema_version == SCHEMA_V2) != receipt.supports_denied_coverage()
+            || self.receipt_id.as_deref() != Some(receipt.digest()?.as_str())
             || receipt.transition_plan_digest != self.plan.digest()?
             || receipt.transaction_id != self.transaction_id
             || receipt.owner_identity_digest
@@ -505,6 +527,7 @@ impl ProviderTransitionIntentRecord {
             _ => false,
         };
         if !legal
+            || self.schema_version != previous.schema_version
             || self.transaction_id != previous.transaction_id
             || self.role != previous.role
             || self.local_generation != previous.local_generation
@@ -533,3 +556,6 @@ pub(in crate::projection) struct TransitionRowData<'a> {
 #[cfg(test)]
 #[path = "transition/tests.rs"]
 mod tests;
+
+#[path = "transition/wire.rs"]
+mod wire;

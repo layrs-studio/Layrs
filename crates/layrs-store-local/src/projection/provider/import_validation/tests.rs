@@ -218,6 +218,7 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
                 },
                 ancestry_root_receipt: None,
                 closure: ImportClosure {
+                    denial_observations: None,
                     restore_history: None,
                     snapshots: row(2),
                     selections: row(1),
@@ -445,6 +446,7 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
                 },
                 ancestry_root_receipt: None,
                 closure: ImportClosure {
+                    denial_observations: None,
                     restore_history: None,
                     snapshots: ImportRowset {
                         count: 2,

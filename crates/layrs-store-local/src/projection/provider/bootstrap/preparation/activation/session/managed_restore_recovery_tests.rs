@@ -174,9 +174,10 @@ fn malformed_journal_refuses_without_effects(store: &ProjectionStore, family: &P
 }
 
 #[test]
-#[ignore = "UNQUALIFIED interrupted admitted restore; ROOT source release, owned child720 / outer780 required"]
+#[ignore = "UNQUALIFIED interrupted admitted restore; ROOT source release, owned child1800 / outer1860 required"]
 fn managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection() {
-    child::run(concat!(module_path!(), "::managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection"), 720, || {
+    // r205: iteration 0 of 4 completed, iteration 1 still running at 720s.
+    child::run(concat!(module_path!(), "::managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection"), 1800, || {
         child::declare();
         let root = admitted_destination();
         let store = ProjectionStore::open(&root).unwrap();
@@ -242,6 +243,13 @@ fn managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_ins
                 baseline.require_same_import(&admitted_ordinary::inspect(&access.connection, &marker, None)?)?;
                 access.with_content(|c, scope| crate::projection::retention::fsck_with_scope(c, &store, Some(scope)))
             }).unwrap();
+            // A completed ordinary restore leaves only its committed budget;
+            // inspection reports it until the next Exclusive entry settles it.
+            assert_eq!(
+                ProjectionStore::inspect_recovery(&root).unwrap().recovery,
+                vec![ProjectionRecoveryReason::Reservation]
+            );
+            format::access(&store, SessionMode::Exclusive).unwrap().run(|access| access.verify()).unwrap();
             drop(store);
             assert!(ProjectionStore::inspect_recovery(&root).unwrap().recovery.is_empty());
         }

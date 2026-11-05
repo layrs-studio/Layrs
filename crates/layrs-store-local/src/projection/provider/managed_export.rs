@@ -9,6 +9,8 @@ pub(in crate::projection::provider) use admission::{
 };
 mod budget;
 mod checkout;
+#[cfg(test)]
+pub(in crate::projection::provider) mod checkout_copy_probe;
 pub(in crate::projection::provider) use checkout::OrdinaryCheckoutProof;
 mod checkout_reopen;
 pub(in crate::projection::provider) use checkout_reopen::{

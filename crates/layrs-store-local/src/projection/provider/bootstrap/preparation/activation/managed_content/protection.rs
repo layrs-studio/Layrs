@@ -1,5 +1,6 @@
 //! Retained managed protection. Hash outside catalog scopes; acknowledge only
 //! after positive family/source closes and complete fresh SQL readback.
+pub(super) use super::source_protection::ManagedSourceCompanionProtection;
 use super::*;
 use crate::projection::shared::{
     exact_content::{verify_published_cas, ExactBinding, PublishedCasProof},
@@ -21,9 +22,20 @@ impl ManagedImportProtection {
     ) -> &ExactProtection {
         &self.root
     }
+    pub(super) fn copy_file(
+        &self,
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
+        manifest: &FileManifest,
+        output: &mut dyn std::io::Write,
+        cancel: &Cancellation,
+    ) -> CauseResult<()> {
+        self.require(lease, cancel)?;
+        self.bytes
+            .copy_exact_file(&self.binding, lease.manifests, manifest, output, cancel)
+    }
     pub(in crate::projection::provider::bootstrap::preparation::activation) fn require(
         &self,
-        lease: &ManagedImportLease<'_, '_, '_, '_>,
+        lease: &ManagedImportLease<'_, '_, '_, '_, '_>,
         cancel: &Cancellation,
     ) -> CauseResult<()> {
         let binding = lease.exact_binding()?;
@@ -37,7 +49,7 @@ impl ManagedImportProtection {
     }
 }
 
-impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
+impl<'h, 'i, 'd, 'a, 'c> ManagedImportLease<'h, 'i, 'd, 'a, 'c> {
     /// Reconstruct physical protection after a checkout journal has already
     /// been committed. This route is read-only and requires an existing exact
     /// root; it cannot repair an absent root or bypass the typed journal.
@@ -114,7 +126,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
 
     pub(super) fn read_protection(
         &self,
-        proof: &PrivateActiveCaptureValidation,
+        proof: &PrivateActivePublicationValidation,
         destination: &ProviderTransitionIntentRecord,
         metadata_floor: u64,
         binding: &ExactBinding,
@@ -122,7 +134,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
         cancel: &Cancellation,
     ) -> CauseResult<ImportProtectionState> {
         let inputs = self.inputs(proof, destination)?;
-        managed_destination::valid(database_io::read_cancellable(
+        managed_destination::valid(database_io::read_cancellable_strict(
             &self.held.family.catalog,
             cancel,
             |c| {
@@ -211,6 +223,7 @@ impl<'h, 'd, 'a, 'c> ManagedImportLease<'h, 'd, 'a, 'c> {
                 c.execute_batch("COMMIT")?;
                 Ok(effect)
             })();
+            let result = super::source_protection::rollback(bare.connection(), result);
             bare.finish_writer(result, close)
         })?;
         // The outer source read close has succeeded; nothing is acknowledged

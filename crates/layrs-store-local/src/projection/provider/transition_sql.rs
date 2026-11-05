@@ -2,9 +2,10 @@
 //! This commits nothing and confers no filesystem, family, native, or image
 //! authority. On any error the caller must roll back its transaction.
 use super::{
-    cancellation,
+    cancellation, denied_coverage_storage,
     import_validation::{self, ImportDatabaseKind},
     records::{
+        denied_coverage::DerivedDeniedCoverage,
         import::ImportSourceReferences,
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
         AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Record,
@@ -13,10 +14,10 @@ use super::{
     validation::{self, PrivateActiveCaptureValidation},
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, DatabaseName, TransactionState};
 
 mod publication;
-pub(super) use publication::apply_source_publication;
+pub(super) use publication::{apply_source_publication, apply_source_publication_with_companion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceIntentEffect {
@@ -38,11 +39,48 @@ pub(super) fn apply_source_intent(
     next: &ProviderTransitionIntentRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<SourceIntentEffect> {
+    apply_source_intent_with_coverage(
+        c, allocation, prepared, binding, root_id, previous, next, None, cancel,
+    )
+}
+
+/// A fresh v2 Planned row and its observation-derived document are inserted in
+/// the same caller-owned main write transaction. Existing v2 rows must already
+/// own their complete stored body: supplied DATA never repairs replay/history.
+/// No live caller, destination transport or capacity admission is provided here.
+pub(super) fn apply_source_intent_with_coverage(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    binding: &ProviderBootstrapBinding,
+    root_id: [u8; 16],
+    previous: Option<&ProviderTransitionIntentRecord>,
+    next: &ProviderTransitionIntentRecord,
+    coverage: Option<&DerivedDeniedCoverage>,
+    cancel: Option<&Cancellation>,
+) -> Result<SourceIntentEffect> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid(
             "source transition requires a caller-owned transaction",
         ));
+    }
+    if next.plan.denial_coverage.is_some() || coverage.is_some() {
+        if c.transaction_state(Some(DatabaseName::Main))? != TransactionState::Write {
+            return Err(invalid(
+                "source denied coverage requires an active main write transaction",
+            ));
+        }
+        let (foreign_keys, query_only): (i64, i64) = c.query_row(
+            "SELECT (SELECT foreign_keys FROM pragma_foreign_keys), (SELECT query_only FROM pragma_query_only)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if foreign_keys != 1 || query_only != 0 {
+            return Err(invalid(
+                "source denied coverage requires writable foreign-key enforcement",
+            ));
+        }
     }
     let next_payload = next.encode()?;
     let next_digest = next.digest()?;
@@ -71,6 +109,27 @@ pub(super) fn apply_source_intent(
         .transitions
         .iter()
         .find(|row| row.transaction_id == next.transaction_id);
+    if next
+        .plan
+        .source_prefix
+        .closure
+        .denial_observations
+        .is_some()
+    {
+        return Err(invalid(
+            "source inherited denied coverage prefix scope is unsupported",
+        ));
+    }
+    // Complete before-reader above must reject missing/substituted/extra SQL
+    // bodies before considering even a genuine supplied normalized document.
+    if let Some(coverage) = coverage {
+        coverage.record().require_intent(next, cancel)?;
+    }
+    if current.is_none() && next.plan.denial_coverage.is_some() && coverage.is_none() {
+        return Err(invalid(
+            "new source denied coverage intent requires derived body",
+        ));
+    }
     let exact_replay = current == Some(next);
     if exact_replay {
         if let Some(previous) = previous {
@@ -128,6 +187,14 @@ pub(super) fn apply_source_intent(
     cancellation::check(cancel)?;
     if exact_replay {
         return Ok(SourceIntentEffect::AlreadyPresent);
+    }
+    if previous.is_none() {
+        if let Some(reference) = &next.plan.denial_coverage {
+            let coverage = coverage.ok_or_else(|| {
+                invalid("new source denied coverage intent requires derived body")
+            })?;
+            denied_coverage_storage::insert_exact(c, coverage, reference, cancel)?;
+        }
     }
     let changed = match previous {
         None => c.execute(
@@ -191,3 +258,7 @@ fn next_state(state: TransitionState) -> &'static str {
 #[cfg(test)]
 #[path = "transition_sql/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transition_sql/coverage_tests.rs"]
+pub(in crate::projection::provider) mod coverage_tests;

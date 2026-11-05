@@ -148,7 +148,9 @@ impl ProjectionStore {
     pub fn pending_publication(&self) -> Result<Option<PendingPublication>> {
         let access = format::access(self, SessionMode::Shared)?;
         access.run(|access: &mut format::Access| -> Result<_> {
-            database::require_idle(&access.connection)?;
+            // Scoped like captured_patch: an admitted C14 image has no ordinary
+            // outgoing reader, its authenticated admission owns that check.
+            access.with_content(|c, scope| database::require_idle_with_scope(c, self, scope))?;
             let result = storage::pending(&access.connection, self)?;
             access.verify()?;
             Ok(result)

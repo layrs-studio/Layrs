@@ -42,6 +42,7 @@ fn segments_digest(segments: &[ImportedSegment]) -> String {
 
 fn closure(generation: u64, captures: u64, receipts: u64) -> ImportClosure {
     ImportClosure {
+        denial_observations: None,
         restore_history: None,
         snapshots: row(generation + 1),
         selections: row(1),
@@ -140,6 +141,7 @@ fn receipt(
         } => (identity, version),
     };
     ProviderTransitionReceiptRecord {
+        denial_coverage: None,
         schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
         owner_identity_digest: ZERO.into(),
         transaction_id: transaction.into(),

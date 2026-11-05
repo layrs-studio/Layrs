@@ -25,6 +25,20 @@ pub(in crate::projection) struct ImportContentInputs<'a> {
     pub source_staging: &'a ProviderTransitionIntentRecord,
     pub destination_staging: &'a ProviderTransitionIntentRecord,
     pub required: &'a [FileManifest],
+    pub source_context:
+        Option<crate::projection::shared::source_companion::SourceCompanionFamilyContext<'a>>,
+}
+
+impl<'a> ImportContentInputs<'a> {
+    fn source_inputs(&self) -> ImportSourceInputs<'_, '_> {
+        ImportSourceInputs::provider_with_companions(
+            self.allocation,
+            self.prepared,
+            self.activation,
+            self.capture,
+            self.source_context.as_ref(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,18 +437,16 @@ impl FamilyAccess {
     ) -> Result<ImportProtectionState> {
         require_transaction(c, false, cancel)?;
         require_staging_pair(inputs, cancel)?;
+        require_source_envelope(c, inputs, cancel)?;
         if installation_binding(inputs)? != *binding {
             return Err(invalid(
                 "exact protection binding differs from managed import",
             ));
         }
-        if validate_import_base_at_member(
+        if validate_import_base_at_member_for_source(
             self,
             c,
-            inputs.allocation,
-            inputs.prepared,
-            inputs.activation,
-            inputs.capture,
+            &inputs.source_inputs(),
             inputs.source_staging,
             UnreservedPhase::Staging,
             member_phase,
@@ -513,18 +525,16 @@ impl FamilyAccess {
     ) -> Result<crate::projection::shared::exact_content::ExactInstallState> {
         require_transaction(c, false, cancel)?;
         require_staging_pair(inputs, cancel)?;
+        require_source_envelope(c, inputs, cancel)?;
         if installation_binding(inputs)? != *binding {
             return Err(invalid(
                 "exact installation binding differs from managed import",
             ));
         }
-        if validate_import_base(
+        if validate_import_base_for_source(
             self,
             c,
-            inputs.allocation,
-            inputs.prepared,
-            inputs.activation,
-            inputs.capture,
+            &inputs.source_inputs(),
             inputs.source_staging,
             UnreservedPhase::Staging,
             cancel,
@@ -551,13 +561,11 @@ impl FamilyAccess {
     ) -> Result<ImportContentState> {
         require_transaction(c, false, cancel)?;
         require_staging_pair(inputs, cancel)?;
-        if validate_import_base(
+        require_source_envelope(c, inputs, cancel)?;
+        if validate_import_base_for_source(
             self,
             c,
-            inputs.allocation,
-            inputs.prepared,
-            inputs.activation,
-            inputs.capture,
+            &inputs.source_inputs(),
             inputs.source_staging,
             UnreservedPhase::Staging,
             cancel,
@@ -661,3 +669,28 @@ pub(in crate::projection) fn installation_binding(
 #[cfg(test)]
 #[path = "content/tests.rs"]
 mod tests;
+
+fn require_source_envelope(
+    c: &Connection,
+    inputs: &ImportContentInputs<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<()> {
+    if inputs.source_staging.plan.companion_id.is_none() {
+        return Ok(());
+    }
+    let context = inputs
+        .source_context
+        .as_ref()
+        .ok_or_else(|| invalid("companion C effects require complete source family context"))?;
+    let root = context
+        .pending
+        .ok_or_else(|| invalid("companion C effects require separate fixed B reservation"))?;
+    root.require_plan(inputs.allocation, inputs.source_staging, cancel)?;
+    if root.inspect(c, cancel)?
+        == crate::projection::shared::source_companion::SourceCompanionPresence::Absent
+    {
+        return Err(invalid("companion C effects cannot precede B reservation"));
+    }
+    root.require_union(inputs.required, cancel)?;
+    root.require_capacity(c, cancel)
+}

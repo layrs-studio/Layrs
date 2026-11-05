@@ -87,6 +87,7 @@ impl Fixture {
             inherited_segments: row(0),
             ancestry_root_receipt: None,
             closure: ImportClosure {
+                denial_observations: None,
                 restore_history: None,
                 snapshots: row(2),
                 selections: row(1),
@@ -108,6 +109,7 @@ impl Fixture {
             digest: TOKEN.into(),
         };
         let plan = TransitionPlan {
+            denial_coverage: None,
             kind: ProviderImportKind::ManagedOrdinary,
             source_prefix_id: prefix.digest().unwrap(),
             source_prefix: prefix,

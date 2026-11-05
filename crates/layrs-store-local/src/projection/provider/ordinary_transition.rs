@@ -321,6 +321,11 @@ fn read_rows(
             row.get(7)?,
         );
         let record = ProviderTransitionIntentRecord::decode(&payload)?;
+        if record.plan.denial_coverage.is_some() {
+            return Err(invalid(
+                "ordinary outgoing denial coverage reader is not integrated",
+            ));
+        }
         record.require_row(TransitionRowData {
             id: &id,
             role: &role,

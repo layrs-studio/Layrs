@@ -14,7 +14,27 @@ impl Lease {
         bytes: u64,
         committed: bool,
     ) -> Result<()> {
-        self.restore_cancellation_stages(marker, reservation, operation, bytes, committed)?;
+        self.cancellation_stages(marker, reservation, operation, bytes, committed, false)?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(in crate::projection) fn preflight_capture_cancellation(
+        &self,
+        marker: &format::Marker,
+        reservation: &str,
+        capture: &crate::projection::retention::LocalCaptureCancellation,
+        bytes: u64,
+        committed: bool,
+    ) -> Result<()> {
+        self.cancellation_stages(
+            marker,
+            reservation,
+            capture.operation(),
+            bytes,
+            committed,
+            true,
+        )?;
         Ok(())
     }
 
@@ -27,7 +47,31 @@ impl Lease {
         committed: bool,
     ) -> Result<()> {
         let stages =
-            self.restore_cancellation_stages(marker, reservation, operation, bytes, committed)?;
+            self.cancellation_stages(marker, reservation, operation, bytes, committed, false)?;
+        self.finish_cancellation_stages(stages)
+    }
+
+    #[cfg(windows)]
+    pub(in crate::projection) fn cancel_capture_installations(
+        &self,
+        marker: &format::Marker,
+        reservation: &str,
+        capture: &crate::projection::retention::LocalCaptureCancellation,
+        bytes: u64,
+        committed: bool,
+    ) -> Result<()> {
+        let stages = self.cancellation_stages(
+            marker,
+            reservation,
+            capture.operation(),
+            bytes,
+            committed,
+            true,
+        )?;
+        self.finish_cancellation_stages(stages)
+    }
+
+    fn finish_cancellation_stages(&self, stages: Vec<Stage>) -> Result<()> {
         for mut stage in stages {
             if let Some(manifest) = &stage.manifest {
                 // Never choose another representation by FileId. A catalog
@@ -46,23 +90,34 @@ impl Lease {
         Ok(())
     }
 
-    fn restore_cancellation_stages(
+    fn cancellation_stages(
         &self,
         marker: &format::Marker,
         reservation: &str,
         operation: &str,
         bytes: u64,
         committed: bool,
+        capture: bool,
     ) -> Result<Vec<Stage>> {
-        if !self.is_admitted()
-            || reservation.is_empty()
-            || reservation.len() > 128
-            || reservation.contains('\0')
-            || !operation.strip_prefix("restore:").is_some_and(|id| {
+        let operation_matches = if capture {
+            operation.strip_prefix("capture:").is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        } else {
+            operation.strip_prefix("restore:").is_some_and(|id| {
                 !id.is_empty()
                     && id.len() <= 96
                     && id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
             })
+        };
+        if !self.is_admitted()
+            || reservation.is_empty()
+            || reservation.len() > 128
+            || reservation.contains('\0')
+            || !operation_matches
             || !(65536..=i64::MAX as u64).contains(&bytes)
         {
             return Err(invalid(

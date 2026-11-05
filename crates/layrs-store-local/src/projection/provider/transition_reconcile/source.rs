@@ -7,7 +7,7 @@ use super::*;
 /// Their own source version/preimages remain validated by the retained import
 /// proof; this kernel checks exact rowsets and passes their bytes through.
 pub(in crate::projection::provider) struct InheritedCompanionData<'a> {
-    pub header: &'a ProviderCompanionHeaderRecord,
+    pub header: super::super::records::companion_v2::CompanionHeaderRef<'a>,
     pub files: &'a [ProviderCompanionFileRecord],
     pub deletions: &'a [ProviderCompanionDeletionRecord],
 }
@@ -19,11 +19,190 @@ pub(in crate::projection::provider) struct ReconcileSourceData<'a> {
     pub(super) inherited: &'a [InheritedCompanionData<'a>],
     pub(super) current_changes: BTreeMap<RepoPath, &'a CapturedChange>,
     latest: Option<&'a CapturedPatch>,
+    pub(super) original_descriptors: BTreeMap<FileId, (FileManifestId, u64)>,
     // Retain the WHOLE proof rather than extracting a digest as permission.
     // No SQL operation or connection revalidation is performed by this module.
     _closure: Option<&'a VerifiedImportClosure>,
 }
 impl<'a> ReconcileSourceData<'a> {
+    /// Borrow the same already-normalized history/closure, adding original
+    /// descriptors from its complete private proof. No caller map is accepted.
+    pub(in crate::projection::provider) fn provider_descriptor_view(
+        &self,
+        proof: &super::super::validation::PrivateActiveCaptureValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        let input = SourceObservationData {
+            prefix: self.input.prefix,
+            identity: self.input.identity,
+            snapshot: self.input.snapshot,
+            snapshot_parent_digest: self.input.snapshot_parent_digest,
+            selection: self.input.selection,
+            selection_generation: self.input.selection_generation,
+            selection_snapshot_digest: self.input.selection_snapshot_digest,
+        };
+        Self {
+            input,
+            prefix_id: self.prefix_id.clone(),
+            mappings: self.mappings,
+            inherited: self.inherited,
+            current_changes: self.current_changes.clone(),
+            latest: self.latest,
+            original_descriptors: BTreeMap::new(),
+            _closure: self._closure,
+        }
+        .with_provider_descriptors(proof, cancel)
+    }
+    /// Original descriptor input is the FULL validated source proof, never an
+    /// arbitrary FileId->alternate map. Frozen mappings always take precedence.
+    /// Call after normalize and before image/reconcile/OwnedCompanion derivation.
+    pub(in crate::projection::provider) fn with_provider_descriptors(
+        mut self,
+        proof: &super::super::validation::PrivateActiveCaptureValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        let ImportSource::Provider {
+            activation_map_id,
+            version,
+            ..
+        } = &self.input.prefix.source
+        else {
+            return Err(invalid(
+                "original descriptor proof requires provider source",
+            ));
+        };
+        if activation_map_id != &proof.active.activation.digest()?
+            || proof.active.activated.generation != version.generation
+            || proof.active.activated.digest != version.snapshot_digest
+            || proof.active.activated.snapshot != *self.input.snapshot
+            || proof.capture.patches.len() as u64 != version.capture_count
+            || proof.capture.patches.last().map(|p| p.digest.as_str())
+                != version.capture_head.as_deref()
+        {
+            return Err(invalid("original descriptor full source proof differs"));
+        }
+        for descriptor in proof.active.source.descriptors() {
+            cancellation::check(cancel)?;
+            descriptor.encode()?;
+            let value = (descriptor.manifest_id.clone(), descriptor.bytes);
+            if self
+                .original_descriptors
+                .insert(descriptor.file_id.clone(), value.clone())
+                .is_some_and(|old| old != value)
+            {
+                return Err(invalid(
+                    "original source has ambiguous descriptor representation",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    pub(in crate::projection::provider) fn require_provider_descriptors(
+        &self,
+        proof: &super::super::validation::PrivateActiveCaptureValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        for descriptor in proof.active.source.descriptors() {
+            cancellation::check(cancel)?;
+            if self.original_descriptors.get(&descriptor.file_id)
+                != Some(&(descriptor.manifest_id.clone(), descriptor.bytes))
+            {
+                return Err(invalid(
+                    "complete source requires with_provider_descriptors before reconcile",
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub(in crate::projection::provider) fn publication_descriptor_view(
+        &self,
+        proof: &super::super::validation::PrivateActivePublicationValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        let input = SourceObservationData {
+            prefix: self.input.prefix,
+            identity: self.input.identity,
+            snapshot: self.input.snapshot,
+            snapshot_parent_digest: self.input.snapshot_parent_digest,
+            selection: self.input.selection,
+            selection_generation: self.input.selection_generation,
+            selection_snapshot_digest: self.input.selection_snapshot_digest,
+        };
+        Self {
+            input,
+            prefix_id: self.prefix_id.clone(),
+            mappings: self.mappings,
+            inherited: self.inherited,
+            current_changes: self.current_changes.clone(),
+            latest: self.latest,
+            original_descriptors: BTreeMap::new(),
+            _closure: self._closure,
+        }
+        .with_publication_descriptors(proof, cancel)
+    }
+    /// Original descriptor input is the FULL validated source proof, never an
+    /// arbitrary FileId->alternate map. Frozen mappings always take precedence.
+    /// Call after normalize and before image/reconcile/OwnedCompanion derivation.
+    pub(in crate::projection::provider) fn with_publication_descriptors(
+        mut self,
+        proof: &super::super::validation::PrivateActivePublicationValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<Self> {
+        let ImportSource::Provider {
+            activation_map_id,
+            version,
+            ..
+        } = &self.input.prefix.source
+        else {
+            return Err(invalid(
+                "original descriptor proof requires provider source",
+            ));
+        };
+        if activation_map_id != &proof.active.activation.digest()?
+            || proof.active.activated.generation != version.generation
+            || proof.active.activated.digest != version.snapshot_digest
+            || proof.active.activated.snapshot != *self.input.snapshot
+            || proof.capture.patches.len() as u64 != version.capture_count
+            || proof.capture.patches.last().map(|p| p.digest.as_str())
+                != version.capture_head.as_deref()
+        {
+            return Err(invalid("original descriptor full source proof differs"));
+        }
+        for descriptor in proof.active.source.descriptors() {
+            cancellation::check(cancel)?;
+            descriptor.encode()?;
+            let value = (descriptor.manifest_id.clone(), descriptor.bytes);
+            if self
+                .original_descriptors
+                .insert(descriptor.file_id.clone(), value.clone())
+                .is_some_and(|old| old != value)
+            {
+                return Err(invalid(
+                    "original source has ambiguous descriptor representation",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    pub(in crate::projection::provider) fn require_publication_descriptors(
+        &self,
+        proof: &super::super::validation::PrivateActivePublicationValidation,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        for descriptor in proof.active.source.descriptors() {
+            cancellation::check(cancel)?;
+            if self.original_descriptors.get(&descriptor.file_id)
+                != Some(&(descriptor.manifest_id.clone(), descriptor.bytes))
+            {
+                return Err(invalid(
+                    "complete source requires with_publication_descriptors before reconcile",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(in crate::projection::provider) fn normalize(
         input: SourceObservationData<'a>,
         closure: &'a VerifiedImportClosure,
@@ -92,6 +271,7 @@ impl<'a> ReconcileSourceData<'a> {
             inherited,
             current_changes,
             latest,
+            original_descriptors: BTreeMap::new(),
             _closure: Some(closure),
         };
         result.require_observation(observation)?;
@@ -114,6 +294,64 @@ impl<'a> ReconcileSourceData<'a> {
             }
         }
         Ok(result)
+    }
+
+    /// Extract catalog DATA only through the matching complete provider proof.
+    /// Ordinary sources never acquire a catalog by supplying a provider proof.
+    pub(super) fn companion_catalog(
+        &self,
+        proof: Option<&super::super::validation::PrivateActiveCaptureValidation>,
+    ) -> Result<Option<String>> {
+        match (&self.input.prefix.source, proof) {
+            (ImportSource::Ordinary { .. }, None) => Ok(None),
+            (
+                ImportSource::Provider {
+                    activation_map_id, ..
+                },
+                Some(proof),
+            ) => {
+                self._closure
+                    .as_ref()
+                    .ok_or_else(|| invalid("companion catalog lacks retained import proof"))?
+                    .require_provider_inputs(proof)?;
+                let (_, activation, source, _, _) = proof.import_parts();
+                if activation.digest()? != *activation_map_id
+                    || activation.catalog_id != source.commitment().catalog_id
+                {
+                    return Err(invalid("companion provider catalog anchor differs"));
+                }
+                Ok(Some(activation.catalog_id.clone()))
+            }
+            _ => Err(invalid("companion source/provider proof kind differs")),
+        }
+    }
+
+    pub(super) fn publication_companion_catalog(
+        &self,
+        proof: Option<&super::super::validation::PrivateActivePublicationValidation>,
+    ) -> Result<Option<String>> {
+        match (&self.input.prefix.source, proof) {
+            (ImportSource::Ordinary { .. }, None) => Ok(None),
+            (
+                ImportSource::Provider {
+                    activation_map_id, ..
+                },
+                Some(proof),
+            ) => {
+                self._closure
+                    .as_ref()
+                    .ok_or_else(|| invalid("companion catalog lacks retained import proof"))?
+                    .require_publication_inputs(proof)?;
+                let (_, activation, source, _, _) = proof.import_parts();
+                if activation.digest()? != *activation_map_id
+                    || activation.catalog_id != source.commitment().catalog_id
+                {
+                    return Err(invalid("companion provider catalog anchor differs"));
+                }
+                Ok(Some(activation.catalog_id.clone()))
+            }
+            _ => Err(invalid("companion source/provider proof kind differs")),
+        }
     }
 
     pub(super) fn require_observation(&self, observed: &TransitionObservationData) -> Result<()> {
@@ -172,6 +410,7 @@ impl<'a> ReconcileSourceData<'a> {
     pub(super) fn mapping(&self, file: &FileId) -> Result<RepresentationData> {
         self.mappings
             .get(file)
+            .or_else(|| self.original_descriptors.get(file))
             .map(|(manifest, bytes)| RepresentationData {
                 file_id: file.clone(),
                 manifest_id: manifest.clone(),
@@ -251,6 +490,7 @@ pub(super) fn from_test_data<'a>(
         inherited,
         current_changes,
         latest,
+        original_descriptors: BTreeMap::new(),
         _closure: None,
     };
     result.require_observation(observed)?;
@@ -332,6 +572,10 @@ fn validate_inherited(
     let mut metadata = 0u64;
     for companion in inherited {
         cancellation::check(cancel)?;
+        metadata = metadata
+            .checked_add(companion.header.encode()?.len() as u64)
+            .filter(|n| *n <= MAX_METADATA)
+            .ok_or_else(|| invalid("reconcile inherited header metadata exceeds bound"))?;
         path_budget(
             companion
                 .files
@@ -360,7 +604,7 @@ fn validate_inherited(
         let receipt = expected
             .get(id.as_str())
             .ok_or_else(|| invalid("reconcile inherited companion is not engaged"))?;
-        receipt.require_companion(companion.header)?;
+        companion.header.require_receipt(receipt)?;
         if !ids.insert(id) {
             return Err(invalid("reconcile inherited companion repeats"));
         }

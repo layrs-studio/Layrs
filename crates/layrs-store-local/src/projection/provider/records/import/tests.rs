@@ -24,6 +24,7 @@ fn rowset(count: u64) -> ImportRowset {
 }
 fn closure() -> ImportClosure {
     ImportClosure {
+        denial_observations: None,
         snapshots: rowset(3),
         selections: rowset(3),
         captures: rowset(0),
@@ -450,6 +451,7 @@ fn segments_digest(segments: &[ImportedSegment]) -> String {
 fn receipt_from(prefix: &ProviderImportPrefixRecord, tx: &str) -> ProviderTransitionReceiptRecord {
     let version = prefix.source.version();
     ProviderTransitionReceiptRecord {
+        denial_coverage: None,
         schema_version: RECEIPT_SCHEMA.into(),
         owner_identity_digest: ID0.into(),
         transaction_id: tx.into(),
@@ -592,10 +594,21 @@ fn admitted_source_binding_roundtrips_with_canonical_bounded_fields() {
 }
 
 #[test]
-fn admitted_source_requires_v2_schema9_checkout_and_incoming_ancestry() {
+fn admitted_source_requires_v2_schema9_or10_checkout_and_incoming_ancestry() {
     let (prefix, _, _) = admitted_prefix();
     let bytes = prefix.encode().unwrap();
-    for schema in [6, 7, 8, 10] {
+    for schema in [9, 10] {
+        let mut supported = ProviderImportPrefixRecord::decode(&bytes).unwrap();
+        if let ImportSource::Ordinary { private_schema, .. } = &mut supported.source {
+            *private_schema = schema;
+        }
+        let encoded = supported.encode().unwrap();
+        assert_eq!(
+            ProviderImportPrefixRecord::decode(&encoded).unwrap(),
+            supported
+        );
+    }
+    for schema in [6, 7, 8, 11] {
         let mut wrong = ProviderImportPrefixRecord::decode(&bytes).unwrap();
         if let ImportSource::Ordinary { private_schema, .. } = &mut wrong.source {
             *private_schema = schema;
@@ -1037,6 +1050,7 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
 fn receipt_binds_prefix_and_new_destination_generation() {
     let prefix = prefix();
     let mut receipt = ProviderTransitionReceiptRecord {
+        denial_coverage: None,
         schema_version: RECEIPT_SCHEMA.into(),
         owner_identity_digest: ID0.into(),
         transaction_id: "transition-one".into(),
@@ -1073,4 +1087,195 @@ fn receipt_binds_prefix_and_new_destination_generation() {
         .unwrap();
     receipt.destination_observation_generation = 2;
     assert!(receipt.encode().is_err());
+}
+
+fn denial_reference() -> DeniedCoverageRef {
+    DeniedCoverageRef {
+        id: ID1.into(),
+        count: 1,
+        path_bytes: 10,
+        rows_digest: ID2.into(),
+    }
+}
+
+#[test]
+fn receipt_v1_keeps_legacy_bytes_and_digest_domain() {
+    let prefix = prefix();
+    let value = receipt_from(&prefix, "legacy-transition");
+    let empty = serde_json::json!({"count": 0, "digest": ID0});
+    let legacy = serde_json::json!({
+        "schemaVersion": RECEIPT_SCHEMA, "ownerIdentityDigest": ID0,
+        "transactionId": "legacy-transition", "transitionPlanDigest": ID1,
+        "destinationProofDigest": ID1, "sourcePrefixId": prefix.digest().unwrap(),
+        "sourcePrefix": prefix, "parentReceiptId": null,
+        "sourceIdentity": identity("source"), "destinationIdentity": identity("destination"),
+        "importedMaxGeneration": 2, "destinationObservationGeneration": 3,
+        "destinationObservationDigest": RAW, "destinationPlacementGeneration": 4,
+        "destinationPlacementDigest": RAW, "importedCaptureCount": 0,
+        "destinationCaptureSequence": 1, "destinationCaptureDigest": ID1,
+        "protectedManifests": empty, "contentMappings": empty, "companionId": null,
+        "companionFiles": empty, "companionDeletions": empty
+    });
+    let bytes = canonical_json(&legacy).unwrap();
+    assert_eq!(value.encode().unwrap(), bytes);
+    assert_eq!(value.digest().unwrap(), codec::hash(RECEIPT_DOMAIN, &bytes));
+    assert_eq!(
+        ProviderTransitionReceiptRecord::decode(&bytes).unwrap(),
+        value
+    );
+}
+
+#[test]
+fn receipt_v2_requires_a_closed_nonnull_coverage_reference() {
+    let mut value = receipt_from(&prefix(), "coverage-transition");
+    value.schema_version = RECEIPT_SCHEMA_V2.into();
+    value.denial_coverage = Some(denial_reference());
+    let bytes = value.encode().unwrap();
+    assert!(bytes.len() < ProviderTransitionReceiptRecord::MAX_BYTES);
+    assert_eq!(
+        ProviderTransitionReceiptRecord::decode(&bytes).unwrap(),
+        value
+    );
+    assert_eq!(
+        value.digest().unwrap(),
+        codec::hash(RECEIPT_DOMAIN_V2, &bytes)
+    );
+    assert_ne!(value.digest().unwrap(), codec::hash(RECEIPT_DOMAIN, &bytes));
+    let wire = serde_json::to_value(&value).unwrap();
+    for malformed in 0..6 {
+        let mut wrong = wire.clone();
+        match malformed {
+            0 => {
+                wrong.as_object_mut().unwrap().remove("denialCoverage");
+            }
+            1 => wrong["denialCoverage"] = serde_json::Value::Null,
+            2 => wrong["schemaVersion"] = RECEIPT_SCHEMA.into(),
+            3 => wrong["denialCoverage"]["unexpected"] = true.into(),
+            4 => {
+                wrong["denialCoverage"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("count");
+            }
+            _ => wrong["unexpected"] = true.into(),
+        }
+        let bytes = canonical_json(&wrong).unwrap();
+        assert!(serde_json::from_slice::<ProviderTransitionReceiptRecord>(&bytes).is_err());
+        assert!(ProviderTransitionReceiptRecord::decode(&bytes).is_err());
+    }
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let reference = serde_json::to_string(&denial_reference()).unwrap();
+    for duplicate in [
+        format!("{{\"schemaVersion\":\"{RECEIPT_SCHEMA_V2}\",{}", &text[1..]),
+        text.replacen(
+            "\"denialCoverage\":",
+            &format!("\"denialCoverage\":{reference},\"denialCoverage\":"),
+            1,
+        ),
+    ] {
+        assert!(serde_json::from_str::<ProviderTransitionReceiptRecord>(&duplicate).is_err());
+    }
+    let mut legacy_null = serde_json::to_value(receipt_from(&prefix(), "legacy")).unwrap();
+    legacy_null["denialCoverage"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<ProviderTransitionReceiptRecord>(legacy_null).is_err());
+    value.schema_version = RECEIPT_SCHEMA.into();
+    assert!(value.encode().is_err());
+    value.denial_coverage = None;
+    value.schema_version = RECEIPT_SCHEMA_V2.into();
+    assert!(value.encode().is_err());
+}
+
+#[test]
+fn prefix_v3_requires_closed_inherited_denial_inventory_and_restore_history() {
+    let mut value = prefix_v2();
+    value.schema_version = PREFIX_SCHEMA_V3.into();
+    value.closure.denial_observations = Some(rowset(2));
+    let bytes = value.encode().unwrap();
+    assert_eq!(ProviderImportPrefixRecord::decode(&bytes).unwrap(), value);
+    assert_eq!(
+        value.digest().unwrap(),
+        codec::hash(PREFIX_DOMAIN_V3, &bytes)
+    );
+    for old_domain in [PREFIX_DOMAIN, PREFIX_DOMAIN_V2] {
+        assert_ne!(value.digest().unwrap(), codec::hash(old_domain, &bytes));
+    }
+    assert!(value.supports_restore_history());
+    assert!(value.authenticated_checkout_identity().unwrap().is_some());
+    let wire = serde_json::to_value(&value).unwrap();
+    for malformed in 0..8 {
+        let mut wrong = wire.clone();
+        match malformed {
+            0 => {
+                wrong["closure"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("denialObservations");
+            }
+            1 => wrong["closure"]["denialObservations"] = serde_json::Value::Null,
+            2 => {
+                wrong["closure"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("restoreHistory");
+            }
+            3 => wrong["closure"]["restoreHistory"] = serde_json::Value::Null,
+            4 => wrong["schemaVersion"] = PREFIX_SCHEMA_V2.into(),
+            5 => wrong["closure"]["denialObservations"]["unexpected"] = true.into(),
+            6 => wrong["closure"]["unexpected"] = true.into(),
+            _ => wrong["unexpected"] = true.into(),
+        }
+        let bytes = canonical_json(&wrong).unwrap();
+        assert!(serde_json::from_slice::<ProviderImportPrefixRecord>(&bytes).is_err());
+        assert!(ProviderImportPrefixRecord::decode(&bytes).is_err());
+    }
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let rows = serde_json::to_string(&rowset(2)).unwrap();
+    for duplicate in [
+        format!("{{\"schemaVersion\":\"{PREFIX_SCHEMA_V3}\",{}", &text[1..]),
+        text.replacen(
+            "\"denialObservations\":",
+            &format!("\"denialObservations\":{rows},\"denialObservations\":"),
+            1,
+        ),
+    ] {
+        assert!(serde_json::from_str::<ProviderImportPrefixRecord>(&duplicate).is_err());
+    }
+    for legacy in [prefix(), prefix_v2()] {
+        let mut legacy_null = serde_json::to_value(legacy).unwrap();
+        legacy_null["closure"]["denialObservations"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ProviderImportPrefixRecord>(legacy_null).is_err());
+    }
+    let mut bare_extra = serde_json::to_value(&value.closure).unwrap();
+    bare_extra["unexpected"] = true.into();
+    assert!(serde_json::from_value::<ImportClosure>(bare_extra).is_err());
+    // Standalone closure decoding cannot erase malformed version extensions.
+    let mut bare = serde_json::to_value(&value.closure).unwrap();
+    bare["denialObservations"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<ImportClosure>(bare).is_err());
+    for old_schema in [PREFIX_SCHEMA, PREFIX_SCHEMA_V2] {
+        value.schema_version = old_schema.into();
+        assert!(value.encode().is_err());
+    }
+    value.schema_version = PREFIX_SCHEMA_V3.into();
+    let ImportSource::Ordinary {
+        checkout_identity, ..
+    } = &mut value.source
+    else {
+        unreachable!()
+    };
+    *checkout_identity = None;
+    assert!(value.encode().is_err());
+}
+
+#[test]
+fn prefix_denial_documents_share_the_existing_closure_aggregate_bound() {
+    let mut value = prefix_v2();
+    value.schema_version = PREFIX_SCHEMA_V3.into();
+    // Existing six rows + denial documents use the same one-million row cap.
+    value.closure.denial_observations = Some(rowset(MAX_ROWS - 6));
+    value.encode().unwrap();
+    value.closure.denial_observations.as_mut().unwrap().count += 1;
+    assert!(value.encode().is_err());
+    value.closure.denial_observations.as_mut().unwrap().count = MAX_ROWS + 1;
+    assert!(value.encode().is_err());
 }

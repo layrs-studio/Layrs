@@ -104,6 +104,7 @@ fn staged(
         digest: rows.digest.clone(),
     };
     let receipt = ProviderTransitionReceiptRecord {
+        denial_coverage: None,
         schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
         owner_identity_digest: proof.owner_digest(&staging.plan).unwrap(),
         transaction_id: staging.transaction_id.clone(),

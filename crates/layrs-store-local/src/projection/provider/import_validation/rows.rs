@@ -25,6 +25,7 @@ pub(super) enum Kind {
     CompanionDeletions,
     ContentMappings,
     RestoreHistory,
+    DenialObservations,
 }
 impl Kind {
     fn domain(self) -> &'static [u8] {
@@ -42,6 +43,7 @@ impl Kind {
             Self::CompanionDeletions => b"layrs-provider-import-companion-deletions-v1\0",
             Self::ContentMappings => b"layrs-provider-import-content-mappings-v1\0",
             Self::RestoreHistory => b"layrs-provider-import-restore-history-v1\0",
+            Self::DenialObservations => b"layrs-provider-import-denial-observations-v1\0",
         }
     }
 }
@@ -74,9 +76,9 @@ pub(super) fn preflight(
     specs: &[Spec<'_>],
     cancel: Option<&Cancellation>,
 ) -> CauseResult<Preflight> {
-    if !matches!(specs.len(), 12 | 13) {
+    if !matches!(specs.len(), 12 | 13 | 14) {
         return Err(invalid(
-            "import requires twelve legacy or thirteen extended rowsets",
+            "import requires twelve, thirteen or fourteen versioned rowsets",
         ));
     }
     let mut counts = Vec::with_capacity(specs.len());
@@ -87,6 +89,21 @@ pub(super) fn preflight(
         crate::projection::provider::cancellation::check(cancel)?;
         if spec.kind as usize != index {
             return Err(invalid("import rowset order or duplicate kind differs"));
+        }
+        if spec.kind == Kind::DenialObservations && !spec.params.is_empty() {
+            // Empty ordinary6 scopes have no observation table. All selected
+            // denial scopes bind their derived ID JSON as the single parameter.
+            // Both source and destination collision checks inspect the actual
+            // stored type/length before selecting or allocating any body.
+            let malformed: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projection_observations WHERE digest IN (SELECT value FROM json_each(?1)) AND (typeof(digest)!='text' OR length(CAST(digest AS BLOB))!=71 OR typeof(payload)!='blob' OR length(payload)=0 OR length(payload)>67108864))",
+                spec.params, |r| r.get(0),
+            )?;
+            if malformed {
+                return Err(invalid(
+                    "import denial stored body type/length exceeds bound",
+                ));
+            }
         }
         let (count, bytes): (u64, u64) = c.query_row(spec.preflight_sql, spec.params, |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -117,7 +134,7 @@ pub(super) fn stream(
     preflight: &Preflight,
     cancel: Option<&Cancellation>,
 ) -> CauseResult<ImportClosure> {
-    if !matches!(specs.len(), 12 | 13)
+    if !matches!(specs.len(), 12 | 13 | 14)
         || preflight.counts.len() != specs.len()
         || preflight.bytes.len() != specs.len()
         || specs
@@ -137,7 +154,13 @@ pub(super) fn stream(
             cancel,
         )?);
     }
+    let denial_observations = if specs.len() == 14 {
+        output.pop()
+    } else {
+        None
+    };
     Ok(ImportClosure {
+        denial_observations,
         snapshots: output.remove(0),
         selections: output.remove(0),
         captures: output.remove(0),
@@ -175,6 +198,9 @@ fn digest_one(
     let mut bytes = 0u64;
     while let Some(row) = rows.next()? {
         crate::projection::provider::cancellation::check(cancel)?;
+        if spec.kind == Kind::DenialObservations {
+            require_denial_row(row)?;
+        }
         count += 1;
         if count > expected {
             return Err(invalid("import rowset grew after preflight"));
@@ -268,4 +294,22 @@ pub(in crate::projection::provider) fn content_mapping_rowset_data(
         count,
         digest: format!("blake3:{}", hash.finalize()),
     })
+}
+
+/// Inspect borrowed SQLite fields before any owned BLOB allocation in copy.
+/// Canonical document/reference validation belongs to the authenticated scope.
+pub(super) fn require_denial_row(row: &rusqlite::Row<'_>) -> CauseResult<()> {
+    if row.as_ref().column_count() != 2 {
+        return Err(invalid("import denial document row shape differs"));
+    }
+    let ValueRef::Text(id) = row.get_ref(0)? else {
+        return Err(invalid("import denial document key is not TEXT"));
+    };
+    let ValueRef::Blob(body) = row.get_ref(1)? else {
+        return Err(invalid("import denial document body is not BLOB"));
+    };
+    if id.len() != 71 || body.is_empty() || body.len() > 64 * 1024 * 1024 {
+        return Err(invalid("import denial document key/body exceeds bound"));
+    }
+    Ok(())
 }

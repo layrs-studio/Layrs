@@ -16,6 +16,56 @@ pub(in crate::projection::provider) fn apply_source_publication(
     receipt: &ProviderTransitionReceiptRecord,
     cancel: Option<&Cancellation>,
 ) -> Result<SourceIntentEffect> {
+    if next.plan.companion_id.is_some() {
+        return Err(invalid(
+            "legacy source publication requires no new companion",
+        ));
+    }
+    apply_source_publication_scoped(
+        c, allocation, prepared, binding, root_id, previous, next, receipt, None, cancel,
+    )
+}
+
+pub(in crate::projection::provider) fn apply_source_publication_with_companion(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    binding: &ProviderBootstrapBinding,
+    root_id: [u8; 16],
+    previous: &ProviderTransitionIntentRecord,
+    next: &ProviderTransitionIntentRecord,
+    receipt: &ProviderTransitionReceiptRecord,
+    companion: &crate::projection::provider::source_companion::SourceCompanionPublication<'_>,
+    cancel: Option<&Cancellation>,
+) -> Result<SourceIntentEffect> {
+    apply_source_publication_scoped(
+        c,
+        allocation,
+        prepared,
+        binding,
+        root_id,
+        previous,
+        next,
+        receipt,
+        Some(companion),
+        cancel,
+    )
+}
+
+fn apply_source_publication_scoped(
+    c: &Connection,
+    allocation: &AllocationRecord,
+    prepared: &PreparedRecord,
+    binding: &ProviderBootstrapBinding,
+    root_id: [u8; 16],
+    previous: &ProviderTransitionIntentRecord,
+    next: &ProviderTransitionIntentRecord,
+    receipt: &ProviderTransitionReceiptRecord,
+    companion: Option<
+        &crate::projection::provider::source_companion::SourceCompanionPublication<'_>,
+    >,
+    cancel: Option<&Cancellation>,
+) -> Result<SourceIntentEffect> {
     cancellation::check(cancel)?;
     if c.is_autocommit() {
         return Err(invalid(
@@ -50,7 +100,18 @@ pub(in crate::projection::provider) fn apply_source_publication(
         .transitions
         .iter()
         .find(|row| row.transaction_id == next.transaction_id);
+    if let Some(companion) = companion {
+        let mut staging = ProviderTransitionIntentRecord::decode(&next.encode()?)?;
+        staging.state = TransitionState::Staging;
+        staging.receipt_id = None;
+        companion.require(allocation, &staging, receipt, cancel)?;
+    } else if next.plan.companion_id.is_some() {
+        return Err(invalid("source publication companion scope absent"));
+    }
     if current == Some(next) {
+        if let Some(companion) = companion {
+            companion.require_rows(c, cancel)?;
+        }
         if before
             .receipts
             .iter()
@@ -69,21 +130,16 @@ pub(in crate::projection::provider) fn apply_source_publication(
         // The original scoped prefix is authenticated before adding its
         // outgoing receipt. Incoming ancestry and outgoing receipts remain
         // separate sets; later terminal reads expose the complete new set.
-        let proof = PrivateActiveCaptureValidation {
-            active: before.active,
-            capture: before.capture,
-        };
-        import_validation::verify_source(
+        import_validation::verify_source_publication(
             c,
             &allocation.format,
-            ImportDatabaseKind::Provider,
             &next.plan.source_prefix,
             ImportSourceReferences::Provider {
                 allocation,
                 prepared,
-                activation: &proof.active.activation,
+                activation: &before.active.activation,
             },
-            Some(&proof),
+            &before,
             match &next.plan.source_prefix.source {
                 crate::projection::provider::records::import::ImportSource::Provider {
                     version,
@@ -107,6 +163,9 @@ pub(in crate::projection::provider) fn apply_source_publication(
         return Err(invalid("source publication writer requires foreign keys"));
     }
     if next.state == TransitionState::Ready {
+        if let Some(companion) = companion {
+            companion.insert(c, cancel)?;
+        }
         // No orphan is adopted: the complete before-reader requires every
         // existing receipt to have its own terminal source intent.
         if c.execute(
@@ -149,6 +208,9 @@ pub(in crate::projection::provider) fn apply_source_publication(
         return Err(invalid(
             "source publication post-write interpretation differs",
         ));
+    }
+    if let Some(companion) = companion {
+        companion.require_rows(c, cancel)?;
     }
     cancellation::check(cancel)?;
     Ok(SourceIntentEffect::Updated)
