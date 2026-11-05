@@ -177,9 +177,9 @@ fn second_room_merges_through_a_weave_after_the_first() {
     run(&project, &["room", "drop", "agent-c"], true);
 }
 
-/// ADR 0025: a Room's captures trust its change index like git (an edit that
-/// keeps the exact size and dates is not seen by `step`), but `drop` reads
-/// every byte first, so that edit is captured and the drop refused.
+/// ADR 0025: a Room's captures trust its change index like git (on Windows an
+/// edit that keeps the exact size and dates is not seen by `step`), but `drop`
+/// reads every byte first, so that edit is captured and the drop refused.
 #[test]
 fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
     let fixture = Fixture::new();
@@ -208,9 +208,12 @@ fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
         handle.set_modified(modified).unwrap();
     }
     assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
+    // Windows has no inode change time a write must bump, so the stat stays
+    // the same there. On Unix the write moves ctime, which the index compares
+    // as git's does, so the edit is already seen.
     assert_eq!(
         run(&room, &["room", "step"], true)["step"]["changed"],
-        false,
+        cfg!(not(windows)),
         "a git-like step trusts the unchanged stat"
     );
 
