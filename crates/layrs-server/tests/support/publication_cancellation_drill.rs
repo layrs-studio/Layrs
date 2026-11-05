@@ -92,7 +92,11 @@ pub fn run(remote: &NativeRemote, root: &Path, probe: &Probe, lose_response: &At
     std::fs::write(&file, b"initial published bytes").unwrap();
     let workspace = NativeWorkspace::initialize(&directory, "Publication cancellation").unwrap();
     let project = remote
-        .provision(&workspace, "publication-cancellation", "project")
+        .provision(
+            &workspace,
+            "publication-cancellation",
+            "publication-cancellation",
+        )
         .unwrap();
     assert_eq!(
         remote

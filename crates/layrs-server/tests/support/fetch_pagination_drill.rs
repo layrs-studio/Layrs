@@ -26,7 +26,7 @@ pub fn run(remote: &NativeRemote, root: &Path, origin: &str, token: &str, ca: &s
     workspace.capture().unwrap();
     let second = head(&workspace);
     let project = remote
-        .provision(&workspace, "fetch-pagination", "project")
+        .provision(&workspace, "fetch-pagination", "fetch-pagination")
         .unwrap();
     assert_eq!(
         remote

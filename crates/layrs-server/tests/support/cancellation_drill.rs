@@ -77,7 +77,7 @@ pub fn run(remote: &NativeRemote, root: &Path, probe: &Probe) {
     std::fs::write(source_root.join("contents.txt"), b"before cancellation").unwrap();
     let source = NativeWorkspace::initialize(&source_root, "Cancellation fixture").unwrap();
     let project = remote
-        .provision(&source, "cancellation", "project")
+        .provision(&source, "cancellation", "cancellation")
         .unwrap();
     assert_eq!(
         remote

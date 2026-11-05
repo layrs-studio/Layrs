@@ -106,7 +106,7 @@ pub fn run(
     std::fs::create_dir(&dest).unwrap();
     std::fs::write(source_root.join("contents.txt"), b"unchanged bytes").unwrap();
     let source = NativeWorkspace::initialize(&source_root, "Unchanged source").unwrap();
-    let project = remote.provision(&source, "unchanged", "project").unwrap();
+    let project = remote.provision(&source, "unchanged", "unchanged").unwrap();
     assert_eq!(
         remote
             .publish(&source, LayerMutationMode::Advance)
