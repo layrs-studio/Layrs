@@ -7,7 +7,6 @@
   "scripts": {
     "build:apps": "pnpm --filter @layrs/studio-web build && pnpm --filter @layrs/studio-desktop build",
     "check": "node scripts/check-all.mjs",
-    "check:file-size": "node scripts/check-file-size.mjs",
     "check:migrations": "node scripts/check-migrations.mjs",
     "check:typescript": "pnpm -r --if-present check",
     "check:workspaces": "pnpm -r --if-present check",

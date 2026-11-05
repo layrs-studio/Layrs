@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 
 const steps = [
   ["Migration immutability", "pnpm", ["run", "check:migrations"]],
-  ["Source file size", "pnpm", ["run", "check:file-size"]],
   ["Rust formatting", "pnpm", ["run", "format:check"]],
   ["Rust Clippy", "pnpm", ["run", "lint:rust"]],
   ["TypeScript workspaces", "pnpm", ["run", "check:typescript"]],

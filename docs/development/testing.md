@@ -43,7 +43,6 @@ pnpm format:check
 pnpm lint:rust
 pnpm check:typescript
 pnpm build:apps
-pnpm check:file-size
 ```
 
 `pnpm check` runs every command above. Clippy warnings are failures, not

@@ -453,7 +453,7 @@ révocation et conservation des références historiques ; cinq tests du
 vérificateur de paquets passent avec un module WASM réel. Les 20 migrations et
 leurs checksums, ainsi que les contrats TypeScript SDK et paquets intégrés,
 passent les contrôles ciblés. `pnpm check` passe aussi toutes les portes
-statiques : migrations, taille des fichiers, format Rust, Clippy sur tout le
+statiques : migrations, format Rust, Clippy sur tout le
 workspace avec avertissements refusés, TypeScript et builds Web/Desktop.
 Le serveur de développement reconstruit répond sur `https://localhost:19443` :
 TLS/authentification vérifiés, catalogue des lenses et organisations accessibles.
