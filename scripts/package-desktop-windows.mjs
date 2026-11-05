@@ -25,6 +25,8 @@ const sourceFiles = () => sourceTreeFiles(root, ["crates", "packages", "apps/stu
 const beforeFiles = sourceFiles();
 const beforeBuild = digestFiles(beforeFiles);
 run(process.execPath, ["scripts/check-packaged-wasm.mjs", "--offline"], root, false);
+// The Desktop build script bundles this exact release worker image.
+run("cargo", ["build", "--locked", "--release", "-p", "layrs-weave", "--bin", "layrs-lens-worker"], root, false);
 const started = Date.now();
 run(process.execPath, [join(app, "node_modules/@tauri-apps/cli/tauri.js"), "build", "--bundles", "msi", "--config", config, "--ci", "--no-sign", "--", "--locked"], app, false);
 const changes = sourceTreeChanges(beforeFiles, sourceFiles());
