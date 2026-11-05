@@ -23,7 +23,8 @@ Diff SHA256 `9f9d8b873a8274c6486f266c15331f3e3b95791cbb2a88d66ec62aa1a5f8f00e`.
 Baseline is the retained r84 source tree; unchanged context matched after newline
 normalization. ROOT73332/r84 finished with seven PASS results. ROOT38516/r88
 is terminal exit1; ROOT75810/r91 is terminal exit0 with seven PASS. The separate
-checkout runner ROOT86893/r94 is now active. Never reuse r88
+checkout runner ROOT86893/r94 finished with five PASS results and archived evidence.
+The five additional late-checkout recipes now run separately as ROOT99703/r98. Never reuse r88
 fixtures or rerun its scripts. A fresh retained revision is required.
 
 Implemented interfaces: `read_ordinary_checkout_finalizable` returns a boxed
@@ -39,8 +40,9 @@ withheld ACK after SQLite connection-close success. They also inspect real B/C
 byte drift, C Exclusive contention and pinned bytes. Incomplete journal and
 exact-manifest/corrupt family refusals are covered by the SQL recipe that passed
 in r88, not by the native recipes. The r88 native failure is a setup witness
-error: C correctly inherits B ingress receipt. No fresh-driver success or actual
-xClose/OS-close failure behavior is established at this checkpoint.
+error: C correctly inherits B ingress receipt. That failed recipe alone establishes
+no fresh-driver success; the corrected r91 runs above do. Actual xClose/OS-close
+failure behavior remains unqualified.
 
 The follow-up retained ReadyContext correction and test-only phase timings are
 integrated as r86 passed independent critical source review. Six paths differ

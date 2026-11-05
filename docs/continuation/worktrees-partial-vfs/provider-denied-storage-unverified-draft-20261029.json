@@ -1,0 +1,51 @@
+{
+  "status": "INTERRUPTED_OR_UNVERIFIED_DRAFT_NOT_A_RELEASE",
+  "savedUtc": "2026-10-29T00:01:50.730656+00:00",
+  "source": "D:\\Layrs\\tmp\\provider-denied-coverage-storage-proposal",
+  "files": [
+    {
+      "path": "base-inputs.json",
+      "bytes": 644,
+      "sha256": "9ec80062281b7bf897278db72a66b1b03dea2ee26ffaab16ea57391e3cfd27ad"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/denied_coverage_storage/tests.rs",
+      "bytes": 11138,
+      "sha256": "0f2408c537d8a3b57b945f31e6a9e59e947b7fd1e692bd5a1b6d9e04ed6fb4f3"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/denied_coverage_storage.rs",
+      "bytes": 5173,
+      "sha256": "197b17fe89ae9d88ec29eb15e574ac2fff5804b290a2e89b2f077ce4bcf140d5"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/denied_coverage/tests.rs",
+      "bytes": 14741,
+      "sha256": "f4160343c446a0e453abac6cd8555c3fe1819c4e2d8282e24557dc67db887b2f"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/denied_coverage.rs",
+      "bytes": 17824,
+      "sha256": "239b94eb41a90210fdadb70694bb8ac5340b66fec07bb541b569858bafae1d60"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records.rs",
+      "bytes": 2170,
+      "sha256": "3763fe0be9d4461a418f91792d3faf6254aa459bf32b61b8e21af6dbe3531975"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider.rs",
+      "bytes": 13483,
+      "sha256": "07d2902e96f62417791b5b68ff175b335615987b63da5242c76b19835498cd6c"
+    }
+  ],
+  "sourceDriftDuringSnapshot": [],
+  "archive": {
+    "path": "D:\\Layrs\\layrs\\docs\\continuation\\worktrees-partial-vfs\\provider-denied-storage-unverified-draft-20261029.tar.gz",
+    "bytes": 15446,
+    "sha256": "9781a027671ed4921adfa1f84b933bb7ff43f726b5d44c0d1d2a2e74a2857a53"
+  },
+  "compilation": "NOT_RUN",
+  "runtime": "NOT_RUN",
+  "integration": "NOT_DONE"
+}

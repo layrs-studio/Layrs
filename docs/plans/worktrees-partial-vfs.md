@@ -35,9 +35,13 @@ r91 passent ; les deux natifs privés frais réussissent en585,368s et571,530s.
 Le retained privé ACK passe en559,386s ; les deux recettes famille passent en
 573,955s et570,455s. ROOT75810/r91 termine exit0 : sept PASS archivés. La reprise
 de copie fraîche r92 est revue ; témoin TEMP corrigé r93, annotation de type r93b.
-Build/workspace r93b PASS. ROOT86893/r94 : SQL étendu PASS44,665s, natifs checkout
-en cours. Cinq recettes tardives supplémentaires sont revues et corrigées r96,
-sans compilation/runtime à ce stade.
+Build/workspace r93b PASS. ROOT86893/r94 termine exit0 : SQL étendu PASS44,665s,
+fresh checkout PASS575,541s, DeclareACK PASS576,062s, OwnedACK PASS577,891s,
+retained checkout PASS652,120s ; cinq résultats archivés. Les cinq recettes
+tardives corrigées r96 compilent r97 et s'exécutent seules dans ROOT99703/r98.
+Le test SQL isolant le minimum C10 à un octet près est intégré, sans compilation
+ni exécution pour l'instant. C13 dispose d'une proposition source partielle ;
+le raccordement réel, la préservation avant Ready et l'autonomie restent à établir.
 Voir la [passation courante](worktrees-partial-vfs-resume-2026-10-28.md)
 pour les preuves, sessions et limites. Ces jalons ne clôturent pas les lots globaux.
 

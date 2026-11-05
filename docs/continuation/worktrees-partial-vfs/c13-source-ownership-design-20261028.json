@@ -1,0 +1,245 @@
+{
+  "task": "C13 source8 companion ownership/publication integration",
+  "status": "SOURCE_ONLY_DESIGN_FOR_ROOT_DECISION",
+  "scope": {
+    "repository": "D:/Layrs/layrs",
+    "declared_base": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+    "proposal": "D:/Layrs/tmp/c13-provider-driver-source-proposal",
+    "checks": "Read source, handoff and convergence plan; no Git command, Cargo/build/test, SQL/native execution, network, fixture/process access or delegation. No main/proposal edits. Only this report is written. Base supplied by assignment, not independently queried.",
+    "instructions": "No AGENTS.md found in workspace/repository ancestors or checked crate/src/projection/provider/shared ancestor directories.",
+    "evidence": "Static path/contract tracing only; not acceptance, independent review or typecheck."
+  },
+  "conclusion": {
+    "recommended": "A separately typed B-owned companion retention-only group: explicit fixed B reservation plus canonical exact B root; C alone installs/debits the complete exact union. Keep B companion SQL absent during C preparation. After genuine C private AND family Ready, atomically insert B mappings/header/scalars/claim/receipt and CAS Staging->Ready, positively close and fresh-read, then use the existing Ready->Published protocol.",
+    "schema_change": "No DDL change proved necessary. Schema8 already contains required companion/receipt/content/claim tables; family schema2 already has reservations, roots and root_manifests. New payload/hash/funding-algorithm versions and named typed validation paths are required.",
+    "b_quota": "There is one family quota singleton, not spare per-B capacity. Existing B capture reservations are attempt-specific and cannot be borrowed. C plan.quota_bytes and its remaining belong to C exact installation/checkout even if proposal sizing includes some B SQL. Add an explicit B metadata-envelope reservation within unchanged family quota; refuse when free capacity cannot cover both. Never enlarge capture/C reservations or call set_quota.",
+    "receipt_order_conflict": "The proposal document says identical source/destination rows exist before EITHER receipt. The investigated hypothesis publishes B rows only AFTER C Ready, hence after C receipt. Both cannot hold. ROOT must explicitly adopt protect-both-before-either-receipt plus each-database-rows-before-its-own-receipt, or implement a different pending/Staging B SQL protocol. Recommendation selects the former; current documentation must change.",
+    "no_completion_claim": "This route supplies source ownership design only. Retained remote authority and genuine C companion-capable Ready/ordinary admission remain separate necessary integration."
+  },
+  "evidence": [
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider/schema.rs:13",
+        "crates/layrs-store-local/src/projection/retention.rs:25",
+        "crates/layrs-store-local/src/projection/shared.rs:38"
+      ],
+      "fact": "Receipt.companion_id FK requires header first; scalar companion_id requires header. No scalar FileId/ManifestId FK requires projection_content. Mapping requirement is an application contract. projection_content is FileId PRIMARY KEY; claim.kind/owner and family root/reservation operation are TEXT, allowing new typed classes without DDL."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider/validation.rs:570",
+        "crates/layrs-store-local/src/projection/provider/validation.rs:768",
+        "crates/layrs-store-local/src/projection/provider/validation/transition/publication.rs:46"
+      ],
+      "fact": "ActivePublication still requires companion tables empty. It preflights transition/receipt relations, validates capture, then owns each receipt via one terminal source intent. It does not currently validate companion headers/scalars. Merely calling insert_new_rows in the writer cannot pass its own before/after validator."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider/validation/capture.rs:362",
+        "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan.rs:213"
+      ],
+      "fact": "Every content row must match a staged capture replacement; every claim must be provider-capture with unique staged owner. Accepted replacement/claim coverage is mandatory. Managed planning separately checks historical mapping cardinality against frozen prefix content_mappings. Extras cannot just be appended to PrivateCaptureProof."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/shared/provider_access.rs:269",
+        "crates/layrs-store-local/src/projection/shared/provider_capture.rs:169",
+        "crates/layrs-store-local/src/projection/shared/provider_capture.rs:397"
+      ],
+      "fact": "Family B validation assigns ALL B reservations/roots to capture attempts, requires capture operations and caps capture remaining. Unknown B roots/reservations fail. require_no_owner_exact_installations also forbids B exact journals. A new B companion class must be explicitly accounted alongside capture, preserving owner completeness."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/shared/exact_protection.rs:55",
+        "crates/layrs-store-local/src/projection/shared/exact_protection.rs:139",
+        "crates/layrs-store-local/src/projection/shared/exact_protection.rs:208",
+        "crates/layrs-store-local/src/projection/shared/provider_import/content.rs:exact_binding"
+      ],
+      "fact": "ExactProtection hardcodes provider-import:<transaction>, binds destination ExactBinding, and inspect/insert demands unique root for owner. B already has capture roots. Changing owner to B is not a valid use of protect_import. Keep its guards and add a separate SourceCompanionProtection type."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider/import_validation/ancestry.rs:read_ancestry_rows",
+        "crates/layrs-store-local/src/projection/provider/import_validation/source.rs:495",
+        "crates/layrs-store-local/src/projection/provider/import_validation/scoped.rs:110",
+        "crates/layrs-store-local/src/projection/provider/import_validation/provider_proof.rs:43"
+      ],
+      "fact": "Incoming lineage begins at prefix.ancestry_root_receipt, follows parents and supplies scoped receipt/companion IDs. Content selectors use capture/incoming companion IDs, not whole tables. verify_source_publication separately binds outgoing rows while keeping the old closure. Its mode binding currently hashes only transition/receipt vectors; new companion proof must enter that equality/hash."
+    },
+    {
+      "files": [
+        "proposal files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions.rs:276",
+        "proposal files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs:21",
+        "proposal files/crates/layrs-store-local/src/projection/provider/import_validation/scoped/companions_v2.rs:100",
+        "proposal files/crates/layrs-store-local/src/projection/provider/import_validation/scoped/companions_v2.rs:356"
+      ],
+      "fact": "source_mappings prefers frozen mapping, else a companion file scalar. insert_new_rows/require_new_rows requires those mappings first on both databases. Scoped v2 authenticates scalar exact representation separately from unchanged sticky mapping, but still REQUIRES both and base/preimage mappings. Descriptor-only bases absent from frozen mappings and file scalars need complete derivation from validated baseline/preimage inventory or early refusal."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider/transition_sql/publication.rs:8",
+        "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs:74",
+        "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs:362"
+      ],
+      "fact": "Current writer verifies predecessor/old prefix, inserts receipt and CASes Staging->Ready atomically, validates prospective state, COMMITs under C/family RO scopes, positively closes and fresh-reads before separate Ready->Published. It accepts no closed companion/source-protection input and checks metadata against C remaining. This is the concrete source insertion integration point."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/shared.rs:928",
+        "crates/layrs-store-local/src/projection/shared/exact_content/sql.rs:validate_installations_inner",
+        "crates/layrs-store-local/src/projection/shared/admitted_catalog.rs:393"
+      ],
+      "fact": "Usage includes all reservations.remaining and exact journal charges. Exact groups enforce Q_C minus durable debit equals remaining. admitted_catalog scans provider-import roots and provider-transition/exact-journal reservations; a new namespace would otherwise be silently ignored. Add explicit companion class interpretation rather than exploiting that omission."
+    },
+    {
+      "files": [
+        "crates/layrs-store-local/src/projection/provider.rs:177",
+        "crates/layrs-store-local/src/projection/shared/maintenance.rs:reconcile",
+        "crates/layrs-store-local/src/projection/provider/validation.rs:PrivateCaptureMutationValidation"
+      ],
+      "fact": "Reclamation refuses populated provider8/admitted9/10 before cleanup. Keep those fences. Capture after Published retains full outgoing publication proof but equality currently compares only transition/receipt vectors; include companion proof and family source groups to preserve old companions through later capture."
+    }
+  ],
+  "design": {
+    "union": "Use the same full sorted exact manifest union U committed by plan.protected_manifests for the first B retention root. This conservatively retains live/fresh/historical/companion/preimage representations, including both ManifestIds for one FileId. It is not duplicate content debit; C remains the only installer.",
+    "new_records": {
+      "SourceCompanionBinding": "Family incarnation/root/catalog/marker IDs; B worktree/private DB/schema8; frozen prefix ID; transaction ID/immutable plan digest/companion ID/protected-manifest commitment; C owner/private DB/destination-proof digest; distinct deterministic B operation/reservation; funding algorithm v1.",
+      "SourceCompanionProtection": "Canonical versioned payload and separate hash domain in existing roots table, with binding plus full canonical sorted U. Operation example: provider-companion:<domain-separated hash of B/transaction/prefix/plan>. Do not use provider-import or provider-transition prefixes. No B exact_installations.",
+      "SourceCompanionPrivateProof": "Exact outgoing terminal intents/receipts, codec-validated headers/scalars, required sticky mappings, and one provider-companion private claim per companion transition. Family validation binds claim root/digest to B owner/database/group.",
+      "ManagedSourceCompanionProtection": "Retained physical object holding exact Published CAS proof, image/owner pins and source root identity. DATA construction alone never grants bytes, remote authority or writer rights."
+    },
+    "mapping_rules": [
+      "Preserve every existing sticky mapping exactly. Missing mappings may be inserted only from closed validated source reconciliation; never prefer an arbitrary alternate representation.",
+      "Capture proof keeps capture-only mappings/claims and all current Accepted coverage. The actual SQL set equals the union of capture-stage references and precisely validated terminal companion references; unknown extras fail.",
+      "Capture and companion may reference the same FileId and same unchanged SQL row. Later capture does not transfer ownership away from old companion; classify references, not disjoint FileId ownership.",
+      "All scalar files, bases, accepted preimages and satisfied-intent dependencies require their exact sticky mapping as current v2 specifies. The scalar alternate and sticky mapping must both belong to protected header/U.",
+      "Outgoing companion extras never join frozen source-prefix ContentMappings/Companions/TransitionReceipts selectors. Incoming ancestry stays unchanged."
+    ],
+    "funding_before_effects": [
+      "Freeze closed source image/authority/closure, canonical companion rows, U, sticky mappings and Q_B/Q_C before reservation/installation/publication effects. Preflight every encoding, aggregate count and overflow first.",
+      "Q_C retains existing plan.quota_bytes meaning. Proposal counting B rows inside C metadata is conservative sizing, not B funding. Do not alter an already stored plan/reservation.",
+      "Use a deterministic versioned Q_B envelope from existing immutable rowsets and encoded bounds. Example mechanically safe v1: Q_B = M_B + 65536 + 256*|U| + 16MiB. The fixed 16MiB root maximum avoids a self-referential payload/amount sizing loop.",
+      "M_B covers source header/scalars, all required source mappings (charging reused rows too is conservative), one claim, source receipt and BOTH terminal source intent projections. Use bounded sizing-only serializers or conservatively 2*intent.MAX_BYTES plus receipt/header maxima and schema UTF-8 scalar bounds times committed counts. No fake valid records for sizing.",
+      "Refuse if M_B exceeds 1GiB, actual root exceeds 16MiB, header exceeds 65536, manifest/union bounds fail, or arithmetic exceeds SQLite integer range. MAX-payload sizing may reserve tens of MiB for small companions; this is an explicit conservative tradeoff, not silently expanded capacity.",
+      "Before first B/C reservation verify global usage + absent Q_B + absent Q_C <= unchanged family quota. Insert/replay fixed B reserve; C reserve still follows its existing legal phase and independently rechecks capacity. Separate commits may leave B reserved/C absent, safely blocked.",
+      "B reserve has remaining==Q_B throughout; no debit/release here. C alone charges new chunks/manifests/journals. SUM(remaining) includes B automatically. Validate actual source/root envelope before B root and every receipt/source writer open; never top up a persisted underfunded attempt.",
+      "No new plan field is logically necessary if Q_B is a deterministic function selected by new root/funding protocol and existing companion plan commitments. If ROOT wants separately serialized exact owner budgets, add a versioned plan record deliberately; that is optional API policy, not a proven DDL need."
+    ],
+    "steps": [
+      "S0: existing B plan/Copying/Staging journal; no NEW B companion SQL rows, claim or receipt. Complete closed derivation and fixed envelopes.",
+      "S1: family transaction inserts exact B companion reservation linked to actual immutable B Staging plan; positive close/fresh read. Reservation-only gap is explicitly valid; arbitrary B reservations remain invalid.",
+      "S2: existing C member/reservation/exact install/debit protocol over U. Keep original B image pinned and B envelope fixed. Thread source-group context through family callbacks.",
+      "S3: after C U fully Published and independent CAS bytes verified outside SQL, insert B root+all root_manifests atomically in family transaction. Recheck B plan, C Published journals and B envelope. Exact absent-or-complete replay only; partial root refuses.",
+      "S4: C persists its mappings/header/scalars before C receipt, private Ready, then family Ready. Both independently owned roots/envelopes must pass before C receipt. Companion-capable Ready constructors must prove complete state; do not delete legacy refusal guards.",
+      "S5: with genuine C private+family Ready and both roots retained, open FK-enabled B writer. Authenticate original frozen prefix before extras. In ONE transaction insert absent exact B mappings; exact header/scalars; B claim; source receipt; Staging->Ready CAS; full prospective validation; COMMIT.",
+      "S5 acknowledgment: nested C/family RO positive closes, source writer positive close/ACK, then complete fresh B/C/family read. No further operation after uncertain close.",
+      "S6: retain existing separate Ready->Published CAS/close/fresh-read. No source byte rehash after B Ready. Root/reservation/mappings/rows/claim remain unchanged. Published replay is no-write."
+    ],
+    "phase_contracts": [
+      "Staging allows exact reservation absent/present and exact root absent/present only in protocol order, but no private companion rows/claim/receipt. Root is already durably owned through actual source plan, not a private orphan adopted later.",
+      "Ready/Published require complete private companion projection and existing exact B root/reservation. Claim/header/scalars/mappings/receipt/Ready cannot commit separately.",
+      "Before source Ready failures rollback all B SQL together. After uncertain COMMIT/close return failure; next owner may recognize complete Ready and resume, but never repairs partial/corrupt rows/root.",
+      "B reservation-only/root-only/C-Ready-B-Staging crash states remain retained and resumable or blocked. No cleanup/release in this tranche.",
+      "Restart cannot turn root/SQL DATA into original native/remote authority. Reacquire genuine source/image/authority capabilities or a supported recovery owner before dependent operations.",
+      "C autonomous open uses C private receipt/claim/root and full union, with no B database/native/provider lookup. New B group classification must not impose B availability on C.",
+      "Keep current provider/admitted reclamation refusal. Future source removal/reservation release/GC needs a separate protocol for the new group."
+    ]
+  },
+  "required_api_changes": [
+    {
+      "files": [
+        "provider/validation.rs",
+        "provider/validation/capture.rs",
+        "provider/validation/transition.rs",
+        "provider/validation/transition/publication.rs"
+      ],
+      "changes": "Add SourceCompanionPrivateProof to complete publication proof. Break the cycle using an internal CaptureHistoryData (transactions/receipts/patches, no incomplete authority): read capture history; validate transition/receipt ownership; validate outgoing companion rows; then classify SQL mappings/claims and produce final capture-only PrivateCaptureProof. Preflight all admitted companion relations BEFORE global FK traversal. Named companion-aware publication/capture-mutation branch only; old empty guards remain."
+    },
+    {
+      "files": [
+        "provider/import_validation.rs",
+        "provider/import_validation/provider_proof.rs",
+        "provider/import_validation/scoped.rs",
+        "provider/import_validation/scoped/companions_v2.rs (proposal)"
+      ],
+      "changes": "Add non-recursive outgoing companion validator using receipt.source_prefix plus its original lineage/effective base; reuse row/provenance kernel without recursively calling verify_source_publication. Include companion proof in mode_binding/current-proof equality. Keep ScopeView::from_metadata and old prefix selectors unchanged."
+    },
+    {
+      "files": [
+        "shared/source_companion.rs (new proposed module)",
+        "shared/provider_access.rs",
+        "shared/provider_capture.rs",
+        "shared/provider_import/source.rs",
+        "shared/provider_import/content.rs",
+        "shared/provider_import/publication.rs"
+      ],
+      "changes": "Proposed borrowed-transaction signatures: reserve_source_companion(c, actual_source_transition, closed_source_data, funding); inspect_source_companion(c, full_source_proof, binding, required); protect_source_companion(c, actual_staging, closed_binding, exact_root, published_c_proof). Driver separately owns physical CAS/pins/closes. Add named validate_source_companion_catalog accepting full transition/publication proof. Capture+source classes must exactly account all B roots/reservations/claims; no caller-selected exclusions. Thread full source context through C import/Ready/publication callbacks currently taking capture only. Preserve no-B-exact-installations."
+    },
+    {
+      "files": [
+        "shared/admitted_catalog.rs",
+        "shared/admitted_catalog/groups.rs",
+        "provider/destination_ready/autonomous/family_read.rs"
+      ],
+      "changes": "Add bounded source-companion retained class to companion-aware family scans, checking canonical root/exact members/fixed reservation/binding against available known C Ready/receipt. Do not hide new operation namespace from old scans. Keep C admission independently complete without reopening B; foreign B retention never supplies C authority. Existing exact debit/duplicate-charge sets remain unchanged; B groups have no installation debit."
+    },
+    {
+      "files": [
+        "provider/transition_reconcile/companions.rs (proposal)",
+        "provider/transition_reconcile/companions/sql.rs (proposal)",
+        "provider/managed_budget.rs",
+        "provider/bootstrap/preparation/activation/managed_plan.rs"
+      ],
+      "changes": "Complete descriptor-only base/preimage mapping derivation; expose closed source mapping/row projection; deterministic B envelope sizing/rederivation before effects. Proposed source-specific insert_source_mappings_and_rows(c, closed, source_claim) inserts only absent exact mappings then calls insert_new_rows. Conflict/extra rows refuse, no orphan adoption. Existing C quota meaning remains."
+    },
+    {
+      "files": [
+        "provider/bootstrap/preparation/activation/managed_content/protection.rs",
+        "provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+        "provider/transition_sql/publication.rs"
+      ],
+      "changes": "Add ManagedSourceCompanionProtection acquire/reopen and consume it in with_source_publication_inputs/context and publish_source. Extend low-level apply_source_publication with closed companion rows/claim DATA and full source-aware before/after interpretation. B envelope is checked independently of existing C envelope. Keep writer clean admission, caller rollback, nested RO closes, writer positive close/ACK, fresh read and separate terminal CASes."
+    },
+    {
+      "files": [
+        "provider/validation.rs:PrivateCaptureMutationValidation",
+        "provider/bootstrap/preparation/activation/managed_content/ready_data.rs",
+        "provider/destination_ready/data.rs",
+        "provider/destination_ready/autonomous.rs",
+        "docs/plans/worktrees-partial-vfs-convergence.md:507"
+      ],
+      "changes": "Preserve full companion proof in later capture require_same_publications/require_same_state and family checks; Ready still blocks capture. Add separate fully proved companion Ready path, retaining old constructors' no-companion guards. Explicitly update temporal source/destination row requirement if adopting delayed B SQL."
+    }
+  ],
+  "alternatives": [
+    {
+      "name": "Destination root alone, or relabel ExactBinding owner B",
+      "disposition": "Rejected",
+      "reason": "Wrong retention/accounting owner; destination-specific binding, unique-owner roots and B capture classifiers conflict. A second B installer would need multi-group debit/journal work and is unnecessary."
+    },
+    {
+      "name": "Recovery-only mappings stay in v2 header/scalars, never projection_content",
+      "disposition": "Incompatible with current code/proposal; broader versioned protocol required",
+      "reason": "SQL has no FK forcing mappings, but insert_new_rows, scoped v2 sticky/base/preimage validation, ContentMappings selectors, ancestry closure verification and copy_verified_prefix REQUIRE them. Existing v2 header means both exact scalar representation and sticky mapping; it does not mark mappings optional. Family roots, not header declarations, protect GC content. A new header contract and scoped/copy/destination mapping rules could represent this, preserving old histories, but cannot be substituted locally."
+    },
+    {
+      "name": "Write source rows before C receipt to preserve current document literally",
+      "disposition": "Possible different protocol, not selected",
+      "reason": "Needs a pending/Staging B SQL owner without receipt, extra B commit and crash/replay classification. This is missing code, not schema impossibility. It abandons the source-untouched hypothesis."
+    }
+  ],
+  "minimal_acceptance_cases_NOT_RUN": [
+    "SQL: accepted historical mapping plus authorized edit, unknown creation and modified protected file. Old B prefix identical; only authorized C checkout/Capture; identical companion rows both sides; distinct exact B/C roots; B rows+claim+receipt+Ready atomic.",
+    "SQL: B capture roots coexist with new B root, same FileId with alternate ManifestIds, descriptor-only base/preimage, later capture sharing companion FileId. Sticky mapping remains; all representations protected; unrelated mapping/claim/root/reservation rejects.",
+    "SQL: valid 65536-byte header vs 65537 refusal before effects; wrong B owner/DB/plan/op/C binding, reused reservation, missing/extra root members, partial scalars/unowned receipt/claim all refuse without repair.",
+    "SQL: family has room for C but not B+C; refuse before reservation/install. Fixed B reservation replay writes nothing; changed Q_B/reduced remaining rejects; C debit equality unchanged; shared bytes charged once; no quota/reservation growth.",
+    "SQL/native: fault at B reserve/root COMMIT, C Ready, every B insertion and Ready/Published COMMIT/close/ACK. Allowed retained predecessor or complete atomic state only; uncertain close never success or next effect; restart no repair/duplicate debit.",
+    "Native: successful conversion, stop provider, B unavailable, offline C reopen/capture authorized change/prepared Restore and supported inherited export/reimport. C root suffices; recovery-only work never becomes Capture; alternate/preimage references survive; GC refusal retained."
+  ],
+  "remaining": [
+    "ROOT decision required on documented receipt ordering. No runtime or typecheck performed by instruction.",
+    "Retained authority, complete-image reader integration and genuine companion C Ready remain separate prerequisites.",
+    "Ordinary9/10 outgoing creation adapters remain outside this source8 mission; no broad U1-U7 reinventory.",
+    "Future reclamation/source removal/reservation release needs explicit support before existing fences can change."
+  ]
+}

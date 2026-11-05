@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "layrs.c14-durable-denial-contract.v1",
+  "status": "SOURCE ONLY recommendation; no code, SQL, tests, network or process inspection executed",
+  "repository": "D:/Layrs/layrs",
+  "headProvidedByRoot": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+  "decision": {
+    "change": "Add one immutable typed denial-coverage document in the existing projection_observations table. Reference and transport it through explicit intent/receipt/import-prefix codec versions. Keep snapshot.v1, selection, current SQL fingerprints, full SourcePublished preservation and compact transition plans unchanged in meaning.",
+    "storage": "projection_observations(digest TEXT PRIMARY KEY,payload BLOB NOT NULL CHECK(length(payload)<=67108864)) already exists. Its BLOB can contain all canonical denial rows, not just their digest. A dedicated reader must distinguish this document from the existing offline Observation{snapshot,selection}.",
+    "sourceRef": "crates/layrs-store-local/src/projection/retention.rs:30",
+    "noSchemaExtensionDemonstrated": "No new column/table/index or altered constraint is necessary for this solution. The existing table holds the required authenticatable paths, including the 100k/8MiB raw-path envelope. A normalized new SQL rowset would be an alternative, not a demonstrated necessity.",
+    "compatibilityCondition": "Every nonempty denial document used by a live transition or active/admitted destination must have a required v2 plan/receipt link. No state may admit a denial document merely as an ignorable extra observation row. Old readers fail on the new required codec, before mutation. Do not install this contract in ordinary legacy layouts whose readers could ignore it."
+  },
+  "evidence": [
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/records/transition.rs:62",
+      "fact": "Transition rowsets are separately stored; transition rows deliberately do not embed namespace arrays."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/records/transition.rs:353",
+      "fact": "Intent Record MAX_BYTES is 256KiB. The SQL transition payload ceiling is larger, but this is not permission to enlarge the v1 codec silently."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/managed_admission/schema.rs:7",
+      "fact": "Admission stores the COMPLETE source_published body with a 262144-byte DDL constraint; increasing an intent to 16MiB alone would break autonomous admission."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/managed_admission/read.rs:441",
+      "fact": "Autonomous admission decodes SourcePublished and recomputes its exact digest, not a compact invented substitute."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/import_validation/copy.rs:20",
+      "fact": "Immutable import closure copies selected rowsets, not source operational transition journals. A large array kept only in the old source intent would not survive later imports."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/provider/records/import.rs:59",
+      "fact": "Current immutable closure has twelve rowsets, plus restore_history for prefix v2; it has no denial observation rowset."
+    },
+    {
+      "ref": "crates/layrs-store-local/src/projection/offline.rs:99",
+      "fact": "Current offline Observation has only snapshot and selection with deny_unknown_fields. The new typed record must never masquerade as this object or ProjectionVersion::Remote v1."
+    },
+    {
+      "ref": "crates/layrs-core/src/projection/model.rs:74",
+      "fact": "Snapshot.v1 couples target=None to state=Absent; it cannot express an unreadable/denied unknown path without inventing an absence. Existing snapshot reserved paths omit these denied nodes."
+    }
+  ],
+  "document": {
+    "proposedType": "TransitionDeniedCoverageRecord",
+    "schema": "layrs.projection-transition-denied-coverage.v1",
+    "key": "domain-separated digest of the entire canonical document; the stored SQL key must equal that digest",
+    "fields": [
+      "schemaVersion",
+      "sourcePrefixId, sourceIdentity and exact source generation/snapshot/selection/capture-count/head anchor",
+      "transactionId and destinationIdentity",
+      "sourceEffectiveImageDigest",
+      "exact StepId/rootTreeId and pathSemantics",
+      "authority strategy, one observed policySetId/authorizationEpoch, and the authority-data binding",
+      "destination observation generation/snapshot digest and expanded selection digest",
+      "deniedPathCount, raw UTF-8 path-byte count, ordered denied-path rowset digest",
+      "ALL denied exact paths in strict BINARY order, serialized as path-only negative rows"
+    ],
+    "semantics": "A row says that the exact path could not be accepted as a readable/creatable observation under this epoch. It is neither a positive absence nor a read/write grant, and does not assert a directory-wide remote ACL.",
+    "bounds": "Use the existing 100000-path / 8MiB shared path preflight; do not grant denials a second independent 100k budget. Each RepoPath <=4096 UTF-8 bytes; strict sorting/uniqueness, cross-view aliases, denied-ancestor/visible-descendant conflicts and source/expanded-scope coverage checked before canonical allocation. Document MAX_BYTES can use the existing 64MiB observation BLOB ceiling: even worst-case JSON escaping of 8MiB raw path bytes plus per-row framing and a compact header fits. Preflight actual canonical bytes as well. This does not raise the raw path budget.",
+    "authentication": "Read and validate every path and all count/byte/digest bindings from the actual retained transaction. Recompute the canonical whole-document ID and the length-framed ordered rowset digest; a missing or substituted body is NeedsRepair/refusal. The compact reference alone is never sufficient.",
+    "cycleAvoidance": "The document binds source-prefix/image/epoch/observation/transaction. The plan commits its ID; the receipt commits plan digest plus the same ID. Do not put the final plan digest back into the document ID, which would create a hash cycle."
+  },
+  "versionedLinks": {
+    "intent": "Introduce a closed transition-intent.v2 / plan-v2 domain with a REQUIRED denialCoverage reference {id,count,pathBytes,rowsDigest}. Keep v1 decoding byte-exact and reject extra fields. The v2 intent remains compact and within 256KiB; do not inline the paths. Legacy no-denial workflows can remain v1.",
+    "receipt": "Introduce transition-receipt.v2 with REQUIRED denialCoverage reference and source/observation/placement linkage. Keep the existing 64KiB receipt bound because it stores references only. Require exact equality to the actual plan and coverage record before Ready/Published. v1 receipt cannot acknowledge nonempty denial coverage.",
+    "importPrefix": "Introduce import-prefix.v3 with a REQUIRED denialObservations ImportRowset alongside the existing immutable rowsets. Domain-separate this version; do not add a defaulted optional field to v1/v2. Import all coverage documents referenced by inherited receipts plus the relevant source observation lineage, preserving bytes verbatim.",
+    "admission": "Keep source_published as the actual full compact v2 intent and its exact digest; no new compact stand-in. Retain the real denial document in C and include it in terminal inventory/budget. Exact SourcePublished/Ready/receipt/reference equality plus local body validation permits reopening without B.",
+    "schemaAlternative": "If normalized per-path SQL rows are chosen instead of the existing BLOB table, the exact private8/9/10 fingerprints forbid silently adding them. The first unused private schema number is 11 and it needs an explicit complete footprint and migration/admission contract. That extension is unnecessary for the recommended existing-table solution.",
+    "refs": [
+      "crates/layrs-store-local/src/projection/provider/records/import.rs:13",
+      "crates/layrs-store-local/src/projection/provider/records/import.rs:776",
+      "crates/layrs-store-local/src/projection/provider/records/transition.rs:415",
+      "crates/layrs-store-local/src/projection/provider/managed_admission/record.rs:105"
+    ]
+  },
+  "persistenceOrder": [
+    "Acquire/revalidate the genuine entire-scope remote observation outside SQL/operation gates. Normalize complete positive metadata plus separate denied rows; bind exact source prefix/current image and intended destination observation.",
+    "Under actual source owner and a retained source transaction, revalidate source prefix/image frontier and fixed budget; INSERT the full immutable coverage document and source Planned v2 intent in ONE transaction. Existing equal-ID rows require exact canonical byte equality, not unconditional ON CONFLICT acceptance. Observe commit/positive close before destination allocation or other transition effects.",
+    "Create the destination through existing pinned allocation. Copy/authenticate the coverage document under source+destination transactions before any overlay/install/readiness effect that relies on its coverage. Source and destination v2 plans must reference the same document.",
+    "Install/protect authorized overlay and companions using existing exact engines. Revalidate positive snapshot/selection, actual denied body, image and family accounting; require no accepted overlay/capture mutation intersects a denied fence. No missing body is repaired by guessing grants or an absent snapshot node.",
+    "In the destination private Ready transaction, retain full document, snapshots/selection/capture/claim, v2 receipt and exact v2 intent; reread and close observably. Family Ready follows only that durable private receipt. Source publication retains the same reference.",
+    "Admission and replay use local documents and exact receipts/source_published proof. A later re-export copies denial observation documents through prefix-v3 closure before dependent receipts. Never delete these documents as source-local journals. Pre-Ready resume revalidates live source/authority; already-Ready exact replay needs no B or new network grant."
+  ],
+  "proposedInterfaces": [
+    "derive_transition_denied_coverage(source_anchor, verified_image_binding, normalized_observation) -> TransitionDeniedCoverageRecord DATA",
+    "persist_planned_transition_with_denials(source_tx, intent_v2, coverage, cancel) -> typed planned observation after actual row reread",
+    "read_transition_denials<'tx>(c: &'tx Connection, actual_plan_or_receipt, actual_snapshot, actual_selection, cancel) -> VerifiedDeniedCoverage<'tx>",
+    "VerifiedDeniedCoverage::require_connection_and_binding(c, plan_or_receipt, snapshot_generation_digest)",
+    "VerifiedDeniedCoverage::namespace_fences(snapshot_reserved_paths) -> combined read-only fences, with no positive grants",
+    "copy_denial_observations(source_tx, destination_tx, authenticated_prefix_v3_scope, cancel)",
+    "read_admitted_import / read_managed_ready expose the verified current observation's denial coverage to acceptance callers, not a detached caller-supplied Vec"
+  ],
+  "readersAndReplay": {
+    "recordAndJournal": [
+      "records/transition.rs: codec v2 dispatch, plan equality/digest, require_transition/require_receipt",
+      "transition_sql readers/writers and ordinary_transition readers: strict scoped coverage row validation in Planned/Copying/Staging/Ready/Published; preserve existing phase/close rules"
+    ],
+    "immutableTransport": [
+      "records/import.rs: receipt-v2/prefix-v3 domains and closure links",
+      "import_validation/rows.rs, scoped.rs and copy.rs: new DenialObservations Kind with static scoped SELECT over projection_observations; bound canonical bodies and include their normalized bytes in quota",
+      "import_validation/destination_prefix.rs: require the actual incoming receipt's document and link all historical scopes locally"
+    ],
+    "readinessAndAutonomy": [
+      "destination_ready/data.rs and autonomous.rs: validate negative coverage against actual observation/placement and ensure no authorized overlay touches it",
+      "managed_admission/read.rs and write.rs / ordinary_write.rs: count/charge the new immutable observation rows instead of defaulting their table to zero; source_published remains <=256KiB",
+      "provider/validation.rs: projection_observations is currently an EMPTY_TABLES member. Permit only exact documents referenced by the new typed transition/receipt scopes; do not remove the table's fail-closed fence globally"
+    ],
+    "legacyOffline": "offline.rs::resolve(Remote) keeps its existing strict legacy Observation meaning. Add a separate coverage codec/reader; do not route denial documents through record_version_observation or make them grants. Legacy unrelated offline observations remain governed by their existing ordinary contract.",
+    "refs": [
+      "crates/layrs-store-local/src/projection/provider/validation.rs:304",
+      "crates/layrs-store-local/src/projection/provider/import_validation/rows.rs:14",
+      "crates/layrs-store-local/src/projection/provider/managed_admission/read.rs:143",
+      "crates/layrs-store-local/src/projection/offline.rs:271"
+    ]
+  },
+  "futureCreationAndCapture": {
+    "required": "YES: the negative coverage remains an acceptance fence after admission/activation, until a later explicit coherent observation supersedes it for the corresponding generation. Never promote a cached historical writable-absence row or resurrect original source grants.",
+    "existingProtection": "An omitted exact path already fails current ordinary unknown-path capture and explicit namespace creation; Provider capture also rejects unknown/excluded paths. This is useful existing defense, but it does not persist/authenticate whole-scope coverage or provide the missing negative path for common ancestor/descendant/alias fences.",
+    "integration": "Combine verified current denied paths with snapshot reserved_paths using existing ReservedPaths semantics. Forbid local acceptance touching the exact name, its aliases, or namespace ancestors/descendants. This is a conservative namespace consistency fence, not an assertion that the server granted/denied a subtree. Apply before data effects and on journal resume.",
+    "consumers": [
+      "capture/scan.rs: scan / dirty-change acceptance and namespace walker",
+      "namespace.rs::validate_mutation plus namespace engine replay: currently only snapshot.reserved_paths() is consulted",
+      "provider/bootstrap/preparation/activation/capture_image.rs::reconcile: consult authenticated current denial coverage before accepting checkpoint overlay",
+      "typed ordinary/provider content scope and availability/current-destination restore/receive/rebase/selection acceptance paths that can introduce or replace working entries; they must not drop the fence on reopening"
+    ],
+    "lifetime": "Associate denials with their immutable observation/placement generations and epoch, not a permanent global ACL. New explicit entire-scope reobservation may supply a readable/writable absence at a newer accepted observation and supersede the live fence; retain old negative documents for historical provenance. Historical prepared reads do not become new remote authority.",
+    "refs": [
+      "crates/layrs-core/src/projection/model.rs:98",
+      "crates/layrs-core/src/projection/paths.rs:44",
+      "crates/layrs-store-local/src/projection/capture/scan.rs:323",
+      "crates/layrs-store-local/src/projection/namespace.rs:201",
+      "crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/capture_image.rs:132"
+    ]
+  },
+  "alternatives": {
+    "inlineTransitionV2": "A versioned large intent can intentionally replace the v1 no-array contract, but payload<=16MiB in projection_provider_transitions alone does not solve the 256KiB source_published DDL, 64KiB immutable receipt or missing journal copy on repeated import. Making it complete requires additional admission/storage/history changes. It is larger than one separately stored immutable document with compact links.",
+    "normalizedNewTables": "Valid if SQL streaming/indexing is later measured necessary. No such need is demonstrated for <=100k / 8MiB paths; authenticatable canonical rows inside the existing bounded BLOB suffice. Do not introduce private schema11 solely from overlooking projection_observations.",
+    "rejected": [
+      "Optional denial field silently accepted under intent/receipt v1",
+      "Dummy companion/catalog header standing in for denied paths",
+      "Only a count/digest without the actual durable path body",
+      "Encoding denied path as snapshot.v1 Absent/Reserved with a fabricated target or write grant",
+      "Truncating to 64KiB or returning refusal-only as completion",
+      "A proof requiring B after Ready/admission or omitting the document on re-export"
+    ]
+  },
+  "decisiveCases": [
+    "Full-capacity persistence: 100000 denied exact paths within the existing shared 8MiB path budget, including non-ASCII/escaping limits. Compact plan/receipt/source_published remain within their existing bounds; coverage body survives copy/admission/re-export byte-exactly.",
+    "Crash/ACK cuts: after source coverage+Planned commit but before allocation; after destination document copy; after private Ready commit before ACK. Fresh reopen validates the same actual rows; no destination readiness before document durability, no duplicate observations/effects.",
+    "Tamper/no-owner: remove one denial, substitute its path/epoch/source prefix/image/selection or swap a document between transactions; query-only/Ready/replay/admission reject before effects. Retained SourcePublished, receipt and body all verified without B.",
+    "Post-admission negative fence: path was formerly writable Absent, now denied. Physical creation, namespace create/move, alias or ancestor/descendant mutation cannot be captured/accepted using old cached grants in either ordinary or Provider mode. A readable sibling remains unaffected; source/companions survive refusal.",
+    "Explicit fresh reobservation and compatibility: a later coherent newer observation may authorize the formerly denied path without deleting historical coverage. Old readers reject required v2/v3 links; legacy offline Observation and no-denial v1 workflows stay byte-compatible; a denial document alone can never be read as a Remote grant."
+  ],
+  "bottomLine": "Implement the dedicated immutable coverage record + explicit compact codec links and authenticated copy/fence readers. There is a concrete existing storage location; no new private schema is required by this requirement. The remaining work is a bounded persistence/reader integration, not another authority normalizer or a refusal-only substitute."
+}

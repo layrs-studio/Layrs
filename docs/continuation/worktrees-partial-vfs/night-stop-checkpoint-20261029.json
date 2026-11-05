@@ -1,0 +1,67 @@
+{
+  "savedUtc": "2026-10-29T00:01:50.730656+00:00",
+  "reason": "User explicitly requested stopping for the night",
+  "goalAction": "Pause after checkpoint; do not resume on background completion",
+  "delegateCancel": "Interrupted confirmed at 2026-10-29T00:01:08.154Z, activeRunId null, task 33e27463-7cc9-443b-b7c9-d266c63aeccc; draft only",
+  "runner": {
+    "session": 25207,
+    "action": "Existing final native test may finish; no following recipe or new test",
+    "resultsPath": "D:\\Layrs\\layrs\\.layrs-local\\validation\\provider-ordinary-checkout-boundary-partial-20261028-r100\\ordinary-checkout-boundary-partial-results.json",
+    "completed": [
+      {
+        "test": "projection::provider::destination_ready::ordinary_tests::ordinary_checkout_progress_isolates_future_c10_metadata_floor_at_one_byte_boundary",
+        "exit": 0,
+        "seconds": 21.191,
+        "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-checkout-boundary-partial-r100\\recipe-01",
+        "timeoutCleanup": null
+      },
+      {
+        "test": "projection::provider::destination_ready::ordinary_tests::ordinary_ready_writer_preserves_restore_history_replays_readonly_and_refuses_corruption",
+        "exit": 0,
+        "seconds": 16.336,
+        "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-checkout-boundary-partial-r100\\recipe-02",
+        "timeoutCleanup": null
+      },
+      {
+        "test": "projection::provider::destination_ready::ordinary_tests::ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_replays_readonly",
+        "exit": 0,
+        "seconds": 87.936,
+        "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-checkout-boundary-partial-r100\\recipe-03",
+        "timeoutCleanup": null
+      },
+      {
+        "test": "projection::provider::destination_ready::ordinary_tests::ordinary_source_publication_partitions_receipts_fences_ready_and_replays_historical_published",
+        "exit": 0,
+        "seconds": 54.274,
+        "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-checkout-boundary-partial-r100\\recipe-04",
+        "timeoutCleanup": null
+      },
+      {
+        "test": "projection::provider::destination_ready::ordinary_tests::ordinary_autonomy_keeps_uncopied_selected_base_and_current_representations_through_admission10",
+        "exit": 0,
+        "seconds": 43.674,
+        "fixtureParent": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\layrs-provider-ordinary-checkout-boundary-partial-r100\\recipe-05",
+        "timeoutCleanup": null
+      }
+    ],
+    "terminalObserved": false
+  },
+  "drafts": [
+    {
+      "inventory": "D:\\Layrs\\layrs\\docs\\continuation\\worktrees-partial-vfs\\c13-lease-ready-interrupted-draft-20261029.json",
+      "path": "D:\\Layrs\\layrs\\docs\\continuation\\worktrees-partial-vfs\\c13-lease-ready-interrupted-draft-20261029.tar.gz",
+      "bytes": 315139,
+      "sha256": "9bc56fdc450a4043101fdbbca2b1097454d57add6982334bfc7c127a7fff7596",
+      "fileCount": 103,
+      "drift": []
+    },
+    {
+      "inventory": "D:\\Layrs\\layrs\\docs\\continuation\\worktrees-partial-vfs\\provider-denied-storage-unverified-draft-20261029.json",
+      "path": "D:\\Layrs\\layrs\\docs\\continuation\\worktrees-partial-vfs\\provider-denied-storage-unverified-draft-20261029.tar.gz",
+      "bytes": 15446,
+      "sha256": "9781a027671ed4921adfa1f84b933bb7ff43f726b5d44c0d1d2a2e74a2857a53",
+      "fileCount": 7,
+      "drift": []
+    }
+  ]
+}

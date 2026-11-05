@@ -1,0 +1,206 @@
+{
+  "schemaVersion": "layrs.switch-measurement.v1",
+  "startedAt": "2026-11-04T00:41:39.104Z",
+  "platform": "win32",
+  "os": "10.0.26300",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "totalMemoryBytes": 68387852288,
+  "binary": "D:\\Layrs\\layrs\\target\\release\\layrs.exe",
+  "binarySha256": "d9fe1f52ec0be2a31523243528060645bc60aa407426fcbdd41f698d2caf60ca",
+  "fixtureRoot": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c",
+  "limitations": [
+    "Synthetic 256-byte text files, all distinct contents, 1000 files per directory.",
+    "One run per case, warm OS caches; durations include CLI startup and the full command.",
+    "Concurrent cases start both commands together; they measure contention, not throughput.",
+    "Fixtures retained; no pruning, no remote."
+  ],
+  "cases": [
+    {
+      "files": 1000,
+      "root": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+      "measurements": [
+        {
+          "label": "init",
+          "command": "init Switch 1000",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 31621,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "status clean",
+          "command": "status",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 439,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step initial",
+          "command": "step",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 441,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "layer create",
+          "command": "layer create baseline",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 508,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "diff K=1",
+          "command": "diff --stat",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 764,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=1",
+          "command": "step",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 618,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=1",
+          "command": "layer use baseline",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 1123,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=1",
+          "command": "layer use main",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 1101,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch no-op",
+          "command": "layer use main",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 749,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=100",
+          "command": "step",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 3075,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=100",
+          "command": "layer use baseline",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 1975,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=100",
+          "command": "layer use main",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 2008,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "worktree create",
+          "command": "worktree create C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000-agent --layer baseline --step @layer:baseline",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 7220,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "agent status",
+          "command": "status",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000-agent",
+          "elapsedMs": 444,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status primary",
+          "command": "status",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 489,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status agent",
+          "command": "status",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000-agent",
+          "elapsedMs": 493,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step primary",
+          "command": "step",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000",
+          "elapsedMs": 636,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step agent",
+          "command": "step",
+          "cwd": "C:\\Users\\ALEXA\\AppData\\Local\\Temp\\lsw-r212c\\files-1000-agent",
+          "elapsedMs": 1179,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ]
+    }
+  ],
+  "completedAt": "2026-11-04T00:42:33.180Z"
+}

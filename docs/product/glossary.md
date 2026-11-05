@@ -37,6 +37,16 @@ Layers and Steps locally before it receives server ids.
 Switchable line of work inside a Space. A Layer behaves like a branch in the
 user mental model, but it is represented as a Layrs Layer, not a Git branch.
 
+## Room
+
+Lightweight working folder on a Layer, cheap enough to open one per task or
+agent. A Room has its own Layer derived from a source Layer; its Steps stay
+there until a Weave brings them into the target Layer. Rooms are virtual by
+default (files appear when read, copied from the Store on first write) and live
+outside the project tree. Product name for what the engine calls a Worktree
+(`loom` and `worktree` are accepted command aliases). See
+[ADR 0025](../decisions/0025-rooms.md).
+
 ## Step
 
 Anonymous snapshot of a Layer state. A Step is not a commit and does not need a

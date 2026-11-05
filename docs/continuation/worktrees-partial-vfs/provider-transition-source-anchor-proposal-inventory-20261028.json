@@ -1,0 +1,75 @@
+{
+  "scope": "Unintegrated local Provider source-view proposal; no compilation/runtime/independent review or complete prefix/image/authority acceptance.",
+  "files": [
+    {
+      "path": "base.json",
+      "bytes": 2096,
+      "sha256": "67442a2fb08bf202073532428ea52b5776f9fd965c26387c12a9b427da27d2c8"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/transition_source/tests.rs",
+      "bytes": 6706,
+      "sha256": "1159396bbfd0b3f6bf89e1f855e4b7b0e7d85e7421c589bddecefc3fdce5b286"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/transition_source.rs",
+      "bytes": 7039,
+      "sha256": "0d5d895ce4c3ff816cde147634e22aaceb2afd662832cd01edfbe1d8558083e3"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 18697,
+      "sha256": "fe18a0ddf67b296ece9fe6e2dac08976e6c49bfee0b7a81b249f43518ffdbf56"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation.rs",
+      "bytes": 13864,
+      "sha256": "87c3769f00d554c1c7350b22d011d9296d7740304ae1be971faa83dbe9c844c6"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation.rs",
+      "bytes": 14160,
+      "sha256": "0a447c9c956d3ac42e52f58f1fb7ddbd49084970ea0703bde134bc7f9d21963b"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap.rs",
+      "bytes": 6693,
+      "sha256": "39360c1a83b679b74bdccb7410e265cfe840ab62cd77eb850613ee4e243c3464"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/validation.rs",
+      "bytes": 48605,
+      "sha256": "c1fc7f503beb3d165ae7b449aa215a9743e81b962d3b27d45b7923d7eb0495a4"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider.rs",
+      "bytes": 13468,
+      "sha256": "8bcc4d8c9cec8791f8c6d70f3fe79877b4b0610d3db70c71321e0752e1968305"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection.rs",
+      "bytes": 13829,
+      "sha256": "5da578d378e1b64afd9f48d6e90be15d0976bfa36b8dba100757124e2ababd18"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4732,
+      "sha256": "daa5660e1cda70f5b55ea0ef6c08de8469d6c229af735439c2b7a102de4b9fed"
+    },
+    {
+      "path": "manifest.sha256.json",
+      "bytes": 3661,
+      "sha256": "b715fce9b14728026def9cf64fcbe81fb237d80b2a8fcc01611c3ebcd315e7bf"
+    },
+    {
+      "path": "proposal.patch",
+      "bytes": 22273,
+      "sha256": "fd1a62a97267204fd1001245418133eddc08f03f1f00e14f5a944b8fd56e257a"
+    }
+  ],
+  "archive": {
+    "path": "provider-transition-source-anchor-proposal-20261028.tar.gz",
+    "bytes": 38261,
+    "sha256": "3143877c4671fa8d7ce98cb76fd77620a0b3a30648601b5738a00a4bd313913b"
+  }
+}

@@ -472,6 +472,89 @@ does not justify admitting an incomplete native SCM graph. Selection/history and
 recovery gaps stay explicit. Returning a plain directory plus manifest does not
 satisfy managed recovery.
 
+### Current admission evidence (2026-11-02)
+
+The original proposal below remains historical context. The integrated C14
+Provider8 path now has retained Windows evidence for publication with and
+without a companion, explicit session admission into private9, and independent
+physical terminal reopening after the source database is moved out of reach.
+The source and companion preservation rules above remain unchanged.
+
+The admission qualification is split across retained artifacts: r190 has 37
+passing DATA/SQL recipes, r192 has two passing plain/companion admission natives,
+and r194 has four passing retry/legacy regression natives. These are not a
+single run on one executable. The r194 plain retry covers withheld SQLite-close
+acknowledgements at private Ready, family Ready, source Ready and Published;
+it does not establish recovery after an OS-close failure or process crash.
+The source manifests, executable/PDB bindings and result logs were verified
+after each run. See the current point in
+[the resume log](worktrees-partial-vfs-resume-2026-10-28.md).
+
+C14 admission is currently terminal and read-only. Ordinary Capture/Restore,
+re-export, product CLI routing and broader crash recovery are not qualified by
+this evidence. Therefore requirement 6 above, C14 completion and overall L5
+completion remain open. Existing C14 plans whose fixed metadata quota does not
+cover the new admission peak are refused; the implementation does not enlarge
+their reservations or migrate historical test fixtures.
+
+### C13 companion protocol proposal (source only, 2026-10-28)
+
+The isolated `c13-companions-source-proposal` bundle is a partial implementation,
+not C13 completion or runtime evidence. It proposes a complete retained-image
+adapter, closed companion derivation, a companion-aware immutable plan adapter,
+v2 header codec, source/destination row
+persistence/readback primitives and scoped historical validation. The active
+legacy managed driver and its Ready guards remain until ROOT integrates the
+entire protocol below. No source cleanup or quota increase is authorized.
+
+The proposed v2 header uses the existing bounded 64KiB canonical header payload
+and a new digest domain. Its payload durably includes sorted accepted-Capture
+and already-satisfied deletion intents. Accepted deletion provenance binds the
+original source prefix, snapshot, Capture sequence/digest, exact CapturedChange
+and preimage representation. It also retains sorted exact companion representation
+references, including alternate ManifestIds of one FileId; inherited reconciliation
+re-unions those references even after the file disappears from the live image.
+Deletion SQL scalars retain their existing layout
+and row commitment; only the enclosing v2 codec permits an accepted deletion
+with an effective Absent base, after exact Capture/history verification. Such
+scalars alone are insufficient evidence and must not be interpreted as a v1
+effective-file deletion. Satisfied intents have no synthetic deletion scalar or
+None-to-None Capture. The header ID, bound by the transition receipt, commits to
+those intents even when both scalar row counts are zero.
+
+The v1 codec and payloads remain unchanged. Strict typed dispatch refuses unknown
+versions, duplicate/unknown fields and noncanonical bytes; an old v1 decoder
+refuses a v2 header. Ordinary9/10 source bindings are explicit v2 inputs, using
+the existing admitted-source validation. This proposes no schema8 DDL change or
+implicit migration. Exceeding the existing header bound blocks preservation;
+it never truncates provenance or silently enlarges the durable reservation.
+
+Protect B and C before either new companion receipt. Each database persists
+and validates the identical new canonical header/scalar rows before THAT
+database's own receipt. B rows remain absent until genuine C private AND family
+Ready, then B mappings/rows/claim/receipt and Staging->Ready commit atomically.
+B has a separate fixed metadata reservation and canonical exact retention root;
+C alone installs/debits the union. Capture and C reservations cannot fund B.
+Reserve the full
+union of live content, fresh bases, historical representations, companions and
+preimages, including both ManifestIds for one FileId. Derivation keeps companion
+paths out of the authorized checkout and Capture, counts new companion metadata
+at source and destination, and retains original inherited payloads verbatim.
+These DATA and SQL helpers do not grant native, family, source-writer or remote
+authority; the existing gates, rollback, positive-close and strict-read rules
+remain necessary around them.
+
+ROOT still needs to wire the complete adapter and closed owner through the
+active immutable plan, reservation, exact installation/protection, both receipt
+publications, terminal Ready validation, ordinary autonomous readers/catalogues
+and live v2 inherited re-export. The generic inherited normalizer/owner already
+retains v1/v2 headers without rewriting their payloads. Fresh authority must remain an actual
+retained epoch/whole-scope observation proof, never equality of supplied DATA.
+Do not remove empty/fresh guards until their replacement checks cover all these
+paths. The bundle handoff enumerates the unfinished seams and proposed R1-R5
+integration recipes; compilation, independent review and native execution remain
+with ROOT. No C13, C14 or overall L5 completion follows from this proposal.
+
 ## Sequential dependencies and ownership
 
 | Stage | Dependency and owner boundary | Completion evidence |
@@ -549,3 +632,36 @@ not inferred successes from unit tests or the complete-store prototype.
 - Linux/FUSE work starts only after Windows qualification and available
   prerequisites; do not implement around an unavailable OS feature. macOS and
   untested Windows versions/volumes remain unqualified.
+
+## C13 provider driver follow-up: source-only partial proposal
+
+The cumulative `c13-provider-driver-source-proposal` retains the preceding
+17-file companion proposal and wires inherited exact v2 representation references
+into the existing terminal and admitted ordinary readers. Historical same-FileId
+alternate ManifestIds must remain in the required union even when their native
+path no longer exists. V1 scalar mapping semantics remain strict and unchanged.
+The incoming scoped reader checks the per-header 64KiB maximum before loading
+the BLOB, alongside the existing aggregate bound. The new DATA recipe exercises
+65,536-byte acceptance and 65,537-byte refusal without changing source DATA.
+This bounded tranche does not provide 100k-companion scalability, truncation,
+spill storage, a private-schema redesign or automatic larger reservations.
+
+The requested Provider8 conversion is still blocked at this source base: the
+managed image/plan/Staging/lease setup has only test callers, and transition
+observation normalization carries declared DATA with no retained whole-scope
+authority owner. Source-side companion mappings/claims and receipt publication
+are not integrated. New local companion Ready guards remain. No current helper
+or matching DATA digest substitutes for remote epoch/enumeration revalidation.
+Ordinary9/10 outgoing adapters remain explicitly deferred with legacy guards.
+
+The authored native negative recipe reaches the existing allocation/copier and
+Staging refusal boundary: unknown creation must remain intact, no writer may
+open on refusal, source/destination/family witnesses must remain unchanged, and
+C must stay Copying without a new receipt. Its complete checkpoint reader can
+copy unknown bytes; this is not successful companion conversion or autonomous
+open/capture/prepared Restore evidence. Both new recipes are uncompiled and
+unexecuted. Successful mixed-work driver coverage and independent source AND
+destination row/claim/receipt assertions remain ROOT integration requirements.
+Rollback, positively observed SQLite connection close, holder lifetime and
+ready-last requirements continue to apply; no readback may follow an
+unacknowledged SQLite connection close. C13 and L5 remain open.
