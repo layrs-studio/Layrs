@@ -152,6 +152,10 @@ jobs:
       - name: Desktop typecheck
         run: pnpm --filter @layrs/studio-desktop check
 
+      # The Desktop build script bundles the exact debug worker image.
+      - name: Build supervised native Lens worker
+        run: cargo build --locked -p layrs-weave --bin layrs-lens-worker
+
       - name: Tauri shell tests
         run: pnpm test:tauri
 
