@@ -96,29 +96,36 @@ impl NativeWorkspace {
                 "resolution requires Ready or Conflicted Worktree",
             ));
         }
-        let mut objects = load_objects(
-            &reader,
-            source.space.id(),
-            result.parent_step_ids().to_vec(),
-            preview.limits,
-        )?;
-        for tree in &preview.bundle.trees {
-            objects.trees.insert(tree.id().clone(), tree.clone());
-        }
-        // Replacement bundles contain single-chunk files or empty manifests.
-        // Populate the preview closure before deriving exact checkout entries.
-        for chunk in &preview.bundle.chunks {
-            objects
-                .files
-                .insert(FileId::from_bytes(chunk.bytes()), chunk.bytes().to_vec());
-        }
-        for manifest in &preview.bundle.file_manifests {
-            if manifest.byte_length() == 0 {
-                objects.files.insert(manifest.file_id().clone(), vec![]);
-            }
-        }
         let after = if active && clean {
-            rewrite::checkout_entries(&objects, result.root_tree_id(), preview.limits)?
+            // Parent Trees as metadata; unchanged File content is read lazily
+            // from the admitted Store only for the resulting checkout.
+            let mut input = load_objects(
+                &reader,
+                source.space.id(),
+                result.parent_step_ids().to_vec(),
+                TreeScope::Heads,
+                preview.limits,
+            )?;
+            for tree in &preview.bundle.trees {
+                input.objects.trees.insert(tree.id().clone(), tree.clone());
+            }
+            // Replacement bundles contain single-chunk files or empty manifests.
+            // Populate the preview closure before deriving exact checkout entries.
+            for chunk in &preview.bundle.chunks {
+                input
+                    .objects
+                    .files
+                    .insert(FileId::from_bytes(chunk.bytes()), chunk.bytes().to_vec());
+            }
+            for manifest in &preview.bundle.file_manifests {
+                if manifest.byte_length() == 0 {
+                    input
+                        .objects
+                        .files
+                        .insert(manifest.file_id().clone(), vec![]);
+                }
+            }
+            rewrite::checkout_entries(&input, result.root_tree_id(), preview.limits)?
         } else {
             vec![]
         };

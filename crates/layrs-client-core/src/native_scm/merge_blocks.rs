@@ -77,12 +77,15 @@ impl NativeWorkspace {
             .step_ids();
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(
+        let input = load_objects(
             &reader,
             state.space.id(),
             heads.to_vec(),
+            TreeScope::Heads,
             GraphMergeLimits::default(),
         )?;
+        // Conflict payload Files are loaded eagerly (verified) by the loader.
+        let objects = &input.objects;
         let conflict = objects
             .conflicts
             .get(conflict)

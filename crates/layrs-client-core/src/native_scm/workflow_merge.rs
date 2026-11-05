@@ -55,10 +55,11 @@ impl NativeWorkspace {
             .ok_or(NativeClientError::Missing("Layer"))?;
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = super::merge::load_objects(
+        let input = super::merge::load_objects(
             &reader,
             state.space.id(),
             heads.step_ids().to_vec(),
+            super::merge::TreeScope::Heads,
             GraphMergeLimits::default(),
         )?;
         let file = FileId::parse(
@@ -66,7 +67,9 @@ impl NativeWorkspace {
                 .as_str()
                 .ok_or(NativeClientError::Missing("variant File ID"))?,
         )?;
-        let bytes = objects
+        // Conflict term Files are loaded eagerly (verified) by the loader.
+        let bytes = input
+            .objects
             .files
             .get(&file)
             .ok_or(NativeClientError::Missing("variant bytes"))?;
@@ -130,13 +133,30 @@ impl NativeWorkspace {
         }
     }
     pub fn prepare_named_weave(&self, source: &str, target: &str) -> Result<NativeMergePreview> {
-        self.named_weave(source, target, true)
+        self.named_weave(source, target, Some(true))
+    }
+    /// As `prepare_named_weave` when the caller captured this folder just
+    /// before (a Room merge whose fast-forward attempt did): no second scan.
+    /// `accept_merge` still verifies the folder against its base first.
+    pub fn prepare_named_weave_after_capture(
+        &self,
+        source: &str,
+        target: &str,
+    ) -> Result<NativeMergePreview> {
+        self.named_weave(source, target, None)
     }
     /// Read-only preview; pending edits must be captured explicitly first.
     pub fn preview_named_weave(&self, source: &str, target: &str) -> Result<NativeMergePreview> {
-        self.named_weave(source, target, false)
+        self.named_weave(source, target, Some(false))
     }
-    fn named_weave(&self, source: &str, target: &str, capture: bool) -> Result<NativeMergePreview> {
+    /// `capture`: Some(true) captures first, Some(false) requires a clean
+    /// folder, None trusts a capture the caller just made.
+    fn named_weave(
+        &self,
+        source: &str,
+        target: &str,
+        capture: Option<bool>,
+    ) -> Result<NativeMergePreview> {
         // Only the launching user's deployment environment configures executable
         // trust. Repository files and remote metadata never supply a worker pin.
         let worker = std::env::var_os("LAYRS_LENS_WORKER");
@@ -210,12 +230,16 @@ impl NativeWorkspace {
         } else {
             None
         };
-        if capture {
-            self.capture_with_reason(CaptureReason::BeforeOperation)?;
-        } else if self.is_dirty()? {
-            return Err(NativeClientError::InvalidState(
-                "capture pending edits before requesting a read-only preview",
-            ));
+        match capture {
+            Some(true) => {
+                self.capture_with_reason(CaptureReason::BeforeOperation)?;
+            }
+            Some(false) if self.is_dirty()? => {
+                return Err(NativeClientError::InvalidState(
+                    "capture pending edits before requesting a read-only preview",
+                ));
+            }
+            _ => {}
         }
         let target = self.layer_named(target)?;
         let source_heads = if source.starts_with("blake3:")

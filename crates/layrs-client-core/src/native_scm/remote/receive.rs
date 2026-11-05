@@ -763,6 +763,10 @@ impl NativeRemote {
                     scm_v1::checkout::CheckoutProjectionContent::Symlink { .. } => None,
                 })
                 .collect();
+            // Target bytes come from the received graph and are proven while
+            // staging; the Store copy of each displaced base file must be
+            // intact before the journal, or its backup would be the only copy.
+            workspace.verify_displaced_content(&before, &after)?;
             let mut read_chunk = |id: &ChunkId| graph.read_chunk(id);
             let mut write_file = |path: &str, output: &mut dyn std::io::Write| {
                 let id = files
@@ -777,6 +781,8 @@ impl NativeRemote {
                 chunks: &external_chunks,
                 read_chunk: &mut read_chunk,
                 write_file: &mut write_file,
+                end_staging: None,
+                write_file_shared: None,
             };
             scm_v1::materialize::apply_checkout_with_sources_bound_metadata(
                 workspace.store_root(),

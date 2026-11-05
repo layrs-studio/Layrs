@@ -76,7 +76,9 @@ pub fn execute_vfs_control(request: VfsControlRequest) -> std::result::Result<Va
     let timeout = match &request.command {
         VfsHostCommand::Status {} => Duration::from_secs(3),
         VfsHostCommand::Stop {} => Duration::from_secs(10),
-        VfsHostCommand::Capture { .. } | VfsHostCommand::Export { .. } => Duration::from_secs(300),
+        VfsHostCommand::Capture { .. }
+        | VfsHostCommand::CaptureVerifying {}
+        | VfsHostCommand::Export { .. } => Duration::from_secs(300),
     };
     let response = VfsHostClient::open(&request.ticket)
         .map_err(|error| format!("{}: {error}", error.code()))?

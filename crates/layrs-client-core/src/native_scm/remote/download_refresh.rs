@@ -163,9 +163,13 @@ fn bounded_batch_plan(plan: FetchPlanResponse, claims: &[FetchClaim]) -> RemoteR
         if claims.len() > 1 {
             return Ok(BatchPlan::Split);
         }
-        return Err(NativeRemoteError::Invalid(
-            "fetch denied, incomplete or exceeds limits",
-        ));
+        // One File is never split: it streams through the spool whatever its
+        // size (ADR 0027). An incomplete plan still refuses.
+        if plan.has_more {
+            return Err(NativeRemoteError::Invalid(
+                "fetch denied, incomplete or exceeds limits",
+            ));
+        }
     }
     Ok(BatchPlan::Ready(plan))
 }
@@ -434,7 +438,6 @@ mod tests {
     fn aggregate_manifest_overhead_splits_valid_four_gib_file_budget() {
         let (plan, claims) = large_file_plan(4, 16);
         assert_eq!(4 * 16 * MAX_OBJECT, MAX_STREAM_BYTES);
-        assert_eq!(16 * MAX_OBJECT, MAX_FILE_STREAM);
         assert!(matches!(
             bounded_batch_plan(plan.clone(), &claims).unwrap(),
             BatchPlan::Split
@@ -466,12 +469,11 @@ mod tests {
             bounded_batch_plan(exact, &claims).unwrap(),
             BatchPlan::Ready(_)
         ));
+        // One File is never split and streams whatever its size (ADR 0027).
         let (oversized, single) = large_file_plan(1, 65);
         assert!(matches!(
             bounded_batch_plan(oversized, &single),
-            Err(NativeRemoteError::Invalid(
-                "fetch denied, incomplete or exceeds limits"
-            ))
+            Ok(BatchPlan::Ready(_))
         ));
         let (mut oversized_object, single) = large_file_plan(1, 16);
         oversized_object.download_capabilities[0]

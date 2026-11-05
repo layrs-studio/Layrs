@@ -49,6 +49,9 @@ pub enum VfsHostCommand {
     Capture {
         writers_quiesced: bool,
     },
+    /// As Capture with writers stopped, reading every local byte instead of
+    /// trusting the change index (ADR 0025): required before a Room is deleted.
+    CaptureVerifying {},
     Export {
         parent: PathBuf,
         writers_quiesced: bool,
@@ -129,7 +132,7 @@ impl VfsHost {
     /// Runs until an authenticated Stop, a listener failure, or process exit.
     /// All exits preserve the persistent checkout and its unaccepted writes.
     pub fn serve(mut self) -> Result<()> {
-        loop {
+        let (mut stream, response) = loop {
             let (mut stream, peer) = self.listener.accept()?;
             if !peer.ip().is_loopback() {
                 continue;
@@ -153,7 +156,16 @@ impl VfsHost {
                     }
                 };
             let stop = matches!(request.command, VfsHostCommand::Stop {});
+            let label = format!(
+                "vfs-host:{}",
+                serde_json::to_value(&request.command)
+                    .ok()
+                    .and_then(|value| value["action"].as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            );
             let result = self.execute(request.command);
+            layrs_store_local::perf::emit(&label);
+            layrs_store_local::perf::reset();
             let stopped = stop && result.is_ok();
             let response = match result {
                 Ok(value) => VfsHostResponse::Ok { value },
@@ -162,6 +174,9 @@ impl VfsHost {
                     message: error.to_string(),
                 },
             };
+            if stopped {
+                break (stream, response);
+            }
             // A lost reply cannot undo acceptance. Its durable receipt remains
             // available after restart; never retry the mutation inside serve.
             let _ = write_frame(
@@ -171,10 +186,19 @@ impl VfsHost {
                 },
                 &response,
             );
-            if stopped {
-                return Ok(());
-            }
-        }
+        };
+        // The caller renames or deletes the Room folder right after this
+        // reply: release every handle on it (provider session, root and
+        // ancestor guards) before acknowledging the Stop.
+        drop(self.worktree);
+        let _ = write_frame(
+            &mut DeadlineStream {
+                stream: &mut stream,
+                deadline: Instant::now() + CONTROL_FRAME_TIMEOUT,
+            },
+            &response,
+        );
+        Ok(())
     }
 
     fn execute(&mut self, command: VfsHostCommand) -> Result<serde_json::Value> {
@@ -183,6 +207,7 @@ impl VfsHost {
             VfsHostCommand::Capture {
                 writers_quiesced: true,
             } => json(self.worktree.capture_quiesced()?),
+            VfsHostCommand::CaptureVerifying {} => json(self.worktree.capture_quiesced_verifying()?),
             VfsHostCommand::Export {
                 parent,
                 writers_quiesced: true,

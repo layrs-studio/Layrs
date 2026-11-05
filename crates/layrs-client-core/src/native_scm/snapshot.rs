@@ -28,12 +28,13 @@ impl Default for SnapshotLimits {
     }
 }
 impl SnapshotLimits {
-    /// Logical limits for spool-backed paths. In-memory callers deliberately
-    /// retain the smaller Default limits.
+    /// Logical limits for spool-backed paths: content is never held whole,
+    /// so file and capture sizes are unbounded (ADR 0027); only the disk
+    /// bounds them. In-memory callers deliberately retain the Default limits.
     pub fn streaming() -> Self {
         Self {
-            max_file_bytes: 1024 * 1024 * 1024,
-            max_total_bytes: 4 * 1024 * 1024 * 1024,
+            max_file_bytes: usize::MAX,
+            max_total_bytes: usize::MAX,
             ..Self::default()
         }
     }
@@ -49,8 +50,32 @@ impl PreparedSnapshot {
     pub(super) fn from_streaming(
         entries: &[layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry],
         manifests: Vec<FileManifest>,
+        chunks: SnapshotChunkSpool,
+        limits: SnapshotLimits,
+    ) -> Result<Self> {
+        Self::from_streaming_inner(entries, manifests, chunks, limits, false)
+    }
+
+    /// As `from_streaming`, where a file without a streamed manifest is a
+    /// reference to content already admitted to the Space (a change-index
+    /// entry, ADR 0025). Admission of the resulting Tree still requires that
+    /// content to be durably admitted, so a stale reference fails the capture
+    /// instead of producing a dangling Step.
+    pub(super) fn from_streaming_referencing(
+        entries: &[layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry],
+        manifests: Vec<FileManifest>,
+        chunks: SnapshotChunkSpool,
+        limits: SnapshotLimits,
+    ) -> Result<Self> {
+        Self::from_streaming_inner(entries, manifests, chunks, limits, true)
+    }
+
+    fn from_streaming_inner(
+        entries: &[layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry],
+        manifests: Vec<FileManifest>,
         mut chunks: SnapshotChunkSpool,
         limits: SnapshotLimits,
+        references: bool,
     ) -> Result<Self> {
         use layrs_store_local::scm_v1::checkout::CheckoutProjectionContent;
         let mut builder = SnapshotBuilder::new(limits);
@@ -67,9 +92,13 @@ impl PreparedSnapshot {
                     byte_length,
                     executable,
                 } => {
-                    let manifest = manifests
-                        .get(file_id)
-                        .ok_or(NativeClientError::Missing("streamed FileManifest"))?;
+                    let Some(manifest) = manifests.get(file_id) else {
+                        if !references {
+                            return Err(NativeClientError::Missing("streamed FileManifest"));
+                        }
+                        builder.add_file_reference(path, file_id.clone(), *byte_length, *executable)?;
+                        continue;
+                    };
                     if manifest.byte_length() != *byte_length {
                         return Err(NativeClientError::InvalidState(
                             "streamed file length changed",

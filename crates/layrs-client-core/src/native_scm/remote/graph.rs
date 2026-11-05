@@ -65,7 +65,7 @@ impl GraphObjects {
         output: &mut (impl Write + ?Sized),
     ) -> RemoteResult<u64> {
         let manifest = self.manifest(id)?;
-        if manifest.byte_length() > MAX_FILE_STREAM || manifest.chunks().len() > 16_384 {
+        if manifest.chunks().len() > MAX_FILE_CHUNKS {
             return Err(NativeRemoteError::Invalid("file exceeds limit"));
         }
         let mut verifier = manifest.verifier();
@@ -78,7 +78,7 @@ impl GraphObjects {
         Ok(manifest.byte_length())
     }
     pub(super) fn verify_file(&self, manifest: &FileManifest) -> RemoteResult<()> {
-        if manifest.byte_length() > MAX_FILE_STREAM || manifest.chunks().len() > 16_384 {
+        if manifest.chunks().len() > MAX_FILE_CHUNKS {
             return Err(NativeRemoteError::Invalid("file exceeds limit"));
         }
         let mut verifier = manifest.verifier();
@@ -92,16 +92,11 @@ impl GraphObjects {
         &self,
         mut check: impl FnMut() -> RemoteResult<()>,
     ) -> RemoteResult<()> {
-        let mut work = 0u64;
+        // Verification streams one chunk at a time: its work is the closure's
+        // logical size, which is unbounded like the files (ADR 0027).
         for object in self.objects.values() {
             check()?;
             if let CanonicalObject::FileManifest(manifest) = object {
-                work = work
-                    .checked_add(manifest.byte_length())
-                    .filter(|n| *n <= MAX_STREAM_BYTES)
-                    .ok_or(NativeRemoteError::Invalid(
-                        "file verification budget exhausted",
-                    ))?;
                 self.verify_file(manifest)?;
             }
         }
@@ -250,9 +245,6 @@ impl GraphObjects {
                         CheckoutProjectionContent::Symlink { target } => target.len() as u64,
                     })
                     .ok_or(NativeRemoteError::Invalid("checkout exceeds limits"))?;
-                if total > 4 * 1024 * 1024 * 1024 {
-                    return Err(NativeRemoteError::Invalid("checkout exceeds limits"));
-                }
                 entries.push(CheckoutProjectionEntry { path, content });
             }
         }
@@ -495,17 +487,13 @@ impl GraphObjects {
         id: &FileId,
         work: &mut u64,
     ) -> RemoteResult<FileManifestId> {
-        let remaining = MAX_STREAM_BYTES
-            .checked_sub(*work)
-            .ok_or(NativeRemoteError::Invalid(
-                "file verification budget exhausted",
-            ))?;
+        // Logical work only (verification streams); unbounded (ADR 0027).
         let FileAvailability::Present(file) = reader.file_availability_with_budget(
             id,
-            32_768,
-            usize::try_from(remaining).unwrap_or(usize::MAX),
+            MAX_FILE_CHUNKS + 2_048,
+            usize::MAX,
             128,
-            16_384,
+            MAX_FILE_CHUNKS,
         )?
         else {
             return Err(NativeRemoteError::Invalid("missing local File"));
@@ -514,17 +502,13 @@ impl GraphObjects {
             let manifest = reader
                 .get_file_manifest(manifest_id)?
                 .ok_or(NativeRemoteError::Invalid("missing local File manifest"))?;
-            if manifest.byte_length() > MAX_FILE_STREAM {
+            if manifest.chunks().len() > MAX_FILE_CHUNKS {
                 return Err(NativeRemoteError::Invalid("file exceeds limit"));
             }
             let metadata = serde_jcs::to_vec(&manifest)?.len() as u64;
             *work = work
-                .checked_add(manifest.byte_length())
-                .and_then(|n| n.checked_add(metadata))
-                .filter(|n| *n <= MAX_STREAM_BYTES)
-                .ok_or(NativeRemoteError::Invalid(
-                    "file verification budget exhausted",
-                ))?;
+                .saturating_add(manifest.byte_length())
+                .saturating_add(metadata);
         }
         Ok(file.verified_manifest_ids()[0].clone())
     }

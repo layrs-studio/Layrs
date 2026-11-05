@@ -154,8 +154,15 @@ impl NativeWorkspace {
         Ok(self.state()?.operation.id().clone())
     }
     pub fn switch_layer(&self, name_or_id: &str) -> Result<StepId> {
-        self.capture_with_reason(CaptureReason::BeforeLayerSwitch)?;
-        let source = self.state()?;
+        let _total = layrs_store_local::perf::span("switch.total");
+        {
+            let _span = layrs_store_local::perf::span("switch.capture_before");
+            self.capture_with_reason(CaptureReason::BeforeLayerSwitch)?;
+        }
+        let source = {
+            let _span = layrs_store_local::perf::span("switch.state");
+            self.state()?
+        };
         let matches: Vec<_> = source
             .layers
             .iter()
@@ -175,7 +182,11 @@ impl NativeWorkspace {
         let [step] = heads.step_ids() else {
             return Err(NativeClientError::NeedsIntegration);
         };
-        let target = self.read_step_projection(step)?;
+        let target = {
+            let _span = layrs_store_local::perf::span("switch.read_target_projection");
+            self.read_step_projection(step)?
+        };
+        let _span = layrs_store_local::perf::span("switch.apply_transition");
         self.apply_transition(
             &source,
             step.clone(),
@@ -188,6 +199,104 @@ impl NativeWorkspace {
             &NoMaterializationFaults,
         )?;
         Ok(step.clone())
+    }
+
+    /// Fast-forwards `target` from exactly `expected_head` to `step`, which
+    /// must descend from it (a Room's captured Step on a Layer forked at that
+    /// head). If this folder has `target` active, only the files that differ
+    /// are materialized (O(changes)); otherwise only the Layer head moves.
+    /// Returns whether this folder's files were updated. Refuses (caller then
+    /// performs a full Weave) when the target moved since `expected_head`.
+    pub fn fast_forward_layer(
+        &self,
+        target: &LayerId,
+        expected_head: &StepId,
+        step: &StepId,
+    ) -> Result<bool> {
+        let _total = layrs_store_local::perf::span("room.fast_forward");
+        self.capture_with_reason(CaptureReason::BeforeOperation)?;
+        let source = self.state()?;
+        let current = source
+            .view
+            .layer_heads()
+            .iter()
+            .find(|h| h.layer_id() == target)
+            .ok_or(NativeClientError::Missing("target Layer heads"))?;
+        if current.step_ids() != [expected_head.clone()] {
+            return Err(NativeClientError::NeedsIntegration);
+        }
+        {
+            let store = self.open_store()?;
+            let reader = NativeScmReader::new(&store)?;
+            if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), source.space.id())? {
+                return Err(NativeClientError::Missing("Step admitted to this Space"));
+            }
+        }
+        let heads = source
+            .view
+            .layer_heads()
+            .iter()
+            .map(|h| {
+                if h.layer_id() == target {
+                    LayerHeadSet::new(target.clone(), vec![step.clone()])
+                } else {
+                    Ok(h.clone())
+                }
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let own = source
+            .view
+            .worktrees()
+            .iter()
+            .find(|w| w.worktree_id() == self.worktree_id())
+            .ok_or(NativeClientError::Missing("Worktree state"))?;
+        if own.active_layer_id() == Some(target) && own.base_step_id() == Some(expected_head) {
+            // The reference View carries the moved head; this folder's own
+            // state is rebuilt by the transition (absent from the reference).
+            let reference = RepositoryView::new(
+                source.space.id().clone(),
+                heads,
+                source.view.marker_ids().to_vec(),
+                source.view.release_ids().to_vec(),
+                source
+                    .view
+                    .worktrees()
+                    .iter()
+                    .filter(|w| w.worktree_id() != self.worktree_id())
+                    .cloned()
+                    .collect(),
+            )?;
+            let after = self.read_step_projection(step)?;
+            self.apply_transition(
+                &source,
+                step.clone(),
+                Some(target.clone()),
+                after,
+                None,
+                Some(reference),
+                OperationKind::MoveLayerHeads,
+                "Fast-forward Room merge",
+                &NoMaterializationFaults,
+            )?;
+            return Ok(true);
+        }
+        let next = RepositoryView::new(
+            source.space.id().clone(),
+            heads,
+            source.view.marker_ids().to_vec(),
+            source.view.release_ids().to_vec(),
+            source.view.worktrees().to_vec(),
+        )?;
+        let change = self.client().prepare_metadata_change(
+            &source,
+            next,
+            vec![],
+            OperationKind::MoveLayerHeads,
+            "Fast-forward Room merge",
+            MutationStamp::fresh()?,
+        )?;
+        self.client().accept(&change)?;
+        Ok(false)
     }
 
     pub fn restore_step(&self, step: &StepId, path: Option<&str>) -> Result<StepId> {
@@ -261,6 +370,24 @@ impl NativeWorkspace {
         read_tree(&reader, step.root_tree_id())
     }
 
+    /// Verified content of only the `selected` paths of an admitted Step.
+    pub(super) fn read_step_files_selected(
+        &self,
+        step: &StepId,
+        selected: &BTreeSet<String>,
+    ) -> Result<Vec<CheckoutEntry>> {
+        let state = self.state()?;
+        let store = self.open_store()?;
+        let reader = NativeScmReader::new(&store)?;
+        if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
+            return Err(NativeClientError::Missing("Step admitted to this Space"));
+        }
+        let step = reader
+            .get_step(step)?
+            .ok_or(NativeClientError::Missing("Step"))?;
+        read_tree_selected(&reader, step.root_tree_id(), Some(selected))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn apply_transition(
         &self,
@@ -330,7 +457,15 @@ impl NativeWorkspace {
         rewrite_map: Vec<RewriteTarget>,
         faults: &dyn MaterializationFaults,
     ) -> Result<()> {
-        let before = self.read_step_projection(&base_step(source)?)?;
+        let before = {
+            let _span = layrs_store_local::perf::span("transition.read_before_projection");
+            self.read_step_projection(&base_step(source)?)?
+        };
+        // Projections are metadata only. The Store copy of every displaced
+        // base file is verified before the journal; target bytes are proven
+        // while staged, and a staging failure leaves the checkout untouched
+        // with its journal closed.
+        self.verify_displaced_content(&before, &after)?;
         let stamp = MutationStamp::fresh()?;
         let snapshot = restore_projection::snapshot(&after)?;
         let reference_view = restored_view.as_ref().unwrap_or(&source.view);
@@ -440,23 +575,36 @@ impl NativeWorkspace {
         )?;
         drop(reader);
         drop(store);
+        self.materialize_projection(&before, &after, &batch, faults)
+    }
+
+    /// Materializes `before` -> `after` together with `batch`: every written
+    /// file is staged from the Store, or from `batch`'s own new objects (a
+    /// merge's resolved content), and proven against its FileId while staged.
+    pub(super) fn materialize_projection(
+        &self,
+        before: &[CheckoutProjectionEntry],
+        after: &[CheckoutProjectionEntry],
+        batch: &WriteBatch,
+        faults: &dyn MaterializationFaults,
+    ) -> Result<()> {
         let files: BTreeMap<_, _> = after.iter().map(|e| (e.path.as_str(), e)).collect();
-        let mut write_file = |path: &str, output: &mut dyn std::io::Write| {
-            // Staging holds the checkout lease but no exclusive Store handle.
-            // Never retain this shared capability across journal/commit phases.
-            let content_store = self.open_store().map_err(std::io::Error::other)?;
-            let content_reader =
-                NativeScmReader::new(&content_store).map_err(std::io::Error::other)?;
+        // Staging holds the checkout lease but no exclusive Store handle. One
+        // shared capability serves the whole (concurrent) staging phase and
+        // `end_staging` releases it: never retained across journal/commit
+        // phases. Every byte is proven by the manifest verifier and by the
+        // materializer's `VerifiedWriter`.
+        let staging_store = restore_projection::SharedStagingStore::new(|| self.open_store());
+        let mut end_staging = || staging_store.end();
+        let write_shared = |path: &str, output: &mut dyn std::io::Write| {
             let entry = files
                 .get(path)
                 .ok_or_else(|| std::io::Error::other("prepared restore file absent"))?;
-            restore_projection::write_file(
-                &content_reader,
-                batch.canonical_objects(),
-                entry,
-                output,
-            )
+            staging_store.with_reader(|reader| {
+                restore_projection::write_file(reader, batch.canonical_objects(), entry, output)
+            })
         };
+        let mut write_file = |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
         let mut read_chunk = |_: &ChunkId| {
             Err(StoreError::Corruption {
                 message: "unexpected restore chunk source".into(),
@@ -467,14 +615,16 @@ impl NativeWorkspace {
             self.store_identity(),
             self.metadata_identity(),
             self.worktree_id(),
-            &before,
-            &after,
-            &batch,
+            before,
+            after,
+            batch,
             faults,
             &mut scm_v1::materialize::CheckoutSources {
                 chunks: &[],
                 read_chunk: &mut read_chunk,
                 write_file: &mut write_file,
+                end_staging: Some(&mut end_staging),
+                write_file_shared: Some(&write_shared),
             },
         )?;
         Ok(())
@@ -497,6 +647,16 @@ pub(super) fn snapshot_entries(entries: &[CheckoutEntry]) -> Result<PreparedSnap
 }
 
 fn read_tree(reader: &impl ScmReader, root: &TreeId) -> Result<Vec<CheckoutEntry>> {
+    read_tree_selected(reader, root, None)
+}
+
+/// As `read_tree`, but with `selected` only those paths carry content (and are
+/// returned); Trees are still walked in full so limits and order are unchanged.
+pub(super) fn read_tree_selected(
+    reader: &impl ScmReader,
+    root: &TreeId,
+    selected: Option<&BTreeSet<String>>,
+) -> Result<Vec<CheckoutEntry>> {
     let mut pending = vec![(String::new(), root.clone(), 0)];
     let mut files: BTreeMap<String, CheckoutContent> = BTreeMap::new();
     // Reuse bytes already verified during this read, without a persistent cache
@@ -528,6 +688,11 @@ fn read_tree(reader: &impl ScmReader, root: &TreeId) -> Result<Vec<CheckoutEntry
             let content = match entry.target() {
                 TreeEntryTarget::Tree { tree_id } => {
                     pending.push((path, tree_id.clone(), depth + 1));
+                    continue;
+                }
+                TreeEntryTarget::File { .. } | TreeEntryTarget::Symlink { .. }
+                    if selected.is_some_and(|selected| !selected.contains(&path)) =>
+                {
                     continue;
                 }
                 TreeEntryTarget::File { file_id } => {

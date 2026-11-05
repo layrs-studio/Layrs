@@ -33,8 +33,7 @@ impl ChunkSpool {
         let next = self
             .length
             .checked_add(length as u64)
-            .filter(|length| *length <= MAX_STREAM_BYTES)
-            .ok_or(NativeRemoteError::Invalid("chunk spool exceeds limit"))?;
+            .ok_or(NativeRemoteError::Invalid("chunk spool length overflow"))?;
         let file = self.file.get_mut();
         if file.is_none() {
             *file = Some(download::temporary_file()?);

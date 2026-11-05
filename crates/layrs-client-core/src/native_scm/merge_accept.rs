@@ -117,44 +117,36 @@ impl NativeWorkspace {
                 "merge requires a ready active Worktree",
             ));
         }
-        // Also covers a graph-only join whose checkout delta is empty.
+        // Also covers a graph-only join whose checkout delta is empty. The
+        // checkout is streamed (no whole-checkout memory bound) and read only
+        // where its change index (ADR 0025), if any, does not vouch for it.
         if active {
-            let (_, captured) = self.capture_projection(source, SnapshotLimits::default())?;
+            let limits = SnapshotLimits::streaming();
+            let captured = match layrs_store_local::scm_v1::change_index::ChangeIndex::load(
+                self.store_root(),
+                self.worktree_id(),
+            ) {
+                // Precedes writing the merge result: two equal passes.
+                Some(index) => self.capture_projection_indexed(source, limits, &index, false)?.0,
+                None => self.capture_projection_streaming(source, limits)?.1,
+            };
             if worktree.materialized_tree_id() != Some(captured.root_tree_id()) {
                 return Err(NativeClientError::StaleCapture);
             }
         }
-        let mut objects = load_objects(
-            &reader,
-            source.space.id(),
-            preview
-                .plan
-                .source_heads()
-                .iter()
-                .chain(preview.plan.target_heads())
-                .cloned()
-                .collect(),
-            preview.plan.limits(),
-        )?;
         let bundle = preview.plan.installation_bundle().map_err(merge_error)?;
-        for tree in &bundle.trees {
-            objects.trees.insert(tree.id().clone(), tree.clone());
-        }
-        for (id, bytes) in preview.plan.files() {
-            objects.files.insert(id.clone(), bytes.clone());
-        }
+        // Only a clean merge into the active checkout is materialized, from
+        // metadata: the result Tree's projection (new Trees and resolved
+        // files from the bundle, the rest admitted in the Store). Only the
+        // paths it changes are then written, as a switch does.
         let after = if active && clean {
-            rewrite::checkout_entries(
-                &objects,
-                preview.plan.step().root_tree_id(),
-                preview.plan.limits(),
-            )?
+            result_projection(&reader, &bundle, preview.plan.step().root_tree_id())?
         } else {
             vec![]
         };
         if active
             && clean
-            && super::super::restore::snapshot_entries(&after)?.root_tree_id()
+            && &layrs_store_local::scm_v1::checkout::projection_tree_id(&after)?
                 != preview.plan.step().root_tree_id()
         {
             return Err(NativeClientError::InvalidState(
@@ -254,18 +246,12 @@ impl NativeWorkspace {
         drop(reader);
         drop(store);
         if active {
-            let before = self.read_step_files(&base_step(source)?)?;
             if clean {
-                materialize::apply_checkout_bound_metadata(
-                    self.store_root(),
-                    self.store_identity(),
-                    self.metadata_identity(),
-                    self.worktree_id(),
-                    &before,
-                    &after,
-                    &batch,
-                    faults,
-                )?;
+                let before = self.read_step_projection(&base_step(source)?)?;
+                // Store copies of the base files this merge displaces are
+                // verified before the journal, as for a switch.
+                self.verify_displaced_content(&before, &after)?;
+                self.materialize_projection(&before, &after, &batch, faults)?;
             } else {
                 // No files change. Verify current bytes still match the claimed
                 // old projection, and retain that old projection in the View.
@@ -276,4 +262,88 @@ impl NativeWorkspace {
         }
         Ok(outcome)
     }
+}
+
+/// The checkout projection of a merge result Tree: new Trees and resolved
+/// file lengths come from the bundle, everything else from admitted Store
+/// metadata. A clean result has only files, directories and symlinks.
+fn result_projection(
+    reader: &NativeScmReader,
+    bundle: &layrs_weave::graph_merge::InstallationBundle,
+    root: &TreeId,
+) -> Result<Vec<layrs_store_local::scm_v1::checkout::CheckoutProjectionEntry>> {
+    use layrs_store_local::scm_v1::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
+    let trees: std::collections::BTreeMap<&TreeId, &Tree> =
+        bundle.trees.iter().map(|tree| (tree.id(), tree)).collect();
+    let lengths: std::collections::BTreeMap<&FileId, u64> = bundle
+        .file_manifests
+        .iter()
+        .map(|manifest| (manifest.file_id(), manifest.byte_length()))
+        .collect();
+    let mut stored_lengths = std::collections::BTreeMap::<FileId, u64>::new();
+    let mut entries = Vec::new();
+    let mut pending = vec![(String::new(), root.clone(), 0usize)];
+    while let Some((prefix, id, depth)) = pending.pop() {
+        if depth > 128 || entries.len() + pending.len() >= 100_000 {
+            return Err(NativeClientError::InvalidState("merge result exceeds checkout limits"));
+        }
+        let stored;
+        let tree = match trees.get(&id) {
+            Some(tree) => *tree,
+            None => {
+                stored = reader
+                    .get_tree(&id)?
+                    .ok_or(NativeClientError::Missing("merge result Tree"))?;
+                &stored
+            }
+        };
+        // Recorded lengths of this Tree's stored Files, one batched query.
+        let unknown: Vec<&FileId> = tree
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.target().file_id())
+            .filter(|file| !lengths.contains_key(file) && !stored_lengths.contains_key(*file))
+            .collect();
+        if !unknown.is_empty() {
+            stored_lengths.extend(reader.file_lengths_metadata(unknown)?);
+        }
+        for entry in tree.entries() {
+            let path = if prefix.is_empty() {
+                entry.name().as_str().to_owned()
+            } else {
+                format!("{prefix}/{}", entry.name().as_str())
+            };
+            let content = match entry.target() {
+                TreeEntryTarget::Tree { tree_id } => {
+                    pending.push((path, tree_id.clone(), depth + 1));
+                    continue;
+                }
+                TreeEntryTarget::File { file_id } => CheckoutProjectionContent::File {
+                    byte_length: match lengths.get(file_id) {
+                        Some(length) => *length,
+                        None => *stored_lengths
+                            .get(file_id)
+                            .ok_or(NativeClientError::Missing("merge result File"))?,
+                    },
+                    file_id: file_id.clone(),
+                    executable: entry.executable(),
+                },
+                TreeEntryTarget::Symlink { symlink_id } => CheckoutProjectionContent::Symlink {
+                    target: reader
+                        .get_symlink(symlink_id)?
+                        .ok_or(NativeClientError::Missing("merge result Symlink"))?
+                        .target()
+                        .to_owned(),
+                },
+                _ => {
+                    return Err(NativeClientError::InvalidState(
+                        "clean merge Tree cannot be represented by checkout",
+                    ))
+                }
+            };
+            entries.push(CheckoutProjectionEntry { path, content });
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
 }

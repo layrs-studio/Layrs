@@ -107,6 +107,39 @@ impl NativeWorkspace {
         faults: &dyn MaterializationFaults,
         creation_faults: &dyn WorktreeCreationFaults,
     ) -> Result<Self> {
+        self.create_worktree_inner(root, layer_id, step_id, faults, creation_faults, false)
+    }
+
+    /// A Room's physical folder: as `create_worktree`, with its change index
+    /// (ADR 0025) enabled before materialization, so the files written there
+    /// are already recognised by the first capture without being reopened.
+    pub fn create_room_worktree(
+        &self,
+        root: impl AsRef<Path>,
+        layer_id: &LayerId,
+        step_id: &StepId,
+    ) -> Result<Self> {
+        self.create_worktree_inner(
+            root,
+            layer_id,
+            step_id,
+            &NoMaterializationFaults,
+            &NoWorktreeCreationFaults,
+            true,
+        )
+    }
+
+    fn create_worktree_inner(
+        &self,
+        root: impl AsRef<Path>,
+        layer_id: &LayerId,
+        step_id: &StepId,
+        faults: &dyn MaterializationFaults,
+        creation_faults: &dyn WorktreeCreationFaults,
+        change_index: bool,
+    ) -> Result<Self> {
+        let _total = layrs_store_local::perf::span("worktree.create");
+        let prepare = layrs_store_local::perf::span("worktree.prepare");
         let checkout = CheckoutReader::open(root, None)?;
         let root = checkout.root().to_path_buf();
         creation_faults.before_creation_lease()?;
@@ -126,8 +159,11 @@ impl NativeWorkspace {
             ));
         }
         let source = self.state()?;
-        // Verifies admission, closure and platform representation before reserving
-        // or registering anything. Conflict Steps fail explicitly if not representable.
+        // Verifies admission, recorded availability and platform representation
+        // of every file before reserving or registering anything; content
+        // bytes are proven while staged (a damaged Store copy fails staging
+        // with the checkout untouched). Conflict Steps fail explicitly if not
+        // representable.
         let after = self.read_step_projection(step_id)?;
         scm_v1::checkout::validate_streaming_projection(&after)?;
         let store = self.open_store()?;
@@ -159,6 +195,11 @@ impl NativeWorkspace {
         )?;
         drop(reader);
         drop(store);
+        if change_index {
+            scm_v1::change_index::ChangeIndex::enable(self.store_root(), worktree.id(), &root)?;
+        }
+        drop(prepare);
+        let register = layrs_store_local::perf::span("worktree.register");
         let creation = scm_v1::worktrees::WorktreeCreation {
             worktree: worktree.clone(),
             source_worktree_id: self.worktree_id().clone(),
@@ -185,7 +226,11 @@ impl NativeWorkspace {
         Self::register_reserved_worktree(&locator, &lease, Some(source.operation.id()))?;
         creation_faults.after_registration()?;
         let created = Self::open(&root)?;
-        created.finish_worktree_creation(faults, &lease)?;
+        drop(register);
+        {
+            let _finish = layrs_store_local::perf::span("worktree.finish");
+            created.finish_worktree_creation(faults, &lease)?;
+        }
         Ok(created)
     }
 
@@ -497,14 +542,21 @@ impl NativeWorkspace {
         drop(reader);
         drop(store);
         let files: BTreeMap<_, _> = after.iter().map(|e| (e.path.as_str(), e)).collect();
-        let mut write_file = |path: &str, output: &mut dyn std::io::Write| {
-            let store = self.open_store().map_err(std::io::Error::other)?;
-            let reader = NativeScmReader::new(&store).map_err(std::io::Error::other)?;
+        // One shared Store capability for the whole (concurrent) staging
+        // phase, released by `end_staging` before materialization's exclusive
+        // journal phases. Every byte is proven by the manifest verifier and
+        // by the materializer's `VerifiedWriter`.
+        let staging_store = restore_projection::SharedStagingStore::new(|| self.open_store());
+        let write_shared = |path: &str, output: &mut dyn std::io::Write| {
             let entry = files
                 .get(path)
                 .ok_or_else(|| std::io::Error::other("Worktree file missing"))?;
-            restore_projection::write_file(&reader, batch.canonical_objects(), entry, output)
+            staging_store.with_reader(|reader| {
+                restore_projection::write_file(reader, batch.canonical_objects(), entry, output)
+            })
         };
+        let mut write_file = |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
+        let mut end_staging = || staging_store.end();
         let mut read_chunk = |_: &ChunkId| {
             Err(StoreError::Corruption {
                 message: "unexpected Worktree chunk source".into(),
@@ -523,6 +575,8 @@ impl NativeWorkspace {
                 chunks: &[],
                 read_chunk: &mut read_chunk,
                 write_file: &mut write_file,
+                end_staging: Some(&mut end_staging),
+                write_file_shared: Some(&write_shared),
             },
         )?;
         lease.verify()?;

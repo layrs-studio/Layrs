@@ -2,7 +2,7 @@
 use super::Result;
 use super::*;
 use layrs_core::scm::*;
-use layrs_store::scm::{CanonicalObject, FileAvailability, ScmReader};
+use layrs_store::scm::{CanonicalObject, ScmReader};
 use layrs_store_local::scm_v1::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
 use std::{collections::BTreeMap, io::Write};
 
@@ -10,8 +10,8 @@ pub(super) fn limits() -> SnapshotLimits {
     SnapshotLimits {
         max_entries: 100_000,
         max_depth: 128,
-        max_file_bytes: 1024 * 1024 * 1024,
-        max_total_bytes: 4usize * 1024 * 1024 * 1024,
+        max_file_bytes: usize::MAX,
+        max_total_bytes: usize::MAX,
     }
 }
 pub(super) fn snapshot(entries: &[CheckoutProjectionEntry]) -> Result<PreparedSnapshot> {
@@ -107,6 +107,69 @@ pub(super) fn captured(snapshot: &PreparedSnapshot) -> Result<Vec<CheckoutProjec
     Ok(entries)
 }
 
+/// One shared Store capability for a whole checkout staging phase, usable
+/// from several staging threads, opened on first use and released by `end`
+/// (materialization calls it before any exclusive journal phase).
+pub(super) struct SharedStagingStore<F> {
+    open: F,
+    state: std::sync::RwLock<Option<layrs_store_local::scm_v1::NativeStoreReading>>,
+    ended: std::sync::atomic::AtomicBool,
+}
+
+impl<F> SharedStagingStore<F>
+where
+    F: Fn() -> Result<layrs_store_local::scm_v1::NativeStoreOpen> + Sync,
+{
+    pub(super) fn new(open: F) -> Self {
+        Self {
+            open,
+            state: std::sync::RwLock::new(None),
+            ended: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn with_reader<T>(
+        &self,
+        read: impl FnOnce(&layrs_store_local::scm_v1::NativeScmReader<'_>) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        let poisoned = || std::io::Error::other("staging Store lock poisoned");
+        {
+            let guard = self.state.read().map_err(|_| poisoned())?;
+            if let Some(reading) = guard.as_ref() {
+                return read(&reading.reader());
+            }
+        }
+        if self.ended.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(std::io::Error::other("checkout staging already ended"));
+        }
+        {
+            let mut guard = self.state.write().map_err(|_| poisoned())?;
+            if self.ended.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(std::io::Error::other("checkout staging already ended"));
+            }
+            if guard.is_none() {
+                let store = (self.open)().map_err(std::io::Error::other)?;
+                *guard = Some(
+                    layrs_store_local::scm_v1::NativeStoreReading::new(store)
+                        .map_err(std::io::Error::other)?,
+                );
+            }
+        }
+        let guard = self.state.read().map_err(|_| poisoned())?;
+        let reading = guard
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("checkout staging already ended"))?;
+        read(&reading.reader())
+    }
+
+    pub(super) fn end(&self) {
+        self.ended.store(true, std::sync::atomic::Ordering::Release);
+        if let Ok(mut guard) = self.state.write() {
+            drop(guard.take());
+        }
+    }
+}
+
 pub(super) fn write_file(
     reader: &layrs_store_local::scm_v1::NativeScmReader,
     overlay: &[CanonicalObject],
@@ -140,24 +203,20 @@ fn write_file_from(
         }
         _ => None,
     });
-    let use_spool = overlaid.is_some() && spool.is_some();
+    // A capture spools only chunks the Store does not already admit; every
+    // other chunk of an overlaid manifest comes from the Store. Either source
+    // is proven by `manifest.verifier()` below.
+    let spool = spool.filter(|_| overlaid.is_some());
     let manifest = match overlaid {
         Some(manifest) => manifest,
         None => {
-            let FileAvailability::Present(file) = reader
-                .file_availability_with_budget(
-                    file_id,
-                    32_768,
-                    4usize * 1024 * 1024 * 1024,
-                    128,
-                    16_384,
-                )
-                .map_err(error)?
-            else {
-                return Err(error("missing admitted file"));
-            };
+            // Manifest from metadata only: every streamed chunk below goes
+            // through `manifest.verifier()`, which proves the FileId, so a
+            // separate full pre-read and re-hash of the file is redundant.
+            let ids = reader.file_manifest_ids_metadata(file_id).map_err(error)?;
+            let first = ids.first().ok_or_else(|| error("missing admitted file"))?;
             reader
-                .get_file_manifest(&file.verified_manifest_ids()[0])
+                .get_file_manifest(first)
                 .map_err(error)?
                 .ok_or_else(|| error("missing file manifest"))?
         }
@@ -174,7 +233,7 @@ fn write_file_from(
             _ => None,
         }) {
             Some(chunk) => chunk,
-            None if use_spool => Chunk::new(
+            None if spool.is_some_and(|spool| spool.contains(part.chunk_id())) => Chunk::new(
                 spool
                     .expect("checked spool")
                     .read(part.chunk_id())

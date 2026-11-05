@@ -2,6 +2,7 @@
 //! moves or fictitious accepted Weave receipts occur during preparation.
 use super::{NativeClientError, NativeWorkspace, Result, WorkspaceState};
 use layrs_core::scm::*;
+use layrs_graph::scm::StepDag;
 use layrs_store::scm::*;
 #[cfg(test)]
 use layrs_store_local::scm_v1::open;
@@ -10,7 +11,7 @@ use layrs_weave::graph_merge::{
     self, GraphMergeLimits, GraphMergePlan, InstallationBundle, MergeObjects, PlannedConflict,
 };
 use layrs_weave::reconciliation::FileMergePolicy;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[path = "merge_accept.rs"]
 mod accept;
 pub use accept::NativeAcceptedMerge;
@@ -113,9 +114,21 @@ impl NativeWorkspace {
         };
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
-        let bundle = graph_merge::resolve_conflict_blocks(&objects, parent, choices, limits)
-            .map_err(merge_error)?;
+        let input = load_objects(
+            &reader,
+            state.space.id(),
+            vec![parent.clone()],
+            TreeScope::Heads,
+            limits,
+        )?;
+        let bundle = graph_merge::resolve_conflict_blocks_with_source(
+            &input.objects,
+            &input.files,
+            parent,
+            choices,
+            limits,
+        )
+        .map_err(merge_error)?;
         Ok(NativeResolutionPreview {
             state,
             target_layer: target_layer.clone(),
@@ -160,10 +173,21 @@ impl NativeWorkspace {
         };
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
-        let bundle =
-            graph_merge::resolve_conflict_replacements(&objects, parent, replacements, limits)
-                .map_err(merge_error)?;
+        let input = load_objects(
+            &reader,
+            state.space.id(),
+            vec![parent.clone()],
+            TreeScope::Heads,
+            limits,
+        )?;
+        let bundle = graph_merge::resolve_conflict_replacements_with_source(
+            &input.objects,
+            &input.files,
+            parent,
+            replacements,
+            limits,
+        )
+        .map_err(merge_error)?;
         Ok(NativeResolutionPreview {
             state,
             target_layer: target_layer.clone(),
@@ -192,14 +216,16 @@ impl NativeWorkspace {
             .step_ids();
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(
+        let input = load_objects(
             &reader,
             state.space.id(),
             source_heads.iter().chain(targets).cloned().collect(),
+            TreeScope::HeadsAndMergeBases,
             limits,
         )?;
-        let plan = graph_merge::plan_sandboxed_merge(
-            &objects,
+        let plan = graph_merge::plan_sandboxed_merge_with_source(
+            &input.objects,
+            &input.files,
             source_heads,
             targets,
             file_policy,
@@ -257,16 +283,32 @@ impl NativeWorkspace {
             .step_ids();
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(
+        let input = load_objects(
             &reader,
             state.space.id(),
             source_heads.iter().chain(targets).cloned().collect(),
+            TreeScope::HeadsAndMergeBases,
             limits,
         )?;
+        let (objects, files) = (&input.objects, &input.files);
         let plan = if structural_only {
-            graph_merge::plan_structural_merge(&objects, source_heads, targets, file_policy, limits)
+            graph_merge::plan_structural_merge_with_source(
+                objects,
+                files,
+                source_heads,
+                targets,
+                file_policy,
+                limits,
+            )
         } else {
-            graph_merge::plan_graph_merge(&objects, source_heads, targets, file_policy, limits)
+            graph_merge::plan_graph_merge_with_source(
+                objects,
+                files,
+                source_heads,
+                targets,
+                file_policy,
+                limits,
+            )
         }
         .map_err(merge_error)?;
         Ok(NativeMergePreview {
@@ -298,9 +340,21 @@ impl NativeWorkspace {
         };
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = load_objects(&reader, state.space.id(), vec![parent.clone()], limits)?;
-        let bundle = graph_merge::resolve_conflict_terms(&objects, parent, choices, limits)
-            .map_err(merge_error)?;
+        let input = load_objects(
+            &reader,
+            state.space.id(),
+            vec![parent.clone()],
+            TreeScope::Heads,
+            limits,
+        )?;
+        let bundle = graph_merge::resolve_conflict_terms_with_source(
+            &input.objects,
+            &input.files,
+            parent,
+            choices,
+            limits,
+        )
+        .map_err(merge_error)?;
         Ok(NativeResolutionPreview {
             state,
             target_layer: target_layer.clone(),
@@ -331,56 +385,200 @@ fn bundle_objects(bundle: InstallationBundle) -> Result<Vec<CanonicalObject>> {
     Ok(result)
 }
 
-pub(super) fn load_objects(
+/// Which Step root Trees the loader reads. Every ancestor Step object is always
+/// loaded (the Weave needs the complete DAG), and so are the root Trees of all
+/// Steps named by a loaded Conflict's terms, recursively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TreeScope {
+    /// Exactly the requested Steps (resolution parents, squash, displays).
+    Heads,
+    /// The requested Steps and their DAG merge bases (Weave plan/acceptance).
+    HeadsAndMergeBases,
+    /// The requested Steps and their parents (replay/revert delta bases).
+    HeadsAndParents,
+}
+
+/// Admitted merge input: Steps, Trees, Symlinks, Tombstones and Conflicts in
+/// memory; File content reachable from admitted Trees is only recorded as
+/// available and read on demand. Conflict-referenced File content is not
+/// covered by Tree admission closure, so it is loaded eagerly and verified.
+pub(super) struct NativeMergeInput<'r> {
+    pub(super) objects: MergeObjects,
+    pub(super) files: NativeFileSource<'r>,
+}
+
+impl NativeMergeInput<'_> {
+    /// Verified content from resident objects or the admitted Store closure.
+    pub(super) fn file_bytes(&self, id: &FileId) -> Result<Vec<u8>> {
+        match self.objects.files.get(id) {
+            Some(bytes) => Ok(bytes.clone()),
+            None => self.files.read(id),
+        }
+    }
+}
+
+/// Lazy File content of an admitted local Store closure.
+pub(super) struct NativeFileSource<'r> {
+    reader: &'r dyn ScmReader,
+    space: SpaceId,
+    max_bytes: usize,
+    available: BTreeSet<FileId>,
+}
+
+impl NativeFileSource<'_> {
+    /// Reads, reconstructs and verifies exact content from an admitted
+    /// FileManifest whose chunks are admitted to the same Space.
+    pub(super) fn read(&self, id: &FileId) -> Result<Vec<u8>> {
+        let max = self.max_bytes;
+        read_admitted_file(self.reader, &self.space, id, |bytes| {
+            if bytes > max {
+                return Err(merge_error("File exceeds the input byte limit"));
+            }
+            Ok(())
+        })
+    }
+}
+
+impl graph_merge::MergeFileSource for NativeFileSource<'_> {
+    /// Recorded only for Files reachable from a Tree admitted to this Space.
+    /// Durable admission is closed by induction (Tree -> FileManifest ->
+    /// Chunks), so such content is present; `load` still verifies it.
+    fn contains(&self, id: &FileId) -> bool {
+        self.available.contains(id)
+    }
+    fn load(&self, id: &FileId) -> std::result::Result<Vec<u8>, String> {
+        self.read(id).map_err(|error| error.to_string())
+    }
+}
+
+fn admitted(reader: &dyn ScmReader, space: &SpaceId, object: StoreObjectId) -> Result<()> {
+    if !reader.object_admitted_to_space(&object, space)? {
+        return Err(merge_error("object is outside the native Space"));
+    }
+    Ok(())
+}
+
+fn read_admitted_file(
     reader: &dyn ScmReader,
     space: &SpaceId,
+    id: &FileId,
+    mut reserve: impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<u8>> {
+    let FileAvailability::Present(available) = reader.file_availability(id)? else {
+        return Err(NativeClientError::Missing("merge File"));
+    };
+    let mut manifest = None;
+    for id in available.verified_manifest_ids() {
+        if reader.object_admitted_to_space(&StoreObjectId::FileManifest(id.clone()), space)? {
+            manifest = reader.get_file_manifest(id)?;
+            if manifest.is_some() {
+                break;
+            }
+        }
+    }
+    let manifest = manifest.ok_or(NativeClientError::Missing("admitted FileManifest"))?;
+    reserve(usize::try_from(manifest.byte_length()).map_err(merge_error)?)?;
+    let mut chunks = BTreeMap::new();
+    for chunk in manifest.chunks() {
+        admitted(
+            reader,
+            space,
+            StoreObjectId::ChunkRaw(chunk.chunk_id().clone()),
+        )?;
+        chunks.insert(
+            chunk.chunk_id().clone(),
+            reader
+                .get_chunk(chunk.chunk_id())?
+                .ok_or(NativeClientError::Missing("merge Chunk"))?,
+        );
+    }
+    let bytes = manifest.reconstruct(|id| chunks.get(id).map(|chunk| chunk.bytes().to_vec()))?;
+    if FileId::from_bytes(&bytes) != *id {
+        return Err(merge_error("File content mismatch"));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn load_objects<'r>(
+    reader: &'r dyn ScmReader,
+    space: &SpaceId,
     heads: Vec<StepId>,
+    scope: TreeScope,
     limits: GraphMergeLimits,
-) -> Result<MergeObjects> {
+) -> Result<NativeMergeInput<'r>> {
     let mut loader = Loader {
         reader,
         space,
         objects: MergeObjects::default(),
-        pending_steps: heads,
+        available: BTreeSet::new(),
+        pending_steps: heads.clone(),
+        pending_roots: vec![],
+        rooted: BTreeSet::new(),
         limits,
         bytes: 0,
         paths: 0,
     };
-    while let Some(id) = loader.pending_steps.pop() {
-        if loader.objects.steps.contains_key(&id) {
-            continue;
+    loader.steps()?;
+    let mut roots = heads.clone();
+    match scope {
+        TreeScope::Heads => {}
+        TreeScope::HeadsAndParents => {
+            for head in &heads {
+                roots.extend_from_slice(loader.objects.steps[head].parent_step_ids());
+            }
         }
-        if loader.objects.steps.len() >= limits.max_steps {
-            return Err(merge_error("Step input limit"));
+        TreeScope::HeadsAndMergeBases => {
+            // Same set and DAG computation as the Weave. Invalid head sets are
+            // left for the Weave to reject with its own precise error.
+            let unique: Vec<_> = heads
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if let Ok(bases) = StepDag::from_steps(loader.objects.steps.values())
+                .and_then(|dag| dag.merge_bases(&unique))
+            {
+                roots.extend(bases);
+            }
         }
-        loader.admitted(StoreObjectId::Step(id.clone()))?;
-        let step = reader
-            .get_step(&id)?
-            .ok_or(NativeClientError::Missing("merge Step"))?;
-        loader
-            .pending_steps
-            .extend_from_slice(step.parent_step_ids());
-        loader.objects.steps.insert(id, step.clone());
-        loader.tree(step.root_tree_id(), 0)?;
     }
-    Ok(loader.objects)
+    for step in roots {
+        loader.root(step);
+    }
+    while let Some(step) = loader.pending_roots.pop() {
+        let root = loader.objects.steps[&step].root_tree_id().clone();
+        loader.tree(&root, 0)?;
+        // Conflict terms may name Steps outside the requested ancestry.
+        loader.steps()?;
+    }
+    Ok(NativeMergeInput {
+        objects: loader.objects,
+        files: NativeFileSource {
+            reader,
+            space: space.clone(),
+            max_bytes: limits.max_input_bytes,
+            available: loader.available,
+        },
+    })
 }
 
 struct Loader<'a> {
     reader: &'a dyn ScmReader,
     space: &'a SpaceId,
     objects: MergeObjects,
+    available: BTreeSet<FileId>,
     pending_steps: Vec<StepId>,
+    /// Steps whose root Tree must be loaded (each queued once).
+    pending_roots: Vec<StepId>,
+    rooted: BTreeSet<StepId>,
     limits: GraphMergeLimits,
     bytes: usize,
     paths: usize,
 }
 impl Loader<'_> {
     fn admitted(&self, object: StoreObjectId) -> Result<()> {
-        if !self.reader.object_admitted_to_space(&object, self.space)? {
-            return Err(merge_error("object is outside the native Space"));
-        }
-        Ok(())
+        admitted(self.reader, self.space, object)
     }
     fn charge(&mut self, bytes: usize) -> Result<()> {
         self.bytes = self
@@ -391,6 +589,30 @@ impl Loader<'_> {
             return Err(merge_error("input byte limit"));
         }
         Ok(())
+    }
+    /// Complete admitted ancestry of every pending Step (objects only).
+    fn steps(&mut self) -> Result<()> {
+        while let Some(id) = self.pending_steps.pop() {
+            if self.objects.steps.contains_key(&id) {
+                continue;
+            }
+            if self.objects.steps.len() >= self.limits.max_steps {
+                return Err(merge_error("Step input limit"));
+            }
+            self.admitted(StoreObjectId::Step(id.clone()))?;
+            let step = self
+                .reader
+                .get_step(&id)?
+                .ok_or(NativeClientError::Missing("merge Step"))?;
+            self.pending_steps.extend_from_slice(step.parent_step_ids());
+            self.objects.steps.insert(id, step);
+        }
+        Ok(())
+    }
+    fn root(&mut self, step: StepId) {
+        if self.rooted.insert(step.clone()) {
+            self.pending_roots.push(step);
+        }
     }
     fn tree(&mut self, id: &TreeId, depth: usize) -> Result<()> {
         if depth > self.limits.max_depth {
@@ -420,7 +642,11 @@ impl Loader<'_> {
             return Err(merge_error("object depth limit"));
         }
         match target {
-            TreeEntryTarget::File { file_id } => self.file(file_id)?,
+            // Reached from an admitted Tree: present by admission closure.
+            // Content is read only if the Weave or a checkout needs it.
+            TreeEntryTarget::File { file_id } => {
+                self.available.insert(file_id.clone());
+            }
             TreeEntryTarget::Tree { tree_id } => self.tree(tree_id, depth)?,
             TreeEntryTarget::Symlink { symlink_id } => {
                 self.admitted(StoreObjectId::Symlink(symlink_id.clone()))?;
@@ -453,27 +679,31 @@ impl Loader<'_> {
                 self.objects
                     .conflicts
                     .insert(conflict_id.clone(), parsed.clone());
+                // Conflict admission has no File closure: read and verify the
+                // payload and term File values it references (bounded by the
+                // conflicts present, not by repository size).
                 for id in parsed.payload_file_ids().map_err(merge_error)? {
                     self.file(&id)?;
                 }
                 for role in ["bases", "sides"] {
                     for term in parsed.document()[role].as_array().expect("validated terms") {
-                        self.pending_steps.push(StepId::parse(
-                            term["provenance"]["stepId"].as_str().unwrap(),
-                        )?);
+                        let step = StepId::parse(term["provenance"]["stepId"].as_str().unwrap())?;
+                        self.pending_steps.push(step.clone());
+                        self.root(step);
                         for placed in term["values"].as_array().expect("validated placed values") {
                             let value = &placed["value"];
                             let id = value["objectId"].as_str();
-                            let target = match value["kind"].as_str().unwrap() {
-                                "file" => Some(TreeEntryTarget::file(FileId::parse(id.unwrap())?)),
-                                "tree" => Some(TreeEntryTarget::tree(TreeId::parse(id.unwrap())?)),
-                                "symlink" => {
-                                    Some(TreeEntryTarget::symlink(SymlinkId::parse(id.unwrap())?))
-                                }
-                                _ => None,
-                            };
-                            if let Some(target) = target {
-                                self.target(&target, depth + 1)?;
+                            match value["kind"].as_str().unwrap() {
+                                "file" => self.file(&FileId::parse(id.unwrap())?)?,
+                                "tree" => self.target(
+                                    &TreeEntryTarget::tree(TreeId::parse(id.unwrap())?),
+                                    depth + 1,
+                                )?,
+                                "symlink" => self.target(
+                                    &TreeEntryTarget::symlink(SymlinkId::parse(id.unwrap())?),
+                                    depth + 1,
+                                )?,
+                                _ => {}
                             }
                         }
                     }
@@ -482,42 +712,13 @@ impl Loader<'_> {
         }
         Ok(())
     }
+    /// Eager verified content, charged to the loader's input budget.
     fn file(&mut self, id: &FileId) -> Result<()> {
         if self.objects.files.contains_key(id) {
             return Ok(());
         }
-        let FileAvailability::Present(available) = self.reader.file_availability(id)? else {
-            return Err(NativeClientError::Missing("merge File"));
-        };
-        let mut manifest = None;
-        for id in available.verified_manifest_ids() {
-            if self
-                .reader
-                .object_admitted_to_space(&StoreObjectId::FileManifest(id.clone()), self.space)?
-            {
-                manifest = self.reader.get_file_manifest(id)?;
-                if manifest.is_some() {
-                    break;
-                }
-            }
-        }
-        let manifest = manifest.ok_or(NativeClientError::Missing("admitted FileManifest"))?;
-        self.charge(usize::try_from(manifest.byte_length()).map_err(merge_error)?)?;
-        let mut chunks = BTreeMap::new();
-        for chunk in manifest.chunks() {
-            self.admitted(StoreObjectId::ChunkRaw(chunk.chunk_id().clone()))?;
-            chunks.insert(
-                chunk.chunk_id().clone(),
-                self.reader
-                    .get_chunk(chunk.chunk_id())?
-                    .ok_or(NativeClientError::Missing("merge Chunk"))?,
-            );
-        }
-        let bytes =
-            manifest.reconstruct(|id| chunks.get(id).map(|chunk| chunk.bytes().to_vec()))?;
-        if FileId::from_bytes(&bytes) != *id {
-            return Err(merge_error("File content mismatch"));
-        }
+        let (reader, space) = (self.reader, self.space);
+        let bytes = read_admitted_file(reader, space, id, |bytes| self.charge(bytes))?;
         self.objects.files.insert(id.clone(), bytes);
         Ok(())
     }
@@ -624,6 +825,56 @@ mod tests {
     }
 
     #[test]
+    fn merge_input_reads_no_tree_file_content_and_only_selected_root_trees() {
+        use graph_merge::MergeFileSource;
+        let temp = Temp::new();
+        std::fs::write(temp.0.join("code.ts"), b"a\nb\nc\n").unwrap();
+        let workspace = NativeWorkspace::initialize(&temp.0, "lazy input").unwrap();
+        let initial = workspace.state().unwrap();
+        let base = initial.view.layer_heads()[0].step_ids()[0].clone();
+        let older = fork(&workspace, base.clone(), b"older\n");
+        let head = fork(&workspace, older.clone(), b"head\n");
+        let state = workspace.state().unwrap();
+        let store = open(workspace.store_root()).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let input = load_objects(
+            &reader,
+            state.space.id(),
+            vec![head.clone()],
+            TreeScope::Heads,
+            GraphMergeLimits::default(),
+        )
+        .unwrap();
+        // The complete Step DAG, but no File content and no historical Trees.
+        assert!(input.objects.steps.contains_key(&base));
+        assert!(input.objects.steps.contains_key(&older));
+        assert!(input.objects.files.is_empty());
+        assert!(input
+            .objects
+            .trees
+            .contains_key(input.objects.steps[&head].root_tree_id()));
+        assert!(!input
+            .objects
+            .trees
+            .contains_key(input.objects.steps[&older].root_tree_id()));
+        let current = FileId::from_bytes(b"head\n");
+        assert!(input.files.contains(&current));
+        assert!(!input.files.contains(&FileId::from_bytes(b"older\n")));
+        assert_eq!(input.files.load(&current).unwrap(), b"head\n");
+        // Replay/revert scope adds the parents' root Trees.
+        let input = load_objects(
+            &reader,
+            state.space.id(),
+            vec![head],
+            TreeScope::HeadsAndParents,
+            GraphMergeLimits::default(),
+        )
+        .unwrap();
+        assert!(input.files.contains(&FileId::from_bytes(b"older\n")));
+        assert!(input.objects.files.is_empty());
+    }
+
+    #[test]
     fn persisted_native_conflict_roundtrips_and_resolves_after_reopen() {
         let temp = Temp::new();
         std::fs::write(temp.0.join("code.ts"), b"base").unwrap();
@@ -645,18 +896,20 @@ mod tests {
         let state = reopened.state().unwrap();
         let store = open(reopened.store_root()).unwrap();
         let reader = NativeScmReader::new(&store).unwrap();
-        let objects = load_objects(
+        let input = load_objects(
             &reader,
             state.space.id(),
             vec![preview.plan().step().id().clone()],
+            TreeScope::Heads,
             GraphMergeLimits::default(),
         )
         .unwrap();
-        let conflict = objects.conflicts.values().next().unwrap();
+        let conflict = input.objects.conflicts.values().next().unwrap();
         let choice =
             ObjectId::parse(conflict.document()["sides"][0]["termId"].as_str().unwrap()).unwrap();
-        let result = graph_merge::resolve_conflict_terms(
-            &objects,
+        let result = graph_merge::resolve_conflict_terms_with_source(
+            &input.objects,
+            &input.files,
             preview.plan().step().id(),
             &BTreeMap::from([(conflict.id(), choice)]),
             GraphMergeLimits::default(),

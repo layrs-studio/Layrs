@@ -31,9 +31,13 @@ impl SnapshotChunkSpool {
         let next = self
             .length
             .checked_add(chunk.bytes().len() as u64)
-            .filter(|n| *n <= 4 * 1024 * 1024 * 1024)
-            .ok_or_else(|| io::Error::other("capture spool exceeds4GiB"))?;
-        if self.entries.len() >= 16_384 || chunk.bytes().len() > 1024 * 1024 {
+            .ok_or_else(|| io::Error::other("capture spool length overflow"))?;
+        // Bounded like a batch (MAX_BATCH_OBJECTS); captures spool only chunks
+        // new to the Space, initial captures every chunk of the checkout. The
+        // spool's bytes are bounded by the disk only (ADR 0027).
+        if self.entries.len() >= 262_144
+            || chunk.bytes().len() as u64 > layrs_core::scm::MAX_FIXED_CHUNK_BYTES
+        {
             return Err(io::Error::other("capture spool chunk budget exceeded"));
         }
         let file = self
@@ -52,6 +56,10 @@ impl SnapshotChunkSpool {
             .iter()
             .map(|(id, (_, len))| (id.clone(), *len as u64))
             .collect()
+    }
+    /// Known (already admitted) chunks are never spooled by a capture.
+    pub(crate) fn contains(&self, id: &ChunkId) -> bool {
+        self.entries.contains_key(id)
     }
     pub(crate) fn read(&self, id: &ChunkId) -> layrs_store::scm::Result<Vec<u8>> {
         let result = (|| -> io::Result<Vec<u8>> {
@@ -78,6 +86,23 @@ impl SnapshotChunkSpool {
     }
     pub(super) fn retain(&mut self, ids: &std::collections::BTreeSet<ChunkId>) {
         self.entries.retain(|id, _| ids.contains(id));
+    }
+    /// Forgets every chunk `known` answers true for (already admitted to the
+    /// target Space): such a chunk is neither re-read nor re-installed.
+    pub(crate) fn forget_known<E>(
+        &mut self,
+        mut known: impl FnMut(&ChunkId) -> std::result::Result<bool, E>,
+    ) -> std::result::Result<(), E> {
+        let mut forgotten = Vec::new();
+        for id in self.entries.keys() {
+            if known(id)? {
+                forgotten.push(id.clone());
+            }
+        }
+        for id in forgotten {
+            self.entries.remove(&id);
+        }
+        Ok(())
     }
 }
 

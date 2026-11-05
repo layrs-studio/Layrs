@@ -12,7 +12,7 @@ use layrs_store_local::scm_v1::{
     NativeScmReader,
 };
 use layrs_weave::{
-    graph_merge::{self, GraphMergeLimits, MergeObjects, PlannedConflict},
+    graph_merge::{self, GraphMergeLimits, PlannedConflict},
     reconciliation::{FailureAction, FileMergeLimits, FileMergePolicy},
 };
 
@@ -139,14 +139,16 @@ impl NativeWorkspace {
         let limits = GraphMergeLimits::default();
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let mut objects = merge::load_objects(
+        let mut input = merge::load_objects(
             &reader,
             state.space.id(),
             vec![selected.clone(), target.clone()],
+            merge::TreeScope::HeadsAndParents,
             limits,
         )?;
-        let bundle = graph_merge::plan_replay(
-            &objects,
+        let bundle = graph_merge::plan_replay_with_source(
+            &input.objects,
+            &input.files,
             selected,
             mainline,
             &target,
@@ -183,7 +185,7 @@ impl NativeWorkspace {
         let step = bundle.step;
         let conflicts = bundle.conflicts;
         for tree in bundle.trees {
-            objects.trees.insert(tree.id().clone(), tree);
+            input.objects.trees.insert(tree.id().clone(), tree);
         }
         let chunks = bundle
             .chunks
@@ -193,10 +195,13 @@ impl NativeWorkspace {
         for manifest in bundle.file_manifests {
             let bytes =
                 manifest.reconstruct(|id| chunks.get(id).map(|chunk| chunk.bytes().to_vec()))?;
-            objects.files.insert(manifest.file_id().clone(), bytes);
+            input
+                .objects
+                .files
+                .insert(manifest.file_id().clone(), bytes);
         }
         let (after, snapshot) = if conflicts.is_empty() {
-            let entries = checkout_entries(&objects, step.root_tree_id(), limits)?;
+            let entries = checkout_entries(&input, step.root_tree_id(), limits)?;
             let snapshot = restore::snapshot_entries(&entries)?;
             if snapshot.root_tree_id() != step.root_tree_id() {
                 return Err(NativeClientError::InvalidState(
@@ -257,7 +262,14 @@ impl NativeWorkspace {
         let limits = GraphMergeLimits::default();
         let store = self.open_store()?;
         let reader = NativeScmReader::new(&store)?;
-        let objects = merge::load_objects(&reader, state.space.id(), vec![target.clone()], limits)?;
+        let input = merge::load_objects(
+            &reader,
+            state.space.id(),
+            vec![target.clone()],
+            merge::TreeScope::Heads,
+            limits,
+        )?;
+        let objects = &input.objects;
         let mut selected = vec![];
         let mut cursor = target.clone();
         let parents = loop {
@@ -291,7 +303,7 @@ impl NativeWorkspace {
             ));
         }
         let step = Step::new(parents, objects.steps[&target].root_tree_id().clone())?;
-        let after = checkout_entries(&objects, step.root_tree_id(), limits)?;
+        let after = checkout_entries(&input, step.root_tree_id(), limits)?;
         let snapshot = restore::snapshot_entries(&after)?;
         if snapshot.root_tree_id() != step.root_tree_id() {
             return Err(NativeClientError::InvalidState(
@@ -397,13 +409,18 @@ fn make_plan(
     }
 }
 
+/// Exact checkout of one Tree. Content comes from resident objects (new
+/// proposed Files) or is read lazily, verified, from the admitted Store.
 pub(super) fn checkout_entries(
-    objects: &MergeObjects,
+    input: &merge::NativeMergeInput<'_>,
     root: &TreeId,
     limits: GraphMergeLimits,
 ) -> Result<Vec<CheckoutEntry>> {
+    let objects = &input.objects;
     let mut pending = vec![(String::new(), root.clone(), 0)];
-    let mut entries = vec![];
+    let mut entries: Vec<CheckoutEntry> = vec![];
+    // Each distinct File is read at most once; repeats copy the prior entry.
+    let mut read = std::collections::BTreeMap::<FileId, usize>::new();
     let mut paths = 0usize;
     let mut bytes = 0usize;
     while let Some((prefix, id, depth)) = pending.pop() {
@@ -434,15 +451,24 @@ pub(super) fn checkout_entries(
                     continue;
                 }
                 TreeEntryTarget::File { file_id } => {
-                    let data = objects
-                        .files
-                        .get(file_id)
-                        .ok_or(NativeClientError::Missing("rewrite File"))?;
+                    let previous = read.get(file_id).map(|&index| &entries[index].content);
+                    let data = if let Some(CheckoutContent::File { bytes, .. }) = previous {
+                        bytes.clone()
+                    } else {
+                        match input.file_bytes(file_id) {
+                            Err(NativeClientError::Missing(_)) => {
+                                return Err(NativeClientError::Missing("rewrite File"))
+                            }
+                            other => other?,
+                        }
+                    };
                     bytes = bytes
                         .checked_add(data.len())
                         .ok_or(NativeClientError::InvalidState("rewrite checkout bytes"))?;
+                    // Index of the entry pushed for this path below.
+                    read.entry(file_id.clone()).or_insert(entries.len());
                     CheckoutContent::File {
-                        bytes: data.clone(),
+                        bytes: data,
                         executable: entry.executable(),
                     }
                 }

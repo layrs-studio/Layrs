@@ -172,6 +172,14 @@ impl NativeClient {
         &self.metadata_identity
     }
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::open_with_store(root)?.0)
+    }
+
+    /// `open`, also returning the bound Store capability it acquired, for a
+    /// caller whose next step reads the Store (one opening instead of two).
+    pub fn open_with_store(
+        root: impl AsRef<Path>,
+    ) -> Result<(Self, layrs_store_local::scm_v1::NativeStoreOpen)> {
         let directory =
             layrs_store_local::scm_v1::checkout::CheckoutReader::open(root.as_ref(), None)?;
         let metadata = layrs_store_local::scm_v1::checkout::CheckoutReader::open(
@@ -182,12 +190,13 @@ impl NativeClient {
         let store = store
             .with_filesystem_identity(&directory.identity())?
             .with_metadata_identity(&metadata.identity())?;
-        Ok(Self {
+        let client = Self {
             root: store.layout().root().to_path_buf(),
             store_identity: directory.identity(),
             metadata_identity: metadata.identity(),
             store_id: store.store_id().clone(),
-        })
+        };
+        Ok((client, store))
     }
 
     /// Check the original binding on the acquired shared capability. Acquisition
@@ -239,11 +248,19 @@ impl NativeClient {
     }
 
     pub fn capture_base(&self, worktree_id: &WorktreeId) -> Result<CaptureBase> {
-        let store = self.open_store()?;
-        if layrs_store_local::scm_v1::materialize::recovery_pending(&store, worktree_id)? {
+        self.capture_base_with(&self.open_store()?, worktree_id)
+    }
+
+    /// `capture_base` on an already open Store.
+    pub fn capture_base_with(
+        &self,
+        store: &layrs_store_local::scm_v1::NativeStoreOpen,
+        worktree_id: &WorktreeId,
+    ) -> Result<CaptureBase> {
+        if layrs_store_local::scm_v1::materialize::recovery_pending(store, worktree_id)? {
             return Err(NativeClientError::NeedsRepair);
         }
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(store)?;
         let worktree = reader
             .get_worktree(worktree_id)?
             .ok_or(NativeClientError::Missing("Worktree"))?;
@@ -275,7 +292,7 @@ impl NativeClient {
     pub fn prepare_capture_with_reason(
         &self,
         expected: &CaptureBase,
-        snapshot: PreparedSnapshot,
+        mut snapshot: PreparedSnapshot,
         stamp: MutationStamp,
         reason: CaptureReason,
     ) -> Result<CapturePlan> {
@@ -386,8 +403,23 @@ impl NativeClient {
         )?;
         let observation =
             observation_with_identity(&stamp, &step, &worktree, reason, identity.as_ref());
+        // Spooled chunks already admitted to the Space (unchanged parts of a
+        // changed file) are durable, verified and closed, like the objects
+        // `retain_new_objects` drops: the batch carries only new content.
+        if snapshot.chunks.as_ref().is_some_and(|spool| std::sync::Arc::strong_count(spool) > 1) {
+            layrs_store_local::perf::count("capture.forget_admitted_skipped_shared", 1);
+        }
+        if let Some(spool) = snapshot.chunks.as_mut().and_then(std::sync::Arc::get_mut) {
+            let _span = layrs_store_local::perf::span("capture.forget_admitted_chunks");
+            spool.forget_known(|id| {
+                reader.object_admitted_metadata(
+                    &layrs_store::scm::StoreObjectId::ChunkRaw(id.clone()),
+                    worktree.space_id(),
+                )
+            })?;
+        }
         let chunks = snapshot.chunks.clone();
-        let objects = objects(snapshot, &step, &next);
+        let objects = retain_new_objects(&reader, worktree.space_id(), objects(snapshot, &step, &next))?;
         let admissions = admissions_with_chunks(worktree.space_id(), &objects, chunks.as_deref());
         let batch = WriteBatch::new(
             stamp.transaction_id,
@@ -501,6 +533,29 @@ fn admissions_with_chunks(
         }));
     }
     result
+}
+
+/// Objects already admitted to the Space are durable, content-verified on
+/// installation and closed (admissions are only written after closure
+/// validation and never deleted). A capture batch carries only new objects, so
+/// install, validation and admission scale with the change, not the checkout.
+fn retain_new_objects(
+    reader: &NativeScmReader<'_>,
+    space: &layrs_core::scm::SpaceId,
+    objects: Vec<CanonicalObject>,
+) -> Result<Vec<CanonicalObject>> {
+    let _span = layrs_store_local::perf::span("capture.retain_new_objects");
+    let mut kept = Vec::with_capacity(objects.len());
+    for object in objects {
+        let always = matches!(
+            object,
+            CanonicalObject::Step(_) | CanonicalObject::RepositoryView(_)
+        );
+        if always || !reader.object_admitted_metadata(&object.object_id(), space)? {
+            kept.push(object);
+        }
+    }
+    Ok(kept)
 }
 
 fn objects(snapshot: PreparedSnapshot, step: &Step, view: &RepositoryView) -> Vec<CanonicalObject> {

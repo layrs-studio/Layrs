@@ -72,6 +72,12 @@ pub use vfs_host::{VfsHost, VfsHostClient, VfsHostTicket, VfsHostCommand, VfsHos
 pub use vfs_commands::{prepare_vfs_host, execute_vfs_control, VfsLaunchAction, VfsControlRequest};
 mod worktrees;
 pub use worktrees::{NoWorktreeCreationFaults, WorktreeCreationFaults};
+mod rooms;
+pub use rooms::{
+    default_rooms_parent, is_virtual_room_root, room_layer_name, unregister_virtual_room,
+    validate_room_name,
+    virtual_room_origin, RoomKind, RoomRecord,
+};
 mod worktree_operations;
 pub use remote::{
     NativeDevicePoll, NativeDeviceStart, NativeInlinePolicyRules, NativePolicyPreview,
@@ -89,7 +95,7 @@ mod partial_provider;
 pub use partial_provider::{provider_status, ProviderStatus, ProviderStatusError, ProviderStatusTicket};
 mod projection_offline_commands;
 pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
-pub use diff::{NativeDiffLine, NativeFileChange};
+pub use diff::{NativeDiffLine, NativeFileChange, StatusReport};
 pub use filesystem::capture_checkout;
 pub use layrs_graph::scm::{ReferenceSelector, StepSelector};
 pub use layrs_weave::graph_merge::ConflictReplacement;

@@ -3,7 +3,7 @@
 use super::Result;
 use super::*;
 use layrs_core::scm::*;
-use layrs_store::scm::{EntityRecord, ScmReader};
+use layrs_store::scm::{CanonicalObject, EntityRecord, ScmReader};
 use layrs_store_local::scm_v1::{
     self,
     checkout::{CheckoutLimits, CheckoutReader},
@@ -165,6 +165,23 @@ impl NativeWorkspace {
             after.sort_by(|a, b| a.path.cmp(&b.path));
         }
         scm_v1::checkout::validate_streaming_projection(&after)?;
+        // Refuse a damaged target, or a damaged Store copy of a displaced base
+        // file, before any automatic capture. Only files the Store does not
+        // hold yet are supplied by that capture instead.
+        let captured: BTreeSet<FileId> = {
+            let store = self.open_store()?;
+            let reader = NativeScmReader::new(&store)?;
+            let mut captured = BTreeSet::new();
+            for object in snapshot.objects() {
+                if let CanonicalObject::FileManifest(manifest) = object {
+                    if !reader.file_present_metadata(manifest.file_id())? {
+                        captured.insert(manifest.file_id().clone());
+                    }
+                }
+            }
+            captured
+        };
+        self.verify_changed_content(&before, &after, &captured)?;
         let after_tree = scm_v1::checkout::projection_tree_id(&after)?;
         let union: BTreeSet<_> = before
             .iter()

@@ -418,17 +418,12 @@ fn large_hydrated_and_relocated_files_export_with_streaming_hashes() {
             );
             "large.bin"
         };
-        let capture_error = worktree.capture_quiesced().unwrap_err();
-        assert!(
-            if relocated {
-                capture_error.to_string().contains("Unsupported")
-            } else {
-                capture_error
-                    .to_string()
-                    .contains("VFS dirty byte budget exceeded")
-            },
-            "{capture_error}"
-        );
+        // ADR 0025: a hydrated in-sync placeholder is its base (no rehash, no
+        // dirty budget); a moved placeholder is hashed at its new path, its
+        // bytes streamed through the bounded spool (no 64 MiB memory limit).
+        let report = worktree.capture_quiesced().unwrap();
+        assert_eq!(report.changed, relocated, "{report:?}");
+        assert_eq!(report.counts.hashed_files, usize::from(relocated));
         let exported = worktree.export_quiesced(&fixture.root).unwrap();
         assert_eq!(
             hash_file(&exported.tree_root.join(actual)),
@@ -468,18 +463,24 @@ fn large_hydrated_and_relocated_files_export_with_streaming_hashes() {
             .unwrap();
         assert_eq!(entry["fileId"], expected_file.to_string());
         assert_eq!(entry["byteLength"], size);
-        assert_eq!(
-            worktree.status().unwrap().active_operation_id,
-            before.active_operation_id
-        );
-        assert_eq!(
-            worktree.status().unwrap().accepted_step_id,
-            before.accepted_step_id
-        );
-        assert_eq!(
-            serde_json::to_vec(&journal_events(&fixture.source, worktree.worktree_id())).unwrap(),
-            journal_before
-        );
+        let after = worktree.status().unwrap();
+        if relocated {
+            let store = fixture.source.open_store().unwrap();
+            let reader = NativeScmReader::new(&store).unwrap();
+            assert_eq!(after.accepted_step_id, report.step_id);
+            assert_eq!(
+                reader.get_step(&report.step_id).unwrap().unwrap().root_tree_id(),
+                expected_tree.id()
+            );
+        } else {
+            assert_eq!(after.active_operation_id, before.active_operation_id);
+            assert_eq!(after.accepted_step_id, before.accepted_step_id);
+            assert_eq!(
+                serde_json::to_vec(&journal_events(&fixture.source, worktree.worktree_id()))
+                    .unwrap(),
+                journal_before
+            );
+        }
         assert_eq!(hash_file(&root.join(actual)), (expected_file.clone(), size));
         assert_eq!(
             fixture.source.state().unwrap().operation.id(),
@@ -644,7 +645,7 @@ fn unicode_and_available_short_name_parents_export_with_same_native_identity() {
 
 #[test]
 #[ignore = "real CFAPI disconnected rename recovery export; disposable parent required"]
-fn disconnected_renamed_placeholders_export_actual_bytes_without_acceptance() {
+fn disconnected_renamed_placeholders_export_actual_bytes_then_capture_the_move() {
     for state in ["clean-unread", "clean-full", "dirty-full"] {
         let fixture = Fixture::native();
         let worktree = fixture.virtual_root(state);
@@ -669,12 +670,6 @@ fn disconnected_renamed_placeholders_export_actual_bytes_without_acceptance() {
         let mut worktree = VfsWorktree::open(&root).unwrap();
         let journal_before =
             serde_json::to_vec(&journal_events(&fixture.source, &worktree_id)).unwrap();
-        let capture_error = worktree.capture_quiesced().unwrap_err();
-        assert!(
-            capture_error.to_string().contains("Unsupported"),
-            "{capture_error}"
-        );
-        assert_eq!(worktree.source_read_counts(), (0, 0));
         if state == "clean-unread" {
             let chunk_path = {
                 let store = fixture.source.open_store().unwrap();
@@ -737,18 +732,32 @@ fn disconnected_renamed_placeholders_export_actual_bytes_without_acceptance() {
             FileId::from_bytes(&expected).to_string()
         );
         assert_eq!(actual_record["byteLength"], expected.len() as u64);
-        assert!(worktree
-            .capture_quiesced()
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported"));
-        assert_eq!(
+        // ADR 0025: the move is captured: the bytes at the new path (hashed,
+        // hydrating if needed), the original path deleted.
+        let report = worktree.capture_quiesced().unwrap();
+        assert!(report.changed, "{report:?}");
+        assert_eq!(report.counts.hashed_files, 1);
+        {
+            let store = fixture.source.open_store().unwrap();
+            let reader = NativeScmReader::new(&store).unwrap();
+            let step = reader.get_step(&report.step_id).unwrap().unwrap();
+            let tree = reader.get_tree(step.root_tree_id()).unwrap().unwrap();
+            let names: Vec<_> = tree.entries().iter().map(|e| e.name().as_str().to_owned()).collect();
+            assert!(names.contains(&actual) && !names.iter().any(|name| name == original));
+            let moved = tree
+                .entries()
+                .iter()
+                .find(|entry| entry.name().as_str() == actual)
+                .unwrap();
+            assert_eq!(moved.target().file_id(), Some(&FileId::from_bytes(&expected)));
+        }
+        assert_ne!(
             serde_json::to_vec(&journal_events(&fixture.source, &worktree_id)).unwrap(),
             journal_before
         );
         let after = worktree.status().unwrap();
-        assert_eq!(after.active_operation_id, before.active_operation_id);
-        assert_eq!(after.accepted_step_id, before.accepted_step_id);
+        assert_eq!(after.accepted_step_id, report.step_id);
+        assert_ne!(after.accepted_step_id, before.accepted_step_id);
         assert_eq!(
             fixture.source.state().unwrap().operation.id(),
             &source_operation

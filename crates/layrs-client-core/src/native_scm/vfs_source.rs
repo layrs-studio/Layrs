@@ -5,7 +5,7 @@ use layrs_core::scm::{
     FileId, FileManifest, OperationId, RepoPath, SpaceId, StepId, StoreId, Tree, TreeEntryTarget,
     TreeId,
 };
-use layrs_store::scm::{FileAvailability, ScmReader, StoreObjectId};
+use layrs_store::scm::{ScmReader, StoreObjectId};
 use layrs_store_local::scm_v1::checkout::{CheckoutProjectionContent, CheckoutReader};
 use layrs_store_local::scm_v1::{self, NativeScmReader};
 use layrs_vfs::{Cancellation, Catalog, CatalogEntry, SnapshotSource};
@@ -43,10 +43,30 @@ pub struct VerifiedVfsSnapshot {
     operation_id: OperationId,
     step_id: StepId,
     catalog: Catalog,
-    manifests: BTreeMap<FileId, FileManifest>,
+    /// Admitted manifest of each file, recorded from metadata. The manifest
+    /// object itself is read from the CAS (and proven against its id) the
+    /// first time the file is hydrated: a file never read costs nothing.
+    manifest_ids: BTreeMap<FileId, (layrs_core::scm::FileManifestId, u64)>,
+    manifests: std::sync::Mutex<BTreeMap<FileId, std::sync::Arc<FileManifest>>>,
     chunk_reads: AtomicU64,
     chunk_bytes: AtomicU64,
+    /// CAS view used by hydration, revalidated against the Store every
+    /// `CAS_REVALIDATE`. Holds no Store lock between reads.
+    cas: std::sync::Mutex<Option<(scm_v1::NativeCas, Instant)>>,
+    /// The Store's shared lock, held around each hydrated range.
+    read_lock: scm_v1::SharedReadLocks,
+    /// The last few chunks read (and verified) by hydration. Ranges are
+    /// smaller than chunks, so a sequential read reuses each chunk instead of
+    /// re-reading and re-hashing it per range. Chunks are immutable.
+    recent: std::sync::Mutex<std::collections::VecDeque<std::sync::Arc<layrs_core::scm::Chunk>>>,
 }
+
+/// Bounds of `recent`: entries and their total bytes.
+const RECENT_CHUNKS: usize = 8;
+const RECENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How long hydration reuses one CAS view before re-binding it to the Store.
+const CAS_REVALIDATE: Duration = Duration::from_secs(2);
 
 impl VerifiedVfsSnapshot {
     /// Verify the full local closure before returning a provider capability.
@@ -125,9 +145,10 @@ impl VerifiedVfsSnapshot {
             &reader,
             &binding.space_id,
             &binding.step_id,
+            Some(store.layout().root()),
         )?;
         let mut entries = Vec::with_capacity(projection.len());
-        let mut manifests = BTreeMap::new();
+        let mut manifest_ids = BTreeMap::new();
         for entry in projection {
             cancelled(cancel)?;
             let CheckoutProjectionContent::File {
@@ -140,30 +161,18 @@ impl VerifiedVfsSnapshot {
                     "VFS prototype requires regular non-executable files",
                 ));
             };
-            if !manifests.contains_key(&file_id) {
-                let FileAvailability::Present(verified) = reader.file_availability_with_budget(
-                    &file_id,
-                    32_768,
-                    4usize * 1024 * 1024 * 1024,
-                    128,
-                    16_384,
-                )?
-                else {
-                    return Err(NativeClientError::Missing("complete VFS file"));
-                };
-                let id = verified
-                    .verified_manifest_ids()
+            if !manifest_ids.contains_key(&file_id) {
+                // Metadata only: the File is recorded present with a manifest
+                // validated at admission (chunk ids, offsets, length, FileId).
+                // That manifest is read and checked against this file at its
+                // first hydration, and every hydrated range is read through
+                // the CAS, which proves each chunk against its id. Reading
+                // every manifest or file here made Room creation O(project).
+                let ids = reader.file_manifest_ids_metadata(&file_id)?;
+                let id = ids
                     .first()
-                    .ok_or(NativeClientError::Missing("verified VFS manifest"))?;
-                let manifest = reader
-                    .get_file_manifest(id)?
-                    .ok_or(NativeClientError::Missing("VFS manifest"))?;
-                if manifest.file_id() != &file_id || manifest.byte_length() != byte_length {
-                    return Err(NativeClientError::InvalidState(
-                        "VFS manifest identity differs",
-                    ));
-                }
-                manifests.insert(file_id.clone(), manifest);
+                    .ok_or(NativeClientError::Missing("complete VFS file"))?;
+                manifest_ids.insert(file_id.clone(), (id.clone(), byte_length));
             }
             entries.push(CatalogEntry {
                 path: RepoPath::parse(entry.path)?,
@@ -183,10 +192,107 @@ impl VerifiedVfsSnapshot {
             operation_id: binding.operation_id.clone(),
             step_id: binding.step_id.clone(),
             catalog,
-            manifests,
+            manifest_ids,
+            manifests: std::sync::Mutex::new(BTreeMap::new()),
             chunk_reads: AtomicU64::new(0),
             chunk_bytes: AtomicU64::new(0),
+            cas: std::sync::Mutex::new(None),
+            read_lock: scm_v1::SharedReadLocks::open(store.layout().root()).map_err(|error| {
+                NativeClientError::Filesystem(io::Error::other(error.to_string()))
+            })?,
+            recent: std::sync::Mutex::new(std::collections::VecDeque::new()),
         })
+    }
+
+    /// The admitted manifest of `id`, read from the CAS (proven against its
+    /// object id) on first use and checked against this file's identity and
+    /// catalog length.
+    /// Chunk ids of a source File's admitted manifest: content the Space
+    /// already has, which a capture of an edited copy need not spool again.
+    pub(super) fn source_chunk_ids(
+        &self,
+        id: &FileId,
+    ) -> Result<std::collections::BTreeSet<layrs_core::scm::ChunkId>> {
+        Ok(self
+            .manifest(id, &Cancellation::default())?
+            .chunks()
+            .iter()
+            .map(|chunk| chunk.chunk_id().clone())
+            .collect())
+    }
+
+    fn manifest(
+        &self,
+        id: &FileId,
+        cancel: &Cancellation,
+    ) -> Result<std::sync::Arc<FileManifest>> {
+        if let Some(manifest) = self
+            .manifests
+            .lock()
+            .map_err(|_| NativeClientError::InvalidState("VFS manifest cache poisoned"))?
+            .get(id)
+        {
+            return Ok(manifest.clone());
+        }
+        let (manifest_id, length) = self
+            .manifest_ids
+            .get(id)
+            .ok_or(NativeClientError::Missing("VFS manifest"))?;
+        let manifest = match self
+            .chunk_source(cancel)?
+            .read(&StoreObjectId::FileManifest(manifest_id.clone()))
+            .map_err(|error| NativeClientError::InvalidSnapshot(format!("VFS manifest: {error}")))?
+        {
+            layrs_store::scm::CanonicalObject::FileManifest(manifest) => manifest,
+            _ => return Err(NativeClientError::InvalidState("VFS manifest kind differs")),
+        };
+        if manifest.file_id() != id || manifest.byte_length() != *length {
+            return Err(NativeClientError::InvalidState(
+                "VFS manifest identity differs",
+            ));
+        }
+        let manifest = std::sync::Arc::new(manifest);
+        self.manifests
+            .lock()
+            .map_err(|_| NativeClientError::InvalidState("VFS manifest cache poisoned"))?
+            .insert(id.clone(), manifest.clone());
+        Ok(manifest)
+    }
+
+    /// The CAS view for hydration. Opening the Store (lock, SQLite, identity
+    /// checks) for every range made each first read of a virtual file cost
+    /// ~20 ms. The Step's admission and its retained Operation were proven
+    /// when this snapshot was opened and are never withdrawn; every chunk read
+    /// below is still proven against its content id by the CAS itself. The
+    /// view is re-bound to the original Store incarnation every
+    /// `CAS_REVALIDATE`, and its own pins recheck the Store path continuously.
+    fn chunk_source(&self, cancel: &Cancellation) -> Result<scm_v1::NativeCas> {
+        let mut cached = self
+            .cas
+            .lock()
+            .map_err(|_| NativeClientError::InvalidState("VFS CAS cache poisoned"))?;
+        if let Some((cas, bound_at)) = cached.as_ref() {
+            if bound_at.elapsed() < CAS_REVALIDATE {
+                return Ok(cas.clone());
+            }
+        }
+        let store = open_for_range(
+            &self.store_root,
+            &self.store_identity,
+            &self.store_metadata_identity,
+            cancel,
+        )?;
+        let guard = CheckoutReader::open(&self.store_root, Some(&self.store_identity))?;
+        if store.store_id() != &self.store_id {
+            return Err(NativeClientError::InvalidState(
+                "VFS Store identity changed",
+            ));
+        }
+        let cas = scm_v1::NativeCas::open(&store)
+            .map_err(|error| NativeClientError::InvalidSnapshot(format!("VFS CAS: {error}")))?;
+        CheckoutReader::open(&self.store_root, Some(&guard.identity()))?;
+        *cached = Some((cas.clone(), Instant::now()));
+        Ok(cas)
     }
 
     pub fn binding(&self) -> VerifiedVfsSnapshotBinding {
@@ -302,48 +408,43 @@ impl SnapshotSource for VerifiedVfsSnapshot {
         cancel: &Cancellation,
     ) -> layrs_vfs::Result<()> {
         cancel.check()?;
-        let manifest = self
-            .manifests
-            .get(id)
-            .ok_or_else(|| layrs_vfs::Error::MissingBytes {
+        let _range = layrs_store_local::perf::span("vfs.read_range");
+        let manifest_span = layrs_store_local::perf::span("vfs.read_manifest");
+        let manifest = self.manifest(id, cancel).map_err(|error| match error {
+            NativeClientError::Missing(_) => layrs_vfs::Error::MissingBytes {
                 file_id: id.clone(),
                 offset,
                 length: output.len(),
-            })?;
+            },
+            error => layrs_vfs::Error::Io(io::Error::other(error.to_string())),
+        })?;
+        drop(manifest_span);
         let end = offset
             .checked_add(output.len() as u64)
             .filter(|end| *end <= manifest.byte_length())
             .ok_or(layrs_vfs::Error::InvalidRange)?;
         let result = (|| -> Result<()> {
-            let store = open_for_range(
-                &self.store_root,
-                &self.store_identity,
-                &self.store_metadata_identity,
-                cancel,
-            )?;
-            // Check the original incarnation under the short Store capability.
-            // A directory copy with identical logical IDs cannot replace it.
-            let guard = CheckoutReader::open(&self.store_root, Some(&self.store_identity))?;
-            if store.store_id() != &self.store_id {
-                return Err(NativeClientError::InvalidState(
-                    "VFS Store identity changed",
-                ));
-            }
-            let reader = NativeScmReader::new(&store)?;
-            if !reader.object_admitted_to_space(
-                &StoreObjectId::Step(self.step_id.clone()),
-                &self.space_id,
-            )? || reader
-                .get_operation(&self.operation_id)?
-                .as_ref()
-                .map(|op| op.space_id())
-                != Some(&self.space_id)
-            {
-                return Err(NativeClientError::Missing("retained VFS source"));
-            }
+            // Each range waits for an exclusive Store writer like a shared
+            // open would, but holds only the Store's shared file lock.
+            let lock_span = layrs_store_local::perf::span("vfs.read_lock");
+            let _lock = shared_read_lock(&self.read_lock, cancel)?;
+            drop(lock_span);
+            let cas = {
+                let _span = layrs_store_local::perf::span("vfs.read_cas_bind");
+                self.chunk_source(cancel)?
+            };
+            let _chunks = layrs_store_local::perf::span("vfs.read_chunks");
             let mut copied = 0usize;
-            for part in manifest.chunks() {
+            // Chunks are ordered and contiguous: start at the one holding
+            // `offset` instead of scanning a large file's whole list.
+            let first = manifest
+                .chunks()
+                .partition_point(|part| part.offset() + part.byte_length() <= offset);
+            for part in &manifest.chunks()[first..] {
                 cancelled(cancel)?;
+                if part.offset() >= end {
+                    break;
+                }
                 let part_end = part
                     .offset()
                     .checked_add(part.byte_length())
@@ -353,15 +454,44 @@ impl SnapshotSource for VerifiedVfsSnapshot {
                 if start >= stop {
                     continue;
                 }
-                let chunk = reader
-                    .get_chunk(part.chunk_id())?
-                    .ok_or(NativeClientError::Missing("VFS chunk"))?;
+                let cached = self.recent.lock().ok().and_then(|recent| {
+                    recent.iter().find(|c| c.id() == part.chunk_id()).cloned()
+                });
+                let chunk = match cached {
+                    Some(chunk) => chunk,
+                    None => {
+                        let chunk = match cas
+                            .read(&StoreObjectId::ChunkRaw(part.chunk_id().clone()))
+                            .map_err(|error| {
+                                NativeClientError::InvalidSnapshot(format!("VFS chunk: {error}"))
+                            })? {
+                            layrs_store::scm::CanonicalObject::ChunkRaw(chunk) => {
+                                std::sync::Arc::new(chunk)
+                            }
+                            _ => {
+                                return Err(NativeClientError::InvalidState(
+                                    "VFS chunk kind differs",
+                                ));
+                            }
+                        };
+                        self.chunk_reads.fetch_add(1, Ordering::Relaxed);
+                        self.chunk_bytes
+                            .fetch_add(chunk.byte_length(), Ordering::Relaxed);
+                        if let Ok(mut recent) = self.recent.lock() {
+                            recent.push_back(std::sync::Arc::clone(&chunk));
+                            while recent.len() > RECENT_CHUNKS
+                                || recent.iter().map(|c| c.byte_length()).sum::<u64>()
+                                    > RECENT_BYTES
+                            {
+                                recent.pop_front();
+                            }
+                        }
+                        chunk
+                    }
+                };
                 if chunk.byte_length() != part.byte_length() {
                     return Err(NativeClientError::InvalidState("VFS chunk length differs"));
                 }
-                self.chunk_reads.fetch_add(1, Ordering::Relaxed);
-                self.chunk_bytes
-                    .fetch_add(chunk.byte_length(), Ordering::Relaxed);
                 let source = usize::try_from(start - part.offset())
                     .map_err(|_| NativeClientError::InvalidState("VFS offset overflow"))?;
                 let destination = usize::try_from(start - offset)
@@ -375,7 +505,6 @@ impl SnapshotSource for VerifiedVfsSnapshot {
             if copied != output.len() {
                 return Err(NativeClientError::Missing("complete VFS range"));
             }
-            CheckoutReader::open(&self.store_root, Some(&guard.identity()))?;
             cancelled(cancel)?;
             Ok(())
         })();
@@ -413,6 +542,27 @@ fn open_for_range(
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// The Store's shared lock, waiting (bounded, cancellable) for a writer.
+fn shared_read_lock<'a>(
+    locks: &'a scm_v1::SharedReadLocks,
+    cancel: &Cancellation,
+) -> Result<scm_v1::SharedReadLock<'a>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        cancelled(cancel)?;
+        match locks.hold() {
+            Ok(lock) => return Ok(lock),
+            Err(
+                layrs_store_local::StoreError::LockBusy(_)
+                | layrs_store_local::StoreError::ReentrantLock(_),
+            ) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Err(error) => {
+                return Err(NativeClientError::Filesystem(io::Error::other(error.to_string())))
+            }
         }
     }
 }

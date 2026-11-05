@@ -130,9 +130,19 @@ fn repeated_file_content_keeps_each_path_and_is_revalidated_on_later_reads() {
         }
     }
     assert!(workspace.read_step_files(marker.target_step_id()).is_err());
-    assert!(workspace
+    // Projections carry metadata only; every use that writes bytes re-verifies
+    // them, so a restore needing the tampered content refuses before writing.
+    workspace
         .read_step_projection(marker.target_step_id())
+        .unwrap();
+    fs::write(checkout.0.join("copy"), b"edited after tamper").unwrap();
+    assert!(workspace
+        .restore_step(marker.target_step_id(), None)
         .is_err());
+    assert_eq!(
+        fs::read(checkout.0.join("copy")).unwrap(),
+        b"edited after tamper"
+    );
 }
 
 #[test]

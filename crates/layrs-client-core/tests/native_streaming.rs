@@ -167,6 +167,8 @@ fn exercise(count: usize) {
         chunks: &descriptors,
         read_chunk: &mut read,
         write_file: &mut write,
+        end_staging: None,
+        write_file_shared: None,
     };
     // Interrupt after replacing the real large file; recovery must stream its
     // fingerprint and restore the exact old original without changing heads.

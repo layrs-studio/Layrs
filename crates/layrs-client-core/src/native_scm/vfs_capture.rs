@@ -37,14 +37,29 @@ pub(super) struct VfsCapturedSnapshot {
 
 /// `read_file` must read through the provider checkpoint's retained capability.
 /// The caller keeps that checkpoint alive until accept and journal ack finish.
-/// These initial bounds apply to dirty bytes in memory, not clean logical files.
+/// Hashed files stream in the chunks of an ordinary capture
+/// (`fixed_chunk_bytes`) to a private spool: memory stays bounded whatever
+/// their size, which only the streaming entry/depth bounds limit (ADR 0027).
 pub(super) fn assemble_snapshot<'a>(
     source: &VerifiedVfsSnapshot,
     inspections: impl IntoIterator<Item = (&'a RepoPath, &'a CaptureEvidence)>,
     read_file: &mut dyn FnMut(&RepoPath, &mut dyn Write) -> Result<()>,
 ) -> Result<VfsCapturedSnapshot> {
-    let mut builder = SnapshotBuilder::new(SnapshotLimits::streaming());
-    let limits = SnapshotLimits::default();
+    use layrs_store_local::scm_v1::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
+    let limits = SnapshotLimits::streaming();
+    let mut entries = Vec::new();
+    let mut manifests = Vec::new();
+    let mut spool = super::snapshot::SnapshotChunkSpool::new()?;
+    let reference = |entries: &mut Vec<CheckoutProjectionEntry>, path: &RepoPath, file_id: &FileId, size: u64| {
+        entries.push(CheckoutProjectionEntry {
+            path: path.as_str().to_owned(),
+            content: CheckoutProjectionContent::File {
+                file_id: file_id.clone(),
+                byte_length: size,
+                executable: false,
+            },
+        });
+    };
     let mut files = Vec::new();
     let mut counts = VfsCaptureCounts::default();
     let mut seen = std::collections::BTreeSet::new();
@@ -71,7 +86,7 @@ pub(super) fn assemble_snapshot<'a>(
                         "immutable VFS evidence differs from verified source",
                     ));
                 }
-                builder.add_file_reference(path.clone(), file_id.clone(), *size, false)?;
+                reference(&mut entries, path, file_id, *size);
                 counts.reused_files += 1;
                 files.push(VfsFileRecord {
                     path: path.clone(),
@@ -80,37 +95,35 @@ pub(super) fn assemble_snapshot<'a>(
                     immutable_source: true,
                 });
             }
-            CaptureEvidence::NeedsHash { size, .. } => {
-                let size = usize::try_from(*size)
-                    .map_err(|_| NativeClientError::InvalidState("VFS file size overflow"))?;
-                if size > limits.max_file_bytes
+            CaptureEvidence::NeedsHash { size, base } => {
+                if *size > limits.max_file_bytes as u64
                     || counts
                         .hashed_bytes
-                        .checked_add(size as u64)
+                        .checked_add(*size)
                         .is_none_or(|sum| sum > limits.max_total_bytes as u64)
                 {
                     return Err(NativeClientError::InvalidSnapshot(
                         "VFS dirty byte budget exceeded".into(),
                     ));
                 }
-                let mut output = BoundedFile {
-                    bytes: Vec::new(),
-                    limit: size,
+                // A large edited file keeps most of its source chunks: those
+                // are admitted already and are not spooled again (ADR 0027).
+                let known = match base {
+                    Some(base) if *size >= 64 * 1024 * 1024 => source.source_chunk_ids(base)?,
+                    _ => std::collections::BTreeSet::new(),
                 };
+                let mut output = ChunkingWriter::new(*size, &mut spool)?.skipping(&known);
                 read_file(path, &mut output)?;
-                if output.bytes.len() != size {
-                    return Err(NativeClientError::InvalidState(
-                        "VFS file length changed under checkpoint",
-                    ));
-                }
-                let file_id = FileId::from_bytes(&output.bytes);
-                builder.add_file(path.clone(), &output.bytes, false)?;
+                let manifest = output.finish()?;
+                let file_id = manifest.file_id().clone();
+                reference(&mut entries, path, &file_id, *size);
+                manifests.push(manifest);
                 counts.hashed_files += 1;
-                counts.hashed_bytes += size as u64;
+                counts.hashed_bytes += *size;
                 files.push(VfsFileRecord {
                     path: path.clone(),
                     file_id,
-                    byte_length: size as u64,
+                    byte_length: *size,
                     immutable_source: false,
                 });
             }
@@ -121,6 +134,19 @@ pub(super) fn assemble_snapshot<'a>(
                     ));
                 }
                 counts.deleted_files += 1;
+            }
+            // Proven by an earlier accepted capture (change index, ADR 0025):
+            // a reference to content already admitted. Admission of the new
+            // Tree still requires it, so a stale entry fails the capture.
+            CaptureEvidence::Vouched { file_id, size } => {
+                reference(&mut entries, path, file_id, *size);
+                counts.reused_files += 1;
+                files.push(VfsFileRecord {
+                    path: path.clone(),
+                    file_id: file_id.clone(),
+                    byte_length: *size,
+                    immutable_source: false,
+                });
             }
         }
     }
@@ -135,16 +161,119 @@ pub(super) fn assemble_snapshot<'a>(
         ));
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    manifests.sort_by(|a, b| a.id().cmp(b.id()));
+    manifests.dedup_by(|a, b| a.id() == b.id());
+    // Reused files are references to content already admitted (the verified
+    // source, or an earlier accepted capture); admission rechecks them.
+    let snapshot = PreparedSnapshot::from_streaming_referencing(&entries, manifests, spool, limits)?;
+    // The captured Tree's projection, for the next command (derived data).
+    layrs_store_local::scm_v1::projection_cache::save(
+        &source.binding().store_root,
+        snapshot.root_tree_id(),
+        snapshot.root_tree_id(),
+        &entries,
+    );
     Ok(VfsCapturedSnapshot {
-        snapshot: builder.finish()?,
+        snapshot,
         files,
         counts,
     })
 }
 
+/// Splits one file's bytes into the deterministic chunks of an ordinary
+/// capture (`fixed_chunk_bytes`), spooling each chunk and building its
+/// manifest. The exact announced length is required.
+struct ChunkingWriter<'a> {
+    builder: layrs_core::scm::FileManifestBuilder,
+    spool: &'a mut super::snapshot::SnapshotChunkSpool,
+    /// Chunks already admitted to the Space: hashed into the manifest but
+    /// not spooled.
+    known: Option<&'a std::collections::BTreeSet<layrs_core::scm::ChunkId>>,
+    buffer: Vec<u8>,
+    chunk_bytes: usize,
+    expected: u64,
+    written: u64,
+}
+impl<'a> ChunkingWriter<'a> {
+    fn new(expected: u64, spool: &'a mut super::snapshot::SnapshotChunkSpool) -> Result<Self> {
+        let chunk_bytes = layrs_core::scm::fixed_chunk_bytes(expected);
+        let chunks = usize::try_from(expected.div_ceil(chunk_bytes))
+            .map_err(|_| NativeClientError::InvalidState("VFS file chunk count overflow"))?;
+        let chunk_bytes = chunk_bytes as usize;
+        Ok(Self {
+            builder: layrs_core::scm::FileManifestBuilder::new(
+                layrs_core::scm::fixed_chunking(expected),
+                expected,
+                chunks,
+            )?,
+            spool,
+            known: None,
+            buffer: Vec::with_capacity(chunk_bytes.min(expected as usize)),
+            chunk_bytes,
+            expected,
+            written: 0,
+        })
+    }
+    fn emit(&mut self) -> io::Result<()> {
+        let bytes = std::mem::replace(
+            &mut self.buffer,
+            Vec::with_capacity(self.chunk_bytes.min((self.expected - self.written) as usize)),
+        );
+        let chunk = layrs_core::scm::Chunk::new(bytes).map_err(io::Error::other)?;
+        self.builder.push_chunk(&chunk).map_err(io::Error::other)?;
+        if self.known.is_some_and(|known| known.contains(chunk.id())) {
+            return Ok(());
+        }
+        self.spool.insert(&chunk)
+    }
+    fn skipping(
+        mut self,
+        known: &'a std::collections::BTreeSet<layrs_core::scm::ChunkId>,
+    ) -> Self {
+        self.known = Some(known);
+        self
+    }
+    fn finish(mut self) -> Result<layrs_core::scm::FileManifest> {
+        if self.written != self.expected {
+            return Err(NativeClientError::InvalidState(
+                "VFS file length changed under checkpoint",
+            ));
+        }
+        if !self.buffer.is_empty() {
+            self.emit()?;
+        }
+        Ok(self.builder.finish()?)
+    }
+}
+impl Write for ChunkingWriter<'_> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let accepted = bytes.len();
+        if accepted as u64 > self.expected - self.written {
+            return Err(io::Error::other(
+                "VFS file grew or exceeded its checkpoint bound",
+            ));
+        }
+        self.written += accepted as u64;
+        while !bytes.is_empty() {
+            let room = self.chunk_bytes - self.buffer.len();
+            let take = room.min(bytes.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.buffer.len() == self.chunk_bytes {
+                self.emit()?;
+            }
+        }
+        Ok(accepted)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Recovery export keeps only descriptors and incremental hashes in memory.
 /// All logical bounds are checked before reading or creating an output tree:
-/// 1 GiB/file, 4 GiB total, 100,000 entries and the streaming depth bound.
+/// 100,000 entries and the streaming depth bound; sizes are unbounded.
 /// `read_file` must consume the retained ExportCheckpoint reader to real EOF;
 /// the provider verifies its exact count/identity before returning success.
 pub(super) fn assemble_export_snapshot<'a>(
@@ -182,6 +311,11 @@ pub(super) fn assemble_export_snapshot<'a>(
                 *size
             }
             CaptureEvidence::NeedsHash { size, .. } => *size,
+            CaptureEvidence::Vouched { .. } => {
+                return Err(NativeClientError::InvalidState(
+                    "export never admits a file from its listing",
+                ))
+            }
             CaptureEvidence::Deleted { base } => {
                 if catalog.entry(path).map(|entry| &entry.file_id) != Some(base) {
                     return Err(NativeClientError::InvalidState(
@@ -198,7 +332,7 @@ pub(super) fn assemble_export_snapshot<'a>(
             ))?;
         if length > limits.max_file_bytes as u64 || total > limits.max_total_bytes as u64 {
             return Err(NativeClientError::InvalidSnapshot(
-                "VFS export limit exceeded (1 GiB/file, 4 GiB total)".into(),
+                "VFS export size limit exceeded".into(),
             ));
         }
         entries.push((path, evidence));
@@ -232,6 +366,11 @@ pub(super) fn assemble_export_snapshot<'a>(
             CaptureEvidence::Deleted { .. } => {
                 counts.deleted_files += 1;
                 continue;
+            }
+            CaptureEvidence::Vouched { .. } => {
+                return Err(NativeClientError::InvalidState(
+                    "export never admits a file from its listing",
+                ))
             }
         };
         // Export never accepts this metadata into CAS. References are backed
@@ -299,30 +438,6 @@ impl Write for ExportHash {
     }
 }
 
-struct BoundedFile {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-impl Write for BoundedFile {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|len| len > self.limit)
-        {
-            return Err(io::Error::other(
-                "VFS file grew or exceeded its checkpoint bound",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod export_tests {
     use super::*;
@@ -378,14 +493,10 @@ mod export_tests {
     }
 
     #[test]
-    fn export_preflights_file_and_total_limits_before_reading() {
-        let limits = SnapshotLimits::streaming();
+    fn export_accepts_any_file_size_and_refuses_size_overflow_before_reading() {
         let catalog = layrs_vfs::Catalog::new(1, vec![]).unwrap();
-        for sizes in [
-            vec![limits.max_file_bytes as u64 + 1],
-            vec![limits.max_file_bytes as u64; 5],
-        ] {
-            let entries: Vec<_> = sizes
+        let entries = |sizes: Vec<u64>| -> Vec<_> {
+            sizes
                 .into_iter()
                 .enumerate()
                 .map(|(index, size)| {
@@ -394,17 +505,37 @@ mod export_tests {
                         CaptureEvidence::NeedsHash { base: None, size },
                     )
                 })
-                .collect();
-            let error = assemble_export_snapshot(
-                &catalog,
-                entries.iter().map(|(path, evidence)| (path, evidence)),
-                &mut |_, _| panic!("over-budget export must refuse before reading"),
-            )
-            .err()
-            .unwrap();
-            assert!(matches!(error, NativeClientError::InvalidSnapshot(message)
-                if message.contains("1 GiB/file, 4 GiB total")));
-        }
+                .collect()
+        };
+        // Files beyond 1 GiB, and a total beyond 4 GiB, reach the reader
+        // (ADR 0027): the read is what fails here, not a size preflight.
+        let large = entries(vec![5 << 30, 5 << 30]);
+        let mut reads = 0;
+        let error = assemble_export_snapshot(
+            &catalog,
+            large.iter().map(|(path, evidence)| (path, evidence)),
+            &mut |_, _| {
+                reads += 1;
+                Err(NativeClientError::InvalidState("reader stopped"))
+            },
+        )
+        .err()
+        .unwrap();
+        assert_eq!(reads, 1);
+        assert!(matches!(error, NativeClientError::InvalidState("reader stopped")));
+        // A logical size overflow still refuses before any read.
+        let overflow = entries(vec![u64::MAX, 1]);
+        let error = assemble_export_snapshot(
+            &catalog,
+            overflow.iter().map(|(path, evidence)| (path, evidence)),
+            &mut |_, _| panic!("overflowing export must refuse before reading"),
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(
+            error,
+            NativeClientError::InvalidState("VFS export logical size overflow")
+        ));
     }
 
     #[test]

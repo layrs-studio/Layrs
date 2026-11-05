@@ -31,7 +31,11 @@ pub use projection_rebase::{
     ProjectionMergeFile,
 };
 const MAX_TOTAL: usize = 256 * 1024 * 1024;
-const MAX_FILE_STREAM: u64 = 1024 * 1024 * 1024;
+/// Files stream one chunk at a time and are unbounded (ADR 0027); only their
+/// chunk count is bounded, like a manifest object's size.
+const MAX_FILE_CHUNKS: usize = 1 << 24;
+/// Budget of one transfer plan of several files, which splits beyond it. A
+/// single file is never split and may exceed it (ADR 0027).
 const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 pub(super) type RemoteResult<T> = std::result::Result<T, NativeRemoteError>;
@@ -637,6 +641,12 @@ pub(crate) mod lenses;
 mod observations;
 mod path_patch;
 mod projection;
+mod provider_observation;
+pub use provider_observation::{
+    ObservedProviderTransitionScope, ProviderTransitionDescriptor,
+    ProviderTransitionObservationRequest, ProviderTransitionObservationStrategy,
+    ProviderTransitionSourceAnchor,
+};
 mod projection_namespace;
 pub use projection_namespace::{
     NativeProjectionNamespaceMutation, NativeProjectionNamespacePreview,

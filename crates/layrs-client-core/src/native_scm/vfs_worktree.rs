@@ -23,6 +23,124 @@ use std::{
     sync::Arc,
 };
 
+/// The root `.layrsignore` rules, as an ordinary capture applies them: an
+/// ignored path is neither read nor captured unless it is already tracked
+/// (in the provider catalog, checked by the provider, or captured since, as
+/// recorded by the change index). `None` without rules.
+fn capture_filter(
+    root: &Path,
+    source: &VerifiedVfsSnapshot,
+    index: &scm_v1::change_index::ChangeIndex,
+) -> Result<Option<layrs_vfs::CaptureFilter>> {
+    const ERROR_CLOUD_FILE_ACCESS_DENIED: i32 = 395;
+    let bytes = match std::fs::read(root.join(".layrsignore")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // The provider cannot hydrate its own placeholder: one not yet
+        // hydrated was never written, so it holds its verified base bytes.
+        Err(error) if error.raw_os_error() == Some(ERROR_CLOUD_FILE_ACCESS_DENIED) => {
+            let path = RepoPath::parse(".layrsignore")?;
+            let entry = source
+                .catalog()
+                .entry(&path)
+                .ok_or(NativeClientError::Missing("base .layrsignore"))?;
+            if entry.size > 64 * 1024 {
+                return Err(NativeClientError::InvalidState(".layrsignore exceeds 64 KiB"));
+            }
+            let mut bytes = vec![0; entry.size as usize];
+            source
+                .read_exact_at(&entry.file_id, 0, &mut bytes, &Cancellation::default())
+                .map_err(|error| provider_stage("read base .layrsignore", error))?;
+            bytes
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let rules = scm_v1::checkout_ignore::IgnoreRules::parse_bytes(&bytes)?;
+    if rules.is_empty() {
+        return Ok(None);
+    }
+    let captured: std::collections::BTreeSet<String> = index.paths().map(str::to_owned).collect();
+    Ok(Some(std::sync::Arc::new(move |path: &str, directory: bool| {
+        if !rules.ignores(path, directory) || (directory && rules.has_exceptions) {
+            return false;
+        }
+        if directory {
+            let prefix = format!("{path}/");
+            !captured
+                .range(prefix.clone()..)
+                .next()
+                .is_some_and(|tracked| tracked.starts_with(&prefix))
+        } else {
+            !captured.contains(path)
+        }
+    })))
+}
+
+/// The change index proven by one accepted capture (ADR 0025): placeholders
+/// admitted as their base keep their native number, vouched files keep their
+/// entry, hashed files get a fresh entry from the listing observed before
+/// they were read, and everything else is forgotten.
+fn next_change_index(
+    index: &scm_v1::change_index::ChangeIndex,
+    checkpoint: &layrs_vfs::Checkpoint<'_>,
+    captured: &super::vfs_capture::VfsCapturedSnapshot,
+    verified_at: i64,
+) -> scm_v1::change_index::ChangeIndex {
+    use layrs_vfs::CaptureEvidence;
+    use scm_v1::change_index::{IndexEntry, StatKey};
+    let hashed: std::collections::BTreeMap<&RepoPath, &super::vfs_capture::VfsFileRecord> =
+        captured
+            .files
+            .iter()
+            .filter(|file| !file.immutable_source)
+            .map(|file| (&file.path, file))
+            .collect();
+    let mut next = index.clone();
+    next.clear();
+    for inspection in checkpoint.entries() {
+        let path = &inspection.path;
+        let Some(listed) = checkpoint.listed(path) else {
+            continue;
+        };
+        let Some(stat) =
+            StatKey::from_listing(listed.size, listed.last_write, listed.creation, listed.attributes)
+        else {
+            continue;
+        };
+        let entry = match &inspection.evidence {
+            CaptureEvidence::Immutable { file_id, size, .. } => IndexEntry {
+                file_id: file_id.clone(),
+                length: *size,
+                executable: false,
+                stat,
+                verified_at: index
+                    .entry(path.as_str())
+                    .filter(|old| old.native == Some(listed.native_index))
+                    .map_or(verified_at, |old| old.verified_at),
+                native: Some(listed.native_index),
+            },
+            CaptureEvidence::Vouched { .. } => match index.entry(path.as_str()) {
+                Some(old) => old.clone(),
+                None => continue,
+            },
+            CaptureEvidence::NeedsHash { .. } => match hashed.get(path) {
+                Some(file) => IndexEntry {
+                    file_id: file.file_id.clone(),
+                    length: file.byte_length,
+                    executable: false,
+                    stat,
+                    verified_at,
+                    native: None,
+                },
+                None => continue,
+            },
+            CaptureEvidence::Deleted { .. } => continue,
+        };
+        next.insert(path.as_str().to_owned(), entry);
+    }
+    next
+}
+
 pub const VFS_BACKEND_KEY: &str = "layrs.worktree.backend";
 pub const VFS_BACKEND: &str = "windows-cfapi-v1";
 const LOCATOR_SCHEMA: &str = "layrs.vfs-worktree-locator.v1";
@@ -221,12 +339,18 @@ impl VfsWorktree {
         step: &StepId,
         faults: &dyn VfsWorktreeFaults,
     ) -> Result<Self> {
-        let snapshot = Arc::new(VerifiedVfsSnapshot::prepare(
-            source,
-            step,
-            &Cancellation::default(),
-        )?);
+        let _total = layrs_store_local::perf::span("vfs.create");
+        let snapshot = {
+            let _span = layrs_store_local::perf::span("vfs.snapshot_prepare");
+            Arc::new(VerifiedVfsSnapshot::prepare(
+                source,
+                step,
+                &Cancellation::default(),
+            )?)
+        };
+        let reserve = layrs_store_local::perf::span("vfs.reserve");
         let locator = VfsWorktreeLocator::reserve(source, root, layer, step, &snapshot)?;
+        drop(reserve);
         faults.before_creation_lease()?;
         let creation_lease = locator.creation_lease(&snapshot, None)?;
         {
@@ -250,8 +374,60 @@ impl VfsWorktree {
             &JournalFaults(faults),
         )
         .map_err(|error| creation_error(&recovery_id, &recovery_root, error))?;
-        Self::finish_creation(locator, client, journal, snapshot, faults, &creation_lease)
-            .map_err(|error| creation_error(&recovery_id, &recovery_root, error))
+        let _finish = layrs_store_local::perf::span("vfs.finish_creation");
+        let created =
+            Self::finish_creation(locator, client, journal, snapshot, faults, &creation_lease)
+                .map_err(|error| creation_error(&recovery_id, &recovery_root, error))?;
+        drop(_finish);
+        // A cache: without it the first capture inspects every file once.
+        if created.seed_change_index().is_err() {
+            layrs_store_local::perf::count("vfs.change_index_unseeded", 1);
+        }
+        Ok(created)
+    }
+
+    /// Records the in-sync placeholder created for each catalog path (its
+    /// native file number), so the first capture admits them unopened.
+    fn seed_change_index(&self) -> Result<()> {
+        use scm_v1::change_index::{ChangeIndex, IndexEntry, StatKey};
+        let _span = layrs_store_local::perf::span("vfs.seed_change_index");
+        ChangeIndex::enable(self.store_root(), self.worktree_id(), self.checkout_root())?;
+        let mut index = ChangeIndex::load(self.store_root(), self.worktree_id())
+            .ok_or(NativeClientError::Missing("change index"))?;
+        let verified_at = scm_v1::change_index::now();
+        let listing = self
+            .session
+            .list_files()
+            .map_err(|error| provider_stage("list namespace for change index", error))?;
+        for entry in self.source.catalog().entries() {
+            let Some(listed) = listing.get(entry.path.as_str()) else {
+                continue;
+            };
+            if !listed.placeholder.is_some_and(|p| p.in_sync) || listed.size != entry.size {
+                continue;
+            }
+            let Some(stat) = StatKey::from_listing(
+                listed.size,
+                listed.last_write,
+                listed.creation,
+                listed.attributes,
+            ) else {
+                continue;
+            };
+            index.insert(
+                entry.path.as_str().to_owned(),
+                IndexEntry {
+                    file_id: entry.file_id.clone(),
+                    length: entry.size,
+                    executable: false,
+                    stat,
+                    verified_at,
+                    native: Some(listed.native_index),
+                },
+            );
+        }
+        index.save(self.store_root())?;
+        Ok(())
     }
 
     /// Bounded .layrs bytes are hints until compared with private Store intent,
@@ -372,10 +548,12 @@ impl VfsWorktree {
                 locator.checkout_root(),
                 Some(locator.creation.worktree.filesystem_identity()),
             )?;
+            let _span = layrs_store_local::perf::span("vfs.register_worktree");
             locator.register(&client, creation_lease)?;
             journal.append(VfsEvent::Registered, &journal_faults)?;
         }
         let mut session = if journal.state().phase == VfsPhase::Registered {
+            let _span = layrs_store_local::perf::span("vfs.session_create_populate");
             let session = Session::create_with_registration_hook(
                 locator.checkout_root(),
                 locator.root_id,
@@ -458,6 +636,7 @@ impl VfsWorktree {
                 .map(|bytes| ControlFileIdentity::decode(bytes))
                 .transpose()
                 .map_err(|error| provider_stage("decode prepared locator identity", error))?;
+            let _span = layrs_store_local::perf::span("vfs.publish_locator");
             let staging_root = journal.staging_root()?;
             let control = session
                 .publish_control_file_recoverable(
@@ -500,6 +679,7 @@ impl VfsWorktree {
             journal.state().phase,
             VfsPhase::LocatorPublished | VfsPhase::ActivationPrepared
         ) {
+            let _span = layrs_store_local::perf::span("vfs.mark_ready");
             locator.mark_ready(&client, &mut journal, faults)?;
         }
         if journal.state().phase != VfsPhase::Ready {
@@ -531,10 +711,27 @@ impl VfsWorktree {
         self.capture_quiesced_with_faults(&NoVfsWorktreeFaults)
     }
 
+    /// As `capture_quiesced`, reading every local byte: the full content
+    /// verification required before deleting a Room (ADR 0025).
+    pub fn capture_quiesced_verifying(&mut self) -> Result<VfsCaptureReport> {
+        self.capture_inner(&NoVfsWorktreeFaults, true)
+    }
+
     pub fn capture_quiesced_with_faults(
         &mut self,
         faults: &dyn VfsWorktreeFaults,
     ) -> Result<VfsCaptureReport> {
+        self.capture_inner(faults, false)
+    }
+
+    /// `verify_all` ignores the change index: every local byte is read.
+    fn capture_inner(
+        &mut self,
+        faults: &dyn VfsWorktreeFaults,
+        verify_all: bool,
+    ) -> Result<VfsCaptureReport> {
+        use scm_v1::change_index::{ChangeIndex, StatKey};
+        let _total = layrs_store_local::perf::span("vfs.capture");
         let journal_faults = JournalFaults(faults);
         self.journal.resolve_capture(&journal_faults)?;
         self.journal.ensure_capture_capacity()?;
@@ -544,10 +741,46 @@ impl VfsWorktree {
         }
         let original_operation = original.active_operation_id;
         let original_step = original.accepted_step_id;
-        let mut checkpoint = self
-            .session
-            .checkpoint()
-            .map_err(|error| provider_stage("acquire capture checkpoint", error))?;
+        // ADR 0025: the change index lets the checkpoint admit, from the
+        // directory listing alone, each in-sync placeholder created for its
+        // path and each file whose proven content kept the same stat key.
+        if !ChangeIndex::is_enabled(self.store_root(), self.worktree_id()) {
+            ChangeIndex::enable(self.store_root(), self.worktree_id(), self.checkout_root())?;
+        }
+        let index = ChangeIndex::load(self.store_root(), self.worktree_id())
+            .ok_or(NativeClientError::Missing("change index"))?;
+        let verified_at = scm_v1::change_index::now();
+        let mut trust = |path: &RepoPath, listed: &layrs_vfs::ListedFile| {
+            let entry = index.entry(path.as_str())?;
+            match (entry.native, listed.placeholder) {
+                (Some(native), Some(placeholder)) => (placeholder.in_sync
+                    && native == listed.native_index
+                    && entry.length == listed.size)
+                    .then_some(layrs_vfs::Vouch::Base),
+                (Some(_), None) => None,
+                (None, _) => {
+                    let stat = StatKey::from_listing(
+                        listed.size,
+                        listed.last_write,
+                        listed.creation,
+                        listed.attributes,
+                    )?;
+                    index
+                        .trusted(path.as_str(), &stat)
+                        .map(|entry| layrs_vfs::Vouch::Content(entry.file_id.clone()))
+                }
+            }
+        };
+        let filter = capture_filter(self.checkout_root(), self.source.as_ref(), &index)?;
+        let mut checkpoint = {
+            let _span = layrs_store_local::perf::span("vfs.capture_checkpoint");
+            if verify_all {
+                self.session.checkpoint_verifying(filter)
+            } else {
+                self.session.checkpoint_trusting(&mut trust, filter)
+            }
+        }
+        .map_err(|error| provider_stage("acquire capture checkpoint", error))?;
         let entries: Vec<_> = checkpoint
             .entries()
             .iter()
@@ -568,6 +801,13 @@ impl VfsWorktree {
         checkpoint
             .revalidate_namespace()
             .map_err(|error| provider_stage("revalidate captured namespace", error))?;
+        let next_index = next_change_index(&index, &checkpoint, &captured, verified_at);
+        let index_unchanged = next_index.same_entries(&index);
+        let save_index = |store_root: &Path| {
+            if !index_unchanged && next_index.save(store_root).is_err() {
+                layrs_store_local::perf::count("vfs.change_index_unsaved", 1);
+            }
+        };
         for _ in 0..8 {
             let store = self.client.open_store()?;
             let reader = NativeScmReader::new(&store)?;
@@ -600,6 +840,7 @@ impl VfsWorktree {
                 .map_err(|error| provider_stage("revalidate prepared capture", error))?;
             match plan {
                 CapturePlan::Unchanged { step_id } => {
+                    save_index(self.locator.source.store_root.as_path());
                     return Ok(VfsCaptureReport {
                         step_id,
                         active_operation_id: original_operation,
@@ -625,6 +866,7 @@ impl VfsWorktree {
                         checkpoint.revalidate_namespace().map_err(|error| {
                             provider_stage("revalidate acknowledged capture", error)
                         })?;
+                        save_index(self.locator.source.store_root.as_path());
                         return Ok(VfsCaptureReport {
                             step_id: intent.step_id,
                             active_operation_id: intent.operation_id,
@@ -1428,6 +1670,21 @@ fn metadata_catalog(
             .get_tree(&tree)?
             .ok_or(NativeClientError::Missing("VFS source Tree"))?;
         super::vfs_source::validate_vfs_tree_placement(!prefix.is_empty(), &tree)?;
+        // Recorded lengths (validated at admission), one batched query per
+        // Tree instead of a manifest read per file.
+        let unknown: Vec<&layrs_core::scm::FileId> = tree
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry.target() {
+                TreeEntryTarget::File { file_id } if !lengths.contains_key(file_id) => {
+                    Some(file_id)
+                }
+                _ => None,
+            })
+            .collect();
+        if !unknown.is_empty() {
+            lengths.extend(reader.file_lengths_metadata(unknown)?);
+        }
         for entry in tree.entries() {
             let path = if prefix.is_empty() {
                 entry.name().as_str().to_owned()
@@ -1449,8 +1706,7 @@ fn metadata_catalog(
                     };
                     total = total
                         .checked_add(size)
-                        .filter(|n| *n <= 4 * 1024 * 1024 * 1024)
-                        .ok_or(NativeClientError::InvalidState("VFS catalog byte limit"))?;
+                        .ok_or(NativeClientError::InvalidState("VFS catalog size overflow"))?;
                     entries.push(layrs_vfs::CatalogEntry {
                         path: RepoPath::parse(path)?,
                         file_id: file_id.clone(),
