@@ -12,9 +12,18 @@ use layrs_sync::v3::{ObjectDescriptor, ObjectKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-const MAX_FILE_CHUNKS: usize = 16_384;
+/// Files are verified one chunk at a time (memory is one chunk), so their
+/// size is unbounded (ADR 0027). Chunk references stay bounded, like a
+/// manifest object's size.
+const MAX_FILE_BYTES: u64 = u64::MAX;
+const MAX_STREAM_BYTES: u64 = u64::MAX;
+const MAX_FILE_CHUNKS: usize = 1 << 24;
+/// Verification work is charged only beyond `AMPLIFICATION` times the
+/// distinct chunk bytes a manifest references: an ordinary file (even a new
+/// version reusing stored chunks) costs nothing, while a manifest repeating a
+/// few chunks consumes this per-transaction allowance (ADR 0027).
+const AMPLIFICATION: u64 = 64;
+const MAX_AMPLIFIED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Reconstruct incrementally: memory is bounded by a single CAS chunk.
 pub(crate) async fn verified_manifest(
@@ -50,8 +59,21 @@ async fn verified_manifest_budgeted(
         });
     }
     // Logical reconstruction work includes repeated chunks and failed manifest
-    // candidates. Deduplication cannot turn a tiny CAS into unbounded hashing.
-    charge_stream(verification_bytes, manifest.byte_length())?;
+    // candidates. Deduplication cannot turn a tiny CAS into unbounded hashing:
+    // work beyond AMPLIFICATION x the distinct bytes referenced is charged.
+    let mut distinct = BTreeMap::new();
+    for chunk in manifest.chunks() {
+        distinct.insert(chunk.chunk_id(), chunk.byte_length());
+    }
+    let distinct = distinct
+        .values()
+        .fold(0u64, |total, length| total.saturating_add(*length));
+    charge_amplified(
+        verification_bytes,
+        manifest
+            .byte_length()
+            .saturating_sub(distinct.saturating_mul(AMPLIFICATION)),
+    )?;
     let mut verifier = manifest.verifier();
     for chunk in manifest.chunks() {
         let id = ObjectId::parse(chunk.chunk_id().as_str())
@@ -385,6 +407,18 @@ fn charge_closure(total: &mut u64, bytes: u64) -> V3StoreResult<()> {
     Ok(())
 }
 
+fn charge_amplified(total: &mut u64, bytes: u64) -> V3StoreResult<()> {
+    let next = total
+        .checked_add(bytes)
+        .filter(|next| *next <= MAX_AMPLIFIED_BYTES)
+        .ok_or(V3StoreError::LimitExceeded {
+            resource: "transaction amplified verification bytes",
+            limit: MAX_AMPLIFIED_BYTES,
+        })?;
+    *total = next;
+    Ok(())
+}
+
 fn charge_stream(total: &mut u64, bytes: u64) -> V3StoreResult<()> {
     let next = total
         .checked_add(bytes)
@@ -435,15 +469,31 @@ mod tests {
     }
 
     #[test]
+    fn amplified_verification_is_bounded_per_transaction() {
+        let mut charged = 0;
+        super::charge_amplified(&mut charged, super::MAX_AMPLIFIED_BYTES).unwrap();
+        assert!(super::charge_amplified(&mut charged, 1).is_err());
+        let mut overflow = u64::MAX;
+        assert!(super::charge_amplified(&mut overflow, 1).is_err());
+        // 100,000 references to one 16 MiB chunk: ~1.5 TiB logical against
+        // 1 GiB of amplification-free work, far beyond the allowance.
+        let excess = (100_000u64 * 16 << 20).saturating_sub((16u64 << 20) * super::AMPLIFICATION);
+        assert!(super::charge_amplified(&mut 0, excess).is_err());
+    }
+
+    #[test]
     fn streamed_budget_does_not_expand_metadata_or_allow_reconstruction_amplification() {
+        // Streamed content is unbounded (ADR 0027) but never overflows, and
+        // never expands the separately bounded metadata closure.
         let mut streamed = 0;
         for _ in 0..4 {
-            super::charge_stream(&mut streamed, super::MAX_FILE_BYTES).unwrap();
+            super::charge_stream(&mut streamed, 1024 * 1024 * 1024).unwrap();
         }
-        assert!(super::charge_stream(&mut streamed, 1).is_err());
-        assert_eq!(streamed, super::MAX_STREAM_BYTES);
+        assert_eq!(streamed, 4 * 1024 * 1024 * 1024);
+        let mut full = super::MAX_STREAM_BYTES;
+        assert!(super::charge_stream(&mut full, 1).is_err());
         let mut metadata = 0;
-        assert!(super::charge_closure(&mut metadata, super::MAX_FILE_BYTES).is_err());
+        assert!(super::charge_closure(&mut metadata, 1024 * 1024 * 1024).is_err());
         let mut overflow = u64::MAX;
         assert!(super::charge_stream(&mut overflow, 1).is_err());
         assert_eq!(overflow, u64::MAX);
