@@ -8,7 +8,7 @@ pub(in crate::graph_merge) fn upgrade(
     structural: PlannedConflict,
     result: &LensReconcileResult,
     ordered_terms: [&str; 3],
-    files: &BTreeMap<FileId, Vec<u8>>,
+    files: &Files,
     limit: usize,
 ) -> MergeResult<(PlannedConflict, BTreeMap<FileId, Vec<u8>>)> {
     let original = match originals(&structural.0) {
@@ -17,6 +17,16 @@ pub(in crate::graph_merge) fn upgrade(
     };
     if result.blocks.is_empty() {
         return Ok((structural, BTreeMap::new()));
+    }
+    // The three originals were already read (and cached) for the Lens call.
+    let mut sources = Vec::with_capacity(3);
+    for term in ordered_terms {
+        sources.push(
+            match files.get(&original[term].0, "File content ID mismatch") {
+                Err(GraphMergeError::Missing(_)) => Err(invalid("missing block original")),
+                other => other,
+            }?,
+        );
     }
     let mode = original.values().next().unwrap().1;
     let mut output = structural.0.clone();
@@ -80,9 +90,7 @@ pub(in crate::graph_merge) fn upgrade(
         let mut spans = vec![];
         let mut values = BTreeMap::new();
         for i in 0..3 {
-            let source = files
-                .get(&original[ordered_terms[i]].0)
-                .ok_or_else(|| invalid("missing block original"))?;
+            let source = &sources[i];
             let end = positions[i]
                 .checked_add(parts[i].len())
                 .ok_or(GraphMergeError::Limit("block offset"))?;
@@ -120,7 +128,7 @@ pub(in crate::graph_merge) fn upgrade(
         return Err(invalid("unreferenced Lens block"));
     }
     for i in 0..3 {
-        if positions[i] != files[&original[ordered_terms[i]].0].len() {
+        if positions[i] != sources[i].len() {
             return Ok((structural, BTreeMap::new()));
         }
     }

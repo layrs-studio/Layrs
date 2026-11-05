@@ -11,6 +11,53 @@ pub fn plan_replay(
     file_policy: FileMergePolicy,
     limits: GraphMergeLimits,
 ) -> MergeResult<InstallationBundle> {
+    replay(
+        objects,
+        None,
+        source,
+        selected_parent,
+        target,
+        inverse,
+        file_policy,
+        limits,
+    )
+}
+
+/// [`plan_replay`] with a lazy File content source.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_replay_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    source: &StepId,
+    selected_parent: Option<&StepId>,
+    target: &StepId,
+    inverse: bool,
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+) -> MergeResult<InstallationBundle> {
+    replay(
+        objects,
+        Some(files),
+        source,
+        selected_parent,
+        target,
+        inverse,
+        file_policy,
+        limits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay(
+    objects: &MergeObjects,
+    file_source: Option<&dyn MergeFileSource>,
+    source: &StepId,
+    selected_parent: Option<&StepId>,
+    target: &StepId,
+    inverse: bool,
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+) -> MergeResult<InstallationBundle> {
     if objects.steps.len() > limits.max_steps {
         return Err(GraphMergeError::Limit("replay steps"));
     }
@@ -60,15 +107,9 @@ pub fn plan_replay(
         return Err(GraphMergeError::Limit("replay bytes"));
     }
     StepDag::from_steps(objects.steps.values()).map_err(invalid)?;
-    let mut validator = InputValidator {
-        objects,
-        limits,
-        paths: 0,
-        bytes: input_bytes,
-        seen_files: BTreeSet::new(),
-        seen_metadata: BTreeSet::new(),
-        validated_conflicts: BTreeSet::new(),
-    };
+    let files = Files::new(&objects.files, file_source, limits.max_input_bytes);
+    files.charge(input_bytes)?;
+    let mut validator = InputValidator::new(objects, &files, limits);
     for id in sides.iter().chain(&bases) {
         let step = objects
             .steps
@@ -83,6 +124,7 @@ pub fn plan_replay(
     .map_err(invalid)?;
     let mut planner = Planner {
         objects,
+        files: &files,
         executor: None,
         plan: GraphMergePlan {
             source_heads: vec![incoming],
@@ -110,9 +152,11 @@ pub fn plan_replay(
     };
     // A replay delta base need not be the sides' DAG merge base. Do not emit
     // a rename Conflict claiming Weave ancestry for that different operation.
+    // The validator above already checked exactly this base/side closure and
+    // budget, so the exact-value analysis runs on the validated input.
     if bases.len() == 1
         && sides.len() == 2
-        && !renames::analyze_renames(objects, &bases[0], &sides, limits)?
+        && !renames::analyze_validated(objects, &bases[0], &sides, limits)?
             .conflicts
             .is_empty()
     {

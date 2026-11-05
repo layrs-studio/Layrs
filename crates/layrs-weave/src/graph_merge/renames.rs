@@ -49,6 +49,28 @@ pub fn analyze_renames(
     sides: &[StepId],
     limits: GraphMergeLimits,
 ) -> MergeResult<RenameAnalysis> {
+    analyze(objects, None, base, sides, limits)
+}
+
+/// [`analyze_renames`] with a lazy File content source. Movement analysis is
+/// exact-value (FileId equality), so no File content is read.
+pub fn analyze_renames_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    base: &StepId,
+    sides: &[StepId],
+    limits: GraphMergeLimits,
+) -> MergeResult<RenameAnalysis> {
+    analyze(objects, Some(files), base, sides, limits)
+}
+
+fn analyze(
+    objects: &MergeObjects,
+    source: Option<&dyn MergeFileSource>,
+    base: &StepId,
+    sides: &[StepId],
+    limits: GraphMergeLimits,
+) -> MergeResult<RenameAnalysis> {
     if objects.steps.len() > limits.max_steps {
         return Err(GraphMergeError::Limit("rename Steps"));
     }
@@ -68,15 +90,9 @@ pub fn analyze_renames(
         return Err(GraphMergeError::Limit("rename input"));
     }
     StepDag::from_steps(objects.steps.values()).map_err(invalid)?;
-    let mut validator = InputValidator {
-        objects,
-        limits,
-        paths: 0,
-        bytes: input_bytes,
-        seen_files: BTreeSet::new(),
-        seen_metadata: BTreeSet::new(),
-        validated_conflicts: BTreeSet::new(),
-    };
+    let files = Files::new(&objects.files, source, limits.max_input_bytes);
+    files.charge(input_bytes)?;
+    let mut validator = InputValidator::new(objects, &files, limits);
     for id in std::iter::once(base).chain(sides) {
         let step = objects
             .steps
@@ -134,7 +150,7 @@ fn occurrences(inventory: &Inventory) -> BTreeMap<Identity, Vec<RepoPath>> {
     index
 }
 
-fn analyze_validated(
+pub(super) fn analyze_validated(
     objects: &MergeObjects,
     base: &StepId,
     sides: &[StepId],

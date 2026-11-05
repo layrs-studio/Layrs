@@ -232,6 +232,12 @@ impl PlannedConflict {
     /// Check that immutable fragments and spans reconstruct all three originals
     /// exactly. Never use a search for an ambiguous repeated substring.
     pub fn validate_payload(&self, files: &BTreeMap<FileId, Vec<u8>>) -> MergeResult<()> {
+        self.validate_payload_in(&Files::memory_only(files))
+    }
+
+    /// [`PlannedConflict::validate_payload`] over resident and lazily loaded
+    /// content. Every File read is verified against its FileId.
+    pub(in crate::graph_merge) fn validate_payload_in(&self, files: &Files) -> MergeResult<()> {
         if array(&self.0, "blocks")?.is_empty() {
             return Ok(());
         }
@@ -273,7 +279,7 @@ impl PlannedConflict {
                 let end = cursor
                     .checked_add(fragment.len())
                     .ok_or(GraphMergeError::Limit("block offset"))?;
-                if bytes.get(cursor..end) != Some(fragment) {
+                if bytes.get(cursor..end) != Some(&*fragment) {
                     return Err(invalid("block original reconstruction"));
                 }
                 cursor = end;
@@ -289,12 +295,10 @@ impl PlannedConflict {
     }
 }
 
-fn file_bytes<'a>(files: &'a BTreeMap<FileId, Vec<u8>>, id: &FileId) -> MergeResult<&'a [u8]> {
-    let bytes = files
-        .get(id)
-        .ok_or_else(|| GraphMergeError::Missing(id.to_string()))?;
-    if FileId::from_bytes(bytes) != *id || std::str::from_utf8(bytes).is_err() || bytes.contains(&0)
-    {
+/// `Files::get` verifies the FileId of every resident or loaded value.
+fn file_bytes<'a>(files: &Files<'a>, id: &FileId) -> MergeResult<FileBytes<'a>> {
+    let bytes = files.get(id, "block file hash/text")?;
+    if std::str::from_utf8(&bytes).is_err() || bytes.contains(&0) {
         return Err(invalid("block file hash/text"));
     }
     Ok(bytes)

@@ -1,6 +1,7 @@
 use super::*;
 use crate::reconciliation::{FailureAction, FileMergeLimits};
 mod blocks;
+mod lazy;
 mod renames;
 
 fn policy() -> FileMergePolicy {

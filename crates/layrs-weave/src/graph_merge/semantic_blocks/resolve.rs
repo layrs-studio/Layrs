@@ -19,10 +19,10 @@ pub(in crate::graph_merge) struct BlockResult {
 pub(in crate::graph_merge) fn resolve_blocks(
     conflict: &PlannedConflict,
     choices: &BTreeMap<ObjectId, ConflictBlockResolution>,
-    files: &BTreeMap<FileId, Vec<u8>>,
+    files: &Files,
     limit: usize,
 ) -> MergeResult<BlockResult> {
-    conflict.validate_payload(files)?;
+    conflict.validate_payload_in(files)?;
     let original = originals(&conflict.0)?;
     let mode = original.values().next().unwrap().1;
     let mut value = conflict.0.clone();
@@ -105,10 +105,10 @@ pub(in crate::graph_merge) fn resolve_blocks(
             &blocks[text(&segment["blockId"])?]["resolution"]["result"]["objectId"]
         };
         let id = FileId::parse(text(id)?).map_err(invalid)?;
-        let bytes = proposed
-            .get(&id)
-            .or_else(|| files.get(&id))
-            .ok_or_else(|| GraphMergeError::Missing(id.to_string()))?;
+        let bytes = match proposed.get(&id) {
+            Some(bytes) => FileBytes::Borrowed(bytes.as_slice()),
+            None => files.get(&id, "block file hash/text")?,
+        };
         let next = result
             .len()
             .checked_add(bytes.len())
@@ -116,7 +116,7 @@ pub(in crate::graph_merge) fn resolve_blocks(
         if next.saturating_add(bytes_used) > limit {
             return Err(GraphMergeError::Limit("resolved file"));
         }
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(&bytes);
     }
     let id = FileId::from_bytes(&result);
     proposed.insert(id.clone(), result);

@@ -13,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod canonical;
 mod conflict_layout;
+mod files;
 pub use conflict_layout::validate_conflict_layout;
+pub use files::MergeFileSource;
+use files::{FileBytes, Files};
 mod receipt;
 use canonical::{conflict, term};
 pub mod renames;
@@ -22,10 +25,11 @@ mod resolution;
 mod semantic_blocks;
 mod structural;
 pub use receipt::{ReceiptContext, ReceiptHostAttestation};
-pub use replay::plan_replay;
+pub use replay::{plan_replay, plan_replay_with_source};
 pub use resolution::{
-    ConflictReplacement, resolve_conflict_blocks, resolve_conflict_replacements,
-    resolve_conflict_terms,
+    ConflictReplacement, resolve_conflict_blocks, resolve_conflict_blocks_with_source,
+    resolve_conflict_replacements, resolve_conflict_replacements_with_source,
+    resolve_conflict_terms, resolve_conflict_terms_with_source,
 };
 pub use semantic_blocks::ConflictBlockResolution;
 
@@ -51,6 +55,9 @@ fn invalid(error: impl std::fmt::Display) -> GraphMergeError {
 }
 
 /// Verified immutable input closure, independent of any checkout or SQL order.
+/// With the plain entry points every closure File must be in `files`. The
+/// `*_with_source` entry points accept a partial `files` map: any other File
+/// must be proven present by a [`MergeFileSource`] and is loaded only if read.
 #[derive(Debug, Default, Clone)]
 pub struct MergeObjects {
     pub steps: BTreeMap<StepId, Step>,
@@ -66,6 +73,9 @@ pub struct GraphMergeLimits {
     pub max_steps: usize,
     pub max_paths: usize,
     pub max_depth: usize,
+    /// Resident input bytes: Steps, metadata objects, in-memory File content
+    /// and content actually loaded from a [`MergeFileSource`]. Unread
+    /// source-backed Files are not charged.
     pub max_input_bytes: usize,
     pub max_output_bytes: usize,
 }
@@ -211,6 +221,30 @@ pub fn plan_graph_merge(
 ) -> MergeResult<GraphMergePlan> {
     plan_graph_merge_mode(
         objects,
+        None,
+        source_heads,
+        target_heads,
+        file_policy,
+        limits,
+        true,
+        None,
+    )
+}
+
+/// [`plan_graph_merge`] where File content absent from `objects.files` is
+/// proven present by `files` and loaded only when planning reads it (verified
+/// against its FileId, cached once per plan, charged to `max_input_bytes`).
+pub fn plan_graph_merge_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    source_heads: &[StepId],
+    target_heads: &[StepId],
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+) -> MergeResult<GraphMergePlan> {
+    plan_graph_merge_mode(
+        objects,
+        Some(files),
         source_heads,
         target_heads,
         file_policy,
@@ -230,6 +264,28 @@ pub fn plan_structural_merge(
 ) -> MergeResult<GraphMergePlan> {
     plan_graph_merge_mode(
         objects,
+        None,
+        source_heads,
+        target_heads,
+        file_policy,
+        limits,
+        false,
+        None,
+    )
+}
+
+/// [`plan_structural_merge`] with a lazy File content source.
+pub fn plan_structural_merge_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    source_heads: &[StepId],
+    target_heads: &[StepId],
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+) -> MergeResult<GraphMergePlan> {
+    plan_graph_merge_mode(
+        objects,
+        Some(files),
         source_heads,
         target_heads,
         file_policy,
@@ -250,8 +306,52 @@ pub fn plan_sandboxed_merge(
     limits: GraphMergeLimits,
     host: &crate::wasm_host::WasmHost,
 ) -> MergeResult<GraphMergePlan> {
+    sandboxed_merge(
+        objects,
+        None,
+        source_heads,
+        target_heads,
+        file_policy,
+        limits,
+        host,
+    )
+}
+
+/// [`plan_sandboxed_merge`] with a lazy File content source.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plan_sandboxed_merge_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    source_heads: &[StepId],
+    target_heads: &[StepId],
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+    host: &crate::wasm_host::WasmHost,
+) -> MergeResult<GraphMergePlan> {
+    sandboxed_merge(
+        objects,
+        Some(files),
+        source_heads,
+        target_heads,
+        file_policy,
+        limits,
+        host,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sandboxed_merge(
+    objects: &MergeObjects,
+    files: Option<&dyn MergeFileSource>,
+    source_heads: &[StepId],
+    target_heads: &[StepId],
+    file_policy: FileMergePolicy,
+    limits: GraphMergeLimits,
+    host: &crate::wasm_host::WasmHost,
+) -> MergeResult<GraphMergePlan> {
     let mut plan = plan_graph_merge_mode(
         objects,
+        files,
         source_heads,
         target_heads,
         file_policy,
@@ -307,6 +407,7 @@ impl FileExecutor for crate::wasm_host::WasmHost {
 #[allow(clippy::too_many_arguments)]
 fn plan_graph_merge_mode(
     objects: &MergeObjects,
+    source: Option<&dyn MergeFileSource>,
     source_heads: &[StepId],
     target_heads: &[StepId],
     file_policy: FileMergePolicy,
@@ -373,15 +474,9 @@ fn plan_graph_merge_mode(
     if bases.len() > 64 {
         return Err(GraphMergeError::Limit("conflict bases"));
     }
-    let mut validator = InputValidator {
-        objects,
-        limits,
-        paths: 0,
-        bytes: step_bytes,
-        seen_files: BTreeSet::new(),
-        seen_metadata: BTreeSet::new(),
-        validated_conflicts: BTreeSet::new(),
-    };
+    let files = Files::new(&objects.files, source, limits.max_input_bytes);
+    files.charge(step_bytes)?;
+    let mut validator = InputValidator::new(objects, &files, limits);
     // Validate the complete selected closure before planning, including objects
     // a trivial rule would otherwise reuse without examining their contents.
     for step in heads.iter().chain(&bases) {
@@ -391,6 +486,7 @@ fn plan_graph_merge_mode(
     let placeholder = Step::new(heads.clone(), empty.id().clone()).map_err(invalid)?;
     let mut planner = Planner {
         objects,
+        files: &files,
         executor,
         plan: GraphMergePlan {
             source_heads: sources,
@@ -439,25 +535,33 @@ fn checked_heads(input: &[StepId]) -> MergeResult<Vec<StepId>> {
     Ok(set.into_iter().collect())
 }
 
+/// Proves the complete selected closure is present and structurally valid.
+/// Every Tree, Symlink, Tombstone and Conflict (including its payload) is read
+/// and checked. Resident (in-memory) File content is verified and charged; a
+/// lazy source proves presence without reading, and content it supplies later
+/// is verified on load.
 struct InputValidator<'a> {
     objects: &'a MergeObjects,
+    files: &'a Files<'a>,
     limits: GraphMergeLimits,
     paths: usize,
-    bytes: usize,
-    seen_files: BTreeSet<FileId>,
     seen_metadata: BTreeSet<String>,
     validated_conflicts: BTreeSet<ConflictId>,
 }
-impl InputValidator<'_> {
+impl<'a> InputValidator<'a> {
+    fn new(objects: &'a MergeObjects, files: &'a Files<'a>, limits: GraphMergeLimits) -> Self {
+        Self {
+            objects,
+            files,
+            limits,
+            paths: 0,
+            seen_metadata: BTreeSet::new(),
+            validated_conflicts: BTreeSet::new(),
+        }
+    }
     fn metadata(&mut self, id: &str, byte_length: usize) -> MergeResult<()> {
         if self.seen_metadata.insert(id.to_string()) {
-            self.bytes = self
-                .bytes
-                .checked_add(byte_length)
-                .ok_or(GraphMergeError::Limit("input bytes"))?;
-            if self.bytes > self.limits.max_input_bytes {
-                return Err(GraphMergeError::Limit("input bytes"));
-            }
+            self.files.charge(byte_length)?;
         }
         Ok(())
     }
@@ -492,23 +596,7 @@ impl InputValidator<'_> {
             }
             match entry.target() {
                 TreeEntryTarget::File { file_id } => {
-                    let bytes = self
-                        .objects
-                        .files
-                        .get(file_id)
-                        .ok_or_else(|| GraphMergeError::Missing(file_id.to_string()))?;
-                    if self.seen_files.insert(file_id.clone()) {
-                        self.bytes = self
-                            .bytes
-                            .checked_add(bytes.len())
-                            .ok_or(GraphMergeError::Limit("input bytes"))?;
-                        if self.bytes > self.limits.max_input_bytes {
-                            return Err(GraphMergeError::Limit("input bytes"));
-                        }
-                        if &FileId::from_bytes(bytes) != file_id {
-                            return Err(invalid("File content ID mismatch"));
-                        }
-                    }
+                    self.files.require(file_id, "File content ID mismatch")?;
                 }
                 TreeEntryTarget::Tree { tree_id } => self.tree(tree_id, &path, depth + 1)?,
                 TreeEntryTarget::Symlink { symlink_id } => {
@@ -553,7 +641,7 @@ impl InputValidator<'_> {
                             depth + 1,
                         )?;
                     }
-                    conflict.validate_payload(&self.objects.files)?;
+                    conflict.validate_payload_in(self.files)?;
                     for (origin, retained_path, retained) in conflict
                         .placed_entries("bases")?
                         .into_iter()
@@ -602,23 +690,7 @@ impl InputValidator<'_> {
         match entry.target() {
             TreeEntryTarget::Tree { tree_id } => self.tree(tree_id, path, depth)?,
             TreeEntryTarget::File { file_id } => {
-                let bytes = self
-                    .objects
-                    .files
-                    .get(file_id)
-                    .ok_or_else(|| GraphMergeError::Missing(file_id.to_string()))?;
-                if self.seen_files.insert(file_id.clone()) {
-                    self.bytes = self
-                        .bytes
-                        .checked_add(bytes.len())
-                        .ok_or(GraphMergeError::Limit("input bytes"))?;
-                    if self.bytes > self.limits.max_input_bytes {
-                        return Err(GraphMergeError::Limit("input bytes"));
-                    }
-                    if &FileId::from_bytes(bytes) != file_id {
-                        return Err(invalid("retained File ID mismatch"));
-                    }
-                }
+                self.files.require(file_id, "retained File ID mismatch")?;
             }
             TreeEntryTarget::Symlink { symlink_id } => {
                 if self
@@ -640,6 +712,7 @@ type TermEntry = (StepId, Option<TreeEntry>);
 type TermTree = (StepId, Option<TreeId>);
 struct Planner<'a> {
     objects: &'a MergeObjects,
+    files: &'a Files<'a>,
     executor: Option<&'a dyn FileExecutor>,
     plan: GraphMergePlan,
     paths: usize,
@@ -824,19 +897,22 @@ impl Planner<'_> {
                     .executor
                     .and_then(|executor| executor.implementation_digest(&pin))
                     .unwrap_or_else(|| pin.digest.clone());
-                let side = |e: &Option<TreeEntry>| {
-                    LensReconcileSideContract::present(
-                        self.objects.files[e.as_ref().unwrap().target().file_id().unwrap()].clone(),
+                // Only a content leaf changed on several sides reaches here;
+                // content of Files unchanged by a side is never read.
+                let side = |e: &Option<TreeEntry>| -> MergeResult<_> {
+                    let id = e.as_ref().unwrap().target().file_id().unwrap();
+                    Ok(LensReconcileSideContract::present(
+                        self.files.get(id, "File content ID mismatch")?.to_vec(),
                         None,
-                    )
+                    ))
                 };
                 let request = LensReconcileRequest::new(
                     pin.clone(),
                     path,
                     None,
-                    side(&bases[0].1),
-                    side(&sides[0].1),
-                    side(&sides[1].1),
+                    side(&bases[0].1)?,
+                    side(&sides[0].1)?,
+                    side(&sides[1].1)?,
                     LensReconcileLabelsContract {
                         existing: sides[0].0.to_string(),
                         incoming: sides[1].0.to_string(),
@@ -896,7 +972,7 @@ impl Planner<'_> {
                 conflict,
                 &result,
                 ordered,
-                &self.objects.files,
+                self.files,
                 self.plan.limits.max_output_bytes,
             )?;
             conflict = upgraded;

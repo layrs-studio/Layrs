@@ -15,6 +15,26 @@ pub fn resolve_conflict_replacements(
 ) -> MergeResult<InstallationBundle> {
     resolve(
         objects,
+        None,
+        parent,
+        &BTreeMap::new(),
+        replacements,
+        &BTreeMap::new(),
+        limits,
+    )
+}
+
+/// [`resolve_conflict_replacements`] with a lazy File content source.
+pub fn resolve_conflict_replacements_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    parent: &StepId,
+    replacements: &BTreeMap<ConflictId, ConflictReplacement>,
+    limits: GraphMergeLimits,
+) -> MergeResult<InstallationBundle> {
+    resolve(
+        objects,
+        Some(files),
         parent,
         &BTreeMap::new(),
         replacements,
@@ -35,6 +55,26 @@ pub fn resolve_conflict_terms(
 ) -> MergeResult<InstallationBundle> {
     resolve(
         objects,
+        None,
+        parent,
+        choices,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        limits,
+    )
+}
+
+/// [`resolve_conflict_terms`] with a lazy File content source.
+pub fn resolve_conflict_terms_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    parent: &StepId,
+    choices: &BTreeMap<ConflictId, ObjectId>,
+    limits: GraphMergeLimits,
+) -> MergeResult<InstallationBundle> {
+    resolve(
+        objects,
+        Some(files),
         parent,
         choices,
         &BTreeMap::new(),
@@ -53,6 +93,26 @@ pub fn resolve_conflict_blocks(
 ) -> MergeResult<InstallationBundle> {
     resolve(
         objects,
+        None,
+        parent,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        choices,
+        limits,
+    )
+}
+
+/// [`resolve_conflict_blocks`] with a lazy File content source.
+pub fn resolve_conflict_blocks_with_source(
+    objects: &MergeObjects,
+    files: &dyn MergeFileSource,
+    parent: &StepId,
+    choices: &BTreeMap<ConflictId, BTreeMap<ObjectId, ConflictBlockResolution>>,
+    limits: GraphMergeLimits,
+) -> MergeResult<InstallationBundle> {
+    resolve(
+        objects,
+        Some(files),
         parent,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -63,6 +123,7 @@ pub fn resolve_conflict_blocks(
 
 fn resolve(
     objects: &MergeObjects,
+    source: Option<&dyn MergeFileSource>,
     parent: &StepId,
     choices: &BTreeMap<ConflictId, ObjectId>,
     replacements: &BTreeMap<ConflictId, ConflictReplacement>,
@@ -119,18 +180,13 @@ fn resolve(
     if parent_step.id() != parent {
         return Err(invalid("parent Step ID mismatch"));
     }
-    let mut validator = InputValidator {
-        objects,
-        limits,
-        paths: 0,
-        bytes: replacement_bytes,
-        seen_files: BTreeSet::new(),
-        seen_metadata: BTreeSet::new(),
-        validated_conflicts: BTreeSet::new(),
-    };
+    let input = Files::new(&objects.files, source, limits.max_input_bytes);
+    input.charge(replacement_bytes)?;
+    let mut validator = InputValidator::new(objects, &input, limits);
     validator.tree(parent_step.root_tree_id(), "", 0)?;
     let mut resolution = Resolution {
         objects,
+        input: &input,
         choices,
         replacements,
         block_choices,
@@ -185,6 +241,7 @@ fn resolve(
 
 struct Resolution<'a> {
     objects: &'a MergeObjects,
+    input: &'a Files<'a>,
     choices: &'a BTreeMap<ConflictId, ObjectId>,
     replacements: &'a BTreeMap<ConflictId, ConflictReplacement>,
     block_choices: &'a BTreeMap<ConflictId, BTreeMap<ObjectId, ConflictBlockResolution>>,
@@ -244,7 +301,7 @@ impl Resolution<'_> {
                     let result = semantic_blocks::resolve_blocks(
                         conflict,
                         choices,
-                        &self.objects.files,
+                        self.input,
                         self.limits.max_output_bytes.saturating_sub(self.bytes),
                     )?;
                     self.applied.insert(id.clone());
