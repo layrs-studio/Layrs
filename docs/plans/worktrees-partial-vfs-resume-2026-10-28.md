@@ -90,6 +90,72 @@ Ordre prévu :
 
 Le 5 novembre 2026, à la demande de l'utilisateur, tout le travail est commité en 9 commits thématiques (`c0e53e6..155a954`), la branche est poussée, puis fusionnée dans `main` (`5a4cbac`, merge `--no-ff`, poussé).
 
+CI « Trust gates » de `main` amenée au vert (`c199968`, run 42097388834, Linux et Windows), à la demande de l'utilisateur, avant de reprendre les performances. Corrections, toutes poussées en avance rapide sur `main` et sur la branche :
+- **Portes statiques** :
+  - `rustfmt` et `clippy -D warnings`, les lints locaux étant autorisés sur l'élément quand une correction réécrirait la logique ;
+  - découpe des 8 fichiers de plus de 2 000 lignes sans changer les chemins des tests ;
+  - les JSON de preuve de `docs/continuation` sont exclus du contrôle de taille, comme les lockfiles.
+- **Linux** :
+  - `provider::checkout_journal` est passé en `cfg(windows)` ;
+  - les éléments atteints seulement par Windows sont autorisés en `cfg_attr(not(windows), ...)`, vérifiés par un clippy croisé Linux (recette en mémoire `layrs-linux-crosslint`).
+- **Tests obsolètes depuis a4c3551 ou b52b95a**, alignés sur le comportement voulu :
+  - la récupération refuse un journal chaud partagé ;
+  - liaison Worktree des vues ;
+  - slugs de Space par contexte ;
+  - un rebase partiel sous catalogue de Lens laisse le choix explicite ;
+  - bannière « Aucun changement en attente de capture » ;
+  - corps de réponse lu seulement en cas d'échec.
+- **Rooms** : sous Unix, le ctime révèle une édition à stat identique ; seul Windows garde l'assertion « invisible pour `step` ».
+- **CI et paquet** : le worker Lens est construit avant `test:tauri` et avant le paquet MSI, et le worker copié dans `resources` est exclu de l'empreinte des sources.
+
+D2 implémenté dans `scm_v1/materialize/fresh.rs` (5 novembre 2026, pas encore commité au moment de la rédaction). Une première matérialisation dans un dossier qui ne contient que `.layrs` suit ce chemin :
+- **Journal** : il est écrit dans le schéma `layrs.fresh-checkout.v1` et liste les entrées de premier niveau. Le dossier est revérifié vide sous le journal.
+- **Création** :
+  - les dossiers sont créés en séquence, sans sync ;
+  - puis les fichiers sont créés en parallèle, de façon exclusive, relativement au handle parent ; chaque handle ne partage que la lecture et les octets sont prouvés par `VerifiedWriter` ;
+  - chaque fichier est horodaté par une seule requête `FileBasicInfo`, puis fermé sur son fil, de sorte que l'analyse antivirus à la fermeture se chevauche avec les autres écritures.
+- **Contrôle final** : chaque dossier est énuméré et comparé aux horodatages, avec la même confiance que l'index de changements. `drop` lit toujours chaque octet.
+- **Commit** : la synchronisation des dossiers précède le commit des métadonnées.
+- **Reprise** : si le commit n'a pas eu lieu, tout sauf `.layrs` est mis en quarantaine par renommage dans le dossier frère `.<nom>.layrs-abandoned-<tag>`, jamais supprimé, et la création peut reprendre. Si le commit a eu lieu, les fichiers sont gardés.
+
+Écarts par rapport aux conditions du conseil r5 :
+- **Condition 5** : clôture du journal et commit restent deux transactions. La reprise décide par l'Operation active, donc un checkout commité n'est jamais mis en quarantaine.
+- **Condition 4** : les handles ne sont pas tenus jusqu'au contrôle final. L'énumération confronte les horodatages pris par le handle d'écriture. À faire valider par le conseil.
+
+Lecture Store parallèle : `SharedStagingStore` devient un pool, une lecture et donc une connexion SQLite par écrivain. Avant, les requêtes de manifeste se sérialisaient sur un seul `Mutex<Connection>`. Résultat à 10 000 fichiers pour une Room physique : 9,4 s, puis 2,6 s ; `git worktree add` prend 2,5 à 2,8 s, dans le même dossier.
+
+**Mesures faussées par l'emplacement** (micro-banc `createbench`, création, écriture et fermeture de 10 000 fichiers sur 8 fils) :
+
+| situation | durée |
+| --- | --- |
+| exécutable sur C: | 1,1 s |
+| même exécutable lancé depuis `D:\Layrs\tmp\roomtest` | 3,9 s |
+| dossier cible dans `%TEMP%` | 1,1 s |
+| dossier cible dans `AppData\Local` ou dans le dossier personnel | 3,3 à 3,5 s |
+
+L'antivirus est la cause probable. Tous les bancs précédents lançaient layrs depuis D:, et créaient les Rooms par défaut dans `AppData\Local\Layrs\rooms`, alors que les worktrees git étaient dans `%TEMP%`.
+
+Banc r34z, layrs lancé depuis C: et Rooms dans le même dossier que les worktrees git :
+
+| commande | git | layrs r34z |
+| --- | --- | --- |
+| status | 58 ms | 110 ms |
+| commit | 162 ms | 333 ms |
+| nouvel espace virtuel | 2,52 s | 1,31 s |
+| lecture complète | 3,2 s | 17,8 s |
+| commit en Room | 272 ms | 500 ms |
+| avance rapide | 84 ms | 675 ms |
+| 2e agent | 82 ms | 794 ms |
+| 3 voies | 374 ms | 1,33 s |
+| `drop` | 1,59 s | 0,54 s |
+| Room physique | 2,52 s (worktree) | 3,15 s |
+
+La lecture complète reste lente une fois l'emplacement corrigé : le mode hybride est confirmé. Ordre suivant :
+1. mode hybride ;
+2. fusions (D5) ;
+3. commit et `status` ;
+4. à soumettre à l'utilisateur : l'emplacement par défaut des Rooms, à côté du projet comme les worktrees git.
+
 Mesure M4 partielle, écriture physique de 10 000 petits fichiers (node, Defender actif) : 4,2 s avec un écrivain, 2,9 s avec 4, 2,5 s avec 8 ; un `grep` ensuite prend 0,85 s. `git worktree add` prend 2,24 s.
 
 Conception D2 et hybride (à implémenter) :
