@@ -37,6 +37,7 @@ impl NamespaceBudget {
         self.control_seen = true;
         Ok(())
     }
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn finish(&self, attached_control: bool) -> Result<()> {
         if self.control_seen != attached_control {
             return Err(Error::IdentityMismatch);
@@ -139,6 +140,7 @@ impl Catalog {
             .map(|i| &self.entries[i])
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn file_identity(&self, index: usize) -> Vec<u8> {
         let e = &self.entries[index];
         let mut bytes = b"LYRFILE1".to_vec();
@@ -149,6 +151,7 @@ impl Catalog {
         bytes
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn resolve_identity(&self, bytes: &[u8]) -> Result<&CatalogEntry> {
         if bytes.len() != 162
             || &bytes[..8] != b"LYRFILE1"
@@ -245,6 +248,7 @@ pub trait SnapshotSource: Send + Sync + 'static {
     ) -> Result<()>;
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn read_checked(
     source: &dyn SnapshotSource,
     entry: &CatalogEntry,

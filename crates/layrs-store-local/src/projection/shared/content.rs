@@ -513,6 +513,7 @@ impl Lease {
 /// The active catalog gate and caller transaction cover this check and the
 /// subsequent publication. A schema-2 length collision is refused before any
 /// immutable filesystem object is renamed into the family.
+#[cfg_attr(not(windows), allow(unused_variables))]
 fn prepare_manifest_file(c: &Connection, manifest: &FileManifest) -> Result<()> {
     if c.is_autocommit() {
         return Err(invalid(

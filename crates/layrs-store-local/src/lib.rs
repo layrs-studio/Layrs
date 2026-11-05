@@ -9,6 +9,9 @@ mod error;
 mod layout;
 mod lock;
 pub mod perf;
+// Partial projections are a Windows (CFAPI) feature; their portable core is
+// only partly reachable elsewhere. Windows builds still lint it in full.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod projection;
 pub mod scm_v1;
 pub use secure_fs::private_spool_file;

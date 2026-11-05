@@ -104,6 +104,7 @@ pub(crate) fn create_room_host(
 
 /// Starts (in the background) the VFS host of an existing virtual Room root
 /// and returns its launch data. Used when a Room's host is not running.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn start_room_host(cli: &Cli, path: &Path) -> Result<serde_json::Value, CliError> {
     #[cfg(windows)]
     {

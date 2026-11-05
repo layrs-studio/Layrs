@@ -131,6 +131,7 @@ impl Registration {
         Ok(value)
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn for_control_directory(
         control: &crate::ControlDirectoryIdentity,
         root_id: [u8; 16],
@@ -153,6 +154,7 @@ impl Registration {
         })
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn require_legacy(&self) -> Result<()> {
         match self.flavor {
             RegistrationFlavor::Legacy => Ok(()),
@@ -178,6 +180,7 @@ impl Registration {
         Ok(())
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn root_blob(&self, ready: bool) -> Vec<u8> {
         let mut bytes = match self.flavor {
             RegistrationFlavor::Legacy => b"LYRROOT1".to_vec(),

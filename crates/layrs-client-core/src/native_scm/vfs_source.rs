@@ -209,6 +209,7 @@ impl VerifiedVfsSnapshot {
     /// catalog length.
     /// Chunk ids of a source File's admitted manifest: content the Space
     /// already has, which a capture of an edited copy need not spool again.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) fn source_chunk_ids(
         &self,
         id: &FileId,

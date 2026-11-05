@@ -24,6 +24,7 @@ pub(in crate::projection) struct ContentScope<'a> {
 }
 
 impl<'a> ContentScope<'a> {
+    #[cfg_attr(not(windows), allow(unused_variables))]
     pub(in crate::projection) fn preflight_local_capture(
         &self,
         c: &Connection,
@@ -186,6 +187,7 @@ impl<'a> ContentScope<'a> {
 
 /// Keep legacy callers intact while requiring explicit authority for private9.
 /// The borrowed form never re-acquires owner/lifecycle gates or a generic lease.
+#[cfg_attr(not(windows), allow(clippy::large_enum_variant))]
 pub(in crate::projection) enum ContentFamily<'a> {
     Borrowed(Option<&'a shared::Lease>),
     Legacy(Option<shared::Lease>),

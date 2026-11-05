@@ -18,6 +18,7 @@ pub struct HydrationRange {
     end: u64,
 }
 impl HydrationRange {
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn bounds(&self) -> std::ops::Range<u64> {
         self.next..self.end
     }

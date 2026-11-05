@@ -42,6 +42,7 @@ mod artifacts;
 pub(in crate::projection) mod cancellation;
 #[cfg(windows)]
 mod capture_lock;
+#[cfg(windows)]
 mod checkout_journal;
 #[cfg(windows)]
 pub(in crate::projection) mod content_catalog;

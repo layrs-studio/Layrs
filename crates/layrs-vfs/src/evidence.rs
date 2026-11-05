@@ -107,5 +107,6 @@ pub struct Inspection {
     pub(crate) _parents: Vec<std::fs::File>,
     /// Listing facts of an entry admitted without a guard; revalidation
     /// requires the same version at the same path.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) listed: Option<ListedFile>,
 }

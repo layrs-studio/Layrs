@@ -299,6 +299,7 @@ enum BatchDurability {
     /// flush, directory updates are ordered by the NTFS journal, and one
     /// final flush of a marker created after every publication persists the
     /// journal up to that point and the device cache (as git's batch mode).
+    #[cfg_attr(not(windows), allow(dead_code))]
     JournalOrdered,
 }
 

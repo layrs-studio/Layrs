@@ -523,6 +523,7 @@ pub(in crate::projection) fn access_for_managed_export_retry(
     access_with_settlement(store, mode, false, AccessPurpose::General)
 }
 
+#[cfg_attr(not(windows), allow(unused_variables, unused_mut))]
 fn access_with_settlement(
     store: &ProjectionStore,
     mode: SessionMode,

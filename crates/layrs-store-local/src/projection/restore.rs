@@ -8,6 +8,7 @@ mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
 pub(in crate::projection) use engine::LocalRestorePlan;
+#[cfg_attr(not(windows), allow(unused_imports))]
 pub(in crate::projection) use engine::imported_history_preview;
 pub(super) use engine::verify_history;
 #[cfg(windows)]
