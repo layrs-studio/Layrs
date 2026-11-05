@@ -63,7 +63,9 @@ pub fn room_layer_name(name: &str) -> String {
     format!("room/{name}")
 }
 
-/// Default parent of all Room folders for a Space, outside any project tree:
+/// Built-in parent of all Room folders for a Space, outside any project tree
+/// (`NativeWorkspace::rooms_location` applies the project's or the user's
+/// choice first):
 /// Windows `%LOCALAPPDATA%\Layrs\rooms\<space>`, Linux
 /// `$XDG_DATA_HOME/layrs/rooms/<space>`, macOS
 /// `~/Library/Application Support/Layrs/rooms/<space>`. A Room must share
@@ -88,6 +90,12 @@ pub fn default_rooms_parent(
             ))?;
         return Ok(parent.join(format!("{name}.rooms")));
     }
+    Ok(base.join(space_folder_name(space_name, space_id)))
+}
+
+/// A Space's folder name under a shared Rooms parent: a readable slug of its
+/// name and a short hash of its id, stable and distinct per Space.
+pub(super) fn space_folder_name(space_name: &str, space_id: &str) -> String {
     let slug: String = space_name
         .chars()
         .map(|c| {
@@ -104,11 +112,11 @@ pub fn default_rooms_parent(
         .join("-");
     let slug: String = slug.chars().take(32).collect();
     let short = blake3::hash(space_id.as_bytes()).to_hex()[..8].to_owned();
-    Ok(base.join(if slug.is_empty() {
+    if slug.is_empty() {
         short
     } else {
         format!("{slug}-{short}")
-    }))
+    }
 }
 
 /// Same drive (Windows) or same mount guess (Unix: always true; the Store

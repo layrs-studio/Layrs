@@ -251,3 +251,94 @@ fn room_names_and_folders_are_validated() {
     );
     run(&project, &["room", "drop", "missing"], false);
 }
+
+/// As `run`, with the user's configuration folder redirected to `config`.
+fn run_in(root: &Path, config: &Path, args: &[&str], success: bool) -> Value {
+    let result = Command::new(env!("CARGO_BIN_EXE_layrs"))
+        .current_dir(root)
+        .env("APPDATA", config)
+        .env("XDG_CONFIG_HOME", config)
+        .arg("--json")
+        .args(args)
+        .output()
+        .unwrap();
+    assert_eq!(
+        result.status.success(),
+        success,
+        "{args:?}: {} {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&result.stdout).unwrap();
+    if success {
+        envelope["data"].clone()
+    } else {
+        envelope["error"].clone()
+    }
+}
+
+#[test]
+fn room_location_is_chosen_per_project_then_per_user_then_default() {
+    let fixture = Fixture::new();
+    let project = init(&fixture);
+    let config = fixture.0.join("config");
+    fs::create_dir(&config).unwrap();
+    let source = |shown: &Value| shown["location"]["source"].as_str().unwrap().to_owned();
+    let shown = run_in(&project, &config, &["room", "location"], true);
+    assert_eq!(source(&shown), "default");
+    assert!(shown["project"].is_null() && shown["user"].is_null());
+
+    let mine = fixture.0.join("my-rooms");
+    let set = run_in(
+        &project,
+        &config,
+        &["room", "location", "set", mine.to_str().unwrap()],
+        true,
+    );
+    assert_eq!(source(&set), "project");
+    assert_eq!(Path::new(set["location"]["parent"].as_str().unwrap()), mine);
+    let created = run_in(&project, &config, &["room", "new", "a", "--physical"], true);
+    let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
+    assert_eq!(room.parent().unwrap(), mine);
+    assert_eq!(fs::read(room.join("src/a.txt")).unwrap(), b"a\n");
+
+    // The user's choice applies to every project (one subfolder each) and
+    // needs no project; the project's own choice still wins.
+    let everywhere = fixture.0.join("all-rooms");
+    let user = run_in(
+        &fixture.0,
+        &config,
+        &[
+            "room",
+            "location",
+            "set",
+            everywhere.to_str().unwrap(),
+            "--global",
+        ],
+        true,
+    );
+    assert_eq!(Path::new(user["user"].as_str().unwrap()), everywhere);
+    assert_eq!(
+        source(&run_in(&project, &config, &["room", "location"], true)),
+        "project"
+    );
+    run_in(&project, &config, &["room", "location", "reset"], true);
+    let shown = run_in(&project, &config, &["room", "location"], true);
+    assert_eq!(source(&shown), "user");
+    assert_eq!(
+        Path::new(shown["location"]["parent"].as_str().unwrap()).parent(),
+        Some(everywhere.as_path())
+    );
+    run_in(
+        &fixture.0,
+        &config,
+        &["room", "location", "reset", "--global"],
+        true,
+    );
+    assert_eq!(
+        source(&run_in(&project, &config, &["room", "location"], true)),
+        "default"
+    );
+    run_in(&project, &config, &["room", "drop", "a"], true);
+    assert!(!room.exists());
+}

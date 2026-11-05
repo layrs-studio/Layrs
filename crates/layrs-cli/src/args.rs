@@ -8,7 +8,7 @@ mod worktree;
 pub use blocks::BlockChoice;
 pub use offline::OfflineCommand;
 pub use partial_provider::PartialProviderCommand;
-pub use room::RoomCommand;
+pub use room::{RoomCommand, RoomLocationAction};
 use std::fmt;
 use std::path::PathBuf;
 pub use vfs::VfsCommand;

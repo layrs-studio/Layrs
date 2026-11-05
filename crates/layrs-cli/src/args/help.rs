@@ -9,6 +9,11 @@ Commands:
     size and dates, like git; --full reads every file (after a tool that
     rewrites files keeping their size and dates).
   layrs room list
+  layrs room location [set DIR | reset] [--global]
+    Show or choose where new Rooms go: --dir wins, then this project's choice,
+    then your choice for every project (--global, one subfolder per project),
+    then the default. Virtual Rooms cannot live inside another synced folder
+    (such as OneDrive).
   layrs room create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR
     Open another working folder (Room) sharing the Store, at an exact Step;
     the Layer must already exist. One Room per agent works in parallel.

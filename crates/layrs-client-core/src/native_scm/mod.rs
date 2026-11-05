@@ -72,6 +72,11 @@ pub use vfs_worktree::{
 };
 mod worktrees;
 pub use worktrees::{NoWorktreeCreationFaults, WorktreeCreationFaults};
+mod room_location;
+pub use room_location::{
+    set_user_rooms_location, user_rooms_location, user_rooms_location_file, RoomsLocation,
+    RoomsLocationSource,
+};
 mod rooms;
 pub use rooms::{
     default_rooms_parent, is_virtual_room_root, room_layer_name, unregister_virtual_room,

@@ -17,6 +17,12 @@ pub enum RoomCommand {
     Path {
         name: String,
     },
+    /// Show or choose where new Rooms go: this project's choice, or with
+    /// `global` the user's choice for every project.
+    Location {
+        action: RoomLocationAction,
+        global: bool,
+    },
     /// NAME may be omitted when run from inside the Room.
     Status {
         name: Option<String>,
@@ -33,6 +39,13 @@ pub enum RoomCommand {
         name: Option<String>,
         force: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoomLocationAction {
+    Show,
+    Set(PathBuf),
+    Reset,
 }
 
 fn optional_name(args: Vec<String>, command: &str) -> Result<Option<String>, CliParseError> {
@@ -69,6 +82,23 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
             let name = take_required_positional(args, "NAME", "room path")?;
             Ok(CliCommand::Room(RoomCommand::Path { name }))
         }
+        Some("location") => {
+            args.remove(0);
+            let global = take_bool_flag(&mut args, "--global")?;
+            let action = match args.as_slice() {
+                [] => RoomLocationAction::Show,
+                [verb, dir] if verb == "set" && !dir.is_empty() && !dir.starts_with("--") => {
+                    RoomLocationAction::Set(PathBuf::from(dir))
+                }
+                [verb] if verb == "reset" => RoomLocationAction::Reset,
+                _ => {
+                    return Err(CliParseError::new(
+                        "usage: layrs room location [set DIR | reset] [--global]",
+                    ));
+                }
+            };
+            Ok(CliCommand::Room(RoomCommand::Location { action, global }))
+        }
         Some("status") => {
             args.remove(0);
             Ok(CliCommand::Room(RoomCommand::Status {
@@ -101,7 +131,7 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
         }
         Some("create" | "open" | "resume") => Ok(CliCommand::Worktree(worktree::parse(args)?)),
         _ => Err(CliParseError::new(
-            "usage: layrs room new NAME [--physical] [--dir PATH] | list | path NAME | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] | drop [NAME] [--force]  (alias: loom)",
+            "usage: layrs room new NAME [--physical] [--dir PATH] | list | path NAME | location [set DIR | reset] [--global] | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] | drop [NAME] [--force]  (alias: loom)",
         )),
     }
 }
@@ -136,6 +166,38 @@ mod tests {
                 parse_args([name, "list"]).unwrap().command,
                 CliCommand::Room(RoomCommand::List)
             );
+            assert_eq!(
+                parse_args([name, "location"]).unwrap().command,
+                CliCommand::Room(RoomCommand::Location {
+                    action: RoomLocationAction::Show,
+                    global: false
+                })
+            );
+            assert_eq!(
+                parse_args([name, "location", "set", "D:/rooms", "--global"])
+                    .unwrap()
+                    .command,
+                CliCommand::Room(RoomCommand::Location {
+                    action: RoomLocationAction::Set(PathBuf::from("D:/rooms")),
+                    global: true
+                })
+            );
+            assert_eq!(
+                parse_args([name, "location", "reset"]).unwrap().command,
+                CliCommand::Room(RoomCommand::Location {
+                    action: RoomLocationAction::Reset,
+                    global: false
+                })
+            );
+            for bad in [
+                &["location", "set"][..],
+                &["location", "elsewhere"],
+                &["location", "set", "--global"],
+            ] {
+                let mut words = vec![name];
+                words.extend_from_slice(bad);
+                assert!(parse_args(words).is_err(), "{bad:?}");
+            }
             assert_eq!(
                 parse_args([name, "path", "agent-a"]).unwrap().command,
                 CliCommand::Room(RoomCommand::Path {

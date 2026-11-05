@@ -1,12 +1,13 @@
 //! `layrs room` (ADR 0025): lightweight working folders, virtual by default.
 use crate::{
-    args::{Cli, RoomCommand},
+    args::{Cli, RoomCommand, RoomLocationAction},
     error::CliError,
     render::Rendered,
 };
 use layrs_client_core::native_scm::{
-    NativeWorkspace, RoomKind, RoomRecord, default_rooms_parent, room_layer_name,
-    validate_room_name, virtual_room_origin,
+    NativeWorkspace, RoomKind, RoomRecord, RoomsLocationSource, room_layer_name,
+    set_user_rooms_location, user_rooms_location, user_rooms_location_file, validate_room_name,
+    virtual_room_origin,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -55,6 +56,71 @@ fn context(cli: &Cli) -> Result<Context, CliError> {
     })
 }
 
+/// `layrs room location`: applies a change to this project's or the user's
+/// choice, then shows where new Rooms go and every level's setting.
+fn location(
+    project: Option<&NativeWorkspace>,
+    action: &RoomLocationAction,
+    global: bool,
+) -> Result<Rendered, CliError> {
+    let chosen = match action {
+        RoomLocationAction::Show => None,
+        RoomLocationAction::Set(dir) => Some(Some(dir.as_path())),
+        RoomLocationAction::Reset => Some(None),
+    };
+    if let Some(chosen) = chosen {
+        if global {
+            set_user_rooms_location(chosen).map_err(error)?;
+        } else {
+            project
+                .ok_or_else(|| CliError::usage("run this from a project, or add --global"))?
+                .set_project_rooms_location(chosen)
+                .map_err(error)?;
+        }
+    }
+    let user = user_rooms_location().map_err(error)?;
+    let user_file = user_rooms_location_file().map_err(error)?;
+    let text = |path: &Option<std::path::PathBuf>| {
+        path.as_ref()
+            .map_or_else(|| "not set".to_owned(), |p| p.display().to_string())
+    };
+    let Some(project) = project else {
+        return Ok(Rendered {
+            human: format!(
+                "Your Rooms location (every project): {}\n  setting: {}",
+                text(&user),
+                user_file.display()
+            ),
+            data: json!({ "user": user, "userSetting": user_file }),
+        });
+    };
+    let state = project.state().map_err(error)?;
+    let effective = project
+        .rooms_location(state.space.name(), state.space.id().as_str())
+        .map_err(error)?;
+    let own = project.project_rooms_location().map_err(error)?;
+    let why = match effective.source {
+        RoomsLocationSource::Project => "this project's choice",
+        RoomsLocationSource::User => "your choice for every project",
+        RoomsLocationSource::Default => "default",
+    };
+    Ok(Rendered {
+        human: format!(
+            "New Rooms go to: {} ({why})\n  this project: {}\n  every project: {} ({})",
+            effective.parent.display(),
+            text(&own),
+            text(&user),
+            user_file.display()
+        ),
+        data: json!({
+            "location": effective,
+            "project": own,
+            "user": user,
+            "userSetting": user_file,
+        }),
+    })
+}
+
 fn room_at(workspace: &NativeWorkspace, root: &Path) -> Result<Option<String>, CliError> {
     Ok(workspace
         .rooms()
@@ -85,8 +151,21 @@ fn selected(context: &Context, name: Option<&String>) -> Result<RoomRecord, CliE
 }
 
 pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
+    // The user's choice applies to every project: no project is needed.
+    if let RoomCommand::Location {
+        action,
+        global: true,
+    } = command
+    {
+        if !matches!(action, RoomLocationAction::Show) {
+            return location(None, action, true);
+        }
+    }
     let context = context(cli)?;
     match command {
+        RoomCommand::Location { action, global } => {
+            location(Some(&context.project), action, *global)
+        }
         RoomCommand::List => list(&context.project),
         RoomCommand::Path { name } => {
             let room = context.project.room(name).map_err(error)?;
@@ -193,12 +272,10 @@ fn new(
     let path = match dir {
         Some(dir) => std::path::absolute(dir).map_err(error)?,
         None => free_room_folder(
-            &default_rooms_parent(
-                &workspace.checkout_root().map_err(error)?,
-                state.space.name(),
-                state.space.id().as_str(),
-            )
-            .map_err(error)?,
+            &workspace
+                .rooms_location(state.space.name(), state.space.id().as_str())
+                .map_err(error)?
+                .parent,
             name,
         ),
     };
