@@ -49,7 +49,7 @@ export async function verifyNativeCloneCancellation(page:Page, testInfo:TestInfo
     await writeFile(resolve(root,"upload.txt"),uploadText,"utf8");
     await expect(page.getByRole("region",{name:"Fichiers modifiés"}).getByText("upload.txt",{exact:true})).toBeVisible({timeout:15000});
     await page.getByRole("button",{name:"Créer une capture",exact:true}).press("Enter");
-    await expect(page.getByText("Aucune modification de fichier.",{exact:true})).toBeVisible();
+    await expect(page.getByText("Aucun changement en attente de capture",{exact:true})).toBeVisible();
     await page.getByRole("complementary",{name:"Navigation principale"}).getByRole("link",{name:"Synchronisation",exact:true}).click();
     await page.getByText("Captures candidates et têtes publiées",{exact:true}).click();
     await control("arm-upload");

@@ -41,7 +41,7 @@ async function capture(page:Page,path:string){
   await expect(page.getByRole("region",{name:"Fichiers modifiés"}).getByText(path,{exact:false}).first()).toBeVisible({timeout:15000});
   // Keyboard activation: a confirmation toast may still cover the button.
   await page.getByRole("button",{name:"Créer une capture",exact:true}).press("Enter");
-  await expect(page.getByText("Aucune modification de fichier.",{exact:true})).toBeVisible();
+  await expect(page.getByText("Aucun changement en attente de capture",{exact:true})).toBeVisible();
 }
 async function switchLayer(page:Page,label:string){
   await page.getByRole("combobox",{name:"Layer",exact:true}).selectOption({label});
@@ -267,10 +267,10 @@ test("native SCM Desktop captures, previews and restores through real IPC",async
     const changed=page.getByRole("region",{name:"Fichiers modifiés"});
     await writeFile(resolve(root,"readme.txt"),"Automatically captured\n","utf8");
     await expect(changed.getByText("readme.txt",{exact:true})).toBeVisible({timeout:10000});
-    await expect(page.getByText("Aucune modification de fichier.",{exact:true})).toBeVisible({timeout:15000});
+    await expect(page.getByText("Aucun changement en attente de capture",{exact:true})).toBeVisible({timeout:15000});
     await writeFile(resolve(root,"readme.txt"),"Second automatic capture\n","utf8");
     await expect(changed.getByText("readme.txt",{exact:true})).toBeVisible({timeout:10000});
-    await expect(page.getByText("Aucune modification de fichier.",{exact:true})).toBeVisible({timeout:15000});
+    await expect(page.getByText("Aucun changement en attente de capture",{exact:true})).toBeVisible({timeout:15000});
     await open(page,"Historique");
     const automaticGroup=page.locator("details.history-group").filter({has:page.getByText("2 captures automatiques successives",{exact:true})});
     await expect(automaticGroup).toBeVisible();
