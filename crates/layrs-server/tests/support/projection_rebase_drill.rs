@@ -53,18 +53,26 @@ pub(super) fn run(
     let preview = reader
         .preview_projection_rebase(store, local.sequence, layer)
         .unwrap();
-    assert!(preview.files.iter().all(|f| !f.conflict));
+    // With a project Lens catalogue, a partial checkout keeps even disjoint
+    // text edits as a conflict: it retains no executable Lens to merge them.
+    assert!(preview.files.iter().any(|f| f.path == path && f.conflict));
     assert_eq!(std::fs::read(&file).unwrap(), b"A\nb\nc\n");
     let reopened = ProjectionStore::open(store.checkout_root()).unwrap();
     let saved = serde_json::from_slice(&reopened.rebase_draft().unwrap().unwrap()).unwrap();
     assert_eq!(preview, saved);
-    let merged = reader
-        .apply_projection_rebase(&reopened, &saved, &BTreeMap::new())
-        .unwrap();
-    assert_eq!(std::fs::read(&file).unwrap(), b"A\nb\nC\n");
-    assert_eq!(
+    assert!(
         reader
             .apply_projection_rebase(&reopened, &saved, &BTreeMap::new())
+            .is_err()
+    );
+    let keep_local = BTreeMap::from([(path.clone(), ProjectionMergeChoice::Local)]);
+    let merged = reader
+        .apply_projection_rebase(&reopened, &saved, &keep_local)
+        .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"A\nb\nc\n");
+    assert_eq!(
+        reader
+            .apply_projection_rebase(&reopened, &saved, &keep_local)
             .unwrap(),
         merged
     );
@@ -179,6 +187,6 @@ pub(super) fn run(
         "HTTPS partial historical restore: complete writable leaves, forbidden selection refused, current remote base preserved and replay PASS"
     );
     eprintln!(
-        "HTTPS partial rebase: disjoint text merge, durable draft, exact replay, unresolved conflict, stale View and explicit resolution PASS"
+        "HTTPS partial rebase: disjoint edits kept for explicit choice, durable draft, exact replay, unresolved conflict, stale View and explicit resolution PASS"
     );
 }
