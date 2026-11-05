@@ -115,7 +115,7 @@ pub(super) fn kill_spilled_writer(path: &Path, mode: &str, ready: &Path) {
 }
 
 #[test]
-fn hot_databases_route_without_writes_then_explicit_recovery_keeps_application_journal() {
+fn hot_shared_databases_route_without_writes_and_refuse_explicit_recovery() {
     for mode in ["catalog", "owner"] {
         let f = Fixture::new();
         let family = family(&f);
@@ -169,34 +169,30 @@ fn hot_databases_route_without_writes_then_explicit_recovery_keeps_application_j
             before,
             "discovery changed durable bytes"
         );
-        let recovered = execute_projection_offline(
+        // A shared private or family hot journal cannot prove its backend and
+        // staged content without rollback: explicit recovery refuses it on a
+        // read-only connection and leaves every byte, journal included.
+        let error = execute_projection_offline(
             &root,
             ProjectionOfflineAction::RecoverDatabases {
                 expected: binding(&inspected),
             },
         )
-        .unwrap();
-        assert_eq!(
-            recovered["recovery"],
-            serde_json::json!(["filesystemOperation"])
-        );
+        .unwrap_err();
+        assert!(error.contains("readonly"), "{mode}: {error}");
+        assert_eq!(fingerprints(&f.0), before, "refused recovery changed bytes");
         assert!(
             !root.join("a.txt").exists(),
-            "SQL rollback replayed an application journal"
+            "refused recovery replayed an application journal"
         );
         assert_eq!(checkout_kind(&root).unwrap(), "projection");
-        execute_projection(
-            &root,
-            ProjectionAction::ResumeInstallation {
-                expected: binding(&recovered),
-            },
-        )
-        .unwrap();
-        assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"alpha");
-        let info =
+        let again =
             execute_projection_offline(&root, ProjectionOfflineAction::InspectRecovery {}).unwrap();
-        assert_eq!(info["recovery"], serde_json::json!([]));
-        ProjectionStore::open(&root).unwrap().fsck().unwrap();
+        assert!(again["recovery"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == expected));
     }
 }
 

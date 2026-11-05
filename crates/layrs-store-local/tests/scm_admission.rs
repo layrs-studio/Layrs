@@ -350,6 +350,23 @@ fn seed(root: &Path, fixture: &Fixture) {
             params![view.id().as_str(), fixture.space.id().as_str()],
         )
         .unwrap();
+    for (ordinal, worktree) in view.worktrees().iter().enumerate() {
+        let status = serde_json::to_value(worktree.status()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO repository_view_worktrees(repository_view_id,worktree_id,active_layer_id,base_step_id,materialized_tree_id,status,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    view.id().as_str(),
+                    worktree.worktree_id().as_str(),
+                    worktree.active_layer_id().map(|v| v.as_str()),
+                    worktree.base_step_id().map(|v| v.as_str()),
+                    worktree.materialized_tree_id().map(|v| v.as_str()),
+                    status.as_str().unwrap(),
+                    i64::try_from(ordinal).unwrap(),
+                ],
+            )
+            .unwrap();
+    }
     connection
         .execute(
             "INSERT INTO operations VALUES (?1, ?2, ?3, 'initialize', NULL, NULL, ?4, ?5)",

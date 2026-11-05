@@ -164,43 +164,24 @@ fn recovery_dispatch_rejects_replaced_checkout_before_sql_or_application_effects
             &f.0.join("spill-ready"),
         );
         assert_all_recovery_refused(&root, &expected_a, &f.0, "binding");
-        let recovered = execute_projection_offline(
+        // Even the current binding gets no writable fallback: a shared private
+        // hot journal is refused on a read-only connection, without writes.
+        let before = recovery::fingerprints(&f.0);
+        let error = execute_projection_offline(
             &root,
             ProjectionOfflineAction::RecoverDatabases {
                 expected: expected_b,
             },
         )
-        .unwrap();
-        let expected_b = binding(&recovered);
+        .unwrap_err();
+        assert!(error.contains("readonly"), "{error}");
         assert_eq!(
-            recovered["recovery"],
-            json!([if initialize {
-                "initializing"
-            } else {
-                "filesystemOperation"
-            }])
+            recovery::fingerprints(&f.0),
+            before,
+            "refused recovery changed bytes"
         );
         assert!(!root.join("a.txt").exists());
         assert_all_recovery_refused(&root, &expected_a, &f.0, "binding");
-        if initialize {
-            let ready = execute_projection_offline(
-                &root,
-                ProjectionOfflineAction::ResumeInitialization {
-                    expected: expected_b,
-                },
-            )
-            .unwrap();
-            assert_eq!(ready["recovery"], json!([]));
-        } else {
-            execute_projection(
-                &root,
-                ProjectionAction::ResumeInstallation {
-                    expected: expected_b,
-                },
-            )
-            .unwrap();
-            assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"alpha");
-        }
         assert_eq!(
             fs::read(retained_a.join("local-note")).unwrap(),
             b"retained A bytes"

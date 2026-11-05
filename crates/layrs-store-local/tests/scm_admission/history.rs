@@ -740,7 +740,7 @@ fn initializer_lookup_never_misses_a_kind_or_space_projection_divergence() {
 #[test]
 fn worktree_cas_can_advance_only_to_the_operation_published_in_its_space() {
     let root = unique_root("worktree-publication-coupling");
-    let fixture = fixture();
+    let fixture = registered_worktree_fixture();
     seed(&root, &fixture);
     let store = open(&root).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
@@ -865,4 +865,44 @@ fn worktree_cas_can_advance_only_to_the_operation_published_in_its_space() {
     drop(reader);
     drop(store);
     cleanup(&root);
+}
+
+/// The base Operation's View registers the Worktree, as the durable own-active
+/// binding of a Worktree publication requires of its parent and result.
+fn registered_worktree_fixture() -> Fixture {
+    let mut fixture = fixture();
+    let view = RepositoryView::new(
+        fixture.space.id().clone(),
+        vec![],
+        vec![],
+        vec![],
+        vec![layrs_core::scm::WorktreeViewState::new(
+            fixture.worktree.id().clone(),
+            None,
+            None,
+            None,
+            layrs_core::scm::WorktreeStatus::Ready,
+        )],
+    )
+    .unwrap();
+    for object in &mut fixture.objects {
+        if let CanonicalObject::RepositoryView(value) = object {
+            *value = view.clone();
+        }
+    }
+    fixture.operation = Operation::new(
+        fixture.operation.id().clone(),
+        fixture.space.id().clone(),
+        vec![],
+        view.id().clone(),
+        OperationKind::Initialize,
+        "initialize",
+        vec![],
+        None,
+        None,
+        Timestamp::parse("2026-07-19T12:00:00Z").unwrap(),
+        Metadata::empty(),
+    )
+    .unwrap();
+    fixture
 }
