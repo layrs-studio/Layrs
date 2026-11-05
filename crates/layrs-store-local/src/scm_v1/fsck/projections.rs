@@ -70,11 +70,9 @@ impl Context<'_> {
         &mut self,
         manifest: &layrs_core::scm::FileManifest,
     ) -> Result<(), String> {
-        if manifest.byte_length() > 1024 * 1024 * 1024
-            || manifest.byte_length() > self.file_byte_budget_remaining
-        {
+        if manifest.byte_length() > self.file_byte_budget_remaining {
             self.exhaust_bytes("logical File verification");
-            return Err("File verification exceeds1GiB per file or4GiB total".into());
+            return Err("File verification exceeds the audit byte budget".into());
         }
         self.file_byte_budget_remaining -= manifest.byte_length();
         let cas = NativeCas::open_audit(self.audit).map_err(|error| error.to_string())?;

@@ -154,6 +154,22 @@ impl PinnedDirectory {
         Ok(child)
     }
 
+    /// As `ensure_child` without its two directory syncs: the caller makes
+    /// the creation durable later (a CAS batch syncs every directory it
+    /// touched, or flushes the NTFS journal, before its metadata commits).
+    pub(crate) fn ensure_child_unsynced(&self, name: &OsStr) -> io::Result<Self> {
+        validate_name(name)?;
+        let file = platform::open_directory_at(&self.file, name, true, true)?;
+        let metadata = file.metadata()?;
+        let display_path = self.display_path.join(name);
+        validate_directory_metadata(&display_path, &metadata)?;
+        Ok(Self {
+            identity: file_identity(&file)?,
+            file,
+            display_path,
+        })
+    }
+
     /// Create a new directory relative to this pinned parent; never adopt a
     /// colliding entry, even when it is already a regular directory.
     pub(crate) fn create_new_child(&self, name: &OsStr) -> io::Result<Self> {
@@ -177,6 +193,21 @@ impl PinnedDirectory {
         validate_name(name)?;
         let file = platform::create_file_at(&self.file, name)?;
         self.wrap_file(name, file)
+    }
+
+    /// As `create_file`, and on Windows the handle denies every other writer
+    /// while it is open (`is_at` + unchanged metadata then prove the bytes).
+    pub(crate) fn create_file_denying_writers(&self, name: &OsStr) -> io::Result<PinnedFile> {
+        #[cfg(windows)]
+        {
+            validate_name(name)?;
+            let file = platform::create_file_denying_writers_at(&self.file, name)?;
+            self.wrap_file(name, file)
+        }
+        #[cfg(not(windows))]
+        {
+            self.create_file(name)
+        }
     }
 
     pub(crate) fn open_file(&self, name: &OsStr) -> io::Result<PinnedFile> {
@@ -289,6 +320,7 @@ impl PinnedDirectory {
     }
 
     pub(crate) fn sync(&self) -> io::Result<()> {
+        let _span = crate::perf::span("fs.dir_sync");
         sync_directory_handle(&self.file)
     }
 
@@ -300,11 +332,37 @@ impl PinnedDirectory {
     }
 
     pub(crate) fn verify_path_identity(&self) -> io::Result<()> {
+        let _span = crate::perf::span("fs.verify_path_identity");
+        #[cfg(windows)]
+        if self.final_path_matches_display() {
+            return Ok(());
+        }
         let reopened = Self::open_components(&self.display_path)?;
         if reopened.identity != self.identity {
             return Err(identity_changed(&self.display_path));
         }
         Ok(())
+    }
+
+    /// Fast exact form of the path check, for the identity question the walk
+    /// answers. The filesystem builds a handle's normalized NT path from the
+    /// pinned object's real parent chain on its volume device, with every
+    /// link resolved. `display_path`'s drive letter is resolved to its device
+    /// in the caller's own DosDevices namespace (as the walk resolves it,
+    /// session-local definitions included). If device + remainder equals that
+    /// NT path exactly, each display component names a real directory of the
+    /// chain: a symlink, junction or mount point at any component would make
+    /// the chain differ, and an entry name is unique in its parent. So the
+    /// walk reaches this very object. The object itself must also carry no
+    /// reparse point and not be pending deletion, which the walk refuses.
+    /// Divergence kept: a non-link reparse tag (cloud files, ProjFS) set on an
+    /// ancestor after pinning does not redirect the chain and is not rechecked
+    /// here; the walk's refusal of it is policy, checked when pinning. Any
+    /// other difference (8.3 names, case, UNC, subst, moved or replaced
+    /// component, API failure) falls back to the full walk.
+    #[cfg(windows)]
+    fn final_path_matches_display(&self) -> bool {
+        handle_is_at(&self.file, &self.display_path)
     }
 
     pub(crate) fn components_to_parent(
@@ -343,6 +401,29 @@ impl PinnedDirectory {
 impl PinnedFile {
     pub(crate) fn file(&self) -> &File {
         &self.file
+    }
+
+    pub(crate) fn identity_token(&self) -> String {
+        format!(
+            "fs:v1:{:016x}:{:016x}",
+            self.identity.volume, self.identity.file
+        )
+    }
+
+    /// Whether this open file is, right now, the plain (no reparse point,
+    /// not deleting) object `path` names, by the exact check of
+    /// `verify_path_identity`'s fast path. False on any doubt or on other
+    /// platforms: callers then fall back to opening and reading by path.
+    pub(crate) fn is_at(&self, path: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            handle_is_at(&self.file, path)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = path;
+            false
+        }
     }
 
     pub(crate) fn file_mut(&mut self) -> &mut File {
@@ -387,6 +468,45 @@ impl PinnedFile {
     pub(crate) fn sync_parent(&self) -> io::Result<()> {
         sync_directory_handle(&self.parent)
     }
+}
+
+/// Exact handle-to-path check (see `verify_path_identity`): the handle's
+/// normalized NT path, built from the object's real parent chain with links
+/// resolved, must equal `path`'s drive device (resolved in the caller's own
+/// DosDevices namespace) plus its remainder, and the object itself must carry
+/// no reparse point and not be pending deletion. Then walking `path` reaches
+/// this very object: a link, junction or mount point at any component would
+/// change the chain, and an entry name is unique in its parent. Divergence
+/// kept from the component walk: a non-link reparse tag (cloud files, ProjFS)
+/// set on an ancestor after pinning does not redirect the chain and is not
+/// rechecked here; the walk's refusal of it is policy, checked when pinning.
+/// Any other difference (8.3 names, case, UNC, subst, moved or replaced
+/// component, API failure) returns false.
+#[cfg(windows)]
+fn handle_is_at(file: &File, path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    if !platform::plain_live_object(file).unwrap_or(false) {
+        return false;
+    }
+    let Ok(actual) = platform::final_path(file) else {
+        return false;
+    };
+    const BACKSLASH: u16 = 0x5c;
+    const VERBATIM: [u16; 4] = [BACKSLASH, BACKSLASH, b'?' as u16, BACKSLASH];
+    let display = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let display = display.strip_prefix(&VERBATIM[..]).unwrap_or(&display);
+    if display.len() < 3
+        || !(display[0] < 128 && (display[0] as u8).is_ascii_alphabetic())
+        || display[1] != b':' as u16
+        || display[2] != BACKSLASH
+    {
+        return false;
+    }
+    let Ok(mut expected) = platform::dos_device(&display[..2]) else {
+        return false;
+    };
+    expected.extend_from_slice(&display[2..]);
+    actual == expected
 }
 
 fn validate_name(name: &OsStr) -> io::Result<()> {

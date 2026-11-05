@@ -19,6 +19,7 @@ impl<'store> NativeRecovery<'store> {
     }
 
     pub fn create(&mut self, plan: &RecoveryPlan) -> RecoveryResult<MutationOutcome> {
+        let _span = crate::perf::span("journal.create");
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -59,18 +60,19 @@ impl<'store> NativeRecovery<'store> {
             ],
         )?;
         for path in &plan.paths {
-            transaction.execute(
-                "INSERT INTO recovery_paths(
+            transaction
+                .prepare_cached(
+                    "INSERT INTO recovery_paths(
                     recovery_operation_id, path, path_role, expected_object_id,
                     evidence_json, state
                  ) VALUES (?1, ?2, ?3, ?4, '{}', 'pending')",
-                params![
+                )?
+                .execute(params![
                     plan.id.as_str(),
                     path.path,
                     path.role.as_str(),
                     path.expected_object_id,
-                ],
-            )?;
+                ])?;
         }
         transaction.commit()?;
         self.hit(RecoveryFaultPoint::AfterCreateCommit)?;
@@ -122,6 +124,7 @@ impl<'store> NativeRecovery<'store> {
         preparation: &RecoveryPreparation,
         updated_at_ms: i64,
     ) -> RecoveryResult<MutationOutcome> {
+        let _span = crate::perf::span("journal.prepare");
         valid_time("updated_at_ms", updated_at_ms)?;
         let transaction = self
             .connection
@@ -155,16 +158,17 @@ impl<'store> NativeRecovery<'store> {
         }
         require_exact_path_evidence(&current.paths, &preparation.path_evidence, id)?;
         for evidence in &preparation.path_evidence {
-            transaction.execute(
-                "UPDATE recovery_paths SET evidence_json = ?1, state = 'verified' \
+            transaction
+                .prepare_cached(
+                    "UPDATE recovery_paths SET evidence_json = ?1, state = 'verified' \
                  WHERE recovery_operation_id = ?2 AND path = ?3 AND path_role = ?4",
-                params![
+                )?
+                .execute(params![
                     evidence.canonical_json,
                     id.as_str(),
                     evidence.path,
                     evidence.role.as_str(),
-                ],
-            )?;
+                ])?;
         }
         transaction.execute(
             "UPDATE recovery_operations SET state = 'prepared', evidence_json = ?1,
@@ -184,6 +188,7 @@ impl<'store> NativeRecovery<'store> {
         now_ms: i64,
         lease_duration_ms: i64,
     ) -> RecoveryResult<ClaimOutcome> {
+        let _span = crate::perf::span("journal.claim");
         let owner_token = validated_token("owner_token", owner_token.into())?;
         valid_time("now_ms", now_ms)?;
         if lease_duration_ms <= 0 {
@@ -229,10 +234,9 @@ impl<'store> NativeRecovery<'store> {
         let mut leases = Vec::new();
         for resource_key in resources {
             let existing: Option<(String, String, u64, i64, Option<i64>)> = transaction
-                .query_row(
-                    "SELECT recovery_operation_id, owner_token, generation, expires_at_ms, released_at_ms FROM materialization_leases \
-                     WHERE worktree_id = ?1 AND resource_key = ?2",
-                    params![current.worktree_id.as_str(), resource_key],
+                .prepare_cached("SELECT recovery_operation_id, owner_token, generation, expires_at_ms, released_at_ms FROM materialization_leases \
+                     WHERE worktree_id = ?1 AND resource_key = ?2")?
+                .query_row(params![current.worktree_id.as_str(), resource_key],
                     |row| {
                         Ok((
                             row.get(0)?,
@@ -241,8 +245,7 @@ impl<'store> NativeRecovery<'store> {
                             row.get(3)?,
                             row.get(4)?,
                         ))
-                    },
-                )
+                    })
                 .optional()?;
             let generation = match existing {
                 Some((recovery_id, owner, _, expiry, None))
@@ -258,8 +261,9 @@ impl<'store> NativeRecovery<'store> {
                 })?,
                 None => 1,
             };
-            transaction.execute(
-                "INSERT INTO materialization_leases(
+            transaction
+                .prepare_cached(
+                    "INSERT INTO materialization_leases(
                     worktree_id, resource_key, recovery_operation_id, owner_token, generation,
                     acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, NULL)
@@ -271,7 +275,8 @@ impl<'store> NativeRecovery<'store> {
                     heartbeat_at_ms = excluded.heartbeat_at_ms,
                     expires_at_ms = excluded.expires_at_ms,
                     released_at_ms = NULL",
-                params![
+                )?
+                .execute(params![
                     current.worktree_id.as_str(),
                     resource_key,
                     id.as_str(),
@@ -279,8 +284,7 @@ impl<'store> NativeRecovery<'store> {
                     generation,
                     now_ms,
                     expires_at_ms,
-                ],
-            )?;
+                ])?;
             leases.push(ResourceLease {
                 resource_key,
                 generation,
@@ -331,6 +335,7 @@ impl<'store> NativeRecovery<'store> {
         now_ms: i64,
         lease_duration_ms: i64,
     ) -> RecoveryResult<Vec<ResourceLease>> {
+        let _span = crate::perf::span("journal.heartbeat");
         let owner_token = validated_token("owner_token", owner_token.to_owned())?;
         valid_time("now_ms", now_ms)?;
         if lease_duration_ms <= 0 {
@@ -372,12 +377,14 @@ impl<'store> NativeRecovery<'store> {
         let mut renewed = Vec::new();
         for resource in resources {
             let generation = expected_map[resource.as_str()];
-            let changed = transaction.execute(
-                "UPDATE materialization_leases SET heartbeat_at_ms = ?1, expires_at_ms = ?2
+            let changed = transaction
+                .prepare_cached(
+                    "UPDATE materialization_leases SET heartbeat_at_ms = ?1, expires_at_ms = ?2
                  WHERE worktree_id = ?3 AND resource_key = ?4
                    AND recovery_operation_id = ?5 AND owner_token = ?6
                    AND generation = ?7 AND released_at_ms IS NULL AND expires_at_ms > ?1",
-                params![
+                )?
+                .execute(params![
                     now_ms,
                     expires_at_ms,
                     current.worktree_id.as_str(),
@@ -385,8 +392,7 @@ impl<'store> NativeRecovery<'store> {
                     id.as_str(),
                     owner_token,
                     generation,
-                ],
-            )?;
+                ])?;
             if changed != 1 {
                 return Err(RecoveryError::LeaseFenced {
                     worktree_id: current.worktree_id.clone(),
@@ -584,6 +590,7 @@ impl<'store> NativeRecovery<'store> {
         path_results: &[RecoveryPathResult],
         now_ms: i64,
     ) -> RecoveryResult<MutationOutcome> {
+        let _span = crate::perf::span("journal.terminal");
         let owner_token = validated_token("owner_token", owner_token.to_owned())?;
         valid_time("now_ms", now_ms)?;
         let evidence_json = required_evidence(evidence)?;

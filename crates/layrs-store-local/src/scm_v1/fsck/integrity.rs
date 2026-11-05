@@ -294,8 +294,9 @@ impl Context<'_> {
                     format!("stored path {storage_path:?} differs from {expected_storage:?}"),
                 );
             }
-            let actual_length = match fs::symlink_metadata(&expected_path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // The physical copy: a separate file or a pack member (ADR 0026).
+            let actual_length = match cas.locate(&object_id) {
+                Ok(None) => {
                     self.finding(
                         FsckFindingCode::MissingCasObject,
                         FsckSeverity::Error,
@@ -317,29 +318,21 @@ impl Context<'_> {
                     );
                     continue;
                 }
-                Ok(metadata) => {
-                    if !metadata.is_file() || metadata.file_type().is_symlink() {
-                        self.finding(
-                            FsckFindingCode::CasCorruption,
-                            FsckSeverity::Error,
-                            Some(expected_path.clone()),
-                            Some(id_text.clone()),
-                            None,
-                            "CAS entry is not a regular file",
-                        );
-                        continue;
-                    }
-                    if metadata.len() != byte_length {
+                Ok(Some(location)) => {
+                    if location.length() != byte_length {
                         self.finding(
                             FsckFindingCode::ObjectLengthMismatch,
                             FsckSeverity::Error,
-                            Some(expected_path.clone()),
+                            Some(location.path().to_path_buf()),
                             Some(id_text.clone()),
                             None,
-                            format!("indexed length {byte_length}, actual {}", metadata.len()),
+                            format!(
+                                "indexed length {byte_length}, actual {}",
+                                location.length()
+                            ),
                         );
                     }
-                    metadata.len()
+                    location.length()
                 }
             };
             let inspection_length = byte_length.max(actual_length);

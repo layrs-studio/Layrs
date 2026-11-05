@@ -20,6 +20,7 @@ pub(super) fn load_record(
     connection: &rusqlite::Connection,
     id: &RecoveryId,
 ) -> RecoveryResult<RecoveryRecord> {
+    let _span = crate::perf::span("journal.load_record");
     type Row = (
         String,
         String,
@@ -136,12 +137,23 @@ pub(super) fn load_record(
     })
 }
 
+/// The leased resources of a record. A record whose payload says
+/// `"leaseScope":"worktree"` holds one lease for its whole checkout (council
+/// r5, D3): the checkout lock and the single pending journal per Worktree
+/// already serialize its transitions, and per-path leases cost one row per
+/// path at claim, heartbeat and release. Any other record keeps one lease per
+/// path, so a journal written by an earlier binary recovers as before.
 pub(super) fn resource_keys(record: &RecoveryRecord) -> Vec<String> {
-    let mut resources: BTreeSet<String> = record
-        .paths
-        .iter()
-        .map(|path| format!("repo-path:{}", path.path))
-        .collect();
+    let worktree_scope = record.payload.get("leaseScope").and_then(|v| v.as_str()) == Some("worktree");
+    let mut resources: BTreeSet<String> = if worktree_scope {
+        std::iter::once("checkout:worktree".to_owned()).collect()
+    } else {
+        record
+            .paths
+            .iter()
+            .map(|path| format!("repo-path:{}", path.path))
+            .collect()
+    };
     if record.recovery_type == RecoveryType::CasStagingCleanup {
         resources.insert("cas:staging".into());
     }
@@ -155,19 +167,22 @@ pub(super) fn load_owner_leases(
 ) -> RecoveryResult<Vec<ResourceLease>> {
     let mut leases = Vec::new();
     for resource in resource_keys(record) {
-        let (generation, expires_at_ms): (u64, i64) = transaction.query_row(
-            "SELECT generation, expires_at_ms FROM materialization_leases
+        let (generation, expires_at_ms): (u64, i64) = transaction
+            .prepare_cached(
+                "SELECT generation, expires_at_ms FROM materialization_leases
              WHERE worktree_id = ?1 AND resource_key = ?2
                AND recovery_operation_id = ?3 AND owner_token = ?4
                AND released_at_ms IS NULL",
-            params![
-                record.worktree_id.as_str(),
-                resource,
-                record.id.as_str(),
-                owner
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+            )?
+            .query_row(
+                params![
+                    record.worktree_id.as_str(),
+                    resource,
+                    record.id.as_str(),
+                    owner
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
         leases.push(ResourceLease {
             resource_key: resource,
             generation,
@@ -185,11 +200,13 @@ pub(super) fn leases_are_active(
 ) -> RecoveryResult<bool> {
     for resource in resource_keys(record) {
         let expiry: Option<i64> = transaction
-            .query_row(
+            .prepare_cached(
                 "SELECT expires_at_ms FROM materialization_leases
                  WHERE worktree_id = ?1 AND resource_key = ?2
                    AND recovery_operation_id = ?3 AND owner_token = ?4
                    AND released_at_ms IS NULL",
+            )?
+            .query_row(
                 params![
                     record.worktree_id.as_str(),
                     resource,
@@ -228,20 +245,21 @@ pub(super) fn release_leases(
     }
     for resource in resources {
         let generation = expected_map[resource.as_str()];
-        let changed = transaction.execute(
-            "UPDATE materialization_leases SET released_at_ms = ?1
+        let changed = transaction
+            .prepare_cached(
+                "UPDATE materialization_leases SET released_at_ms = ?1
              WHERE worktree_id = ?2 AND resource_key = ?3
                AND recovery_operation_id = ?4 AND owner_token = ?5
                AND generation = ?6 AND released_at_ms IS NULL AND expires_at_ms > ?1",
-            params![
+            )?
+            .execute(params![
                 now_ms,
                 record.worktree_id.as_str(),
                 resource,
                 record.id.as_str(),
                 owner,
                 generation,
-            ],
-        )?;
+            ])?;
         if changed != 1 {
             return Err(RecoveryError::LeaseFenced {
                 worktree_id: record.worktree_id.clone(),
@@ -300,18 +318,19 @@ pub(super) fn persist_path_results(
     results: &[RecoveryPathResult],
 ) -> RecoveryResult<()> {
     for result in results {
-        let changed = transaction.execute(
-            "UPDATE recovery_paths SET evidence_json = ?1, state = ?2
+        let changed = transaction
+            .prepare_cached(
+                "UPDATE recovery_paths SET evidence_json = ?1, state = ?2
              WHERE recovery_operation_id = ?3 AND path = ?4 AND path_role = ?5
                AND state = 'verified'",
-            params![
+            )?
+            .execute(params![
                 result.evidence_json,
                 result.state.as_str(),
                 id.as_str(),
                 result.path,
                 result.role.as_str(),
-            ],
-        )?;
+            ])?;
         if changed != 1 {
             return Err(RecoveryError::Corruption(format!(
                 "terminal path result did not update exactly one row for {} ({})",

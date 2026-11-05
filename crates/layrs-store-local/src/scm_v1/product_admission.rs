@@ -109,6 +109,20 @@ impl CompositeAdmissionResolver<'_> {
                 .ok_or_else(|| rejected("Weave closure object missing"))?;
             match object {
                 CanonicalObject::Tree(tree) => {
+                    // A durably admitted Tree had its Files closed when it
+                    // was admitted (admissions are never withdrawn): only
+                    // its descendants still need visiting, for Conflicts.
+                    let durable = self.overlay_object(&id).is_none()
+                        && self.reader.object_admitted_metadata(&id, space)?;
+                    if !durable {
+                        // One batched query for this Tree's Files, not two each.
+                        let files: Vec<&FileId> = tree
+                            .entries()
+                            .iter()
+                            .filter_map(|entry| entry.target().file_id())
+                            .collect();
+                        self.prefetch_admitted_manifests(&files, space)?;
+                    }
                     for entry in tree.entries() {
                         match entry.target() {
                             TreeEntryTarget::Tree { tree_id } => {
@@ -118,8 +132,10 @@ impl CompositeAdmissionResolver<'_> {
                                 pending.push(StoreObjectId::Conflict(conflict_id.clone()))
                             }
                             TreeEntryTarget::File { file_id } => {
-                                self.admissible_manifest_for_file(file_id, space)?
-                                    .ok_or_else(|| rejected("Weave File closure missing"))?;
+                                if !durable {
+                                    self.admissible_manifest_for_file(file_id, space)?
+                                        .ok_or_else(|| rejected("Weave File closure missing"))?;
+                                }
                             }
                             TreeEntryTarget::Symlink { symlink_id } => {
                                 pending.push(StoreObjectId::Symlink(symlink_id.clone()))
@@ -232,7 +248,10 @@ impl CompositeAdmissionResolver<'_> {
                     "Weave Operation requires exactly one receipt in the same batch",
                 ));
             };
-            self.validate_product_context(operation.space_id(), product)?;
+            {
+                let _span = crate::perf::span("validate.weave_product_context");
+                self.validate_product_context(operation.space_id(), product)?;
+            }
             if !self.admissions.contains(&(
                 operation.space_id().clone(),
                 StoreObjectId::Product(product.id().clone()),

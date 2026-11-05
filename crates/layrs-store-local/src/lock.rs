@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::{StoreError, StoreResult};
-use crate::layout::{open_read_no_follow, open_read_write_no_follow};
+use crate::layout::{open_read_no_follow, open_read_write_no_follow, reopen_read_no_follow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionMode {
@@ -56,6 +56,73 @@ impl StoreLock {
         }
 
         Ok(Self { file, key, mode })
+    }
+}
+
+/// A Store lock whose path is validated once and whose shared lock is held
+/// around short reads. Holders in this process share one lock: the first
+/// opens the lock file and takes it, the last releases and closes it, so an
+/// exclusive writer of any process (or this one) still excludes every read
+/// and no handle stays open between reads (an open file would forbid moving
+/// or renaming the Store's folders). One open and `LockFileEx` per read
+/// replace a full path validation.
+#[derive(Debug)]
+pub(crate) struct ReusableSharedLock {
+    key: PathBuf,
+    path: PathBuf,
+    holders: Mutex<(usize, Option<File>)>,
+}
+
+/// One holder of a `ReusableSharedLock`.
+#[derive(Debug)]
+pub(crate) struct SharedHold<'a>(&'a ReusableSharedLock);
+
+impl ReusableSharedLock {
+    pub fn open(path: &Path) -> StoreResult<Self> {
+        // Full validation once (every ancestor, the file itself).
+        drop(open_read_no_follow(path)?);
+        Ok(Self {
+            key: canonical_lock_key(path)?,
+            path: path.to_path_buf(),
+            holders: Mutex::new((0, None)),
+        })
+    }
+
+    pub fn hold(&self) -> StoreResult<SharedHold<'_>> {
+        let mut holders = self
+            .holders
+            .lock()
+            .map_err(|_| StoreError::InvalidState("shared read lock poisoned".into()))?;
+        if holders.0 == 0 {
+            let file = reopen_read_no_follow(&self.path)?;
+            claim_local(&self.key, SessionMode::Shared)?;
+            if let Err(error) = fs2::FileExt::try_lock_shared(&file) {
+                release_local(&self.key, SessionMode::Shared);
+                return if lock_is_contended(&error) {
+                    Err(StoreError::LockBusy(self.path.clone()))
+                } else {
+                    Err(StoreError::Io(error))
+                };
+            }
+            holders.1 = Some(file);
+        }
+        holders.0 += 1;
+        Ok(SharedHold(self))
+    }
+}
+
+impl Drop for SharedHold<'_> {
+    fn drop(&mut self) {
+        let Ok(mut holders) = self.0.holders.lock() else {
+            return;
+        };
+        holders.0 -= 1;
+        if holders.0 == 0 {
+            if let Some(file) = holders.1.take() {
+                let _ = fs2::FileExt::unlock(&file);
+            }
+            release_local(&self.0.key, SessionMode::Shared);
+        }
     }
 }
 

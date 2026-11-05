@@ -18,7 +18,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use super::acquisition::{ORDINARY_WAIT, SHORT_WAIT, acquire};
-use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter};
+use super::cas::{CasFaultInjector, CasFaultPoint, NativeCasWriter, PutItem};
 use super::sqlite::{
     canonical_receipt_json, rfc3339_to_epoch_millis, validate_canonical_receipt_json,
 };
@@ -298,29 +298,36 @@ impl NativeScmRepository {
         let cas = NativeCasWriter::with_fault_injector(&store, Arc::clone(&self.cas_faults))
             .map_err(cas_backend)?;
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
-        for (id, length) in chunks {
-            let bytes = read_chunk(id)?;
-            if bytes.len() as u64 != *length {
-                return Err(StoreError::Corruption {
-                    message: "external chunk length differs from its descriptor".into(),
-                });
+        // External chunks are read and checked here in order, then every
+        // object is installed as by `put`, concurrently; outcomes and fault
+        // boundaries are consumed in the original order.
+        let mut external = chunks.iter();
+        let mut objects = batch.canonical_objects().iter();
+        let outcomes = cas.put_ordered(|| {
+            if let Some((id, length)) = external.next() {
+                let checked = (|| {
+                    let bytes = read_chunk(id)?;
+                    if bytes.len() as u64 != *length {
+                        return Err(StoreError::Corruption {
+                            message: "external chunk length differs from its descriptor".into(),
+                        });
+                    }
+                    let chunk = Chunk::new(bytes).map_err(|error| StoreError::Corruption {
+                        message: format!("invalid external chunk: {error}"),
+                    })?;
+                    if chunk.id() != id {
+                        return Err(StoreError::Corruption {
+                            message: "external chunk identity differs from its descriptor".into(),
+                        });
+                    }
+                    Ok(PutItem::Owned(CanonicalObject::ChunkRaw(chunk)))
+                })();
+                return Some(checked);
             }
-            let chunk = Chunk::new(bytes).map_err(|error| StoreError::Corruption {
-                message: format!("invalid external chunk: {error}"),
-            })?;
-            if chunk.id() != id {
-                return Err(StoreError::Corruption {
-                    message: "external chunk identity differs from its descriptor".into(),
-                });
-            }
-            installed.push(
-                cas.put(&CanonicalObject::ChunkRaw(chunk))
-                    .map_err(cas_backend)?,
-            );
-            self.hit(RepositoryFaultPoint::AfterEachCas)?;
-        }
-        for object in batch.canonical_objects() {
-            installed.push(cas.put(object).map_err(cas_backend)?);
+            objects.next().map(|object| Ok(PutItem::Borrowed(object)))
+        })?;
+        for outcome in outcomes {
+            installed.push(outcome.map_err(cas_backend)?);
             self.hit(RepositoryFaultPoint::AfterEachCas)?;
         }
         self.hit(RepositoryFaultPoint::AfterAllCas)?;
@@ -395,14 +402,17 @@ impl NativeScmRepository {
             let guard = connection.lock().map_err(|_| poisoned())?;
             insert_object_rows(&guard, store_root, &installed[..external_chunks])?;
         }
+        let validation = crate::perf::span("batch.validate");
         let reader = NativeTransactionalScmReader::new(connection, cas)?;
         ensure_immutables(&reader, batch)?;
         let resolver = CompositeAdmissionResolver::new(&reader, batch)?;
         resolver.validate_batch()?;
         drop(resolver);
         drop(reader);
+        drop(validation);
         self.hit(RepositoryFaultPoint::AfterValidation)?;
 
+        let rows = crate::perf::span("batch.insert_rows");
         let guard = connection.lock().map_err(|_| poisoned())?;
         insert_object_rows(&guard, store_root, installed)?;
         insert_object_projections_first(&guard, batch)?;
@@ -413,7 +423,10 @@ impl NativeScmRepository {
         insert_admissions(&guard, batch)?;
         self.hit(RepositoryFaultPoint::AfterAdmissions)?;
         apply_mutations(&guard, batch, self)?;
+        drop(rows);
+        let gc_roots = crate::perf::span("batch.rebuild_gc_roots");
         rebuild_gc_roots(&guard)?;
+        drop(gc_roots);
         self.hit(RepositoryFaultPoint::BeforeReceipt)?;
         let receipt = ApplyBatchReceipt::new(batch);
         let receipt_json = canonical_receipt_json(&receipt).map_err(schema_backend)?;
@@ -641,10 +654,33 @@ fn insert_object_rows(
             })?
             .to_string_lossy()
             .replace('\\', "/");
-        connection.execute(
+        let inserted = connection.execute(
             "INSERT OR IGNORE INTO objects(object_id,object_kind,storage_path,byte_length,verified,created_at_ms) VALUES(?1,?2,?3,?4,1,CAST(unixepoch('subsec')*1000 AS INTEGER))",
             params![outcome.object_id.as_str(), kind_name(outcome.object_id.kind()), relative, outcome.bytes_len],
         ).map_err(sql_backend)?;
+        if inserted == 0 {
+            // An existing row must describe exactly this object: a different
+            // kind, path or length is never silently kept.
+            let existing: (String, String, i64, i64) = connection
+                .query_row(
+                    "SELECT object_kind,storage_path,byte_length,verified FROM objects WHERE object_id=?1",
+                    params![outcome.object_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(sql_backend)?;
+            let same = existing.0 == kind_name(outcome.object_id.kind())
+                && existing.1.replace('\\', "/") == relative
+                && u64::try_from(existing.2).ok() == Some(outcome.bytes_len)
+                && existing.3 == 1;
+            if !same {
+                return Err(StoreError::Corruption {
+                    message: format!(
+                        "objects row for {} differs from the installed object",
+                        outcome.object_id
+                    ),
+                });
+            }
+        }
     }
     Ok(())
 }

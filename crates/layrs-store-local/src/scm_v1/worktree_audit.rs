@@ -124,7 +124,8 @@ pub fn audit_worktree_store(root: &Path) -> io::Result<AuditedWorktreeStore> {
         store_root.join("metadata"),
         Some(&metadata_directory.identity()),
     )?;
-    let audit = NativeStoreAudit::new(layout, checked.store_id().clone(), lock);
+    let audit = NativeStoreAudit::new(layout, checked.store_id().clone(), lock)
+        .with_format_version(checked.format_version());
     let connection = audit.try_connection().map_err(io::Error::other)?;
     let worktree = read_identity(&connection, audit.store_id(), &checkout.identity())?;
     if locator

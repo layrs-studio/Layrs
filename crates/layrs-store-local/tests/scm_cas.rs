@@ -175,6 +175,64 @@ fn audit_and_exclusive_capabilities_open_only_their_cas_surface() {
     assert_eq!(exclusive_cas.recover_staging().unwrap(), 0);
 }
 
+/// A `put_ordered` batch is durable at its end (journal-ordered on NTFS,
+/// coalesced directory syncs elsewhere or when forced): every object reads
+/// back exactly, scrubs clean, and no staged file or marker is left behind.
+#[test]
+fn ordered_batches_publish_every_object_in_each_durability_mode() {
+    for mode in [None, Some("coalesced"), Some("per-object")] {
+        let root = TestRoot::new(&format!("batch-{}", mode.unwrap_or("default")));
+        let exclusive = exclusive_store(&root);
+        let cas = NativeCas::open_exclusive(&exclusive).unwrap();
+        let mut objects = fixture_objects();
+        for index in 0..300u32 {
+            objects.push(CanonicalObject::ChunkRaw(
+                Chunk::new(format!("batch chunk {index}").into_bytes()).unwrap(),
+            ));
+        }
+        match mode {
+            // Process-wide, but every mode is correct for concurrent tests.
+            Some(value) => unsafe { std::env::set_var("LAYRS_CAS_BATCH_DURABILITY", value) },
+            None => unsafe { std::env::remove_var("LAYRS_CAS_BATCH_DURABILITY") },
+        }
+        let mut items = objects.iter();
+        let outcomes = cas
+            .put_ordered::<()>(|| {
+                items
+                    .next()
+                    .map(|object| Ok(layrs_store_local::scm_v1::PutItem::Borrowed(object)))
+            })
+            .unwrap();
+        unsafe { std::env::remove_var("LAYRS_CAS_BATCH_DURABILITY") };
+        assert_eq!(outcomes.len(), objects.len());
+        for (object, outcome) in objects.iter().zip(outcomes) {
+            let outcome = outcome.unwrap();
+            assert_eq!(outcome.object_id, object.object_id());
+            assert_eq!(cas.read(&object.object_id()).unwrap(), *object);
+        }
+        let report = cas.scrub().unwrap();
+        assert!(report.is_clean(), "{mode:?}: {:?}", report.issues);
+        let leftovers: Vec<_> = fs::read_dir(cas.staging_dir())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("scm-v1-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{mode:?}: staging leftovers {leftovers:?}");
+        // A second identical batch reuses every object.
+        let mut again = objects.iter();
+        for outcome in cas
+            .put_ordered::<()>(|| {
+                again
+                    .next()
+                    .map(|object| Ok(layrs_store_local::scm_v1::PutItem::Borrowed(object)))
+            })
+            .unwrap()
+        {
+            assert!(outcome.unwrap().existed);
+        }
+    }
+}
+
 #[test]
 fn all_canonical_kinds_roundtrip_and_chunks_remain_raw() {
     let root = TestRoot::new("all-kinds");

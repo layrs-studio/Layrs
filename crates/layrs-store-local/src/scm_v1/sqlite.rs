@@ -414,9 +414,12 @@ pub fn open_existing(path: &Path, busy_timeout: Duration) -> Result<Connection> 
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     configure_common(&connection, busy_timeout)?;
-    validate_schema(&connection, path)?;
+    validate_schema_once(&connection, path)?;
     configure_writer(&connection, busy_timeout)?;
     validate_writer_pragmas(&connection, busy_timeout)?;
+    // Memory-mapped reads of the database file during the write transaction
+    // (admission reads many rows); writes still go through the WAL.
+    connection.pragma_update(None, "mmap_size", 256i64 * 1024 * 1024)?;
     Ok(connection)
 }
 
@@ -497,7 +500,10 @@ pub fn open_read_only(path: &Path, busy_timeout: Duration) -> Result<Connection>
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     connection.busy_timeout(busy_timeout)?;
-    validate_schema(&connection, path)?;
+    // Memory-mapped reads: a fresh read connection otherwise pays one read
+    // syscall per page it touches. Read-only and immutable, so no writes.
+    connection.pragma_update(None, "mmap_size", 256i64 * 1024 * 1024)?;
+    validate_schema_once(&connection, path)?;
     let synchronous: u32 = connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
     require_pragma("synchronous", "2", synchronous.to_string())?;
     Ok(connection)
@@ -626,6 +632,11 @@ pub fn with_immediate_transaction<T>(
 }
 
 fn validate_embedded_checksum() -> Result<()> {
+    // A pure function of this binary's embedded SQL: computed once.
+    static VALID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *VALID.get_or_init(|| schema_checksum() == SCHEMA_CHECKSUM) {
+        return Ok(());
+    }
     let actual = schema_checksum();
     if actual != SCHEMA_CHECKSUM {
         return Err(ScmSchemaError::EmbeddedChecksumMismatch {
@@ -683,6 +694,32 @@ fn validate_writer_pragmas(connection: &Connection, busy_timeout: Duration) -> R
         &expected_timeout.to_string(),
         actual_timeout.to_string(),
     )
+}
+
+/// `validate_schema` once per database file state (path, length, last
+/// write): the schema only changes through a write, which moves both. A
+/// read-only opening of an unchanged file needs no new fingerprint.
+fn validate_schema_once(connection: &Connection, path: &Path) -> Result<()> {
+    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+    static VALIDATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<Key>>> =
+        std::sync::OnceLock::new();
+    let key = fs::metadata(path)
+        .ok()
+        .map(|metadata| (path.to_path_buf(), metadata.len(), metadata.modified().ok()));
+    let validated = VALIDATED.get_or_init(Default::default);
+    if key
+        .as_ref()
+        .is_some_and(|key| validated.lock().is_ok_and(|set| set.contains(key)))
+    {
+        return Ok(());
+    }
+    validate_schema(connection, path)?;
+    if let Some(key) = key {
+        if let Ok(mut set) = validated.lock() {
+            set.insert(key);
+        }
+    }
+    Ok(())
 }
 
 fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {

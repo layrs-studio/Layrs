@@ -177,7 +177,7 @@ impl NativeStoreLayout {
     }
 
     fn validate_existing_boundaries(&self) -> io::Result<()> {
-        for path in [
+        crate::layout::reject_reparse_components_all(&[
             &self.root,
             &self.format_path,
             &self.objects_dir,
@@ -187,10 +187,7 @@ impl NativeStoreLayout {
             &self.sqlite_path,
             &self.lock_path,
             &self.repair_backups_dir,
-        ] {
-            reject_reparse_components(path)?;
-        }
-        Ok(())
+        ])
     }
 
     fn validate_containment(&self) -> io::Result<()> {
@@ -240,7 +237,20 @@ pub struct NativeStoreOpen {
     store_id: StoreId,
     bound_directory: Option<crate::secure_fs::PinnedDirectory>,
     bound_metadata: Option<crate::secure_fs::PinnedDirectory>,
+    /// Last successful implicit identity check made by `connection()`.
+    implicit_verified: Mutex<Option<std::time::Instant>>,
+    format_version: u32,
 }
+
+/// Implicit per-query rebinding checks are throttled to this interval. SQLite
+/// reads stay bound to the already opened database handle and CAS reads stay
+/// bound to their pinned objects directory, rechecked on the same interval
+/// (`NativeCas::pinned_objects_for_read`); every CAS byte is verified against
+/// its content address, so a per-query recheck adds no integrity. CAS
+/// publication re-pins on every access. Bind time, every explicit
+/// `verify_filesystem_identity()` and each write commit stay unconditional;
+/// a replaced path is still detected within one interval.
+const IMPLICIT_IDENTITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl NativeStoreOpen {
     pub(crate) fn new(
@@ -256,6 +266,8 @@ impl NativeStoreOpen {
             store_id,
             bound_directory: None,
             bound_metadata: None,
+            implicit_verified: Mutex::new(None),
+            format_version: super::FORMAT_VERSION,
         }
     }
 
@@ -267,11 +279,34 @@ impl NativeStoreOpen {
         &self.store_id
     }
 
+    /// The validated format version of this Store (2 or 5).
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    pub fn packs_enabled(&self) -> bool {
+        self.format_version >= super::PACKED_FORMAT_VERSION
+    }
+
+    pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
+        self.format_version = format_version;
+        self
+    }
+
     pub(crate) fn connection(&self) -> Result<MutexGuard<'_, Connection>, ScmStoreError> {
-        self.verify_filesystem_identity()
-            .map_err(|error| ScmStoreError::Backend {
-                message: error.to_string(),
-            })?;
+        crate::perf::count("store.connection", 1);
+        let backend = |message: String| ScmStoreError::Backend { message };
+        let mut verified = self
+            .implicit_verified
+            .lock()
+            .map_err(|_| backend("native Store identity timer mutex is poisoned".into()))?;
+        if verified.is_none_or(|at| at.elapsed() >= IMPLICIT_IDENTITY_RECHECK) {
+            self.verify_filesystem_identity()
+                .map_err(|error| backend(error.to_string()))?;
+            *verified = Some(std::time::Instant::now());
+        }
+        drop(verified);
         self.connection.lock().map_err(|_| ScmStoreError::Backend {
             message: "native Store read connection mutex is poisoned".into(),
         })
@@ -309,6 +344,7 @@ pub struct NativeStoreAudit {
     _store_lock: StoreLock,
     layout: NativeStoreLayout,
     store_id: StoreId,
+    format_version: u32,
 }
 
 impl NativeStoreAudit {
@@ -317,8 +353,25 @@ impl NativeStoreAudit {
             _store_lock: store_lock,
             layout,
             store_id,
+            format_version: super::FORMAT_VERSION,
         }
     }
+
+    /// The validated format version of this Store (2 or 5).
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    pub fn packs_enabled(&self) -> bool {
+        self.format_version >= super::PACKED_FORMAT_VERSION
+    }
+
+    pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
+        self.format_version = format_version;
+        self
+    }
+
 
     pub fn layout(&self) -> &NativeStoreLayout {
         &self.layout
@@ -345,6 +398,7 @@ pub struct NativeStoreExclusive {
     store_id: StoreId,
     bound_directory: Option<crate::secure_fs::PinnedDirectory>,
     bound_metadata: Option<crate::secure_fs::PinnedDirectory>,
+    format_version: u32,
 }
 
 impl NativeStoreExclusive {
@@ -355,8 +409,25 @@ impl NativeStoreExclusive {
             store_id,
             bound_directory: None,
             bound_metadata: None,
+            format_version: super::FORMAT_VERSION,
         }
     }
+
+    /// The validated format version of this Store (2 or 5).
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    pub fn packs_enabled(&self) -> bool {
+        self.format_version >= super::PACKED_FORMAT_VERSION
+    }
+
+    pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
+        self.format_version = format_version;
+        self
+    }
+
 
     pub fn layout(&self) -> &NativeStoreLayout {
         &self.layout

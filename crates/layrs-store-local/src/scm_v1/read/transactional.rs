@@ -81,6 +81,49 @@ impl ScmReader for NativeTransactionalScmReader<'_> {
         self.active_reader()?.file_availability(id)
     }
 
+    fn file_present_metadata(&self, id: &FileId) -> Result<bool> {
+        Ok(self.active_reader()?.file_length_metadata(id)?.is_some())
+    }
+
+    fn file_manifest_ids_metadata(
+        &self,
+        id: &FileId,
+    ) -> Result<Vec<layrs_core::scm::FileManifestId>> {
+        self.active_reader()?.file_manifest_ids_metadata(id)
+    }
+
+    fn object_admitted_metadata(
+        &self,
+        object_id: &StoreObjectId,
+        space_id: &SpaceId,
+    ) -> Result<bool> {
+        self.active_reader()?.object_admitted_metadata(object_id, space_id)
+    }
+
+    fn chunk_present_metadata(&self, id: &layrs_core::scm::ChunkId) -> Result<bool> {
+        self.active_reader()?.chunk_present_metadata(id)
+    }
+
+    fn files_present_metadata(
+        &self,
+        files: &[&FileId],
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        self.active_reader()?.files_present_metadata(files)
+    }
+
+    fn tree_present_metadata(&self, id: &layrs_core::scm::TreeId) -> Result<bool> {
+        self.active_reader()?.tree_present_metadata(id)
+    }
+
+    fn admitted_manifests_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeMap<FileId, layrs_core::scm::FileManifestId>> {
+        self.active_reader()?
+            .admitted_manifests_metadata(files.iter().copied(), space)
+    }
+
     fn object_admitted_to_space(
         &self,
         object_id: &StoreObjectId,

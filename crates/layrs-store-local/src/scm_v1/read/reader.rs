@@ -328,6 +328,19 @@ impl ScmReader for NativeScmReader<'_> {
         Ok(value)
     }
 
+    /// Installation verifies content before recording `present`
+    /// (`repository.rs` file_availability rows); answer from metadata.
+    fn file_present_metadata(&self, id: &FileId) -> Result<bool> {
+        Ok(self.file_length_metadata(id)?.is_some())
+    }
+
+    fn file_manifest_ids_metadata(
+        &self,
+        id: &FileId,
+    ) -> Result<Vec<layrs_core::scm::FileManifestId>> {
+        NativeScmReader::file_manifest_ids_metadata(self, id)
+    }
+
     fn file_availability(&self, id: &FileId) -> Result<FileAvailability> {
         self.file_availability_with_budget(
             id,
@@ -362,6 +375,76 @@ impl ScmReader for NativeScmReader<'_> {
             )));
         }
         Ok(true)
+    }
+
+    /// A verified `objects` row, as for chunks (`chunk_present_metadata`).
+    fn tree_present_metadata(&self, id: &layrs_core::scm::TreeId) -> Result<bool> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM objects                  WHERE object_id = ?1 AND object_kind = 'tree' AND verified = 1)",
+            )
+            .map_err(sqlite_backend)?;
+        statement
+            .query_row([StoreObjectId::Tree(id.clone()).as_str()], |row| row.get(0))
+            .map_err(sqlite_backend)
+    }
+
+    fn files_present_metadata(
+        &self,
+        files: &[&FileId],
+    ) -> Result<std::collections::BTreeSet<FileId>> {
+        Ok(self
+            .file_lengths_metadata(files.iter().copied())?
+            .into_keys()
+            .collect())
+    }
+
+    fn admitted_manifests_metadata(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<std::collections::BTreeMap<FileId, layrs_core::scm::FileManifestId>> {
+        NativeScmReader::admitted_manifests_metadata(self, files.iter().copied(), space)
+    }
+
+    /// Installation verifies a chunk's bytes against its id before writing
+    /// its `verified` object row (`repository.rs` insert_object_rows), and
+    /// every read verifies them again; presence is answered from that row.
+    fn chunk_present_metadata(&self, id: &layrs_core::scm::ChunkId) -> Result<bool> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM objects WHERE object_id = ?1 AND verified = 1)",
+            )
+            .map_err(sqlite_backend)?;
+        statement
+            .query_row(
+                [StoreObjectId::ChunkRaw(id.clone()).as_str()],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_backend)
+    }
+
+    fn object_admitted_metadata(
+        &self,
+        object_id: &StoreObjectId,
+        space_id: &SpaceId,
+    ) -> Result<bool> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM space_object_admissions AS a \
+                 JOIN objects AS o ON o.object_id = a.object_id \
+                 WHERE a.object_id = ?1 AND a.space_id = ?2)",
+            )
+            .map_err(sqlite_backend)?;
+        statement
+            .query_row(
+                rusqlite::params![object_id.as_str(), space_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_backend)
     }
 
     fn is_step_ancestor(&self, ancestor: &StepId, descendant: &StepId) -> Result<bool> {

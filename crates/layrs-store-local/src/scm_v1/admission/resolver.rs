@@ -10,7 +10,16 @@ impl AdmissionResolver for CompositeAdmissionResolver<'_> {
     }
 
     fn tree_exists(&self, id: &TreeId) -> bool {
-        let result = self.object(&StoreObjectId::Tree(id.clone()));
+        let object = StoreObjectId::Tree(id.clone());
+        if self.overlay_object(&object).is_some() {
+            return matches!(self.overlay_object(&object), Some(CanonicalObject::Tree(_)));
+        }
+        // An installed Tree was verified against its id (`objects.verified`):
+        // presence needs no read and decode of its every entry.
+        if self.resolve(self.reader.tree_present_metadata(id), false) {
+            return true;
+        }
+        let result = self.object(&object);
         matches!(self.resolve(result, None), Some(CanonicalObject::Tree(_)))
     }
 
@@ -54,10 +63,9 @@ impl AdmissionResolver for CompositeAdmissionResolver<'_> {
         {
             return value;
         }
-        let value = matches!(
-            self.resolve(self.reader.file_availability(id), FileAvailability::Absent),
-            FileAvailability::Present(_)
-        );
+        // Existing Files were content-verified when installed; admission of a
+        // new View/Step referencing them needs presence, not a full re-hash.
+        let value = self.resolve(self.reader.file_present_metadata(id), false);
         if let Ok(mut cache) = self.verified_files.lock() {
             cache.insert(id.clone(), value);
         }

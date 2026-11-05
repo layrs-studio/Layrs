@@ -20,9 +20,12 @@ use layrs_store::scm::{
     StoreObjectId, WriteBatch,
 };
 
-pub(super) const MAX_BATCH_OBJECTS: usize = 16_384;
+// One initial capture of an N-file tree carries ~2N objects (manifest + chunk
+// per file) plus Trees; 262,144 admits the 100k-entry checkout bound.
+pub(super) const MAX_BATCH_OBJECTS: usize = 262_144;
 const MAX_BATCH_ENTITIES: usize = 16_384;
-const MAX_BATCH_ADMISSIONS: usize = 65_536;
+// One admission per new object (spooled chunks included): same bound.
+const MAX_BATCH_ADMISSIONS: usize = MAX_BATCH_OBJECTS;
 const MAX_BATCH_MUTATIONS: usize = 4_096;
 const MAX_GRAPH_NODES: usize = 16_384;
 const MAX_GRAPH_EDGES: usize = 16_384;
@@ -31,8 +34,11 @@ const MAX_GRAPH_EDGES: usize = 16_384;
 const MAX_OBJECT_DEPENDENCIES: usize = 262_144;
 const MAX_ANCESTOR_QUERIES: usize = 4_096;
 const MAX_ANCESTOR_RELATIONS: usize = 1_000_000;
-const MAX_ADMISSION_VISITS: usize = 65_536;
-const MAX_ADMISSION_EDGE_VISITS: usize = 262_144;
+// New objects only: durably admitted dependencies end the walk. Sized for an
+// initial capture at MAX_BATCH_OBJECTS (each object visited once, file and
+// chunk references counted as edges).
+const MAX_ADMISSION_VISITS: usize = 524_288;
+const MAX_ADMISSION_EDGE_VISITS: usize = 1_048_576;
 #[path = "product_admission.rs"]
 mod products;
 
@@ -239,17 +245,27 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// transaction. Backend failures take precedence over an induced false
     /// result from the infallible Core resolver adapter.
     pub fn validate_batch(&self) -> Result<()> {
+        self.prefetch_tree_files()?;
+        let objects_span = crate::perf::span("validate.objects");
         for object in self.batch.canonical_objects() {
             if let CanonicalObject::Product(value) = object {
                 value.validate_native_subset()?;
             }
             let validation = match object {
                 CanonicalObject::FileManifest(value) => {
+                    let _span = crate::perf::span("validate.object.manifest");
                     validate_file_manifest_admission(value, self)
                 }
-                CanonicalObject::Tree(value) => validate_tree_admission(value, self),
-                CanonicalObject::Step(value) => validate_step_admission(value, self),
+                CanonicalObject::Tree(value) => {
+                    let _span = crate::perf::span("validate.object.tree");
+                    validate_tree_admission(value, self)
+                }
+                CanonicalObject::Step(value) => {
+                    let _span = crate::perf::span("validate.object.step");
+                    validate_step_admission(value, self)
+                }
                 CanonicalObject::RepositoryView(value) => {
+                    let _span = crate::perf::span("validate.object.view");
                     validate_repository_view_admission(value, self)
                 }
                 CanonicalObject::ChunkRaw(_)
@@ -260,7 +276,9 @@ impl<'a> CompositeAdmissionResolver<'a> {
             };
             self.finish_validation(validation, object_kind(object), object.object_id().as_str())?;
         }
+        drop(objects_span);
 
+        let entities_span = crate::perf::span("validate.entities");
         for record in self.batch.entity_records() {
             let validation = match record {
                 EntityRecord::Space(_) => Ok(()),
@@ -278,17 +296,97 @@ impl<'a> CompositeAdmissionResolver<'a> {
             };
             self.finish_validation(validation, entity_kind(record), record.id_str())?;
         }
+        drop(entities_span);
 
-        self.validate_operation_frontiers()?;
-        self.validate_weave_operations()?;
-
-        for admission in self.batch.admissions() {
-            self.validate_admission(admission.space_id(), admission.object_id())?;
+        {
+            let _span = crate::perf::span("validate.frontiers_weave");
+            {
+                let _span = crate::perf::span("validate.frontiers");
+                self.validate_operation_frontiers()?;
+            }
+            let _span = crate::perf::span("validate.weave");
+            self.validate_weave_operations()?;
         }
+
+        {
+            let _span = crate::perf::span("validate.admissions");
+            crate::perf::count("validate.admission_roots", self.batch.admissions().len() as u64);
+            for admission in self.batch.admissions() {
+                self.validate_admission(admission.space_id(), admission.object_id())?;
+            }
+        }
+        let _span = crate::perf::span("validate.mutations");
         for mutation in self.batch.mutations() {
             self.validate_mutation(mutation)?;
         }
         self.take_failure().map_or(Ok(()), Err)
+    }
+
+    /// Answers, in bulk, the per-File metadata questions that validating the
+    /// batch's Trees asks one File at a time: presence (Tree validation) and
+    /// the durably admitted manifest (admission closure). Only Files without a
+    /// manifest in this batch are prefetched, and only sound answers are
+    /// cached, so every decision is the one the per-File path would make.
+    fn prefetch_tree_files(&self) -> Result<()> {
+        let _span = crate::perf::span("validate.prefetch_tree_files");
+        let mut files = BTreeSet::new();
+        for object in self.batch.canonical_objects() {
+            if let CanonicalObject::Tree(tree) = object {
+                for entry in tree.entries() {
+                    if let Some(file) = entry.target().file_id() {
+                        if !self.manifests_by_file.contains_key(file) {
+                            files.insert(file);
+                        }
+                    }
+                }
+            }
+        }
+        if files.is_empty() {
+            return Ok(());
+        }
+        let files: Vec<&FileId> = files.into_iter().collect();
+        let present = self.reader.files_present_metadata(&files)?;
+        if let Ok(mut cache) = self.verified_files.lock() {
+            for file in present {
+                cache.insert(file, true);
+            }
+        }
+        let spaces: BTreeSet<&SpaceId> =
+            self.batch.admissions().iter().map(|a| a.space_id()).collect();
+        for space in spaces {
+            self.prefetch_admitted_manifests(&files, space)?;
+        }
+        Ok(())
+    }
+
+    /// Caches, in one batched metadata query, the durably admitted manifest
+    /// of each File without a manifest in this batch (the choice
+    /// `admissible_manifest_for_file` makes for such a File). Files left out
+    /// keep the per-File path.
+    pub(super) fn prefetch_admitted_manifests(&self, files: &[&FileId], space: &SpaceId) -> Result<()> {
+        let unknown: Vec<&FileId> = {
+            let cache = self.file_manifest_cache.lock().ok();
+            files
+                .iter()
+                .copied()
+                .filter(|file| !self.manifests_by_file.contains_key(*file))
+                .filter(|file| {
+                    cache
+                        .as_ref()
+                        .is_none_or(|cache| !cache.contains_key(&(space.clone(), (*file).clone())))
+                })
+                .collect()
+        };
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let admitted = self.reader.admitted_manifests_metadata(&unknown, space)?;
+        if let Ok(mut cache) = self.file_manifest_cache.lock() {
+            for (file, manifest) in admitted {
+                cache.insert((space.clone(), file), Some(manifest));
+            }
+        }
+        Ok(())
     }
 
     /// Validates only explicitly published Operations against the complete
@@ -553,6 +651,33 @@ impl<'a> CompositeAdmissionResolver<'a> {
             }
             let visits = self.admission_visits.fetch_add(1, Ordering::Relaxed) + 1;
             require_budget("admission object visits", visits, MAX_ADMISSION_VISITS)?;
+            // A durable admission row is only written by `insert_admissions`
+            // after this same closure validation (including product context)
+            // succeeded in its batch, and nothing deletes admissions or CAS
+            // objects, so a durably admitted dependency is already closed
+            // (induction). fsck re-checks edge closure (fsck/graphs.rs), not
+            // the FileId->manifest->chunk closure. Decided from metadata before
+            // reading the object; re-walking durable objects made batches O(repo).
+            // An object carried by this batch is validated from memory below
+            // (strictly more checking than skipping it as durably closed), so
+            // only objects outside the batch cost a metadata query.
+            if &object_id != root
+                && self.overlay_object(&object_id).is_none()
+                && self.reader.object_admitted_metadata(&object_id, space)?
+            {
+                crate::perf::count("admission.durable_closed", 1);
+                continue;
+            }
+            // A chunk has no dependencies and no context: its presence is all
+            // closure needs. Installed chunks were verified against their id
+            // on installation and are verified again at every read, so their
+            // bytes are not re-read here (that made a capture re-read itself).
+            if matches!(object_id, StoreObjectId::ChunkRaw(_)) {
+                if !self.object_admitted_result(&object_id, space)? {
+                    return Err(admission_rejected(&object_id));
+                }
+                continue;
+            }
             let object = self
                 .object(&object_id)?
                 .ok_or_else(|| admission_rejected(&object_id))?;
@@ -624,12 +749,20 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .get(file_id)
             .cloned()
             .unwrap_or_default();
-        if let FileAvailability::Present(available) = self.reader.file_availability(file_id)? {
-            candidates.extend(available.verified_manifest_ids().iter().cloned());
-        }
+        // Durable manifests were verified (with their chunks) when installed;
+        // list them from metadata instead of re-hashing every chunk.
+        candidates.extend(self.reader.file_manifest_ids_metadata(file_id)?);
         let mut selected = None;
         for manifest_id in candidates {
             let object_id = StoreObjectId::FileManifest(manifest_id.clone());
+            // A durably admitted manifest had this exact check (file identity,
+            // manifest validity, every chunk admitted) when its batch was
+            // validated; admissions are never deleted. Same selection, decided
+            // from metadata before reading the object.
+            if self.reader.object_admitted_metadata(&object_id, space)? {
+                selected = Some(manifest_id);
+                break;
+            }
             if !self.object_admitted_result(&object_id, space)? {
                 continue;
             }
@@ -855,7 +988,16 @@ impl CompositeAdmissionResolver<'_> {
         {
             return Ok(value);
         }
-        if self.object(object)?.is_none() {
+        let present = match object {
+            // Presence only: a chunk's bytes are verified where installed or read.
+            StoreObjectId::ChunkRaw(chunk) => {
+                self.overlay_object(object).is_some()
+                    || self.reader.chunk_present_metadata(chunk)?
+                    || self.object(object)?.is_some()
+            }
+            _ => self.object(object)?.is_some(),
+        };
+        if !present {
             return Ok(false);
         }
         let value = self.admissions.contains(&key)

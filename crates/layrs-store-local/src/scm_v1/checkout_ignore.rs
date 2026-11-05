@@ -1,11 +1,12 @@
 //! Bounded root .layrsignore: ordered globs, ** directories and ! exceptions.
 use crate::secure_fs::PinnedDirectory;
 use std::io::{self, Read};
-#[derive(Default)]
-pub(super) struct IgnoreRules {
+#[derive(Default, Clone, Debug)]
+pub struct IgnoreRules {
     rules: Vec<Rule>,
     pub has_exceptions: bool,
 }
+#[derive(Clone, Debug)]
 struct Rule {
     parts: Vec<String>,
     anchored: bool,
@@ -25,6 +26,16 @@ impl IgnoreRules {
             return Err(invalid(".layrsignore exceeds 64 KiB"));
         }
         Self::parse(std::str::from_utf8(&bytes).map_err(|_| invalid(".layrsignore must be UTF-8"))?)
+    }
+    /// The same rules from a `.layrsignore` file's bytes (at most 64 KiB).
+    pub fn parse_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() > 65536 {
+            return Err(invalid(".layrsignore exceeds 64 KiB"));
+        }
+        Self::parse(std::str::from_utf8(bytes).map_err(|_| invalid(".layrsignore must be UTF-8"))?)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
     }
     fn parse(text: &str) -> io::Result<Self> {
         let mut result = Self::default();

@@ -8,6 +8,7 @@ pub mod download_cache;
 mod error;
 mod layout;
 mod lock;
+pub mod perf;
 pub mod projection;
 pub mod scm_v1;
 pub use secure_fs::private_spool_file;

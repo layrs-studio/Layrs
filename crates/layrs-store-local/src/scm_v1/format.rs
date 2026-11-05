@@ -9,6 +9,35 @@ use layrs_core::scm::{StoreId, canonical_json};
 use serde::{Deserialize, Serialize};
 
 use super::layout::{NativeStoreAudit, NativeStoreExclusive, NativeStoreLayout, NativeStoreOpen};
+
+/// The Store's shared lock, its file opened and its path validated once
+/// (`open`), then held around each short read (`hold`) without the database
+/// or identity checks of a full open. A reader of immutable, admitted CAS
+/// objects thereby still waits for an exclusive writer like a shared open.
+pub struct SharedReadLocks {
+    lock: crate::lock::ReusableSharedLock,
+}
+
+/// One held shared read lock.
+pub struct SharedReadLock<'a> {
+    _hold: crate::lock::SharedHold<'a>,
+}
+
+impl SharedReadLocks {
+    pub fn open(root: &Path) -> Result<Self, crate::StoreError> {
+        let layout = NativeStoreLayout::new(root).map_err(crate::StoreError::Io)?;
+        Ok(Self {
+            lock: crate::lock::ReusableSharedLock::open(layout.lock_path())?,
+        })
+    }
+
+    /// `LockBusy` while an exclusive writer holds the Store.
+    pub fn hold(&self) -> Result<SharedReadLock<'_>, crate::StoreError> {
+        Ok(SharedReadLock {
+            _hold: self.lock.hold()?,
+        })
+    }
+}
 use super::sqlite::{self, ScmSchemaError};
 use crate::StoreError;
 use crate::layout::{
@@ -18,9 +47,22 @@ use crate::lock::{SessionMode, StoreLock};
 
 pub const FORMAT_MAGIC: &str = "LAYRS_NATIVE_STORE";
 pub const FORMAT_SCHEMA: &str = "layrs.store-format.v1";
+/// The complete-Store format without packs (every object a loose file).
 pub const FORMAT_VERSION: u32 = 2;
+/// The complete-Store format whose CAS may hold packs of small objects (ADR
+/// 0026). 3 and 4 belong to projection Stores of the same magic.
+pub const PACKED_FORMAT_VERSION: u32 = 5;
+/// The newest complete-Store format this reader understands.
+pub const NEWEST_FORMAT_VERSION: u32 = PACKED_FORMAT_VERSION;
 pub const MAX_FORMAT_BYTES: u64 = 64 * 1024;
-const MIN_READER_VERSION: u32 = 2;
+
+/// The format `init` creates: packed, unless `LAYRS_STORE_FORMAT=2`.
+fn creation_format_version() -> u32 {
+    match std::env::var("LAYRS_STORE_FORMAT").as_deref() {
+        Ok("2") => FORMAT_VERSION,
+        _ => PACKED_FORMAT_VERSION,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,12 +84,19 @@ pub struct FormatMarker {
 }
 
 impl FormatMarker {
+    /// A marker in the format `init` creates today.
     pub fn new(store_id: StoreId, state: FormatState) -> Self {
+        Self::with_version(store_id, state, creation_format_version())
+    }
+
+    /// A marker of an explicit supported version (2 or 5); readers of an
+    /// older version refuse it.
+    pub fn with_version(store_id: StoreId, state: FormatState, format_version: u32) -> Self {
         Self {
             schema_version: FORMAT_SCHEMA.to_string(),
             magic: FORMAT_MAGIC.to_string(),
-            format_version: FORMAT_VERSION,
-            min_reader_version: MIN_READER_VERSION,
+            format_version,
+            min_reader_version: format_version,
             state,
             store_id,
         }
@@ -85,13 +134,15 @@ impl FormatMarker {
                 "native Store magic does not match".into(),
             ));
         }
-        if self.format_version != FORMAT_VERSION {
+        if self.format_version != FORMAT_VERSION && self.format_version != PACKED_FORMAT_VERSION {
             return Err(NativeStoreError::InvalidMarker(format!(
                 "native Store format {} is not supported by reader {}",
-                self.format_version, FORMAT_VERSION
+                self.format_version, NEWEST_FORMAT_VERSION
             )));
         }
-        if self.min_reader_version > FORMAT_VERSION {
+        if self.min_reader_version > NEWEST_FORMAT_VERSION
+            || self.min_reader_version > self.format_version
+        {
             return Err(NativeStoreError::InvalidMarker(format!(
                 "native Store requires reader {}",
                 self.min_reader_version
@@ -303,9 +354,14 @@ pub fn init(
 
     layout.ensure_lock_boundary()?;
     let store_lock = StoreLock::acquire_existing(layout.lock_path(), SessionMode::Exclusive)?;
-    match inspect(layout.root())? {
+    // Resuming an interrupted initialization keeps its marker's version: a
+    // format-2 Store is never promoted implicitly.
+    let format_version = match inspect(layout.root())? {
         NativeStoreInspection::NativeInitializing { marker, .. }
-            if marker.store_id() == &store_id => {}
+            if marker.store_id() == &store_id =>
+        {
+            marker.format_version()
+        }
         NativeStoreInspection::NativeInitializing { marker, .. } => {
             return Err(NativeStoreError::StoreIdMismatch {
                 expected: marker.store_id().clone(),
@@ -317,7 +373,7 @@ pub fn init(
                 inspection: Box::new(other),
             });
         }
-    }
+    };
     layout.ensure_bootstrap_directories()?;
     let connection = if layout.sqlite_path().exists() {
         sqlite::open_existing(layout.sqlite_path(), Duration::from_secs(5))?
@@ -329,7 +385,7 @@ pub fn init(
     sync_directory(layout.metadata_dir())?;
     publish_marker(
         &layout,
-        &FormatMarker::new(store_id.clone(), FormatState::Ready),
+        &FormatMarker::with_version(store_id.clone(), FormatState::Ready, format_version),
     )?;
     layout.validate_ready_boundaries()?;
     drop(store_lock);
@@ -338,19 +394,34 @@ pub fn init(
 
 /// Opens only a complete, ready native Store and never repairs or creates it.
 pub fn open(root: impl AsRef<Path>) -> Result<NativeStoreOpen, NativeStoreError> {
-    match inspect(root)? {
+    let _span = crate::perf::span("store.open_shared");
+    let inspected = {
+        let _span = crate::perf::span("open.inspect");
+        inspect(root)?
+    };
+    match inspected {
         NativeStoreInspection::NativeReady { layout, marker } => {
-            recover_orphaned_wal(&layout, marker.store_id())?;
+            {
+                let _span = crate::perf::span("open.wal");
+                recover_orphaned_wal(&layout, marker.store_id())?;
+            }
+            let lock_span = crate::perf::span("open.lock");
             let store_lock = StoreLock::acquire_existing(layout.lock_path(), SessionMode::Shared)?;
+            drop(lock_span);
+            let ready_span = crate::perf::span("open.ready_under_lock");
             let (layout, marker) = ready_under_lock(&layout, marker.store_id())?;
+            drop(ready_span);
+            let sqlite_span = crate::perf::span("open.sqlite");
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
+            drop(sqlite_span);
             Ok(NativeStoreOpen::new(
                 layout,
                 marker.store_id().clone(),
                 connection,
                 store_lock,
-            ))
+            )
+            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -368,7 +439,8 @@ pub fn open_audit(root: impl AsRef<Path>) -> Result<NativeStoreAudit, NativeStor
                 layout,
                 marker.store_id().clone(),
                 store_lock,
-            ))
+            )
+            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -378,6 +450,7 @@ pub fn open_audit(root: impl AsRef<Path>) -> Result<NativeStoreAudit, NativeStor
 
 /// Acquires the exclusive writer capability without changing logical state.
 pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, NativeStoreError> {
+    let _span = crate::perf::span("store.open_exclusive");
     match inspect(root)? {
         NativeStoreInspection::NativeReady { layout, marker } => {
             let store_lock =
@@ -393,7 +466,8 @@ pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, Na
                 layout,
                 marker.store_id().clone(),
                 store_lock,
-            ))
+            )
+            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -447,7 +521,73 @@ fn ready_under_lock(
     }
 }
 
+/// The full boundary validation (every boundary a regular directory or file,
+/// no reparse point on any path component) once per process and Store root.
+/// Later opens still re-read and validate the marker, pin the root and check
+/// its identity; a command opening its Store many times no longer walks every
+/// ancestor of every boundary each time (git makes no such check at all).
+fn validate_ready_boundaries_once(layout: &NativeStoreLayout) -> io::Result<()> {
+    static VALIDATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    let validated = VALIDATED.get_or_init(Default::default);
+    if validated
+        .lock()
+        .is_ok_and(|roots| roots.contains(layout.root()))
+    {
+        return Ok(());
+    }
+    layout.validate_ready_boundaries()?;
+    if let Ok(mut roots) = validated.lock() {
+        roots.insert(layout.root().to_path_buf());
+    }
+    Ok(())
+}
+
+/// A Ready marker already parsed and validated by this process, keyed by
+/// the FORMAT file's metadata (it is only ever replaced by a rename, which
+/// changes them): a command opening its Store many times reads it once.
+fn ready_marker_memo() -> &'static std::sync::Mutex<
+    std::collections::HashMap<PathBuf, (u64, Option<SystemTime>, FormatMarker)>,
+> {
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, Option<SystemTime>, FormatMarker)>>,
+    > = std::sync::OnceLock::new();
+    MEMO.get_or_init(Default::default)
+}
+
 fn inspect_marker(layout: NativeStoreLayout) -> Result<NativeStoreInspection, NativeStoreError> {
+    let observed = fs::symlink_metadata(layout.format_path())
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| (metadata.len(), metadata.modified().ok()));
+    if let Some((length, modified)) = observed {
+        let remembered = ready_marker_memo().lock().ok().and_then(|memo| {
+            memo.get(layout.format_path())
+                .filter(|(l, m, _)| *l == length && *m == modified)
+                .map(|(_, _, marker)| marker.clone())
+        });
+        if let Some(marker) = remembered {
+            return match validate_ready_boundaries_once(&layout) {
+                Ok(()) => Ok(NativeStoreInspection::NativeReady { layout, marker }),
+                Err(error) => Ok(NativeStoreInspection::InvalidNative {
+                    layout,
+                    reason: error.to_string(),
+                }),
+            };
+        }
+    }
+    let inspected = inspect_marker_uncached(layout)?;
+    if let (NativeStoreInspection::NativeReady { layout, marker }, Some((length, modified))) =
+        (&inspected, observed)
+    {
+        if let Ok(mut memo) = ready_marker_memo().lock() {
+            memo.insert(layout.format_path().to_path_buf(), (length, modified, marker.clone()));
+        }
+    }
+    Ok(inspected)
+}
+
+fn inspect_marker_uncached(layout: NativeStoreLayout) -> Result<NativeStoreInspection, NativeStoreError> {
     let bytes = match read_regular_file_bounded(layout.format_path(), MAX_FORMAT_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -471,7 +611,12 @@ fn inspect_marker(layout: NativeStoreLayout) -> Result<NativeStoreInspection, Na
     let version = probe
         .get("formatVersion")
         .and_then(serde_json::Value::as_u64);
-    if magic == Some(FORMAT_MAGIC) && version.is_some_and(|value| value > u64::from(FORMAT_VERSION))
+    // Any version this complete-Store reader does not read is "future" to
+    // it: 3 and 4 (projection Stores, routed elsewhere) as well as 6+.
+    if magic == Some(FORMAT_MAGIC)
+        && version.is_some_and(|value| {
+            value > u64::from(FORMAT_VERSION) && value != u64::from(PACKED_FORMAT_VERSION)
+        })
     {
         return Ok(NativeStoreInspection::FutureFormat {
             layout,
@@ -507,7 +652,7 @@ fn inspect_marker(layout: NativeStoreLayout) -> Result<NativeStoreInspection, Na
         FormatState::Initializing => {
             Ok(NativeStoreInspection::NativeInitializing { layout, marker })
         }
-        FormatState::Ready => match layout.validate_ready_boundaries() {
+        FormatState::Ready => match validate_ready_boundaries_once(&layout) {
             Ok(()) => Ok(NativeStoreInspection::NativeReady { layout, marker }),
             Err(error) => Ok(NativeStoreInspection::InvalidNative {
                 layout,

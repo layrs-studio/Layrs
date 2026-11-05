@@ -115,6 +115,132 @@ unsafe extern "system" {
         file_handle: RawHandle,
         information: *mut ByHandleFileInformation,
     ) -> i32;
+    fn GetFinalPathNameByHandleW(
+        file_handle: RawHandle,
+        path: *mut u16,
+        path_length: u32,
+        flags: u32,
+    ) -> u32;
+}
+
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    fn GetFileInformationByHandleEx(
+        file_handle: RawHandle,
+        class: i32,
+        information: *mut c_void,
+        size: u32,
+    ) -> i32;
+    fn QueryDosDeviceW(device: *const u16, target: *mut u16, length: u32) -> u32;
+}
+
+/// FILE_NAME_NORMALIZED | VOLUME_NAME_NT.
+const FINAL_PATH_NORMALIZED_NT: u32 = 0x2;
+const FILE_STANDARD_INFO_CLASS: i32 = 1;
+const FILE_ATTRIBUTE_TAG_INFO_CLASS: i32 = 9;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+#[repr(C)]
+struct FileStandardInfo {
+    allocation_size: i64,
+    end_of_file: i64,
+    number_of_links: u32,
+    delete_pending: u8,
+    directory: u8,
+}
+
+#[repr(C)]
+struct FileAttributeTagInfo {
+    file_attributes: u32,
+    reparse_tag: u32,
+}
+
+/// True when the object itself carries no reparse point and is not pending
+/// deletion: the states the component walk refuses on the last component.
+pub(super) fn plain_live_object(file: &File) -> io::Result<bool> {
+    let mut tag = FileAttributeTagInfo {
+        file_attributes: 0,
+        reparse_tag: 0,
+    };
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ATTRIBUTE_TAG_INFO_CLASS,
+            ptr::addr_of_mut!(tag).cast(),
+            size_of::<FileAttributeTagInfo>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut standard = FileStandardInfo {
+        allocation_size: 0,
+        end_of_file: 0,
+        number_of_links: 0,
+        delete_pending: 0,
+        directory: 0,
+    };
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_STANDARD_INFO_CLASS,
+            ptr::addr_of_mut!(standard).cast(),
+            size_of::<FileStandardInfo>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(tag.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        && tag.reparse_tag == 0
+        && standard.delete_pending == 0)
+}
+
+/// The NT device a drive letter (`X:`) names in the caller's own DosDevices
+/// namespace, which is what a path walk from `X:\` resolves through
+/// (session-local definitions included), e.g. `\Device\HarddiskVolume3`.
+pub(super) fn dos_device(drive: &[u16]) -> io::Result<Vec<u16>> {
+    let mut name = drive.to_vec();
+    name.push(0);
+    let mut buffer = vec![0u16; 1024];
+    let length = unsafe { QueryDosDeviceW(name.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+        as usize;
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The first of the NUL-separated targets is the active mapping.
+    let end = buffer[..length].iter().position(|c| *c == 0).unwrap_or(length);
+    buffer.truncate(end);
+    Ok(buffer)
+}
+
+/// The normalized NT path of the object this handle refers to, built by the
+/// filesystem from the object's actual parent chain (links resolved), e.g.
+/// `\Device\HarddiskVolume3\Users\me\repo`.
+pub(super) fn final_path(file: &File) -> io::Result<Vec<u16>> {
+    let mut buffer = vec![0u16; 512];
+    loop {
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FINAL_PATH_NORMALIZED_NT,
+            )
+        } as usize;
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            buffer.truncate(length);
+            return Ok(buffer);
+        }
+        // Too small: `length` is the required size including the terminator.
+        if length > 32_768 {
+            return Err(io::Error::other("final path exceeds the Windows path limit"));
+        }
+        buffer.resize(length + 1, 0);
+    }
 }
 
 pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
@@ -319,6 +445,23 @@ pub(super) fn remove_empty_directory_at(parent: &File, name: &OsStr) -> io::Resu
         size_of::<DispositionInformation>() as u32,
         FILE_DISPOSITION_INFORMATION,
     ))
+}
+
+/// Exclusive creation whose handle also denies every other writer for its
+/// lifetime (readers, rename and delete stay shareable). While it is open,
+/// the file's bytes can only change through this handle.
+pub(super) fn create_file_denying_writers_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    open_at_with_security_and_share(
+        parent,
+        name,
+        FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+        ptr::null_mut(),
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+    )
 }
 
 fn open_at(

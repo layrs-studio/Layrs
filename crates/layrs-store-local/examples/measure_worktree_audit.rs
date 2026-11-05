@@ -426,9 +426,11 @@ fn run(data: &mut Value) -> Result<()> {
         "FORMAT exceeds audit size limit",
     )?;
     let audit = scm_v1::open_audit(&root)?;
+    // It counts one physical file per indexed object: packs (format 5) do
+    // not fit. Create the Store with LAYRS_STORE_FORMAT=2.
     require(
-        scm_v1::FORMAT_VERSION == 2,
-        "this benchmark auditor requires Store format 2",
+        audit.format_version() == scm_v1::FORMAT_VERSION,
+        "this benchmark auditor requires Store format 2 (LAYRS_STORE_FORMAT=2)",
     )?;
     data["storeRoot"] = json!(audit.layout().root());
     data["storeId"] = json!(audit.store_id());

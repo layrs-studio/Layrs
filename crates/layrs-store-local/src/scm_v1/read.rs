@@ -26,12 +26,14 @@ use super::{CasError, NativeCas, NativeCasWriter, NativeStoreOpen};
 mod history;
 pub use history::{ObservationProjection, ObservationSnapshot};
 
-const DEFAULT_FILE_AVAILABILITY_ROWS: usize = 66_561;
+// Work rows: the File, its manifests and every chunk reference. Sized for
+// the 2^24-chunk File bound plus manifest rows (ADR 0027).
+const DEFAULT_FILE_AVAILABILITY_ROWS: usize = (1 << 24) + 2_048;
 // Logical verification work, not an allocation: availability streams one
-// bounded chunk at a time. Reserve metadata overhead beside four 1GiB files.
-const DEFAULT_FILE_AVAILABILITY_BYTES: usize = 4 * 1024 * 1024 * 1024 + 256 * 1024 * 1024;
+// bounded chunk at a time, so File bytes are unbounded (ADR 0027).
+const DEFAULT_FILE_AVAILABILITY_BYTES: usize = usize::MAX;
 const DEFAULT_FILE_AVAILABILITY_MANIFESTS: usize = 1_024;
-const DEFAULT_FILE_AVAILABILITY_CHUNKS: usize = 65_536;
+const DEFAULT_FILE_AVAILABILITY_CHUNKS: usize = 1 << 24;
 
 /// Reader bound to a validated Ready Store capability.
 pub struct NativeScmReader<'store> {
@@ -101,6 +103,36 @@ impl<'transaction> NativeTransactionalScmReader<'transaction> {
     fn active_reader(&self) -> Result<&NativeScmReader<'transaction>> {
         drop(self.reader.connection()?);
         Ok(&self.reader)
+    }
+}
+
+/// One shared Store capability with its CAS view and identity registry
+/// opened once, for loops that read many objects (e.g. checkout staging).
+/// Each `reader()` is equivalent to `NativeScmReader::new(store)` at the time
+/// this was opened; drop it to release the shared capability.
+pub struct NativeStoreReading {
+    store: NativeStoreOpen,
+    cas: NativeCas,
+    identities: super::identity::IdentityRegistry,
+}
+
+impl NativeStoreReading {
+    pub fn new(store: NativeStoreOpen) -> Result<Self> {
+        let cas = NativeCas::open(&store).map_err(cas_open_backend)?;
+        let identities = super::identity::read_registry(store.layout().root(), store.store_id())?;
+        Ok(Self {
+            store,
+            cas,
+            identities,
+        })
+    }
+
+    pub fn reader(&self) -> NativeScmReader<'_> {
+        NativeScmReader {
+            source: SqlReadSource::Ready(&self.store),
+            identities: self.identities.clone(),
+            cas: CasReadSource::Transaction(&self.cas),
+        }
     }
 }
 
@@ -205,19 +237,14 @@ impl<'store> NativeScmReader<'store> {
                 "objects.storage_path for {id} does not match its canonical CAS path"
             )));
         }
-        let metadata = std::fs::symlink_metadata(&expected_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                corruption(format!("verified CAS object {id} is missing"))
-            } else {
-                backend(format!("inspect CAS object {id}: {error}"))
-            }
-        })?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(corruption(format!(
-                "verified CAS object {id} is not a regular file"
-            )));
-        }
-        if metadata.len() != u64::try_from(byte_length).unwrap_or_default() {
+        // A separate file or a pack member (ADR 0026); either is verified
+        // against its content address by the read below.
+        let location = self
+            .cas
+            .locate(id)
+            .map_err(cas_read_error)?
+            .ok_or_else(|| corruption(format!("verified CAS object {id} is missing")))?;
+        if location.length() != u64::try_from(byte_length).unwrap_or_default() {
             return Err(corruption(format!(
                 "objects.byte_length for {id} does not match stored bytes"
             )));

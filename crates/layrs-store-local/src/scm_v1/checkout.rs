@@ -3,8 +3,10 @@
 use crate::secure_fs::PinnedDirectory;
 mod projection;
 mod streaming;
+pub use streaming::{TrustedCapture, TrustedFile};
 pub use projection::{
     CheckoutProjectionContent, CheckoutProjectionEntry, projection_tree_id,
+    remember_projection_tree_id,
     validate_streaming_projection,
 };
 use std::{
@@ -51,14 +53,29 @@ impl CheckoutReader {
         if root.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(invalid("checkout path contains parent traversal"));
         }
-        // Reject reparse/symlink ancestors as well as the checkout itself.
+        // Reject reparse/symlink ancestors as well as the checkout itself. A
+        // strict ancestor found plain once is not re-inspected by this
+        // process (a command opens the same checkout and Store many times);
+        // the checkout directory itself is always inspected, then pinned.
+        static PLAIN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+            std::sync::OnceLock::new();
+        let plain = PLAIN.get_or_init(Default::default);
         let mut ancestor = PathBuf::new();
         for part in root.components() {
             ancestor.push(part);
             if matches!(part, Component::Normal(_)) {
+                let strict = ancestor != root;
+                if strict && plain.lock().is_ok_and(|known| known.contains(&ancestor)) {
+                    continue;
+                }
                 let metadata = fs::symlink_metadata(&ancestor)?;
                 if metadata.file_type().is_symlink() || reparse(&metadata) {
                     return Err(invalid("checkout ancestor is a symlink or reparse point"));
+                }
+                if strict {
+                    if let Ok(mut known) = plain.lock() {
+                        known.insert(ancestor.clone());
+                    }
                 }
             }
         }
@@ -384,6 +401,24 @@ fn list(path: &Path, limit: usize) -> io::Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+/// Sorted names with the entry's own (non-following) metadata from the
+/// directory enumeration: on Windows no extra open per entry.
+fn list_with_metadata(path: &Path, limit: usize) -> io::Result<Vec<(String, fs::Metadata)>> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("checkout filename is not UTF-8"))?;
+        if entries.len() >= limit {
+            return Err(invalid("checkout directory entry limit exceeded"));
+        }
+        entries.push((name, entry.metadata()?));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
 }
 fn same_metadata(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.len() == b.len()

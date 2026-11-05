@@ -5,6 +5,7 @@ use layrs_core::scm::{LayerId, OperationId, StepId, StoreId, Worktree, WorktreeI
 use layrs_store::scm::{ScmReader, StoreError};
 use serde::{Deserialize, Serialize};
 use std::{
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -71,8 +72,10 @@ pub fn registered_worktrees(store: &NativeStoreOpen) -> layrs_store::scm::Result
     if ids.len() > 16384 {
         return Err(backend("Worktree listing limit exceeded"));
     }
+    let retired = retired_worktrees(store.layout().metadata_dir()).map_err(backend)?;
     let reader = NativeScmReader::new(store)?;
     ids.into_iter()
+        .filter(|id| !retired.contains(id))
         .map(|id| {
             let id = WorktreeId::parse(id).map_err(backend)?;
             reader
@@ -80,6 +83,64 @@ pub fn registered_worktrees(store: &NativeStoreOpen) -> layrs_store::scm::Result
                 .ok_or_else(|| backend("registered Worktree disappeared"))
         })
         .collect()
+}
+
+const RETIRED: &str = "retired-worktrees.json";
+const MAX_RETIRED: usize = 16_384;
+
+/// Worktrees retired from use (a dropped Room): their rows, Operations and
+/// history stay, but they are no longer listed, discovered or protected as a
+/// registered root. Only folders whose work is already kept in the Store are
+/// retired.
+pub fn retired_worktrees(metadata_dir: &Path) -> io::Result<std::collections::BTreeSet<String>> {
+    let path = metadata_dir.join(RETIRED);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(e),
+    };
+    if bytes.len() > MAX_RETIRED * 64 {
+        return Err(invalid("retired Worktree registry exceeds its bound"));
+    }
+    let ids: Vec<String> =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("retired Worktree registry is invalid"))?;
+    for id in &ids {
+        WorktreeId::parse(id.clone()).map_err(|_| invalid("retired Worktree registry is invalid"))?;
+    }
+    Ok(ids.into_iter().collect())
+}
+
+/// Durably adds `id` to the retired registry under the exclusive Store lock.
+pub fn retire_worktree(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    id: &WorktreeId,
+) -> io::Result<()> {
+    let store = super::repository::open_exclusive_retry(store_root)
+        .map_err(io::Error::other)?
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
+    let metadata = store.layout().metadata_dir().to_path_buf();
+    let mut retired = retired_worktrees(&metadata)?;
+    if !retired.insert(id.as_str().to_owned()) {
+        return Ok(());
+    }
+    if retired.len() > MAX_RETIRED {
+        return Err(invalid("too many retired Worktrees"));
+    }
+    let bytes = serde_json::to_vec(&retired.into_iter().collect::<Vec<_>>())
+        .map_err(io::Error::other)?;
+    let staged = metadata.join(format!(".{RETIRED}.{}.tmp", std::process::id()));
+    {
+        let mut file = fs::File::create(&staged)?;
+        io::Write::write_all(&mut file, &bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&staged, metadata.join(RETIRED))?;
+    PinnedDirectory::open(&metadata)?.sync()?;
+    drop(store);
+    Ok(())
 }
 
 /// Reserve the existing empty directory without replacing any entry. All

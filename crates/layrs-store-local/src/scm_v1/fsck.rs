@@ -391,14 +391,11 @@ impl<'a> Context<'a> {
             byte_budget_remaining: (row_limit as u64)
                 .saturating_mul(64 * 1024)
                 .min(256 * 1024 * 1024),
-            // Chunk auditing is streaming and does not populate objects RAM.
-            // Keep its I/O budget separate from retained canonical metadata.
-            chunk_byte_budget_remaining: (row_limit as u64)
-                .saturating_mul(64 * 1024)
-                .min(4 * 1024 * 1024 * 1024),
-            file_byte_budget_remaining: (row_limit as u64)
-                .saturating_mul(64 * 1024)
-                .min(4 * 1024 * 1024 * 1024),
+            // Chunk and File auditing stream one chunk at a time and do not
+            // populate objects RAM: their I/O is the Store's size, like a
+            // full git fsck, and is not capped (ADR 0027).
+            chunk_byte_budget_remaining: u64::MAX,
+            file_byte_budget_remaining: u64::MAX,
             cpu_budget_remaining: (max_findings.max(1) as u64)
                 .saturating_mul(256)
                 .min(16_000_000),

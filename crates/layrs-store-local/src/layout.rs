@@ -116,6 +116,18 @@ pub(crate) fn open_read_no_follow(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Reopens a file whose full path `open_read_no_follow` already validated:
+/// no ancestor walk, the opened object itself must still be a regular,
+/// non-reparse file (checked through its own handle).
+pub(crate) fn reopen_read_no_follow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    set_no_follow(&mut options);
+    let file = options.open(path)?;
+    validate_regular_non_reparse(path, &file.metadata()?)?;
+    Ok(file)
+}
+
 pub(crate) fn open_read_write_no_follow(path: &Path) -> io::Result<File> {
     reject_reparse_components(path)?;
     let mut options = OpenOptions::new();
@@ -217,6 +229,30 @@ pub(crate) fn reject_reparse_components(path: &Path) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// `reject_reparse_components` for every path, inspecting each distinct
+/// prefix once: sibling paths under one root share all their ancestors.
+pub(crate) fn reject_reparse_components_all(paths: &[&Path]) -> io::Result<()> {
+    let mut checked = std::collections::HashSet::new();
+    for path in paths {
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            if matches!(component, Component::Prefix(_)) || !checked.insert(current.clone()) {
+                continue;
+            }
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata_has_reparse_point(&metadata) => {
+                    return reparse_error(path);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn metadata_has_reparse_point(metadata: &fs::Metadata) -> bool {

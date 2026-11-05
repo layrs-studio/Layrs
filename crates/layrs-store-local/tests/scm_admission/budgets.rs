@@ -160,7 +160,8 @@ fn admission_chain_is_linearized_and_oversized_batches_fail_with_a_stable_budget
         .validate_batch()
         .unwrap();
 
-    let too_many: Vec<_> = (0_u32..16_385)
+    // One past MAX_BATCH_OBJECTS (sized for a 100k-entry initial capture).
+    let too_many: Vec<_> = (0_u32..262_145)
         .map(|value| CanonicalObject::ChunkRaw(Chunk::new(value.to_le_bytes().to_vec()).unwrap()))
         .collect();
     let oversized =

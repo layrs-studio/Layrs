@@ -141,6 +141,8 @@ pub fn apply_checkout_bound_metadata(
             chunks: &[],
             read_chunk: &mut read_chunk,
             write_file: &mut write_file,
+            end_staging: None,
+            write_file_shared: None,
         },
     )
 }
@@ -245,14 +247,23 @@ pub fn apply_checkout_with_sources_bound_metadata(
         worktree.checkout_root(),
         Some(worktree.filesystem_identity()),
     )?;
-    let tracked = before.iter().chain(after).map(|e| e.path.clone()).collect();
-    if checkout
-        .capture_streaming(limits(), &tracked, &mut |_| Ok(()), &mut || Ok(()))?
-        .0
-        != before
-    {
+    // Only the paths this transition touches are checked, like a git
+    // checkout: every original it will move must still hold its exact `before`
+    // content (and phase one rechecks each one right before moving it), and
+    // every new leaf must be free. Untouched paths are never written, so a
+    // concurrent edit there stays a working change. A conflict refuses here,
+    // before any journal.
+    let precheck = crate::perf::span("materialize.precheck");
+    let pinned_checkout = PinnedDirectory::open(checkout.root())?;
+    if pinned_checkout.identity_token() != worktree.filesystem_identity() {
+        return Err(error("checkout identity changed"));
+    }
+    if !touched_paths_match(&pinned_checkout, checkout.root(), &paths, &prior)? {
         return Err(error("checkout changed after capture"));
     }
+    drop(pinned_checkout);
+    drop(precheck);
+    crate::perf::count("materialize.changed_paths", paths.len() as u64);
     if paths.is_empty() {
         return NativeScmRepository::new(store_root)
             .with_short_acquisition()
@@ -379,7 +390,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
             "{}-attempt-{attempt}",
             batch.request_digest().to_string().replace(':', "-")
         ));
-        let payload = serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity() });
+        let payload = serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" });
         let path_plans = paths
             .iter()
             .map(|p| RecoveryPathPlan::new(*p, RecoveryPathRole::Materialized, None))
@@ -442,32 +453,44 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .file_name()
             .ok_or_else(|| error("missing backup name"))?,
     )?;
-    let mut staged = BTreeMap::new();
-    let mut evidence = Vec::new();
-    for (index, path) in paths.iter().enumerate() {
-        if let Some(CheckoutProjectionContent::File {
-            file_id,
-            byte_length,
-            executable,
-        }) = next.get(path).copied()
-        {
-            let mut file = backup.create_file(format!("new-{index}").as_ref())?;
-            let mut verified = sources::VerifiedWriter::new(file.file_mut(), file_id, *byte_length);
-            (sources.write_file)(path, &mut verified)?;
-            verified.finish()?;
-            set_executable(file.file(), *executable)?;
-            file.file().sync_all()?;
-            staged.insert(*path, PinnedLeaf::File(file));
-        } else if let Some(CheckoutProjectionContent::Symlink { target }) = next.get(path).copied()
-        {
-            staged.insert(
-                *path,
-                backup.create_symlink(format!("new-{index}").as_ref(), target)?,
-            );
-        }
-        evidence.push(PathEvidence::new(*path, RecoveryPathRole::Materialized, serde_json::json!({"backup":format!("old-{index}"), "before":fingerprint(prior.get(path).copied()), "after":fingerprint(next.get(path).copied())})).map_err(error)?);
+    // Checkout files are a projection of content that is already durable in
+    // the CAS (or, for a received graph, installed durably before the commit).
+    // Git-like contract (decided 2026-11-04): staged files are NOT flushed one
+    // by one. Each staged file's identity is journaled, so after a crash a
+    // file of ours whose bytes did not reach the disk is recognised: before
+    // the commit it is quarantined like any installed leaf, after the commit
+    // it is kept and shows as a working change. Originals moved in phase one
+    // keep their per-move syncs. A staging failure (missing or corrupt source,
+    // disk full) touched no checkout path: the journal is closed as untouched
+    // instead of leaving the Worktree needing repair.
+    let stage = crate::perf::span("materialize.stage");
+    let staging = stage_all(&backup, &paths, &prior, &next, sources);
+    if let Some(end_staging) = sources.end_staging.as_mut() {
+        end_staging();
     }
-    backup.sync()?;
+    let (staged, evidence, written) = match staging.and_then(|staged| {
+        backup.sync()?;
+        Ok(staged)
+    }) {
+        Ok(staged) => staged,
+        Err(failure) => {
+            if let Err(abandon) = abandon_untouched(
+                store_root,
+                store_identity,
+                metadata_identity,
+                &recovery_id,
+                &owner,
+                &paths,
+                faults,
+            ) {
+                return Err(error(format!(
+                    "{failure}; the untouched checkout journal could not be closed: {abandon}"
+                )));
+            }
+            return Err(failure);
+        }
+    };
+    drop(stage);
     let leases = {
         let mut store = open_exclusive(store_root)
             .map_err(error)?
@@ -496,6 +519,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
         leases,
         faults,
     )?;
+    let phases = crate::perf::span("materialize.phases");
+    // What each moved original looked like once proven equal to its tracked
+    // content: the completed attempt deletes only backups still exactly so.
+    let mut sealed: Vec<(String, BackupSeal)> = Vec::new();
     // Phase one moves every changed original out of the way before any new
     // directory/file is created. A prefix may change from file to directory.
     for (index, path) in paths.iter().enumerate() {
@@ -524,49 +551,152 @@ pub fn apply_checkout_with_sources_bound_metadata(
                     "checkout leaf changed during backup; moved entry retained",
                 ));
             }
+            if let Some(seal) = BackupSeal::of(&protected) {
+                sealed.push((format!("old-{index}"), seal));
+            }
             faults.check(MaterializationPoint::AfterBackup)?;
         }
     }
     // Only remove empty directories that obstruct a desired leaf. Unexpected
     // children make the native nonrecursive removal fail with backups retained.
+    // Only changed paths can be obstructed: an unchanged desired leaf is
+    // already that exact leaf (precheck), and a directory replaced by a leaf
+    // only held changed paths. Recovery passes its changed paths the same way.
+    let changed = |path: &&str| paths.binary_search(path).is_ok();
     clear_obstructing_directories(
         &checkout,
-        prior.keys().copied(),
-        next.keys().copied(),
+        prior.keys().copied().filter(changed),
+        next.keys().copied().filter(changed),
         &mut || lease.tick(),
     )?;
     faults.check(MaterializationPoint::AfterDirectoryRemoval)?;
+    // Installs are made durable together, before the postcheck and the
+    // metadata commit. Recovery decides each path independently (staged leaf
+    // still in the backup, or installed leaf at its path, both fingerprinted),
+    // so it never relies on one install being durable before the next; the
+    // commit is what needs every install durable. Staged bytes were synced
+    // before any install, and phase one keeps its per-move syncs.
+    let mut installed_into: BTreeMap<&str, PinnedDirectory> = BTreeMap::new();
+    let mut installed_any = false;
     for path in &paths {
+        let _install = crate::perf::span("phases.install");
         lease.tick()?;
         checkout.verify_path_identity()?;
         if let Some(file) = staged.get(path) {
-            let (parent, name) = checkout.components_to_parent(Path::new(path))?;
+            let parent_span = crate::perf::span("phases.parent");
+            let (directory, name) = path.rsplit_once('/').unwrap_or(("", path));
+            // One ensured (created and synced) parent per directory; its path
+            // binding is still verified before every install into it.
+            if !installed_into.contains_key(directory) {
+                // Bound open handles: make the installs so far durable early.
+                if installed_into.len() >= 64 {
+                    for parent in installed_into.values() {
+                        parent.sync()?;
+                    }
+                    installed_into.clear();
+                }
+                let (parent, _) = checkout.components_to_parent(Path::new(path))?;
+                installed_into.insert(directory, parent);
+            }
+            let parent = &installed_into[directory];
             parent.verify_path_identity()?;
-            if file.rename_to(&parent, &name)? {
+            drop(parent_span);
+            if file.rename_to(parent, std::ffi::OsStr::new(name))? {
                 return Err(error(
                     "checkout path appeared during materialization; original backup retained",
                 ));
             }
-            parent.sync()?;
-            backup.sync()?;
+            installed_any = true;
         }
         faults.check(MaterializationPoint::AfterPath)?;
     }
-    let actual = CheckoutReader::open(&checkout_root, Some(&identity))?
-        .capture_streaming(
-            limits(),
-            &after.iter().map(|e| e.path.clone()).collect(),
-            &mut |_| Ok(()),
-            &mut || lease.tick(),
-        )?
-        .0;
-    if actual != after {
+    for parent in installed_into.values() {
+        lease.tick()?;
+        parent.sync()?;
+    }
+    if installed_any {
+        backup.sync()?;
+    }
+    drop(installed_into);
+    drop(phases);
+    let postcheck = crate::perf::span("materialize.postcheck");
+    // A change index (ADR 0025) learns each file proven below, with the
+    // handle's metadata, as of no later than this instant.
+    let indexed = super::change_index::ChangeIndex::is_enabled(store_root, worktree_id);
+    let proven_at = super::change_index::now();
+    let mut proven: Vec<(String, super::change_index::IndexEntry)> = Vec::new();
+    // A file this materialization installed is vouched for through the very
+    // handle that wrote its proven bytes: still that file at exactly that
+    // path, same length and modification time as right after the write.
+    // Reopening and rehashing it by path is what made fresh checkouts slow
+    // (the antivirus scans every new file on its first open). Untouched
+    // paths, listings and identities are rechecked as before.
+    let mut trust = |path: &str, full: &Path| -> Option<super::checkout::TrustedFile> {
+        let file = staged.get(path)?.regular_file()?;
+        let CheckoutProjectionContent::File {
+            file_id,
+            byte_length,
+            executable,
+        } = next.get(path).copied()?
+        else {
+            return None;
+        };
+        let stamp = written.get(path)?;
+        let metadata = file.file().metadata().ok()?;
+        let now = StagedStamp {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        let trusted = stamp.modified.is_some()
+            && *stamp == now
+            && now.length == *byte_length
+            && file.is_at(full);
+        if trusted && indexed {
+            if let Some(stat) = super::change_index::StatKey::of(&metadata) {
+                proven.push((
+                    path.to_owned(),
+                    super::change_index::IndexEntry {
+                        file_id: file_id.clone(),
+                        length: *byte_length,
+                        executable: *executable,
+                        stat,
+                        verified_at: proven_at,
+                        native: None,
+                    },
+                ));
+            }
+        }
+        trusted.then(|| super::checkout::TrustedFile {
+            file_id: file_id.clone(),
+            length: *byte_length,
+            executable: *executable,
+        })
+    };
+    if !touched_paths_installed(
+        &checkout,
+        Path::new(&checkout_root),
+        &paths,
+        &next,
+        &mut trust,
+        &mut || lease.tick(),
+    )? {
         return Err(error(
             "checkout changed during materialization; backup retained",
         ));
     }
+    drop(postcheck);
+    drop(trust);
+    // Closing a freshly written file is where the antivirus scans it: close
+    // the staged handles on a few threads while the metadata commits. They
+    // are joined before this function returns.
+    let closer = close_in_background(staged.into_values().collect());
     faults.check(MaterializationPoint::BeforeMetadata)?;
-    lease.force()?;
+    let metadata = crate::perf::span("materialize.metadata_and_complete");
+    // The metadata transaction itself checks the permit, the `applying`
+    // state, the batch digest and that no lease expired or was released,
+    // which is stronger than a heartbeat: renew only when one is due
+    // (council r5, D3).
+    lease.tick()?;
     let outcome =
         NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
             .with_store_identity(store_identity)
@@ -574,7 +704,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
             .map_err(io::Error::other)?;
     faults.check(MaterializationPoint::AfterMetadata)?;
-    lease.force()?;
+    lease.tick()?;
     let results = paths
         .iter()
         .map(|p| {
@@ -602,7 +732,376 @@ pub fn apply_checkout_with_sources_bound_metadata(
             faults.lease_time_ms()?,
         )
         .map_err(error)?;
+    drop(metadata);
+    {
+        let _close = crate::perf::span("materialize.close_staged");
+        drop(closer);
+    }
+    {
+        // The completed journal no longer needs its originals: each was proven
+        // equal to tracked content (durable in the CAS) before it moved, so
+        // keeping them only doubled the disk use of every replaced file.
+        // Best effort: a leftover backup is harmless and never read again.
+        let _purge = crate::perf::span("materialize.purge_backup");
+        purge_completed_backup(&backups, backup, &backup_root, &sealed);
+    }
+    if indexed {
+        // A cache: failing to record it only makes the next capture read more.
+        let _span = crate::perf::span("materialize.change_index");
+        if let Some(mut index) = super::change_index::ChangeIndex::load(store_root, worktree_id) {
+            for path in &paths {
+                index.remove_path(path);
+            }
+            for (path, entry) in proven {
+                index.insert(path, entry);
+            }
+            if index.save(store_root).is_err() {
+                crate::perf::count("materialize.change_index_unsaved", 1);
+            }
+        }
+    }
     Ok(outcome)
+}
+
+/// Identity and metadata of a moved original, observed right after it was
+/// proven equal to its tracked content.
+struct BackupSeal {
+    identity: String,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+impl BackupSeal {
+    fn of(leaf: &PinnedLeaf) -> Option<Self> {
+        let PinnedLeaf::File(file) = leaf else {
+            return None;
+        };
+        let metadata = file.file().metadata().ok()?;
+        Some(Self {
+            identity: file.identity_token(),
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// Removes a completed attempt's backups: only the journal's own `old-N`
+/// entries, through the pinned backup directory (never a path that could be
+/// substituted), each reopened and still the very file proven equal to its
+/// tracked content (same identity, length and modification time). Anything
+/// else, an entry that cannot be checked or deleted included, is retained,
+/// and so is the attempt's directory. A writer still holding the file makes
+/// the check fail (Windows); one that wrote and closed changed its metadata.
+/// The remaining window between check and deletion is the one git's
+/// checkout also has.
+fn purge_completed_backup(
+    backups: &PinnedDirectory,
+    backup: PinnedDirectory,
+    root: &Path,
+    sealed: &[(String, BackupSeal)],
+) {
+    let mut deleted = 0usize;
+    for (name, seal) in sealed {
+        // On Windows the check holds the file against writers: an open that
+        // must refuse any existing write handle fails if another process
+        // still holds one, and the backup is then retained.
+        #[cfg(windows)]
+        let checked = backup.open_immutable_file(name.as_ref()).map(PinnedLeaf::File);
+        #[cfg(not(windows))]
+        let checked = backup.open_leaf(name.as_ref());
+        let unchanged = checked.is_ok_and(|leaf| {
+            BackupSeal::of(&leaf).is_some_and(|now| {
+                now.identity == seal.identity
+                    && now.length == seal.length
+                    && now.modified == seal.modified
+            })
+        });
+        if unchanged && backup.unlink_file(name.as_ref()).is_ok() {
+            deleted += 1;
+        }
+    }
+    drop(backup);
+    if deleted == sealed.len() {
+        if let Some(name) = root.file_name() {
+            let _ = backups.remove_empty_child(name);
+        }
+    }
+}
+
+/// Drops `leaves` on a few threads; the returned guard joins them on drop.
+fn close_in_background(leaves: Vec<PinnedLeaf>) -> BackgroundClose {
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8);
+    let per = leaves.len().div_ceil(threads).max(1);
+    let mut leaves = leaves;
+    let mut workers = Vec::new();
+    while !leaves.is_empty() {
+        let batch = leaves.split_off(leaves.len().saturating_sub(per));
+        match std::thread::Builder::new().spawn(move || drop(batch)) {
+            Ok(worker) => workers.push(worker),
+            // Could not spawn: the batch was moved into the failed closure
+            // and is dropped (closed) here, on this thread.
+            Err(_) => {}
+        }
+    }
+    BackgroundClose(workers)
+}
+
+struct BackgroundClose(Vec<std::thread::JoinHandle<()>>);
+
+impl Drop for BackgroundClose {
+    fn drop(&mut self) {
+        for worker in self.0.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Length and modification time of a staged file right after its bytes were
+/// written; the postcheck trusts an installed file only while both still
+/// hold through the handle that wrote it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StagedStamp {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+type Staged<'a> = (
+    BTreeMap<&'a str, PinnedLeaf>,
+    Vec<PathEvidence>,
+    BTreeMap<&'a str, StagedStamp>,
+);
+
+/// Writes every new leaf into the backup directory as `new-{index}` (file
+/// bytes verified against their FileId while written) and builds the journal
+/// evidence, including each staged file's identity.
+fn stage_all<'a>(
+    backup: &PinnedDirectory,
+    paths: &[&'a str],
+    prior: &BTreeMap<&'a str, &CheckoutProjectionContent>,
+    next: &BTreeMap<&'a str, &CheckoutProjectionContent>,
+    sources: &mut CheckoutSources<'_>,
+) -> io::Result<Staged<'a>> {
+    let jobs: Vec<sources::StageJob<'_>> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, path)| match next.get(path).copied() {
+            Some(CheckoutProjectionContent::File {
+                file_id,
+                byte_length,
+                ..
+            }) => Some(sources::StageJob {
+                index,
+                path,
+                file_id,
+                length: *byte_length,
+            }),
+            _ => None,
+        })
+        .collect();
+    let mut written = sources::stage_files(backup, &jobs, sources)?;
+    let mut staged = BTreeMap::new();
+    let mut evidence = Vec::with_capacity(paths.len());
+    let mut stamps = BTreeMap::new();
+    for (index, path) in paths.iter().enumerate() {
+        let mut staged_identity = serde_json::Value::Null;
+        match next.get(path).copied() {
+            Some(CheckoutProjectionContent::File { executable, .. }) => {
+                let file = written
+                    .remove(&index)
+                    .ok_or_else(|| error("staged file is missing"))?;
+                set_executable(file.file(), *executable)?;
+                let metadata = file.file().metadata()?;
+                stamps.insert(
+                    *path,
+                    StagedStamp {
+                        length: metadata.len(),
+                        modified: metadata.modified().ok(),
+                    },
+                );
+                staged_identity = serde_json::json!({
+                    "identity": file.identity_token(),
+                    "length": metadata.len(),
+                    "modified": modified_nanos(metadata.modified().ok()),
+                });
+                staged.insert(*path, PinnedLeaf::File(file));
+            }
+            Some(CheckoutProjectionContent::Symlink { target }) => {
+                staged.insert(
+                    *path,
+                    backup.create_symlink(format!("new-{index}").as_ref(), target)?,
+                );
+            }
+            None => {}
+        }
+        evidence.push(
+            PathEvidence::new(
+                *path,
+                RecoveryPathRole::Materialized,
+                serde_json::json!({
+                    "backup": format!("old-{index}"),
+                    "before": fingerprint(prior.get(path).copied()),
+                    "after": fingerprint(next.get(path).copied()),
+                    "staged": staged_identity,
+                }),
+            )
+            .map_err(error)?,
+        );
+    }
+    Ok((staged, evidence, stamps))
+}
+
+/// Closes a journal whose staging failed before any checkout path was
+/// touched, exactly as recovery closes an untouched Pending journal.
+fn abandon_untouched(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    recovery_id: &RecoveryId,
+    owner: &str,
+    paths: &[&str],
+    faults: &dyn MaterializationFaults,
+) -> io::Result<()> {
+    let mut store = open_exclusive(store_root)
+        .map_err(error)?
+        .with_filesystem_identity(store_identity)?
+        .with_metadata_identity(metadata_identity)?;
+    let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
+    let evidence = paths
+        .iter()
+        .map(|path| {
+            PathEvidence::new(
+                *path,
+                RecoveryPathRole::Materialized,
+                serde_json::json!({"untouched": true}),
+            )
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(error)?;
+    journal
+        .prepare(
+            recovery_id,
+            &RecoveryPreparation::new(
+                serde_json::json!({"untouched": true, "stagingFailed": true}),
+                evidence,
+            )
+            .map_err(error)?,
+            faults.lease_time_ms()?,
+        )
+        .map_err(error)?;
+    let leases = journal
+        .claim(recovery_id, owner, faults.lease_time_ms()?, LEASE_MS)
+        .map_err(error)?
+        .leases;
+    let results = paths
+        .iter()
+        .map(|path| {
+            RecoveryPathResult::new(
+                *path,
+                RecoveryPathRole::Materialized,
+                RecoveryPathState::RolledBack,
+                serde_json::json!({"verified": true, "originalsRetained": true, "untouched": true}),
+            )
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(error)?;
+    journal
+        .complete(
+            recovery_id,
+            owner,
+            &leases,
+            serde_json::json!({"committed": false, "abandoned": true}),
+            &results,
+            faults.lease_time_ms()?,
+        )
+        .map_err(error)?;
+    Ok(())
+}
+
+/// Pre-journal check of exactly the touched paths (see the precheck).
+fn touched_paths_match(
+    checkout: &PinnedDirectory,
+    root: &Path,
+    paths: &[&str],
+    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
+) -> io::Result<bool> {
+    // A fresh, empty checkout (worktree creation) has nothing to compare.
+    if prior.is_empty() && fs::read_dir(root)?.next().is_none() {
+        return Ok(true);
+    }
+    for path in paths {
+        let current = current_file(checkout, path)?;
+        if !matches_fingerprint(
+            current.as_ref(),
+            &fingerprint(prior.get(path).copied()),
+            &mut || Ok(()),
+        )? {
+            return Ok(false);
+        }
+        if prior.contains_key(path) {
+            continue;
+        }
+        // A new leaf may only take the place of a directory that is empty or
+        // whose tracked content this transition removes (the obstruction pass
+        // then removes it), and every existing ancestor must be a directory
+        // or a tracked file this transition removes.
+        let tracked_below = |directory: &str| {
+            let prefix = format!("{directory}/");
+            prior
+                .range::<&str, _>(prefix.as_str()..)
+                .next()
+                .is_some_and(|(p, _)| p.starts_with(&prefix))
+        };
+        if let Ok(meta) = fs::symlink_metadata(root.join(path)) {
+            if !meta.is_dir()
+                || (!tracked_below(path) && fs::read_dir(root.join(path))?.next().is_some())
+            {
+                return Ok(false);
+            }
+        }
+        for (end, _) in path.match_indices('/') {
+            let ancestor = &path[..end];
+            if let Ok(meta) = fs::symlink_metadata(root.join(ancestor)) {
+                if !meta.is_dir() && !prior.contains_key(ancestor) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Post-install check of exactly the touched paths: each new leaf holds its
+/// `after` content (vouched for by the handle that wrote it, else read and
+/// fingerprinted) and each removed path is absent.
+fn touched_paths_installed(
+    checkout: &PinnedDirectory,
+    root: &Path,
+    paths: &[&str],
+    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+    trust: &mut dyn FnMut(&str, &Path) -> Option<super::checkout::TrustedFile>,
+    progress: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<bool> {
+    checkout.verify_path_identity()?;
+    for path in paths {
+        progress()?;
+        if matches!(next.get(path), Some(CheckoutProjectionContent::File { .. }))
+            && trust(path, &path.split('/').fold(root.to_path_buf(), |full, part| full.join(part)))
+                .is_some()
+        {
+            continue;
+        }
+        let current = current_file(checkout, path)?;
+        if !matches_fingerprint(
+            current.as_ref(),
+            &fingerprint(next.get(path).copied()),
+            &mut *progress,
+        )? {
+            return Ok(false);
+        }
+    }
+    checkout.verify_path_identity()?;
+    Ok(true)
 }
 
 /// Missing parent or a regular-file ancestor means this leaf is absent. An
@@ -712,8 +1211,9 @@ fn limits() -> CheckoutLimits {
     CheckoutLimits {
         max_entries: 100_000,
         max_depth: 128,
-        max_file_bytes: 1024 * 1024 * 1024,
-        max_total_bytes: 4 * 1024 * 1024 * 1024,
+        // Materialization streams one chunk at a time (ADR 0027).
+        max_file_bytes: usize::MAX,
+        max_total_bytes: usize::MAX,
     }
 }
 fn now_ms() -> io::Result<i64> {
@@ -955,9 +1455,14 @@ pub fn recover_checkout_bound_metadata(
                 checkout.verify_path_identity()?;
                 let current = current_file(&checkout, &path.path)?;
                 if committed {
+                    // Our own installed file whose unflushed bytes did not
+                    // survive (checkout durability contract) is kept: it shows
+                    // as a working change, its content stays durable in the
+                    // CAS. Anything else that differs is someone's edit.
                     if !matches_fingerprint(current.as_ref(), &path.evidence["after"], &mut || {
                         lease.tick()
-                    })? {
+                    })? && !staged_by_us(current.as_ref(), &path.evidence, false)
+                    {
                         return Err(error(
                             "committed checkout was edited; recovery needs manual inspection",
                         ));
@@ -991,9 +1496,16 @@ pub fn recover_checkout_bound_metadata(
                     continue;
                 }
                 if let Some(current) = current {
+                    // Our own installed file whose unflushed bytes did not
+                    // survive is quarantined (moved, never deleted) only if
+                    // nothing wrote to it after us: same identity, length and
+                    // modification time as journaled right after our write.
+                    // Identity alone is provenance, not authority to move an
+                    // edit made after the interruption.
                     if !matches_fingerprint(Some(&current), &path.evidence["after"], &mut || {
                         lease.tick()
-                    })? {
+                    })? && !staged_by_us(Some(&current), &path.evidence, true)
+                    {
                         return Err(error(
                             "checkout edited after interruption; both current and backup preserved",
                         ));
@@ -1093,6 +1605,47 @@ pub fn recover_checkout_bound_metadata(
         count += 1;
     }
     Ok(count)
+}
+
+/// Whether `current` is the very file this materialization staged for the
+/// path (identity journaled with the evidence before any install) and, with
+/// `unchanged`, still has the length and modification time journaled right
+/// after our write (nothing wrote to it since).
+fn staged_by_us(
+    current: Option<&PinnedLeaf>,
+    evidence: &serde_json::Value,
+    unchanged: bool,
+) -> bool {
+    let staged = &evidence["staged"];
+    let Some(current) = current else {
+        return false;
+    };
+    if current.identity_token().as_deref() != staged["identity"].as_str() || staged["identity"].is_null() {
+        return false;
+    }
+    if !unchanged {
+        return true;
+    }
+    let Some(file) = current.regular_file() else {
+        return false;
+    };
+    let Ok(metadata) = file.file().metadata() else {
+        return false;
+    };
+    let modified = modified_nanos(metadata.modified().ok());
+    !modified.is_null()
+        && staged["modified"] == modified
+        && staged["length"].as_u64() == Some(metadata.len())
+}
+
+/// A modification time as decimal nanoseconds since the Unix epoch (JSON
+/// string, exact), or null when unavailable.
+fn modified_nanos(modified: Option<std::time::SystemTime>) -> serde_json::Value {
+    modified
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(serde_json::Value::Null, |since| {
+            serde_json::Value::String(since.as_nanos().to_string())
+        })
 }
 
 fn matches_fingerprint(

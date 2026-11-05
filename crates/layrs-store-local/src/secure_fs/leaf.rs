@@ -69,6 +69,14 @@ impl PinnedDirectory {
     }
 }
 impl PinnedLeaf {
+    /// Identity of a regular file leaf (`fs:v1:<volume>:<file>`).
+    pub(crate) fn identity_token(&self) -> Option<String> {
+        match self {
+            Self::File(file) => Some(file.identity_token()),
+            #[cfg(target_os = "linux")]
+            Self::Symlink(_) => None,
+        }
+    }
     pub(crate) fn link_target(&self) -> io::Result<Option<String>> {
         match self {
             Self::File(_) => Ok(None),

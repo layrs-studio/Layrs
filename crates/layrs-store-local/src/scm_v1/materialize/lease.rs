@@ -14,7 +14,15 @@ pub(super) struct LeaseKeeper<'a> {
     pub leases: Vec<ResourceLease>,
     faults: &'a dyn MaterializationFaults,
     last_ms: i64,
+    /// Last implicit identity recheck by `tick()`; `force()` always rechecks.
+    verified_at: Option<std::time::Instant>,
 }
+
+/// Progress ticks run per scanned entry and chunk. Rebinding checks there are
+/// throttled like `NativeStoreOpen::connection()`. Unconditional Store and
+/// metadata checks remain before staging, in `force()` before metadata, in the
+/// 30 s renewal's bound exclusive open and at the batch commit.
+const TICK_IDENTITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
 impl<'a> LeaseKeeper<'a> {
     pub fn new(
         root: &'a Path,
@@ -39,6 +47,7 @@ impl<'a> LeaseKeeper<'a> {
             leases,
             faults,
             last_ms,
+            verified_at: None,
         })
     }
     pub fn tick(&mut self) -> io::Result<()> {
@@ -48,8 +57,15 @@ impl<'a> LeaseKeeper<'a> {
         self.renew(true)
     }
     fn renew(&mut self, force: bool) -> io::Result<()> {
-        self.store_directory.verify_path_identity()?;
-        self.metadata_directory.verify_path_identity()?;
+        if force
+            || self
+                .verified_at
+                .is_none_or(|at| at.elapsed() >= TICK_IDENTITY_RECHECK)
+        {
+            self.store_directory.verify_path_identity()?;
+            self.metadata_directory.verify_path_identity()?;
+            self.verified_at = Some(std::time::Instant::now());
+        }
         let now = self.faults.lease_time_ms()?;
         // A backwards wall-clock correction does not expire an existing lease.
         // Avoid an O(paths²) renewal storm while time catches up.

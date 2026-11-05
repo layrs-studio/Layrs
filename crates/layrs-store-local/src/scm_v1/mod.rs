@@ -8,8 +8,9 @@ mod acquisition;
 pub use acquisition::{open_for_read_with_retry, open_for_registration_with_retry};
 mod admission;
 pub mod cas;
+pub mod change_index;
 pub mod checkout;
-mod checkout_ignore;
+pub mod checkout_ignore;
 mod checkout_paths;
 pub mod compaction;
 mod format;
@@ -18,6 +19,7 @@ mod identity;
 mod layout;
 pub use identity::{LocalIdentity, configure_local_identity, local_identity};
 pub mod materialize;
+pub mod projection_cache;
 mod read;
 pub mod recovery;
 mod repository;
@@ -30,8 +32,8 @@ mod write_batch;
 
 pub use admission::CompositeAdmissionResolver;
 pub use cas::{
-    CasError, CasFaultInjector, CasFaultPoint, CasResult, CasScrubIssue, CasScrubReport,
-    InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PreparedObject,
+    CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue, CasScrubReport,
+    InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PreparedObject, PutItem,
 };
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
@@ -39,8 +41,10 @@ pub use fsck::{
 };
 
 pub use format::{
-    FORMAT_MAGIC, FORMAT_SCHEMA, FORMAT_VERSION, FormatMarker, FormatState, NativeStoreError,
-    NativeStoreInspection, init, inspect, open, open_audit, open_exclusive,
+    FORMAT_MAGIC, FORMAT_SCHEMA, FORMAT_VERSION, FormatMarker, NEWEST_FORMAT_VERSION,
+    PACKED_FORMAT_VERSION, FormatState, NativeStoreError,
+    NativeStoreInspection, SharedReadLock, SharedReadLocks, init, inspect, open, open_audit,
+    open_exclusive,
 };
 pub use layout::{
     FORMAT_FILE_NAME, LOCK_FILE_NAME, METADATA_DIR_NAME, NativeStoreAudit, NativeStoreExclusive,
@@ -48,7 +52,8 @@ pub use layout::{
     SQLITE_FILE_NAME, STAGING_DIR_NAME, STAGING_LEASE_FILE_NAME,
 };
 pub use read::{
-    NativeScmReader, NativeTransactionalScmReader, ObservationProjection, ObservationSnapshot,
+    NativeScmReader, NativeStoreReading, NativeTransactionalScmReader, ObservationProjection,
+    ObservationSnapshot,
 };
 pub use recovery::{
     ClaimOutcome, MutationOutcome, NativeRecovery, PathEvidence, RecoveryDecision, RecoveryError,
