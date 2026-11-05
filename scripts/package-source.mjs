@@ -2,10 +2,15 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
+// Build outputs written inside the source tree. The Desktop build script copies
+// the exact Lens worker here and bakes its digest into the binary.
+const generatedFiles = new Set(["apps/studio-desktop/src-tauri/resources/layrs-lens-worker.exe"]);
+
 // Hash source bytes, including uncommitted files, while excluding build outputs.
 export function sourceTreeFiles(root, inputs) {
   const files = new Map();
   function visit(relative) {
+    if (generatedFiles.has(relative)) return;
     const path = join(root, relative);
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) throw new Error(`Source symlink is not supported for distribution: ${relative}`);
