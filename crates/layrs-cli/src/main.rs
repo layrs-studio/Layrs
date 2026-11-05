@@ -4,6 +4,14 @@ use layrs_cli::render::{self, Rendered};
 
 fn main() {
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    // Detached deletion of a dropped Room's folder (spawned by `room drop`).
+    if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_COMMAND) {
+        std::process::exit(layrs_cli::native_room::purge_dropped(&raw_args[1..]));
+    }
+    #[cfg(windows)]
+    if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_VIRTUAL_COMMAND) {
+        std::process::exit(layrs_cli::native_room::purge_dropped_virtual(&raw_args[1..]));
+    }
     let wants_json = raw_args.iter().any(|arg| arg == "--json");
 
     let cli = match parse_args(raw_args) {
@@ -24,7 +32,12 @@ fn main() {
     }
     let json = cli.globals.json;
     let diagnosis = matches!(cli.command, CliCommand::Doctor);
-    match run(cli) {
+    let run_span = layrs_store_local::perf::span("cli.run");
+    let result = run(cli);
+    drop(run_span);
+    // Opt-in diagnostics (LAYRS_PERF=1) go to stderr, never into the JSON envelope.
+    layrs_store_local::perf::emit(&std::env::args().skip(1).collect::<Vec<_>>().join(" "));
+    match result {
         Ok(rendered) => {
             let exit_code = if diagnosis
                 && (rendered.data["clean"] != true || rendered.data["complete"] != true)

@@ -13,6 +13,13 @@ mod process;
 #[path = "native_vfs_windows.rs"]
 mod windows;
 
+/// Makes this process's standard handles non-inheritable before spawning a
+/// long-lived child (see `process::keep_standard_handles_private`).
+pub(crate) fn keep_standard_handles_private() {
+    #[cfg(any(windows, test))]
+    process::keep_standard_handles_private();
+}
+
 pub fn run_foreground(cli: &Cli) -> Option<ExitCode> {
     let crate::args::CliCommand::Vfs(command) = &cli.command else {
         return None;
@@ -62,6 +69,56 @@ pub fn run(cli: &Cli, command: &VfsCommand) -> Result<Rendered, CliError> {
     #[cfg(not(windows))]
     {
         let _ = (cli, command);
+        Err(unsupported())
+    }
+}
+
+/// Starts a background VFS host that creates `path` on `layer` at `step` and
+/// returns its launch data (path, pid, ticket). Used by `layrs room new`.
+pub(crate) fn create_room_host(
+    cli: &Cli,
+    path: &Path,
+    layer: &str,
+    step: &str,
+) -> Result<serde_json::Value, CliError> {
+    #[cfg(windows)]
+    {
+        windows::run(
+            cli,
+            &VfsCommand::Create {
+                path: path.to_path_buf(),
+                layer: layer.to_owned(),
+                step: step.to_owned(),
+                background: true,
+                ready_timeout_seconds: 300,
+            },
+        )
+        .map(|rendered| rendered.data)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cli, path, layer, step);
+        Err(unsupported())
+    }
+}
+
+/// Starts (in the background) the VFS host of an existing virtual Room root
+/// and returns its launch data. Used when a Room's host is not running.
+pub(crate) fn start_room_host(cli: &Cli, path: &Path) -> Result<serde_json::Value, CliError> {
+    #[cfg(windows)]
+    {
+        windows::run(
+            cli,
+            &VfsCommand::Start {
+                path: path.to_path_buf(),
+                ready_timeout_seconds: 300,
+            },
+        )
+        .map(|rendered| rendered.data)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cli, path);
         Err(unsupported())
     }
 }

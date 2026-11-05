@@ -11,11 +11,35 @@ use std::{
 const MAX_READY: usize = 64 * 1024;
 const MAX_ERROR: usize = 4096;
 
+/// Windows hands every inheritable handle of this process to a child it
+/// spawns, including this process's own stdout/stderr pipes. A long-lived
+/// child (a VFS host, a detached purge) would then hold its caller's pipes
+/// open, and a caller waiting for end of output (a script, an agent's shell
+/// tool) would wait as long as that child lives. Our own standard handles
+/// are made non-inheritable before such a spawn; the child gets its own.
+pub(crate) fn keep_standard_handles_private() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        for handle in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !handle.is_null() {
+                unsafe { SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, 0) };
+            }
+        }
+    }
+}
+
 pub(super) fn start(
     command: &mut Command,
     timeout: Duration,
     verify: impl FnOnce(&Value, Duration) -> Result<(), String> + Send + 'static,
 ) -> Result<Value, CliError> {
+    keep_standard_handles_private();
     if timeout.is_zero() || timeout > Duration::from_secs(300) {
         return Err(CliError::usage(
             "VFS readiness timeout must be positive and at most 300 seconds",

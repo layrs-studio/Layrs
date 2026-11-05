@@ -394,6 +394,30 @@ fn missing_target_chunk_refuses_switch_before_deleting_current_files() {
     s.pass();
 }
 #[test]
+fn missing_base_chunk_refuses_switch_before_moving_current_files() {
+    let s = empty("native-missing-base-chunk");
+    fs::write(s.space.join("story"), b"main bytes only in this base\n").unwrap();
+    step(&s);
+    let chunk_root = s.space.join(".layrs/objects/chunk_raw");
+    let base_chunks = files(&chunk_root);
+    assert_eq!(base_chunks.len(), 1);
+    let missing = base_chunks.iter().next().unwrap().clone();
+    cli(&s, &["layer", "create", "other"]);
+    cli(&s, &["layer", "use", "other"]);
+    fs::write(s.space.join("story"), b"other target bytes\n").unwrap();
+    step(&s);
+    cli(&s, &["layer", "use", "main"]);
+    let before = snapshot_working_tree(&s.space);
+    let state = cli(&s, &["status"])["state"].clone();
+    // The checkout copy is intact, but the Store copy of the file the switch
+    // would displace is gone: refuse before journaling or moving anything.
+    fs::remove_file(missing).unwrap();
+    run_err(&s, ["--json", "layer", "use", "other"]);
+    assert_working_tree_snapshot(&s.space, &before);
+    assert_eq!(cli(&s, &["status"])["state"], state);
+    s.pass();
+}
+#[test]
 fn large_snapshot_history_stays_readable_and_noop_adds_no_objects() {
     let s = TestSpace::new("native-large-history");
     let original = deterministic_large_content(0);

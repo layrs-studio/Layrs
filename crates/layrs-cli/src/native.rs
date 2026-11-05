@@ -59,6 +59,9 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     if let CliCommand::Vfs(command) = &cli.command {
         return Some(crate::native_vfs::run(cli, command));
     }
+    if let CliCommand::Room(command) = &cli.command {
+        return Some(crate::native_room::run(cli, command));
+    }
     if let CliCommand::PartialProvider(command) = &cli.command {
         return Some(partial_provider_command(command));
     }
@@ -206,7 +209,10 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     }
     // Shared discovery validates both a primary Store and a secondary file
     // locator, including its registered root and filesystem identity.
-    let workspace = match NativeWorkspace::discover(&root) {
+    let discover_span = layrs_store_local::perf::span("cli.discover");
+    let discovered = NativeWorkspace::discover(&root);
+    drop(discover_span);
+    let workspace = match discovered {
         Ok(workspace) => workspace,
         Err(layrs_client_core::native_scm::NativeClientError::Missing(
             "checkout .layrs directory",
@@ -612,16 +618,18 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
                 .map_err(error)?;
                 json!({"export":report})
             }
-            CliCommand::Status => {
-                let repair = workspace.needs_repair().map_err(error)?;
-                let dirty = if repair {
-                    None
-                } else {
-                    Some(workspace.is_dirty().map_err(error)?)
-                };
-                json!({"dirty":dirty,"needsRepair":repair,"state":workspace.state().map_err(error)?})
+            CliCommand::Status { full } => {
+                let _span = layrs_store_local::perf::span("cli.status");
+                let report = workspace.status_report(!*full).map_err(error)?;
+                json!({"dirty":report.dirty,"needsRepair":report.needs_repair,"state":report.state})
             }
-            CliCommand::Step => match workspace.capture().map_err(error)? {
+            CliCommand::Step { full } => match (if *full {
+                workspace.capture_verifying_all(layrs_core::scm::CaptureReason::ManualSnapshot)
+            } else {
+                workspace.capture()
+            })
+            .map_err(error)?
+            {
                 CapturePlan::Unchanged { step_id } => {
                     json!({"status":"unchanged","stepId":step_id})
                 }
@@ -854,7 +862,7 @@ fn human_output(command: &CliCommand, data: &serde_json::Value) -> String {
             }
             output
         }
-        CliCommand::Status => format!(
+        CliCommand::Status { .. } => format!(
             "{} — {}\n{}",
             data["state"]["space"]["name"].as_str().unwrap_or("Project"),
             if data["needsRepair"] == true {
@@ -868,7 +876,7 @@ fn human_output(command: &CliCommand, data: &serde_json::Value) -> String {
                 .as_str()
                 .unwrap_or("")
         ),
-        CliCommand::Step => format!(
+        CliCommand::Step { .. } => format!(
             "{} {}",
             data["status"].as_str().unwrap_or("Captured"),
             data["stepId"].as_str().unwrap_or("")

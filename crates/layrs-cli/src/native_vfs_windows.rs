@@ -58,6 +58,8 @@ pub(super) fn foreground(
 ) -> Result<(), CliError> {
     let action = launch(command)?;
     let host = prepare_vfs_host(source_root(cli)?, action).map_err(error)?;
+    layrs_store_local::perf::emit("vfs-host:ready");
+    layrs_store_local::perf::reset();
     let path = host.checkout_root().to_path_buf();
     let data =
         json!({"status":"ready","ticket":host.ticket(),"pid":std::process::id(),"path":path});

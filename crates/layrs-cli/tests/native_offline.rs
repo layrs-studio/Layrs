@@ -33,13 +33,16 @@ struct Fixture {
 }
 impl Fixture {
     fn new(shared: bool) -> (Self, ProjectionStore) {
+        // Parallel tests can read the same 100ns clock tick: add a counter.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let outer = std::env::temp_dir().join(format!(
-            "layrs-cli-offline-{}-{}",
+            "layrs-cli-offline-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let root = outer.join("checkout");
         fs::create_dir_all(&root).unwrap();

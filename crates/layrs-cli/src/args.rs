@@ -3,6 +3,7 @@ mod git;
 pub(crate) mod offline;
 mod vfs;
 mod partial_provider;
+mod room;
 mod worktree;
 pub use blocks::BlockChoice;
 pub use offline::OfflineCommand;
@@ -10,6 +11,7 @@ use std::fmt;
 use std::path::PathBuf;
 pub use vfs::VfsCommand;
 pub use partial_provider::PartialProviderCommand;
+pub use room::RoomCommand;
 pub use worktree::WorktreeCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub enum CliCommand {
     PartialProvider(PartialProviderCommand),
     Vfs(VfsCommand),
     Worktree(WorktreeCommand),
+    Room(RoomCommand),
     ResolveBlock {
         layer: String,
         conflict: String,
@@ -102,7 +105,10 @@ pub enum CliCommand {
         name: String,
         path: Option<PathBuf>,
     },
-    Step,
+    /// `full`: read every file instead of trusting the change index.
+    Step {
+        full: bool,
+    },
     GitImport {
         source: PathBuf,
         dry_run: bool,
@@ -168,7 +174,9 @@ pub enum CliCommand {
     Timeline {
         limit: Option<u32>,
     },
-    Status,
+    Status {
+        full: bool,
+    },
     Layers,
     LayerUse {
         name_or_id: String,
@@ -379,7 +387,9 @@ where
             )?
         }
         "remote" => CliCommand::Remote { args },
-        "worktree" => CliCommand::Worktree(worktree::parse(args)?),
+        // "room" is the product name (ADR 0025); "loom" and the historical
+        // "worktree" are accepted aliases.
+        "room" | "loom" | "worktree" => room::parse(&command_name, args)?,
         "vfs" => CliCommand::Vfs(vfs::parse(args)?),
         "partial" if args.first().is_some_and(|arg| arg == "offline") => {
             CliCommand::Offline(offline::parse(args.into_iter().skip(1).collect())?)
@@ -389,7 +399,9 @@ where
         }
         "partial" => CliCommand::Partial { args },
         "init" => parse_init(args)?,
-        "step" => parse_no_extra(args, CliCommand::Step)?,
+        "step" => CliCommand::Step {
+            full: parse_full_flag(args)?,
+        },
         "doctor" => parse_no_extra(args, CliCommand::Doctor)?,
         "compact" => {
             let mut args = args;
@@ -453,7 +465,9 @@ where
         },
         "diff" => parse_diff(args)?,
         "timeline" => parse_timeline(args)?,
-        "status" => parse_no_extra(args, CliCommand::Status)?,
+        "status" => CliCommand::Status {
+            full: parse_full_flag(args)?,
+        },
         // Account commands are aliases of their `layrs remote` form.
         "login" | "whoami" | "logout" => CliCommand::Remote {
             args: std::iter::once(command_name.clone()).chain(args).collect(),
@@ -574,6 +588,15 @@ fn parse_layer(mut args: Vec<String>) -> Result<CliCommand, CliParseError> {
         _ => Err(CliParseError::new(format!(
             "unknown layer command `{subcommand}`; expected use or create"
         ))),
+    }
+}
+
+/// An optional `--full` (read every file, ADR 0025) and nothing else.
+fn parse_full_flag(args: Vec<String>) -> Result<bool, CliParseError> {
+    match args.as_slice() {
+        [] => Ok(false),
+        [flag] if flag == "--full" => Ok(true),
+        [other, ..] => Err(CliParseError::new(format!("unexpected argument `{other}`"))),
     }
 }
 

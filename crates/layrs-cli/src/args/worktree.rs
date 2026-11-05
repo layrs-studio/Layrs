@@ -24,7 +24,7 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<WorktreeCommand, CliParseEr
         "list" if args.is_empty() => Ok(WorktreeCommand::List),
         "resume" if args.is_empty() => Ok(WorktreeCommand::Resume),
         "open" => Ok(WorktreeCommand::Open {
-            path: take_required_positional(args, "PATH", "worktree open")?.into(),
+            path: take_required_positional(args, "PATH", "room open")?.into(),
         }),
         "create" => {
             let layer = take_string_option(&mut args, "--layer")?
@@ -33,7 +33,7 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<WorktreeCommand, CliParseEr
             let step = take_string_option(&mut args, "--step")?
                 .filter(|s| !s.is_empty())
                 .ok_or_else(usage)?;
-            let path = take_required_positional(args, "EMPTY_DIR", "worktree create")?.into();
+            let path = take_required_positional(args, "EMPTY_DIR", "room create")?.into();
             Ok(WorktreeCommand::Create { path, layer, step })
         }
         _ => Err(usage()),
@@ -42,7 +42,7 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<WorktreeCommand, CliParseEr
 
 fn usage() -> CliParseError {
     CliParseError::new(
-        "usage: layrs worktree list | open PATH | resume | create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR",
+        "usage: layrs room list | open PATH | resume | create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR (aliases: loom, worktree)",
     )
 }
 

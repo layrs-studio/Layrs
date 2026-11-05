@@ -7,13 +7,16 @@ use std::{
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        // pid + nanos alone collide between tests running in parallel.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "layrs-offline-output-{}-{}",
+            "layrs-offline-output-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
         Self(root)

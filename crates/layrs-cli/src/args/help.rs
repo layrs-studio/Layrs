@@ -4,19 +4,24 @@ pub fn usage() -> &'static str {
 
 Commands:
   layrs init \"Space Name\" [--path PATH]
-  layrs step
-  layrs worktree list
-  layrs worktree create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR
-    Share the Store at an exact Step; the Layer must already exist.
-  layrs worktree open PATH
-    Validate and describe a Worktree; use --space PATH for subsequent commands.
-  layrs worktree resume
-    Finish interrupted creation in the selected Worktree after recovery.
+  layrs step [--full]
+    Capture the folder as a Step. Unchanged files are recognised from their
+    size and dates, like git; --full reads every file (after a tool that
+    rewrites files keeping their size and dates).
+  layrs room list
+  layrs room create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR
+    Open another working folder (Room) sharing the Store, at an exact Step;
+    the Layer must already exist. One Room per agent works in parallel.
+  layrs room open PATH
+    Validate and describe a Room; use --space PATH for subsequent commands.
+  layrs room resume
+    Finish interrupted creation in the selected Room after recovery.
+    (`loom` and `worktree` are aliases of `room`.)
   layrs vfs create EMPTY_DIR --layer NAME_OR_ID --step EXACT_SELECTOR [--background]
   layrs vfs serve ROOT
     Foreground Windows VFS host; create/serve/resume prints one nonsecret ticket, then stays running.
     Use --json and redirect stdout to a ticket file for subsequent control commands.
-  layrs [--space SOURCE] vfs resume WORKTREE_ID [--background]
+  layrs [--space SOURCE] vfs resume ROOM_ID [--background]
     Recover an interrupted creation using its retained exact ID from the ordinary source workspace.
     Uses the recorded root and original Step, including failures before root registration/locator.
   layrs vfs start ROOT [--ready-timeout-seconds 1..300]
@@ -25,7 +30,7 @@ Commands:
   layrs vfs status --ticket FILE
   layrs vfs capture --ticket FILE --writers-quiesced
   layrs vfs export PARENT --ticket FILE --writers-quiesced
-    Stop ALL Worktree writers before capture/export and keep them stopped until completion.
+    Stop ALL Room writers before capture/export and keep them stopped until completion.
     The flag is your acknowledgment; it does not suspend applications. Export creates a new tree.
   layrs vfs stop --ticket FILE
     Disconnect the host and retain the root/work. Restart with serve/start; retain the new ticket.
@@ -68,7 +73,7 @@ Commands:
     VERSION defaults to current; historical selectors: generation:N, capture:N, version-file:FILE.
     Digests come from stored history. Version files accept an exact version or successful JSON receipt.
   layrs partial offline restore-preview PATH... [--version VERSION] --expected-generation N --output NEW_PREVIEW.json
-    Review destination Store/Worktree, exact before/after file identities, sizes, modes and digest.
+    Review destination Store/Room, exact before/after file identities, sizes, modes and digest.
     Writes a new typed preview artifact (maximum 1 MiB); no files are restored or history changed.
     VERSION defaults to current.
     Save the artifact outside the checkout to avoid changing its reviewed namespace.
@@ -157,7 +162,7 @@ Commands:
   layrs release create VERSION
   layrs diff [STEP_ID] [--stat] [--name-only] [--window START:LIMIT] [--wrap|--no-wrap]
   layrs timeline [--limit N]
-  layrs status
+  layrs status [--full]
   layrs layers
   layrs layer use NAME_OR_ID
   layrs layer create NAME
