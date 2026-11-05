@@ -43,6 +43,7 @@ api! {
     register: "CfRegisterSyncRoot" (PCWSTR, *const CF_SYNC_REGISTRATION, *const CF_SYNC_POLICIES, CF_REGISTER_FLAGS) -> HRESULT,
     connect: "CfConnectSyncRoot" (PCWSTR, *const CF_CALLBACK_REGISTRATION, *const c_void, CF_CONNECT_FLAGS, *mut CF_CONNECTION_KEY) -> HRESULT,
     disconnect: "CfDisconnectSyncRoot" (CF_CONNECTION_KEY) -> HRESULT,
+    unregister: "CfUnregisterSyncRoot" (PCWSTR) -> HRESULT,
     create: "CfCreatePlaceholders" (PCWSTR, *mut CF_PLACEHOLDER_CREATE_INFO, u32, CF_CREATE_FLAGS, *mut u32) -> HRESULT,
     execute: "CfExecute" (*const CF_OPERATION_INFO, *mut CF_OPERATION_PARAMETERS) -> HRESULT,
     root_info: "CfGetSyncRootInfoByHandle" (HANDLE, CF_SYNC_ROOT_INFO_CLASS, *mut c_void, u32, *mut u32) -> HRESULT,

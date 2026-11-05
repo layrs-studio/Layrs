@@ -123,6 +123,15 @@ unsafe fn cancel_fields(fields: Fields) -> Option<Cancel> {
 pub(super) unsafe fn cancel(pointer: *const CF_CALLBACK_PARAMETERS) -> Option<Cancel> {
     unsafe { cancel_fields(Fields::native(pointer.cast())?) }
 }
+/// CF_CALLBACK_RENAME_FLAGS of a rename notification.
+pub(super) unsafe fn rename_flags(pointer: *const CF_CALLBACK_PARAMETERS) -> Option<i32> {
+    unsafe {
+        Fields::native(pointer.cast())?.field(
+            offset_of!(CF_CALLBACK_PARAMETERS, Anonymous)
+                + offset_of!(CF_CALLBACK_PARAMETERS_0_10, Flags),
+        )
+    }
+}
 pub(super) unsafe fn process_id(pointer: *const CF_PROCESS_INFO) -> Option<u32> {
     unsafe { Fields::native(pointer.cast())?.field(offset_of!(CF_PROCESS_INFO, ProcessId)) }
 }

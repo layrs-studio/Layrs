@@ -33,7 +33,7 @@ impl Session {
     /// placeholders for explicit full-byte recovery reads, without adopting a
     /// new catalog or altering registration, history, or placeholder identities.
     pub fn export_checkpoint(&self) -> Result<ExportCheckpoint<'_>> {
-        let checkpoint = self.checkpoint_for(InspectionPurpose::Export)?;
+        let checkpoint = self.checkpoint_for(InspectionPurpose::Export, None, false, None)?;
         checkpoint.validate_export_namespace()?;
         let mut proofs = BTreeMap::new();
         for entry in checkpoint.entries() {
@@ -42,7 +42,10 @@ impl Session {
             let size = match &entry.evidence {
                 CaptureEvidence::Immutable { size, .. }
                 | CaptureEvidence::NeedsHash { size, .. } => *size,
-                CaptureEvidence::Deleted { .. } => return Err(Error::IdentityMismatch),
+                // Export never trusts a listing: every file holds a guard.
+                CaptureEvidence::Deleted { .. } | CaptureEvidence::Vouched { .. } => {
+                    return Err(Error::IdentityMismatch)
+                }
             };
             if proof.size != size || (proof.identity.is_some() && proof.backing != backing(entry)) {
                 return Err(contextual(entry, Error::IdentityMismatch));
@@ -309,6 +312,7 @@ fn backing(entry: &Inspection) -> Option<FileId> {
         CaptureEvidence::Immutable { file_id, .. } => Some(file_id.clone()),
         CaptureEvidence::NeedsHash { base, .. } => base.clone(),
         CaptureEvidence::Deleted { base } => Some(base.clone()),
+        CaptureEvidence::Vouched { .. } => None,
     }
 }
 

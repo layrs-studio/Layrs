@@ -25,6 +25,13 @@ struct DirectoryPin {
 }
 
 impl ExportParentGuard<'_> {
+    /// Bind the issuing Session to the actual retained Provider owner. Lifetime
+    /// compatibility alone does not identify a source. Ancestor revalidation
+    /// remains separate; this supplies no SnapshotSource or remote authority.
+    pub fn require_source(&self, expected: &super::ProviderRootGuard) -> Result<()> {
+        self.session.require_provider_root(expected)
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -58,6 +65,19 @@ impl ExportParentGuard<'_> {
 }
 
 impl Session {
+    /// Require this V2 Session's complete registration/catalog binding to match
+    /// a retained root proof. This does not authenticate the byte source.
+    pub fn require_provider_root(&self, expected: &super::ProviderRootGuard) -> Result<()> {
+        let actual = self.control.proof().ok_or(Error::IdentityMismatch)?;
+        if actual.registration().encode() != expected.registration().encode()
+            || actual.catalog().identity() != expected.catalog().identity()
+        {
+            return Err(Error::IdentityMismatch);
+        }
+        self.verify_registration()?;
+        expected.revalidate()
+    }
+
     /// Acquire effective no-delete guards for an ordinary export parent and its
     /// whole ancestor chain. Reject own/foreign reparses even under compatibility
     /// masking. No content reads, connection, file creation or path adoption.

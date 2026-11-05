@@ -149,8 +149,10 @@ fn checked_bounds_and_aligned_bounded_transfers() {
     }
 }
 
+/// ADR 0025: an in-sync placeholder with no modified bytes and its catalog
+/// size is its base, hydrated or not (TRACK_ALL clears in-sync on change).
 #[test]
-fn only_clean_partial_same_size_can_reuse_an_immutable_id() {
+fn only_clean_in_sync_same_size_can_reuse_an_immutable_id() {
     let entry = entry("a", b"abc");
     let info = PlaceholderEvidence {
         on_disk_bytes: 0,
@@ -173,16 +175,21 @@ fn only_clean_partial_same_size_can_reuse_an_immutable_id() {
             in_sync: false,
             ..info.clone()
         },
-        PlaceholderEvidence {
-            partial: false,
-            ..info.clone()
-        },
     ] {
         assert!(matches!(
             classify_placeholder(&entry, 3, &info),
             CaptureEvidence::NeedsHash { .. }
         ));
     }
+    let resident = PlaceholderEvidence {
+        partial: false,
+        on_disk_bytes: 3,
+        ..info.clone()
+    };
+    assert!(matches!(
+        classify_placeholder(&entry, 3, &resident),
+        CaptureEvidence::Immutable { .. }
+    ));
     assert!(matches!(
         classify_placeholder(&entry, 2, &info),
         CaptureEvidence::NeedsHash { .. }

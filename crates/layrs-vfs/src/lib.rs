@@ -22,7 +22,10 @@ pub use control_directory::{
     CONTROL_DIRECTORY_MAX_ENCODED_BYTES, CONTROL_DIRECTORY_MAX_FORMAT_BYTES,
     CONTROL_DIRECTORY_MAX_PATH_UTF8_BYTES, CONTROL_DIRECTORY_STAGE_MAX_ENCODED_BYTES,
 };
-pub use evidence::{classify_placeholder, CaptureEvidence, Inspection, PlaceholderEvidence};
+pub use evidence::{
+    classify_placeholder, CaptureEvidence, Inspection, ListedFile, ListedPlaceholder,
+    PlaceholderEvidence, Vouch,
+};
 pub use range::{checked_range, HydrationRange, READ_BUFFER_SIZE};
 pub use registration::Registration;
 #[cfg(windows)]
@@ -32,7 +35,7 @@ pub use windows::{
     CallbackFailure, Checkpoint, ControlDirectoryGuard, ControlRootPreflight, ExportCheckpoint,
     ExportParentGuard, HydrationRequest, ObservedAllocatedControlStage,
     ObservedAllocatedControlStageIdentity, ObservedRootNamespace, OrdinaryRootGuard,
-    ProviderRootGuard, Session,
+    CaptureFilter, ProviderRootGuard, Session, TrustHook, unregister_root,
 };
 
 use std::fmt;

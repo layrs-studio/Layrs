@@ -458,10 +458,19 @@ mod cancellation_tests {
         assert!(!covers(0, -1, 16384, -1, 16384));
     }
 }
-unsafe extern "system" fn rename(info: *const CF_CALLBACK_INFO, _: *const CF_CALLBACK_PARAMETERS) {
+/// Renames and moves inside the root are accepted (ADR 0025): the platform
+/// clears the placeholder's in-sync state and the next capture hashes it at
+/// its new path. Moving a placeholder out of the root is refused, as it would
+/// leave a placeholder no provider can serve.
+unsafe extern "system" fn rename(
+    info: *const CF_CALLBACK_INFO,
+    params: *const CF_CALLBACK_PARAMETERS,
+) {
     let Some(parsed_info) = (unsafe { raw::callback_info(info) }) else {
         return;
     };
+    let within_root = unsafe { raw::rename_flags(params) }
+        .is_some_and(|flags| flags & CF_CALLBACK_RENAME_FLAG_TARGET_IN_SCOPE != 0);
     if let Some((context, info, _inflight)) = unsafe { context(&parsed_info) } {
         let op = operation(info, CF_OPERATION_TYPE_ACK_RENAME);
         let mut params = CF_OPERATION_PARAMETERS {
@@ -470,7 +479,11 @@ unsafe extern "system" fn rename(info: *const CF_CALLBACK_INFO, _: *const CF_CAL
             Anonymous: CF_OPERATION_PARAMETERS_0 {
                 AckRename: CF_OPERATION_PARAMETERS_0_6 {
                     Flags: CF_OPERATION_ACK_RENAME_FLAG_NONE,
-                    CompletionStatus: STATUS_CLOUD_FILE_NOT_SUPPORTED,
+                    CompletionStatus: if within_root {
+                        STATUS_SUCCESS
+                    } else {
+                        STATUS_CLOUD_FILE_NOT_SUPPORTED
+                    },
                 },
             },
         };

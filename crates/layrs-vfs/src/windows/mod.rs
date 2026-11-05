@@ -29,7 +29,7 @@ use crate::{
 use api::{check, Api};
 use attached::AttachedControl;
 pub use callback::{CallbackFailure, HydrationRequest};
-pub use checkpoint::Checkpoint;
+pub use checkpoint::{CaptureFilter, Checkpoint, TrustHook};
 pub use control::read_control_file;
 pub use control_directory::{
     discover_control_directory, observe_control_directory_stage, ControlDirectoryGuard,
@@ -80,6 +80,15 @@ pub fn capability() -> Result<Capability> {
         revision: info.RevisionNumber,
         integration: info.IntegrationNumber,
     })
+}
+
+/// Unregisters a disconnected sync root so its folder can be deleted. The
+/// placeholders and files it contains are left as they are; no provider is
+/// called. Used to drop a Room whose work is already kept in the Store.
+pub fn unregister_root(root: &std::path::Path) -> Result<()> {
+    let api = Api::load()?;
+    let root = fs::wide(root.as_os_str())?;
+    check("CfUnregisterSyncRoot", unsafe { (api.unregister)(root.as_ptr()) })
 }
 
 /// One private NTFS namespace over an immutable source. Multiple sessions may
@@ -355,42 +364,71 @@ impl Session {
             let _parents = self.root.parents(directory)?;
             std::fs::create_dir(self.root.root.join(directory))?;
         }
+        // Files are created per parent directory in bounded batches: one
+        // CFAPI call and one validated parent chain per batch instead of per
+        // file. Every entry's own result and the processed count are checked;
+        // a failure leaves the same incomplete population as before (the
+        // registration is not READY until population and audit complete).
+        const BATCH: usize = 256;
+        let mut by_parent: std::collections::BTreeMap<&Path, Vec<usize>> =
+            std::collections::BTreeMap::new();
         for (index, entry) in self.catalog.entries().iter().enumerate() {
-            let _parents = self.root.parents(entry.path.as_str())?;
-            let relative = Path::new(entry.path.as_str());
-            let parent = self.root.root.join(relative.parent().unwrap());
-            let parent = fs::wide(parent.as_os_str())?;
-            let leaf = fs::wide(relative.file_name().unwrap())?;
-            let identity = self.catalog.file_identity(index);
-            let mut create = CF_PLACEHOLDER_CREATE_INFO {
-                RelativeFileName: leaf.as_ptr(),
-                FsMetadata: CF_FS_METADATA {
-                    BasicInfo: FILE_BASIC_INFO {
-                        FileAttributes: FILE_ATTRIBUTE_NORMAL,
+            let parent = Path::new(entry.path.as_str())
+                .parent()
+                .ok_or(Error::IdentityMismatch)?;
+            by_parent.entry(parent).or_default().push(index);
+        }
+        for (relative_parent, indices) in by_parent {
+            // Guards on every ancestor, held for the whole directory.
+            let first = &self.catalog.entries()[indices[0]];
+            let _parents = self.root.parents(first.path.as_str())?;
+            let parent = fs::wide(self.root.root.join(relative_parent).as_os_str())?;
+            for batch in indices.chunks(BATCH) {
+                let mut leaves = Vec::with_capacity(batch.len());
+                let mut identities = Vec::with_capacity(batch.len());
+                for &index in batch {
+                    let relative = Path::new(self.catalog.entries()[index].path.as_str());
+                    leaves.push(fs::wide(
+                        relative.file_name().ok_or(Error::IdentityMismatch)?,
+                    )?);
+                    identities.push(self.catalog.file_identity(index));
+                }
+                let mut creates: Vec<CF_PLACEHOLDER_CREATE_INFO> = batch
+                    .iter()
+                    .enumerate()
+                    .map(|(position, &index)| CF_PLACEHOLDER_CREATE_INFO {
+                        RelativeFileName: leaves[position].as_ptr(),
+                        FsMetadata: CF_FS_METADATA {
+                            BasicInfo: FILE_BASIC_INFO {
+                                FileAttributes: FILE_ATTRIBUTE_NORMAL,
+                                ..Default::default()
+                            },
+                            FileSize: self.catalog.entries()[index].size as i64,
+                        },
+                        FileIdentity: identities[position].as_ptr().cast(),
+                        FileIdentityLength: identities[position].len() as u32,
+                        Flags: CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
                         ..Default::default()
-                    },
-                    FileSize: entry.size as i64,
-                },
-                FileIdentity: identity.as_ptr().cast(),
-                FileIdentityLength: identity.len() as u32,
-                Flags: CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-                ..Default::default()
-            };
-            let mut count = 0;
-            check("CfCreatePlaceholders", unsafe {
-                (self.api.create)(
-                    parent.as_ptr(),
-                    &mut create,
-                    1,
-                    CF_CREATE_FLAG_STOP_ON_ERROR,
-                    &mut count,
-                )
-            })?;
-            check("CfCreatePlaceholders(entry)", create.Result)?;
-            if count != 1 {
-                return Err(Error::Unsupported(
-                    "CFAPI did not create the requested placeholder",
-                ));
+                    })
+                    .collect();
+                let mut count = 0;
+                check("CfCreatePlaceholders", unsafe {
+                    (self.api.create)(
+                        parent.as_ptr(),
+                        creates.as_mut_ptr(),
+                        creates.len() as u32,
+                        CF_CREATE_FLAG_STOP_ON_ERROR,
+                        &mut count,
+                    )
+                })?;
+                for create in &creates {
+                    check("CfCreatePlaceholders(entry)", create.Result)?;
+                }
+                if count as usize != creates.len() {
+                    return Err(Error::Unsupported(
+                        "CFAPI did not create the requested placeholders",
+                    ));
+                }
             }
         }
         Ok(())
@@ -513,7 +551,9 @@ impl Session {
         path: &RepoPath,
         file: std::fs::File,
         parents: Vec<std::fs::File>,
-        purpose: InspectionPurpose,
+        // Capture and export now inspect identically: a relocated placeholder
+        // is hashed at its new path in both (ADR 0025).
+        _purpose: InspectionPurpose,
     ) -> Result<Inspection> {
         let attrs = fs::attributes(&file)?;
         if self.is_control(path.as_str(), &file)? {
@@ -544,6 +584,7 @@ impl Session {
                 placeholder: None,
                 _guard: Some(file),
                 _parents: parents,
+                listed: None,
             });
         }
         let mut storage = [0u64; 1024];
@@ -579,12 +620,10 @@ impl Session {
         {
             return Err(Error::ForeignRoot);
         }
+        // A renamed or moved placeholder (ADR 0025): its bytes at the new
+        // path are hashed (hydrating through its guard if needed), while its
+        // catalog path is reported deleted.
         let relocated = entry.path != *path;
-        if relocated && purpose == InspectionPurpose::Capture {
-            return Err(Error::Unsupported(
-                "placeholder renamed: identity is preserved, capture reconciliation required",
-            ));
-        }
         let evidence = PlaceholderEvidence {
             on_disk_bytes: info.OnDiskDataSize as u64,
             modified_bytes: info.ModifiedDataSize as u64,
@@ -607,6 +646,7 @@ impl Session {
             placeholder: Some(evidence),
             _guard: Some(file),
             _parents: parents,
+            listed: None,
         })
     }
     fn deleted(&self, path: &RepoPath) -> Result<Inspection> {
@@ -622,6 +662,7 @@ impl Session {
             placeholder: None,
             _guard: None,
             _parents: Vec::new(),
+            listed: None,
         })
     }
 

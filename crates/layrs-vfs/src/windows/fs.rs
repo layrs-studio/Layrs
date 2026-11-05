@@ -139,6 +139,94 @@ pub(super) fn identity(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION> {
     }
     Ok(info)
 }
+/// One child of a directory as its enumeration reports it (no open).
+#[derive(Debug, Clone)]
+pub(super) struct Listed {
+    pub name: String,
+    pub index: u64,
+    pub attributes: u32,
+    pub tag: u32,
+    pub size: u64,
+    pub last_write: i64,
+    pub creation: i64,
+    pub change: i64,
+}
+
+/// Enumerates `directory` (opened with FILE_LIST_DIRECTORY) through that very
+/// handle, cloud placeholders exposed: names, native file numbers, attributes,
+/// reparse tags, sizes and times, without opening any child. A file number
+/// that does not fit the 64-bit NTFS reference is refused.
+pub(super) fn enumerate(directory: &File) -> Result<Vec<Listed>> {
+    use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, GetLastError};
+    super::visibility::with_exposed(|| {
+        let mut entries = Vec::new();
+        // u64 storage keeps every FILE_ID_EXTD_DIR_INFO 8-byte aligned.
+        let mut buffer = vec![0u64; 8 * 1024];
+        let mut class = FileIdExtdDirectoryRestartInfo;
+        loop {
+            let ok = unsafe {
+                GetFileInformationByHandleEx(
+                    handle(directory),
+                    class,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                )
+            };
+            if ok == 0 {
+                if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
+                    return Ok(entries);
+                }
+                return Err(win32_error("GetFileInformationByHandleEx(enumerate)"));
+            }
+            class = FileIdExtdDirectoryInfo;
+            let bytes = buffer.len() * 8;
+            let base = buffer.as_ptr().cast::<u8>();
+            let mut offset = 0usize;
+            loop {
+                let header = offset_of_name();
+                if offset + header > bytes {
+                    return Err(Error::Unsupported("truncated directory enumeration"));
+                }
+                // In bounds and aligned (offsets are 8-byte multiples).
+                let info = unsafe { &*base.add(offset).cast::<FILE_ID_EXTD_DIR_INFO>() };
+                let length = info.FileNameLength as usize;
+                if length % 2 != 0 || offset + header + length > bytes {
+                    return Err(Error::Unsupported("malformed directory enumeration"));
+                }
+                let name = unsafe {
+                    std::slice::from_raw_parts(base.add(offset + header).cast::<u16>(), length / 2)
+                };
+                let name = String::from_utf16(name)
+                    .map_err(|_| Error::Unsupported("non-Unicode directory entry"))?;
+                if name != "." && name != ".." {
+                    let id = info.FileId.Identifier;
+                    if id[8..] != [0; 8] {
+                        return Err(Error::Unsupported("128-bit file identifiers"));
+                    }
+                    entries.push(Listed {
+                        name,
+                        index: u64::from_le_bytes(id[..8].try_into().unwrap()),
+                        attributes: info.FileAttributes,
+                        tag: info.ReparsePointTag,
+                        size: u64::try_from(info.EndOfFile)
+                            .map_err(|_| Error::Unsupported("negative file size"))?,
+                        last_write: info.LastWriteTime,
+                        creation: info.CreationTime,
+                        change: info.ChangeTime,
+                    });
+                }
+                if info.NextEntryOffset == 0 {
+                    break;
+                }
+                offset += info.NextEntryOffset as usize;
+            }
+        }
+    })
+}
+fn offset_of_name() -> usize {
+    std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName)
+}
+
 pub(super) fn index(info: &BY_HANDLE_FILE_INFORMATION) -> u64 {
     ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64
 }
