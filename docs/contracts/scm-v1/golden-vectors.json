@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "layrs.scm.golden-vectors.v2",
+  "hashVectors": [
+    {
+      "name": "chunk-hello",
+      "domain": "layrs-chunk-v1",
+      "identityKind": "rawUtf8",
+      "input": "hello",
+      "expectedIdentityUtf8": "layrs-chunk-v1\u0000hello",
+      "expectedObjectId": "blake3:4eb1f72d41aa4b778090debd8e33feded93a1a98fc76bfad36fea32d94a5ce80"
+    },
+    {
+      "name": "file-hello",
+      "domain": "layrs-file-v1",
+      "identityKind": "rawUtf8",
+      "input": "hello",
+      "expectedIdentityUtf8": "layrs-file-v1\u0000hello",
+      "expectedObjectId": "blake3:cf2b3005225d995b905536bff0fb60d3486f4043ca86bf44da845052c6a4cb7d"
+    },
+    {
+      "name": "step-two-unsorted-parents",
+      "domain": "layrs-step-v1",
+      "identityKind": "stepV1",
+      "idField": "stepId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Step",
+      "input": {
+        "schemaVersion": "layrs.step.v1",
+        "stepId": "blake3:a1b5c9dfe69fcaad375f6f59e7e20eb9ddc93e1275997a0a2d58ba76b3e12833",
+        "parentStepIds": [
+          "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "rootTreeId": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "expectedIdentityUtf8": "layrs-step-v1\u0000parent-count\t2\nparent\tblake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nparent\tblake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nroot-tree\tblake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n",
+      "expectedObjectId": "blake3:a1b5c9dfe69fcaad375f6f59e7e20eb9ddc93e1275997a0a2d58ba76b3e12833"
+    },
+    {
+      "name": "tree-rfc8785-and-entry-sort",
+      "domain": "layrs-tree-v1",
+      "identityKind": "treeV1",
+      "idField": "treeId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Tree",
+      "input": {
+        "schemaVersion": "layrs.tree.v1",
+        "treeId": "blake3:e74dfaab4bbed9d499cb372665f58eed3bd71211e3a810b9e2b72744ec5ed42a",
+        "entries": [
+          {
+            "name": "z.txt",
+            "target": {
+              "kind": "file",
+              "fileId": "blake3:1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "executable": false
+          },
+          {
+            "name": "a",
+            "target": {
+              "kind": "tree",
+              "treeId": "blake3:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "executable": false
+          }
+        ]
+      },
+      "expectedIdentityUtf8": "layrs-tree-v1\u0000{\"entries\":[{\"executable\":false,\"name\":\"a\",\"target\":{\"kind\":\"tree\",\"treeId\":\"blake3:2222222222222222222222222222222222222222222222222222222222222222\"}},{\"executable\":false,\"name\":\"z.txt\",\"target\":{\"fileId\":\"blake3:1111111111111111111111111111111111111111111111111111111111111111\",\"kind\":\"file\"}}],\"schemaVersion\":\"layrs.tree.v1\"}",
+      "expectedObjectId": "blake3:e74dfaab4bbed9d499cb372665f58eed3bd71211e3a810b9e2b72744ec5ed42a"
+    },
+    {
+      "name": "repository-view-empty",
+      "domain": "layrs-repository-view-v1",
+      "identityKind": "jcsV1",
+      "idField": "repositoryViewId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/RepositoryView",
+      "input": {
+        "schemaVersion": "layrs.repository-view.v1",
+        "repositoryViewId": "blake3:2208e8e832cba3c0985e1102dc5bf68c09b7df432d888f0467e3f6fb988a717f",
+        "spaceId": "space:golden",
+        "layerHeads": [],
+        "markerIds": [],
+        "releaseIds": [],
+        "worktrees": []
+      },
+      "expectedIdentityUtf8": "layrs-repository-view-v1\u0000{\"layerHeads\":[],\"markerIds\":[],\"releaseIds\":[],\"schemaVersion\":\"layrs.repository-view.v1\",\"spaceId\":\"space:golden\",\"worktrees\":[]}",
+      "expectedObjectId": "blake3:2208e8e832cba3c0985e1102dc5bf68c09b7df432d888f0467e3f6fb988a717f"
+    },
+    {
+      "name": "conflict-minimal-unresolved",
+      "domain": "layrs-conflict-v1",
+      "identityKind": "jcsV1",
+      "idField": "conflictId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/conflict.schema.json",
+      "input": {
+        "schemaVersion": "layrs.scm.conflict.v1",
+        "conflictId": "blake3:897181c6f49741eca8798fc933d711493b0af65299a9d67ae0717516661e66e0",
+        "kind": "content",
+        "placements": [
+          {
+            "placementId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+            "path": "src/main.rs",
+            "role": "primary"
+          }
+        ],
+        "bases": [],
+        "sides": [
+          {
+            "termId": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+            "termKind": "side",
+            "provenance": {
+              "kind": "step",
+              "stepId": "blake3:4444444444444444444444444444444444444444444444444444444444444444"
+            },
+            "values": [
+              {
+                "placementId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+                "value": { "kind": "absent" }
+              }
+            ]
+          },
+          {
+            "termId": "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+            "termKind": "side",
+            "provenance": {
+              "kind": "step",
+              "stepId": "blake3:5555555555555555555555555555555555555555555555555555555555555555"
+            },
+            "values": [
+              {
+                "placementId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+                "value": { "kind": "absent" }
+              }
+            ]
+          }
+        ],
+        "lensPin": null,
+        "lensImplementationDigest": null,
+        "renderedObjectId": null,
+        "resolutionState": "unresolved",
+        "placementResolutions": [],
+        "blocks": [],
+        "segments": [],
+        "originStepIds": [
+          "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+          "blake3:5555555555555555555555555555555555555555555555555555555555555555"
+        ]
+      },
+      "expectedIdentityUtf8": "layrs-conflict-v1\u0000{\"bases\":[],\"blocks\":[],\"kind\":\"content\",\"lensImplementationDigest\":null,\"lensPin\":null,\"originStepIds\":[\"blake3:4444444444444444444444444444444444444444444444444444444444444444\",\"blake3:5555555555555555555555555555555555555555555555555555555555555555\"],\"placementResolutions\":[],\"placements\":[{\"path\":\"src/main.rs\",\"placementId\":\"blake3:1111111111111111111111111111111111111111111111111111111111111111\",\"role\":\"primary\"}],\"renderedObjectId\":null,\"resolutionState\":\"unresolved\",\"schemaVersion\":\"layrs.scm.conflict.v1\",\"segments\":[],\"sides\":[{\"provenance\":{\"kind\":\"step\",\"stepId\":\"blake3:4444444444444444444444444444444444444444444444444444444444444444\"},\"termId\":\"blake3:2222222222222222222222222222222222222222222222222222222222222222\",\"termKind\":\"side\",\"values\":[{\"placementId\":\"blake3:1111111111111111111111111111111111111111111111111111111111111111\",\"value\":{\"kind\":\"absent\"}}]},{\"provenance\":{\"kind\":\"step\",\"stepId\":\"blake3:5555555555555555555555555555555555555555555555555555555555555555\"},\"termId\":\"blake3:3333333333333333333333333333333333333333333333333333333333333333\",\"termKind\":\"side\",\"values\":[{\"placementId\":\"blake3:1111111111111111111111111111111111111111111111111111111111111111\",\"value\":{\"kind\":\"absent\"}}]}]}",
+      "expectedObjectId": "blake3:897181c6f49741eca8798fc933d711493b0af65299a9d67ae0717516661e66e0"
+    },
+    {
+      "name": "symlink-relative-target",
+      "domain": "layrs-symlink-v1",
+      "identityKind": "jcsV1",
+      "idField": "symlinkId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/SymlinkObject",
+      "input": {
+        "schemaVersion": "layrs.symlink.v1",
+        "symlinkId": "blake3:757ce1bd12694eba55ef7e7e6f0d507cb4a6478b55a9b8f0cb8ab3f1688ba2e3",
+        "target": "../shared/config.toml"
+      },
+      "expectedIdentityUtf8": "layrs-symlink-v1\u0000{\"schemaVersion\":\"layrs.symlink.v1\",\"target\":\"../shared/config.toml\"}",
+      "expectedObjectId": "blake3:757ce1bd12694eba55ef7e7e6f0d507cb4a6478b55a9b8f0cb8ab3f1688ba2e3"
+    },
+    {
+      "name": "tombstone-known-previous",
+      "domain": "layrs-tombstone-v1",
+      "identityKind": "jcsV1",
+      "idField": "tombstoneId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/TombstoneObject",
+      "input": {
+        "schemaVersion": "layrs.tombstone.v1",
+        "tombstoneId": "blake3:94098ace9530a52aa515c3db11db98eb2b90cc2f886cbed44f13aeb97e2f1ad3",
+        "previousObjectId": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedIdentityUtf8": "layrs-tombstone-v1\u0000{\"previousObjectId\":\"blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schemaVersion\":\"layrs.tombstone.v1\"}",
+      "expectedObjectId": "blake3:94098ace9530a52aa515c3db11db98eb2b90cc2f886cbed44f13aeb97e2f1ad3"
+    },
+    {
+      "name": "file-manifest-hello-single",
+      "domain": "layrs-file-manifest-v1",
+      "identityKind": "jcsV1",
+      "idField": "manifestId",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/file.schema.json",
+      "input": {
+        "schemaVersion": "layrs.file-manifest.v1",
+        "manifestId": "blake3:8285c740fc07c66592c95622b313067642398e6c0d8e69f5c2e5eed3129e3321",
+        "fileId": "blake3:cf2b3005225d995b905536bff0fb60d3486f4043ca86bf44da845052c6a4cb7d",
+        "byteLength": 5,
+        "chunking": { "strategy": "single", "version": 1 },
+        "chunks": [
+          {
+            "chunkId": "blake3:4eb1f72d41aa4b778090debd8e33feded93a1a98fc76bfad36fea32d94a5ce80",
+            "offset": 0,
+            "byteLength": 5
+          }
+        ]
+      },
+      "expectedIdentityUtf8": "layrs-file-manifest-v1\u0000{\"byteLength\":5,\"chunking\":{\"strategy\":\"single\",\"version\":1},\"chunks\":[{\"byteLength\":5,\"chunkId\":\"blake3:4eb1f72d41aa4b778090debd8e33feded93a1a98fc76bfad36fea32d94a5ce80\",\"offset\":0}],\"fileId\":\"blake3:cf2b3005225d995b905536bff0fb60d3486f4043ca86bf44da845052c6a4cb7d\",\"schemaVersion\":\"layrs.file-manifest.v1\"}",
+      "expectedObjectId": "blake3:8285c740fc07c66592c95622b313067642398e6c0d8e69f5c2e5eed3129e3321"
+    }
+  ],
+  "objectVectors": [
+    {
+      "name": "chunk-hello-envelope",
+      "kind": "chunk",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/chunk.schema.json",
+      "value": {
+        "schemaVersion": "layrs.chunk.v1",
+        "chunkId": "blake3:4eb1f72d41aa4b778090debd8e33feded93a1a98fc76bfad36fea32d94a5ce80",
+        "byteLength": 5,
+        "content": { "encoding": "base64", "bytes": "aGVsbG8=" }
+      }
+    },
+    {
+      "name": "file-manifest-hello-fixed-same-file",
+      "kind": "fileManifest",
+      "schemaRef": "https://layrs.dev/schemas/scm/v1/file.schema.json",
+      "value": {
+        "schemaVersion": "layrs.file-manifest.v1",
+        "manifestId": "blake3:454a8cae3c27fcf366a6242d2d16a5259474ec36c76cb97366a8e2a780c6569a",
+        "fileId": "blake3:cf2b3005225d995b905536bff0fb60d3486f4043ca86bf44da845052c6a4cb7d",
+        "byteLength": 5,
+        "chunking": {
+          "strategy": "deterministic_fixed",
+          "version": 1,
+          "chunkBytes": 1048576
+        },
+        "chunks": [
+          {
+            "chunkId": "blake3:4eb1f72d41aa4b778090debd8e33feded93a1a98fc76bfad36fea32d94a5ce80",
+            "offset": 0,
+            "byteLength": 5
+          }
+        ]
+      }
+    }
+  ],
+  "sortVectors": [
+    {
+      "name": "parents-sort-ascii",
+      "input": [
+        "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "expected": [
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ]
+    },
+    {
+      "name": "tree-entry-sort-utf8",
+      "input": ["z.txt", "\u00e9.txt", "a"],
+      "expected": ["a", "z.txt", "\u00e9.txt"]
+    }
+  ],
+  "repoPathVectors": [
+    { "value": "a", "valid": true },
+    { "value": "src/lib.rs", "valid": true },
+    { "value": ".env", "valid": true },
+    { "value": "assets/\u00e9.txt", "valid": true },
+    { "value": "assets/e\u0301.txt", "valid": false },
+    { "value": "", "valid": false },
+    { "value": "/absolute", "valid": false },
+    { "value": "C:/drive", "valid": false },
+    { "value": "a\\b", "valid": false },
+    { "value": "a//b", "valid": false },
+    { "value": ".", "valid": false },
+    { "value": "..", "valid": false },
+    { "value": "a/./b", "valid": false },
+    { "value": "a/../b", "valid": false },
+    { "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "valid": false },
+    { "value": "nul\u0000byte", "valid": false }
+  ],
+  "rejectVectors": [
+    {
+      "name": "duplicate-step-parent",
+      "kind": "duplicateStepParents",
+      "value": [
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "expectedCode": "duplicate_step_parent"
+    },
+    {
+      "name": "layer-heads-must-be-antichain",
+      "kind": "layerHeadAntichain",
+      "value": {
+        "heads": [
+          "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "parents": [
+          {
+            "stepId": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "parentStepIds": [
+              "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ]
+          }
+        ]
+      },
+      "expectedCode": "layer_heads_not_antichain"
+    },
+    {
+      "name": "file-manifest-chunk-gap",
+      "kind": "fileChunkLayout",
+      "value": {
+        "byteLength": 4,
+        "chunks": [
+          { "offset": 0, "byteLength": 2 },
+          { "offset": 3, "byteLength": 1 }
+        ]
+      },
+      "expectedCode": "file_manifest_chunks_not_contiguous"
+    },
+    {
+      "name": "fastcdc-parameter-order",
+      "kind": "fastCdcParameters",
+      "value": { "minBytes": 1024, "targetBytes": 512, "maxBytes": 4096 },
+      "expectedCode": "fastcdc_parameter_order"
+    }
+  ]
+}

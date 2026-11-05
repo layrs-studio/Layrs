@@ -1,0 +1,162 @@
+/* ---------- Diff ---------- */
+.layrs-diff {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.layrs-diff__heads {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-ui);
+}
+
+.layrs-diff__head,
+.layrs-diff__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 38px;
+  padding: 0 var(--space-4);
+  font-size: var(--text-sm);
+}
+
+.layrs-diff__summary {
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-ui);
+}
+
+.layrs-diff__head--before {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-text);
+}
+
+.layrs-diff__head--after {
+  border-left: 1px solid var(--border);
+  background: var(--diff-add-bg);
+  color: var(--diff-add-text);
+}
+
+.layrs-diff__added {
+  color: var(--diff-add-text);
+}
+
+.layrs-diff__removed {
+  color: var(--diff-del-text);
+}
+
+.layrs-diff--inline {
+  overflow-x: auto;
+}
+
+.layrs-diff__table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.layrs-diff--inline .layrs-diff__table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.layrs-diff__col-number {
+  width: 52px;
+}
+
+.layrs-diff__number {
+  width: 52px;
+  padding: 0 var(--space-2);
+  color: var(--diff-gutter);
+  text-align: right;
+  vertical-align: top;
+  user-select: none;
+}
+
+.layrs-diff__code {
+  padding: 0 var(--space-3) 0 var(--space-2);
+  line-height: 1.7;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.layrs-diff--inline .layrs-diff__code {
+  white-space: pre;
+}
+
+.layrs-diff__code:nth-child(2) {
+  border-right: 1px solid var(--border);
+}
+
+.layrs-diff--inline .layrs-diff__code:nth-child(2) {
+  border-right: 0;
+}
+
+.layrs-diff__marker {
+  display: inline-block;
+  width: 1.4em;
+  color: var(--diff-gutter);
+  user-select: none;
+}
+
+.layrs-diff__cell--delete,
+.layrs-diff__row--delete td {
+  background: var(--diff-del-bg);
+}
+
+.layrs-diff__cell--insert,
+.layrs-diff__row--insert td {
+  background: var(--diff-add-bg);
+}
+
+.layrs-diff__cell--delete .layrs-diff__marker,
+.layrs-diff__row--delete .layrs-diff__marker {
+  color: var(--diff-del-text);
+}
+
+.layrs-diff__cell--insert .layrs-diff__marker,
+.layrs-diff__row--insert .layrs-diff__marker {
+  color: var(--diff-add-text);
+}
+
+.layrs-diff__empty {
+  background: repeating-linear-gradient(-45deg, transparent 0 7px, color-mix(in srgb, var(--surface-3) 45%, transparent) 7px 8px);
+}
+
+.layrs-diff__eof {
+  color: var(--text-subtle);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-style: italic;
+}
+
+.layrs-diff__fold td {
+  padding: 0;
+  background: var(--surface-2);
+}
+
+.layrs-diff__fold button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--space-4);
+  border: 0;
+  border-block: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.layrs-diff__fold button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}

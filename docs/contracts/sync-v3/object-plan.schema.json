@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/object-plan.schema.json",
+  "title": "Layrs Sync V3 upload object plan",
+  "description": "Exact Space-scoped partition and strongly bound capabilities for immutable CAS uploads.",
+  "oneOf": [
+    { "$ref": "#/$defs/Request" },
+    { "$ref": "#/$defs/Response" }
+  ],
+  "$defs": {
+    "UploadObjectDescriptor": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/ObjectDescriptor" },
+        { "not": { "properties": { "kind": { "const": "authorization_snapshot" } }, "required": ["kind"] } }
+      ]
+    },
+    "UploadCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principalId", "authorizationEpoch", "spaceId", "clientId", "requestId", "planId", "descriptor", "descriptorDigest", "method", "uploadUrl", "token", "expiresAt", "maxCanonicalByteLen", "maxEncodedByteLen", "compression"],
+      "properties": {
+        "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "planId": { "$ref": "common.schema.json#/$defs/PlanId" },
+        "descriptor": { "$ref": "#/$defs/UploadObjectDescriptor" },
+        "descriptorDigest": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "method": { "const": "PUT" },
+        "uploadUrl": { "type": "string", "minLength": 1, "maxLength": 4096, "format": "uri", "pattern": "^https://[^/?#@]+/v3/transfers/uploads$" },
+        "token": { "type": "string", "minLength": 32, "maxLength": 4096 },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "maxCanonicalByteLen": { "type": "integer", "minimum": 0 },
+        "maxEncodedByteLen": { "type": "integer", "minimum": 0 },
+        "compression": { "$ref": "common.schema.json#/$defs/Compression" }
+      }
+    },
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "spaceId", "clientId", "requestId", "objects"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "objectPlanRequest" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "objects": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/UploadObjectDescriptor" }
+        }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "type", "principalId", "authorizationEpoch", "spaceId", "clientId", "requestId", "planId", "presentObjects", "missingObjects", "uploadCapabilities", "expiresAt"],
+      "properties": {
+        "protocol": { "const": "layrs.sync.v3" },
+        "type": { "const": "objectPlanResponse" },
+        "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "requestId": { "$ref": "common.schema.json#/$defs/RequestId" },
+        "planId": { "$ref": "common.schema.json#/$defs/PlanId" },
+        "presentObjects": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/UploadObjectDescriptor" }
+        },
+        "missingObjects": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/UploadObjectDescriptor" }
+        },
+        "uploadCapabilities": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/UploadCapability" }
+        },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    }
+  }
+}

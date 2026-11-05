@@ -1,0 +1,75 @@
+{
+  "scope": "Corrected unintegrated client Provider observation source; original critical review and ROOT fixes retained. No compilation/runtime or Store acceptance.",
+  "files": [
+    {
+      "path": "files/crates/layrs-client-core/src/native_scm/remote/provider_observation.rs",
+      "bytes": 34916,
+      "sha256": "83dec03546eedbed58e6d0b444d35c1b1485755020afad47bc2eccafd331488d"
+    },
+    {
+      "path": "files/crates/layrs-client-core/src/native_scm/remote/provider_observation_tests.rs",
+      "bytes": 52488,
+      "sha256": "362122974df63579779c29f18689ef6ba184194774c294a271b6a28b3f4a2460"
+    },
+    {
+      "path": "files/crates/layrs-client-core/src/native_scm/remote.rs",
+      "bytes": 28096,
+      "sha256": "2503941b44d5b9fd137fcd3280254ac87260d689de2b775bfb92e5a7fbec0cc3"
+    },
+    {
+      "path": "manifest.sha256.json",
+      "bytes": 5057,
+      "sha256": "35bae32f11b6d3f31d19d340c886b984484146a31259b6e1522203e5d68b0861"
+    },
+    {
+      "path": "proposal.patch",
+      "bytes": 91087,
+      "sha256": "8a409e6ce5feae17449d2b623feda66fae44719d536a806b4f51ad28852c7121"
+    },
+    {
+      "path": "reviewed-input/base-checks.json",
+      "bytes": 684,
+      "sha256": "581051a64e8e19624671a3397a8930f11e85d0176f6d5af7c351ab53d4a729a3"
+    },
+    {
+      "path": "reviewed-input/critical-review.json",
+      "bytes": 44591,
+      "sha256": "b7f66bcf59146e73482f8ffc17f2e6ad3b8737034c39330560aabfb9cc655b43"
+    },
+    {
+      "path": "reviewed-input/manifest.sha256.json",
+      "bytes": 1809,
+      "sha256": "cbecbaba6c8ce029f402778bee63d8630ad69bee1057786ff6f53fb3912d8b17"
+    },
+    {
+      "path": "reviewed-input/protected-input-manifests.json",
+      "bytes": 373,
+      "sha256": "d84aef5f6c53e68b1c937bc227ab26a79d4a414cf72b1fbb307289696925f7c9"
+    },
+    {
+      "path": "reviewed-input/PROVIDER-TRANSITION-OBSERVATION-HANDOFF.md",
+      "bytes": 18904,
+      "sha256": "b77dd13548f3bcd4da8100e3ab5f101ea25a41724dc7a4b805086ad5ac6b5da6"
+    },
+    {
+      "path": "reviewed-input/provider-transition-observation.patch",
+      "bytes": 88748,
+      "sha256": "cba3ebbeaa62a7707ef7482a2e68fcb668146fdd81b4b05b7ede36d9a6eaeb85"
+    },
+    {
+      "path": "reviewed-input/source-checks.json",
+      "bytes": 5967,
+      "sha256": "510d489052c507880b68c711620128f681afa1cd131773b8553bcf6a366938fe"
+    },
+    {
+      "path": "ROOT-CORRECTIONS.md",
+      "bytes": 2331,
+      "sha256": "b571e932cf35694ff3345aae60b641098fd9fac583a9cbbd3d79ebe3402fa649"
+    }
+  ],
+  "archive": {
+    "path": "provider-observation-corrected-proposal-20261029.tar.gz",
+    "bytes": 82456,
+    "sha256": "f6517656cc73d738bcf290c9e4833465d70b3c49c5266bba2ce3d494b4234d7c"
+  }
+}

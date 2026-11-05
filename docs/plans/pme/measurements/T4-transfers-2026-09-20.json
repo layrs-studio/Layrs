@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "layrs.native-transfer-validation.v1",
+  "platform": "windows",
+  "profile": "debug",
+  "transport": "HTTPS with explicit private CA; real PostgreSQL and filesystem CAS",
+  "fileBytes": 16777216,
+  "downloadElapsedMs": 8052,
+  "manifestChunkOccurrences": 256,
+  "uniqueChunks": 251,
+  "interruptedDownloadRecovered": true,
+  "finalFileDigestVerified": true,
+  "fourRepeatedInterruptionsRefused": true,
+  "freshRetryAfterExhaustionVerified": true,
+  "networkBufferBytes": 16384,
+  "maximumRangeBytes": 1048576,
+  "maximumRetriesPerObject": 3,
+  "objectDeadlineSeconds": 120,
+  "limitations": [
+    "Small single-node fixture, not a production throughput guarantee.",
+    "Final canonical-object decoding and checkout reconstruction still use bounded in-memory buffers.",
+    "No user cancellation or persisted partial-download recovery across process restart.",
+    "The native file limit remains 64 MiB; object graph/checkout limit remains 256 MiB."
+  ]
+}

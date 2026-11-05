@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "layrs.policy-set.v1",
+  "policySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+  "spaceId": "space:demo",
+  "policyVersions": [{
+    "policyId": "policy:default",
+    "policyVersionId": "policy-version:default-v1",
+    "policyProductObjectId": "blake3:9999999999999999999999999999999999999999999999999999999999999999",
+    "dependencyObjectIds": []
+  }]
+}

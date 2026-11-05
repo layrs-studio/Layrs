@@ -3,27 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Layrs Studio desktop shell placeholder.",
+  "description": "Layrs Studio local-first desktop client.",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 6174",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "cargo build --locked --manifest-path ../../Cargo.toml -p layrs-weave --bin layrs-lens-worker && tauri dev",
     "build": "vite build",
-    "tauri:build": "tauri build",
+    "tauri:build": "cargo build --locked --release --manifest-path ../../Cargo.toml -p layrs-weave --bin layrs-lens-worker && tauri build",
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@layrs/client-sdk": "workspace:*",
-    "@layrs/lenses": "workspace:*",
     "@layrs/ui": "workspace:*",
+    "lucide-react": "^1.48.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
-    "@vitejs/plugin-react": "^4.3.1",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "vite": "^5.4.0",
-    "typescript": "^5.5.4"
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
   }
 }

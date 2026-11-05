@@ -1,0 +1,117 @@
+.layrs-organisation-switcher {
+  min-width: 0;
+}
+
+.layrs-organisation-switcher__label {
+  display: block;
+  margin: 0 0 var(--space-1) var(--space-3);
+  color: var(--text-subtle);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.layrs-organisation-switcher__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.layrs-organisation-switcher__trigger:hover,
+.layrs-organisation-switcher__trigger[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.layrs-organisation-switcher__trigger:focus-visible {
+  outline: 2px solid var(--layrs-coral);
+  outline-offset: 2px;
+}
+
+.layrs-organisation-switcher__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.layrs-organisation-switcher__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layrs-organisation-switcher__chevron {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.layrs-organisation-menu {
+  position: fixed;
+  z-index: 110;
+  overflow-y: auto;
+}
+
+.layrs-organisation-menu__item {
+  justify-content: space-between;
+  min-height: 38px;
+}
+
+.layrs-organisation-menu__name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.layrs-personal-nav {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.layrs-personal-nav[aria-pressed="true"] {
+  background: var(--surface-selected);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.layrs-shell--rail .layrs-organisation-switcher__label,
+.layrs-shell--rail .layrs-organisation-switcher__name,
+.layrs-shell--rail .layrs-organisation-switcher__chevron {
+  display: none;
+}
+
+.layrs-shell--rail .layrs-organisation-switcher__trigger {
+  justify-content: center;
+  padding: var(--space-1);
+}
+
+@media (max-width: 760px) {
+  .layrs-shell--rail .layrs-organisation-switcher__label { display: block; }
+  .layrs-shell--rail .layrs-organisation-switcher__name,
+  .layrs-shell--rail .layrs-organisation-switcher__chevron { display: inline; }
+  .layrs-shell--rail .layrs-organisation-switcher__trigger {
+    justify-content: flex-start;
+    padding: var(--space-1) var(--space-2);
+  }
+}

@@ -2,9 +2,34 @@ import { spawn } from "node:child_process";
 
 const steps = [
   {
-    label: "Core and CLI",
+    label: "Static trust gates",
     command: "pnpm",
-    args: ["run", "test:core"]
+    args: ["run", "check"]
+  },
+  {
+    label: "Lens package contract tests",
+    command: "pnpm",
+    args: ["run", "test:packages"]
+  },
+  ...["local-dev", "native-project-files", "native-remote-project-files", "native-policy-path-form", "native-projection-store", "partial-merge-choices"].map((name) => ({
+    label: name,
+    command: "node",
+    args: [`scripts/test-${name}.mjs`]
+  })),
+  {
+    label: "Rust workspace with mandatory PostgreSQL",
+    command: "pnpm",
+    args: ["run", "test:rust"]
+  },
+  {
+    label: "Studio Desktop Tauri shell",
+    command: "pnpm",
+    args: ["run", "test:tauri"]
+  },
+  {
+    label: "Desktop and Studio Web renderer UI",
+    command: "pnpm",
+    args: ["run", "test:e2e:renderer"]
   },
   {
     label: "Studio Desktop native UI",
@@ -15,13 +40,22 @@ const steps = [
     label: "Studio Web",
     command: "pnpm",
     args: ["run", "test:web:ci"]
-  },
-  {
-    label: "Desktop to Server to Web E2E",
-    command: "pnpm",
-    args: ["run", "test:e2e:ci"]
   }
 ];
+
+if (process.platform !== "win32" && process.env.LAYRS_ALLOW_PLATFORM_PARTIAL !== "1") {
+  throw new Error(
+    "The canonical `pnpm test` gate includes the native Windows Desktop suite. " +
+      "Run it on Windows, or set LAYRS_ALLOW_PLATFORM_PARTIAL=1 only for a documented platform-specific CI job."
+  );
+}
+
+if (process.platform !== "win32") {
+  const nativeStep = steps.findIndex((step) => step.label === "Studio Desktop native UI");
+  if (nativeStep >= 0) {
+    steps.splice(nativeStep, 1);
+  }
+}
 
 for (const step of steps) {
   console.log(`\nLayrs test: ${step.label}`);

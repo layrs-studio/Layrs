@@ -1,0 +1,46 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "objectPlanResponse",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 1,
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "requestId": "request:upload-1",
+  "planId": "plan:upload-1",
+  "presentObjects": [],
+  "missingObjects": [
+    {
+      "kind": "chunk",
+      "objectId": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+      "canonicalByteLen": 4,
+      "encodedByteLen": 4,
+      "compression": "identity"
+    }
+  ],
+  "uploadCapabilities": [
+    {
+      "principalId": "principal:alexa",
+      "authorizationEpoch": 1,
+      "spaceId": "space:demo",
+      "clientId": "client:desktop-a",
+      "requestId": "request:upload-1",
+      "planId": "plan:upload-1",
+      "descriptor": {
+        "kind": "chunk",
+        "objectId": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+        "canonicalByteLen": 4,
+        "encodedByteLen": 4,
+        "compression": "identity"
+      },
+      "descriptorDigest": "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+      "method": "PUT",
+      "uploadUrl": "https://layrs.example/v3/transfers/uploads",
+      "token": "00000000000000000000000000000000",
+      "expiresAt": "2026-07-19T12:05:00Z",
+      "maxCanonicalByteLen": 4,
+      "maxEncodedByteLen": 4,
+      "compression": "identity"
+    }
+  ],
+  "expiresAt": "2026-07-19T12:05:00Z"
+}

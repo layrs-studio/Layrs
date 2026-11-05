@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/file.schema.json",
+  "title": "Layrs SCM V1 FileManifest",
+  "description": "Canonical CAS representation of one logical FileId. FileId is BLAKE3(layrs-file-v1 || NUL || raw file bytes). FileManifestId is BLAKE3(layrs-file-manifest-v1 || NUL || RFC8785(manifest without manifestId)). Multiple manifests may represent the same FileId.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "manifestId",
+    "fileId",
+    "byteLength",
+    "chunking",
+    "chunks"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "layrs.file-manifest.v1" },
+    "manifestId": { "$ref": "#/$defs/FileManifestId" },
+    "fileId": { "$ref": "#/$defs/FileId" },
+    "byteLength": { "type": "integer", "minimum": 0 },
+    "chunking": { "$ref": "#/$defs/ChunkingDescriptor" },
+    "chunks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/FileChunk" }
+    }
+  },
+  "$defs": {
+    "FileId": { "$ref": "common.schema.json#/$defs/ObjectId" },
+    "FileManifestId": { "$ref": "common.schema.json#/$defs/ObjectId" },
+    "FileChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunkId", "offset", "byteLength"],
+      "properties": {
+        "chunkId": { "$ref": "chunk.schema.json#/$defs/ChunkId" },
+        "offset": { "type": "integer", "minimum": 0 },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ChunkingDescriptor": {
+      "oneOf": [
+        { "$ref": "#/$defs/SingleChunking" },
+        { "$ref": "#/$defs/FixedChunking" },
+        { "$ref": "#/$defs/FastCdcChunking" }
+      ]
+    },
+    "SingleChunking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "version"],
+      "properties": {
+        "strategy": { "const": "single" },
+        "version": { "const": 1 }
+      }
+    },
+    "FixedChunking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "version", "chunkBytes"],
+      "properties": {
+        "strategy": { "const": "deterministic_fixed" },
+        "version": { "const": 1 },
+        "chunkBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "FastCdcChunking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "version", "minBytes", "targetBytes", "maxBytes"],
+      "properties": {
+        "strategy": { "const": "fastcdc" },
+        "version": { "const": 1 },
+        "minBytes": { "type": "integer", "minimum": 1 },
+        "targetBytes": { "type": "integer", "minimum": 1 },
+        "maxBytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

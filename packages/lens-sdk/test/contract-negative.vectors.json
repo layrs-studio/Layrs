@@ -1,0 +1,89 @@
+{
+  "reconcileSides": [
+    {
+      "name": "present_requires_bytes",
+      "value": { "exists": true, "size": 0 }
+    },
+    {
+      "name": "present_size_matches_bytes",
+      "value": { "exists": true, "bytes": [1], "size": 0 }
+    },
+    {
+      "name": "absent_forbids_nonempty_bytes",
+      "value": { "exists": false, "bytes": [1], "size": 1 }
+    },
+    {
+      "name": "absent_requires_zero_size",
+      "value": { "exists": false, "bytes": [], "size": 1 }
+    },
+    {
+      "name": "absent_forbids_content_hash",
+      "value": {
+        "exists": false,
+        "bytes": [],
+        "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 0
+      }
+    }
+  ],
+  "reconcileContents": [
+    {
+      "name": "present_result_requires_bytes",
+      "value": { "exists": true }
+    },
+    {
+      "name": "absent_result_forbids_nonempty_bytes",
+      "value": { "exists": false, "bytes": [1] }
+    }
+  ],
+  "pins": [
+    {
+      "name": "pin_rejects_invalid_id",
+      "value": {
+        "lensId": "bad lens",
+        "version": "1.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pin_rejects_incomplete_semver",
+      "value": {
+        "lensId": "layrs.test",
+        "version": "1.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pin_rejects_leading_zero_semver",
+      "value": {
+        "lensId": "layrs.test",
+        "version": "01.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "pin_rejects_invalid_digest",
+      "value": {
+        "lensId": "layrs.test",
+        "version": "1.0.0",
+        "digest": "sha256:abc"
+      }
+    }
+  ],
+  "responsePinMismatches": [
+    {
+      "name": "response_rejects_mismatched_lens_id",
+      "override": { "lensId": "layrs.example.other" }
+    },
+    {
+      "name": "response_rejects_mismatched_version",
+      "override": { "version": "1.2.4" }
+    },
+    {
+      "name": "response_rejects_mismatched_digest",
+      "override": {
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  ]
+}

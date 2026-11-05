@@ -3,17 +3,59 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
+mod contract;
+mod manifest_validation;
+mod selection;
+mod sha256;
+mod validation;
+mod wire;
+
+pub use contract::*;
+pub use manifest_validation::{
+    MAX_PORTABLE_INTEGER, is_lens_id, is_semantic_version, validate_lens_id,
+    validate_semantic_version,
+};
+pub use selection::*;
+pub use sha256::sha256_digest;
+pub use validation::{LensContractValidationError, is_sha256_digest, validate_sha256_digest};
+
 pub type MetadataMap = BTreeMap<String, MetadataValue>;
 pub type LensResult<T> = Result<T, LensError>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LensManifest {
+    #[serde(
+        serialize_with = "manifest_validation::serialize_contract_version",
+        deserialize_with = "manifest_validation::deserialize_contract_version"
+    )]
+    pub contract_version: String,
+    #[serde(
+        serialize_with = "manifest_validation::serialize_lens_id",
+        deserialize_with = "manifest_validation::deserialize_lens_id"
+    )]
     pub id: String,
     pub name: String,
+    #[serde(
+        serialize_with = "manifest_validation::serialize_semantic_version",
+        deserialize_with = "manifest_validation::deserialize_semantic_version"
+    )]
     pub version: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "validation::serialize_optional_sha256_digest",
+        deserialize_with = "validation::deserialize_optional_sha256_digest"
+    )]
+    pub digest: Option<String>,
     pub analyzer: AnalyzerContract,
     pub viewer: ViewerContract,
+    #[serde(default)]
     pub resolution_methods: ResolutionMethods,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<LensBundleContract>,
 }
 
 impl LensManifest {
@@ -25,17 +67,57 @@ impl LensManifest {
         viewer: ViewerContract,
     ) -> Self {
         Self {
+            contract_version: LENS_CONTRACT_VERSION.to_string(),
             id: id.into(),
             name: name.into(),
             version: version.into(),
+            digest: None,
             analyzer,
             viewer,
             resolution_methods: ResolutionMethods::default(),
+            bundle: None,
         }
+    }
+
+    pub fn with_digest(self, digest: impl Into<String>) -> Self {
+        self.try_with_digest(digest)
+            .expect("Lens manifest digest must be a valid sha256 digest")
+    }
+
+    pub fn try_with_digest(
+        mut self,
+        digest: impl Into<String>,
+    ) -> Result<Self, LensContractValidationError> {
+        let digest = digest.into();
+        validate_sha256_digest(&digest)?;
+        self.digest = Some(digest);
+        Ok(self)
+    }
+
+    pub fn with_bundle(mut self, bundle: LensBundleContract) -> Self {
+        self.bundle = Some(bundle);
+        self
+    }
+
+    pub fn pin(&self) -> Option<LensPin> {
+        self.try_pin().ok().flatten()
+    }
+
+    pub fn try_pin(&self) -> Result<Option<LensPin>, LensContractValidationError> {
+        self.validate()?;
+        self.digest
+            .as_ref()
+            .map(|digest| LensPin::try_new(&self.id, &self.version, digest))
+            .transpose()
+    }
+
+    pub fn supports_capability(&self, capability: &LensCapability) -> bool {
+        self.analyzer.capabilities.contains(capability)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnalyzerContract {
     pub supported_media_types: Vec<String>,
     pub file_extensions: Vec<String>,
@@ -80,7 +162,8 @@ impl ResolutionMethods {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ResolutionScope {
     File,
     Block,
@@ -95,7 +178,8 @@ impl ResolutionScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResolutionMethod {
     Existing,
     Incoming,
@@ -246,7 +330,8 @@ pub enum ArtifactKind {
     Custom(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum MetadataValue {
     String(String),
     Integer(i64),
@@ -508,58 +593,8 @@ pub struct LensReconcileResult {
     pub fields: MetadataMap,
 }
 
-impl LensReconcileResult {
-    pub fn auto_resolved(summary: impl Into<String>, content: LensReconcileContent) -> Self {
-        Self {
-            status: LensReconcileResultStatus::AutoResolved,
-            summary: summary.into(),
-            resolved: Some(content),
-            conflict: None,
-            file_methods: Vec::new(),
-            blocks: Vec::new(),
-            segments: Vec::new(),
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn conflicted(
-        summary: impl Into<String>,
-        content: LensReconcileContent,
-        blocks: Vec<LensConflictBlock>,
-        segments: Vec<LensConflictSegment>,
-    ) -> Self {
-        Self {
-            status: LensReconcileResultStatus::Conflicted,
-            summary: summary.into(),
-            resolved: None,
-            conflict: Some(content),
-            file_methods: Vec::new(),
-            blocks,
-            segments,
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn unsupported(summary: impl Into<String>) -> Self {
-        Self {
-            status: LensReconcileResultStatus::Unsupported,
-            summary: summary.into(),
-            resolved: None,
-            conflict: None,
-            file_methods: Vec::new(),
-            blocks: Vec::new(),
-            segments: Vec::new(),
-            fields: MetadataMap::new(),
-        }
-    }
-
-    pub fn with_file_methods(mut self, methods: Vec<ResolutionMethod>) -> Self {
-        self.file_methods = methods;
-        self
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LensReconcileResultStatus {
     AutoResolved,
     Conflicted,
@@ -576,13 +611,22 @@ impl LensReconcileResultStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LensConflictBlock {
     pub block_id: String,
     pub base: String,
+    #[serde(rename = "existing")]
     pub ours: String,
+    #[serde(rename = "incoming")]
     pub theirs: String,
+    #[serde(
+        rename = "resolutionMethods",
+        serialize_with = "contract::serialize_block_methods",
+        deserialize_with = "contract::deserialize_block_methods"
+    )]
     pub methods: Vec<ResolutionMethod>,
+    #[serde(skip)]
     pub supported_resolutions: Vec<String>,
 }
 
@@ -631,14 +675,18 @@ pub struct LensResolutionSegment<'a> {
     pub block_id: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LensConflictSegment {
     pub kind: LensConflictSegmentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LensConflictSegmentKind {
     Text,
     Block,
@@ -667,7 +715,8 @@ pub struct TextSpan {
     pub column: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewerContract {
     pub viewer_id: String,
     pub schema_version: String,
@@ -691,13 +740,14 @@ impl ViewerContract {
             component: component.into(),
             preview_kinds,
             diff_kinds,
-            reconcile_statuses: vec![ReconcileStatus::Unsupported],
+            reconcile_statuses: Vec::new(),
             inspector_fields: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InspectorField {
     pub key: String,
     pub label: String,
@@ -796,89 +846,6 @@ pub fn infer_media_type_from_path(path: Option<&Path>) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_output_declares_reconcile_unsupported() {
-        let metadata = ArtifactMetadata::new(
-            "artifact",
-            "layrs.test",
-            ArtifactKind::Raw,
-            "application/octet-stream",
-            b"bytes",
-        );
-
-        let output = AnalysisOutput::new(metadata);
-
-        assert_eq!(output.reconcile.status, ReconcileStatus::Unsupported);
-    }
-
-    #[test]
-    fn viewer_contract_exposes_reconcile_statuses() {
-        let viewer = ViewerContract::new(
-            "viewer",
-            "Component",
-            vec![PreviewKind::Text],
-            vec![DiffKind::TextLines],
-        );
-
-        assert_eq!(
-            viewer.reconcile_statuses,
-            vec![ReconcileStatus::Unsupported]
-        );
-    }
-
-    #[test]
-    fn manifest_defaults_to_no_resolution_methods() {
-        let manifest = LensManifest::new(
-            "lens",
-            "Lens",
-            "0.0.0",
-            AnalyzerContract {
-                supported_media_types: Vec::new(),
-                file_extensions: Vec::new(),
-                capabilities: Vec::new(),
-            },
-            ViewerContract::new("viewer", "Viewer", Vec::new(), Vec::new()),
-        );
-
-        assert_eq!(manifest.resolution_methods, ResolutionMethods::none());
-    }
-
-    #[test]
-    fn resolution_methods_have_stable_wire_labels_and_aliases() {
-        assert_eq!(ResolutionMethod::Existing.as_str(), "existing");
-        assert_eq!(ResolutionMethod::Incoming.as_str(), "incoming");
-        assert_eq!(ResolutionMethod::Both.as_str(), "both");
-        assert_eq!(ResolutionMethod::Manual.as_str(), "manual");
-        assert_eq!(
-            ResolutionMethod::from_label("ours"),
-            Some(ResolutionMethod::Existing)
-        );
-        assert_eq!(
-            ResolutionMethod::from_label("theirs"),
-            Some(ResolutionMethod::Incoming)
-        );
-        assert_eq!(
-            ResolutionMethod::from_label("both_theirs_then_ours"),
-            Some(ResolutionMethod::Both)
-        );
-        assert_eq!(ResolutionMethod::from_label("base"), None);
-    }
-
-    #[test]
-    fn reconcile_statuses_have_stable_wire_labels() {
-        assert_eq!(ReconcileStatus::Unsupported.as_str(), "unsupported");
-        assert_eq!(
-            ReconcileStatus::NeedsManualResolution.as_str(),
-            "needs_manual_resolution"
-        );
-        assert_eq!(ReconcileStatus::AutoResolvable.as_str(), "auto_resolvable");
-    }
-}
-
 pub fn span_at(text: &str, start: usize, end: usize) -> TextSpan {
     let mut line = 1usize;
     let mut column = 1usize;
@@ -903,3 +870,6 @@ pub fn span_at(text: &str, start: usize, end: usize) -> TextSpan {
         column,
     }
 }
+
+#[cfg(test)]
+mod tests;

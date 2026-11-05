@@ -1,0 +1,1069 @@
+//! Shared CLI/Desktop remote actions. Secrets live only in the OS credential
+//! store and process memory. Authentication responses omit bearer/device codes;
+//! explicit administration can return newly issued service/webhook secrets once.
+use super::{NativeDevicePoll, NativeRemote, NativeWorkspace};
+use crate::secret_store::{OsSecretStore, SecretStore};
+use layrs_core::scm::{LayerId, ObjectId, SpaceId, StepId};
+use layrs_sync::v3::LayerMutationMode;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::path::Path;
+#[path = "projection_commands.rs"]
+mod projection;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeRemoteRequest {
+    pub origin: String,
+    pub ca_pem: Option<String>,
+    #[serde(default)]
+    pub expected_principal_id: Option<String>,
+    pub action: NativeRemoteAction,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum NativeRemoteAction {
+    StartLogin,
+    PollLogin,
+    Whoami,
+    ListContexts,
+    CreateOrganisation {
+        request: Value,
+    },
+    CreateProject {
+        request: Value,
+    },
+    /// One page of the Spaces this principal may open (`GET /v3/spaces`).
+    /// Independent of the local checkout; `root` is ignored.
+    ListSpaces {
+        #[serde(default)]
+        limit: Option<u16>,
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default)]
+        context_id: Option<String>,
+    },
+    /// UI capability hint for one Space (`GET /v3/spaces/:space/capabilities`).
+    SpaceCapabilities {
+        space: SpaceId,
+    },
+    Logout,
+    Provision {
+        workspace: String,
+        slug: String,
+        #[serde(default)]
+        context_id: Option<String>,
+        #[serde(default)]
+        expected_space: Option<SpaceId>,
+    },
+    Publish {
+        #[serde(default)]
+        integrate: bool,
+    },
+    PublishCandidates,
+    PublishCancellable {
+        #[serde(default)]
+        integrate: bool,
+        transfer_id: String,
+    },
+    PublishCandidatesCancellable {
+        transfer_id: String,
+    },
+    Receive,
+    ReceiveCancellable {
+        transfer_id: String,
+    },
+    CloneCancellable {
+        space: SpaceId,
+        name: String,
+        transfer_id: String,
+    },
+    InspectCloneDestination {
+        #[serde(default)]
+        space: Option<SpaceId>,
+        #[serde(default)]
+        context_id: Option<String>,
+    },
+    LinkExisting {
+        space: SpaceId,
+    },
+    PrepareExistingPublication {
+        space: SpaceId,
+        context_id: String,
+    },
+    CloneProjection {
+        space: SpaceId,
+        step: StepId,
+    },
+    CloneProjectionSelected {
+        space: SpaceId,
+        step: StepId,
+        selection: layrs_core::projection::ProjectionSelection,
+    },
+    /// Selection contains additions; existing intent is retained atomically.
+    ExpandProjectionSelection {
+        expected_generation: u64,
+        selection: layrs_core::projection::ProjectionSelection,
+    },
+    ObserveProjectionVersion {
+        expected_generation: u64,
+        step: StepId,
+        paths: Vec<layrs_core::scm::RepoPath>,
+    },
+    PrepareProjectionOffline {
+        expected_generation: u64,
+        request: layrs_core::projection::AvailabilityRequest,
+    },
+    ResumeProjectionOffline {
+        expected_generation: u64,
+        preparation_id: String,
+    },
+    PublishProjection {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    PublishProjectionCandidate {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    ScopedReview {
+        command: super::remote::ScopedReviewCommand,
+    },
+    ReceiveProjection {
+        layer_id: LayerId,
+    },
+    PreviewProjectionRebase {
+        patch_id: u64,
+        layer_id: LayerId,
+    },
+    PreviewProjectionHistoricalRestore {
+        patch_id: u64,
+        layer_id: LayerId,
+        selection: super::remote::ProjectionHistoricalSelection,
+    },
+    ApplyProjectionRebase {
+        preview: Box<super::remote::NativeProjectionRebasePreview>,
+        choices: std::collections::BTreeMap<
+            layrs_core::scm::RepoPath,
+            super::remote::ProjectionMergeChoice,
+        >,
+    },
+    MigrateProjection {
+        destination: String,
+        layer_id: LayerId,
+    },
+    PreviewProjectionNamespace {
+        expected_generation: u64,
+        mutation: super::NativeProjectionNamespaceMutation,
+    },
+    ApplyProjectionNamespace {
+        preview: Box<super::NativeProjectionNamespacePreview>,
+    },
+    PreviewProjectionDirectoryMove {
+        expected_generation: u64,
+        source: layrs_core::scm::RepoPath,
+        destination: layrs_core::scm::RepoPath,
+    },
+    ApplyProjectionDirectoryMove {
+        preview: Box<super::remote::NativeProjectionDirectoryPreview>,
+    },
+    PreviewProjectionRestore {
+        expected_generation: u64,
+        source: layrs_store_local::projection::RestoreSource,
+    },
+    ApplyProjectionRestore {
+        preview: Box<super::remote::NativeProjectionRestorePreview>,
+    },
+    CancelTransfer {
+        transfer_id: String,
+    },
+    PreviewChoose {
+        layer: LayerId,
+        chosen_heads: Vec<StepId>,
+        reason: String,
+    },
+    ApplyChoose {
+        preview: Box<super::NativeChoosePreview>,
+    },
+    PreviewPolicy {
+        policy_set_id: ObjectId,
+    },
+    PreviewPolicyRules {
+        rules: serde_json::Value,
+    },
+    PreviewReplacePolicyRules {
+        policy_id: layrs_sync::v3::PolicyId,
+        rules: serde_json::Value,
+    },
+    ReadPolicyRules {},
+    ReadPendingPolicy {},
+    ApplyPolicy {
+        preview: Box<super::NativePolicyPreview>,
+    },
+    ObserveStep {
+        step: StepId,
+        observed_at: layrs_core::scm::Timestamp,
+        reason: layrs_core::scm::CaptureReason,
+        idempotency_key: layrs_sync::v3::IdempotencyKey,
+    },
+    ReadFile {
+        step: StepId,
+        path: layrs_core::scm::RepoPath,
+        output: std::path::PathBuf,
+    },
+    Clone {
+        space: SpaceId,
+        name: String,
+    },
+    Collaboration {
+        command: super::CollaborationCommand,
+    },
+    /// Newly issued service/webhook secrets are returned once to the explicit
+    /// administration screen; callers must not persist or log the response.
+    Administration {
+        command: super::AdministrationCommand,
+    },
+}
+
+pub fn execute_remote(
+    root: impl AsRef<Path>,
+    request: NativeRemoteRequest,
+) -> Result<Value, String> {
+    execute_remote_with_store(root.as_ref(), request, &OsSecretStore::new())
+}
+
+fn execute_remote_with_store(
+    root: &Path,
+    request: NativeRemoteRequest,
+    secrets: &impl SecretStore,
+) -> Result<Value, String> {
+    validate_offline_action(&request.action)?;
+    let ca = request.ca_pem.as_deref().map(str::as_bytes);
+    let anonymous = NativeRemote::unauthenticated(&request.origin, ca).map_err(remote_error)?;
+    let key = credential_key(anonymous.origin());
+    let device_key = format!("{key}:pending-device");
+    match request.action {
+        NativeRemoteAction::StartLogin => {
+            if !secrets.status().available {
+                return Err("OS credential store unavailable".into());
+            }
+            let device = anonymous
+                .device_start("Layrs CLI / Desktop")
+                .map_err(remote_error)?;
+            secrets
+                .set_token(&device_key, &device.device_code)
+                .map_err(|e| e.to_string())?;
+            return Ok(
+                json!({"status":"pending","userCode":device.user_code,"verificationUri":device.verification_uri,"expiresIn":device.expires_in,"interval":device.interval}),
+            );
+        }
+        NativeRemoteAction::PollLogin => {
+            let code = secrets
+                .get_token(&device_key)
+                .map_err(|e| e.to_string())?
+                .ok_or("No device login in progress for this server")?;
+            return match anonymous.device_poll(&code).map_err(remote_error)? {
+                NativeDevicePoll::Pending { interval } => {
+                    Ok(json!({"status":"pending","interval":interval}))
+                }
+                NativeDevicePoll::Authorized(session) => {
+                    secrets
+                        .set_token(&key, &session.access_token)
+                        .map_err(|e| e.to_string())?;
+                    secrets
+                        .delete_token(&device_key)
+                        .map_err(|e| e.to_string())?;
+                    Ok(
+                        json!({"status":"authorized","principalId":session.principal_id,"expiresIn":session.expires_in}),
+                    )
+                }
+            };
+        }
+        _ => {}
+    }
+    let token = secrets
+        .get_token(&key)
+        .map_err(|e| {
+            if request.expected_principal_id.is_some() {
+                format!("remote_identity_check_failed: {e}")
+            } else {
+                e.to_string()
+            }
+        })?
+        .ok_or_else(|| {
+            if request.expected_principal_id.is_some() {
+                "remote_identity_check_failed: Sign in to this server first with remote login"
+            } else {
+                "Sign in to this server first with remote login"
+            }
+        })?;
+    let remote = match ca {
+        Some(ca) => NativeRemote::with_trusted_ca(anonymous.origin(), &token, ca),
+        None => NativeRemote::new(anonymous.origin(), &token),
+    }
+    .map_err(remote_error)?;
+    // The OS credential can change between the UI's session check and this
+    // request (for example, another CLI login). Check the identity using the
+    // exact token already captured for the operation, before dispatching it.
+    if let Some(expected) = request.expected_principal_id.as_deref() {
+        let who = remote
+            .whoami()
+            .map_err(|error| format!("remote_identity_check_failed: {}", remote_error(error)))?;
+        if !principal_matches(expected, &who) {
+            return Err(
+                "remote_principal_changed: Recheck the Desktop session before continuing".into(),
+            );
+        }
+    }
+    match request.action {
+        NativeRemoteAction::Whoami => remote.whoami().map_err(remote_error),
+        NativeRemoteAction::ListContexts => remote.list_contexts().map_err(remote_error),
+        NativeRemoteAction::CreateOrganisation { request } => {
+            remote.create_organisation(&request).map_err(remote_error)
+        }
+        NativeRemoteAction::CreateProject { request } => {
+            remote.create_project(&request).map_err(remote_error)
+        }
+        NativeRemoteAction::ListSpaces {
+            limit,
+            cursor,
+            context_id,
+        } => remote
+            .list_spaces_in_context(limit, cursor.as_deref(), context_id.as_deref())
+            .map_err(remote_error),
+        NativeRemoteAction::SpaceCapabilities { space } => {
+            remote.space_capabilities(&space).map_err(remote_error)
+        }
+        NativeRemoteAction::InspectCloneDestination { space, context_id } => Ok(json!(
+            remote.inspect_clone_destination(root, space.as_ref(), context_id.as_deref())
+        )),
+        NativeRemoteAction::LinkExisting { space } => {
+            let state = remote.link_existing(root, &space).map_err(remote_error)?;
+            Ok(json!({"status":"linked","state":state}))
+        }
+        NativeRemoteAction::Provision {
+            workspace,
+            slug,
+            context_id: Some(context_id),
+            expected_space: Some(expected_space),
+        } => Ok(json!({"provisioned":remote
+            .provision_existing(root, &expected_space, &context_id, &workspace, &slug)
+            .map_err(remote_error)?})),
+        NativeRemoteAction::PrepareExistingPublication { space, context_id } => {
+            let (state, context_id) = remote
+                .prepare_existing_publication(root, &space, &context_id)
+                .map_err(remote_error)?;
+            Ok(
+                json!({"status":"readyToPublish","localSpaceId":space,"name":state.space.name(),"contextId":context_id,"state":state}),
+            )
+        }
+        NativeRemoteAction::CancelTransfer { transfer_id } => Ok(
+            json!({"transferId":transfer_id,"status":super::transfer_control::cancel(&transfer_id,remote.origin(),root,&token).map_err(remote_error)?}),
+        ),
+        NativeRemoteAction::CloneCancellable {
+            space,
+            name,
+            transfer_id,
+        } => {
+            let registration =
+                super::transfer_control::register(&transfer_id, remote.origin(), root, &token)
+                    .map_err(remote_error)?;
+            let workspace = remote
+                .clone_into_cancellable(root, &space, &name, &registration.control)
+                .map_err(remote_error)?;
+            Ok(
+                json!({"status":"cloned","transferId":transfer_id,"state":workspace.state().map_err(|e|e.to_string())?}),
+            )
+        }
+        NativeRemoteAction::Administration { command } => {
+            let space = if command.needs_space() {
+                Some(
+                    NativeWorkspace::discover(root)
+                        .map_err(|e| e.to_string())?
+                        .state()
+                        .map_err(|e| e.to_string())?
+                        .space
+                        .id()
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            super::admin::execute(&remote, space.as_ref(), command).map_err(remote_error)
+        }
+        NativeRemoteAction::Logout => {
+            // Keep the local credential if revocation fails so it can be retried.
+            remote.logout().map_err(remote_error)?;
+            secrets.delete_token(&key).map_err(|e| e.to_string())?;
+            secrets
+                .delete_token(&device_key)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({"status":"signedOut"}))
+        }
+        NativeRemoteAction::Clone { space, name } => {
+            let workspace = remote
+                .clone_into(root, &space, &name)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"cloned","state":workspace.state().map_err(|e|e.to_string())?}))
+        }
+        NativeRemoteAction::CloneProjection { space, step } => {
+            let store = remote
+                .clone_projection_into(root, &space, &step)
+                .map_err(remote_error)?;
+            Ok(
+                json!({"status":"projectionCloned","identity":store.identity(),"projection":store.state().map_err(|e|e.to_string())?}),
+            )
+        }
+        NativeRemoteAction::CloneProjectionSelected {
+            space,
+            step,
+            selection,
+        } => {
+            let store = remote
+                .clone_projection_selected_into(root, &space, &step, &selection)
+                .map_err(remote_error)?;
+            projection::describe(&store, "projectionCloned")
+        }
+        NativeRemoteAction::ExpandProjectionSelection {
+            expected_generation,
+            selection,
+        } => projection::expand(&remote, root, expected_generation, &selection),
+        NativeRemoteAction::ObserveProjectionVersion {
+            expected_generation,
+            step,
+            paths,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let version = remote
+                .observe_projection_version(&store, expected_generation, &step, &paths)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionVersionObserved", "version":version}))
+        }
+        NativeRemoteAction::PrepareProjectionOffline {
+            expected_generation,
+            request,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let preparation = remote
+                .prepare_projection_offline(&store, expected_generation, &request)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionOfflinePrepared", "preparation":preparation}))
+        }
+        NativeRemoteAction::ResumeProjectionOffline {
+            expected_generation,
+            preparation_id,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            let preparation = remote
+                .resume_projection_offline(&store, expected_generation, &preparation_id)
+                .map_err(remote_error)?;
+            Ok(json!({"status":"projectionOfflinePrepared", "preparation":preparation}))
+        }
+        NativeRemoteAction::PublishProjection { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .publish_projection(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection publication response".into())
+        }
+        NativeRemoteAction::PublishProjectionCandidate { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .publish_projection_candidate(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid candidate publication response".into())
+        }
+        NativeRemoteAction::ScopedReview { command } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            if remote.origin().trim_end_matches('/') != store.identity().origin {
+                return Err("projection origin mismatch".into());
+            }
+            let principal = remote.whoami().map_err(remote_error)?;
+            if principal["principal_id"].as_str() != Some(store.identity().principal_id.as_str()) {
+                return Err("projection review principal changed".into());
+            }
+            remote
+                .scoped_review(&store.identity().space_id, &command)
+                .map_err(remote_error)
+        }
+        NativeRemoteAction::PreviewProjectionHistoricalRestore {
+            patch_id,
+            layer_id,
+            selection,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_historical_restore(&store, patch_id, &layer_id, &selection)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial historical restoration preview".into())
+        }
+        NativeRemoteAction::PreviewProjectionRebase { patch_id, layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_rebase(&store, patch_id, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial merge preview".into())
+        }
+        NativeRemoteAction::ApplyProjectionRebase { preview, choices } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_rebase(&store, &preview, &choices)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid partial merge result".into())
+        }
+        NativeRemoteAction::ReceiveProjection { layer_id } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .receive_projection(&store, &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection receive response".into())
+        }
+        NativeRemoteAction::MigrateProjection {
+            destination,
+            layer_id,
+        } => {
+            let workspace = NativeWorkspace::discover(root).map_err(|e| e.to_string())?;
+            serde_json::to_value(
+                remote
+                    .migrate_projection_into(&workspace, Path::new(&destination), &layer_id)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid projection migration response".into())
+        }
+        NativeRemoteAction::PreviewProjectionNamespace {
+            expected_generation,
+            mutation,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_namespace(&store, expected_generation, &mutation)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid namespace preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionNamespace { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_namespace(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid namespace application response".into())
+        }
+        NativeRemoteAction::PreviewProjectionDirectoryMove {
+            expected_generation,
+            source,
+            destination,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_directory_move(
+                        &store,
+                        expected_generation,
+                        &source,
+                        &destination,
+                    )
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid directory preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionDirectoryMove { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_directory_move(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid directory application response".into())
+        }
+        NativeRemoteAction::PreviewProjectionRestore {
+            expected_generation,
+            source,
+        } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .preview_projection_restore(&store, expected_generation, &source)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid restoration preview response".into())
+        }
+        NativeRemoteAction::ApplyProjectionRestore { preview } => {
+            let store = layrs_store_local::projection::ProjectionStore::open(root)
+                .map_err(|e| format!("projection_store_error: {e}"))?;
+            serde_json::to_value(
+                remote
+                    .apply_projection_restore(&store, &preview)
+                    .map_err(remote_error)?,
+            )
+            .map_err(|_| "invalid restoration application response".into())
+        }
+        action => {
+            let workspace = if matches!(
+                &action,
+                NativeRemoteAction::Provision {
+                    expected_space: Some(_),
+                    ..
+                }
+            ) {
+                NativeWorkspace::open(root).map_err(|e| e.to_string())?
+            } else {
+                NativeWorkspace::discover(root).map_err(|e| e.to_string())?
+            };
+            match action {
+                NativeRemoteAction::Provision {
+                    workspace: slug,
+                    slug: space,
+                    context_id,
+                    expected_space,
+                } => {
+                    if expected_space.is_some() {
+                        return Err("expectedSpace requires an explicit project context".into());
+                    }
+                    Ok(
+                        json!({"provisioned":remote.provision_in_context(&workspace, &slug, &space, context_id.as_deref()).map_err(remote_error)?}),
+                    )
+                }
+                NativeRemoteAction::Publish { integrate } => Ok(
+                    json!({"receipt":remote.publish(&workspace, if integrate {LayerMutationMode::Integrate}else{LayerMutationMode::Advance}).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::PublishCandidates => Ok(
+                    json!({"receipt": remote.publish_candidates(&workspace).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::PublishCancellable {
+                    integrate,
+                    transfer_id,
+                } => {
+                    let registration = super::transfer_control::register(
+                        &transfer_id,
+                        remote.origin(),
+                        root,
+                        &token,
+                    )
+                    .map_err(remote_error)?;
+                    let mode = if integrate {
+                        LayerMutationMode::Integrate
+                    } else {
+                        LayerMutationMode::Advance
+                    };
+                    Ok(
+                        json!({"transferId":transfer_id,"receipt":remote.publish_cancellable(&workspace,mode,&registration.control).map_err(remote_error)?}),
+                    )
+                }
+                NativeRemoteAction::PublishCandidatesCancellable { transfer_id } => {
+                    let registration = super::transfer_control::register(
+                        &transfer_id,
+                        remote.origin(),
+                        root,
+                        &token,
+                    )
+                    .map_err(remote_error)?;
+                    Ok(
+                        json!({"transferId":transfer_id,"receipt":remote.publish_candidates_cancellable(&workspace,&registration.control).map_err(remote_error)?}),
+                    )
+                }
+                NativeRemoteAction::Receive => {
+                    Ok(json!({"received":remote.receive(&workspace).map_err(remote_error)?}))
+                }
+                NativeRemoteAction::ReceiveCancellable { transfer_id } => {
+                    let registration = super::transfer_control::register(
+                        &transfer_id,
+                        remote.origin(),
+                        root,
+                        &token,
+                    )
+                    .map_err(remote_error)?;
+                    Ok(
+                        json!({"transferId":transfer_id,"received":remote.receive_cancellable(&workspace,&registration.control).map_err(remote_error)?}),
+                    )
+                }
+                NativeRemoteAction::PreviewChoose {
+                    layer,
+                    chosen_heads,
+                    reason,
+                } => {
+                    let space = remote
+                        .choose_bound_space(&workspace)
+                        .map_err(remote_error)?;
+                    Ok(
+                        json!({"preview":remote.preview_choose(&space,&layer,&chosen_heads,&reason).map_err(remote_error)?}),
+                    )
+                }
+                NativeRemoteAction::ApplyChoose { preview } => {
+                    let space = remote
+                        .choose_bound_space(&workspace)
+                        .map_err(remote_error)?;
+                    if space != preview.space_id {
+                        return Err("choose preview belongs to another workspace Space".into());
+                    }
+                    Ok(json!({"receipt":remote.apply_choose(&preview).map_err(remote_error)?}))
+                }
+                NativeRemoteAction::PreviewPolicy { policy_set_id } => Ok(
+                    json!({"preview":remote.preview_stored_policy(&workspace, &policy_set_id).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::PreviewPolicyRules { rules } => Ok(
+                    json!({"preview":remote.preview_policy_rules(&workspace,&serde_json::to_vec(&rules).map_err(|_|"invalid policy rules JSON")?).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::PreviewReplacePolicyRules { policy_id, rules } => Ok(
+                    json!({"preview":remote.preview_replace_policy_rules(&workspace,&policy_id,&serde_json::to_vec(&rules).map_err(|_|"invalid policy rules JSON")?).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::ReadPolicyRules {} => serde_json::to_value(
+                    remote.read_policy_rules(&workspace).map_err(remote_error)?,
+                )
+                .map_err(|_| "invalid policy rules response".into()),
+                NativeRemoteAction::ReadPendingPolicy {} => Ok(json!({
+                    "preview": remote.pending_policy_preview(&workspace).map_err(remote_error)?
+                })),
+                NativeRemoteAction::ApplyPolicy { preview } => Ok(
+                    json!({"receipt":remote.apply_policy_preview(&workspace, &preview).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::ObserveStep {
+                    step,
+                    observed_at,
+                    reason,
+                    idempotency_key,
+                } => Ok(
+                    json!({"receipt":remote.publish_observation(&workspace, &step, &observed_at, reason, &idempotency_key).map_err(remote_error)?}),
+                ),
+                NativeRemoteAction::ReadFile { step, path, output } => {
+                    let (id, length) = remote
+                        .download_remote_file(
+                            &workspace,
+                            &step,
+                            &path,
+                            std::path::Path::new(&output),
+                        )
+                        .map_err(remote_error)?;
+                    Ok(
+                        json!({"fileId":id,"stepId":step,"path":path,"output":output,"byteLength":length}),
+                    )
+                }
+                NativeRemoteAction::Collaboration { command } => super::collaboration::execute(
+                    &remote,
+                    workspace.state().map_err(|e| e.to_string())?.space.id(),
+                    command,
+                )
+                .map_err(remote_error),
+                _ => unreachable!("handled without a checkout"),
+            }
+        }
+    }
+}
+
+fn validate_offline_action(action: &NativeRemoteAction) -> Result<(), String> {
+    use layrs_core::projection::ProjectionVersion;
+    let generation = match action {
+        NativeRemoteAction::ObserveProjectionVersion {
+            expected_generation,
+            paths,
+            ..
+        } => {
+            if paths.is_empty() || paths.len() > 1024 || paths.windows(2).any(|p| p[0] >= p[1]) {
+                return Err("offline observation requires 1..1024 sorted unique paths".into());
+            }
+            expected_generation
+        }
+        NativeRemoteAction::PrepareProjectionOffline {
+            expected_generation,
+            request,
+        } => {
+            request.validate().map_err(|e| e.to_string())?;
+            for version in std::iter::once(&request.version).chain(request.other.as_ref()) {
+                let digest = match version {
+                    ProjectionVersion::Generation {
+                        generation, digest, ..
+                    } => {
+                        if *generation > i64::MAX as u64 {
+                            return Err("version generation exceeds bound".into());
+                        }
+                        digest
+                    }
+                    ProjectionVersion::Capture {
+                        sequence, digest, ..
+                    } => {
+                        if *sequence == 0 || *sequence > i64::MAX as u64 {
+                            return Err("capture sequence exceeds bound".into());
+                        }
+                        digest
+                    }
+                    ProjectionVersion::Remote {
+                        observation_digest, ..
+                    } => observation_digest,
+                };
+                if matches!(version, ProjectionVersion::Capture { .. }) {
+                    ObjectId::parse(digest).map_err(|e| e.to_string())?;
+                } else if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
+                    return Err("invalid projection metadata digest".into());
+                }
+            }
+            expected_generation
+        }
+        NativeRemoteAction::ResumeProjectionOffline {
+            expected_generation,
+            preparation_id,
+        } => {
+            if preparation_id.is_empty()
+                || preparation_id.len() > 128
+                || !preparation_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err("invalid offline preparation ID".into());
+            }
+            expected_generation
+        }
+        _ => return Ok(()),
+    };
+    if *generation > i64::MAX as u64 {
+        return Err("expected projection generation exceeds bound".into());
+    }
+    Ok(())
+}
+
+fn credential_key(canonical_origin: &str) -> String {
+    format!(
+        "native-v3:{}",
+        blake3::hash(canonical_origin.as_bytes()).to_hex()
+    )
+}
+
+fn principal_matches(expected: &str, who: &Value) -> bool {
+    !expected.is_empty() && who["principal_id"].as_str() == Some(expected)
+}
+fn remote_error(e: super::NativeRemoteError) -> String {
+    format!("{}: {e}", e.code())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct NoCredential;
+    impl SecretStore for NoCredential {
+        fn status(&self) -> crate::secret_store::SecretStoreStatus {
+            crate::secret_store::SecretStoreStatus {
+                available: true,
+                provider: "test",
+                message: String::new(),
+            }
+        }
+        fn set_token(&self, _: &str, _: &str) -> Result<(), crate::secret_store::SecretStoreError> {
+            unreachable!()
+        }
+        fn get_token(
+            &self,
+            _: &str,
+        ) -> Result<Option<String>, crate::secret_store::SecretStoreError> {
+            Ok(None)
+        }
+        fn delete_token(&self, _: &str) -> Result<(), crate::secret_store::SecretStoreError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn missing_rotated_credential_is_rejected_before_any_remote_action() {
+        let request: NativeRemoteRequest = serde_json::from_value(json!({
+            "origin": "https://example.com", "caPem": null,
+            "expectedPrincipalId": "principal:alice", "action": {"action": "administration", "command": {"action": "listAccounts"}}
+        })).unwrap();
+        let error = execute_remote_with_store(Path::new("."), request, &NoCredential).unwrap_err();
+        assert!(error.starts_with("remote_identity_check_failed: Sign in"));
+    }
+    #[test]
+    fn expected_principal_rejects_a_rotated_credential_identity() {
+        let request: NativeRemoteRequest = serde_json::from_value(json!({
+            "origin": "https://example.com", "caPem": null,
+            "expectedPrincipalId": "principal:alice", "action": {"action": "administration", "command": {"action": "listAccounts"}}
+        })).unwrap();
+        assert_eq!(
+            request.expected_principal_id.as_deref(),
+            Some("principal:alice")
+        );
+        assert!(principal_matches(
+            "principal:alice",
+            &json!({"principal_id":"principal:alice"})
+        ));
+        assert!(!principal_matches(
+            "principal:alice",
+            &json!({"principal_id":"principal:bob"})
+        ));
+        assert!(!principal_matches("principal:alice", &json!({})));
+        assert!(!principal_matches("", &json!({"principal_id":""})));
+    }
+    #[test]
+    fn offline_remote_actions_are_explicit_and_strict_before_credentials() {
+        let id = format!("blake3:{}", "a".repeat(64));
+        let version = json!({"kind":"generation","worktreeId":"worktree:test","generation":0,"digest":"a".repeat(64)});
+        let request = json!({"version":version,"other":null,"paths":["a.txt"],"operation":"read"});
+        for value in [
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["a.txt"]}),
+            json!({"action":"prepareProjectionOffline","expectedGeneration":0,"request":request}),
+            json!({"action":"resumeProjectionOffline","expectedGeneration":0,"preparationId":"123-456"}),
+        ] {
+            let action: NativeRemoteAction = serde_json::from_value(value.clone()).unwrap();
+            validate_offline_action(&action).unwrap();
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+        }
+        for value in [
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":[]}),
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["b","a"]}),
+            json!({"action":"resumeProjectionOffline","expectedGeneration":0,"preparationId":"../other"}),
+            json!({"action":"prepareProjectionOffline","expectedGeneration":u64::MAX,"request":request}),
+        ] {
+            let action: NativeRemoteAction = serde_json::from_value(value).unwrap();
+            assert!(validate_offline_action(&action).is_err());
+        }
+        for value in [
+            json!({"action":"prepareProjectionOffline","expectedGeneration":0,"request":request,"implicit":true}),
+            json!({"action":"resumeProjectionOffline","preparationId":"123"}),
+            json!({"action":"observeProjectionVersion","expectedGeneration":0,"step":id,"paths":["../escape"]}),
+        ] {
+            assert!(serde_json::from_value::<NativeRemoteAction>(value).is_err());
+        }
+    }
+    #[test]
+    fn publication_cancellation_actions_require_a_scoped_transfer_id() {
+        let publish: NativeRemoteAction = serde_json::from_value(
+            json!({"action":"publishCancellable","transferId":"fixture-transfer-1234"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            publish,
+            NativeRemoteAction::PublishCancellable {
+                integrate: false,
+                ..
+            }
+        ));
+        let candidates: NativeRemoteAction = serde_json::from_value(
+            json!({"action":"publishCandidatesCancellable","transferId":"fixture-transfer-1234"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            candidates,
+            NativeRemoteAction::PublishCandidatesCancellable { .. }
+        ));
+        assert!(serde_json::from_value::<NativeRemoteAction>(
+            json!({"action":"publishCancellable"})
+        )
+        .is_err());
+    }
+    #[test]
+    fn catalog_actions_decode_with_optional_page_and_exact_space() {
+        let first: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"listSpaces"})).unwrap();
+        assert!(matches!(
+            first,
+            NativeRemoteAction::ListSpaces {
+                limit: None,
+                cursor: None,
+                context_id: None
+            }
+        ));
+        let next: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"listSpaces","limit":20,"cursor":"c2VhbGVk"}))
+                .unwrap();
+        assert!(matches!(
+            next,
+            NativeRemoteAction::ListSpaces {
+                limit: Some(20),
+                cursor: Some(_),
+                context_id: None
+            }
+        ));
+        let capabilities: NativeRemoteAction =
+            serde_json::from_value(json!({"action":"spaceCapabilities","space":"space:fixture"}))
+                .unwrap();
+        assert!(matches!(
+            capabilities,
+            NativeRemoteAction::SpaceCapabilities { .. }
+        ));
+        for invalid in [
+            json!({"action":"listSpaces","offset":3}),
+            json!({"action":"spaceCapabilities"}),
+            json!({"action":"spaceCapabilities","space":"not-a-space"}),
+        ] {
+            assert!(serde_json::from_value::<NativeRemoteAction>(invalid).is_err());
+        }
+    }
+    #[test]
+    fn catalog_page_arguments_are_bounded_before_any_request() {
+        let remote = NativeRemote::new("https://example.invalid", "fixture-token").unwrap();
+        for (limit, cursor) in [
+            (Some(0), None),
+            (Some(101), None),
+            (None, Some("")),
+            (None, Some("has space")),
+            (None, Some("a&limit=1")),
+        ] {
+            assert!(matches!(
+                remote.list_spaces(limit, cursor),
+                Err(super::super::NativeRemoteError::Invalid(_))
+            ));
+        }
+        let too_long = "A".repeat(2049);
+        assert!(remote.list_spaces(None, Some(&too_long)).is_err());
+        for context in [
+            "workspace:",
+            "space:wrong",
+            "workspace:a&contextId=b",
+            "workspace:a/b",
+            "workspace:a?limit=1",
+        ] {
+            assert!(matches!(
+                remote.list_spaces_in_context(None, None, Some(context)),
+                Err(super::super::NativeRemoteError::Invalid(_))
+            ));
+        }
+    }
+    #[test]
+    fn credentials_are_scoped_to_the_exact_canonical_origin() {
+        let a = NativeRemote::unauthenticated("https://example.com", None).unwrap();
+        let b = NativeRemote::unauthenticated("https://EXAMPLE.com:443/", None).unwrap();
+        assert_eq!(credential_key(a.origin()), credential_key(b.origin()));
+        assert_ne!(
+            credential_key(a.origin()),
+            credential_key("https://example.com:444/")
+        );
+        assert!(NativeRemote::unauthenticated("http://example.com", None).is_err());
+        assert!(NativeRemote::unauthenticated("https://secret@example.com", None).is_err());
+    }
+}

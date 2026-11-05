@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "layrs.validation.metadata-compaction.v1",
+  "date": "2026-09-20",
+  "platforms": {
+    "windows": {"storeTestsPassed": 5, "storeSeconds": 1.81, "clientTestsPassed": 2, "clientSeconds": 1.60, "strictClippySeconds": 3.90},
+    "linux": {"storeTestsPassed": 5, "storeSeconds": 1.86, "clientTestsPassed": 2, "clientSeconds": 1.16, "strictClippySeconds": 15.75, "strictClippyScope": "cache and compaction targets together"}
+  },
+  "physicalFixture": {"sqliteBeforeBytes": 2715648, "sqliteAfterBytes": 614400, "retainedRows": 3, "originalBackupRetained": true},
+  "nativeFixture": {"historicalMarkerAndReleaseTargetsVerified": true, "allLogicalTablesDigestCompared": true, "workingFilesUnchanged": true, "fsckClean": true, "observationsRetained": 3, "watermarkBefore": 10003, "watermarkAfter": 10003},
+  "durableInterruptionBoundaries": 4,
+  "crossProcessLockTest": true,
+  "subprocessHelperIgnoredByDefaultButExecutedByParent": true,
+  "pendingRecoveryAndAdmissionRefused": true,
+  "alteredCopiesAndJournalRefused": true,
+  "simulatedRowidRenumberingRejectsOldSnapshot": true,
+  "historyDeleted": false,
+  "casObjectsDeleted": false,
+  "productionDataTouched": false,
+  "scope": "Physical SQLite compaction only; copies retained, CLI recipe recorded separately, no pruning or local object GC"
+}

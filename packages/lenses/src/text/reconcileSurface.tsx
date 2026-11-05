@@ -4,10 +4,10 @@ import type {
   ResolutionMethod
 } from "@layrs/lens-sdk";
 import { useState } from "react";
+import { textManifest } from "../manifests";
 import { LensSurfaceHeader } from "../shared/LensSurfaceHeader";
+import { surfaceResolutionMethods } from "../shared/resolutionMethods";
 import { joinClassNames } from "../shared/utils";
-
-const TEXT_METHODS: ResolutionMethod[] = ["existing", "incoming", "both", "manual"];
 
 export function TextLensReconcileSurface({
   busy = false,
@@ -37,7 +37,7 @@ export function TextLensReconcileSurface({
           {conflict.blocks.map((block) => {
             const isResolved = block.status === "resolved";
             const blockManualText = manualTextByBlock[block.blockId] ?? block.existing;
-            const methods = supportedMethods(block.supportedMethods, TEXT_METHODS);
+            const methods = surfaceResolutionMethods(textManifest, "block", block);
             const actions = methods.map((method) => textAction(method, block.blockId, existingLabel, incomingLabel));
             const manualAction = actions.find((action) => action.requiresManualText);
             const buttonActions = actions.filter((action) => !action.requiresManualText);
@@ -172,21 +172,8 @@ function textAction(
         requiresManualText: true
       };
     default:
-      return {
-        method,
-        scope,
-        label: String(method),
-        resolution: `block:${blockId}:${String(method)}`,
-        blockId
-      };
+      throw new Error(`Unsupported text resolution method ${String(method)}`);
   }
-}
-
-function supportedMethods(methods: ResolutionMethod[] | undefined, defaults: ResolutionMethod[]) {
-  if (!methods || methods.length === 0) {
-    return defaults;
-  }
-  return defaults.filter((method) => methods.includes(method));
 }
 
 function ConflictVersion({ label, value }: { label: string; value: string }) {

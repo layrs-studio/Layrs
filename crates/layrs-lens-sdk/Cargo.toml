@@ -7,3 +7,9 @@ version.workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json = "1"

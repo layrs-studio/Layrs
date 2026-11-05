@@ -1,0 +1,38 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "spaceBootstrap",
+  "principalId": "principal:alexa",
+  "authorizationEpoch": 1,
+  "spaceId": "space:demo",
+  "watermarkCursor": "cursor-demo-0",
+  "watermarkSequence": 0,
+  "currentRepositoryViewGeneration": 0,
+  "currentRepositoryView": {
+    "repositoryViewId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+    "record": {
+      "schemaVersion": "layrs.repository-view.v1",
+      "repositoryViewId": "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+      "spaceId": "space:demo",
+      "layerHeads": [],
+      "markerIds": [],
+      "releaseIds": [],
+      "worktrees": []
+    }
+  },
+  "currentPolicySet": {
+    "policySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+    "record": {
+      "schemaVersion": "layrs.policy-set.v1",
+      "policySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+      "spaceId": "space:demo",
+      "policyVersions": []
+    }
+  },
+  "currentPolicySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+  "layers": [],
+  "markers": [],
+  "releases": [],
+  "policyRoots": [],
+  "graphRootStepIds": [],
+  "productRoots": []
+}

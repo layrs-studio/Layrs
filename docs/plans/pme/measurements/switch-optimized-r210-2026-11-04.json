@@ -1,0 +1,392 @@
+{
+  "schemaVersion": "layrs.switch-measurement.v1",
+  "startedAt": "2026-11-03T23:29:54.858Z",
+  "platform": "win32",
+  "os": "10.0.26300",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "totalMemoryBytes": 68387852288,
+  "binary": "D:\\Layrs\\layrs\\.layrs-local\\validation\\switch-optimized-r210\\layrs-r210-release.exe",
+  "binarySha256": "d92495d81c8ba63bb06ba33372a6b223b9fceaca40c59b56774b0c748dfcbdcb",
+  "fixtureRoot": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210",
+  "limitations": [
+    "Synthetic 256-byte text files, all distinct contents, 1000 files per directory.",
+    "One run per case, warm OS caches; durations include CLI startup and the full command.",
+    "Concurrent cases start both commands together; they measure contention, not throughput.",
+    "Fixtures retained; no pruning, no remote."
+  ],
+  "cases": [
+    {
+      "files": 1000,
+      "root": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+      "measurements": [
+        {
+          "label": "init",
+          "command": "init Switch 1000",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 31119,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "status clean",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 260,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step initial",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 264,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "layer create",
+          "command": "layer create baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 314,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "diff K=1",
+          "command": "diff --stat",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 1834,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=1",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 415,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=1",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 996,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=1",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 989,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch no-op",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 534,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=100",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 2954,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=100",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 2957,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=100",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 2833,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "worktree create",
+          "command": "worktree create D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000-agent --layer baseline --step @layer:baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 24069,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "agent status",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000-agent",
+          "elapsedMs": 260,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status primary",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 287,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status agent",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000-agent",
+          "elapsedMs": 286,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step primary",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000",
+          "elapsedMs": 433,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step agent",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-1000-agent",
+          "elapsedMs": 849,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "files": 10000,
+      "root": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+      "measurements": [
+        {
+          "label": "init",
+          "command": "init Switch 10000",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 324180,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "status clean",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 1777,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step initial",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 1873,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "layer create",
+          "command": "layer create baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 1977,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "diff K=1",
+          "command": "diff --stat",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 27002,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=1",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 2057,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=1",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 9102,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=1",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 9141,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch no-op",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 4384,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=100",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 4685,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=100",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 11268,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=100",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 11670,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "worktree create",
+          "command": "worktree create D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000-agent --layer baseline --step @layer:baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 247916,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "agent status",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000-agent",
+          "elapsedMs": 1754,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status primary",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 1964,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status agent",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000-agent",
+          "elapsedMs": 1952,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step primary",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000",
+          "elapsedMs": 5058,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step agent",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-optimized-r210\\files-10000-agent",
+          "elapsedMs": 2269,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ]
+    }
+  ],
+  "completedAt": "2026-11-03T23:42:14.224Z"
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "layrs.pg-disk-full.v1",
+  "status": "passed",
+  "packageCommit": "5ab6994e61cd49354b529234fc917037e1bcdb65",
+  "packageTreeSha256": "da78b6ad4edda95c1ed6de2ce2a3d5fbe69caad809815128e80b87cbe345213a",
+  "fixture": "layrs-pg-full-8e20ca5d-4d08-47a8-af40-dbc7bf568ba2",
+  "tmpfsBytes": 268435456,
+  "memoryLimitBytes": 536870912,
+  "checks": [
+    "Qualified CLI/server real baseline publication under nonprivileged PostgreSQL role",
+    "PGDATA tmpfs truly full before actual Layrs transaction",
+    "Real PostgreSQL ENOSPC rejects Layrs admission and preserves exact client pending/data",
+    "No partial business rows or receipt after freeing only fixture pressure file",
+    "Exact pending retry commits all Steps once; canonical receipt replay has no new effect"
+  ],
+  "limitations": [
+    "Disposable Linux PostgreSQL tmpfs, Windows/native client and server binaries when run on Windows.",
+    "No existing service/volume, host disk, power failure, kernel crash, or PostgreSQL WAL-device-only claim.",
+    "No container restart: tmpfs must remain alive throughout PostgreSQL recovery."
+  ],
+  "postgresImage": "sha256:567d5d704a3e5a4864393b623a0d50eb1b5a4ad134cdac7cf19555cb2d8ffe9e",
+  "postgresAdmissionEnospc": true,
+  "failureHttpStatus": 503,
+  "attemptedSteps": 161,
+  "pendingSha256": "ee08364f81fd2bdda63ccc5974841cf77460468f4d890da95850cb86409bab5b",
+  "receiptSha256": "07d26dfc4bf60435e651e161616caffaa2bfd168ccac90e7db28d1f8018d509a",
+  "fixtureRemoved": true,
+  "elapsedMs": 112456
+}

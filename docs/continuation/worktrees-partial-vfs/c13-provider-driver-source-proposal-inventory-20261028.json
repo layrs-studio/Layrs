@@ -1,0 +1,167 @@
+{
+  "scope": "Unintegrated blocked partial C13 proposal. Source retention only; no compilation, runtime or readiness acceptance.",
+  "source_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+  "files": [
+    {
+      "path": "add_recipes.py",
+      "bytes": 8080,
+      "sha256": "dd1b3d0ca4d70c487b65e451a79234b70b80b1e1ffa1c67a04712e2dca64d749"
+    },
+    {
+      "path": "C13-PROVIDER-DRIVER-HANDOFF.md",
+      "bytes": 7837,
+      "sha256": "66bd2274c15dda9b8d740f06421c975491bec82468388c80943822735c281a47"
+    },
+    {
+      "path": "extend_proposal.py",
+      "bytes": 12337,
+      "sha256": "e8895ee954da228acc1ced838a4fc9ea14640efed8748d4aaa5d13259ca19340"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/complete.rs",
+      "bytes": 9944,
+      "sha256": "6c99ae9cfd3ca924239142a50c824496c6b990e78c29bbceae5f6f32a3c21940"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image.rs",
+      "bytes": 20324,
+      "sha256": "a48229409411c4379dad4112bcfedc04fdb31d3f8ded955de5e7013f8ea21422"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan.rs",
+      "bytes": 41423,
+      "sha256": "38db1a4e465c9b9590cd1c0b6b12f445d01b3fdd9ba2f5b8564b6ab955fa1724"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/c13_provider_preservation_tests.rs",
+      "bytes": 8754,
+      "sha256": "9ebd8df2582edbf41b5bf8282f208773182bde582f79dbc137009c274ed5dd65"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs",
+      "bytes": 18725,
+      "sha256": "245d99f3ef4491895d01fa39b78e4f103fb9fadda7626a7dc78a35c398994756"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation.rs",
+      "bytes": 14003,
+      "sha256": "c5ad93fcf119a1387b07c3d5aa874925974584759c643106bd43d04d73a9ba3c"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap.rs",
+      "bytes": 6754,
+      "sha256": "3e55aad4b23dbbeb23dff154d8e687832b9a5896c19b45fc163a92e766a3a38c"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/inventory.rs",
+      "bytes": 9011,
+      "sha256": "1099a13d014efa795c5dda98cdf8cf9242b2bce73943c92171793dc341197cbf"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous.rs",
+      "bytes": 19549,
+      "sha256": "c7d20cc1cb741e7766f3fd9d17bfe9dcf671f1f2d614def50cef609adc887b9b"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/destination_ready/historical.rs",
+      "bytes": 18898,
+      "sha256": "fdd667d55c15077c68d3b5eea5f84834692f4ccae5a3e65cb50c08b7dde954c6"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/import_validation/destination_prefix.rs",
+      "bytes": 27973,
+      "sha256": "5d2974fbdfcf56eea32202b5cea3686fd61420dea379322d5cb1f6299f977bb4"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/import_validation/scoped/companions_v2.rs",
+      "bytes": 15360,
+      "sha256": "a2fc08fcfcb77e1549d2fd6031d11577db9ba28ca7d27c5e47bae3912a450f87"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/import_validation/scoped.rs",
+      "bytes": 36193,
+      "sha256": "2790a81cee2c9571c7a8055b27889875ebeb160f320eccbf369c337f9b0bec56"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/companion_v2.rs",
+      "bytes": 20977,
+      "sha256": "7f1406d05e33e08b6d2cace9be2224d15fbefa4c81b4aa0994f7ae757778a852"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records.rs",
+      "bytes": 2164,
+      "sha256": "c12f1a2e0622cb3ba919861b45c6145a7f5519b2d0d1f52a0b3a521d329de619"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+      "bytes": 11509,
+      "sha256": "78f1525ad5d9f72f39b193e57d6001f02802a03d2be7bb7b5b0e6d4db4d5bef6"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions.rs",
+      "bytes": 23319,
+      "sha256": "dc3677fd9650348ede5911e2436e39fd6c5cbd500a2452e7c065f20a06a41649"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/image.rs",
+      "bytes": 12944,
+      "sha256": "d5c0c8967696fac393d2cad56bbac6adeb833e8b42927c974a96b9c5d64a4805"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/source.rs",
+      "bytes": 18040,
+      "sha256": "b352c5c4e0a918d9f5e78b4d354a21bbd5979b80f60dec0828c5b3fd9778fc35"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/tests/companions.rs",
+      "bytes": 19096,
+      "sha256": "b1cc14d210dfca8fafd34e98f441fbb5e166574cc5efde278b00326ef4a9f0a2"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/tests.rs",
+      "bytes": 21123,
+      "sha256": "418ef5823cae010943b16be18877cd62357a5231036a3a689e655c5f898cbb95"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile.rs",
+      "bytes": 17709,
+      "sha256": "ca373ee92e5e4bedaf56bc3fc7db977defa60db975f5c6f6d8fe7021fc220a48"
+    },
+    {
+      "path": "files/docs/plans/worktrees-partial-vfs-convergence.md",
+      "bytes": 49823,
+      "sha256": "ddcaeac899a16d6954ce8400d44ef963369bb3d627fd1ed74d34676f262de5a6"
+    },
+    {
+      "path": "finalize_bundle.py",
+      "bytes": 14346,
+      "sha256": "996a8748d45e024615a8e15cc3dcf484b046f24bdbbf776ba45b34f4cd25905f"
+    },
+    {
+      "path": "handoff.json",
+      "bytes": 23987,
+      "sha256": "20981a4cce54c44c46b231f69768622e4f8672511222c6d8d1e52181fe6694be"
+    },
+    {
+      "path": "manifest.sha256.json",
+      "bytes": 18212,
+      "sha256": "0033a04e8831186c79b0d3b8581e1d36d1f5083a56470194c0a672ff4186835c"
+    },
+    {
+      "path": "proposal.patch",
+      "bytes": 154780,
+      "sha256": "fd41a6a42d91e0ad4ebdf702421ee3716c9a327a65d96af53803516efc28e1ba"
+    },
+    {
+      "path": "ROOT-INTEGRATION-RECIPES.md",
+      "bytes": 5229,
+      "sha256": "03f6aed2e88230380f7d0e718a00778ba03bea70ba93c54a0f9a28cad5e87037"
+    }
+  ],
+  "missing": "Production Provider conversion caller, whole-scope authority acquisition, B-owned protection and publication, Ready/autonomy and Ordinary9/10 reexport remain incomplete. See C13-PROVIDER-DRIVER-HANDOFF.md.",
+  "archive": {
+    "path": "c13-provider-driver-source-proposal-20261028.tar.gz",
+    "bytes": 149566,
+    "sha256": "9fe82ed476e8eab82b7c9ef1ca49755024c6aad58d010ea8f35e894e98074ae4"
+  }
+}

@@ -1,0 +1,3088 @@
+--- r44/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session.rs
+@@ -493,6 +493,9 @@
+ #[path = "session/managed_ordinary_ready_tests.rs"]
+ mod managed_ordinary_ready_tests;
+ #[cfg(test)]
++#[path = "session/managed_ordinary_family_ready_tests.rs"]
++mod managed_ordinary_family_ready_tests;
++#[cfg(test)]
+ mod managed_ordinary_metadata_tests;
+ #[cfg(test)]
+ #[path = "session/managed_ordinary_reservation_tests.rs"]
+--- /dev/null
++++ family-ready/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_family_ready_tests.rs
+@@ -0,0 +1,561 @@
++//! Genuine ordinary family publication after private C8 Ready. Only C's family
++//! member changes Initializing -> Ready; B remains Staging and C unadmitted.
++//! Withholding ACK follows successful OS close, not an OS close failure. Positive
++//! deletion/nested checkout, crashes and owner-loss recovery remain unqualified.
++use super::{
++    managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
++    managed_ordinary_ready_tests::{self as ready_witness, Physical, CURRENT},
++};
++use crate::projection::{
++    provider::{
++        checkout_journal::{CheckoutFile, ExpectedCheckout},
++        database_io::{WriterCloseObserver, WriterOpenPoint},
++        destination_ready::ReadyEffect,
++        managed_export::allocation,
++        ordinary_destination::{staging::StageEffect, CopyEffect},
++        process_profile::tests::child,
++        records::transition::{ProviderTransitionIntentRecord, TransitionState},
++        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
++        transition_sql::SourceIntentEffect,
++    },
++    selection,
++    shared::{
++        admitted_catalog::{ExportPublicationEffect, ExportReservationEffect},
++        exact_protection::{ExactProtection, ProtectionPresence},
++        provider_access::ImportRegistrationEffect,
++    },
++    ProjectionStore,
++};
++use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
++use layrs_vfs::Cancellation;
++use rusqlite::ffi;
++use std::{collections::BTreeSet, fs, path::Path};
++
++const LEAF: &str = "00000000000000000000000000000111";
++const TX: &str = "00000000000000000000000000000112";
++const HISTORY: &[u8] = b"ordinary family publication historical-only capture";
++const WITHHELD_ACK: &str = "ordinary family Ready successful close acknowledgement withheld";
++
++#[derive(Default)]
++struct Close {
++    opens: usize,
++    raw: usize,
++    closes: usize,
++    withheld: usize,
++    withhold: bool,
++    physical: Option<Physical>,
++    physical_checks: usize,
++}
++impl Close {
++    fn counts(&self) -> (usize, usize, usize, usize) {
++        (self.opens, self.raw, self.closes, self.withheld)
++    }
++}
++impl WriterCloseObserver for Close {
++    fn open_point(&mut self, point: WriterOpenPoint, raw: *mut ffi::sqlite3) -> CauseResult<()> {
++        match point {
++            WriterOpenPoint::BeforeRaw => {
++                assert!(raw.is_null());
++                self.opens += 1;
++                if let Some(physical) = &self.physical {
++                    physical.require();
++                    self.physical_checks += 1;
++                }
++            }
++            WriterOpenPoint::AfterRaw => {
++                assert!(!raw.is_null());
++                self.raw += 1;
++            }
++            _ => {}
++        }
++        Ok(())
++    }
++    fn before_close(&mut self, _: *mut ffi::sqlite3) -> Option<Cause> {
++        None
++    }
++    fn after_close(&mut self, succeeded: bool) -> Option<Cause> {
++        assert!(
++            succeeded,
++            "family observer requires physically successful writer close"
++        );
++        self.closes += 1;
++        if let Some(physical) = &self.physical {
++            physical.require();
++            self.physical_checks += 1;
++        }
++        if std::mem::take(&mut self.withhold) {
++            self.withheld += 1;
++            Some(invalid(WITHHELD_ACK))
++        } else {
++            None
++        }
++    }
++}
++
++fn snapshot(path: &Path) -> Database {
++    witness::read(path, witness::database)
++}
++fn text(value: &str) -> Cell {
++    Cell::Text(value.as_bytes().to_vec())
++}
++fn copy_cell(cell: &Cell) -> Cell {
++    match cell {
++        Cell::Null => Cell::Null,
++        Cell::Integer(v) => Cell::Integer(*v),
++        Cell::Real(v) => Cell::Real(*v),
++        Cell::Text(v) => Cell::Text(v.clone()),
++        Cell::Blob(v) => Cell::Blob(v.clone()),
++    }
++}
++
++fn family(
++    path: &Path,
++    stage: &ProviderTransitionIntentRecord,
++    required: &[FileManifest],
++    state: &str,
++) -> Database {
++    witness::read(path, |c| {
++        let proof = stage.destination.as_ref().unwrap();
++        let shared = proof.format.shared.as_ref().unwrap();
++        let registration: (String, String, Vec<u8>, String) = c
++            .query_row(
++                "SELECT metadata_path,database_identity,marker,state FROM worktrees WHERE id=?1",
++                [proof.format.identity.worktree_id.as_str()],
++                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
++            )
++            .unwrap();
++        assert_eq!(
++            registration,
++            (
++                shared.metadata_path.to_str().unwrap().into(),
++                proof.private_database_identity.clone(),
++                proof.format.bytes().unwrap(),
++                state.into()
++            )
++        );
++        let protection = ExactProtection::new(
++            &shared.incarnation,
++            &proof.format.identity.worktree_id,
++            &proof.private_database_identity,
++            &stage.transaction_id,
++            required,
++            None,
++        )
++        .unwrap();
++        assert_eq!(
++            protection.inspect(c, None).unwrap(),
++            ProtectionPresence::Present
++        );
++        assert!(!c
++            .query_row(
++                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
++                [],
++                |r| r.get::<_, bool>(0)
++            )
++            .unwrap());
++        witness::database(c)
++    })
++}
++
++fn only_member_state_changed(
++    before: &Database,
++    after: &Database,
++    stage: &ProviderTransitionIntentRecord,
++) {
++    assert_eq!(
++        before.keys().collect::<Vec<_>>(),
++        after.keys().collect::<Vec<_>>()
++    );
++    let proof = stage.destination.as_ref().unwrap();
++    let shared = proof.format.shared.as_ref().unwrap();
++    let mut expected_member = vec![
++        text(proof.format.identity.worktree_id.as_str()),
++        text(shared.metadata_path.to_str().unwrap()),
++        text(&proof.private_database_identity),
++        Cell::Blob(proof.format.bytes().unwrap()),
++        text("initializing"),
++    ];
++    assert_eq!(
++        before["worktrees"]
++            .iter()
++            .filter(|row| row.first() == expected_member.first())
++            .collect::<Vec<_>>(),
++        vec![&expected_member]
++    );
++    for (table, rows) in before {
++        if table != "worktrees" {
++            assert_eq!(&after[table], rows, "family publication changed {table}");
++            continue;
++        }
++        let mut expected: Vec<_> = rows
++            .iter()
++            .map(|row| row.iter().map(copy_cell).collect::<Vec<_>>())
++            .collect();
++        let member = expected
++            .iter_mut()
++            .find(|row| row.first() == expected_member.first())
++            .unwrap();
++        expected_member[4] = text("ready");
++        *member = expected_member.iter().map(copy_cell).collect();
++        expected.sort();
++        assert_eq!(
++            after[table], expected,
++            "only exact C registry state may change"
++        );
++    }
++}
++
++fn only_catalog_changed(before: &(Tree, Tree, Tree), after: &(Tree, Tree, Tree), catalog: &Path) {
++    assert_eq!(
++        before.0, after.0,
++        "B checkout changed during family publication"
++    );
++    assert_eq!(
++        before.2, after.2,
++        "C checkout changed during family publication"
++    );
++    assert_eq!(
++        before.1.keys().collect::<Vec<_>>(),
++        after.1.keys().collect::<Vec<_>>()
++    );
++    assert!(before.1.contains_key(catalog));
++    for (path, node) in &before.1 {
++        let next = &after.1[path];
++        if path == catalog {
++            let (Node::File((old_id, _, old_hash)), Node::File((new_id, _, new_hash))) =
++                (node, next)
++            else {
++                panic!("family catalog must remain a regular file")
++            };
++            assert_eq!(old_id, new_id);
++            assert_ne!(old_hash, new_hash, "family publication must be durable");
++        } else {
++            assert_eq!(node, next, "family publication changed unrelated {path:?}");
++        }
++    }
++}
++
++#[test]
++#[ignore = "ROOT source release and audited owned native child3000/outer3060 required"]
++fn managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c(
++) {
++    // Same owned child3000/outer3060 proposal as private Ready. This recipe
++    // reaches that frontier normally and withholds only the new family ACK.
++    child::run(
++        concat!(
++            module_path!(),
++            "::managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c"
++        ),
++        3000,
++        family_ready_recipe,
++    );
++}
++
++fn family_ready_recipe() {
++    child::declare();
++
++    // This helper creates a fresh owned fixture and genuinely admits B9.
++    let root = super::managed_restore_recovery_tests::admitted_destination();
++    let store = ProjectionStore::open(&root).unwrap();
++    let state = store.state().unwrap();
++    let path = RepoPath::parse("README.md").unwrap();
++    let base_id = match state
++        .snapshot
++        .entries
++        .iter()
++        .find(|e| e.path == path)
++        .unwrap()
++        .target
++        .as_ref()
++        .unwrap()
++    {
++        TreeEntryTarget::File { file_id } => file_id.clone(),
++        _ => panic!("selected README required"),
++    };
++
++    fs::write(root.join(path.as_str()), HISTORY).unwrap();
++    store.capture_patch(state.generation).unwrap();
++    drop(store);
++    let store = ProjectionStore::open(&root).unwrap();
++    assert_eq!(store.state().unwrap(), state);
++    fs::write(root.join(path.as_str()), CURRENT).unwrap();
++
++    let family_root = store.marker.shared.as_ref().unwrap().root.clone();
++    let source_database = store.marker.metadata_path(&root).join("projection.sqlite3");
++    let source_lock = source_database.parent().unwrap().join("layrs.lock");
++    let mut identity = store.identity().clone();
++    identity.worktree_id = WorktreeId::parse("worktree:ordinary-family-ready-destination").unwrap();
++    let cancel = Cancellation::default();
++    let mut owner = store
++        .begin_managed_export(state.generation, identity, &cancel)
++        .unwrap();
++    let current = owner.current_manifest(&path).unwrap().clone();
++    let history = owner
++        .retained_manifest(&FileId::from_bytes(HISTORY))
++        .unwrap()
++        .clone();
++    let base = owner.retained_manifest(&base_id).unwrap().clone();
++    assert!(owner.retained_manifest(current.file_id()).is_none());
++    assert_eq!(current.chunks().len(), 1);
++
++    let (planned, effect) = owner
++        .begin_plan(root.parent().unwrap(), LEAF, TX, &cancel)
++        .unwrap();
++    assert_eq!(effect, SourceIntentEffect::Inserted);
++    let derived = owner
++        .derive_plan(
++            &planned.plan.destination_parent,
++            &planned.plan.destination_parent_identity,
++            LEAF,
++            TX,
++            &cancel,
++        )
++        .unwrap();
++    assert_eq!(derived.plan, planned.plan);
++    let required: Vec<FileManifest> = derived
++        .required_manifests
++        .iter()
++        .map(|row| {
++            let m = if row.manifest_id == *current.id() {
++                current.clone()
++            } else {
++                owner.retained_manifest(&row.file_id).unwrap().clone()
++            };
++            assert_eq!(*m.id(), row.manifest_id);
++            assert_eq!(m.byte_length(), row.bytes);
++            m
++        })
++        .collect();
++    assert_eq!(required.len(), 3);
++    assert_eq!(
++        required
++            .iter()
++            .map(FileManifest::id)
++            .collect::<BTreeSet<_>>(),
++        [base.id(), history.id(), current.id()]
++            .into_iter()
++            .collect::<BTreeSet<_>>()
++    );
++    let image = owner.image_digest().to_owned();
++    let files = [CheckoutFile {
++        path: path.clone(),
++        manifest_id: current.id().clone(),
++        file_id: current.file_id().clone(),
++        bytes: current.byte_length(),
++        executable: false,
++    }];
++
++    let mut allocated = allocation::allocate(&mut owner, &planned, &cancel)
++        .unwrap_or_else(|e| panic!("family Ready allocation {e:?}"));
++    let (copying, effect) = owner
++        .commit_allocation(&planned, &allocated, &cancel)
++        .unwrap();
++    assert_eq!(effect, SourceIntentEffect::Updated);
++    allocated
++        .publish_format(&mut owner, &copying, &cancel)
++        .unwrap();
++    assert_eq!(
++        owner
++            .register_allocation(&allocated, &copying, &cancel)
++            .unwrap(),
++        ImportRegistrationEffect::Inserted
++    );
++    let mut setup = Close::default();
++    assert_eq!(
++        owner
++            .copy_metadata(&allocated, &copying, &mut setup, &cancel)
++            .unwrap(),
++        CopyEffect::Copied
++    );
++    let staged = owner
++        .stage_metadata(&allocated, &copying, &mut setup, &cancel)
++        .unwrap();
++    assert_eq!(staged.source, SourceIntentEffect::Updated);
++    assert_eq!(staged.destination, StageEffect::Updated);
++    let staging = staged.intent;
++    assert_eq!(staging.state, TransitionState::Staging);
++    assert_eq!(
++        owner
++            .reserve_content(&allocated, &staging, &mut setup, &cancel)
++            .unwrap(),
++        ExportReservationEffect::Inserted
++    );
++    for m in &required {
++        assert_eq!(
++            owner
++                .install_content(&allocated, &staging, m.id(), &mut setup, &cancel)
++                .unwrap(),
++            *m
++        );
++    }
++    let protection = owner
++        .protect_content(&allocated, &staging, &mut setup, &cancel)
++        .unwrap();
++    let checkout = owner
++        .copy_checkout(&allocated, &staging, &protection, &mut setup, &cancel)
++        .unwrap();
++
++    let destination_root = allocated.root().to_owned();
++    let destination_database = allocated.destination_database().path().to_owned();
++    let destination_lock = destination_database.parent().unwrap().join("layrs.lock");
++    let locks = [source_lock.as_path(), destination_lock.as_path()];
++    let family_database = family_root.join("metadata/catalog.sqlite3");
++    let expected = ExpectedCheckout::ordinary(&staging, &files, &[], &image, None).unwrap();
++    assert!(
++        expected.deletions().is_empty(),
++        "single README fixture does not qualify positive deletion/nested checkout"
++    );
++    let staged_c = witness::destination(&destination_database, &staging);
++    let selection_payload = witness::read(&source_database, |c| {
++        selection::encode(&selection::at(c, staging.local_generation).unwrap()).unwrap()
++    });
++
++    // Normal setup only: the new target boundary starts after actual private C
++    // Ready, without replaying private Ready's separate ACK-withholding test.
++    let private_ready = owner
++        .finalize_destination_ready(
++            &allocated,
++            &staging,
++            &protection,
++            &checkout,
++            &mut setup,
++            &cancel,
++        )
++        .unwrap();
++    assert_eq!(private_ready.effect(), ReadyEffect::Finalized);
++    let durable = ready_witness::require_ready_rows(
++        &destination_database,
++        &staged_c,
++        &staging,
++        &derived,
++        &selection_payload,
++        &current,
++        &required,
++        &expected,
++    );
++    assert_eq!(private_ready.ready(), &durable.ready);
++    assert_eq!(private_ready.receipt(), &durable.receipt);
++    drop(private_ready);
++
++    let before_b = witness::source(&source_database, &store.marker, Some(&staging));
++    let before_c = durable.rows;
++    let before_family = family(&family_database, &staging, &required, "initializing");
++    let before = witness::trees(&root, &family_root, &destination_root, locks);
++    let final_path = destination_root.join(path.as_str());
++    let Node::File((inode, _, _)) = &before.2[&final_path] else {
++        panic!("complete checkout final file required")
++    };
++    let physical = Physical {
++        file: final_path,
++        inode: inode.clone(),
++        cas: witness::object(
++            &family_root,
++            "chunks",
++            current.chunks()[0].chunk_id().as_str(),
++        ),
++    };
++    physical.require();
++    witness::verify_objects(&family_root, &required);
++    let mut close = Close {
++        physical: Some(physical),
++        ..Close::default()
++    };
++    let cancelled = Cancellation::default();
++    cancelled.cancel();
++    assert!(owner
++        .publish_destination_family_ready(
++            &allocated,
++            &staging,
++            &protection,
++            &checkout,
++            &mut close,
++            &cancelled,
++        )
++        .is_err());
++    assert_eq!(close.counts(), (0, 0, 0, 0));
++    assert_eq!(close.physical_checks, 0);
++    assert_eq!(
++        witness::trees(&root, &family_root, &destination_root, locks),
++        before
++    );
++    assert_eq!(snapshot(&source_database), before_b);
++    assert_eq!(snapshot(&destination_database), before_c);
++    assert_eq!(snapshot(&family_database), before_family);
++
++    close.withhold = true;
++    let error = match owner.publish_destination_family_ready(
++        &allocated,
++        &staging,
++        &protection,
++        &checkout,
++        &mut close,
++        &cancel,
++    ) {
++        Ok(_) => panic!("family Ready close ACK was not withheld"),
++        Err(error) => error,
++    };
++    assert!(error.to_string().contains(WITHHELD_ACK), "{error}");
++    assert_eq!(close.counts(), (1, 1, 1, 1));
++    assert_eq!(close.physical_checks, 2);
++
++    let committed = witness::trees(&root, &family_root, &destination_root, locks);
++    only_catalog_changed(&before, &committed, &family_database);
++    assert_eq!(
++        witness::source(&source_database, &store.marker, Some(&staging)),
++        before_b
++    );
++    assert_eq!(snapshot(&destination_database), before_c);
++    let published = family(&family_database, &staging, &required, "ready");
++    // Every other row, including exact journals, charged bitsets, debits,
++    // reservations and the Protected C root, must remain byte-for-byte equal.
++    only_member_state_changed(&before_family, &published, &staging);
++    close.physical.as_ref().unwrap().require();
++    witness::verify_objects(&family_root, &required);
++
++    let outcome = owner
++        .publish_destination_family_ready(
++            &allocated,
++            &staging,
++            &protection,
++            &checkout,
++            &mut close,
++            &cancel,
++        )
++        .unwrap();
++    assert_eq!(outcome.effect(), ExportPublicationEffect::AlreadyReady);
++    assert_eq!(outcome.ready(), &durable.ready);
++    assert_eq!(outcome.receipt(), &durable.receipt);
++    assert_eq!(close.counts(), (1, 1, 1, 1));
++    assert_eq!(close.physical_checks, 2);
++    assert_eq!(
++        witness::trees(&root, &family_root, &destination_root, locks),
++        committed
++    );
++    assert_eq!(snapshot(&source_database), before_b);
++    assert_eq!(snapshot(&destination_database), before_c);
++    assert_eq!(
++        family(&family_database, &staging, &required, "ready"),
++        published
++    );
++    close.physical.as_ref().unwrap().require();
++
++    drop(outcome);
++    drop(checkout);
++    drop(protection);
++    owner.close().unwrap();
++    assert!(ProjectionStore::open(&root).is_err());
++    allocated.require_published(&staging.plan).unwrap();
++    drop(allocated);
++    assert!(
++        ProjectionStore::open(&destination_root).is_err(),
++        "family Ready and private C8 Ready remain unadmitted without C9 admission"
++    );
++    assert_eq!(
++        witness::trees(&root, &family_root, &destination_root, locks),
++        committed
++    );
++    assert_eq!(snapshot(&source_database), before_b);
++    assert_eq!(snapshot(&destination_database), before_c);
++    assert_eq!(snapshot(&family_database), published);
++    drop(store);
++}
+--- r44/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_ready_tests.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/session/managed_ordinary_ready_tests.rs
+@@ -46,13 +46,13 @@
+ const LEAF: &str = "00000000000000000000000000000101";
+ const TX: &str = "00000000000000000000000000000102";
+ const HISTORY: &[u8] = b"ordinary Ready historical-only capture";
+-const CURRENT: &[u8] = b"ordinary Ready uncaptured current bytes";
++pub(super) const CURRENT: &[u8] = b"ordinary Ready uncaptured current bytes";
+ const WITHHELD_ACK: &str = "private C Ready successful close acknowledgement withheld";
+ 
+-struct Physical {
+-    file: PathBuf,
+-    inode: String,
+-    cas: PathBuf,
++pub(super) struct Physical {
++    pub(super) file: PathBuf,
++    pub(super) inode: String,
++    pub(super) cas: PathBuf,
+ }
+ fn require_write_blocked(path: &Path) {
+     let error = OpenOptions::new()
+@@ -67,7 +67,7 @@
+     );
+ }
+ impl Physical {
+-    fn require(&self) {
++    pub(super) fn require(&self) {
+         assert_eq!(fs::read(&self.file).unwrap(), CURRENT);
+         let metadata = fs::symlink_metadata(&self.file).unwrap();
+         assert!(metadata.is_file());
+@@ -210,13 +210,13 @@
+     });
+ }
+ 
+-struct ReadyRows {
+-    ready: ProviderTransitionIntentRecord,
+-    receipt: ProviderTransitionReceiptRecord,
+-    rows: Database,
++pub(super) struct ReadyRows {
++    pub(super) ready: ProviderTransitionIntentRecord,
++    pub(super) receipt: ProviderTransitionReceiptRecord,
++    pub(super) rows: Database,
+ }
+ #[allow(clippy::too_many_arguments)]
+-fn require_ready_rows(
++pub(super) fn require_ready_rows(
+     path: &Path,
+     before: &Database,
+     stage: &ProviderTransitionIntentRecord,
+--- r44/crates/layrs-store-local/src/projection/provider/destination_ready.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/destination_ready.rs
+@@ -32,7 +32,8 @@
+ mod ordinary;
+ pub(in crate::projection::provider) use historical::{read_frozen_ready_rows, FrozenReadyRows};
+ pub(in crate::projection::provider) use ordinary::{
+-    finalize_ordinary_checkout_or_replay, read_ordinary_checkout_ready, OrdinaryReadyInputs,
++    finalize_ordinary_checkout_or_replay, read_ordinary_checkout_ready,
++    read_ordinary_checkout_ready_for_publication, OrdinaryReadyInputs,
+ };
+ mod read;
+ pub(in crate::projection::provider) use autonomous::{
+--- r44/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary.rs
+@@ -10,7 +10,9 @@
+         ordinary_destination::{self, OrdinaryCopyInputs},
+     },
+     shared::{
+-        admitted_catalog::{AdmittedFamilyContext, ExportReserveOnlyTarget},
++        admitted_catalog::{
++            AdmittedFamilyContext, ExportPublicationInputs, ExportReserveOnlyTarget,
++        },
+         exact_protection::{ExactProtection, ProtectionPresence},
+     },
+ };
+@@ -46,6 +48,23 @@
+ }
+ 
+ impl OrdinaryReadyInputs<'_> {
++    /// Expected publication DATA only; the outer reader still authenticates C.
++    pub(in crate::projection::provider) fn publication_inputs(
++        &self,
++        expected: &ExpectedCheckout,
++    ) -> ExportPublicationInputs<'_> {
++        ExportPublicationInputs {
++            target: self.target,
++            destination_ready: self.data.ready,
++            receipt: self.data.receipt,
++            required: self.data.required,
++            protection: self.protection,
++            ready_metadata_floor: self.metadata_floor,
++            checkout_journal_maximum_bytes: expected.maximum_encoded_bytes(),
++            checkout_file_bytes: expected.header().file_bytes,
++        }
++    }
++
+     fn view<'a>(&'a self, source: &'a OrdinaryBasis) -> ReadyView<'a> {
+         ReadyView {
+             marker: self.marker,
+@@ -56,7 +75,16 @@
+     }
+ }
+ 
++// Closed entry choice. Existing Ready writer/replay always uses PrivateReady.
++// Publication accepts only a complete actual C Ready under the full family walk.
++#[derive(Clone, Copy)]
++enum FamilyInterpretation {
++    PrivateReady,
++    Publication,
++}
++
+ struct OrdinaryPrepared {
++    family: FamilyInterpretation,
+     basis: OrdinaryBasis,
+     suffix: PreparedData,
+ }
+@@ -81,6 +109,7 @@
+ }
+ 
+ fn prepare(
++    family: FamilyInterpretation,
+     source_c: &Connection,
+     destination: &Connection,
+     family_c: &Connection,
+@@ -257,25 +286,49 @@
+             "ordinary Ready metadata floor differs from actual B/C pair",
+         ));
+     }
+-    require_family(family_c, inputs, expected, cancel)?;
++    require_family(family, family_c, inputs, expected, cancel)?;
+     cancellation::check(cancel)?;
+-    Ok(OrdinaryPrepared { basis, suffix })
++    Ok(OrdinaryPrepared {
++        family,
++        basis,
++        suffix,
++    })
+ }
+ 
+ fn require_family(
++    interpretation: FamilyInterpretation,
+     family_c: &Connection,
+     inputs: &OrdinaryReadyInputs<'_>,
+     expected: &ExpectedCheckout,
+     cancel: Option<&Cancellation>,
+ ) -> Result<()> {
+-    let (_, state) = inputs.retained.validate_export_protection(
+-        family_c,
+-        inputs.family_marker_bytes,
+-        inputs.target,
+-        inputs.data.required,
+-        inputs.protection,
+-        cancel,
+-    )?;
++    let state = match interpretation {
++        FamilyInterpretation::PrivateReady => {
++            inputs
++                .retained
++                .validate_export_protection(
++                    family_c,
++                    inputs.family_marker_bytes,
++                    inputs.target,
++                    inputs.data.required,
++                    inputs.protection,
++                    cancel,
++                )?
++                .1
++        }
++        FamilyInterpretation::Publication => {
++            inputs
++                .retained
++                .read_export_publication(
++                    family_c,
++                    inputs.family_marker_bytes,
++                    &inputs.publication_inputs(expected),
++                    cancel,
++                )?
++                .1
++                .protection
++        }
++    };
+     if state.root != ProtectionPresence::Present {
+         return Err(invalid("ordinary Ready requires committed C protection"));
+     }
+@@ -369,7 +422,7 @@
+         Some(expected),
+         cancel,
+     )?;
+-    require_family(family_c, inputs, expected, cancel)
++    require_family(prepared.family, family_c, inputs, expected, cancel)
+ }
+ 
+ pub(in crate::projection::provider) fn read_ordinary_checkout_ready(
+@@ -380,7 +433,48 @@
+     expected: &ExpectedCheckout,
+     cancel: Option<&Cancellation>,
+ ) -> Result<DestinationReady> {
+-    let prepared = prepare(source_c, destination, family_c, inputs, expected, cancel)?;
++    let prepared = prepare(
++        FamilyInterpretation::PrivateReady,
++        source_c,
++        destination,
++        family_c,
++        inputs,
++        expected,
++        cancel,
++    )?;
++    read_prepared(
++        source_c,
++        destination,
++        family_c,
++        inputs,
++        expected,
++        &prepared,
++        cancel,
++    )?;
++    Ok(DestinationReady)
++}
++
++/// Complete actual C Ready reader for the one-row family publication boundary.
++/// The family member may be Initializing or Ready, but every retained group,
++/// reservation, exact C root, prefix, suffix and checkout row is still checked.
++/// This entry never writes C and never makes canonical Ready DATA an authority.
++pub(in crate::projection::provider) fn read_ordinary_checkout_ready_for_publication(
++    source_c: &Connection,
++    destination: &Connection,
++    family_c: &Connection,
++    inputs: &OrdinaryReadyInputs<'_>,
++    expected: &ExpectedCheckout,
++    cancel: Option<&Cancellation>,
++) -> Result<DestinationReady> {
++    let prepared = prepare(
++        FamilyInterpretation::Publication,
++        source_c,
++        destination,
++        family_c,
++        inputs,
++        expected,
++        cancel,
++    )?;
+     read_prepared(
+         source_c,
+         destination,
+@@ -404,7 +498,15 @@
+     expected: &ExpectedCheckout,
+     cancel: Option<&Cancellation>,
+ ) -> Result<ReadyEffect> {
+-    let prepared = prepare(source_c, destination, family_c, inputs, expected, cancel)?;
++    let prepared = prepare(
++        FamilyInterpretation::PrivateReady,
++        source_c,
++        destination,
++        family_c,
++        inputs,
++        expected,
++        cancel,
++    )?;
+     let (count, max_state): (u64, u64) = destination.query_row(
+         "SELECT count(*),coalesce(max(length(CAST(state AS BLOB))),0) FROM (SELECT state FROM projection_provider_transitions LIMIT 2)",
+         [], |r| Ok((r.get(0)?, r.get(1)?)),
+--- r44/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/destination_ready/ordinary_tests.rs
+@@ -34,7 +34,7 @@
+ const TX: &str = "000000000000000000000000000ce101";
+ const LEAF: &str = "000000000000000000000000000ce102";
+ 
+-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
++#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+ enum Cell {
+     Null,
+     Integer(i64),
+@@ -223,443 +223,664 @@
+     );
+     child::run(test, 120, || {
+         child::declare();
+-        with_admitted_source_family_sql(|source, marker, supplied, family, family_marker| {
+-            let actual = admitted_ordinary::inspect(source, marker, None).unwrap();
+-            let retained = AdmittedFamilyContext::new(&actual).unwrap();
+-            family
+-                .execute(
+-                    "UPDATE worktrees SET state='ready' WHERE id=?1",
+-                    [marker.identity.worktree_id.as_str()],
+-                )
++        exercise_ready_sql(false);
++    });
++}
++
++#[test]
++#[ignore = "ROOT source release and audited ordinary publication SQL child120/outer180 required"]
++fn ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_replays_readonly() {
++    let test = concat!(module_path!(), "::ordinary_family_publication_authenticates_actual_ready_changes_one_row_and_replays_readonly");
++    child::run(test, 120, || {
++        child::declare();
++        exercise_ready_sql(true);
++    });
++}
++
++fn exercise_ready_sql(publication: bool) {
++    with_admitted_source_family_sql(|source, marker, supplied, family, family_marker| {
++        let actual = admitted_ordinary::inspect(source, marker, None).unwrap();
++        let retained = AdmittedFamilyContext::new(&actual).unwrap();
++        family
++            .execute(
++                "UPDATE worktrees SET state='ready' WHERE id=?1",
++                [marker.identity.worktree_id.as_str()],
++            )
++            .unwrap();
++        published_group(family, retained.binding(), supplied, true);
++        retained
++            .validate_catalog(family, family_marker, None)
++            .unwrap();
++        let (preimage, history) =
++            ordinary_destination::tests::append_restore(source, marker, supplied);
++        let known: Vec<_> = supplied.iter().cloned().chain([preimage]).collect();
++        let current = database::current(source).unwrap();
++        let selected = selection::at(source, current.generation).unwrap();
++        let entry = &current.snapshot.entries[0];
++        let Some(TreeEntryTarget::File { file_id: base_id }) = &entry.target else {
++            panic!("fixture file required")
++        };
++        let image_manifest = supplied.last().unwrap();
++        assert_ne!(base_id, image_manifest.file_id());
++        let image = bootstrap::recovery_image_digest(
++            &[ProviderRecoveryExportFile {
++                path: entry.path.clone(),
++                file_id: image_manifest.file_id().clone(),
++                length: image_manifest.byte_length(),
++                executable: Some(entry.executable),
++                class: ProviderRecoveryExportClass::ManagedCandidate,
++            }],
++            &[],
++            &[],
++        )
++        .unwrap();
++        let image = image.strip_prefix("blake3:").unwrap();
++        let mut destination_identity = marker.identity.clone();
++        destination_identity.worktree_id =
++            WorktreeId::parse("worktree:ordinary-ready-sql-c").unwrap();
++        let (prefix, closure) =
++            plan_admitted_import(source, marker, destination_identity.clone(), image, None)
+                 .unwrap();
+-            published_group(family, retained.binding(), supplied, true);
+-            retained
+-                .validate_catalog(family, family_marker, None)
++        assert_eq!(prefix.closure.restore_history.as_ref().unwrap().count, 1);
++        let mappings = closure
++            .copied_content_mappings(source, &prefix, None)
++            .unwrap();
++        let historical: Vec<_> = mappings
++            .iter()
++            .map(|(file, (id, bytes))| RequiredManifest {
++                file_id: file.clone(),
++                manifest_id: id.clone(),
++                bytes: *bytes,
++            })
++            .collect();
++        let mut union = BTreeMap::new();
++        for (file, (id, bytes)) in &mappings {
++            let manifest = known
++                .iter()
++                .find(|m| m.file_id() == file && m.id() == id && m.byte_length() == *bytes)
+                 .unwrap();
+-            let (preimage, history) =
+-                ordinary_destination::tests::append_restore(source, marker, supplied);
+-            let known: Vec<_> = supplied.iter().cloned().chain([preimage]).collect();
+-            let current = database::current(source).unwrap();
+-            let selected = selection::at(source, current.generation).unwrap();
+-            let entry = &current.snapshot.entries[0];
+-            let Some(TreeEntryTarget::File { file_id: base_id }) = &entry.target else {
+-                panic!("fixture file required")
+-            };
+-            let image_manifest = supplied.last().unwrap();
+-            assert_ne!(base_id, image_manifest.file_id());
+-            let image = bootstrap::recovery_image_digest(
+-                &[ProviderRecoveryExportFile {
+-                    path: entry.path.clone(),
+-                    file_id: image_manifest.file_id().clone(),
+-                    length: image_manifest.byte_length(),
+-                    executable: Some(entry.executable),
+-                    class: ProviderRecoveryExportClass::ManagedCandidate,
+-                }],
+-                &[],
+-                &[],
+-            )
+-            .unwrap();
+-            let image = image.strip_prefix("blake3:").unwrap();
+-            let mut destination_identity = marker.identity.clone();
+-            destination_identity.worktree_id =
+-                WorktreeId::parse("worktree:ordinary-ready-sql-c").unwrap();
+-            let (prefix, closure) =
+-                plan_admitted_import(source, marker, destination_identity.clone(), image, None)
+-                    .unwrap();
+-            assert_eq!(prefix.closure.restore_history.as_ref().unwrap().count, 1);
+-            let mappings = closure
+-                .copied_content_mappings(source, &prefix, None)
+-                .unwrap();
+-            let historical: Vec<_> = mappings
+-                .iter()
+-                .map(|(file, (id, bytes))| RequiredManifest {
+-                    file_id: file.clone(),
+-                    manifest_id: id.clone(),
+-                    bytes: *bytes,
+-                })
+-                .collect();
+-            let mut union = BTreeMap::new();
+-            for (file, (id, bytes)) in &mappings {
+-                let manifest = known
+-                    .iter()
+-                    .find(|m| m.file_id() == file && m.id() == id && m.byte_length() == *bytes)
+-                    .unwrap();
+-                union.insert((file.clone(), id.clone()), manifest.clone());
+-            }
+-            let base = known.iter().find(|m| m.file_id() == base_id).unwrap();
+-            for manifest in [base, image_manifest] {
+-                union.insert(
+-                    (manifest.file_id().clone(), manifest.id().clone()),
+-                    manifest.clone(),
+-                );
+-            }
+-            let required: Vec<_> = union.into_values().collect();
+-            let version = prefix.source.version();
+-            let stored_selection_digest: String = source.query_row(
++            union.insert((file.clone(), id.clone()), manifest.clone());
++        }
++        let base = known.iter().find(|m| m.file_id() == base_id).unwrap();
++        for manifest in [base, image_manifest] {
++            union.insert(
++                (manifest.file_id().clone(), manifest.id().clone()),
++                manifest.clone(),
++            );
++        }
++        let required: Vec<_> = union.into_values().collect();
++        let version = prefix.source.version();
++        let stored_selection_digest: String = source.query_row(
+                 "SELECT digest FROM projection_selections WHERE generation<=?1 ORDER BY generation DESC LIMIT 1",
+                 [current.generation], |row| row.get(0),
+             ).unwrap();
+-            assert_eq!(version.selection_digest, stored_selection_digest);
+-            assert_ne!(
+-                selection::initial_digest(&selected).unwrap(),
+-                version.selection_digest,
+-                "Ready must accept the authenticated versioned selection digest",
++        assert_eq!(version.selection_digest, stored_selection_digest);
++        assert_ne!(
++            selection::initial_digest(&selected).unwrap(),
++            version.selection_digest,
++            "Ready must accept the authenticated versioned selection digest",
++        );
++        let files = [ImageFile {
++            path: &entry.path,
++            manifest: image_manifest,
++            executable: entry.executable,
++            expected: Some((base_id.clone(), entry.executable)),
++        }];
++        let derived = bootstrap::derive_ordinary_data(
++            &prefix,
++            &current.snapshot,
++            &selected,
++            &version.selection_digest,
++            &[base],
++            &files,
++            &[],
++            destination_identity.clone(),
++            "C:\\ordinary-ready-parent",
++            "fs:v1:0000000000000001:0000000000000040",
++            LEAF,
++            TX,
++            &historical,
++            &required,
++            4 * 1024 * 1024,
++        )
++        .unwrap();
++        assert_eq!(derived.capture.changes.len(), 1);
++        let planned = ProviderTransitionIntentRecord {
++            schema_version: "layrs.projection-provider-transition-intent.v1".into(),
++            transaction_id: TX.into(),
++            role: TransitionRole::Source,
++            state: TransitionState::Planned,
++            local_generation: version.generation,
++            plan: serde_json::from_slice(&canonical_json(&derived.plan).unwrap()).unwrap(),
++            destination: None,
++            reservation: None,
++            receipt_id: None,
++        };
++        ordinary_transition::apply_planned(source, marker, &prefix, &planned, None).unwrap();
++        let mut value = serde_json::to_value(marker).unwrap();
++        value["identity"] = serde_json::to_value(&destination_identity).unwrap();
++        value["checkoutRoot"] = format!("C:\\ordinary-ready-parent\\{LEAF}").into();
++        value["checkoutIdentity"] = "fs:v1:0000000000000001:0000000000000041".into();
++        value["storeIdentity"] = "fs:v1:0000000000000001:0000000000000042".into();
++        value["metadataIdentity"] = "fs:v1:0000000000000001:0000000000000043".into();
++        value["importDigest"] = prefix.digest().unwrap().into();
++        value["shared"]["metadataPath"] = marker
++            .shared
++            .as_ref()
++            .unwrap()
++            .root
++            .join("worktrees")
++            .join(
++                blake3::hash(destination_identity.worktree_id.as_str().as_bytes())
++                    .to_hex()
++                    .to_string(),
++            )
++            .join("metadata")
++            .to_str()
++            .unwrap()
++            .into();
++        value["shared"]["databaseIdentity"] = "1:0:9000".into();
++        let target_marker = format::parse_marker_bytes(&canonical_json(&value).unwrap()).unwrap();
++        let mut copying =
++            ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
++        copying.state = TransitionState::Copying;
++        copying.destination = Some(TransitionDestinationProof {
++            backend: TransitionBackendKind::Ordinary,
++            format: target_marker.clone(),
++            private_database_identity: "1:0:9000".into(),
++            format_file_identity: "1:0:9001".into(),
++            family_marker_digest: retained.binding().family_marker_digest.clone(),
++            native_control_identity_hex: None,
++            native_root_identity: None,
++        });
++        ordinary_transition::apply_copying(source, marker, &prefix, &copying, None).unwrap();
++        let bare = BareConnection::reference().unwrap();
++        let c = bare.connection();
++        c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
++            .unwrap();
++        ordinary_destination::initialize_or_replay_copied(
++            c,
++            &target_marker,
++            &OrdinaryCopyInputs::new(source, marker, &copying, &closure),
++            None,
++        )
++        .unwrap();
++        let staging = ordinary_transition::proposed_staging(&copying).unwrap();
++        ordinary_transition::apply_staging(source, marker, &prefix, &staging, None).unwrap();
++        let source_input = OrdinaryCopyInputs::new(source, marker, &staging, &closure);
++        ordinary_destination::staging::apply_staging(c, &target_marker, &source_input, None)
++            .unwrap();
++        let destination_staging = source_input
++            .authenticate_staging_source(c, &target_marker, None)
++            .unwrap();
++        let checkout_files = [CheckoutFile {
++            path: entry.path.clone(),
++            manifest_id: image_manifest.id().clone(),
++            file_id: image_manifest.file_id().clone(),
++            bytes: image_manifest.byte_length(),
++            executable: entry.executable,
++        }];
++        let expected =
++            ExpectedCheckout::ordinary(&destination_staging, &checkout_files, &[], image, None)
++                .unwrap();
++        complete(c, &expected);
++        let base_floor = managed_budget::base_metadata_floor(
++            closure.metadata_bytes(source, &prefix, None).unwrap(),
++            &derived.observation,
++            &derived.placement,
++            &derived.capture,
++            &derived.plan,
++            &selected,
++            managed_budget::intent_size(&staging).unwrap(),
++            managed_budget::intent_size(&destination_staging).unwrap(),
++        )
++        .unwrap();
++        let q0 = managed_budget::quota(&required, [image_manifest.byte_length()], 0).unwrap();
++        let target = ExportReserveOnlyTarget::new(
++            &retained,
++            &staging,
++            &destination_staging,
++            &required,
++            q0,
++            base_floor,
++            None,
++        )
++        .unwrap();
++        family
++            .execute(
++                "INSERT INTO worktrees VALUES(?1,?2,?3,?4,'initializing')",
++                params![
++                    target_marker.identity.worktree_id.as_str(),
++                    target_marker
++                        .shared
++                        .as_ref()
++                        .unwrap()
++                        .metadata_path
++                        .to_str()
++                        .unwrap(),
++                    target_marker.shared.as_ref().unwrap().database_identity,
++                    target_marker.bytes().unwrap()
++                ],
++            )
++            .unwrap();
++        retained
++            .reserve_export_only(family, family_marker, &target, None)
++            .unwrap();
++        published_group(family, target.binding(), &required, false);
++        let proof = copying.destination.as_ref().unwrap();
++        let binding = target.binding();
++        let protection = ExactProtection::new(
++            &binding.family_incarnation,
++            &binding.owner,
++            &binding.database_identity,
++            &binding.transaction_id,
++            &required,
++            None,
++        )
++        .unwrap();
++        retained
++            .protect_export(family, family_marker, &target, &required, &protection, None)
++            .unwrap();
++        let rowset = |r: &super::super::records::transition::TransitionRowset| ImportRowset {
++            count: r.count,
++            digest: r.digest.clone(),
++        };
++        let receipt = ProviderTransitionReceiptRecord {
++            schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
++            owner_identity_digest: proof.owner_digest(&derived.plan).unwrap(),
++            transaction_id: TX.into(),
++            transition_plan_digest: derived.plan.digest().unwrap(),
++            destination_proof_digest: proof.digest(&derived.plan).unwrap(),
++            source_prefix_id: prefix.digest().unwrap(),
++            source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap(),
++            parent_receipt_id: prefix.ancestry_root_receipt.clone(),
++            source_identity: marker.identity.clone(),
++            destination_identity,
++            imported_max_generation: version.generation,
++            destination_observation_generation: derived.plan.observation.generation,
++            destination_observation_digest: derived.observation_digest.clone(),
++            destination_placement_generation: derived.plan.placement_generation,
++            destination_placement_digest: derived.placement_digest.clone(),
++            imported_capture_count: version.capture_count,
++            destination_capture_sequence: derived.plan.capture_sequence,
++            destination_capture_digest: derived.capture.digest.clone(),
++            protected_manifests: rowset(&derived.plan.protected_manifests),
++            content_mappings: prefix.closure.content_mappings.clone(),
++            companion_id: None,
++            companion_files: rowset(&derived.plan.companion_files),
++            companion_deletions: rowset(&derived.plan.companion_deletions),
++        };
++        let mut ready =
++            ProviderTransitionIntentRecord::decode(&destination_staging.encode().unwrap()).unwrap();
++        ready.state = TransitionState::Ready;
++        ready.receipt_id = Some(receipt.digest().unwrap());
++        let overlay = [ManagedReadyOverlay {
++            path: entry.path.clone(),
++            manifest_id: Some(image_manifest.id().clone()),
++        }];
++        let claims = [ManagedReadyClaim {
++            root_id: protection.id().into(),
++            digest: protection.id().into(),
++            kind: "provider-import".into(),
++            owner: TX.into(),
++        }];
++        let data = ManagedReadyData {
++            observation: &derived.observation,
++            placement: &derived.placement,
++            capture: &derived.capture,
++            overlay: &overlay,
++            required: &required,
++            receipt: &receipt,
++            ready: &ready,
++            claims: &claims,
++        };
++        let floor = managed_budget::complete_metadata_floor(
++            base_floor, &ready, &receipt, &claims[0], &required, None,
++        )
++        .unwrap();
++        let mut inputs = OrdinaryReadyInputs {
++            marker: &target_marker,
++            source_marker: marker,
++            source_staging: &staging,
++            closure: &closure,
++            retained: &retained,
++            target: &target,
++            protection: &protection,
++            family_marker_bytes: family_marker,
++            metadata_floor: floor,
++            data: &data,
++        };
++        if publication {
++            assert!(
++                read_ordinary_checkout_ready_for_publication(
++                    source, c, family, &inputs, &expected, None
++                )
++                .is_err(),
++                "canonical Ready DATA must not authenticate an actual Staging C"
+             );
+-            let files = [ImageFile {
+-                path: &entry.path,
+-                manifest: image_manifest,
+-                executable: entry.executable,
+-                expected: Some((base_id.clone(), entry.executable)),
+-            }];
+-            let derived = bootstrap::derive_ordinary_data(
+-                &prefix,
+-                &current.snapshot,
+-                &selected,
+-                &version.selection_digest,
+-                &[base],
+-                &files,
+-                &[],
+-                destination_identity.clone(),
+-                "C:\\ordinary-ready-parent",
+-                "fs:v1:0000000000000001:0000000000000040",
+-                LEAF,
+-                TX,
+-                &historical,
+-                &required,
+-                4 * 1024 * 1024,
++        }
++        let source_before = dump(source);
++        let family_before = dump(family);
++        let before = dump(c);
++        let changes = c.total_changes();
++        inputs.metadata_floor += 1;
++        assert!(
++            finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
++                .is_err()
++        );
++        inputs.metadata_floor -= 1;
++        assert_eq!(dump(c), before);
++        assert_eq!(c.total_changes(), changes);
++        c.execute_batch("SAVEPOINT incomplete").unwrap();
++        assert_eq!(
++            c.execute(
++                "DELETE FROM projection_prejournal WHERE path=?1",
++                [expected.sql_key(RowKey::Header).unwrap()],
+             )
+-            .unwrap();
+-            assert_eq!(derived.capture.changes.len(), 1);
+-            let planned = ProviderTransitionIntentRecord {
+-                schema_version: "layrs.projection-provider-transition-intent.v1".into(),
+-                transaction_id: TX.into(),
+-                role: TransitionRole::Source,
+-                state: TransitionState::Planned,
+-                local_generation: version.generation,
+-                plan: serde_json::from_slice(&canonical_json(&derived.plan).unwrap()).unwrap(),
+-                destination: None,
+-                reservation: None,
+-                receipt_id: None,
+-            };
+-            ordinary_transition::apply_planned(source, marker, &prefix, &planned, None).unwrap();
+-            let mut value = serde_json::to_value(marker).unwrap();
+-            value["identity"] = serde_json::to_value(&destination_identity).unwrap();
+-            value["checkoutRoot"] = format!("C:\\ordinary-ready-parent\\{LEAF}").into();
+-            value["checkoutIdentity"] = "fs:v1:0000000000000001:0000000000000041".into();
+-            value["storeIdentity"] = "fs:v1:0000000000000001:0000000000000042".into();
+-            value["metadataIdentity"] = "fs:v1:0000000000000001:0000000000000043".into();
+-            value["importDigest"] = prefix.digest().unwrap().into();
+-            value["shared"]["metadataPath"] = marker
+-                .shared
+-                .as_ref()
+-                .unwrap()
+-                .root
+-                .join("worktrees")
+-                .join(
+-                    blake3::hash(destination_identity.worktree_id.as_str().as_bytes())
+-                        .to_hex()
+-                        .to_string(),
+-                )
+-                .join("metadata")
+-                .to_str()
+-                .unwrap()
+-                .into();
+-            value["shared"]["databaseIdentity"] = "1:0:9000".into();
+-            let target_marker =
+-                format::parse_marker_bytes(&canonical_json(&value).unwrap()).unwrap();
+-            let mut copying =
+-                ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
+-            copying.state = TransitionState::Copying;
+-            copying.destination = Some(TransitionDestinationProof {
+-                backend: TransitionBackendKind::Ordinary,
+-                format: target_marker.clone(),
+-                private_database_identity: "1:0:9000".into(),
+-                format_file_identity: "1:0:9001".into(),
+-                family_marker_digest: retained.binding().family_marker_digest.clone(),
+-                native_control_identity_hex: None,
+-                native_root_identity: None,
+-            });
+-            ordinary_transition::apply_copying(source, marker, &prefix, &copying, None).unwrap();
+-            let bare = BareConnection::reference().unwrap();
+-            let c = bare.connection();
+-            c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")
+-                .unwrap();
+-            ordinary_destination::initialize_or_replay_copied(
+-                c,
+-                &target_marker,
+-                &OrdinaryCopyInputs::new(source, marker, &copying, &closure),
+-                None,
+-            )
+-            .unwrap();
+-            let staging = ordinary_transition::proposed_staging(&copying).unwrap();
+-            ordinary_transition::apply_staging(source, marker, &prefix, &staging, None).unwrap();
+-            let source_input = OrdinaryCopyInputs::new(source, marker, &staging, &closure);
+-            ordinary_destination::staging::apply_staging(c, &target_marker, &source_input, None)
+-                .unwrap();
+-            let destination_staging = source_input
+-                .authenticate_staging_source(c, &target_marker, None)
+-                .unwrap();
+-            let checkout_files = [CheckoutFile {
+-                path: entry.path.clone(),
+-                manifest_id: image_manifest.id().clone(),
+-                file_id: image_manifest.file_id().clone(),
+-                bytes: image_manifest.byte_length(),
+-                executable: entry.executable,
+-            }];
+-            let expected =
+-                ExpectedCheckout::ordinary(&destination_staging, &checkout_files, &[], image, None)
+-                    .unwrap();
+-            complete(c, &expected);
+-            let base_floor = managed_budget::base_metadata_floor(
+-                closure.metadata_bytes(source, &prefix, None).unwrap(),
+-                &derived.observation,
+-                &derived.placement,
+-                &derived.capture,
+-                &derived.plan,
+-                &selected,
+-                managed_budget::intent_size(&staging).unwrap(),
+-                managed_budget::intent_size(&destination_staging).unwrap(),
+-            )
+-            .unwrap();
+-            let q0 = managed_budget::quota(&required, [image_manifest.byte_length()], 0).unwrap();
+-            let target = ExportReserveOnlyTarget::new(
+-                &retained,
+-                &staging,
+-                &destination_staging,
+-                &required,
+-                q0,
+-                base_floor,
+-                None,
+-            )
+-            .unwrap();
+-            family
+-                .execute(
+-                    "INSERT INTO worktrees VALUES(?1,?2,?3,?4,'initializing')",
+-                    params![
+-                        target_marker.identity.worktree_id.as_str(),
+-                        target_marker
+-                            .shared
+-                            .as_ref()
+-                            .unwrap()
+-                            .metadata_path
+-                            .to_str()
+-                            .unwrap(),
+-                        target_marker.shared.as_ref().unwrap().database_identity,
+-                        target_marker.bytes().unwrap()
+-                    ],
+-                )
+-                .unwrap();
+-            retained
+-                .reserve_export_only(family, family_marker, &target, None)
+-                .unwrap();
+-            published_group(family, target.binding(), &required, false);
+-            let proof = copying.destination.as_ref().unwrap();
+-            let binding = target.binding();
+-            let protection = ExactProtection::new(
+-                &binding.family_incarnation,
+-                &binding.owner,
+-                &binding.database_identity,
+-                &binding.transaction_id,
+-                &required,
+-                None,
+-            )
+-            .unwrap();
+-            retained
+-                .protect_export(family, family_marker, &target, &required, &protection, None)
+-                .unwrap();
+-            let rowset = |r: &super::super::records::transition::TransitionRowset| ImportRowset {
+-                count: r.count,
+-                digest: r.digest.clone(),
+-            };
+-            let receipt = ProviderTransitionReceiptRecord {
+-                schema_version: "layrs.projection-provider-transition-receipt.v1".into(),
+-                owner_identity_digest: proof.owner_digest(&derived.plan).unwrap(),
+-                transaction_id: TX.into(),
+-                transition_plan_digest: derived.plan.digest().unwrap(),
+-                destination_proof_digest: proof.digest(&derived.plan).unwrap(),
+-                source_prefix_id: prefix.digest().unwrap(),
+-                source_prefix: ProviderImportPrefixRecord::decode(&prefix.encode().unwrap())
+-                    .unwrap(),
+-                parent_receipt_id: prefix.ancestry_root_receipt.clone(),
+-                source_identity: marker.identity.clone(),
+-                destination_identity,
+-                imported_max_generation: version.generation,
+-                destination_observation_generation: derived.plan.observation.generation,
+-                destination_observation_digest: derived.observation_digest.clone(),
+-                destination_placement_generation: derived.plan.placement_generation,
+-                destination_placement_digest: derived.placement_digest.clone(),
+-                imported_capture_count: version.capture_count,
+-                destination_capture_sequence: derived.plan.capture_sequence,
+-                destination_capture_digest: derived.capture.digest.clone(),
+-                protected_manifests: rowset(&derived.plan.protected_manifests),
+-                content_mappings: prefix.closure.content_mappings.clone(),
+-                companion_id: None,
+-                companion_files: rowset(&derived.plan.companion_files),
+-                companion_deletions: rowset(&derived.plan.companion_deletions),
+-            };
+-            let mut ready =
+-                ProviderTransitionIntentRecord::decode(&destination_staging.encode().unwrap())
+-                    .unwrap();
+-            ready.state = TransitionState::Ready;
+-            ready.receipt_id = Some(receipt.digest().unwrap());
+-            let overlay = [ManagedReadyOverlay {
+-                path: entry.path.clone(),
+-                manifest_id: Some(image_manifest.id().clone()),
+-            }];
+-            let claims = [ManagedReadyClaim {
+-                root_id: protection.id().into(),
+-                digest: protection.id().into(),
+-                kind: "provider-import".into(),
+-                owner: TX.into(),
+-            }];
+-            let data = ManagedReadyData {
+-                observation: &derived.observation,
+-                placement: &derived.placement,
+-                capture: &derived.capture,
+-                overlay: &overlay,
+-                required: &required,
+-                receipt: &receipt,
+-                ready: &ready,
+-                claims: &claims,
+-            };
+-            let floor = managed_budget::complete_metadata_floor(
+-                base_floor, &ready, &receipt, &claims[0], &required, None,
+-            )
+-            .unwrap();
+-            let mut inputs = OrdinaryReadyInputs {
+-                marker: &target_marker,
+-                source_marker: marker,
+-                source_staging: &staging,
+-                closure: &closure,
+-                retained: &retained,
+-                target: &target,
+-                protection: &protection,
+-                family_marker_bytes: family_marker,
+-                metadata_floor: floor,
+-                data: &data,
+-            };
+-            let source_before = dump(source);
+-            let family_before = dump(family);
++            .unwrap(),
++            1
++        );
++        let before = dump(c);
++        let changes = c.total_changes();
++        assert!(
++            finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
++                .is_err()
++        );
++        assert_eq!(dump(c), before);
++        assert_eq!(c.total_changes(), changes);
++        c.execute_batch("ROLLBACK TO incomplete; RELEASE incomplete")
++            .unwrap();
++        assert_eq!(
++            finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
++                .unwrap(),
++            ReadyEffect::Finalized
++        );
++        assert_eq!(dump(source), source_before);
++        assert_eq!(dump(family), family_before);
++        assert_eq!(
++            c.query_row("SELECT payload FROM projection_restore_history", [], |r| {
++                r.get::<_, Vec<u8>>(0)
++            })
++            .unwrap(),
++            history
++        );
++        read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
++        for sql in [
++            "UPDATE projection_restore_history SET payload=x'00'",
++            "UPDATE projection_head SET generation=0",
++            "UPDATE projection_provider_transitions SET receipt_id=NULL",
++        ] {
++            c.execute_batch("SAVEPOINT corrupt").unwrap();
++            assert_eq!(c.execute(sql, []).unwrap(), 1);
+             let before = dump(c);
+             let changes = c.total_changes();
+-            inputs.metadata_floor += 1;
+-            assert!(finalize_ordinary_checkout_or_replay(
+-                source, c, family, &inputs, &expected, None
+-            )
+-            .is_err());
+-            inputs.metadata_floor -= 1;
+-            assert_eq!(dump(c), before);
+-            assert_eq!(c.total_changes(), changes);
+-            c.execute_batch("SAVEPOINT incomplete").unwrap();
+-            assert_eq!(
+-                c.execute(
+-                    "DELETE FROM projection_prejournal WHERE path=?1",
+-                    [expected.sql_key(RowKey::Header).unwrap()],
+-                )
+-                .unwrap(),
+-                1
++            assert!(
++                read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).is_err()
+             );
+-            let before = dump(c);
+-            let changes = c.total_changes();
+             assert!(finalize_ordinary_checkout_or_replay(
+                 source, c, family, &inputs, &expected, None
+             )
+             .is_err());
+             assert_eq!(dump(c), before);
+             assert_eq!(c.total_changes(), changes);
+-            c.execute_batch("ROLLBACK TO incomplete; RELEASE incomplete")
++            c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
+                 .unwrap();
+-            assert_eq!(
+-                finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
+-                    .unwrap(),
+-                ReadyEffect::Finalized
+-            );
+-            assert_eq!(dump(source), source_before);
+-            assert_eq!(dump(family), family_before);
+-            assert_eq!(
+-                c.query_row("SELECT payload FROM projection_restore_history", [], |r| {
+-                    r.get::<_, Vec<u8>>(0)
+-                })
++        }
++        c.execute_batch("COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED")
++            .unwrap();
++        let before = dump(c);
++        let changes = c.total_changes();
++        assert_eq!(
++            finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
+                 .unwrap(),
+-                history
+-            );
+-            read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
+-            for sql in [
+-                "UPDATE projection_restore_history SET payload=x'00'",
+-                "UPDATE projection_head SET generation=0",
+-                "UPDATE projection_provider_transitions SET receipt_id=NULL",
+-            ] {
+-                c.execute_batch("SAVEPOINT corrupt").unwrap();
+-                assert_eq!(c.execute(sql, []).unwrap(), 1);
+-                let before = dump(c);
+-                let changes = c.total_changes();
+-                assert!(
+-                    read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None)
+-                        .is_err()
+-                );
+-                assert!(finalize_ordinary_checkout_or_replay(
+-                    source, c, family, &inputs, &expected, None
++            ReadyEffect::AlreadyReady
++        );
++        read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
++        let cancel = Cancellation::default();
++        cancel.cancel();
++        assert!(finalize_ordinary_checkout_or_replay(
++            source,
++            c,
++            family,
++            &inputs,
++            &expected,
++            Some(&cancel)
++        )
++        .is_err());
++        assert_eq!(dump(c), before);
++        assert_eq!(c.total_changes(), changes);
++        assert_eq!(dump(source), source_before);
++        assert_eq!(dump(family), family_before);
++        assert_eq!(
++            retained
++                .validate_export_protection(
++                    family,
++                    family_marker,
++                    &target,
++                    &required,
++                    &protection,
++                    None
+                 )
+-                .is_err());
+-                assert_eq!(dump(c), before);
+-                assert_eq!(c.total_changes(), changes);
+-                c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
+-                    .unwrap();
+-            }
+-            c.execute_batch(
+-                "COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED",
+-            )
+-            .unwrap();
+-            let before = dump(c);
+-            let changes = c.total_changes();
+-            assert_eq!(
+-                finalize_ordinary_checkout_or_replay(source, c, family, &inputs, &expected, None)
+-                    .unwrap(),
+-                ReadyEffect::AlreadyReady
+-            );
+-            read_ordinary_checkout_ready(source, c, family, &inputs, &expected, None).unwrap();
+-            let cancel = Cancellation::default();
+-            cancel.cancel();
+-            assert!(finalize_ordinary_checkout_or_replay(
+-                source,
+-                c,
+-                family,
+-                &inputs,
+-                &expected,
+-                Some(&cancel)
+-            )
+-            .is_err());
+-            assert_eq!(dump(c), before);
+-            assert_eq!(c.total_changes(), changes);
+-            assert_eq!(dump(source), source_before);
+-            assert_eq!(dump(family), family_before);
+-            assert_eq!(
+-                retained
+-                    .validate_export_protection(
+-                        family,
+-                        family_marker,
+-                        &target,
+-                        &required,
+-                        &protection,
+-                        None
+-                    )
+-                    .unwrap()
+-                    .1
+-                    .root,
+-                ProtectionPresence::Present
+-            );
+-            assert_eq!(
+-                read_admitted_import(source, marker, None)
+-                    .unwrap()
+-                    .outgoing()
+-                    .iter()
+-                    .find(|r| r.transaction_id == TX)
+-                    .unwrap()
+-                    .state,
+-                TransitionState::Staging
+-            );
+-            c.execute_batch("ROLLBACK").unwrap();
+-            bare.finish(Ok(())).unwrap();
+-        });
++                .unwrap()
++                .1
++                .root,
++            ProtectionPresence::Present
++        );
++        assert_eq!(
++            read_admitted_import(source, marker, None)
++                .unwrap()
++                .outgoing()
++                .iter()
++                .find(|r| r.transaction_id == TX)
++                .unwrap()
++                .state,
++            TransitionState::Staging
++        );
++        if publication {
++            exercise_publication(source, c, family, &inputs, &expected);
++        }
++        c.execute_batch("ROLLBACK").unwrap();
++        bare.finish(Ok(())).unwrap();
+     });
+ }
++
++fn exercise_publication(
++    source: &Connection,
++    destination: &Connection,
++    family: &Connection,
++    inputs: &OrdinaryReadyInputs<'_>,
++    expected: &ExpectedCheckout,
++) {
++    use crate::projection::shared::admitted_catalog::{
++        ExportPublicationEffect, ExportPublicationMember,
++    };
++    let publication = inputs.publication_inputs(expected);
++    let retained = inputs.retained;
++    let marker = inputs.family_marker_bytes;
++    let source_before = dump(source);
++    let destination_before = dump(destination);
++    let family_before = dump(family);
++    read_ordinary_checkout_ready_for_publication(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        None,
++    )
++    .unwrap();
++    let before = retained
++        .read_export_publication(family, marker, &publication, None)
++        .unwrap()
++        .1;
++    assert_eq!(before.member, ExportPublicationMember::Initializing);
++
++    let cancel = Cancellation::default();
++    cancel.cancel();
++    let changes = family.total_changes();
++    assert!(retained
++        .publish_export_ready(family, marker, &publication, Some(&cancel))
++        .is_err());
++    assert_eq!(family.total_changes(), changes);
++    assert_eq!(dump(family), family_before);
++    // A Ready record borrowed from another transaction must not authorize this CAS.
++    let mut wrong_receipt =
++        ProviderTransitionReceiptRecord::decode(&inputs.data.receipt.encode().unwrap()).unwrap();
++    wrong_receipt.transaction_id = "000000000000000000000000000ce199".into();
++    let mut wrong = inputs.publication_inputs(expected);
++    wrong.receipt = &wrong_receipt;
++    assert!(retained
++        .publish_export_ready(family, marker, &wrong, None)
++        .is_err());
++    assert_eq!(family.total_changes(), changes);
++    assert_eq!(dump(family), family_before);
++
++    family
++        .execute_batch("SAVEPOINT publication_rollback")
++        .unwrap();
++    assert_eq!(
++        retained
++            .publish_export_ready(family, marker, &publication, None)
++            .unwrap(),
++        ExportPublicationEffect::Updated
++    );
++    read_ordinary_checkout_ready_for_publication(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        None,
++    )
++    .unwrap();
++    family
++        .execute_batch("ROLLBACK TO publication_rollback; RELEASE publication_rollback")
++        .unwrap();
++    assert_eq!(dump(family), family_before);
++    read_ordinary_checkout_ready(source, destination, family, inputs, expected, None).unwrap();
++    let changes = family.total_changes();
++    assert_eq!(
++        retained
++            .publish_export_ready(family, marker, &publication, None)
++            .unwrap(),
++        ExportPublicationEffect::Updated
++    );
++    assert_eq!(family.total_changes() - changes, 1);
++    let after = retained
++        .read_export_publication(family, marker, &publication, None)
++        .unwrap()
++        .1;
++    assert_eq!(after.member, ExportPublicationMember::Ready);
++    assert_eq!(after.protection, before.protection);
++    let mut expected_family = family_before;
++    let members = expected_family.get_mut("worktrees").unwrap();
++    let owner = Cell::Text(inputs.target.binding().owner.as_str().as_bytes().to_vec());
++    let row = members
++        .iter_mut()
++        .find(|row| row.first() == Some(&owner))
++        .unwrap();
++    assert_eq!(row.len(), 5);
++    assert_eq!(row[4], Cell::Text(b"initializing".to_vec()));
++    row[4] = Cell::Text(b"ready".to_vec());
++    members.sort();
++    assert_eq!(dump(family), expected_family);
++    assert_eq!(dump(source), source_before);
++    assert_eq!(dump(destination), destination_before);
++    read_ordinary_checkout_ready_for_publication(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        None,
++    )
++    .unwrap();
++    assert!(
++        read_ordinary_checkout_ready(source, destination, family, inputs, expected, None).is_err()
++    );
++    assert!(finalize_ordinary_checkout_or_replay(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        None
++    )
++    .is_err());
++    assert!(retained
++        .validate_export_protection(
++            family,
++            marker,
++            inputs.target,
++            inputs.data.required,
++            inputs.protection,
++            None
++        )
++        .is_err());
++    for sql in [
++        "UPDATE worktrees SET marker=x'00' WHERE id=?1",
++        "UPDATE roots SET payload=x'00' WHERE owner=?1",
++        "UPDATE reservations SET remaining=remaining+1 WHERE owner=?1",
++    ] {
++        family
++            .execute_batch("SAVEPOINT corrupt_publication")
++            .unwrap();
++        assert_eq!(
++            family
++                .execute(sql, [inputs.target.binding().owner.as_str()])
++                .unwrap(),
++            1
++        );
++        let corrupt = dump(family);
++        let changes = family.total_changes();
++        assert!(read_ordinary_checkout_ready_for_publication(
++            source,
++            destination,
++            family,
++            inputs,
++            expected,
++            None
++        )
++        .is_err());
++        assert!(retained
++            .publish_export_ready(family, marker, &publication, None)
++            .is_err());
++        assert_eq!(dump(family), corrupt);
++        assert_eq!(family.total_changes(), changes);
++        family
++            .execute_batch("ROLLBACK TO corrupt_publication; RELEASE corrupt_publication")
++            .unwrap();
++    }
++    family
++        .execute_batch("COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED")
++        .unwrap();
++    let changes = family.total_changes();
++    read_ordinary_checkout_ready_for_publication(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        None,
++    )
++    .unwrap();
++    assert_eq!(
++        retained
++            .publish_export_ready(family, marker, &publication, None)
++            .unwrap(),
++        ExportPublicationEffect::AlreadyReady
++    );
++    assert!(read_ordinary_checkout_ready_for_publication(
++        source,
++        destination,
++        family,
++        inputs,
++        expected,
++        Some(&cancel)
++    )
++    .is_err());
++    assert_eq!(family.total_changes(), changes);
++    assert_eq!(dump(family), expected_family);
++    assert_eq!(dump(source), source_before);
++    assert_eq!(dump(destination), destination_before);
++}
+--- r44/crates/layrs-store-local/src/projection/provider/managed_export/ready.rs
++++ family-ready/crates/layrs-store-local/src/projection/provider/managed_export/ready.rs
+@@ -1,5 +1,5 @@
+-//! Private C Ready under an actual retained B Staging snapshot. This driver
+-//! does not promote the family member, B's journal, or C's admission schema.
++//! Private C Ready and its separate family publication under actual retained
++//! B Staging. Neither operation promotes B's journal or C's admission schema.
+ use super::{
+     allocation::ManagedDestinationAllocation, checkout::OrdinaryCheckoutProof, content,
+     protection::OrdinaryImportProtection, ready_data::OwnedOrdinaryReadyData, reservation,
+@@ -21,7 +21,10 @@
+             },
+         },
+         shared::{
+-            admitted_catalog::{AdmittedFamilyContext, ExportReserveOnlyTarget},
++            admitted_catalog::{
++                AdmittedFamilyContext, ExportPublicationEffect, ExportPublicationMember,
++                ExportPublicationState, ExportReserveOnlyTarget,
++            },
+             exact_protection::ProtectionPresence,
+             provider_access::provider_import::source::OrdinarySourceInputs,
+         },
+@@ -45,6 +48,39 @@
+     }
+     pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
+         &self.receipt
++    }
++}
++
++/// Acknowledged family member Ready DATA. The private C row stays Ready/C8;
++/// these records do not authorize B publication or C ordinary admission.
++pub(in crate::projection::provider) struct OrdinaryFamilyReadyOutcome {
++    effect: ExportPublicationEffect,
++    ready: ProviderTransitionIntentRecord,
++    receipt: ProviderTransitionReceiptRecord,
++}
++impl OrdinaryFamilyReadyOutcome {
++    pub(in crate::projection::provider) fn effect(&self) -> ExportPublicationEffect {
++        self.effect
++    }
++    pub(in crate::projection::provider) fn ready(&self) -> &ProviderTransitionIntentRecord {
++        &self.ready
++    }
++    pub(in crate::projection::provider) fn receipt(&self) -> &ProviderTransitionReceiptRecord {
++        &self.receipt
++    }
++}
++
++#[derive(Clone, Copy)]
++enum ReadyOperation {
++    Private,
++    FamilyPublication,
++}
++impl ReadyOperation {
++    fn gate_mode(self) -> SessionMode {
++        match self {
++            Self::Private => SessionMode::Shared,
++            Self::FamilyPublication => SessionMode::Exclusive,
++        }
+     }
+ }
+ 
+@@ -81,6 +117,63 @@
+         close: &mut impl WriterCloseObserver,
+         cancel: &Cancellation,
+     ) -> Result<OrdinaryReadyOutcome> {
++        let (effect, ready, receipt) = self.with_ready_source(
++            destination,
++            staging,
++            protection,
++            checkout,
++            ReadyOperation::Private,
++            cancel,
++            |ready| ready.finalize(close, cancel),
++        )?;
++        Ok(OrdinaryReadyOutcome {
++            effect,
++            ready,
++            receipt,
++        })
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    pub(in crate::projection::provider) fn publish_destination_family_ready(
++        &mut self,
++        destination: &ManagedDestinationAllocation,
++        staging: &ProviderTransitionIntentRecord,
++        protection: &OrdinaryImportProtection,
++        checkout: &OrdinaryCheckoutProof,
++        close: &mut impl WriterCloseObserver,
++        cancel: &Cancellation,
++    ) -> Result<OrdinaryFamilyReadyOutcome> {
++        let (effect, ready, receipt) = self.with_ready_source(
++            destination,
++            staging,
++            protection,
++            checkout,
++            ReadyOperation::FamilyPublication,
++            cancel,
++            |ready| ready.publish_family(close, cancel),
++        )?;
++        Ok(OrdinaryFamilyReadyOutcome {
++            effect,
++            ready,
++            receipt,
++        })
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn with_ready_source<T>(
++        &mut self,
++        destination: &ManagedDestinationAllocation,
++        staging: &ProviderTransitionIntentRecord,
++        protection: &OrdinaryImportProtection,
++        checkout: &OrdinaryCheckoutProof,
++        operation: ReadyOperation,
++        cancel: &Cancellation,
++        action: impl FnOnce(&mut ReadyContext<'_, '_>) -> CauseResult<T>,
++    ) -> Result<(
++        T,
++        ProviderTransitionIntentRecord,
++        ProviderTransitionReceiptRecord,
++    )> {
+         check_cancel(cancel)?;
+         destination.require_published(&staging.plan)?;
+         let Self {
+@@ -164,7 +257,7 @@
+                 let family = destination.family();
+                 let gate = StoreLock::acquire_existing(
+                     &family.root().join("metadata/catalog.lock"),
+-                    SessionMode::Shared,
++                    operation.gate_mode(),
+                 )
+                 .map_err(Cause::from)?;
+                 let checked = database_io::read_cancellable(&family.catalog, cancel, |catalog| {
+@@ -175,15 +268,41 @@
+                         &closure,
+                         &context,
+                     );
+-                    let protected = inputs.validate_export_protection(
+-                        family,
+-                        catalog,
+-                        staging,
+-                        &target,
+-                        &required,
+-                        protection.root(),
+-                        Some(cancel),
+-                    )?;
++                    let protected = match operation {
++                        ReadyOperation::Private => inputs.validate_export_protection(
++                            family,
++                            catalog,
++                            staging,
++                            &target,
++                            &required,
++                            protection.root(),
++                            Some(cancel),
++                        )?,
++                        ReadyOperation::FamilyPublication => {
++                            let ready_data = data.as_data(&required)?;
++                            let ready_inputs = OrdinaryReadyInputs {
++                                marker: &destination.proof().format,
++                                source_marker: &store.marker,
++                                source_staging: staging,
++                                closure: &closure,
++                                retained: &context,
++                                target: &target,
++                                protection: protection.root(),
++                                family_marker_bytes: family.marker_bytes(),
++                                metadata_floor: data.metadata_floor(),
++                                data: &ready_data,
++                            };
++                            inputs
++                                .read_export_publication(
++                                    family,
++                                    catalog,
++                                    staging,
++                                    &ready_inputs.publication_inputs(&expected),
++                                    Some(cancel),
++                                )?
++                                .protection
++                        }
++                    };
+                     if protected.root != ProtectionPresence::Present {
+                         return Err(cause_invalid("ordinary Ready requires durable protection"));
+                     }
+@@ -221,16 +340,16 @@
+                     checkout,
+                 };
+                 ready.revalidate_source(cancel)?;
+-                let effect = ready.finalize(close, cancel)?;
++                let effect = action(&mut ready)?;
+                 ready.revalidate_source(cancel)?;
+-                if !ready.read_current(cancel)? {
++                if matches!(operation, ReadyOperation::Private) && !ready.read_current(cancel)? {
+                     return Err(invalid("ordinary Ready durable readback lost Ready"));
+                 }
+-                Ok(OrdinaryReadyOutcome {
++                Ok((
+                     effect,
+-                    ready: ProviderTransitionIntentRecord::decode(&data.ready().encode()?)?,
+-                    receipt: ProviderTransitionReceiptRecord::decode(&data.receipt().encode()?)?,
+-                })
++                    ProviderTransitionIntentRecord::decode(&data.ready().encode()?)?,
++                    ProviderTransitionReceiptRecord::decode(&data.receipt().encode()?)?,
++                ))
+             })();
+             finish_snapshot(tx, result)
+         })
+@@ -328,6 +447,156 @@
+             metadata_floor: self.data.metadata_floor(),
+             data: &data,
+         })
++    }
++
++    /// Complete actual private C Ready plus the physical B/family wrapper.
++    /// The separate publication reader is required on both sides of the CAS;
++    /// the original private Ready path remains Initializing-only.
++    fn validate_publication(
++        &self,
++        destination: &Connection,
++        catalog: &Connection,
++        cancel: &Cancellation,
++    ) -> CauseResult<ExportPublicationState> {
++        let admitted = read_admitted_import(self.source, &self.store.marker, Some(cancel))?;
++        let source = OrdinarySourceInputs::new(
++            self.source,
++            &self.store.marker,
++            &admitted,
++            self.closure,
++            self.retained,
++        );
++        let state = self.with_inputs(|inputs| {
++            let state = source.read_export_publication(
++                self.destination.family(),
++                catalog,
++                self.staging,
++                &inputs.publication_inputs(self.expected),
++                Some(cancel),
++            )?;
++            destination_ready::read_ordinary_checkout_ready_for_publication(
++                self.source,
++                destination,
++                catalog,
++                inputs,
++                self.expected,
++                Some(cancel),
++            )?;
++            Ok(state)
++        })?;
++        let journal = checkout_journal::read(destination, self.expected, Some(cancel))?;
++        self.checkout
++            .require_parts(self.expected, &journal, cancel)?;
++        require_envelope(
++            self.data,
++            self.expected,
++            self.protection,
++            state.protection.installation.remaining,
++        )?;
++        resident::require_indexed(catalog, self.manifests, cancel)?;
++        self.boundary(cancel)?;
++        Ok(state)
++    }
++
++    fn publish_family(
++        &self,
++        close: &mut impl WriterCloseObserver,
++        cancel: &Cancellation,
++    ) -> CauseResult<ExportPublicationEffect> {
++        self.boundary(cancel)?;
++        let family = self.destination.family();
++        let gate = StoreLock::acquire_existing(
++            &family.root().join("metadata/catalog.lock"),
++            SessionMode::Exclusive,
++        )
++        .map_err(Cause::from)?;
++        // C's distinct read transaction and all physical witnesses remain live
++        // through each family scope, the sole CAS, positive close and readback.
++        let result = database_io::read_cancellable(
++            self.destination.destination_database(),
++            cancel,
++            |destination| {
++                let before = reservation::valid(database_io::read_cancellable(
++                    &family.catalog,
++                    cancel,
++                    |catalog| self.validate_publication(destination, catalog, cancel),
++                )?)?;
++                if before.member == ExportPublicationMember::Ready {
++                    return Ok(ExportPublicationEffect::AlreadyReady);
++                }
++                let admission = database_io::clean_admission(&family.catalog, false, |catalog| {
++                    if self.validate_publication(destination, catalog, cancel)? != before {
++                        return Err(cause_invalid(
++                            "ordinary family Ready predecessor changed before writer",
++                        ));
++                    }
++                    Ok(())
++                })?;
++                self.boundary(cancel)?;
++                let bare = admission.open(&family.catalog, close)?;
++                let written = (|| {
++                    admission.require_geometry(&bare)?;
++                    self.boundary(cancel)?;
++                    let catalog = bare.connection();
++                    catalog.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL; BEGIN IMMEDIATE")?;
++                    if self.validate_publication(destination, catalog, cancel)? != before {
++                        return Err(cause_invalid(
++                            "ordinary family Ready predecessor changed inside writer",
++                        ));
++                    }
++                    let effect = self.with_inputs(|inputs| {
++                        self.retained.publish_export_ready(
++                            catalog,
++                            family.marker_bytes(),
++                            &inputs.publication_inputs(self.expected),
++                            Some(cancel),
++                        )
++                    })?;
++                    let after = self.validate_publication(destination, catalog, cancel)?;
++                    if effect != ExportPublicationEffect::Updated
++                        || after.member != ExportPublicationMember::Ready
++                        || after.protection != before.protection
++                    {
++                        return Err(cause_invalid(
++                            "ordinary family Ready prospective publication differs",
++                        ));
++                    }
++                    self.boundary(cancel)?;
++                    catalog.execute_batch("COMMIT")?;
++                    Ok(effect)
++                })();
++                let written = if bare.connection().is_autocommit() {
++                    written
++                } else {
++                    reservation::combine(
++                        written,
++                        bare.connection()
++                            .execute_batch("ROLLBACK")
++                            .map_err(Cause::from),
++                    )
++                };
++                let effect = bare.finish_writer(written, close)?;
++                // No SQL follows an uncertain COMMIT/rollback/observed close.
++                self.boundary(cancel)?;
++                let after = reservation::valid(database_io::read_cancellable(
++                    &family.catalog,
++                    cancel,
++                    |catalog| self.validate_publication(destination, catalog, cancel),
++                )?)?;
++                if after.member != ExportPublicationMember::Ready
++                    || after.protection != before.protection
++                {
++                    return Err(cause_invalid(
++                        "ordinary family Ready durable publication differs",
++                    ));
++                }
++                Ok(effect)
++            },
++        )
++        .and_then(reservation::valid);
++        let post = self.boundary(cancel);
++        drop(gate);
++        reservation::combine(result, post)
+     }
+ 
+     // The discriminant is only a dispatch hint. Each arm validates the complete
+--- r44/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs
++++ family-ready/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs
+@@ -29,6 +29,13 @@
+     ExportUsage,
+ };
+ 
++#[path = "admitted_catalog/export_publication.rs"]
++mod export_publication;
++pub(in crate::projection) use export_publication::{
++    ExportPublicationEffect, ExportPublicationInputs, ExportPublicationMember,
++    ExportPublicationState,
++};
++
+ struct CatalogParts {
+     proof: AdmittedCatalogProof,
+     export: Option<ExportReserveOnlyState>,
+@@ -39,6 +46,12 @@
+ 
+ // Closed DATA interpretations, never a switch granting physical authority.
+ enum ExportCatalogTarget<'a> {
++    Publication {
++        target: &'a ExportReserveOnlyTarget,
++        required: &'a [FileManifest],
++        protection: &'a ExactProtection,
++        member: ExportPublicationMember,
++    },
+     ReserveOnly(&'a ExportReserveOnlyTarget),
+     Installing {
+         target: &'a ExportReserveOnlyTarget,
+@@ -440,6 +453,12 @@
+                 target,
+                 required,
+                 protection,
++            })
++            | Some(ExportCatalogTarget::Publication {
++                target,
++                required,
++                protection,
++                ..
+             }) => {
+                 protection.require_binding(target.binding(), required, cancel)?;
+                 if known.contains_key(protection.id()) {
+@@ -519,6 +538,27 @@
+         // join the final inventory. None preserves the strict ordinary policy.
+         let (export, installation, protection) = match target {
+             None => (None, None, None),
++            Some(ExportCatalogTarget::Publication {
++                target,
++                required,
++                protection,
++                member,
++            }) => (
++                None,
++                None,
++                Some(target.validate_publication_and_classify(
++                    c,
++                    self,
++                    &marker,
++                    required,
++                    protection,
++                    member,
++                    &mut groups,
++                    &mut charged_chunks,
++                    &mut charged_manifests,
++                    cancel,
++                )?),
++            ),
+             Some(ExportCatalogTarget::ReserveOnly(target)) => (
+                 Some(target.validate_and_classify(c, self, &marker, &mut groups, cancel)?),
+                 None,
+--- r44/crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs
++++ family-ready/crates/layrs-store-local/src/projection/shared/admitted_catalog/export.rs
+@@ -256,6 +256,7 @@
+                 family,
+                 required,
+                 ActiveRoot::Absent,
++                ExportPublicationMember::Initializing,
+                 classified,
+                 charged_chunks,
+                 charged_manifests,
+@@ -283,11 +284,72 @@
+             family,
+             required,
+             ActiveRoot::Protection(protection),
++            ExportPublicationMember::Initializing,
+             classified,
+             charged_chunks,
+             charged_manifests,
+             cancel,
+         )
++    }
++
++    /// Closed parent Publication mode only, after all retained Published
++    /// groups and shared debit sets passed. Exact C root is mandatory here.
++    #[allow(clippy::too_many_arguments)]
++    pub(super) fn validate_publication_and_classify(
++        &self,
++        c: &Connection,
++        retained: &AdmittedFamilyContext,
++        family: &FamilyMarker,
++        required: &[FileManifest],
++        protection: &ExactProtection,
++        member: ExportPublicationMember,
++        classified: &mut BTreeSet<String>,
++        charged_chunks: &mut BTreeSet<String>,
++        charged_manifests: &mut BTreeSet<String>,
++        cancel: Option<&Cancellation>,
++    ) -> Result<ExportProtectionState> {
++        let state = self.validate_active_and_classify(
++            c,
++            retained,
++            family,
++            required,
++            ActiveRoot::Protection(protection),
++            member,
++            classified,
++            charged_chunks,
++            charged_manifests,
++            cancel,
++        )?;
++        if state.root != ProtectionPresence::Present {
++            return Err(invalid("export publication exact protection absent"));
++        }
++        Ok(state)
++    }
++
++    /// Descriptive driver-authenticated Ready floor and checkout quantities.
++    /// Independently preserve M and the remaining logical reservation envelope.
++    pub(super) fn require_publication_envelope(
++        &self,
++        state: ExportProtectionState,
++        protection: &ExactProtection,
++        ready_floor: u64,
++        journal_maximum: u64,
++        checkout_bytes: u64,
++    ) -> Result<()> {
++        let floor = ready_floor
++            .checked_add(journal_maximum)
++            .filter(|n| *n <= MAX_METADATA)
++            .ok_or_else(|| invalid("export publication metadata envelope exceeds bound"))?;
++        if ready_floor < self.private_metadata_floor || journal_maximum == 0 {
++            return Err(invalid("export publication Ready floor/journal differs"));
++        }
++        protection.require_envelope(self.metadata_bytes, floor)?;
++        let remaining = state
++            .installation
++            .remaining
++            .checked_sub(checkout_bytes)
++            .ok_or_else(|| invalid("export publication checkout exceeds remaining quota"))?;
++        protection.require_envelope(remaining, floor)
+     }
+ 
+     #[allow(clippy::too_many_arguments)]
+@@ -298,6 +360,7 @@
+         family: &FamilyMarker,
+         required: &[FileManifest],
+         root_mode: ActiveRoot<'_>,
++        member: ExportPublicationMember,
+         classified: &mut BTreeSet<String>,
+         charged_chunks: &mut BTreeSet<String>,
+         charged_manifests: &mut BTreeSet<String>,
+@@ -316,7 +379,7 @@
+             required,
+             cancel,
+         )?;
+-        self.require_member(c, retained, family)?;
++        self.require_member_at(c, retained, family, member)?;
+         let owner = self.binding.owner.as_str();
+         let root = match root_mode {
+             ActiveRoot::Absent => {
+@@ -493,6 +556,16 @@
+         c: &Connection,
+         retained: &AdmittedFamilyContext,
+         family: &FamilyMarker,
++    ) -> Result<()> {
++        self.require_member_at(c, retained, family, ExportPublicationMember::Initializing)
++    }
++
++    fn require_member_at(
++        &self,
++        c: &Connection,
++        retained: &AdmittedFamilyContext,
++        family: &FamilyMarker,
++        expected: ExportPublicationMember,
+     ) -> Result<()> {
+         self.binding.validate()?;
+         self.marker.validate()?;
+@@ -544,7 +617,7 @@
+             [self.binding.owner.as_str()], |r|r.get(0))?;
+         if !bounded {
+             return Err(invalid(
+-                "export target Initializing registration absent or exceeds bound",
++                "export target registration absent or exceeds bound",
+             ));
+         }
+         let (path, database, marker, state): (String, String, Vec<u8>, String) = c.query_row(
+@@ -555,10 +628,10 @@
+         if path != member_path
+             || database != self.binding.database_identity
+             || marker != marker_bytes
+-            || state != "initializing"
+-        {
+-            return Err(invalid(
+-                "export target registry differs from exact Initializing member",
++            || state != expected.sql()
++        {
++            return Err(invalid(
++                "export target registry differs from exact expected member",
+             ));
+         }
+         Ok(())
+--- /dev/null
++++ family-ready/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication.rs
+@@ -0,0 +1,263 @@
++//! Family publication SQL DATA only. Driver authenticates actual B9 Staging,
++//! actual private C8 Ready/receipt, image, complete journal/floor and pins. It
++//! retains those snapshots/pins around family exclusive Immediate, COMMIT and
++//! positive close, then reauthenticates before ACK. No private SQL is read here.
++use super::*;
++use crate::projection::{
++    provider::records::{
++        import::{
++            ImportSource, ImportSourceReferences, ProviderImportKind,
++            ProviderTransitionReceiptRecord,
++        },
++        transition::{
++            ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole, TransitionState,
++        },
++        Record,
++    },
++    shared::provider_access::exact_path,
++};
++use rusqlite::OptionalExtension;
++
++/// All borrowed values are descriptive DATA. Ready is the actual decoded C
++/// row authenticated externally, never a Staging row used as actual C state.
++/// This module grants no private, physical, owner or durable-close authority.
++pub(in crate::projection) struct ExportPublicationInputs<'a> {
++    pub target: &'a ExportReserveOnlyTarget,
++    pub destination_ready: &'a ProviderTransitionIntentRecord,
++    pub receipt: &'a ProviderTransitionReceiptRecord,
++    pub required: &'a [FileManifest],
++    pub protection: &'a ExactProtection,
++    /// Complete actual Ready floor, excluding checkout journal.
++    pub ready_metadata_floor: u64,
++    pub checkout_journal_maximum_bytes: u64,
++    pub checkout_file_bytes: u64,
++}
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(in crate::projection) enum ExportPublicationMember {
++    Initializing,
++    Ready,
++}
++impl ExportPublicationMember {
++    pub(super) fn sql(self) -> &'static str {
++        match self {
++            Self::Initializing => "initializing",
++            Self::Ready => "ready",
++        }
++    }
++}
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(in crate::projection) struct ExportPublicationState {
++    pub member: ExportPublicationMember,
++    pub protection: ExportProtectionState,
++}
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(in crate::projection) enum ExportPublicationEffect {
++    Updated,
++    AlreadyReady,
++}
++
++fn require_ready(
++    retained: &AdmittedFamilyContext,
++    inputs: &ExportPublicationInputs<'_>,
++    cancel: Option<&Cancellation>,
++) -> Result<()> {
++    cancellation::check(cancel)?;
++    let ready = inputs.destination_ready;
++    // Bounded canonical record encodings, not merely typed field shape.
++    ready.encode()?;
++    inputs.receipt.encode()?;
++    let binding = inputs.target.binding();
++    let proof = ready
++        .destination
++        .as_ref()
++        .ok_or_else(|| invalid("export publication destination proof absent"))?;
++    let prefix = &ready.plan.source_prefix;
++    let ImportSource::Ordinary {
++        private_schema: 9,
++        admission: Some(admission),
++        ..
++    } = &prefix.source
++    else {
++        return Err(invalid("export publication requires admitted ordinary B9"));
++    };
++    prefix.require_references(ImportSourceReferences::AdmittedOrdinary {
++        marker: retained.marker(),
++        admission,
++    })?;
++    if admission.admission_digest != retained.admission_digest()
++        || admission.incoming_prefix_id != retained.binding().prefix_id
++        || admission.database_identity != retained.binding().database_identity
++        || ready.role != TransitionRole::Destination
++        || ready.state != TransitionState::Ready
++        || ready.plan.kind != ProviderImportKind::ManagedOrdinary
++        || ready.plan.companion_id.is_some()
++        || ready.plan.companion_files.count != 0
++        || ready.plan.companion_deletions.count != 0
++        || ready.transaction_id != binding.transaction_id
++        || ready.plan.digest()? != binding.plan_digest
++        || ready.plan.source_prefix_id != binding.prefix_id
++        || ready.plan.quota_bytes != binding.quota_bytes
++        || ready.reservation.as_deref() != Some(binding.reservation.as_str())
++        || ready.reservation_operation()? != binding.operation
++        || proof.backend != TransitionBackendKind::Ordinary
++        || proof.format != *inputs.target.marker()
++        || proof.private_database_identity != binding.database_identity
++        || proof.family_marker_digest != binding.family_marker_digest
++        || proof.digest(&ready.plan)? != binding.destination_proof_digest
++    {
++        return Err(invalid(
++            "export publication Ready differs from exact ordinary target",
++        ));
++    }
++    ready.require_receipt(inputs.receipt)?;
++    inputs
++        .protection
++        .require_binding(binding, inputs.required, cancel)?;
++    cancellation::check(cancel)
++}
++
++fn member_phase(
++    c: &Connection,
++    target: &ExportReserveOnlyTarget,
++    cancel: Option<&Cancellation>,
++) -> Result<ExportPublicationMember> {
++    cancellation::check(cancel)?;
++    if c.is_autocommit()
++        || super::super::provider_access::require_provider_catalog_schema(c, cancel)?
++            != super::super::CatalogSchema::V2
++    {
++        return Err(invalid(
++            "export publication requires schema2 caller transaction",
++        ));
++    }
++    let owner = target.binding().owner.as_str();
++    if c.query_row(
++        "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND length(CAST(state AS BLOB))>12)",
++        [owner],
++        |r| r.get::<_, bool>(0),
++    )? {
++        return Err(invalid("export publication member phase exceeds bound"));
++    }
++    let state: Option<String> = c
++        .query_row("SELECT state FROM worktrees WHERE id=?1", [owner], |r| {
++            r.get(0)
++        })
++        .optional()?;
++    match state.as_deref() {
++        Some("initializing") => Ok(ExportPublicationMember::Initializing),
++        Some("ready") => Ok(ExportPublicationMember::Ready),
++        _ => Err(invalid(
++            "export publication exact member absent or phase differs",
++        )),
++    }
++}
++#[allow(clippy::too_many_arguments)]
++fn publication_parts(
++    retained: &AdmittedFamilyContext,
++    c: &Connection,
++    family_marker: &[u8],
++    target: &ExportReserveOnlyTarget,
++    required: &[FileManifest],
++    protection: &ExactProtection,
++    member: ExportPublicationMember,
++    cancel: Option<&Cancellation>,
++) -> Result<CatalogParts> {
++    retained.validate_catalog_parts(
++        c,
++        family_marker,
++        Some(ExportCatalogTarget::Publication {
++            target,
++            required,
++            protection,
++            member,
++        }),
++        cancel,
++    )
++}
++fn compare_and_publish(c: &Connection, target: &ExportReserveOnlyTarget) -> Result<()> {
++    if c.is_autocommit() || c.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, u64>(0))? != 1 {
++        return Err(invalid(
++            "export publication writer requires FK ON caller transaction",
++        ));
++    }
++    let marker = target.marker();
++    let shared = marker
++        .shared
++        .as_ref()
++        .ok_or_else(|| invalid("export publication shared FORMAT absent"))?;
++    if c.execute(
++        "UPDATE worktrees SET state='ready' WHERE id=?1 AND metadata_path=?2 AND database_identity=?3 AND marker=?4 AND state='initializing'",
++        params![target.binding().owner.as_str(), exact_path(&shared.metadata_path)?,
++            target.binding().database_identity, marker.bytes()?],
++    )? != 1 { return Err(invalid("export publication exact member CAS differs")); }
++    Ok(())
++}
++impl AdmittedFamilyContext {
++    /// Same complete retained Published+C Protected walk at one bounded exact
++    /// C registry phase. No ordinary Lease, private admission or release.
++    pub(in crate::projection) fn read_export_publication(
++        &self,
++        c: &Connection,
++        family_marker: &[u8],
++        inputs: &ExportPublicationInputs<'_>,
++        cancel: Option<&Cancellation>,
++    ) -> Result<(AdmittedCatalogProof, ExportPublicationState)> {
++        require_ready(self, inputs, cancel)?;
++        let member = member_phase(c, inputs.target, cancel)?;
++        let parts = publication_parts(
++            self,
++            c,
++            family_marker,
++            inputs.target,
++            inputs.required,
++            inputs.protection,
++            member,
++            cancel,
++        )?;
++        let protection = parts
++            .protection
++            .ok_or_else(|| invalid("export publication protection state absent"))?;
++        inputs.target.require_publication_envelope(
++            protection,
++            inputs.protection,
++            inputs.ready_metadata_floor,
++            inputs.checkout_journal_maximum_bytes,
++            inputs.checkout_file_bytes,
++        )?;
++        cancellation::check(cancel)?;
++        Ok((parts.proof, ExportPublicationState { member, protection }))
++    }
++    /// C state CAS only. Full Ready replay returns before FK/writer checks.
++    /// Caller rolls back every post-mutation error, COMMITs and closes positively
++    /// before public ACK. Actual B stays Staging; no private admission is added.
++    pub(in crate::projection) fn publish_export_ready(
++        &self,
++        c: &Connection,
++        family_marker: &[u8],
++        inputs: &ExportPublicationInputs<'_>,
++        cancel: Option<&Cancellation>,
++    ) -> Result<ExportPublicationEffect> {
++        let (before_proof, before) =
++            self.read_export_publication(c, family_marker, inputs, cancel)?;
++        if before.member == ExportPublicationMember::Ready {
++            return Ok(ExportPublicationEffect::AlreadyReady);
++        }
++        cancellation::check(cancel)?;
++        compare_and_publish(c, inputs.target)?;
++        let (after_proof, after) =
++            self.read_export_publication(c, family_marker, inputs, cancel)?;
++        if after.member != ExportPublicationMember::Ready
++            || after.protection != before.protection
++            || after_proof.manifests() != before_proof.manifests()
++        {
++            return Err(invalid(
++                "export publication full post-read/accounting differs",
++            ));
++        }
++        cancellation::check(cancel)?;
++        Ok(ExportPublicationEffect::Updated)
++    }
++}
++#[cfg(test)]
++#[path = "export_publication_tests.rs"]
++mod tests;
+--- /dev/null
++++ family-ready/crates/layrs-store-local/src/projection/shared/admitted_catalog/export_publication_tests.rs
+@@ -0,0 +1,283 @@
++//! Lower full-family SQL DATA/CAS tests, not private Ready or physical proofs.
++//! Public entries additionally require Ready/receipt validated by require_ready;
++//! ROOT must connect its real private-Ready fixture for that integration case.
++use super::super::{export_tests, installing_tests as installing};
++use super::*;
++use crate::projection::provider::owned_test as child;
++fn protected(
++    c: &Connection,
++    family: &[u8],
++    retained: &AdmittedFamilyContext,
++    target: &ExportReserveOnlyTarget,
++    required: &[FileManifest],
++) -> ExactProtection {
++    retained
++        .reserve_export_only(c, family, target, None)
++        .unwrap();
++    for m in required {
++        installing::put(
++            c,
++            target.binding(),
++            m,
++            &installing::journal(target.binding(), m, "published", &[], false),
++        );
++    }
++    let b = target.binding();
++    let p = ExactProtection::new(
++        &b.family_incarnation,
++        &b.owner,
++        &b.database_identity,
++        &b.transaction_id,
++        required,
++        None,
++    )
++    .unwrap();
++    retained
++        .protect_export(c, family, target, required, &p, None)
++        .unwrap();
++    p
++}
++fn inspect(
++    c: &Connection,
++    family: &[u8],
++    retained: &AdmittedFamilyContext,
++    target: &ExportReserveOnlyTarget,
++    required: &[FileManifest],
++    p: &ExactProtection,
++) -> ExportPublicationState {
++    let rows = installing::state(c);
++    let changes = c.total_changes();
++    let member = member_phase(c, target, None).unwrap();
++    let parts = publication_parts(retained, c, family, target, required, p, member, None).unwrap();
++    let protection = parts.protection.unwrap();
++    assert_eq!(protection.root, ProtectionPresence::Present);
++    assert_eq!(installing::state(c), rows);
++    assert_eq!(c.total_changes(), changes);
++    ExportPublicationState { member, protection }
++}
++#[test]
++#[ignore = "ROOT source release and audited family publication DATA child120/outer180 required"]
++fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting() {
++    let test=concat!(module_path!(),"::export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting");
++    child::run(test, 120, || {
++        child::declare();
++        export_tests::fixture(|c, family, retained, target, required| {
++            let p = protected(c, family, retained, target, required);
++            let before = inspect(c, family, retained, target, required, &p);
++            assert_eq!(before.member, ExportPublicationMember::Initializing);
++            target
++                .require_publication_envelope(before.protection, &p, 65536, 16384, 0)
++                .unwrap();
++            for (floor, journal, bytes) in [
++                (0, 16384, 0),
++                (65536, u64::MAX, 0),
++                (65536, 16384, u64::MAX),
++            ] {
++                assert!(target
++                    .require_publication_envelope(before.protection, &p, floor, journal, bytes)
++                    .is_err());
++            }
++            let rows = installing::state(c);
++            let changes = c.total_changes();
++            compare_and_publish(c, target).unwrap();
++            assert_eq!(c.total_changes() - changes, 1);
++            let after = inspect(c, family, retained, target, required, &p);
++            assert_eq!(after.member, ExportPublicationMember::Ready);
++            assert_eq!(after.protection, before.protection);
++            let actual = installing::state(c);
++            let owner = installing::Cell::Text(target.binding().owner.as_str().as_bytes().to_vec());
++            let old_members = &rows["worktrees"];
++            let new_members = &actual["worktrees"];
++            assert_eq!(new_members.len(), old_members.len());
++            for member in old_members {
++                if member.first() != Some(&owner) {
++                    assert!(
++                        new_members.contains(member),
++                        "publication changed another member"
++                    );
++                } else {
++                    let observed = new_members
++                        .iter()
++                        .find(|row| row.first() == Some(&owner))
++                        .unwrap();
++                    assert_eq!(&observed[..4], &member[..4]);
++                    assert_eq!(observed[4], installing::Cell::Text(b"ready".to_vec()));
++                }
++            }
++            for (table, old) in &rows {
++                if *table != "worktrees" {
++                    assert_eq!(&actual[table], old, "publication changed {table}");
++                }
++            }
++            let changes = c.total_changes();
++            assert!(retained
++                .validate_export_reserve_only(c, family, target, None)
++                .is_err());
++            assert!(retained
++                .validate_export_installing(c, family, target, required, None)
++                .is_err());
++            assert!(retained
++                .validate_export_protection(c, family, target, required, &p, None)
++                .is_err());
++            assert_eq!(installing::state(c), actual);
++            assert_eq!(c.total_changes(), changes);
++            c.execute_batch(
++                "COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED",
++            )
++            .unwrap();
++            assert_eq!(inspect(c, family, retained, target, required, &p), after);
++            let cancel = Cancellation::default();
++            cancel.cancel();
++            assert!(publication_parts(
++                retained,
++                c,
++                family,
++                target,
++                required,
++                &p,
++                ExportPublicationMember::Ready,
++                Some(&cancel)
++            )
++            .is_err());
++            assert_eq!(installing::state(c), actual);
++            assert_eq!(c.total_changes(), changes);
++            c.execute_batch("ROLLBACK").unwrap();
++        });
++    });
++}
++#[test]
++#[ignore = "ROOT source release and audited family publication refusal DATA child120/outer180 required"]
++fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair(
++) {
++    let test=concat!(module_path!(),"::export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair");
++    child::run(test, 120, || {
++        child::declare();
++        export_tests::fixture(|c, family, retained, target, required| {
++            let p = protected(c, family, retained, target, required);
++            let owner = target.binding().owner.as_str();
++            for sql in [
++                "UPDATE worktrees SET metadata_path='foreign' WHERE id=?1",
++                "UPDATE worktrees SET database_identity='foreign' WHERE id=?1",
++                "UPDATE worktrees SET marker=x'00' WHERE id=?1",
++                "UPDATE worktrees SET state='ready' WHERE id=?1",
++                "UPDATE roots SET payload=x'00' WHERE owner=?1",
++                "UPDATE reservations SET remaining=remaining+1 WHERE owner=?1",
++            ] {
++                c.execute_batch("SAVEPOINT corrupt").unwrap();
++                assert_eq!(c.execute(sql, [owner]).unwrap(), 1);
++                let rows = installing::state(c);
++                let changes = c.total_changes();
++                assert!(publication_parts(
++                    retained,
++                    c,
++                    family,
++                    target,
++                    required,
++                    &p,
++                    ExportPublicationMember::Initializing,
++                    None
++                )
++                .is_err());
++                assert_eq!(installing::state(c), rows);
++                assert_eq!(c.total_changes(), changes);
++                c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
++                    .unwrap();
++            }
++            for absent in [true, false] {
++                c.execute_batch("SAVEPOINT root_corrupt").unwrap();
++                if absent {
++                    assert_eq!(
++                        c.execute("DELETE FROM root_manifests WHERE root_id=?1", [p.id()])
++                            .unwrap(),
++                        required.len()
++                    );
++                    assert_eq!(
++                        c.execute("DELETE FROM roots WHERE id=?1", [p.id()])
++                            .unwrap(),
++                        1
++                    );
++                } else {
++                    assert_eq!(c.execute("INSERT INTO roots(id,owner,database_identity,operation,digest,payload) SELECT ?1,owner,database_identity,operation,digest,payload FROM roots WHERE id=?2", params!["f".repeat(64),p.id()]).unwrap(), 1);
++                }
++                let rows = installing::state(c);
++                let changes = c.total_changes();
++                assert!(publication_parts(
++                    retained,
++                    c,
++                    family,
++                    target,
++                    required,
++                    &p,
++                    ExportPublicationMember::Initializing,
++                    None
++                )
++                .is_err());
++                assert_eq!(installing::state(c), rows);
++                assert_eq!(c.total_changes(), changes);
++                c.execute_batch("ROLLBACK TO root_corrupt; RELEASE root_corrupt")
++                    .unwrap();
++            }
++            for phase in ["declared", "allocated", "verified", "publishing"] {
++                c.execute_batch("SAVEPOINT incomplete").unwrap();
++                installing::put(
++                    c,
++                    target.binding(),
++                    &required[0],
++                    &installing::journal(target.binding(), &required[0], phase, &[], false),
++                );
++                let rows = installing::state(c);
++                let changes = c.total_changes();
++                assert!(publication_parts(
++                    retained,
++                    c,
++                    family,
++                    target,
++                    required,
++                    &p,
++                    ExportPublicationMember::Initializing,
++                    None
++                )
++                .is_err());
++                assert_eq!(installing::state(c), rows);
++                assert_eq!(c.total_changes(), changes);
++                c.execute_batch("ROLLBACK TO incomplete; RELEASE incomplete")
++                    .unwrap();
++            }
++            c.execute_batch("SAVEPOINT retained").unwrap();
++            assert_eq!(
++                c.execute(
++                    "UPDATE reservations SET remaining=remaining+1 WHERE id=?1",
++                    [&retained.binding().reservation]
++                )
++                .unwrap(),
++                1
++            );
++            let rows = installing::state(c);
++            let changes = c.total_changes();
++            assert!(publication_parts(
++                retained,
++                c,
++                family,
++                target,
++                required,
++                &p,
++                ExportPublicationMember::Initializing,
++                None
++            )
++            .is_err());
++            assert_eq!(installing::state(c), rows);
++            assert_eq!(c.total_changes(), changes);
++            c.execute_batch("ROLLBACK TO retained; RELEASE retained; COMMIT; PRAGMA foreign_keys=OFF; BEGIN DEFERRED").unwrap();
++            let rows = installing::state(c);
++            let changes = c.total_changes();
++            assert!(compare_and_publish(c, target).is_err());
++            assert_eq!(installing::state(c), rows);
++            assert_eq!(c.total_changes(), changes);
++            assert_eq!(
++                inspect(c, family, retained, target, required, &p).member,
++                ExportPublicationMember::Initializing
++            );
++            c.execute_batch("ROLLBACK").unwrap();
++        });
++    });
++}
+--- r44/crates/layrs-store-local/src/projection/shared/provider_import/source.rs
++++ family-ready/crates/layrs-store-local/src/projection/shared/provider_import/source.rs
+@@ -203,6 +203,26 @@
+             protection,
+             cancel,
+         )?;
++        family.verify()?;
++        cancellation::check(cancel)?;
++        Ok(state)
++    }
++
++    /// Full publication DATA interpretation under actual B Staging and the
++    /// pinned physical family. Actual complete C Ready and its retained pins
++    /// remain the publication driver's separate, simultaneous evidence.
++    pub(in crate::projection) fn read_export_publication(
++        &self,
++        family: &FamilyAccess,
++        c: &Connection,
++        intent: &ProviderTransitionIntentRecord,
++        inputs: &crate::projection::shared::admitted_catalog::ExportPublicationInputs<'_>,
++        cancel: Option<&Cancellation>,
++    ) -> Result<crate::projection::shared::admitted_catalog::ExportPublicationState> {
++        self.require_export_target(family, intent, inputs.target, cancel)?;
++        let (_, state) =
++            self.retained
++                .read_export_publication(c, family.marker_bytes(), inputs, cancel)?;
+         family.verify()?;
+         cancellation::check(cancel)?;
+         Ok(state)

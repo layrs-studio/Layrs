@@ -1,0 +1,19 @@
+{
+  "mode": "read_only_pilot",
+  "outcome": {
+    "accepted": false,
+    "reason": "reserved metadata path in Git tree"
+  },
+  "peakWorkingSetBytes": 35119104,
+  "progress": {
+    "bytes": 219,
+    "completed": 0,
+    "elapsedMs": 460,
+    "gitProcesses": 8,
+    "objects": 0,
+    "phase": "import_commits",
+    "total": 32
+  },
+  "schemaVersion": "layrs.git-bridge.measurement.v1",
+  "sourceReferencesUnchanged": true
+}

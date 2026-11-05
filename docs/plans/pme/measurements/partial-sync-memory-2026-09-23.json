@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "layrs.partial-sync-memory.v1",
+  "measuredAt": "2026-09-23T14:41:42.4140574Z",
+  "passed": true,
+  "exitCode": 0,
+  "binarySha256": "05a8c999849cb74766c96be343afac6f871a7b578a4988da499556887d756809",
+  "binary": "target/debug/deps/native_clients_v3-91eed12b717712a9.exe",
+  "sourceCommit": "fbd8d6f49858605919451e5cbfe8656b96e66d42",
+  "sourceTreeSha256": "cc55b95ec6bfd8ed3cbcf4289e5ad8b513f0a48de770a6d02a4d3736bac790fa",
+  "arguments": [
+    "two_native_clients_publish_clone_receive_divergence_and_local_operations",
+    "--exact",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "LAYRS_TEST_CONTENT_ACL_ONLY": "1",
+    "LAYRS_TEST_SCOPED_MIB": "1024",
+    "LAYRS_TEST_DATABASE_ISOLATED": "1"
+  },
+  "elapsedMs": 270519,
+  "peakWorkingSetBytes": 66854912,
+  "sampledPeakPrivateBytes": 28467200,
+  "sampleIntervalMs": 50,
+  "observations": 4316,
+  "stdoutLog": "D:/Layrs/tmp/partial-sync-memory-20260923.stdout.log",
+  "stderrLog": "D:/Layrs/tmp/partial-sync-memory-20260923.stderr.log",
+  "limitations": [
+    "Windows process counters for the whole integrated test: in-process native clients and HTTPS server; PostgreSQL, child processes and OS filesystem cache excluded.",
+    "Private-byte sampling can miss peaks between observations; 50ms is the requested wait, not a real-time guarantee.",
+    "Debug build, repeated 1GiB content, warm caches; not a 4GiB aggregate measurement or proof of a universal memory bound.",
+    "Desktop MSI compilation ran concurrently; elapsed time is not a calibrated performance budget."
+  ],
+  "approximateMeanSampleIntervalMs": 62.67817423540315,
+  "sampleIntervalDescription": "50ms requested wait; process-counter reads add overhead. Mean interval includes process startup and completion.",
+  "logSha256": {
+    "stdoutLog": "8a0afe27bb5b73c92baaac07f48dc4da0b16a679cf105f2b192d3df4cf8c7575",
+    "stderrLog": "ab3cd4dea82a25ebc9d270eed62753472afe5c84a69e3b225c7912378176423a"
+  }
+}

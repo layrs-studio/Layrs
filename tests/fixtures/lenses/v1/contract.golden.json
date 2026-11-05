@@ -1,0 +1,330 @@
+{
+  "manifest": {
+    "contractVersion": "layrs.lens.v1",
+    "id": "layrs.example.markdown",
+    "name": "Markdown",
+    "version": "1.2.3",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "analyzer": {
+      "supportedMediaTypes": [
+        "text/markdown"
+      ],
+      "fileExtensions": [
+        "md",
+        "mdown"
+      ],
+      "capabilities": [
+        "view",
+        "preview",
+        "diff",
+        "reconcile",
+        "metadata"
+      ]
+    },
+    "viewer": {
+      "viewerId": "layrs.viewer.example.markdown",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "MarkdownViewer",
+      "previewKinds": [
+        "text"
+      ],
+      "diffKinds": [
+        "textLines"
+      ],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        {
+          "key": "wordCount",
+          "label": "Word count",
+          "valueType": "number"
+        }
+      ]
+    },
+    "resolutionMethods": [
+      {
+        "method": "existing",
+        "scope": "file"
+      },
+      {
+        "method": "incoming",
+        "scope": "file"
+      },
+      {
+        "method": "existing",
+        "scope": "block"
+      },
+      {
+        "method": "incoming",
+        "scope": "block"
+      },
+      {
+        "method": "both",
+        "scope": "block"
+      },
+      {
+        "method": "manual",
+        "scope": "block"
+      }
+    ],
+    "bundle": {
+      "format": "layrslens.v1",
+      "entrypoints": {
+        "analyzer": {
+          "runtime": "wasi",
+          "path": "analyzer.wasm",
+          "export": "analyze",
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "resources": {
+            "maxMemoryBytes": 67108864,
+            "maxExecutionMs": 2000,
+            "maxInputBytes": 16777216,
+            "maxOutputBytes": 8388608,
+            "maxFuel": 10000000
+          }
+        },
+        "reconcile": {
+          "runtime": "wasi",
+          "path": "reconcile.wasm",
+          "export": "reconcile",
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "resources": {
+            "maxMemoryBytes": 67108864,
+            "maxExecutionMs": 3000,
+            "maxInputBytes": 33554432,
+            "maxOutputBytes": 33554432,
+            "maxFuel": 20000000
+          }
+        },
+        "viewer": {
+          "runtime": "esm",
+          "path": "viewer.mjs",
+          "export": "default",
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "resources": {
+            "maxMemoryBytes": 134217728,
+            "maxExecutionMs": 1000,
+            "maxInputBytes": 8388608,
+            "maxOutputBytes": 8388608
+          }
+        }
+      },
+      "signature": {
+        "algorithm": "ed25519",
+        "keyId": "did:key:example#lens-signing",
+        "signedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signature": "base64:ZXhhbXBsZS1zaWduYXR1cmU="
+      }
+    }
+  },
+  "previewWindow": {
+    "contractVersion": "layrs.lens.v1",
+    "lens": {
+      "lensId": "layrs.example.markdown",
+      "version": "1.2.3",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "artifactId": "artifact-123",
+    "unit": "lines",
+    "window": {
+      "start": 10,
+      "endExclusive": 30,
+      "total": 120
+    }
+  },
+  "diffWindow": {
+    "contractVersion": "layrs.lens.v1",
+    "lens": {
+      "lensId": "layrs.example.markdown",
+      "version": "1.2.3",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "path": "docs/readme.md",
+    "lines": {
+      "start": 40,
+      "endExclusive": 60,
+      "total": 200
+    },
+    "columns": {
+      "start": 0,
+      "endExclusive": 120,
+      "total": 400
+    }
+  },
+  "reconcileInput": {
+    "contractVersion": "layrs.lens.v1",
+    "lens": {
+      "lensId": "layrs.example.markdown",
+      "version": "1.2.3",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "path": "docs/readme.md",
+    "mediaType": "text/markdown",
+    "base": {
+      "exists": true,
+      "bytes": [
+        98,
+        97,
+        115,
+        101,
+        10
+      ],
+      "contentHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "size": 5
+    },
+    "existing": {
+      "exists": true,
+      "bytes": [
+        111,
+        117,
+        114,
+        115,
+        10
+      ],
+      "contentHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "size": 5
+    },
+    "incoming": {
+      "exists": true,
+      "bytes": [
+        116,
+        104,
+        101,
+        105,
+        114,
+        115,
+        10
+      ],
+      "contentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "size": 7
+    },
+    "labels": {
+      "existing": "Current layer",
+      "incoming": "Incoming layer"
+    }
+  },
+  "reconcileResults": {
+    "autoResolved": {
+      "contractVersion": "layrs.lens.v1",
+      "lens": {
+        "lensId": "layrs.example.markdown",
+        "version": "1.2.3",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "result": {
+        "status": "auto_resolved",
+        "summary": "Existing and incoming content converge",
+        "resolved": {
+          "exists": true,
+          "bytes": [
+            109,
+            101,
+            114,
+            103,
+            101,
+            100,
+            10
+          ]
+        },
+        "resolutionMethods": [],
+        "blocks": [],
+        "segments": [],
+        "fields": {
+          "strategy": "threeWay"
+        }
+      }
+    },
+    "conflicted": {
+      "contractVersion": "layrs.lens.v1",
+      "lens": {
+        "lensId": "layrs.example.markdown",
+        "version": "1.2.3",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "result": {
+        "status": "conflicted",
+        "summary": "One text block requires resolution",
+        "conflict": {
+          "exists": true,
+          "bytes": [
+            111,
+            117,
+            114,
+            115,
+            10
+          ]
+        },
+        "resolutionMethods": [
+          {
+            "method": "existing",
+            "scope": "file"
+          },
+          {
+            "method": "incoming",
+            "scope": "file"
+          }
+        ],
+        "blocks": [
+          {
+            "blockId": "block-1",
+            "base": "base\n",
+            "existing": "ours\n",
+            "incoming": "theirs\n",
+            "resolutionMethods": [
+              {
+                "method": "existing",
+                "scope": "block"
+              },
+              {
+                "method": "incoming",
+                "scope": "block"
+              },
+              {
+                "method": "both",
+                "scope": "block"
+              },
+              {
+                "method": "manual",
+                "scope": "block"
+              }
+            ]
+          }
+        ],
+        "segments": [
+          {
+            "kind": "text",
+            "text": "before\n"
+          },
+          {
+            "kind": "block",
+            "blockId": "block-1"
+          },
+          {
+            "kind": "text",
+            "text": "after\n"
+          }
+        ],
+        "fields": {
+          "strategy": "textBlocks"
+        }
+      }
+    },
+    "unsupported": {
+      "contractVersion": "layrs.lens.v1",
+      "lens": {
+        "lensId": "layrs.example.markdown",
+        "version": "1.2.3",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "result": {
+        "status": "unsupported",
+        "summary": "Lens cannot reconcile this media type",
+        "resolutionMethods": [],
+        "blocks": [],
+        "segments": [],
+        "fields": {
+          "reasonCode": "mediaType"
+        }
+      }
+    }
+  }
+}

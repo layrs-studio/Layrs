@@ -1,0 +1,636 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/core.schema.json",
+  "title": "Layrs SCM V1 canonical core contracts",
+  "description": "Structural schema. Canonical ordering, hashing, graph closure, immutability and cross-record rules are defined by the SCM V1 ADRs and invariants.",
+  "oneOf": [
+    { "$ref": "#/$defs/Step" },
+    { "$ref": "#/$defs/StepObservation" },
+    { "$ref": "#/$defs/Layer" },
+    { "$ref": "#/$defs/RepositoryView" },
+    { "$ref": "#/$defs/Operation" },
+    { "$ref": "#/$defs/Worktree" },
+    { "$ref": "#/$defs/Marker" },
+    { "$ref": "#/$defs/Release" },
+    { "$ref": "#/$defs/ReleasePublication" },
+    { "$ref": "#/$defs/Tree" },
+    { "$ref": "#/$defs/SymlinkObject" },
+    { "$ref": "#/$defs/TombstoneObject" }
+  ],
+  "$defs": {
+    "ContentId": { "$ref": "common.schema.json#/$defs/ObjectId" },
+    "StepId": { "$ref": "#/$defs/ContentId" },
+    "TreeId": { "$ref": "#/$defs/ContentId" },
+    "FileId": { "$ref": "file.schema.json#/$defs/FileId" },
+    "SymlinkId": { "$ref": "#/$defs/ContentId" },
+    "TombstoneId": { "$ref": "#/$defs/ContentId" },
+    "RepositoryViewId": { "$ref": "#/$defs/ContentId" },
+    "SpaceId": {
+      "type": "string",
+      "pattern": "^space:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "StoreId": {
+      "type": "string",
+      "pattern": "^store:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "LayerId": {
+      "type": "string",
+      "pattern": "^layer:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "WorktreeId": {
+      "type": "string",
+      "pattern": "^worktree:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "MarkerId": {
+      "type": "string",
+      "pattern": "^marker:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ReleaseId": {
+      "type": "string",
+      "pattern": "^release:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ReleasePublicationId": {
+      "type": "string",
+      "pattern": "^release-publication:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "OperationId": {
+      "type": "string",
+      "pattern": "^operation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ObservationId": {
+      "type": "string",
+      "pattern": "^observation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ActorId": {
+      "type": "string",
+      "pattern": "^actor:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "DeviceId": {
+      "type": "string",
+      "pattern": "^device:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ProofId": {
+      "type": "string",
+      "pattern": "^proof:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "NullableStepId": {
+      "oneOf": [
+        { "$ref": "#/$defs/StepId" },
+        { "type": "null" }
+      ]
+    },
+    "NullableTreeId": {
+      "oneOf": [
+        { "$ref": "#/$defs/TreeId" },
+        { "type": "null" }
+      ]
+    },
+    "NullableLayerId": {
+      "oneOf": [
+        { "$ref": "#/$defs/LayerId" },
+        { "type": "null" }
+      ]
+    },
+    "NullableActorId": {
+      "oneOf": [
+        { "$ref": "#/$defs/ActorId" },
+        { "type": "null" }
+      ]
+    },
+    "NullableDeviceId": {
+      "oneOf": [
+        { "$ref": "#/$defs/DeviceId" },
+        { "type": "null" }
+      ]
+    },
+    "NullableWorktreeId": {
+      "oneOf": [
+        { "$ref": "#/$defs/WorktreeId" },
+        { "type": "null" }
+      ]
+    },
+    "MetadataEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 16384
+        }
+      }
+    },
+    "Metadata": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/MetadataEntry" },
+      "uniqueItems": true
+    },
+    "Step": {
+      "description": "Identity domain: layrs-step-v1. Hash the ASCII domain, one NUL byte, then the specialized canonical parent/root payload from ADR 0006; stepId and schemaVersion are not repeated in that payload.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "stepId", "parentStepIds", "rootTreeId"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.step.v1" },
+        "stepId": { "$ref": "#/$defs/StepId" },
+        "parentStepIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepId" },
+          "uniqueItems": true
+        },
+        "rootTreeId": { "$ref": "#/$defs/TreeId" }
+      }
+    },
+    "StepObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "observationId",
+        "stepId",
+        "worktreeId",
+        "actorId",
+        "deviceId",
+        "observedAt",
+        "captureReason",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.step-observation.v1" },
+        "observationId": { "$ref": "#/$defs/ObservationId" },
+        "stepId": { "$ref": "#/$defs/StepId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "operationId": { "$ref": "#/$defs/OperationId" },
+        "worktreeId": { "$ref": "#/$defs/NullableWorktreeId" },
+        "actorId": { "$ref": "#/$defs/NullableActorId" },
+        "deviceId": { "$ref": "#/$defs/NullableDeviceId" },
+        "observedAt": { "$ref": "#/$defs/Timestamp" },
+        "captureReason": {
+          "enum": [
+            "automatic_idle",
+            "before_layer_switch",
+            "before_worktree_switch",
+            "before_operation",
+            "manual_snapshot",
+            "weave_result",
+            "conflict_resolution",
+            "rewrite",
+            "received",
+            "automation"
+          ]
+        },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "LayerSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["automaticCapture", "automaticCaptureIdleMs"],
+      "properties": {
+        "automaticCapture": { "type": "boolean" },
+        "automaticCaptureIdleMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      }
+    },
+    "Layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "layerId",
+        "spaceId",
+        "name",
+        "kind",
+        "status",
+        "parentLayerIds",
+        "settings",
+        "createdAt",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.layer.v1" },
+        "layerId": { "$ref": "#/$defs/LayerId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "kind": {
+          "enum": [
+            "base",
+            "exploration",
+            "proposal",
+            "automated_result",
+            "release_candidate",
+            "published"
+          ]
+        },
+        "status": { "enum": ["draft", "active", "archived", "superseded"] },
+        "parentLayerIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LayerId" },
+          "uniqueItems": true
+        },
+        "settings": { "$ref": "#/$defs/LayerSettings" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "FileTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "fileId"],
+      "properties": {
+        "kind": { "const": "file" },
+        "fileId": { "$ref": "#/$defs/FileId" }
+      }
+    },
+    "TreeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "treeId"],
+      "properties": {
+        "kind": { "const": "tree" },
+        "treeId": { "$ref": "#/$defs/TreeId" }
+      }
+    },
+    "ConflictTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "conflictId"],
+      "properties": {
+        "kind": { "const": "conflict" },
+        "conflictId": { "$ref": "conflict.schema.json#/$defs/ConflictId" }
+      }
+    },
+    "SymlinkTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "symlinkId"],
+      "properties": {
+        "kind": { "const": "symlink" },
+        "symlinkId": { "$ref": "#/$defs/SymlinkId" }
+      }
+    },
+    "TombstoneTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "tombstoneId"],
+      "properties": {
+        "kind": { "const": "tombstone" },
+        "tombstoneId": { "$ref": "#/$defs/TombstoneId" }
+      }
+    },
+    "TreeEntryTarget": {
+      "oneOf": [
+        { "$ref": "#/$defs/FileTarget" },
+        { "$ref": "#/$defs/TreeTarget" },
+        { "$ref": "#/$defs/ConflictTarget" },
+        { "$ref": "#/$defs/SymlinkTarget" },
+        { "$ref": "#/$defs/TombstoneTarget" }
+      ]
+    },
+    "TreeEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "target", "executable"],
+      "properties": {
+        "name": { "$ref": "common.schema.json#/$defs/RepoPathComponent" },
+        "target": { "$ref": "#/$defs/TreeEntryTarget" },
+        "executable": { "type": "boolean" }
+      }
+    },
+    "Tree": {
+      "description": "Identity domain: layrs-tree-v1. Hash the ASCII domain, one NUL byte, then RFC 8785 JSON of this object without treeId after normative entry sorting.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "treeId", "entries"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.tree.v1" },
+        "treeId": { "$ref": "#/$defs/TreeId" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TreeEntry" }
+        }
+      }
+    },
+    "SymlinkObject": {
+      "description": "Identity domain: layrs-symlink-v1. Hash the ASCII domain, one NUL byte, then RFC 8785 JSON of this object without symlinkId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "symlinkId", "target"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.symlink.v1" },
+        "symlinkId": { "$ref": "#/$defs/SymlinkId" },
+        "target": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "TombstoneObject": {
+      "description": "Identity domain: layrs-tombstone-v1. Hash the ASCII domain, one NUL byte, then RFC 8785 JSON of this object without tombstoneId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "tombstoneId", "previousObjectId"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.tombstone.v1" },
+        "tombstoneId": { "$ref": "#/$defs/TombstoneId" },
+        "previousObjectId": {
+          "oneOf": [
+            { "$ref": "#/$defs/ContentId" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "LayerHeadSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layerId", "stepIds"],
+      "properties": {
+        "layerId": { "$ref": "#/$defs/LayerId" },
+        "stepIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepId" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "WorktreeViewState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worktreeId",
+        "activeLayerId",
+        "baseStepId",
+        "materializedTreeId",
+        "status"
+      ],
+      "properties": {
+        "worktreeId": { "$ref": "#/$defs/WorktreeId" },
+        "activeLayerId": { "$ref": "#/$defs/NullableLayerId" },
+        "baseStepId": { "$ref": "#/$defs/NullableStepId" },
+        "materializedTreeId": { "$ref": "#/$defs/NullableTreeId" },
+        "status": {
+          "enum": ["ready", "conflicted", "needs_repair", "stale"]
+        }
+      }
+    },
+    "RepositoryView": {
+      "description": "Identity domain: layrs-repository-view-v1. Hash the ASCII domain, one NUL byte, then RFC 8785 JSON of this object without repositoryViewId after normative collection sorting.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "repositoryViewId",
+        "spaceId",
+        "layerHeads",
+        "markerIds",
+        "releaseIds",
+        "worktrees"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.repository-view.v1" },
+        "repositoryViewId": { "$ref": "#/$defs/RepositoryViewId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "layerHeads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LayerHeadSet" }
+        },
+        "markerIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MarkerId" },
+          "uniqueItems": true
+        },
+        "releaseIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ReleaseId" },
+          "uniqueItems": true
+        },
+        "worktrees": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/WorktreeViewState" }
+        }
+      }
+    },
+    "PublishedRepositoryView": {
+      "description": "Sync/server projection of RepositoryView. Worktree state remains valid in the local core model but is forbidden at every wire and server-CAS boundary.",
+      "allOf": [
+        { "$ref": "#/$defs/RepositoryView" },
+        {
+          "type": "object",
+          "properties": {
+            "worktrees": { "maxItems": 0 }
+          }
+        }
+      ]
+    },
+    "RewriteTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oldStepId", "newStepIds"],
+      "properties": {
+        "oldStepId": { "$ref": "#/$defs/StepId" },
+        "newStepIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StepId" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "Operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "operationId",
+        "spaceId",
+        "parentOperationIds",
+        "resultingViewId",
+        "kind",
+        "summary",
+        "rewriteMap",
+        "actorId",
+        "deviceId",
+        "createdAt",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.operation.v1" },
+        "operationId": { "$ref": "#/$defs/OperationId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "parentOperationIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OperationId" },
+          "uniqueItems": true
+        },
+        "resultingViewId": { "$ref": "#/$defs/RepositoryViewId" },
+        "kind": {
+          "enum": [
+            "initialize",
+            "capture_worktree",
+            "switch_layer",
+            "move_layer_heads",
+            "create_marker",
+            "hide_marker",
+            "create_release",
+            "weave",
+            "resolve_conflict",
+            "rewrite_steps",
+            "receive_remote_state",
+            "integrate_operations",
+            "undo",
+            "redo",
+            "restore",
+            "revert",
+            "prune"
+          ]
+        },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "rewriteMap": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RewriteTarget" }
+        },
+        "actorId": { "$ref": "#/$defs/NullableActorId" },
+        "deviceId": { "$ref": "#/$defs/NullableDeviceId" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "Worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "worktreeId",
+        "storeId",
+        "spaceId",
+        "activeOperationId",
+        "checkoutRoot",
+        "filesystemIdentity",
+        "createdAt",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.worktree.v1" },
+        "worktreeId": { "$ref": "#/$defs/WorktreeId" },
+        "storeId": { "$ref": "#/$defs/StoreId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "activeOperationId": { "$ref": "#/$defs/OperationId" },
+        "checkoutRoot": { "type": "string", "minLength": 1, "maxLength": 32768 },
+        "filesystemIdentity": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "Marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "markerId",
+        "spaceId",
+        "targetStepId",
+        "kind",
+        "name",
+        "title",
+        "notes",
+        "createdBy",
+        "createdAt",
+        "proofIds",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.marker.v1" },
+        "markerId": { "$ref": "#/$defs/MarkerId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "targetStepId": { "$ref": "#/$defs/StepId" },
+        "kind": { "enum": ["checkpoint", "milestone", "decision", "baseline", "custom"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "title": { "type": "string", "maxLength": 1024 },
+        "notes": { "type": "string", "maxLength": 1048576 },
+        "createdBy": { "$ref": "#/$defs/NullableActorId" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "proofIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProofId" },
+          "uniqueItems": true
+        },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "Release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "releaseId",
+        "spaceId",
+        "targetStepId",
+        "version",
+        "title",
+        "notes",
+        "createdBy",
+        "createdAt",
+        "proofIds",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.release.v1" },
+        "releaseId": { "$ref": "#/$defs/ReleaseId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "targetStepId": { "$ref": "#/$defs/StepId" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "title": { "type": "string", "maxLength": 1024 },
+        "notes": { "type": "string", "maxLength": 1048576 },
+        "createdBy": { "$ref": "#/$defs/NullableActorId" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "proofIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProofId" },
+          "uniqueItems": true
+        },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    },
+    "ReleasePublication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "releasePublicationId",
+        "releaseId",
+        "spaceId",
+        "operationId",
+        "publishedBy",
+        "deviceId",
+        "publishedAt",
+        "metadata"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "layrs.release-publication.v1" },
+        "releasePublicationId": { "$ref": "#/$defs/ReleasePublicationId" },
+        "releaseId": { "$ref": "#/$defs/ReleaseId" },
+        "spaceId": { "$ref": "#/$defs/SpaceId" },
+        "operationId": {
+          "oneOf": [
+            { "$ref": "#/$defs/OperationId" },
+            { "type": "null" }
+          ]
+        },
+        "publishedBy": { "$ref": "#/$defs/NullableActorId" },
+        "deviceId": { "$ref": "#/$defs/NullableDeviceId" },
+        "publishedAt": { "$ref": "#/$defs/Timestamp" },
+        "metadata": { "$ref": "#/$defs/Metadata" }
+      }
+    }
+  }
+}

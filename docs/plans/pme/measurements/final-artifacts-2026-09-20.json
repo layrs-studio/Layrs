@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "layrs.final-artifacts.v1",
+  "date": "2026-09-20",
+  "native": [
+    {
+      "directory": "dist/native-windows-qualified2-20260920",
+      "archive": "layrs-b6baf5be90bd-x86_64-pc-windows-msvc-release.tar.gz",
+      "bytes": 23148975,
+      "sha256": "6d3956ccabec77ad67a8ff55fe5d619c562f2e0b37e53fca6bd063ca8b74302f",
+      "manifestSha256": "3199844ebdc13c01219f1acd88636ae3694b65c5c62b76372e2fe2d9e3e4634d",
+      "source": {
+        "commit": "b6baf5be90bdb7cffbeb72ecd54a40c9968864ce",
+        "dirty": true,
+        "treeSha256": "ffb9ea893a38658eedf2699d172c62fff2ccc86489e635ac7b1a6b486099c26e",
+        "cargoLockSha256": "e9f55e23df60109dbf1611288cd171b2de5bc32dc70339985fb4092f605137bd"
+      },
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 21,
+      "smoke": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    },
+    {
+      "directory": "dist/native-linux-qualified2-20260920/candidate",
+      "archive": "layrs-b6baf5be90bd-x86_64-unknown-linux-gnu-release.tar.gz",
+      "bytes": 25727114,
+      "sha256": "bd35d9f550250d08a714bc52df2584727ab61a15de4efe6104ce14d7b2c3d1a7",
+      "manifestSha256": "9aa74630ec35ebc15f15f8ed48baa354719c73914e7238f6ba85a81ef6d273a9",
+      "source": {
+        "commit": "b6baf5be90bdb7cffbeb72ecd54a40c9968864ce",
+        "dirty": true,
+        "treeSha256": "ffb9ea893a38658eedf2699d172c62fff2ccc86489e635ac7b1a6b486099c26e",
+        "cargoLockSha256": "e9f55e23df60109dbf1611288cd171b2de5bc32dc70339985fb4092f605137bd"
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "signature": "unsigned",
+      "artifacts": 21,
+      "smoke": [
+        "verify",
+        "init",
+        "capture-binary",
+        "restore",
+        "undo",
+        "weave-preview",
+        "supervised-weave",
+        "clean-status"
+      ]
+    }
+  ],
+  "desktop": {
+    "directory": "dist/desktop-windows-qualified2-20260920",
+    "schema": "layrs.desktop-distribution.v1",
+    "createdAt": "2026-09-20T16:04:09.837Z",
+    "commit": "b6baf5be90bdb7cffbeb72ecd54a40c9968864ce",
+    "dirty": true,
+    "treeSha256": "c187128c75e733f11d72057169346e89dee553e9f9f6e4f85a6b8649ae1d251b",
+    "signature": "unsigned",
+    "installedByRecipe": false,
+    "artifacts": [
+      {
+        "path": "Layrs Studio_0.0.0_x64_en-US.msi",
+        "bytes": 10858496,
+        "sha256": "61dd34722e70920e4c421912ae4b78c377a7911d8385cc65352bd93573e6b075"
+      }
+    ]
+  },
+  "validation": {
+    "workspace": {
+      "passed": 874,
+      "ignored": 16,
+      "failed": 0,
+      "log": "tmp/final-rust-tests-20260920-4.log",
+      "precedesFetchPaginationFix": true
+    },
+    "fetchPaginationTlsSeconds": 7.28,
+    "postgresSuitesPassed": 6,
+    "postgresQuotaSeconds": 1.76,
+    "completeTlsDockerBackupSeconds": 424.23,
+    "gcLinuxSeconds": 2.65,
+    "clippyAfterFinalCode": "passed",
+    "nativeArchiveExtraction": "passed-both-platforms",
+    "linuxLauncher": "passed",
+    "desktopInstalled": false,
+    "webBrowserQualification": false,
+    "remoteCiObserved": false
+  },
+  "limitations": [
+    "Unsigned local candidates from a dirty checkout, not a published release.",
+    "MSI built but not installed; Tauri warned that updater bundle-type metadata could not be patched. No automatic updater is claimed.",
+    "Human team pilot, fresh Windows installation, complete volume/incident matrix and macOS remain unqualified."
+  ]
+}

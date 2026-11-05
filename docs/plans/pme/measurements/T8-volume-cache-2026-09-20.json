@@ -1,0 +1,167 @@
+{
+  "schemaVersion": "layrs.local-volume-measurement.v1",
+  "startedAt": "2026-09-20T11:22:51.214Z",
+  "platform": "win32",
+  "os": "10.0.26200",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "totalMemoryBytes": 68387852288,
+  "binarySha256": "df5a9a6e69d4dae49d8b1bc0e6ff9a38b1cd2b7ec4cbf86a4df8e03cb9be630e",
+  "fixtureRoot": "D:\\Layrs\\tmp\\layrs-volumes-cached-20260920",
+  "limitations": [
+    "Synthetic repeated content: 200 distinct payloads, 256 bytes each.",
+    "Concurrent compilation may affect timings; one run, warm OS caches.",
+    "Durations include CLI startup and full command; peak process memory and remote sync not measured.",
+    "Fixtures retained for inspection; all current Operations retained, no pruning."
+  ],
+  "cases": [
+    {
+      "files": 10000,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-cached-20260920\\files-10000",
+      "measurements": [
+        {
+          "command": "init Volume 10000",
+          "elapsedMs": 6389,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "status",
+          "elapsedMs": 1560,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 1624,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer create baseline",
+          "elapsedMs": 2008,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "diff --stat",
+          "elapsedMs": 1564,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 4488,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use baseline",
+          "elapsedMs": 6276,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use main",
+          "elapsedMs": 6550,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ],
+      "storage": {
+        "bytes": 1775067,
+        "files": 419
+      }
+    },
+    {
+      "files": 99000,
+      "root": "D:\\Layrs\\tmp\\layrs-volumes-cached-20260920\\files-99000",
+      "measurements": [
+        {
+          "command": "init Volume 99000",
+          "elapsedMs": 18275,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "status",
+          "elapsedMs": 13517,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 14385,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer create baseline",
+          "elapsedMs": 14633,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "diff --stat",
+          "elapsedMs": 14168,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "step",
+          "elapsedMs": 17502,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use baseline",
+          "elapsedMs": 58620,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "command": "layer use main",
+          "elapsedMs": 59220,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ],
+      "storage": {
+        "bytes": 1882263,
+        "files": 419
+      }
+    }
+  ],
+  "completedAt": "2026-09-20T11:27:00.226Z"
+}

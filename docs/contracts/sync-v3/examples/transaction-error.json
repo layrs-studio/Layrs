@@ -1,0 +1,14 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "syncTransactionError",
+  "code": "idempotency_digest_mismatch",
+  "httpStatus": 409,
+  "receiptCreated": false,
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "idempotencyKey": "existing-key-0001",
+  "requestDigest": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expectedRequestDigest": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "existingReceiptUnchanged": true,
+  "message": "idempotency key is already bound to another request digest"
+}

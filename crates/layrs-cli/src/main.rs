@@ -1,10 +1,17 @@
 use layrs_cli::args::{Cli, CliCommand, parse_args, usage};
-use layrs_cli::engine::{CliError, ClientCoreEngine, DiffRequest, EngineContext, ExitCode};
+use layrs_cli::error::{CliError, ExitCode};
 use layrs_cli::render::{self, Rendered};
-use std::io::IsTerminal;
 
 fn main() {
     let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    // Detached deletion of a dropped Room's folder (spawned by `room drop`).
+    if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_COMMAND) {
+        std::process::exit(layrs_cli::native_room::purge_dropped(&raw_args[1..]));
+    }
+    #[cfg(windows)]
+    if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_VIRTUAL_COMMAND) {
+        std::process::exit(layrs_cli::native_room::purge_dropped_virtual(&raw_args[1..]));
+    }
     let wants_json = raw_args.iter().any(|arg| arg == "--json");
 
     let cli = match parse_args(raw_args) {
@@ -20,15 +27,31 @@ fn main() {
         }
     };
 
+    if let Some(exit_code) = layrs_cli::native_vfs::run_foreground(&cli) {
+        std::process::exit(exit_code.as_i32());
+    }
     let json = cli.globals.json;
-    match run(cli) {
+    let diagnosis = matches!(cli.command, CliCommand::Doctor);
+    let run_span = layrs_store_local::perf::span("cli.run");
+    let result = run(cli);
+    drop(run_span);
+    // Opt-in diagnostics (LAYRS_PERF=1) go to stderr, never into the JSON envelope.
+    layrs_store_local::perf::emit(&std::env::args().skip(1).collect::<Vec<_>>().join(" "));
+    match result {
         Ok(rendered) => {
+            let exit_code = if diagnosis
+                && (rendered.data["clean"] != true || rendered.data["complete"] != true)
+            {
+                ExitCode::Runtime
+            } else {
+                ExitCode::Success
+            };
             if json {
                 println!("{}", render::ok_json(rendered.data));
             } else {
                 println!("{}", rendered.human);
             }
-            std::process::exit(ExitCode::Success.as_i32());
+            std::process::exit(exit_code.as_i32());
         }
         Err(error) => {
             if json {
@@ -48,102 +71,22 @@ fn run(cli: Cli) -> Result<Rendered, CliError> {
             data: serde_json::json!({ "usage": usage() }),
         });
     }
-
-    let json_output = cli.globals.json;
-    let color = color_enabled(cli.globals.no_color, json_output);
-    let engine = ClientCoreEngine::new(EngineContext {
-        space: cli.globals.space,
-    });
-
-    let rendered = match cli.command {
-        CliCommand::Help => unreachable!("handled above"),
-        CliCommand::Init { name, path } => {
-            render::init(engine.init_local_space(&name, path.as_deref())?)
-        }
-        CliCommand::Step => render::step(engine.save_local_step()?),
-        CliCommand::Diff {
-            step_id,
-            stat,
-            name_only,
-            window,
-            wrap,
-        } => render::diff(
-            engine.diff(DiffRequest {
-                step_id: step_id.as_deref(),
-                stat,
-                name_only,
-                window: window.as_ref(),
-                wrap,
-            })?,
-            color,
-        ),
-        CliCommand::Timeline { limit } => render::timeline(engine.timeline(limit)?),
-        CliCommand::Publish { workspace } => render::publish(engine.publish(workspace.as_deref())?),
-        CliCommand::Sync { workspace } => render::sync(engine.sync(workspace.as_deref())?),
-        CliCommand::Receive => render::receive(engine.receive()?),
-        CliCommand::Compact => render::compact(engine.compact()?),
-        CliCommand::Status => render::status(engine.status()?),
-        CliCommand::Login { endpoint } => render::login(engine.login(endpoint.as_deref())?),
-        CliCommand::Whoami => render::whoami(engine.whoami()?),
-        CliCommand::Logout => render::logout(engine.logout()?),
-        CliCommand::Spaces => render::spaces(engine.spaces()?),
-        CliCommand::Layers => render::layers(engine.layers()?),
-        CliCommand::LayerUse { name_or_id } => {
-            render::layer(engine.layer_use(&name_or_id)?, "Using")
-        }
-        CliCommand::LayerCreate { name } => render::layer(engine.layer_create(&name)?, "Created"),
-        CliCommand::LayerDelete { name_or_id, yes } => {
-            render::layer_deleted(engine.layer_delete(&name_or_id, yes)?)
-        }
-        CliCommand::LayerDisconnect { name_or_id, yes } => {
-            render::layer_action(engine.layer_disconnect(&name_or_id, yes)?)
-        }
-        CliCommand::LayerClearSteps { name_or_id, yes } => {
-            render::layer_action(engine.layer_clear_steps(&name_or_id, yes)?)
-        }
-        CliCommand::Weave {
-            source,
-            target,
-            preview,
-        } => render::weave(engine.weave(&source, &target, preview)?),
-        CliCommand::WeaveParent { preview } => render::weave(engine.weave_parent(preview)?),
-        CliCommand::WeaveStatus => render::weave_status(engine.weave_status()?),
-        CliCommand::WeaveConflicts => render::weave_conflicts(engine.weave_conflicts()?),
-        CliCommand::WeaveResolve {
-            path,
-            resolution,
-            file,
-        } => render::weave(engine.weave_resolve(&path, &resolution, file.as_deref())?),
-        CliCommand::WeaveContinue => render::weave(engine.weave_continue()?),
-        CliCommand::WeaveAbort => render::weave(engine.weave_abort()?),
-        CliCommand::ConflictList => render::conflict_list(engine.conflict_list()?),
-        CliCommand::ConflictStatus => render::conflict_status(engine.conflict_status()?),
-        CliCommand::ConflictResolve {
-            method: Some(method),
-            path: Some(path),
-            block,
-        } => render::weave(engine.conflict_resolve(method, &path, block.as_deref())?),
-        CliCommand::ConflictResolve { method: None, .. } => {
-            if json_output {
-                return Err(CliError::runtime(
-                    "layrs conflict resolve interactive mode does not support --json.",
-                ));
-            }
-            render::conflict_interactive(engine.conflict_resolve_interactive()?)
-        }
-        CliCommand::ConflictResolve { .. } => {
-            return Err(CliError::runtime(
-                "layrs conflict resolve METHOD requires -f PATH.",
-            ));
-        }
-        CliCommand::ConflictContinue => render::weave(engine.conflict_continue()?),
-        CliCommand::ConflictAbort => render::weave(engine.conflict_abort()?),
+    #[cfg(windows)]
+    if matches!(
+        &cli.command,
+        CliCommand::PartialProvider(layrs_cli::args::PartialProviderCommand::Status { .. })
+    ) {
+        // This executable owns the audited startup/native closure. Keep this
+        // assertion before the route's first SQLite access and out of libraries:
+        // embedding the client does not qualify another host process.
+        layrs_store_local::projection::declare_provider_sqlite_process_profile(
+            layrs_store_local::projection::ProviderSqliteProcessDeclaration::AuditedLayrsHostV1,
+        )
+        .map_err(|error| CliError::runtime(format!("process_profile_unavailable: {error}")))?;
     }
-    .map_err(CliError::runtime)?;
-
-    Ok(rendered)
-}
-
-fn color_enabled(no_color: bool, json: bool) -> bool {
-    !no_color && !json && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+    layrs_cli::native::try_run(&cli).unwrap_or_else(|| {
+        Err(CliError::runtime(
+            "No Layrs project found here. Run `layrs init NAME` to create one.",
+        ))
+    })
 }

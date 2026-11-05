@@ -1,0 +1,270 @@
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures_util::stream;
+use layrs_core::scm::{ObjectId, RepositoryView, StoreId};
+use layrs_sync::v3::{
+    AuthorizationSnapshot, Compression, ObjectDescriptor, ObjectKind, ValidateV3,
+};
+
+use super::{
+    ByteRange, CasByteStream, CasHead, CatalogedCas, FsServerCas, PreparedCasObject, PutOutcome,
+    S3ServerCas, ScrubOutcome, ServerCas, V3StoreError, V3StoreResult,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BackendObjectBinding {
+    pub storage_key: String,
+    pub backend_etag: Option<String>,
+}
+
+#[async_trait]
+trait BindingCas: ServerCas {
+    async fn backend_binding(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> V3StoreResult<BackendObjectBinding>;
+}
+
+#[async_trait]
+impl BindingCas for FsServerCas {
+    async fn backend_binding(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> V3StoreResult<BackendObjectBinding> {
+        FsServerCas::backend_binding(self, descriptor).await
+    }
+}
+
+#[async_trait]
+impl BindingCas for S3ServerCas {
+    async fn backend_binding(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> V3StoreResult<BackendObjectBinding> {
+        S3ServerCas::backend_binding(self, descriptor).await
+    }
+}
+
+#[derive(Clone)]
+pub struct CatalogedFsCas {
+    store_id: StoreId,
+    inner: FsServerCas,
+}
+
+impl CatalogedFsCas {
+    pub fn new(store_id: StoreId, inner: FsServerCas) -> Self {
+        Self { store_id, inner }
+    }
+
+    pub fn store_id(&self) -> &StoreId {
+        &self.store_id
+    }
+
+    pub fn inner(&self) -> &FsServerCas {
+        &self.inner
+    }
+}
+
+#[derive(Clone)]
+pub struct CatalogedS3Cas {
+    store_id: StoreId,
+    inner: S3ServerCas,
+}
+
+impl CatalogedS3Cas {
+    pub fn new(store_id: StoreId, inner: S3ServerCas) -> Self {
+        Self { store_id, inner }
+    }
+
+    pub fn store_id(&self) -> &StoreId {
+        &self.store_id
+    }
+
+    pub fn inner(&self) -> &S3ServerCas {
+        &self.inner
+    }
+}
+
+async fn verify_existing<C: BindingCas>(
+    store_id: &StoreId,
+    cas: &C,
+    descriptor: &ObjectDescriptor,
+) -> V3StoreResult<PreparedCasObject> {
+    let head = cas.head(descriptor).await?.ok_or(V3StoreError::NotFound)?;
+    if head.descriptor != *descriptor {
+        return Err(V3StoreError::CorruptObject(
+            "CAS head descriptor does not match the requested object".into(),
+        ));
+    }
+    match cas.scrub(descriptor).await? {
+        ScrubOutcome::Healthy => {}
+        ScrubOutcome::Corrupt(reason) => return Err(V3StoreError::CorruptObject(reason)),
+    }
+    let binding = cas.backend_binding(descriptor).await?;
+    if binding.storage_key.is_empty() {
+        return Err(V3StoreError::Backend(
+            "CAS backend returned an empty storage key".into(),
+        ));
+    }
+    Ok(PreparedCasObject {
+        descriptor: descriptor.clone(),
+        store_id: store_id.to_string(),
+        storage_key: binding.storage_key,
+        backend_etag: binding.backend_etag,
+    })
+}
+
+async fn prepare_generated<C: BindingCas>(
+    store_id: &StoreId,
+    cas: &C,
+    kind: ObjectKind,
+    canonical_bytes: Bytes,
+) -> V3StoreResult<PreparedCasObject> {
+    let descriptor = generated_descriptor(kind, &canonical_bytes)?;
+    let body = Box::pin(stream::once({
+        let canonical_bytes = canonical_bytes.clone();
+        async move { Ok(canonical_bytes) }
+    }));
+    cas.put_if_absent(&descriptor, body).await?;
+    verify_existing(store_id, cas, &descriptor).await
+}
+
+fn generated_descriptor(
+    kind: ObjectKind,
+    canonical_bytes: &[u8],
+) -> V3StoreResult<ObjectDescriptor> {
+    let object_id = match kind {
+        ObjectKind::AuthorizationSnapshot => {
+            let snapshot: AuthorizationSnapshot = decode_exact_jcs(canonical_bytes)?;
+            snapshot
+                .validate_v3()
+                .map_err(|error| V3StoreError::CorruptObject(error.to_string()))?;
+            let computed = snapshot
+                .computed_id()
+                .map_err(|error| V3StoreError::CorruptObject(error.to_string()))?;
+            if computed != snapshot.authorization_snapshot_id {
+                return Err(V3StoreError::IdentityMismatch);
+            }
+            snapshot.authorization_snapshot_id
+        }
+        ObjectKind::RepositoryView => {
+            let view: RepositoryView = decode_exact_jcs(canonical_bytes)?;
+            if !view.worktrees().is_empty() {
+                return Err(V3StoreError::CorruptObject(
+                    "server RepositoryView contains local-only Worktree state".into(),
+                ));
+            }
+            ObjectId::parse(view.id().as_str().to_owned())
+                .map_err(|error| V3StoreError::CorruptObject(error.to_string()))?
+        }
+        _ => {
+            return Err(V3StoreError::InvalidDescriptor(
+                "only AuthorizationSnapshot and RepositoryView are generated by the Sync V3 transaction engine"
+                    .into(),
+            ));
+        }
+    };
+    let byte_len = u64::try_from(canonical_bytes.len()).map_err(|_| {
+        V3StoreError::InvalidDescriptor("canonical byte length does not fit in u64".into())
+    })?;
+    Ok(ObjectDescriptor {
+        kind,
+        object_id,
+        canonical_byte_len: byte_len,
+        encoded_byte_len: byte_len,
+        compression: Compression::Identity,
+    })
+}
+
+fn decode_exact_jcs<T>(canonical_bytes: &[u8]) -> V3StoreResult<T>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let value = serde_json::from_slice(canonical_bytes)
+        .map_err(|error| V3StoreError::CorruptObject(error.to_string()))?;
+    let exact = serde_jcs::to_vec(&value)
+        .map_err(|error| V3StoreError::CorruptObject(error.to_string()))?;
+    if exact != canonical_bytes {
+        return Err(V3StoreError::CorruptObject(
+            "generated record is not exact JCS".into(),
+        ));
+    }
+    Ok(value)
+}
+
+macro_rules! impl_server_cas_delegate {
+    ($wrapper:ty) => {
+        #[async_trait]
+        impl ServerCas for $wrapper {
+            async fn put_if_absent(
+                &self,
+                descriptor: &ObjectDescriptor,
+                body: CasByteStream,
+            ) -> V3StoreResult<PutOutcome> {
+                self.inner.put_if_absent(descriptor, body).await
+            }
+
+            async fn head(&self, descriptor: &ObjectDescriptor) -> V3StoreResult<Option<CasHead>> {
+                self.inner.head(descriptor).await
+            }
+
+            async fn verified_stream(
+                &self,
+                descriptor: &ObjectDescriptor,
+            ) -> V3StoreResult<CasByteStream> {
+                self.inner.verified_stream(descriptor).await
+            }
+
+            async fn verified_range(
+                &self,
+                descriptor: &ObjectDescriptor,
+                range: ByteRange,
+            ) -> V3StoreResult<CasByteStream> {
+                self.inner.verified_range(descriptor, range).await
+            }
+
+            async fn scrub(&self, descriptor: &ObjectDescriptor) -> V3StoreResult<ScrubOutcome> {
+                self.inner.scrub(descriptor).await
+            }
+        }
+    };
+}
+
+impl_server_cas_delegate!(CatalogedFsCas);
+impl_server_cas_delegate!(CatalogedS3Cas);
+
+#[async_trait]
+impl CatalogedCas for CatalogedFsCas {
+    async fn verify_existing(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> V3StoreResult<PreparedCasObject> {
+        verify_existing(&self.store_id, &self.inner, descriptor).await
+    }
+
+    async fn prepare_generated(
+        &self,
+        kind: ObjectKind,
+        canonical_bytes: Bytes,
+    ) -> V3StoreResult<PreparedCasObject> {
+        prepare_generated(&self.store_id, &self.inner, kind, canonical_bytes).await
+    }
+}
+
+#[async_trait]
+impl CatalogedCas for CatalogedS3Cas {
+    async fn verify_existing(
+        &self,
+        descriptor: &ObjectDescriptor,
+    ) -> V3StoreResult<PreparedCasObject> {
+        verify_existing(&self.store_id, &self.inner, descriptor).await
+    }
+
+    async fn prepare_generated(
+        &self,
+        kind: ObjectKind,
+        canonical_bytes: Bytes,
+    ) -> V3StoreResult<PreparedCasObject> {
+        prepare_generated(&self.store_id, &self.inner, kind, canonical_bytes).await
+    }
+}

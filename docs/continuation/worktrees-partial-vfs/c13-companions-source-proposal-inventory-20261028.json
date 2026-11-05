@@ -1,0 +1,132 @@
+{
+  "scope": "Unintegrated, partial C13 source proposal; no compilation, execution or readiness qualification.",
+  "source_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+  "files": [
+    {
+      "path": "checks.json",
+      "bytes": 1187,
+      "sha256": "7c7a054dc16d77884bea77c5e6552b4a492435ed5634161a720f8c583d187895"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/complete.rs",
+      "bytes": 9944,
+      "sha256": "6c99ae9cfd3ca924239142a50c824496c6b990e78c29bbceae5f6f32a3c21940"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image.rs",
+      "bytes": 20324,
+      "sha256": "a48229409411c4379dad4112bcfedc04fdb31d3f8ded955de5e7013f8ea21422"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_plan.rs",
+      "bytes": 41423,
+      "sha256": "38db1a4e465c9b9590cd1c0b6b12f445d01b3fdd9ba2f5b8564b6ab955fa1724"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation.rs",
+      "bytes": 14003,
+      "sha256": "c5ad93fcf119a1387b07c3d5aa874925974584759c643106bd43d04d73a9ba3c"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/bootstrap.rs",
+      "bytes": 6754,
+      "sha256": "3e55aad4b23dbbeb23dff154d8e687832b9a5896c19b45fc163a92e766a3a38c"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/import_validation/scoped/companions_v2.rs",
+      "bytes": 14467,
+      "sha256": "30a166bcd19873b15bc31bcfaee74ec49f6837da00cfd1c7c1d0b7c9c141a22a"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/import_validation/scoped.rs",
+      "bytes": 33298,
+      "sha256": "171599c1b2d8f868b38b4af876da2c087461dcf788f40f8f5730bd1f2410bd36"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/companion_v2.rs",
+      "bytes": 20977,
+      "sha256": "7f1406d05e33e08b6d2cace9be2224d15fbefa4c81b4aa0994f7ae757778a852"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records.rs",
+      "bytes": 2164,
+      "sha256": "c12f1a2e0622cb3ba919861b45c6145a7f5519b2d0d1f52a0b3a521d329de619"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+      "bytes": 11509,
+      "sha256": "78f1525ad5d9f72f39b193e57d6001f02802a03d2be7bb7b5b0e6d4db4d5bef6"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions.rs",
+      "bytes": 23319,
+      "sha256": "dc3677fd9650348ede5911e2436e39fd6c5cbd500a2452e7c065f20a06a41649"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/image.rs",
+      "bytes": 12944,
+      "sha256": "d5c0c8967696fac393d2cad56bbac6adeb833e8b42927c974a96b9c5d64a4805"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/source.rs",
+      "bytes": 18040,
+      "sha256": "b352c5c4e0a918d9f5e78b4d354a21bbd5979b80f60dec0828c5b3fd9778fc35"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/tests/companions.rs",
+      "bytes": 15952,
+      "sha256": "c613ca0ac2f0d9ea8ad524806fd00ddf78b141c30d00080f399f5994352727a4"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile/tests.rs",
+      "bytes": 21123,
+      "sha256": "418ef5823cae010943b16be18877cd62357a5231036a3a689e655c5f898cbb95"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/transition_reconcile.rs",
+      "bytes": 17709,
+      "sha256": "ca373ee92e5e4bedaf56bc3fc7db977defa60db975f5c6f6d8fe7021fc220a48"
+    },
+    {
+      "path": "files/docs/plans/worktrees-partial-vfs-convergence.md",
+      "bytes": 47593,
+      "sha256": "2f878bebc9645b475dc3e38664d7c1952a66460387b3edb87c5c9b733482a68d"
+    },
+    {
+      "path": "finalize_bundle.py",
+      "bytes": 21238,
+      "sha256": "e4356bb025168796b55cdd63b6dd1b63310ba9ec959619e63ef166bbf7679f4f"
+    },
+    {
+      "path": "handoff.json",
+      "bytes": 24386,
+      "sha256": "0aa31f53ab9f1f9be135d77da44cc07a99491309d26d164abf1d7c7bdf6bd035"
+    },
+    {
+      "path": "manifest.sha256.json",
+      "bytes": 11595,
+      "sha256": "62b21e4638d7d1aa42a51f67c13387b56eb9383285c5ff6403cf4771552844aa"
+    },
+    {
+      "path": "proposal.patch",
+      "bytes": 127406,
+      "sha256": "457f24c098ce9db1acc9b0f09fe6887c841f35453579cf4455e2f34949bd1183"
+    },
+    {
+      "path": "ROOT-INTEGRATION-RECIPES.md",
+      "bytes": 6184,
+      "sha256": "1e6c0ddbe344bf3f972569e82c7067a70665aa231b175870af23cce153e27284"
+    },
+    {
+      "path": "SHA256SUMS",
+      "bytes": 3102,
+      "sha256": "67180b0150d1545af600df2ebb4e80ddc5e6ce13669d3f49e14991cf563f3bda"
+    }
+  ],
+  "unfinished": "U1-U7 in handoff.json; live wiring and qualification remain. This archive is source retention, not acceptance.",
+  "archive": {
+    "path": "c13-companions-source-proposal-20261028.tar.gz",
+    "bytes": 115471,
+    "sha256": "b276be0f3485597acb46f38b99c50f2bb2f4b08f16addd20373e92973e6a744a"
+  }
+}

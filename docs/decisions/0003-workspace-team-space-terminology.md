@@ -4,6 +4,11 @@ Date: 2026-06-29
 
 Status: accepted
 
+Updated 2026-10-05: the [project context contract](../contracts/project-contexts.md)
+refines Workspace ownership: company by default, optional organisations and
+independently optional personal contexts. A Workspace is a technical ownership
+boundary, not a mandatory organisation-creation step for users.
+
 ## Context
 
 Layrs needs stable terms for organization, permissions, repo-like projects and

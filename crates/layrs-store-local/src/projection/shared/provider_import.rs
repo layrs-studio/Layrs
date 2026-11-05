@@ -1,0 +1,533 @@
+//! Family SQL DATA for a fresh managed ordinary destination. The caller owns
+//! the catalog lock, source and destination pins, SQL transaction and close.
+//! These methods neither create a filesystem member nor grant Ready/admission.
+use super::*;
+use crate::projection::provider::{
+    cancellation,
+    records::{
+        activation::ProviderActivationRecord,
+        import::{ImportSource, ImportSourceReferences, ProviderImportKind},
+        transition::{
+            ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole, TransitionState,
+        },
+        AllocationRecord, PreparedRecord, Record,
+    },
+    recovery::error::{invalid, Result},
+    validation::PrivateCaptureProof,
+};
+use layrs_vfs::Cancellation;
+use rusqlite::{params, Connection, OptionalExtension};
+
+#[path = "provider_import/content.rs"]
+pub(in crate::projection) mod content;
+#[path = "provider_import/publication.rs"]
+pub(in crate::projection) mod publication;
+#[path = "provider_import/source.rs"]
+pub(in crate::projection) mod source;
+use source::{ImportSourceInputs, OrdinarySourceInputs};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum ImportRegistration {
+    Absent,
+    Initializing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum ImportRegistrationEffect {
+    Inserted,
+    AlreadyPresent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnreservedPhase {
+    Copying,
+    Staging,
+}
+
+/// Private phase selection. Existing entry points always select Initializing;
+/// only the dedicated publication reader may select the exact Ready member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportMemberPhase {
+    Initializing,
+    Ready,
+}
+impl ImportMemberPhase {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+/// Require the source's Ready family row and all of its capture protections,
+/// then inspect only the destination's exact registry row and owner claims.
+/// The source Copying intent must also have been interpreted from the pinned
+/// private SQL transaction by the caller; this catalog cannot read that DB.
+#[allow(clippy::too_many_arguments)]
+fn validate_import_initializing(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    validate_unreserved(
+        family,
+        c,
+        source_a,
+        source_p,
+        source_activation,
+        source_capture,
+        source_copying,
+        UnreservedPhase::Copying,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_unreserved(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    validate_unreserved_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        phase,
+        cancel,
+    )
+}
+
+fn validate_unreserved_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    let registration =
+        validate_import_base_for_source(family, c, source, source_copying, phase, cancel)?;
+    let owner = source_copying
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("import destination absent"))?
+        .format
+        .identity
+        .worktree_id
+        .as_str();
+    for sql in [
+        "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+        "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
+        "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+    ] {
+        cancellation::check(cancel)?;
+        if c.query_row(sql, [owner], |row| row.get::<_, bool>(0))? {
+            return Err(invalid("import destination has a root/reservation/installation"));
+        }
+    }
+    family.verify()?;
+    cancellation::check(cancel)?;
+    Ok(registration)
+}
+
+/// Shared source/owner interpretation. Content effects are checked separately
+/// by the strict unreserved and reserve-only readers; neither may skip them.
+#[allow(clippy::too_many_arguments)]
+fn validate_import_base(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    validate_import_base_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        phase,
+        cancel,
+    )
+}
+
+fn validate_import_base_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistration> {
+    match validate_import_base_at_member_for_source(
+        family,
+        c,
+        source,
+        source_copying,
+        phase,
+        ImportMemberPhase::Initializing,
+        cancel,
+    )? {
+        None => Ok(ImportRegistration::Absent),
+        Some(ImportMemberPhase::Initializing) => Ok(ImportRegistration::Initializing),
+        Some(ImportMemberPhase::Ready) => Err(invalid("import base unexpectedly admitted Ready")),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_import_base_at_member(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    member_phase: ImportMemberPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<ImportMemberPhase>> {
+    validate_import_base_at_member_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        phase,
+        member_phase,
+        cancel,
+    )
+}
+
+fn validate_import_base_at_member_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    phase: UnreservedPhase,
+    member_phase: ImportMemberPhase,
+    cancel: Option<&Cancellation>,
+) -> Result<Option<ImportMemberPhase>> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit() {
+        return Err(invalid("import family read requires retained transaction"));
+    }
+    let validated_source = source.require_family(family, c, source_copying, cancel)?;
+    source_copying.validate_fields()?;
+    let Some(destination) = source_copying.destination.as_ref() else {
+        return Err(invalid("import Copying has no destination proof"));
+    };
+    if source_copying.role != TransitionRole::Source
+        || source_copying.state
+            != match phase {
+                UnreservedPhase::Copying => TransitionState::Copying,
+                UnreservedPhase::Staging => TransitionState::Staging,
+            }
+        || source_copying.reservation.is_some() != (phase == UnreservedPhase::Staging)
+        || source_copying.receipt_id.is_some()
+        || source_copying.plan.kind != ProviderImportKind::ManagedOrdinary
+        || destination.backend != TransitionBackendKind::Ordinary
+        || destination.native_control_identity_hex.is_some()
+        || destination.native_root_identity.is_some()
+    {
+        return Err(invalid(
+            "import requires exact ordinary source phase without family effects",
+        ));
+    }
+    let marker = &destination.format;
+    let dest_worktree = &marker.identity.worktree_id;
+    let shared = marker
+        .shared
+        .as_ref()
+        .ok_or_else(|| invalid("import destination is not shared"))?;
+    let expected_identity = family.writer_identity(dest_worktree);
+    let member = family.member(dest_worktree);
+    let member_path = exact_path(&member)?;
+    let marker_bytes = marker.bytes()?;
+    if marker.identity != expected_identity
+        || marker.identity == validated_source.marker().identity
+        || shared.root != family.root()
+        || shared.incarnation != family.family.marker.incarnation
+        || shared.root_identity != family.root_pin.identity_token()
+        || shared.metadata_path != member
+        || shared.database_identity != destination.private_database_identity
+        || destination.family_marker_digest != family.marker_digest()
+        || marker_bytes.len() > 65536
+    {
+        return Err(invalid("import destination family/FORMAT binding differs"));
+    }
+    cancellation::check(cancel)?;
+    let owner = dest_worktree.as_str();
+    // Schema, marker, source protections and global FK were fenced above.
+    // Test all target lengths before allocating TEXT/BLOB from a corrupt row.
+    let bad: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND \
+         (length(CAST(metadata_path AS BLOB))>4096 OR \
+          length(CAST(database_identity AS BLOB))>512 OR \
+          length(CAST(state AS BLOB))>12 OR length(marker)>65536))",
+        [owner],
+        |row| row.get(0),
+    )?;
+    if bad {
+        return Err(invalid("import target registry row exceeds bound"));
+    }
+    let target: Option<(String, String, Vec<u8>, String)> = c
+        .query_row(
+            "SELECT metadata_path,database_identity,marker,state FROM worktrees WHERE id=?1",
+            [owner],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let registration = match target {
+        None => None,
+        Some((path, id, bytes, state))
+            if path == member_path
+                && id == destination.private_database_identity
+                && bytes == marker_bytes
+                && state == member_phase.sql() =>
+        {
+            Some(member_phase)
+        }
+        Some(_) => {
+            return Err(invalid(
+                "import target registry row differs from expected member phase",
+            ))
+        }
+    };
+    if (phase == UnreservedPhase::Staging || member_phase == ImportMemberPhase::Ready)
+        && registration != Some(member_phase)
+    {
+        return Err(invalid(
+            "import phase requires existing exact member registration",
+        ));
+    }
+    family.verify()?;
+    cancellation::check(cancel)?;
+    Ok(registration)
+}
+
+/// Insert the exact Initializing row once, or read back an identical replay.
+/// The caller commits or rolls back and observably closes the family writer.
+#[allow(clippy::too_many_arguments)]
+fn register_import_initializing(
+    family: &FamilyAccess,
+    c: &Connection,
+    source_a: &AllocationRecord,
+    source_p: &PreparedRecord,
+    source_activation: &ProviderActivationRecord,
+    source_capture: &PrivateCaptureProof,
+    source_copying: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistrationEffect> {
+    register_import_initializing_for_source(
+        family,
+        c,
+        &ImportSourceInputs::provider(source_a, source_p, source_activation, source_capture),
+        source_copying,
+        cancel,
+    )
+}
+
+fn register_import_initializing_for_source(
+    family: &FamilyAccess,
+    c: &Connection,
+    source: &ImportSourceInputs<'_, '_>,
+    source_copying: &ProviderTransitionIntentRecord,
+    cancel: Option<&Cancellation>,
+) -> Result<ImportRegistrationEffect> {
+    cancellation::check(cancel)?;
+    if c.is_autocommit() || c.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u64>(0))? != 1
+    {
+        return Err(invalid(
+            "import family writer requires FK-enabled caller transaction",
+        ));
+    }
+    let before = validate_unreserved_for_source(
+        family,
+        c,
+        source,
+        source_copying,
+        UnreservedPhase::Copying,
+        cancel,
+    )?;
+    if before == ImportRegistration::Initializing {
+        return Ok(ImportRegistrationEffect::AlreadyPresent);
+    }
+    let destination = source_copying
+        .destination
+        .as_ref()
+        .ok_or_else(|| invalid("import destination absent"))?;
+    let owner = destination.format.identity.worktree_id.as_str();
+    let member = family.member(&destination.format.identity.worktree_id);
+    let inserted = c.execute(
+        "INSERT INTO worktrees(id,metadata_path,database_identity,marker,state) VALUES(?1,?2,?3,?4,'initializing')",
+        params![owner, exact_path(&member)?, destination.private_database_identity, destination.format.bytes()?],
+    )?;
+    if inserted != 1
+        || validate_unreserved_for_source(
+            family,
+            c,
+            source,
+            source_copying,
+            UnreservedPhase::Copying,
+            cancel,
+        )? != ImportRegistration::Initializing
+    {
+        return Err(invalid(
+            "import family Initializing insert/readback differs",
+        ));
+    }
+    Ok(ImportRegistrationEffect::Inserted)
+}
+
+impl FamilyAccess {
+    /// Ordinary B remains the source owner, never C's ordinary lease. The
+    /// caller retains B's physical image and both private/family transactions;
+    /// these borrowed inputs authenticate B's incoming Ready and exact outgoing
+    /// Copying row before this independently checks C's target registration.
+    pub(in crate::projection) fn validate_ordinary_import_initializing(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistration> {
+        validate_unreserved_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_copying,
+            UnreservedPhase::Copying,
+            cancel,
+        )
+    }
+
+    /// Authenticate a durable ordinary SourceStaging with no C reservation,
+    /// installation or protection yet. Retained B groups remain fully checked.
+    pub(in crate::projection) fn validate_ordinary_import_unreserved_staging(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_staging: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistration> {
+        validate_unreserved_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )
+    }
+
+    /// Exact Initializing insert/readback or no-write replay under the caller's
+    /// held catalog gate. No source lease, C reservation or commit is granted.
+    pub(in crate::projection) fn register_ordinary_import_initializing(
+        &self,
+        c: &Connection,
+        source: &OrdinarySourceInputs<'_, '_>,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistrationEffect> {
+        register_import_initializing_for_source(
+            self,
+            c,
+            &ImportSourceInputs::Ordinary(*source),
+            source_copying,
+            cancel,
+        )
+    }
+
+    /// The private Staging intent names its future reservation, but no family
+    /// reservation, installation or protection may exist yet. Caller proves
+    /// this exact Staging row from the retained source transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection) fn validate_import_staging_unreserved(
+        &self,
+        c: &Connection,
+        source_a: &AllocationRecord,
+        source_p: &PreparedRecord,
+        source_activation: &ProviderActivationRecord,
+        source_capture: &PrivateCaptureProof,
+        source_staging: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<()> {
+        validate_unreserved(
+            self,
+            c,
+            source_a,
+            source_p,
+            source_activation,
+            source_capture,
+            source_staging,
+            UnreservedPhase::Staging,
+            cancel,
+        )?;
+        Ok(())
+    }
+
+    /// Full source Ready and destination Initializing/Absent SQL interpretation
+    /// under the caller's held family catalog gate and transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection) fn validate_import_initializing(
+        &self,
+        c: &Connection,
+        source_a: &AllocationRecord,
+        source_p: &PreparedRecord,
+        source_activation: &ProviderActivationRecord,
+        source_capture: &PrivateCaptureProof,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistration> {
+        validate_import_initializing(
+            self,
+            c,
+            source_a,
+            source_p,
+            source_activation,
+            source_capture,
+            source_copying,
+            cancel,
+        )
+    }
+
+    /// Exact insert or no-write replay; commit and close remain caller-owned.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::projection) fn register_import_initializing(
+        &self,
+        c: &Connection,
+        source_a: &AllocationRecord,
+        source_p: &PreparedRecord,
+        source_activation: &ProviderActivationRecord,
+        source_capture: &PrivateCaptureProof,
+        source_copying: &ProviderTransitionIntentRecord,
+        cancel: Option<&Cancellation>,
+    ) -> Result<ImportRegistrationEffect> {
+        register_import_initializing(
+            self,
+            c,
+            source_a,
+            source_p,
+            source_activation,
+            source_capture,
+            source_copying,
+            cancel,
+        )
+    }
+}

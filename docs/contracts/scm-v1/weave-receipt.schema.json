@@ -1,0 +1,665 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/weave-receipt.schema.json",
+  "title": "Layrs SCM V1 Weave Receipt",
+  "description": "Immutable audit receipt for an accepted, non-no-op Weave. Identity is BLAKE3(domain || NUL || RFC8785(receipt without weaveId)).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "weaveId",
+    "spaceId",
+    "sourceHeads",
+    "targetHeadsBefore",
+    "mergeBases",
+    "resultStepId",
+    "outcome",
+    "conflictIds",
+    "lensExecutions",
+    "determinismProfile",
+    "operationId",
+    "gateSnapshotId",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "layrs.scm.weave_receipt.v1"
+    },
+    "weaveId": {
+      "$ref": "common.schema.json#/$defs/ObjectId"
+    },
+    "spaceId": {
+      "$ref": "core.schema.json#/$defs/SpaceId"
+    },
+    "sourceHeads": {
+      "$ref": "#/$defs/StepIdSet"
+    },
+    "targetHeadsBefore": {
+      "$ref": "#/$defs/StepIdSet"
+    },
+    "mergeBases": {
+      "description": "Set sorted by baseId ASCII bytes.",
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/MergeBase"
+      }
+    },
+    "resultStepId": {
+      "$ref": "core.schema.json#/$defs/StepId"
+    },
+    "outcome": {
+      "enum": [
+        "clean",
+        "conflicted"
+      ]
+    },
+    "conflictIds": {
+      "description": "Exact transitive conflict closure of resultStepId, sorted by ID ASCII bytes.",
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "conflict.schema.json#/$defs/ConflictId"
+      }
+    },
+    "lensExecutions": {
+      "description": "Set sorted by executionId ASCII bytes.",
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/LensExecution"
+      }
+    },
+    "determinismProfile": {
+      "$ref": "#/$defs/DeterminismProfile"
+    },
+    "operationId": {
+      "$ref": "core.schema.json#/$defs/OperationId"
+    },
+    "gateSnapshotId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/ObjectId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdAt": {
+      "$ref": "core.schema.json#/$defs/Timestamp"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "clean"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "conflictIds": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "conflictIds": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "Blake3Id": {
+      "$ref": "common.schema.json#/$defs/ObjectId"
+    },
+    "Sha256Id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "StepIdSet": {
+      "description": "Set sorted by Step ID ASCII bytes.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "core.schema.json#/$defs/StepId"
+      }
+    },
+    "AlgorithmVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "MergeBase": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "baseId",
+            "kind",
+            "stepId"
+          ],
+          "properties": {
+            "baseId": {
+              "$ref": "#/$defs/Blake3Id"
+            },
+            "kind": {
+              "const": "step"
+            },
+            "stepId": {
+              "$ref": "core.schema.json#/$defs/StepId"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "baseId",
+            "kind",
+            "sourceStepIds",
+            "algorithm",
+            "result"
+          ],
+          "properties": {
+            "baseId": {
+              "$ref": "#/$defs/Blake3Id"
+            },
+            "kind": {
+              "const": "virtual"
+            },
+            "sourceStepIds": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/StepIdSet"
+                },
+                {
+                  "minItems": 2
+                }
+              ]
+            },
+            "algorithm": {
+              "$ref": "#/$defs/AlgorithmVersion"
+            },
+            "result": {
+              "$ref": "#/$defs/VirtualBaseResult"
+            }
+          }
+        }
+      ]
+    },
+    "VirtualBaseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "objectId"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "tree",
+            "object"
+          ]
+        },
+        "objectId": {
+          "$ref": "#/$defs/Blake3Id"
+        }
+      }
+    },
+    "LensPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lensId",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "lensId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "digest": {
+          "$ref": "#/$defs/Sha256Id"
+        }
+      }
+    },
+    "TermRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termId",
+        "role"
+      ],
+      "properties": {
+        "termId": {
+          "$ref": "conflict.schema.json#/$defs/TermId"
+        },
+        "role": {
+          "enum": [
+            "base",
+            "source",
+            "target",
+            "existing",
+            "incoming"
+          ]
+        }
+      }
+    },
+    "ResourceLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxMemoryBytes",
+        "maxExecutionMs",
+        "maxInputBytes",
+        "maxOutputBytes",
+        "maxFuel",
+        "maxBlocks",
+        "maxSegments",
+        "maxPaths",
+        "maxRecursionDepth"
+      ],
+      "properties": {
+        "maxMemoryBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxExecutionMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxInputBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxFuel": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxBlocks": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxSegments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPaths": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxRecursionDepth": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "AmbientCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "wallClock",
+        "randomness",
+        "locale",
+        "hostFilesystem",
+        "environment"
+      ],
+      "properties": {
+        "network": {
+          "const": false
+        },
+        "wallClock": {
+          "const": false
+        },
+        "randomness": {
+          "const": false
+        },
+        "locale": {
+          "const": false
+        },
+        "hostFilesystem": {
+          "const": false
+        },
+        "environment": {
+          "const": false
+        }
+      }
+    },
+    "HostPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "ambientCapabilities"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "digest": {
+          "$ref": "#/$defs/Sha256Id"
+        },
+        "ambientCapabilities": {
+          "$ref": "#/$defs/AmbientCapabilities"
+        }
+      }
+    },
+    "ResolutionFailureAction": {
+      "enum": [
+        "structural_fallback",
+        "reject"
+      ]
+    },
+    "ResolutionPolicy": {
+      "description": "Complete immutable policy for semantic and structural resolution. allowedMethods is duplicate-free and sorted lexicographically by ASCII method name.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "allowedMethods",
+        "automaticSideSelection",
+        "absentSemantics",
+        "combineOrder",
+        "manualInput",
+        "renameResolution",
+        "onUnsupportedLens",
+        "onUnavailableLens",
+        "onTimeout",
+        "onQuotaExceeded",
+        "onTrap",
+        "onInvalidOutput",
+        "onInvalidSignature",
+        "onDigestMismatch"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "digest": {
+          "$ref": "#/$defs/Sha256Id"
+        },
+        "allowedMethods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "conflict.schema.json#/$defs/ResolutionMethod"
+          }
+        },
+        "automaticSideSelection": {
+          "const": false
+        },
+        "absentSemantics": {
+          "const": "distinct_from_empty_file"
+        },
+        "combineOrder": {
+          "enum": [
+            "term_id_ascii",
+            "lens_defined"
+          ]
+        },
+        "manualInput": {
+          "enum": [
+            "allowed",
+            "forbidden"
+          ]
+        },
+        "renameResolution": {
+          "enum": [
+            "allowed",
+            "forbidden"
+          ]
+        },
+        "onUnsupportedLens": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onUnavailableLens": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onTimeout": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onQuotaExceeded": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onTrap": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onInvalidOutput": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onInvalidSignature": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        },
+        "onDigestMismatch": {
+          "$ref": "#/$defs/ResolutionFailureAction"
+        }
+      }
+    },
+    "DeterminismProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profileId",
+        "canonicalization",
+        "contentHash",
+        "mergeAlgorithm",
+        "baseAlgorithm",
+        "hostPolicy",
+        "resolutionPolicy",
+        "limits"
+      ],
+      "properties": {
+        "profileId": {
+          "$ref": "#/$defs/Blake3Id"
+        },
+        "canonicalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version"
+          ],
+          "properties": {
+            "id": {
+              "const": "rfc8785"
+            },
+            "version": {
+              "const": "RFC8785"
+            }
+          }
+        },
+        "contentHash": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version"
+          ],
+          "properties": {
+            "id": {
+              "const": "blake3"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        "mergeAlgorithm": {
+          "$ref": "#/$defs/AlgorithmVersion"
+        },
+        "baseAlgorithm": {
+          "$ref": "#/$defs/AlgorithmVersion"
+        },
+        "hostPolicy": {
+          "$ref": "#/$defs/HostPolicy"
+        },
+        "resolutionPolicy": {
+          "$ref": "#/$defs/ResolutionPolicy"
+        },
+        "limits": {
+          "$ref": "#/$defs/ResourceLimits"
+        }
+      }
+    },
+    "LensExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executionId",
+        "path",
+        "pin",
+        "implementationDigest",
+        "determinismProfileId",
+        "termRoles",
+        "result",
+        "conflictId"
+      ],
+      "properties": {
+        "executionId": {
+          "$ref": "#/$defs/Blake3Id"
+        },
+        "path": {
+          "$ref": "common.schema.json#/$defs/RepoPath"
+        },
+        "pin": {
+          "$ref": "#/$defs/LensPin"
+        },
+        "implementationDigest": {
+          "$ref": "#/$defs/Sha256Id"
+        },
+        "determinismProfileId": {
+          "$ref": "#/$defs/Blake3Id"
+        },
+        "termRoles": {
+          "description": "Execution-local role set sorted by termId then role ASCII bytes.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 192,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TermRole"
+          }
+        },
+        "result": {
+          "enum": [
+            "auto_resolved",
+            "conflicted",
+            "structural_fallback"
+          ]
+        },
+        "conflictId": {
+          "oneOf": [
+            {
+              "$ref": "conflict.schema.json#/$defs/ConflictId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "const": "auto_resolved"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          },
+          "then": {
+            "properties": {
+              "conflictId": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "conflictId": {
+                "$ref": "conflict.schema.json#/$defs/ConflictId"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

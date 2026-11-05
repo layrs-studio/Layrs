@@ -1,0 +1,7 @@
+/*
+ * Fonts ship with the application (SIL Open Font License 1.1, see each
+ * @fontsource package LICENSE). No third-party network request is made.
+ */
+@import "@fontsource/audiowide/latin-400.css";
+@import "@fontsource-variable/inter/index.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";

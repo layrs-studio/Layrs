@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "layrs.validation.linux-distribution.v1",
+  "date": "2026-09-20",
+  "source": {
+    "commit": "5ab6994e61cd49354b529234fc917037e1bcdb65",
+    "dirty": true,
+    "dirtyScope": "Documentation outside the compiled source digest",
+    "treeSha256": "da78b6ad4edda95c1ed6de2ce2a3d5fbe69caad809815128e80b87cbe345213a",
+    "cargoLockSha256": "cbd0b220fef9f206de9fc4a05ae38d4b55cab2d400258a7e875c1c9dbdec07d5",
+    "matchesWindowsQualified4": true
+  },
+  "archive": {
+    "path": "dist/native-linux-qualified4-20260920/candidate/layrs-5ab6994e61cd-x86_64-unknown-linux-gnu-release.tar.gz",
+    "bytes": 26595911,
+    "sha256": "1994acab66149cce9482110228261007bbbecb6be648a18f00d96cee400e3cb3",
+    "manifestSha256": "e9e6b2afea8fe098b58fb52b7ed79d7323cd58a392f0e5076d39b3c0a96fbd44",
+    "artifacts": 25,
+    "target": "x86_64-unknown-linux-gnu",
+    "rust": "1.85.0",
+    "signature": "unsigned"
+  },
+  "build": {
+    "network": "none",
+    "sourceMount": "readonly",
+    "imageId": "sha256:14ec4cc42d288d7e85fcf7659c48e1747005cbc82f5b84cf8a672bca4acd4e41",
+    "releaseCompileSeconds": 67,
+    "embeddedWasmGate": "PASS1.51s",
+    "sourceDigestStable": true
+  },
+  "smoke": {
+    "passed": true,
+    "seconds": 3.636,
+    "checks": [
+      "verify",
+      "init",
+      "capture-binary",
+      "restore",
+      "undo",
+      "weave-preview",
+      "supervised-weave",
+      "clean-status"
+    ]
+  },
+  "upgrade": {
+    "passed": true,
+    "oldArchiveSha256": "bd35d9f550250d08a714bc52df2584727ab61a15de4efe6104ce14d7b2c3d1a7",
+    "nativeFilesystemAttemptSeconds": 2.732,
+    "correctedWrapperReplaySeconds": 4.543,
+    "wrapperInputAndLifecycleTestsPassed": 8,
+    "provenanceWrittenBeforeRun": true,
+    "containerStoppedBeforeExport": true,
+    "filesystemReportedByStat": "ext2/ext3",
+    "report": "dist/upgrade-linux-qualified2-to4-final-20260920/recipe/report.json",
+    "containerReport": "dist/upgrade-linux-qualified2-to4-final-20260920/container.json",
+    "historicalOperationsRetained": 5,
+    "retainedReferences": [
+      "Marker",
+      "Release",
+      "Layer"
+    ],
+    "closedBackupByteIdentical": true,
+    "checksumCorruptionRejectedBeforeExecution": true,
+    "restorePreservesCheckoutRootIdentity": true,
+    "rollbackDropsPostBackupWritesFromActiveProject": true,
+    "incidentStateRetained": true,
+    "retainedContainer": "layrs-upgrade-d9841fa8-8451-4aac-8bd8-d4cfdcb0a71c",
+    "retainedVolume": "layrs-upgrade-d9841fa8-8451-4aac-8bd8-d4cfdcb0a71c-data"
+  },
+  "failedAttempt": {
+    "fixture": "dist/upgrade-linux-qualified2-to4-20260920/recipe",
+    "error": "restore historical Step: Invalid argument (os error 22)",
+    "filesystem": "Docker bind of Windows workspace",
+    "diagnosis": "Same archives, security options and recipe pass on native Linux volume; exact failing syscall was not traced.",
+    "preserved": true
+  },
+  "limits": [
+    "Same native format2/V3 snapshots only; not a cross-format migration guarantee.",
+    "No production deployment, PostgreSQL upgrade or MSI installation qualified here.",
+    "Docker Windows bind checkout remains unqualified; do not weaken exclusive filesystem guards.",
+    "Exported fixture copy is evidence, not an automatically relocated usable Worktree.",
+    "Packaged guides remain immutable build snapshots; this external report records the later Linux qualification."
+  ]
+}

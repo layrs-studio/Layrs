@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "layrs.validation.disk-full.v1",
+  "date": "2026-09-20",
+  "environment": {
+    "platform": "Linux in Docker Desktop on Windows",
+    "image": "layrs-linux-tests:validation",
+    "rust": "1.90.0",
+    "filesystem": "tmpfs",
+    "capacityBytes": 67108864,
+    "network": "none",
+    "sourceMount": "read-only",
+    "hostFilesystemFilled": false
+  },
+  "command": "node scripts/test-linux-disk-full.mjs",
+  "local": {
+    "test": "native_disk_full::actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads",
+    "result": "passed",
+    "elapsedMs": 743,
+    "checks": [
+      "actual errno 28 while filling disposable tmpfs",
+      "CAS failed write leaves no admitted partial object; retry verifies digest",
+      "capture failure preserves dirty user bytes and previous Operation/head; retry succeeds",
+      "materialization fails after durable journal with original files intact",
+      "recovery_pending is observable; recovery then retry preserves exact target bytes",
+      "native fsck passes after each recovered scenario"
+    ]
+  },
+  "server": {
+    "test": "v3_disk_full::filesystem_server_cas_refuses_enospc_without_installing_partial_bytes",
+    "result": "passed",
+    "elapsedMs": 45,
+    "checks": [
+      "actual ENOSPC returned from FsServerCas write",
+      "new object absent, previous object still verifies with exact bytes",
+      "retry after freeing test filler installs and verifies complete object"
+    ]
+  },
+  "strictLinuxClippy": "passed for both test targets",
+  "ci": "mandatory trust-gates Linux step added; remote GitHub execution not observed",
+  "limitations": [
+    "No actual Windows or macOS filesystem-full qualification",
+    "No PostgreSQL data-volume-full qualification or server SyncTransaction failure claim",
+    "tmpfs ENOSPC does not model device failure, power loss or block filesystem durability",
+    "Debug builds and small deterministic fixtures; no production throughput or recovery SLA"
+  ]
+}

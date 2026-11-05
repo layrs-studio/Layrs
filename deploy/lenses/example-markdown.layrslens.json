@@ -1,0 +1,76 @@
+{
+  "manifest": {
+    "contractVersion": "layrs.lens.v1",
+    "id": "example.markdown",
+    "name": "Markdown",
+    "version": "1.0.0",
+    "analyzer": {
+      "supportedMediaTypes": [
+        "text/markdown"
+      ],
+      "fileExtensions": [
+        "md",
+        "markdown"
+      ],
+      "capabilities": [
+        "view",
+        "preview",
+        "diff"
+      ]
+    },
+    "viewer": {
+      "viewerId": "example.viewer.markdown",
+      "schemaVersion": "layrs.viewer.v1",
+      "component": "layrs.viewer.worker.v1",
+      "previewKinds": [
+        "text"
+      ],
+      "diffKinds": [
+        "textLines"
+      ],
+      "reconcileStatuses": [],
+      "inspectorFields": [
+        {
+          "key": "line_count",
+          "label": "Lines",
+          "valueType": "number"
+        },
+        {
+          "key": "reference_count",
+          "label": "References",
+          "valueType": "number"
+        },
+        {
+          "key": "utf8_lossy",
+          "label": "UTF-8 lossy",
+          "valueType": "boolean"
+        }
+      ]
+    },
+    "resolutionMethods": [],
+    "bundle": {
+      "format": "layrslens.v1",
+      "entrypoints": {
+        "viewer": {
+          "runtime": "esm",
+          "path": "viewer.mjs",
+          "export": "render",
+          "digest": "sha256:3f9ffcb75c9ef6f108c5f1b236fb4f0383973a0dd336218345e68601d29cfbe6",
+          "resources": {
+            "maxMemoryBytes": 67108864,
+            "maxExecutionMs": 5000,
+            "maxInputBytes": 2097152,
+            "maxOutputBytes": 1048576
+          }
+        }
+      }
+    },
+    "digest": "sha256:bbb32ab8261d2472db62cc6da0916a0176cde82a75e21b6bb85e2ddee1ce092f"
+  },
+  "files": [
+    {
+      "path": "viewer.mjs",
+      "bytesBase64": "ZXhwb3J0IGZ1bmN0aW9uIHJlbmRlcihpbnB1dCkgeyByZXR1cm4ge3RpdGxlOmlucHV0LnBhdGgsYmxvY2tzOiBpbnB1dC5raW5kID09PSAnZGlmZicgPyBbe2tpbmQ6J2NvZGUnLHRleHQ6aW5wdXQubGluZXMubWFwKGxpbmUgPT4gKGxpbmUub3AgPT09ICdpbnNlcnQnID8gJysgJyA6IGxpbmUub3AgPT09ICdkZWxldGUnID8gJy0gJyA6ICcgICcpICsgbGluZS50ZXh0KS5qb2luKCdcbicpfV0gOiAoaW5wdXQudGV4dCB8fCAnJykuc3BsaXQoJ1xuJykuc2xpY2UoMCwxMDAwKS5tYXAobGluZSA9PiAoe2tpbmQ6bGluZS5zdGFydHNXaXRoKCcjJyk/J2hlYWRpbmcnOid0ZXh0Jyx0ZXh0OmxpbmUucmVwbGFjZSgvXiMrXHMqLywgJycpfSkpfTsgfQo="
+    }
+  ]
+}

@@ -2,10 +2,13 @@ use layrs_lens_sdk::{
     AnalysisInput, AnalysisOutput, Analyzer, AnalyzerContract, ArtifactKind, ArtifactMetadata,
     DiffKind, DiffModel, Dimensions, InspectorField, InspectorValueType, LensCapability,
     LensManifest, LensResult, MetadataValue, PreviewKind, PreviewModel, ProofCheck, ProofRecipe,
-    ProofStatus, ReconcileModel, ReconcileStatus, ViewerContract, infer_media_type_from_path,
+    ProofStatus, ViewerContract, infer_media_type_from_path,
 };
 
 pub const IMAGE_LENS_ID: &str = "layrs.image";
+pub const IMAGE_LENS_VERSION: &str = "1.0.0";
+pub const IMAGE_LENS_DIGEST: &str =
+    "sha256:948bb0e9e163708f43dd2a33f089ea6eaa70677aad26979ac0d4135705794c7f";
 pub const MAX_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_DECODED_PIXELS: u64 = 20_000_000;
 
@@ -63,7 +66,6 @@ pub fn manifest() -> LensManifest {
         vec![PreviewKind::Image],
         vec![DiffKind::ImageMetadata],
     );
-    viewer.reconcile_statuses = reconcile_statuses_v1();
     viewer.inspector_fields = vec![
         InspectorField {
             key: "format".to_string(),
@@ -90,7 +92,7 @@ pub fn manifest() -> LensManifest {
     LensManifest::new(
         IMAGE_LENS_ID,
         "Image",
-        "0.0.0",
+        IMAGE_LENS_VERSION,
         AnalyzerContract {
             supported_media_types: vec![
                 "image/png".to_string(),
@@ -106,7 +108,6 @@ pub fn manifest() -> LensManifest {
             capabilities: vec![
                 LensCapability::View,
                 LensCapability::Diff,
-                LensCapability::Reconcile,
                 LensCapability::Metadata,
                 LensCapability::Preview,
                 LensCapability::ProofRecipes,
@@ -114,14 +115,7 @@ pub fn manifest() -> LensManifest {
         },
         viewer,
     )
-}
-
-fn reconcile_statuses_v1() -> Vec<ReconcileStatus> {
-    vec![
-        ReconcileStatus::Unsupported,
-        ReconcileStatus::NeedsManualResolution,
-        ReconcileStatus::AutoResolvable,
-    ]
+    .with_digest(IMAGE_LENS_DIGEST)
 }
 
 pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
@@ -173,7 +167,6 @@ pub fn analyze(input: AnalysisInput<'_>) -> AnalysisOutput {
     output.diff = input
         .previous_bytes
         .map(|previous| diff_image_metadata(detect_image(previous), info));
-    output.reconcile = reconcile_for_image_diff(output.diff.as_ref());
     output.proof_recipes.push(image_budget_recipe(
         input.bytes.len() as u64,
         info.dimensions,
@@ -222,18 +215,6 @@ pub fn diff_image_metadata(previous: ImageInfo, current: ImageInfo) -> DiffModel
     diff.fields
         .insert("changed".to_string(), MetadataValue::Bool(changed));
     diff
-}
-
-pub fn reconcile_for_image_diff(diff: Option<&DiffModel>) -> ReconcileModel {
-    match diff.and_then(|diff| diff.fields.get("changed")) {
-        Some(MetadataValue::Bool(false)) => {
-            ReconcileModel::auto_resolvable("No image metadata changes to reconcile")
-        }
-        Some(MetadataValue::Bool(true)) => {
-            ReconcileModel::unsupported("Image reconciliation is not implemented in V1")
-        }
-        _ => ReconcileModel::unsupported("Reconciliation requires a previous image artifact"),
-    }
 }
 
 pub fn detect_image(bytes: &[u8]) -> ImageInfo {
@@ -415,6 +396,7 @@ fn image_budget_recipe(byte_len: u64, dimensions: Option<Dimensions>) -> ProofRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use layrs_lens_sdk::{LENS_CONTRACT_VERSION, ReconcileStatus};
 
     #[test]
     fn parses_png_dimensions_from_ihdr() {
@@ -455,27 +437,50 @@ mod tests {
     }
 
     #[test]
-    fn manifest_declares_core_lens_capabilities() {
+    fn manifest_matches_image_golden_contract_without_reconcile() {
         let manifest = manifest();
+        let pin = manifest.pin().expect("built-in Lens pin");
 
+        assert_eq!(manifest.contract_version, LENS_CONTRACT_VERSION);
+        assert_eq!(manifest.id, IMAGE_LENS_ID);
+        assert_eq!(manifest.version, IMAGE_LENS_VERSION);
+        assert_eq!(manifest.digest.as_deref(), Some(IMAGE_LENS_DIGEST));
+        assert_eq!(pin.lens_id, IMAGE_LENS_ID);
+        assert_eq!(pin.version, IMAGE_LENS_VERSION);
+        assert_eq!(pin.digest, IMAGE_LENS_DIGEST);
+        assert_eq!(manifest.viewer.preview_kinds, vec![PreviewKind::Image]);
+        assert_eq!(manifest.viewer.diff_kinds, vec![DiffKind::ImageMetadata]);
+        assert!(manifest.viewer.reconcile_statuses.is_empty());
+        assert!(manifest.resolution_methods.file.is_empty());
+        assert!(manifest.resolution_methods.block.is_empty());
         assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::View)
-        );
-        assert!(
-            manifest
-                .analyzer
-                .capabilities
-                .contains(&LensCapability::Diff)
-        );
-        assert!(
-            manifest
+            !manifest
                 .analyzer
                 .capabilities
                 .contains(&LensCapability::Reconcile)
         );
-        assert_eq!(manifest.viewer.diff_kinds, vec![DiffKind::ImageMetadata]);
+    }
+
+    #[test]
+    fn preview_and_diff_remain_available_without_reconcile() {
+        let png = png_bytes(32, 24);
+        let previous = png_bytes(16, 12);
+        let output = analyze(AnalysisInput::new("artifact", &png).with_previous_bytes(&previous));
+
+        assert_eq!(output.preview.expect("preview").kind, PreviewKind::Image);
+        assert_eq!(output.diff.expect("diff").kind, DiffKind::ImageMetadata);
+        assert_eq!(output.reconcile.status, ReconcileStatus::Unsupported);
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes
     }
 }

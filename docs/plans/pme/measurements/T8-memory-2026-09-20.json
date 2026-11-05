@@ -1,0 +1,46 @@
+{
+    "schemaVersion":  "layrs.local-memory-measurement.v1",
+    "measuredAt":  "2026-09-20T12:09:36.7962201Z",
+    "binarySha256":  "df5a9a6e69d4dae49d8b1bc0e6ff9a38b1cd2b7ec4cbf86a4df8e03cb9be630e",
+    "fixtureRoot":  "D:\\Layrs\\tmp\\layrs-volumes-cached-20260920",
+    "sampleIntervalMs":  50,
+    "samples":  [
+                    {
+                        "files":  10000,
+                        "command":  "status",
+                        "elapsedMs":  1714,
+                        "peakWorkingSetBytes":  28471296,
+                        "sampledPeakPrivateBytes":  20795392,
+                        "observations":  27
+                    },
+                    {
+                        "files":  10000,
+                        "command":  "diff",
+                        "elapsedMs":  1577,
+                        "peakWorkingSetBytes":  27455488,
+                        "sampledPeakPrivateBytes":  21348352,
+                        "observations":  25
+                    },
+                    {
+                        "files":  99000,
+                        "command":  "status",
+                        "elapsedMs":  19143,
+                        "peakWorkingSetBytes":  194134016,
+                        "sampledPeakPrivateBytes":  187191296,
+                        "observations":  305
+                    },
+                    {
+                        "files":  99000,
+                        "command":  "diff",
+                        "elapsedMs":  20743,
+                        "peakWorkingSetBytes":  194035712,
+                        "sampledPeakPrivateBytes":  193548288,
+                        "observations":  331
+                    }
+                ],
+    "limitations":  [
+                        "Windows process counters, sampled every 50ms; very short-lived peaks can escape private-byte sampling.",
+                        "Read-only status/diff on retained repeated-content fixtures, warm caches.",
+                        "Not a measurement of unique large files, remote sync, or all subprocesses."
+                    ]
+}

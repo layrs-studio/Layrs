@@ -5,17 +5,22 @@ work.
 
 ## Workspace
 
-Server-side organization boundary. A Workspace owns members, Teams, Spaces,
-devices, audit events and governance defaults.
+Server-side project ownership boundary. Each installation has a company
+Workspace. Additional organisations and private personal Workspaces are two
+independent server options, both disabled by default. See
+[project contexts](../contracts/project-contexts.md). The UI does not require
+users to create an organisation before creating their first project.
 
 ## Team
 
 Group of Workspace members used for permissions and ownership.
+Organisation teams can be assigned to several projects with a separate role
+in each. Legacy project-local teams retain their scope and existing grants.
 
 ## Space
 
 Repo-like project in Layrs. A Space contains Layers, artifacts, access policy
-registries, Steps and future Weaves.
+registries, Steps and Weaves.
 
 ## Local Space
 
@@ -31,6 +36,16 @@ Layers and Steps locally before it receives server ids.
 
 Switchable line of work inside a Space. A Layer behaves like a branch in the
 user mental model, but it is represented as a Layrs Layer, not a Git branch.
+
+## Room
+
+Lightweight working folder on a Layer, cheap enough to open one per task or
+agent. A Room has its own Layer derived from a source Layer; its Steps stay
+there until a Weave brings them into the target Layer. Rooms are virtual by
+default (files appear when read, copied from the Store on first write) and live
+outside the project tree. Product name for what the engine calls a Worktree
+(`loom` and `worktree` are accepted command aliases). See
+[ADR 0025](../decisions/0025-rooms.md).
 
 ## Step
 
@@ -56,18 +71,18 @@ material.
 
 ## Lens
 
-Adapter for a file/artifact type. A Lens owns preview, diff and future
-reconcile behavior. UI surfaces render Lens outputs.
+Adapter for a file/artifact type. A Lens owns preview, diff and reconcile
+behavior (reconcile currently covers text and code). UI surfaces render Lens outputs.
 
 ## View
 
-Readable projection of a Space, Layer, Step, artifact or future Weave.
+Readable projection of a Space, Layer, Step, artifact or Weave.
 
 ## Weave
 
-Future review and reconciliation flow between Layers. A Weave will connect
-intent, changed artifacts, Steps, Lens diffs, Proofs, Gates, comments and final
-decisions.
+Review and reconciliation flow between Layers. A Weave connects intent,
+changed artifacts, Steps, Lens diffs, comments and final decisions; Proofs and
+Gates are planned.
 
 ## Proof
 

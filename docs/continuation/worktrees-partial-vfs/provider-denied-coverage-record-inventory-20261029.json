@@ -1,0 +1,47 @@
+{
+  "scope": "C14 pure immutable denial record; source proposal, not integrated/compiled/tested and no durable protocol enabled.",
+  "source_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+  "files": [
+    {
+      "path": "base-inputs.json",
+      "bytes": 367,
+      "sha256": "7e150f17e054e3b01721fbcc5001900b5c5721d47c639d42567932cc00b7f709"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/denied_coverage/tests.rs",
+      "bytes": 14741,
+      "sha256": "f4160343c446a0e453abac6cd8555c3fe1819c4e2d8282e24557dc67db887b2f"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records/denied_coverage.rs",
+      "bytes": 17824,
+      "sha256": "239b94eb41a90210fdadb70694bb8ac5340b66fec07bb541b569858bafae1d60"
+    },
+    {
+      "path": "files/crates/layrs-store-local/src/projection/provider/records.rs",
+      "bytes": 2170,
+      "sha256": "3763fe0be9d4461a418f91792d3faf6254aa459bf32b61b8e21af6dbe3531975"
+    },
+    {
+      "path": "HANDOFF.md",
+      "bytes": 4148,
+      "sha256": "d6eb3f824d45a28331b575bc75f39b0eb5fbf4d37f35ae7497329ee8e37782e8"
+    },
+    {
+      "path": "manifest.sha256.json",
+      "bytes": 2005,
+      "sha256": "8e21ffab7ab08be56d3108a99dede4529387b4f59b9c859e4f56f07369fd0bfd"
+    },
+    {
+      "path": "proposal.patch",
+      "bytes": 35072,
+      "sha256": "cc7f278c561ee72053aa3b1a89fdbde21bbe107ac070cc191270b3547ef44022"
+    }
+  ],
+  "archive": {
+    "path": "provider-denied-coverage-record-proposal-20261029.tar.gz",
+    "bytes": 19982,
+    "sha256": "a98e2cfa0e6373bd7e5a171518eba75f47032a91e20aa8bf62a6f0b5379f2999",
+    "entries": 8
+  }
+}

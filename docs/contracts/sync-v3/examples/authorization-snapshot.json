@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "layrs.authorization-snapshot.v1",
+  "authorizationSnapshotId": "blake3:3333333333333333333333333333333333333333333333333333333333333333",
+  "spaceId": "space:demo",
+  "subject": { "kind": "principal", "principalId": "principal:alexa" },
+  "policySetId": "blake3:4444444444444444444444444444444444444444444444444444444444444444",
+  "authorizationEpoch": 1,
+  "requestBinding": {
+    "clientId": "client:desktop-a",
+    "idempotencyKey": "example-key-0001",
+    "requestDigest": "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "decisions": [{
+    "action": "repository.view.integrate",
+    "scope": { "kind": "space", "spaceId": "space:demo" },
+    "allowed": true,
+    "policyVersionIds": ["policy-version:default-v1"],
+    "reasonCode": "policy.allowed"
+  }],
+  "evaluatedAt": "2026-07-19T12:00:00Z"
+}

@@ -1,0 +1,16 @@
+{
+  "protocol": "layrs.sync.v3",
+  "type": "objectPlanRequest",
+  "spaceId": "space:demo",
+  "clientId": "client:desktop-a",
+  "requestId": "request:upload-1",
+  "objects": [
+    {
+      "kind": "chunk",
+      "objectId": "blake3:2222222222222222222222222222222222222222222222222222222222222222",
+      "canonicalByteLen": 4,
+      "encodedByteLen": 4,
+      "compression": "identity"
+    }
+  ]
+}

@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/products.schema.json",
+  "title": "Layrs Sync V3 canonical product envelopes",
+  "description": "Versioned product records carried in a Sync Transaction. ProductObjectId is BLAKE3('layrs-product-v1' || NUL || RFC8785-JCS(ProductEnvelope with only productObjectId omitted)); semantic admission also correlates kind, logical ID, record IDs, Space and exact dependency projections.",
+  "oneOf": [
+    { "$ref": "#/$defs/ProductEnvelope" }
+  ],
+  "$defs": {
+    "ProductEnvelope": {
+      "oneOf": [
+        { "$ref": "#/$defs/LayerProduct" },
+        { "$ref": "#/$defs/MarkerProduct" },
+        { "$ref": "#/$defs/ReleaseProduct" },
+        { "$ref": "#/$defs/ProofProduct" },
+        { "$ref": "#/$defs/GateDefinitionProduct" },
+        { "$ref": "#/$defs/GateEvaluationProduct" },
+        { "$ref": "#/$defs/PolicyProduct" },
+        { "$ref": "#/$defs/WeaveProduct" },
+        { "$ref": "#/$defs/DecisionProduct" }
+      ]
+    },
+    "ProductBase": {
+      "type": "object",
+      "required": ["kind", "productId", "productObjectId", "dependsOnStepIds", "dependsOnProductIds", "record"],
+      "properties": {
+        "kind": { "$ref": "common.schema.json#/$defs/ProductKind" },
+        "productId": { "$ref": "common.schema.json#/$defs/ProductLogicalId" },
+        "productObjectId": { "$ref": "common.schema.json#/$defs/ProductObjectId" },
+        "dependsOnStepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" },
+        "dependsOnProductIds": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ProductLogicalId" }
+        }
+      }
+    },
+    "LayerProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "required": ["previousProductObjectId"],
+          "properties": {
+            "kind": { "const": "layer" },
+            "productId": { "$ref": "common.schema.json#/$defs/LayerId" },
+            "previousProductObjectId": {
+              "oneOf": [
+                { "$ref": "common.schema.json#/$defs/ContentId" },
+                { "type": "null" }
+              ]
+            },
+            "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Layer" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "MarkerProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "marker" },
+            "productId": { "$ref": "common.schema.json#/$defs/MarkerId" },
+            "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Marker" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ReleaseProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "release" },
+            "productId": { "$ref": "common.schema.json#/$defs/ReleaseId" },
+            "record": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Release" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ImmutableSubject": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "objectId"],
+          "properties": {
+            "kind": { "enum": ["step", "tree", "conflict", "evidence", "product"] },
+            "objectId": { "$ref": "common.schema.json#/$defs/ContentId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "product"],
+          "properties": {
+            "kind": { "const": "productRoot" },
+            "product": { "$ref": "common.schema.json#/$defs/ProductRoot" }
+          }
+        }
+      ]
+    },
+    "ProofRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "proofId", "spaceId", "subject", "recipeObjectId", "evidenceObjectIds", "policyVersionObjectIds", "createdAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.proof.v1" },
+        "proofId": { "$ref": "common.schema.json#/$defs/ProofId" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "subject": { "$ref": "#/$defs/ImmutableSubject" },
+        "recipeObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "evidenceObjectIds": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "policyVersionObjectIds": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "createdAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ProofProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "proof" },
+            "productId": { "$ref": "common.schema.json#/$defs/ProofId" },
+            "record": { "$ref": "#/$defs/ProofRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "GateDefinitionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "gateDefinitionId", "spaceId", "name", "recipeObjectIds", "policyVersionObjectIds", "createdAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.gate-definition.v1" },
+        "gateDefinitionId": { "type": "string", "pattern": "^gate-definition:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "recipeObjectIds": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "policyVersionObjectIds": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "createdAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "GateDefinitionProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "required": ["previousProductObjectId"],
+          "properties": {
+            "kind": { "const": "gateDefinition" },
+            "productId": { "type": "string", "pattern": "^gate-definition:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+            "previousProductObjectId": {
+              "oneOf": [
+                { "$ref": "common.schema.json#/$defs/ContentId" },
+                { "type": "null" }
+              ]
+            },
+            "record": { "$ref": "#/$defs/GateDefinitionRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "GateEvaluationRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "gateEvaluationId", "spaceId", "gateDefinitionObjectId", "subject", "proofObjectIds", "policyVersionObjectIds", "outcome", "evaluatedAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.gate-evaluation.v1" },
+        "gateEvaluationId": { "type": "string", "pattern": "^gate-evaluation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "gateDefinitionObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "subject": { "$ref": "#/$defs/ImmutableSubject" },
+        "proofObjectIds": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "policyVersionObjectIds": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        },
+        "outcome": { "type": "string", "enum": ["passed", "failed"] },
+        "evaluatedAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "GateEvaluationProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "gateEvaluation" },
+            "productId": { "type": "string", "pattern": "^gate-evaluation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+            "record": { "$ref": "#/$defs/GateEvaluationRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PolicyRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "policyId", "versionId", "spaceId", "rulesObjectId", "createdAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.policy.v1" },
+        "policyId": { "type": "string", "pattern": "^policy:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "versionId": { "type": "string", "pattern": "^policy-version:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "rulesObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "createdAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "PolicyProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "required": ["previousProductObjectId"],
+          "properties": {
+            "kind": { "const": "policy" },
+            "productId": { "type": "string", "pattern": "^policy:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+            "previousProductObjectId": {
+              "oneOf": [
+                { "$ref": "common.schema.json#/$defs/ContentId" },
+                { "type": "null" }
+              ]
+            },
+            "record": { "$ref": "#/$defs/PolicyRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "WeaveProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "weave" },
+            "productId": { "type": "string", "pattern": "^weave:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+            "record": { "$ref": "https://layrs.dev/schemas/scm/v1/weave-receipt.schema.json" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecisionRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "decisionId", "spaceId", "layerId", "discardedHeadStepIds", "chosenHeadStepIds", "reason", "decidedBy", "decidedAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.ref-decision.v1" },
+        "decisionId": { "type": "string", "pattern": "^decision:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "layerId": { "$ref": "common.schema.json#/$defs/LayerId" },
+        "discardedHeadStepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" },
+        "chosenHeadStepIds": { "$ref": "common.schema.json#/$defs/StepIdSet" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 16384 },
+        "decidedBy": { "$ref": "common.schema.json#/$defs/ActorId" },
+        "decidedAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "DecisionProduct": {
+      "allOf": [
+        { "$ref": "#/$defs/ProductBase" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "decision" },
+            "productId": { "type": "string", "pattern": "^decision:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+            "record": { "$ref": "#/$defs/DecisionRecord" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

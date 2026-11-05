@@ -1,0 +1,229 @@
+/*
+ * Transitional skin for panels that predate the redesign and are embedded in
+ * the new pages until their own lot rebuilds them. Scoped to `.layrs-legacy`.
+ * Delete each rule once no embedded panel needs it.
+ */
+.layrs-legacy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  color: var(--text);
+}
+
+.layrs-legacy h2 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-lg);
+}
+
+.layrs-legacy h3 {
+  font-size: var(--text-md);
+}
+
+.layrs-legacy p {
+  margin: var(--space-1) 0;
+}
+
+.layrs-legacy label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--space-2) 0;
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+
+.layrs-legacy input:not([type="checkbox"]):not([type="radio"]),
+.layrs-legacy textarea,
+.layrs-legacy select {
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text);
+  font-weight: 400;
+}
+
+.layrs-legacy input:focus,
+.layrs-legacy textarea:focus,
+.layrs-legacy select:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.layrs-legacy textarea {
+  min-height: 80px;
+}
+
+.layrs-legacy input[type="checkbox"] {
+  accent-color: var(--layrs-coral);
+}
+
+.layrs-legacy button {
+  min-height: var(--control-height);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.layrs-legacy button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.layrs-legacy button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.layrs-legacy details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  padding: 0 var(--space-4);
+}
+
+.layrs-legacy details details {
+  margin: var(--space-3) 0;
+  background: var(--surface-2);
+}
+
+.layrs-legacy summary {
+  padding: var(--space-3) 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.layrs-legacy details[open] > summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+
+.layrs-legacy section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.layrs-legacy article {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.layrs-legacy code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.layrs-legacy small,
+.layrs-legacy .native-muted {
+  color: var(--text-muted);
+}
+
+.layrs-legacy a {
+  color: var(--accent-text);
+}
+
+.layrs-legacy ol,
+.layrs-legacy ul {
+  padding-left: var(--space-5);
+}
+
+.layrs-legacy .native-open,
+.layrs-legacy .native-toolbar,
+.layrs-legacy .native-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.layrs-legacy .native-open label:first-child {
+  flex: 1;
+  min-width: 220px;
+}
+
+.layrs-legacy .native-check {
+  flex-direction: row;
+  align-items: center;
+}
+
+.layrs-legacy .native-error {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.layrs-legacy [role="status"] {
+  color: var(--text-muted);
+}
+
+.layrs-legacy .native-preview {
+  padding: var(--space-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+}
+
+.layrs-legacy .native-history {
+  padding: 0;
+  list-style: none;
+}
+
+.layrs-legacy .native-history li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.layrs-legacy .native-history time {
+  display: block;
+  margin: 4px 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.layrs-legacy .native-changes details {
+  margin: var(--space-2) 0;
+}
+
+.layrs-legacy .native-changes pre {
+  max-height: 360px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.layrs-legacy .native-changes [data-op="insert"] {
+  color: var(--diff-add-text);
+}
+
+.layrs-legacy .native-changes [data-op="delete"] {
+  color: var(--diff-del-text);
+}
+
+.layrs-legacy .native-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(250px, 1fr);
+  gap: var(--space-5);
+}
+
+@media (max-width: 900px) {
+  .layrs-legacy .native-columns {
+    grid-template-columns: 1fr;
+  }
+}

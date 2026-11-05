@@ -1,38 +1,57 @@
-export {
-  ActionGroup,
-  AppShell,
-  ArtifactCard,
-  ConfirmModal,
-  DangerZone,
-  NotificationProvider,
-  PolicyMatrix,
-  ProofPanel,
-  Sidebar,
-  StatusPill,
-  Tabs,
-  ToastStack,
-  VirtualWeaveList
-} from "./studio-components";
+export { NativeReviewSurface } from "./native-review";
+export type { NativeReviewContext } from "./native-review-context";
 
-export type {
-  ActionGroupProps,
-  AppShellProps,
-  ArtifactCardProps,
-  ConfirmModalProps,
-  DangerZoneProps,
-  Notification,
-  NotificationContextValue,
-  NotificationInput,
-  NotificationTone,
-  PolicyMatrixProps,
-  ProofPanelProps,
-  SidebarItem,
-  SidebarProps,
-  StatusPillProps,
-  TabItem,
-  TabsProps,
-  ToastStackProps,
-  VirtualWeaveListProps
-} from "./studio-components";
+export { NativeAdminSurface, nativeAdminRoute } from "./native-admin";
+export type { NativeAdminCommand } from "./native-admin";
+export { NativeReleaseSurface } from "./native-release";
+export { NativeHistorySurface } from "./native-history";
+export { NativeProjectFiles } from "./native-project-files";
+export { projectionStoreFiles, projectionCaptureMatches } from "./native-projection-store-model";
+export { validateProjectionSelection, selectedProjectionPaths, projectionSelectionIncludes } from "./native-projection-selection";
+export type { NativeProjectionSelection, ProjectionPathSemantics } from "./native-projection-selection";
+export type {NativeProjectionIdentity,NativeStoreProjection,NativeProjectionStatus,NativeCapturedProjectionPatch} from "./native-projection-store-model";
+export { NativeRemoteProjectFiles } from "./native-remote-project-files";
+export type { NativeProjectionContext, NativeProjectionPage, NativeProjectionPageRequest, NativeProjectionPageEntry, NativeProjectionTarget } from "./native-remote-project-files-model";
+export { checkNativeNamespaceMutation, nativePathKey, nativeProjectionReady, nativeProjectFileLabel } from "./native-project-files-model";
+export type { NativeProjectionAnchor, NativeProjectFile, NativePathReservation, NativeProjectFilesSnapshot, NativeNamespaceMutation, NativeNamespacePreviewRequest, NativeNamespaceCheck } from "./native-project-files-model";
 
-export { useNotifications } from "./studio-components";
+// Redesign foundations: appearance, routing, shell and components.
+export { APPEARANCE_STORAGE_KEY, applyAppearance, prefersReducedMotion, resolveTheme, setAppearance, useAppearance } from "./foundation/appearance";
+export type { Appearance, ResolvedTheme, ThemePreference } from "./foundation/appearance";
+export { href, Link, matchRoute, navigate, segment, useLocation } from "./shell/router";
+export type { Location } from "./shell/router";
+export { AppShell, Breadcrumbs, NavItem, NavSection, PageHeader, SearchTrigger } from "./shell/AppShell";
+export { AllProjectsNav, OrganisationSelector, PersonalProjectsNav } from "./shell/OrganisationSelector";
+export type { Crumb } from "./shell/AppShell";
+export { Brand } from "./shell/Brand";
+export { ThemeSwitcher } from "./shell/ThemeSwitcher";
+export { Button, IconButton } from "./components/Button";
+export type { ButtonProps, ButtonSize, ButtonVariant, IconButtonProps } from "./components/Button";
+export { Checkbox, PasswordField, SelectField, Switch, TextAreaField, TextField } from "./components/Field";
+export { OrganisationSettingsPanel } from "./team/OrganisationSettingsPanel";
+export { Avatar, Badge, Banner, Card, EmptyState, Kbd, Loading, Skeleton, Spinner, StatusDot, TechnicalId, useDelayedFlag } from "./components/Feedback";
+export type { Tone } from "./components/Feedback";
+export { Dialog } from "./components/Dialog";
+export { Tabs } from "./components/Tabs";
+export type { TabItem } from "./components/Tabs";
+export { SegmentedControl } from "./components/SegmentedControl";
+export { Menu } from "./components/Menu";
+export type { MenuItem } from "./components/Menu";
+export { ToastProvider, useToast } from "./components/Toast";
+export type { ToastInput } from "./components/Toast";
+export { CommandPalette, filterCommands, useCommandPaletteShortcut } from "./components/CommandPalette";
+export type { Command } from "./components/CommandPalette";
+export { DiffView } from "./components/DiffView";
+export type { DiffMode } from "./components/DiffView";
+export { diffStats, inlineRows, sideBySideRows } from "./components/diff-model";
+export type { DiffLine, DiffStats } from "./components/diff-model";
+export { formatBytes, formatDateTime, formatRelativeTime } from "./foundation/format";
+export { AppearanceSettings } from "./pages/AppearanceSettings";
+export type * from "./api/catalog-types";
+export * from "./team";
+export * from "./collab";
+export { ProjectLensProvider, useLensRuntime } from "./lenses/runtime";
+export { LensViewer } from "./lenses/LensViewer";
+export { FilePreview } from "./lenses/FilePreview";
+export { InstalledLensesPanel, ProjectLensesPanel } from "./lenses/LensPanels";
+export type { LensCatalog, LensCatalogItem, LensConfiguration, LensPacket, LensPin, LensTransport, LensViewInput } from "./lenses/types";

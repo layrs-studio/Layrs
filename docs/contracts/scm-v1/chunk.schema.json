@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/scm/v1/chunk.schema.json",
+  "title": "Layrs SCM V1 Chunk",
+  "description": "Canonical raw Chunk contract. ChunkId is BLAKE3(layrs-chunk-v1 || NUL || decoded raw chunk bytes); the JSON envelope, base64, compression and transport framing are not identity material.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "chunkId", "byteLength", "content"],
+  "properties": {
+    "schemaVersion": { "const": "layrs.chunk.v1" },
+    "chunkId": { "$ref": "#/$defs/ChunkId" },
+    "byteLength": { "type": "integer", "minimum": 1 },
+    "content": { "$ref": "#/$defs/Base64Content" }
+  },
+  "$defs": {
+    "ChunkId": { "$ref": "common.schema.json#/$defs/ObjectId" },
+    "Base64Content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encoding", "bytes"],
+      "properties": {
+        "encoding": { "const": "base64" },
+        "bytes": {
+          "type": "string",
+          "minLength": 4,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      }
+    }
+  }
+}

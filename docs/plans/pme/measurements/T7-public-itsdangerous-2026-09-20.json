@@ -1,0 +1,170 @@
+{
+  "schemaVersion": "layrs.git-bridge.public-pilot.v1",
+  "status": "refused",
+  "repository": "https://github.com/pallets/itsdangerous",
+  "head": "672971d66a2ef9f85151e53283113f33d642dabd",
+  "readme": "https://github.com/pallets/itsdangerous/blob/672971d66a2ef9f85151e53283113f33d642dabd/README.md",
+  "license": "https://github.com/pallets/itsdangerous/blob/672971d66a2ef9f85151e53283113f33d642dabd/LICENSE.txt",
+  "platform": "win32",
+  "architecture": "x64",
+  "binary": "debug",
+  "timingsMs": {},
+  "assertions": {
+    "sourceEntireMirrorUnchanged": true,
+    "nativeStoreCreated": false
+  },
+  "scope": "Complete advertised local branches and commit tags, including all ancestors. Public open-source repository qualification; no private repository or human PME pilot.",
+  "sourceFingerprintBefore": {
+    "sha256": "8af434f07df7be14565acd16d3b2722ba0b7bf129011ec4f0076ca80d0eb110b",
+    "bytes": 1165276,
+    "files": 22
+  },
+  "gitVersion": "git version 2.45.1.windows.1",
+  "sourceReferences": [
+    {
+      "name": "refs/heads/main",
+      "id": "672971d66a2ef9f85151e53283113f33d642dabd"
+    },
+    {
+      "name": "refs/heads/stable",
+      "id": "b0410878b9e46bd4c008eeac8cf4ed3d345e69b4"
+    },
+    {
+      "name": "refs/tags/0.10",
+      "id": "18c9844cdfa2727d5951e8627ab97b70186065a2"
+    },
+    {
+      "name": "refs/tags/0.11",
+      "id": "b5352b34c57cd680aaef53d07238c41c021c2032"
+    },
+    {
+      "name": "refs/tags/0.12",
+      "id": "59f3bf7877e21af8e5571993edb6834744858583"
+    },
+    {
+      "name": "refs/tags/0.13",
+      "id": "847cbb85b1c4e2a431d8547759495bb56a2e6c83"
+    },
+    {
+      "name": "refs/tags/0.14",
+      "id": "1848718e1386ebeaec990ff34c20fb05ec3008d7"
+    },
+    {
+      "name": "refs/tags/0.15",
+      "id": "56ddae16b77ef23efc4ded9d3411c13ef9ce3cf2"
+    },
+    {
+      "name": "refs/tags/0.16",
+      "id": "dfa3a8c7573836aa7cdbc57bf6a13c3780710b5a"
+    },
+    {
+      "name": "refs/tags/0.17",
+      "id": "d3fef96cc7c220dc862cbd6e83ac0ec4e5855641"
+    },
+    {
+      "name": "refs/tags/0.18",
+      "id": "d936d4ad0f2a54f4d994dbfccc694344b1eb8eb5"
+    },
+    {
+      "name": "refs/tags/0.19",
+      "id": "e434dd49c898f9d9cc234eaf7ff6d490038174ea"
+    },
+    {
+      "name": "refs/tags/0.20",
+      "id": "e0ba072367aee910f3e1254fdd5ea70da44fcc16"
+    },
+    {
+      "name": "refs/tags/0.21",
+      "id": "1803415a5d195b825f993611b911898e7ba7b058"
+    },
+    {
+      "name": "refs/tags/0.22",
+      "id": "72f11600534b2c77aa4f72d406b122eb1cb7c282"
+    },
+    {
+      "name": "refs/tags/0.23",
+      "id": "ccc9c1e43030da167bffbc35ee059dede1b30b60"
+    },
+    {
+      "name": "refs/tags/0.24",
+      "id": "4c3923561fd7d3aa53013b0b6b27bb3221bd473a"
+    },
+    {
+      "name": "refs/tags/0.9",
+      "id": "23ab9411ed400647a85d3137d4973a6ef652c044"
+    },
+    {
+      "name": "refs/tags/0.9.1",
+      "id": "d5b350b46bc26b738bd5262f482fbf11001b3b4a"
+    },
+    {
+      "name": "refs/tags/1.0.0",
+      "id": "2ef8fe08c159de9f1232dbab86f8606aecd6392b"
+    },
+    {
+      "name": "refs/tags/1.0.x",
+      "id": "76117a2e41164e6aa75714b54dbbceb626cc5bf2"
+    },
+    {
+      "name": "refs/tags/1.1.0",
+      "id": "6e6359864be6055860adf1e11d8bb0db69ff1840"
+    },
+    {
+      "name": "refs/tags/1.1.x",
+      "id": "a2e22da8e0b3d3b09f7138279cc11563c65ea7a3"
+    },
+    {
+      "name": "refs/tags/2.0.0",
+      "id": "0418c73347e37d5959d4959ff50ac41e4fe7dd5f"
+    },
+    {
+      "name": "refs/tags/2.0.0a1",
+      "id": "ec0b069b8c704ef3c55efbc47d50330d9e04fbb4"
+    },
+    {
+      "name": "refs/tags/2.0.0rc1",
+      "id": "c23001855d36962ee19e19f9c7286c1b2ec534b8"
+    },
+    {
+      "name": "refs/tags/2.0.0rc2",
+      "id": "487002068fe42deb5aca99bf6657994fccf86fb9"
+    },
+    {
+      "name": "refs/tags/2.0.1",
+      "id": "5937cda3c4850603b917f8e1ab962c2a719491aa"
+    },
+    {
+      "name": "refs/tags/2.0.x",
+      "id": "13edd872d313c19a224e24c8d73215a3e3ef2c8f"
+    },
+    {
+      "name": "refs/tags/2.1.0",
+      "id": "acd62f69b4c07a2881affdc972781993aa77e89b"
+    },
+    {
+      "name": "refs/tags/2.1.1",
+      "id": "90d08f926b2c8c11fe6e6b79fef8ab3ade677209"
+    },
+    {
+      "name": "refs/tags/2.1.2",
+      "id": "afd7d08ccf422b58fd5b43c3fac699cd9efd1bf7"
+    },
+    {
+      "name": "refs/tags/2.1.x",
+      "id": "3f7d737659771fcf13740f79b5b0b1ffd0cb16f0"
+    },
+    {
+      "name": "refs/tags/2.2.0",
+      "id": "629bedb84ee95758388dda140cc740f12b52d4d5"
+    }
+  ],
+  "licenseSha256": "63af09891b6be8ad1a4252ed43af0f4efba7fc948e228367bed7f3c5ae0b09d7",
+  "error": "layrs.exe --json git import D:\\Layrs\\layrs\\tmp\\t7-itsdangerous-20260920\\source.git: 1\nGit ScanReferences: 0/?; 0 objects; 0 bytes\nGit ImportCommits: 0/678; 0 objects; 2632 bytes\n\n{\"error\":{\"message\":\"Unsupported(\\\"Git submodule/gitlink\\\")\"},\"ok\":false}\n",
+  "selectedCommitCount": 678,
+  "advertisedReferenceCount": 379,
+  "sourceFingerprintAfter": {
+    "sha256": "8af434f07df7be14565acd16d3b2722ba0b7bf129011ec4f0076ca80d0eb110b",
+    "bytes": 1165276,
+    "files": 22
+  }
+}

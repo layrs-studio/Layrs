@@ -1,0 +1,30 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://layrs.dev/schemas/sync-v3/content-policy-v2.schema.json",
+  "title":"Whole-Space rules with conservative content path restrictions",
+  "type":"object","additionalProperties":false,
+  "required":["schemaVersion","rules","contentPolicies"],
+  "properties":{
+    "schemaVersion":{"const":"layrs.space-policy-rules.v2"},
+    "rules":{"type":"array","maxItems":256,"items":{"$ref":"#/$defs/ActionRule"}},
+    "contentPolicies":{"type":"array","minItems":1,"maxItems":64,"items":{
+      "type":"object","additionalProperties":false,"required":["principalIds","default","rules"],
+      "properties":{"principalIds":{"$ref":"#/$defs/Principals"},"default":{"$ref":"#/$defs/Effect"},"rules":{"type":"array","maxItems":256,"items":{
+        "type":"object","additionalProperties":false,"required":["effect","selector"],
+        "properties":{"effect":{"$ref":"#/$defs/Effect"},"selector":{
+          "type":"object","additionalProperties":false,"required":["kind","path"],
+          "properties":{"kind":{"enum":["exact","subtree"]},"path":{"type":"string","minLength":1,"maxLength":4096}}
+        }}
+      }}}
+    }}
+  },
+  "$defs":{
+    "Effect":{"enum":["allow","deny"]},
+    "Principals":{"type":"array","minItems":1,"maxItems":256,"items":{"$ref":"common.schema.json#/$defs/PrincipalId"}},
+    "ActionRule":{"type":"object","additionalProperties":false,"required":["effect","principalIds","actions"],"properties":{
+      "effect":{"$ref":"#/$defs/Effect"},"principalIds":{"$ref":"#/$defs/Principals"},
+      "actions":{"type":"array","minItems":1,"maxItems":32,"items":{"enum":["space.bootstrap","object.plan_upload","object.complete_upload","object.plan_fetch","object.fetch","event.read","transaction.apply","policy.administer","audit.read_evidence","review.read","review.write","review.approve","proof.run","release.read","release.publish","release.revoke"]}}
+    }}
+  },
+  "$comment":"Runtime additionally validates normalized RepoPath components, path UTF-8 byte length <=4096 and <=1024 total content rules. Selectors are literals, never glob/regex. All applicable policies intersect; any matching deny wins. Fields absent in v1 remain forbidden in v1."
+}

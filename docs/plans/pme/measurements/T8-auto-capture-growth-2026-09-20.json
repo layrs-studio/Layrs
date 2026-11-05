@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "layrs.auto-capture-growth.v1",
+  "date": "2026-09-20",
+  "platform": "windows",
+  "command": "cargo test --offline -p layrs-client-core --test native_capture_growth -- --nocapture",
+  "result": "passed",
+  "payloadBytes": 65536,
+  "uniqueChanges": 32,
+  "reusedChanges": 32,
+  "unchangedPolls": 128,
+  "baseline": {
+    "automaticObservations": 0,
+    "casBytes": 67802,
+    "objectsByKind": {
+      "chunk_raw": 1,
+      "file_manifest": 1,
+      "repository_view": 1,
+      "step": 1,
+      "tree": 1
+    },
+    "observations": 1,
+    "operations": 1,
+    "steps": 1,
+    "sqliteFileBytes": 618496,
+    "storeBytes": 719246
+  },
+  "afterUnique": {
+    "automaticObservations": 32,
+    "casBytes": 2239802,
+    "objectsByKind": {
+      "chunk_raw": 33,
+      "file_manifest": 33,
+      "repository_view": 33,
+      "step": 33,
+      "tree": 33
+    },
+    "observations": 33,
+    "operations": 33,
+    "steps": 33,
+    "sqliteFileBytes": 1028096,
+    "storeBytes": 3300846
+  },
+  "afterReused": {
+    "automaticObservations": 64,
+    "casBytes": 2282106,
+    "objectsByKind": {
+      "chunk_raw": 33,
+      "file_manifest": 33,
+      "repository_view": 65,
+      "step": 65,
+      "tree": 33
+    },
+    "observations": 65,
+    "operations": 65,
+    "steps": 65,
+    "sqliteFileBytes": 1400832,
+    "storeBytes": 3715886
+  },
+  "uniqueCaptureMs": 16685,
+  "reusedCaptureMs": 25327,
+  "totalMs": 62043,
+  "unchangedGrowthBytes": 0,
+  "historicalBytesVerified": true,
+  "fsckClean": true,
+  "limitations": [
+    "Debug synthetic fixture; not a throughput SLA.",
+    "AutomaticIdle core path; Desktop debounce/timer cadence not simulated.",
+    "Full history retained; no pruning and no disk allocation/block measurement.",
+    "SQLite page allocation may vary between runs; one recorded run."
+  ]
+}

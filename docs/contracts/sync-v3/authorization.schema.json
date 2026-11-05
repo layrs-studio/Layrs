@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/authorization.schema.json",
+  "title": "Layrs Sync V3 canonical policy and authorization records",
+  "oneOf": [
+    { "$ref": "#/$defs/PolicySet" },
+    { "$ref": "#/$defs/AuthorizationSnapshot" }
+  ],
+  "$defs": {
+    "PolicyVersionEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyId", "policyVersionId", "policyProductObjectId", "dependencyObjectIds"],
+      "properties": {
+        "policyId": { "type": "string", "pattern": "^policy:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "policyVersionId": { "type": "string", "pattern": "^policy-version:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "policyProductObjectId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "dependencyObjectIds": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/ContentId" }
+        }
+      }
+    },
+    "PolicySet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "policySetId", "spaceId", "policyVersions"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.policy-set.v1" },
+        "policySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "policyVersions": {
+          "description": "Canonical set sorted by policyId. Exactly one version of each logical Policy may appear in a PolicySet.",
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/PolicyVersionEntry" }
+        }
+      }
+    },
+    "AuthorizationSubject": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "principalId"],
+          "properties": { "kind": { "const": "principal" }, "principalId": { "$ref": "common.schema.json#/$defs/PrincipalId" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "subjectDigest"],
+          "properties": { "kind": { "const": "subjectDigest" }, "subjectDigest": { "$ref": "common.schema.json#/$defs/ContentId" } }
+        }
+      ]
+    },
+    "AuthorizationScope": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "spaceId"],
+          "properties": { "kind": { "const": "space" }, "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "layerId"],
+          "properties": { "kind": { "const": "layer" }, "layerId": { "$ref": "common.schema.json#/$defs/LayerId" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "root", "repoPath"],
+          "properties": { "kind": { "const": "path" }, "root": { "$ref": "common.schema.json#/$defs/AuthorizationRoot" }, "repoPath": { "$ref": "common.schema.json#/$defs/RepoPath" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "product"],
+          "properties": { "kind": { "const": "product" }, "product": { "$ref": "common.schema.json#/$defs/ProductRoot" } }
+        }
+      ]
+    },
+    "AuthorizationDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "scope", "allowed", "policyVersionIds", "reasonCode"],
+      "properties": {
+        "action": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9_.:-]*$" },
+        "scope": { "$ref": "#/$defs/AuthorizationScope" },
+        "allowed": { "type": "boolean" },
+        "policyVersionIds": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^policy-version:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }
+        },
+        "reasonCode": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9_.:-]*$" }
+      }
+    },
+    "AuthorizationRequestBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clientId", "idempotencyKey", "requestDigest"],
+      "properties": {
+        "clientId": { "$ref": "common.schema.json#/$defs/ClientId" },
+        "idempotencyKey": { "$ref": "common.schema.json#/$defs/IdempotencyKey" },
+        "requestDigest": { "$ref": "common.schema.json#/$defs/ContentId" }
+      }
+    },
+    "AuthorizationSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "authorizationSnapshotId", "spaceId", "subject", "policySetId", "authorizationEpoch", "requestBinding", "decisions", "evaluatedAt"],
+      "properties": {
+        "schemaVersion": { "const": "layrs.authorization-snapshot.v1" },
+        "authorizationSnapshotId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "spaceId": { "$ref": "common.schema.json#/$defs/SpaceId" },
+        "subject": { "$ref": "#/$defs/AuthorizationSubject" },
+        "policySetId": { "$ref": "common.schema.json#/$defs/ContentId" },
+        "authorizationEpoch": { "type": "integer", "minimum": 1 },
+        "requestBinding": { "$ref": "#/$defs/AuthorizationRequestBinding" },
+        "decisions": {
+          "type": "array", "maxItems": 10000, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/AuthorizationDecision" }
+        },
+        "evaluatedAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    }
+  }
+}

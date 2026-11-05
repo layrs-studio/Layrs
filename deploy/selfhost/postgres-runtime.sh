@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+LAYRS_RUNTIME_PASSWORD=$(cat /run/secrets/runtime_password)
+export LAYRS_RUNTIME_PASSWORD
+psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 <<'SQL'
+\getenv runtime_password LAYRS_RUNTIME_PASSWORD
+CREATE ROLE layrs_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS PASSWORD :'runtime_password';
+SQL
+unset LAYRS_RUNTIME_PASSWORD

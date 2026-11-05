@@ -1,9 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Layrs Studio Desktop</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="color-scheme" content="dark light" />
+    <style>html{background:#121215}html[data-theme="light"]{background:#f6f5f3}</style>
+    <script>
+      // Mirrors packages/ui/src/foundation/appearance.ts; runs before the first paint.
+      (function () {
+        var root = document.documentElement;
+        try {
+          var stored = JSON.parse(localStorage.getItem("layrs.appearance.v1") || "{}");
+          var theme = stored.theme === "light" || stored.theme === "system" ? stored.theme : "dark";
+          if (theme === "system") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          root.dataset.theme = theme;
+          if (stored.reduceMotion === true) root.dataset.motion = "reduced";
+        } catch (error) {
+          root.dataset.theme = "dark";
+        }
+      })();
+    </script>
+    <title>Layrs</title>
   </head>
   <body>
     <div id="root"></div>

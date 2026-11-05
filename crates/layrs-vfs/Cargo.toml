@@ -1,0 +1,20 @@
+[package]
+name = "layrs-vfs"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+layrs-core = { path = "../layrs-core" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Storage_CloudFilters",
+  "Win32_Storage_FileSystem",
+  "Win32_System_LibraryLoader",
+  "Win32_System_CorrelationVector",
+  "Win32_System_IO",
+  "Win32_Security",
+] }

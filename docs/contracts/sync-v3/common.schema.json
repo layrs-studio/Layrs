@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://layrs.dev/schemas/sync-v3/common.schema.json",
+  "title": "Layrs Sync V3 shared definitions",
+  "$defs": {
+    "ContentId": { "$ref": "https://layrs.dev/schemas/scm/v1/common.schema.json#/$defs/ObjectId" },
+    "ProductObjectId": {
+      "description": "BLAKE3 identity of the exact canonical ProductEnvelope defined by Sync V3.",
+      "$ref": "https://layrs.dev/schemas/scm/v1/common.schema.json#/$defs/ObjectId"
+    },
+    "EvidenceObjectId": {
+      "description": "BLAKE3 identity of exact opaque evidence bytes; evidence is not JSON-canonicalized.",
+      "$ref": "https://layrs.dev/schemas/scm/v1/common.schema.json#/$defs/ObjectId"
+    },
+    "EvidenceByteLength": {
+      "description": "Decoded opaque evidence byte length. Sync V3 evidence objects are limited to 64 MiB.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "FileId": { "$ref": "https://layrs.dev/schemas/scm/v1/file.schema.json#/$defs/FileId" },
+    "FileManifestId": { "$ref": "https://layrs.dev/schemas/scm/v1/file.schema.json#/$defs/FileManifestId" },
+    "StepId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/StepId" },
+    "SpaceId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/SpaceId" },
+    "LayerId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/LayerId" },
+    "MarkerId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/MarkerId" },
+    "ReleaseId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/ReleaseId" },
+    "ProofId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/ProofId" },
+    "ActorId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/ActorId" },
+    "DeviceId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/DeviceId" },
+    "OperationId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/OperationId" },
+    "ObservationId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/ObservationId" },
+    "RepositoryViewId": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/RepositoryViewId" },
+    "Timestamp": { "$ref": "https://layrs.dev/schemas/scm/v1/core.schema.json#/$defs/Timestamp" },
+    "ClientId": {
+      "type": "string",
+      "pattern": "^client:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "PrincipalId": {
+      "type": "string",
+      "pattern": "^principal:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "RequestId": {
+      "type": "string",
+      "pattern": "^request:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "PlanId": {
+      "type": "string",
+      "pattern": "^plan:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "TransactionId": {
+      "type": "string",
+      "pattern": "^transaction:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "EventId": {
+      "type": "string",
+      "pattern": "^event:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "MutationId": {
+      "type": "string",
+      "pattern": "^mutation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "Cursor": {
+      "description": "Opaque authenticated/signed cursor. Its endpoint-specific claims bind the principal, Space, authorization epoch and scan/request position; consumers must never parse it as a CAS condition.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "RepoPath": { "$ref": "https://layrs.dev/schemas/scm/v1/common.schema.json#/$defs/RepoPath" },
+    "ObjectKind": {
+      "type": "string",
+      "enum": ["step", "repository_view", "chunk", "file_manifest", "tree", "conflict", "symlink", "tombstone", "evidence", "product", "policy_set", "authorization_snapshot"]
+    },
+    "Compression": { "type": "string", "enum": ["identity", "zstd"] },
+    "ObjectReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "objectId"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/ObjectKind" },
+        "objectId": { "$ref": "#/$defs/ContentId" }
+      }
+    },
+    "ObjectDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "objectId", "canonicalByteLen", "encodedByteLen", "compression"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/ObjectKind" },
+        "objectId": { "$ref": "#/$defs/ContentId" },
+        "canonicalByteLen": { "type": "integer", "minimum": 0 },
+        "encodedByteLen": { "type": "integer", "minimum": 0 },
+        "compression": { "$ref": "#/$defs/Compression" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "evidence" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "objectId": { "$ref": "#/$defs/EvidenceObjectId" },
+              "canonicalByteLen": { "$ref": "#/$defs/EvidenceByteLength" }
+            }
+          }
+        }
+      ]
+    },
+    "StepIdSet": {
+      "type": "array",
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/StepId" }
+    },
+    "ProductKind": {
+      "type": "string",
+      "enum": ["layer", "marker", "release", "proof", "gateDefinition", "gateEvaluation", "policy", "weave", "decision"]
+    },
+    "ProductLogicalId": {
+      "type": "string",
+      "pattern": "^(?:layer|marker|release|proof|gate-definition|gate-evaluation|policy|weave|decision):[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "ProductRoot": {
+      "oneOf": [
+        { "$ref": "#/$defs/LayerProductRoot" },
+        { "$ref": "#/$defs/MarkerProductRoot" },
+        { "$ref": "#/$defs/ReleaseProductRoot" },
+        { "$ref": "#/$defs/ProofProductRoot" },
+        { "$ref": "#/$defs/GateDefinitionProductRoot" },
+        { "$ref": "#/$defs/GateEvaluationProductRoot" },
+        { "$ref": "#/$defs/PolicyProductRoot" },
+        { "$ref": "#/$defs/WeaveProductRoot" },
+        { "$ref": "#/$defs/DecisionProductRoot" }
+      ]
+    },
+    "LayerProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "layer" }, "logicalId": { "$ref": "#/$defs/LayerId" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "MarkerProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "marker" }, "logicalId": { "$ref": "#/$defs/MarkerId" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "ReleaseProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "release" }, "logicalId": { "$ref": "#/$defs/ReleaseId" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "ProofProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "proof" }, "logicalId": { "$ref": "#/$defs/ProofId" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "GateDefinitionProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "gateDefinition" }, "logicalId": { "type": "string", "pattern": "^gate-definition:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "GateEvaluationProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "gateEvaluation" }, "logicalId": { "type": "string", "pattern": "^gate-evaluation:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "PolicyProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "policy" }, "logicalId": { "type": "string", "pattern": "^policy:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "WeaveProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "weave" }, "logicalId": { "type": "string", "pattern": "^weave:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "DecisionProductRoot": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "logicalId", "objectId"],
+      "properties": { "kind": { "const": "decision" }, "logicalId": { "type": "string", "pattern": "^decision:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }, "objectId": { "$ref": "#/$defs/ContentId" } }
+    },
+    "AuthorizationRoot": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "stepId"],
+          "properties": {
+            "kind": { "const": "step" },
+            "stepId": { "$ref": "#/$defs/StepId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "layerId", "generation", "headStepId"],
+          "properties": {
+            "kind": { "const": "layerHead" },
+            "layerId": { "$ref": "#/$defs/LayerId" },
+            "generation": { "type": "integer", "minimum": 0 },
+            "headStepId": { "$ref": "#/$defs/StepId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "product"],
+          "properties": {
+            "kind": { "const": "product" },
+            "product": { "$ref": "#/$defs/ProductRoot" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "repositoryViewId"],
+          "properties": {
+            "kind": { "const": "repositoryView" },
+            "repositoryViewId": { "$ref": "#/$defs/RepositoryViewId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "policySetId"],
+          "properties": {
+            "kind": { "const": "policySet" },
+            "policySetId": { "$ref": "#/$defs/ContentId" }
+          }
+        }
+      ]
+    }
+  }
+}

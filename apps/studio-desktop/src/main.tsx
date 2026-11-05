@@ -1,15 +1,13 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { NotificationProvider } from "@layrs/ui";
-import "@layrs/ui/styles.css";
-import "@layrs/lenses/styles.css";
+import "@layrs/ui/layrs.css";
 import "./desktop.css";
-import { DesktopApp } from "./DesktopApp";
+import "./sync.css";
+import "./work.css";
+import { DesktopApp } from "./app/DesktopApp";
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <NotificationProvider>
-      <DesktopApp />
-    </NotificationProvider>
+    <DesktopApp />
   </React.StrictMode>
 );

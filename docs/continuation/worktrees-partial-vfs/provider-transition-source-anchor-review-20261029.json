@@ -1,0 +1,68 @@
+{
+  "review_kind": "SOURCE_ONLY",
+  "proposal": "D:/Layrs/tmp/provider-transition-source-anchor-proposal",
+  "base_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+  "scope": "Independent read-only review of the nine proposed Rust files and relevant exact-base readers, locks, session/native ownership, validators, capture engine, and test support. No independent acceptance or runtime qualification is issued.",
+  "integrity": {
+    "begin_and_end_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+    "begin_and_end_manifest_sha256": "b715fce9b14728026def9cf64fcbe81fb237d80b2a8fcc01611c3ebcd315e7bf",
+    "begin_and_end_nine_proposal_hashes_and_lengths_match_manifest": true,
+    "seven_head_base_hashes_match_manifest": true,
+    "begin_and_end_seven_physical_base_hashes_match_base_json": true,
+    "seven_physical_base_texts_equal_head_after_crlf_normalization": true,
+    "patch_sha256_matches_manifest": true,
+    "product_and_proposal_files_modified_by_reviewer": false
+  },
+  "findings": [],
+  "source_criteria_assessment": [
+    {
+      "criterion": "Public API, visibility, types, and lifetimes",
+      "evidence": "transition_source.rs:24-43 defines a publicly exported lifetime-bound view with private fields. The session, activation, preparation, bootstrap, provider, and projection exports connect it to the existing public ProviderActiveSession. Windows gating is inherited from provider/bootstrap. The pub(super) validation constructor and readers are visible to these provider descendants. Getter and ExactSizeIterator lifetimes remain tied to the view. No clone, deserializer, public constructor, or detached proof is introduced.",
+      "assessment": "Source is consistent; compilation was not run."
+    },
+    {
+      "criterion": "Full read, retained native owner, and released operation locks",
+      "evidence": "transition_source.rs:45-92 checks cancellation and connected/lifecycle state, holds FamilyAccess::locks(false) across capture_state::read_live, compares retained mount/activation, and returns only a boxed metadata interpretation. capture_state::read_mode reads and positively closes both private publication and family catalog scopes, validates ready ownership, capture mappings/protection, retained artifacts, and native boundary. Its local OperationLocks cannot escape the closure. The view borrows the actual ProviderActiveSession, whose Arc<LocalSource> owns PublicationPins, ProviderRootGuard, and lifecycle lease; public disconnect/capture still require &mut self.",
+      "assessment": "Ownership and lock-release structure is present in source; actual native behavior remains unexecuted."
+    },
+    {
+      "criterion": "Pending-state rejection and complete metadata revalidation",
+      "evidence": "transition_source.rs:72-83 refuses Hashing/Staging captures and uses from_publication. validation.rs:89-115 rejects every transition state except Cancelled/Published, including Ready. validation.rs:147-183 compares publication intent/receipt history, mount, activation, canonical source commitment, activated generation/digest/snapshot, capture transactions/receipts/patches, content mappings, and claims. transition_source.rs:165-174 repeats the full read before invoking that equality. Factoring the existing mutation reader through from_publication preserves its prior no-pending-transition gate.",
+      "assessment": "Required source checks are present. Companion proof support remains a separate mandatory future integration."
+    },
+    {
+      "criterion": "Cancellation and close failure ordering",
+      "evidence": "Precancel is checked before acquiring operation locks, and cancellation is checked again after the complete read. The reused database_io reader closes its actual connection even on callback failure. Cleanup/close failure returns before concluding snapshots or a subsequent family read; capture_state propagates unavailable/rejected reads rather than projecting success. The new helper does not suppress these failures.",
+      "assessment": "Source ordering is consistent. No cancellation or close fault was executed."
+    },
+    {
+      "criterion": "Generation, parent, selection-row, descriptor, and capture getters",
+      "evidence": "transition_source.rs:107-157 exposes the validated activated VersionedProjection separately from generation-zero initial_snapshot. snapshot_parent_digest is activation.source_digest; selection_generation/snapshot_digest/digest come from the actual original source commitment. The base interpreter requires selection generation zero and binds the activated generation-one parent to that original digest. Descriptors borrow the validated historical rows; captures/count/head use the complete accepted patch sequence. Identity and binding refer to the retained allocation/session that the full reader authenticates.",
+      "assessment": "Source maintains the activated-snapshot versus original-selection distinction without inventing image or prefix proof."
+    },
+    {
+      "criterion": "One genuine native Capture regression recipe",
+      "evidence": "transition_source/tests.rs:37-149 is ignored and uses child::run. It reads the public view under a BeforeWritableOpen observer, checks disconnected and precancel refusal and unchanged hydration-request counts, changes a real selected writable README, and deliberately permits metadata-only revalidation before Capture. Lines 116-133 acquire the actual CaptureAttemptLock and native checkpoint and call the production capture::run using the retained source/root/mount/activation while the old view remains borrowed. Lines 134-144 require an accepted sequence-one patch, refusal specifically from predecessor equality, and a fresh view exposing that patch. This exercises the real engine without changing the production &mut capture API. No concrete borrow/privacy/type defect was found by inspection.",
+      "assessment": "Required assertions and real Capture call are authored; none has been compiled or executed."
+    }
+  ],
+  "checks_performed": [
+    "Read applicable instruction locations and HANDOFF.md, base.json, and manifest.sha256.json.",
+    "Read all nine proposed Rust files; inspected all seven existing-file diffs against physical bases and verified each exact HEAD blob hash.",
+    "Verified begin/end source integrity and exact base, plus proposal.patch hash, using read-only filesystem/hash/git commands.",
+    "Inspected relevant existing session/native ownership, operation locks, private/family readers, complete equality, positive-close handling, capture engine, fixture source, and child/writer-observer support."
+  ],
+  "unavailable_validation": [
+    "No Cargo, build, test, SQL, native, network, fixture execution, process/thread status query, or delegation was performed.",
+    "Rust compilation and the ignored native recipe must be run serially by ROOT under its authorized runner. No local, CI, or production success is claimed.",
+    "Pending-capture, pending-transition, corruption, and cancellation/close fault variants have source-path coverage only in this review; no runtime result is available.",
+    "Child3600/outer3660 remain proposed, unmeasured bounds."
+  ],
+  "future_integration_requirements_not_current_defects": [
+    "The source-companion implementation is not delivered in this proposal or in review scope. When integrated, it must extend the shared retained proof, complete equality, and family reader with the companion proof as HANDOFF.md requires; private/family validation must continue refusing unsupported companion state until then.",
+    "The actual conversion driver must independently derive and retain the verified import closure/source_prefix_id and complete native checkpoint/image/effective_image_digest, bind the client request to them, and match them again after HTTP.",
+    "The final driver must reacquire its real publication scopes, revalidate the same source/image/remote witness, and retain those scopes through authorized effects. This metadata view and standalone revalidation grant neither writer authority nor a continuous remote lease and do not freeze mutable user bytes.",
+    "The collector, source B protocol, and this view still need integrated compilation/runtime verification. Denied-row durability, companion-capable C Ready, autonomy, and expanded activation remain outside this source-only result."
+  ],
+  "critical_verification_request_to_parent": "This ordinary source-only review does not replace critical verification. Provide dedicated critical-verifier coverage when the complete conversion driver joins remote authorization, source/image/import witnesses, publication writer scopes, denied outcomes, and durable effects. No new writer or remote-authorization grant is introduced by the reviewed view itself."
+}

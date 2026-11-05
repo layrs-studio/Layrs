@@ -1,0 +1,624 @@
+//! Filesystem-only family binding and lock-held provider catalog validation.
+//! Never call the ordinary catalog/open/lease helpers from this route.
+use super::*;
+use crate::projection::provider::{
+    database_io::{self, DatabaseFile},
+    records::AllocationRecord,
+    recovery::error::{invalid as provider_invalid, Result as ProviderResult},
+};
+use std::{ffi::OsStr, fs::File};
+#[path = "provider_capture.rs"]
+pub(in crate::projection) mod provider_capture;
+#[path = "provider_import.rs"]
+pub(in crate::projection) mod provider_import;
+pub(in crate::projection) use provider_import::{ImportRegistration, ImportRegistrationEffect};
+
+pub(in crate::projection) struct FamilyAccess {
+    family: PartialStoreFamily,
+    root_pin: PinnedDirectory,
+    metadata_pin: PinnedDirectory,
+    marker_pin: File,
+    marker_bytes: Vec<u8>,
+    pub(in crate::projection) catalog: DatabaseFile,
+}
+pub(in crate::projection) struct OperationLocks {
+    _catalog: StoreLock,
+    _owner: StoreLock,
+    _lifecycle: StoreLock,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum Registration {
+    Absent,
+    Initializing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::projection) enum ActivationRegistration {
+    Initializing,
+    Ready,
+}
+
+enum CatalogRegistration {
+    Absent,
+    Initializing,
+    Ready,
+}
+
+/// DATA-only schema dispatch through the provider's audited reference opener.
+/// This performs no migration and never opens the target database itself.
+pub(in crate::projection) fn require_provider_catalog_schema(
+    c: &Connection,
+    cancel: Option<&layrs_vfs::Cancellation>,
+) -> ProviderResult<CatalogSchema> {
+    crate::projection::provider::cancellation::check(cancel)?;
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let observed = database_io::schema_inventory(c)?;
+    let schema = match version {
+        1 => {
+            database_io::with_reference(SQL, |reference| {
+                if database_io::schema_inventory(reference)? != observed {
+                    return Err(provider_invalid(
+                        "provider family catalog fingerprint differs",
+                    ));
+                }
+                Ok(())
+            })?;
+            CatalogSchema::V1
+        }
+        2 => {
+            if schema_v2::reference_inventory()? != observed {
+                return Err(provider_invalid(
+                    "provider family catalog fingerprint differs",
+                ));
+            }
+            CatalogSchema::V2
+        }
+        _ => {
+            return Err(provider_invalid(
+                "provider family requires exact catalog schema1 or schema2",
+            ))
+        }
+    };
+    crate::projection::provider::cancellation::check(cancel)?;
+    Ok(schema)
+}
+
+pub(super) fn require_no_owner_exact_installations(
+    c: &Connection,
+    schema: CatalogSchema,
+    owner: &str,
+) -> ProviderResult<()> {
+    if schema == CatalogSchema::V2 && c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+        [owner], |r| r.get::<_, bool>(0),
+    )? {
+        return Err(provider_invalid("provider capture/bootstrap owner has unsupported exact installations"));
+    }
+    Ok(())
+}
+
+impl FamilyAccess {
+    /// Hold a shared lifecycle gate for the entire native callback lifetime.
+    /// Short read operations may acquire another shared gate with it held.
+    pub(in crate::projection) fn lifecycle_lease(&self) -> ProviderResult<StoreLock> {
+        let lease = StoreLock::acquire_existing(
+            &self.root().join("metadata/lifecycle.lock"),
+            SessionMode::Shared,
+        )?;
+        self.verify()?;
+        Ok(lease)
+    }
+    pub(in crate::projection) fn open(root: &Path) -> ProviderResult<Self> {
+        let family = PartialStoreFamily::read_bound(root)?; // filesystem only
+        let root_pin = PinnedDirectory::open(&family.root)?;
+        let metadata_pin = root_pin.open_child_for_traversal(OsStr::new("metadata"))?;
+        let marker_pin = crate::layout::open_read_no_follow(&family.root.join("FORMAT"))?;
+        let marker_bytes =
+            canonical_json(&family.marker).map_err(|e| provider_invalid(e.to_string()))?;
+        let catalog = DatabaseFile::open(
+            family.root.join("metadata/catalog.sqlite3"),
+            &family.marker.database_identity,
+        )?;
+        let bound = Self {
+            family,
+            root_pin,
+            metadata_pin,
+            marker_pin,
+            marker_bytes,
+            catalog,
+        };
+        bound.verify()?;
+        Ok(bound)
+    }
+    pub(in crate::projection) fn root(&self) -> &Path {
+        &self.family.root
+    }
+    pub(in crate::projection) fn member(&self, worktree: &WorktreeId) -> PathBuf {
+        self.family.member_metadata(worktree)
+    }
+    pub(in crate::projection) fn verify(&self) -> ProviderResult<()> {
+        self.root_pin.verify_path_identity()?;
+        self.metadata_pin.verify_path_identity()?;
+        self.family.verify()?;
+        self.catalog.verify()?;
+        let file = crate::layout::open_read_no_follow(&self.root().join("FORMAT"))?;
+        if super::super::file::identity(&file)? != super::super::file::identity(&self.marker_pin)?
+            || bounded_file(&self.root().join("FORMAT"), 65536)? != self.marker_bytes
+        {
+            return Err(provider_invalid("provider family FORMAT changed"));
+        }
+        Ok(())
+    }
+    pub(in crate::projection) fn locks(
+        &self,
+        worktree: &WorktreeId,
+        exclusive: bool,
+    ) -> ProviderResult<OperationLocks> {
+        let lifecycle = StoreLock::acquire_existing(
+            &self.root().join("metadata/lifecycle.lock"),
+            SessionMode::Shared,
+        )?;
+        self.verify()?;
+        let mode = if exclusive {
+            SessionMode::Exclusive
+        } else {
+            SessionMode::Shared
+        };
+        let owner = StoreLock::acquire_existing(&self.member(worktree).join("layrs.lock"), mode)?;
+        // Take EXCLUSIVE directly for recovery; never upgrade or reacquire it.
+        let catalog =
+            StoreLock::acquire_existing(&self.root().join("metadata/catalog.lock"), mode)?;
+        self.verify()?;
+        Ok(OperationLocks {
+            _catalog: catalog,
+            _owner: owner,
+            _lifecycle: lifecycle,
+        })
+    }
+    pub(in crate::projection) fn require_allocation(
+        &self,
+        a: &AllocationRecord,
+    ) -> ProviderResult<()> {
+        self.verify()?;
+        let record = &a.family;
+        let canonical = canonical_path(self.root())?;
+        if record.root != exact_path(self.root())?
+            || record.canonical_root != canonical
+            || record.incarnation != self.family.marker.incarnation
+            || record.root_identity != self.root_pin.identity_token()
+            || record.metadata_identity != self.metadata_pin.identity_token()
+            || record.catalog_file_identity != self.family.marker.database_identity
+            || record.marker_file_identity != super::super::file::identity(&self.marker_pin)?
+            || record.marker_digest != self.marker_digest()
+            || self.family.marker.identity.store_id != a.format.identity.store_id
+            || self.family.marker.identity.space_id != a.format.identity.space_id
+            || self.family.marker.identity.origin != a.format.identity.origin
+            || self.family.marker.identity.principal_id != a.format.identity.principal_id
+        {
+            return Err(provider_invalid(
+                "allocation differs from pinned family binding",
+            ));
+        }
+        Ok(())
+    }
+    pub(in crate::projection) fn marker_digest(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(b"layrs-projection-recovery-family-v1\0");
+        h.update(&self.marker_bytes);
+        format!("blake3:{}", h.finalize())
+    }
+    /// Canonical bytes already bound to the retained family marker pin.
+    /// The caller still verifies this holder before interpreting catalog DATA.
+    pub(in crate::projection) fn marker_bytes(&self) -> &[u8] {
+        &self.marker_bytes
+    }
+    /// Caller owns the one catalog gate and a read transaction. No lock/open here.
+    pub(in crate::projection) fn validate_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+    ) -> ProviderResult<Registration> {
+        self.validate_bootstrap_catalog(c, a, None)
+    }
+
+    pub(in crate::projection) fn validate_catalog_cancellable(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: &layrs_vfs::Cancellation,
+    ) -> ProviderResult<Registration> {
+        self.validate_bootstrap_catalog(c, a, Some(cancel))
+    }
+
+    fn validate_bootstrap_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<Registration> {
+        match self.validate_catalog_inner(c, a, cancel, false, None, None, None, None)? {
+            CatalogRegistration::Absent => Ok(Registration::Absent),
+            CatalogRegistration::Initializing => Ok(Registration::Initializing),
+            CatalogRegistration::Ready => Err(provider_invalid(
+                "bootstrap catalog cannot accept ready ownership",
+            )),
+        }
+    }
+
+    /// Complete family interpretation for activation, under the caller's one
+    /// catalog gate and SQL transaction. A ready registry row alone grants no
+    /// capability: the caller must also validate the exact private activation.
+    /// This initial active phase still excludes all target-owned content claims.
+    pub(in crate::projection) fn validate_activation_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(c, a, cancel, true, None, None, None, None)? {
+            CatalogRegistration::Initializing => Ok(ActivationRegistration::Initializing),
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            CatalogRegistration::Absent => Err(provider_invalid(
+                "activation requires the exact registered family owner",
+            )),
+        }
+    }
+
+    /// Capture interpretation requires the complete durable private proof
+    /// from the same caller-held lifecycle/owner/catalog gate epoch.
+    pub(in crate::projection) fn validate_capture_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        proof: &crate::projection::provider::validation::PrivateCaptureProof,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(c, a, cancel, true, Some(proof), None, None, None)? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "capture requires exact ready family owner",
+            )),
+        }
+    }
+
+    /// Same complete actual private proof as capture admission, with one exact
+    /// prospective funding binding kept outside that proof. The caller must
+    /// first prove the requested private transaction AND document absent using
+    /// the complete private reader under these same held gates. This permits
+    /// only its exact family reservation gap; it grants no body/intent repair.
+    pub(in crate::projection) fn validate_capture_catalog_with_pending_denial(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        proof: &crate::projection::provider::validation::PrivateCaptureProof,
+        pending: &crate::projection::shared::source_denial::SourceDeniedCoverageReservation,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(proof),
+            None,
+            Some(pending),
+            None,
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "pending source denial requires exact ready family owner",
+            )),
+        }
+    }
+
+    pub(in crate::projection) fn validate_source_companion_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        context: &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(context.publication.capture_data()),
+            Some(context),
+            None,
+            None,
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "source companion requires exact Ready B family owner",
+            )),
+        }
+    }
+    /// Recovery-only exact exception. The caller retains the actual complete
+    /// source snapshot proving this transaction AND document absent, the
+    /// compact receipt's native pin, owner/capture lock and exclusive gates.
+    pub(in crate::projection) fn validate_source_denial_recovery_catalog(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        context: &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        release: &crate::projection::shared::source_denial::SourceDeniedCoverageRelease,
+        cancel: Option<&layrs_vfs::Cancellation>,
+    ) -> ProviderResult<ActivationRegistration> {
+        match self.validate_catalog_inner(
+            c,
+            a,
+            cancel,
+            true,
+            Some(context.publication.capture_data()),
+            Some(context),
+            None,
+            Some(release),
+        )? {
+            CatalogRegistration::Ready => Ok(ActivationRegistration::Ready),
+            _ => Err(provider_invalid(
+                "denial recovery requires exact Ready owner",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_catalog_inner(
+        &self,
+        c: &Connection,
+        a: &AllocationRecord,
+        cancel: Option<&layrs_vfs::Cancellation>,
+        allow_ready: bool,
+        capture: Option<&crate::projection::provider::validation::PrivateCaptureProof>,
+        source_companion: Option<
+            &crate::projection::shared::source_companion::SourceCompanionFamilyContext<'_>,
+        >,
+        pending_denial: Option<
+            &crate::projection::shared::source_denial::SourceDeniedCoverageReservation,
+        >,
+        release_denial: Option<
+            &crate::projection::shared::source_denial::SourceDeniedCoverageRelease,
+        >,
+    ) -> ProviderResult<CatalogRegistration> {
+        crate::projection::provider::cancellation::check(cancel)?;
+        if ((pending_denial.is_some() || release_denial.is_some()) && capture.is_none())
+            || (pending_denial.is_some() && release_denial.is_some())
+        {
+            return Err(provider_invalid(
+                "pending source denial requires complete actual private proof",
+            ));
+        }
+        let schema = require_provider_catalog_schema(c, cancel)?;
+        crate::projection::provider::cancellation::check(cancel)?;
+        let (count, length): (u64, u64) = c.query_row(
+            "SELECT count(*),coalesce(max(length(marker)),0) FROM family",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if count != 1 || length > 65536 {
+            return Err(provider_invalid(
+                "provider family marker cardinality/bound differs",
+            ));
+        }
+        let marker: Vec<u8> =
+            c.query_row("SELECT marker FROM family WHERE singleton=1", [], |r| {
+                r.get(0)
+            })?;
+        if marker != self.marker_bytes {
+            return Err(provider_invalid("provider family SQL identity differs"));
+        }
+        let quota_count: u64 = c.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM quota LIMIT 2)",
+            [],
+            |r| r.get(0),
+        )?;
+        let quota: u64 = c.query_row(
+            "SELECT count(*) FROM quota WHERE singleton=1 AND bytes>=0",
+            [],
+            |r| r.get(0),
+        )?;
+        if quota != 1 || quota_count != 1 {
+            return Err(provider_invalid("provider family quota singleton differs"));
+        }
+        let owner = a.format.identity.worktree_id.as_str();
+        require_no_owner_exact_installations(c, schema, owner)?;
+        let oversized: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM worktrees WHERE id=?1 AND (length(CAST(metadata_path AS BLOB))>4096 OR length(CAST(database_identity AS BLOB))>512 OR length(CAST(state AS BLOB))>12))", [owner], |r| r.get(0))?;
+        if oversized {
+            return Err(provider_invalid(
+                "provider target registry text exceeds bound",
+            ));
+        }
+        // Check payload bounds before materializing a potentially corrupt target.
+        let target_length: Option<u64> = c
+            .query_row(
+                "SELECT length(marker) FROM worktrees WHERE id=?1",
+                [owner],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if target_length.is_some_and(|length| length > 65536) {
+            return Err(provider_invalid(
+                "provider target registry marker exceeds bound",
+            ));
+        }
+        let target: Option<(String, String, Vec<u8>, String)> = c
+            .query_row(
+                "SELECT metadata_path,database_identity,marker,state FROM worktrees WHERE id=?1",
+                [owner],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let registration = match target {
+            None => CatalogRegistration::Absent,
+            Some((path, id, marker, state))
+                if path == a.private.metadata_path
+                    && id == a.private.database_file_identity
+                    && marker == a.format.bytes()?
+                    && (state == "initializing" || (allow_ready && state == "ready")) =>
+            {
+                if state == "ready" {
+                    CatalogRegistration::Ready
+                } else {
+                    CatalogRegistration::Initializing
+                }
+            }
+            Some(_) => {
+                return Err(provider_invalid(
+                    "provider target registration is not exact initializing ownership",
+                ));
+            }
+        };
+        if let Some(proof) = capture {
+            provider_capture::validate_with_companions(
+                self,
+                c,
+                a,
+                proof,
+                source_companion,
+                pending_denial,
+                release_denial,
+                cancel,
+            )?;
+        } else {
+            for sql in [
+                "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
+                "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1)",
+                "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+            ] {
+                let present: bool = c.query_row(sql, [owner], |r| r.get(0))?;
+                if present {
+                    return Err(provider_invalid(
+                        "provider bootstrap owner has accepted roots/reservations/installations",
+                    ));
+                }
+            }
+        }
+        let failure: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+            [],
+            |r| r.get(0),
+        )?;
+        if failure {
+            return Err(provider_invalid("provider family foreign-key corruption"));
+        }
+        crate::projection::provider::cancellation::check(cancel)?;
+        // Other registered members and their protected content remain valid and
+        // untouched; this is not GC or a demand that the whole family be empty.
+        Ok(registration)
+    }
+}
+
+pub(in crate::projection) fn exact_path(path: &Path) -> ProviderResult<&str> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| provider_invalid("non-Unicode provider locator"))?;
+    if value.is_empty() || value.len() > 4096 || !path.is_absolute() {
+        return Err(provider_invalid(
+            "provider locator bound/absolute requirement",
+        ));
+    }
+    Ok(value)
+}
+pub(in crate::projection) fn canonical_path(path: &Path) -> ProviderResult<String> {
+    let canonical = std::fs::canonicalize(path)?;
+    let value = exact_path(&canonical)?;
+    let value = value.strip_prefix("\\\\?\\").ok_or_else(|| {
+        provider_invalid("canonical provider locator is not an absolute native DOS path")
+    })?;
+    if value.starts_with("UNC\\") {
+        return Err(provider_invalid(
+            "provider bootstrap requires a local drive",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+// Writer-only gates are separate: recovery keeps its existing bundled shared
+// lifecycle behavior. Caller holds lifecycle -> owner before taking a catalog gate.
+impl FamilyAccess {
+    pub(in crate::projection) fn writer_lifecycle(
+        &self,
+        exclusive: bool,
+    ) -> ProviderResult<StoreLock> {
+        let lock = StoreLock::acquire_existing(
+            &self.root().join("metadata/lifecycle.lock"),
+            if exclusive {
+                SessionMode::Exclusive
+            } else {
+                SessionMode::Shared
+            },
+        )?;
+        self.verify()?;
+        Ok(lock)
+    }
+    pub(in crate::projection) fn writer_owner(
+        &self,
+        worktree: &WorktreeId,
+    ) -> ProviderResult<StoreLock> {
+        let lock = StoreLock::acquire_existing(
+            &self.member(worktree).join("layrs.lock"),
+            SessionMode::Exclusive,
+        )?;
+        self.verify()?;
+        Ok(lock)
+    }
+    pub(in crate::projection) fn writer_catalog(&self) -> ProviderResult<StoreLock> {
+        let lock = StoreLock::acquire_existing(
+            &self.root().join("metadata/catalog.lock"),
+            SessionMode::Exclusive,
+        )?;
+        self.verify()?;
+        Ok(lock)
+    }
+    pub(in crate::projection) fn writer_worktrees(&self) -> ProviderResult<PinnedDirectory> {
+        self.verify()?;
+        Ok(self
+            .root_pin
+            .open_private_child_for_write(OsStr::new("worktrees"))?)
+    }
+    pub(in crate::projection) fn writer_identity(
+        &self,
+        worktree: &WorktreeId,
+    ) -> ProjectionIdentity {
+        let i = &self.family.marker.identity;
+        ProjectionIdentity {
+            store_id: i.store_id.clone(),
+            space_id: i.space_id.clone(),
+            worktree_id: worktree.clone(),
+            origin: i.origin.clone(),
+            principal_id: i.principal_id.clone(),
+        }
+    }
+    pub(in crate::projection) fn writer_record(
+        &self,
+    ) -> ProviderResult<crate::projection::provider::records::FamilyRecord> {
+        self.verify()?;
+        Ok(crate::projection::provider::records::FamilyRecord {
+            root: exact_path(self.root())?.into(),
+            canonical_root: canonical_path(self.root())?,
+            incarnation: self.family.marker.incarnation.clone(),
+            root_identity: self.root_pin.identity_token(),
+            marker_file_identity: super::super::file::identity(&self.marker_pin)?,
+            marker_digest: self.marker_digest(),
+            metadata_identity: self.metadata_pin.identity_token(),
+            catalog_file_identity: self.family.marker.database_identity.clone(),
+        })
+    }
+}
+
+impl FamilyAccess {
+    pub(in crate::projection) fn writer_matches(
+        &self,
+        expected: &PartialStoreFamily,
+    ) -> ProviderResult<()> {
+        self.verify()?;
+        if self.family.root.as_os_str() != expected.root.as_os_str()
+            || self.family.marker != expected.marker
+        {
+            return Err(provider_invalid(
+                "provider family handle binding changed before allocation",
+            ));
+        }
+        Ok(())
+    }
+}

@@ -1,0 +1,226 @@
+{
+  "schemaVersion": "layrs.switch-measurement.v1",
+  "startedAt": "2026-11-03T20:59:44.638Z",
+  "platform": "win32",
+  "os": "10.0.26300",
+  "cpu": "13th Gen Intel(R) Core(TM) i9-13900K",
+  "totalMemoryBytes": 68387852288,
+  "binary": "D:\\Layrs\\layrs\\.layrs-local\\validation\\switch-baseline-r208\\layrs-r208-release.exe",
+  "binarySha256": "67a06a0b58d5948cc21df7e5cf2160b4194adfa8fb55eae27049fc9f463a3d01",
+  "fixtureRoot": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208",
+  "limitations": [
+    "Synthetic 256-byte text files, all distinct contents, 1000 files per directory.",
+    "One run per case, warm OS caches; durations include CLI startup and the full command.",
+    "Concurrent cases start both commands together; they measure contention, not throughput.",
+    "Fixtures retained; no pruning, no remote."
+  ],
+  "cases": [
+    {
+      "files": 1000,
+      "root": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+      "measurements": [
+        {
+          "label": "init",
+          "command": "init Switch 1000",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 30101,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "status clean",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 3636,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step initial",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 3556,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "layer create",
+          "command": "layer create baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 7667,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "diff K=1",
+          "command": "diff --stat",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 9801,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=1",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 25686,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=1",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 23487,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=1",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 24287,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch no-op",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 17289,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "step K=100",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 26027,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch out K=100",
+          "command": "layer use baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 27034,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "switch back K=100",
+          "command": "layer use main",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 20474,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "worktree create",
+          "command": "worktree create D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000-agent --layer baseline --step @layer:baseline",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 46801,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "agent status",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000-agent",
+          "elapsedMs": 3714,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status primary",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 4932,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent status agent",
+          "command": "status",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000-agent",
+          "elapsedMs": 4930,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step primary",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000",
+          "elapsedMs": 60635,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        },
+        {
+          "label": "concurrent step agent",
+          "command": "step",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-1000-agent",
+          "elapsedMs": 30906,
+          "exitCode": 0,
+          "expectedSuccess": true,
+          "matchedExpectation": true,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "files": 10000,
+      "root": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-10000",
+      "measurements": [
+        {
+          "label": "init",
+          "command": "init Switch 10000",
+          "cwd": "D:\\Layrs\\tmp\\layrs-switch-baseline-r208\\files-10000",
+          "elapsedMs": 1929,
+          "exitCode": 1,
+          "expectedSuccess": true,
+          "matchedExpectation": false,
+          "truncated": false,
+          "error": {
+            "message": "store corruption detected: streaming batch preflight: combined canonical object count exceeds 16384"
+          }
+        }
+      ],
+      "aborted": "Error: init failed: [object Object]"
+    }
+  ],
+  "completedAt": "2026-11-03T21:05:24.179Z"
+}

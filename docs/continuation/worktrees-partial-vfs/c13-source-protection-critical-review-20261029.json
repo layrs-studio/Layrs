@@ -1,0 +1,654 @@
+{
+  "schema": "layrs.c13-source-protection-critical-source-review.v1",
+  "review_date": "2026-10-29",
+  "status": "SOURCE_REVIEW_COMPLETE_WITH_FINDINGS_NO_ACCEPTANCE_OR_RELEASE_DECISION",
+  "reviewer_role": "Independent critical source reviewer; not the implementer",
+  "scope": {
+    "repository": "D:/Layrs/layrs",
+    "expected_head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+    "expected_branch": "feature/worktrees-partial-vfs",
+    "candidate": "D:/Layrs/tmp/c13-source-protection-source-proposal/",
+    "interpretation": "Only files/ in this cumulative 53-entry proposal overlay the main source. Paths absent from files/ use unchanged main source. The predecessor proposal and ownership design were context, not independent acceptance.",
+    "focus": [
+      "Complete private/family source ownership and capture coexistence",
+      "Authenticated descriptor preimages and exact alternate representations",
+      "Independent fixed B reservation, canonical root and global accounting",
+      "C source-context requirements and strict legacy refusal",
+      "Physical B protection and retained source/CAS witnesses",
+      "Atomic B mappings/header/scalars/claim/receipt/Ready; separate Published",
+      "Replay, uncertain close, recovery and autonomous family interpretation"
+    ],
+    "instructions": {
+      "applicable_repo_instructions": "No AGENTS.md found in the checked workspace/repository/bundle ancestors or the repository/bundle recursive hidden-inclusive AGENTS.md search.",
+      "user_restrictions_followed": true,
+      "product_or_input_writes": false,
+      "output_only": "D:/Layrs/tmp/c13-source-protection-critical-review.json",
+      "subagents": false,
+      "runner_ROOT99703_r98": "Not accessed or inspected",
+      "unrelated_pending_ordinary_tests": "Not reviewed"
+    },
+    "read_documents": [
+      "D:/Layrs/tmp/c13-source-protection-source-proposal/SOURCE-PROTOCOL-HANDOFF.md",
+      "D:/Layrs/tmp/c13-source-protection-source-proposal/SOURCE-PROTOCOL-RECIPES.md",
+      "D:/Layrs/tmp/c13-source-protection-source-proposal/handoff.json",
+      "D:/Layrs/layrs/docs/continuation/worktrees-partial-vfs/c13-source-ownership-design-20261028.json"
+    ]
+  },
+  "evidence_policy": {
+    "executed": "Filesystem source/metadata reads and SHA256 hashing; read-only Git HEAD, branch and scoped diff inspection. The only write is this report.",
+    "source_reasoning": "All findings below are static control-flow, SQL-text or allocation reasoning. No finding is described as a reproduced runtime failure.",
+    "not_executed": [
+      "Builds or typechecking",
+      "Cargo",
+      "Tests or authored recipes",
+      "SQL statements",
+      "Native/product execution",
+      "Fixture opens",
+      "Network",
+      "Process/session inspection",
+      "Git mutations"
+    ],
+    "patch_limit": "Manifest and patch byte hashes were checked. The patch was not applied and its hunks were not independently reconstructed.",
+    "assurance_limit": "This is a bounded critical source review, not exhaustive assurance, acceptance or release qualification."
+  },
+  "findings": [
+    {
+      "id": "C13-CR-001",
+      "severity": "high",
+      "priority": "P1",
+      "title": "The new B reservation/protection wrapper can probe the filesystem after an ACK refusal",
+      "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+      "line": 100,
+      "end_line": 102,
+      "trigger": "In reserve_source_companion or protect_source_companion, the family writer operation succeeds and Connection::close succeeds, but WriterCloseObserver::after_close returns a standalone non-Cleanup cause, such as invalid(\"ack refused\"). The source RO snapshot is still enclosing that writer.",
+      "consequence": "The family writer's failure is returned into source_companion_snapshot, which uses the ordinary interpreting reader. That reader closes B's source connection successfully and then calls database.snapshot() before returning the failure. Thus there is a subsequent filesystem/sidecar probe after the refused ACK, contrary to the stated stop-on-failed-acknowledgement contract and W3. This does not assert that a further commit occurs or that an actual failed SQLite close is ignored.",
+      "evidence": [
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+            "line": 157,
+            "end_line": 205
+          },
+          "fact": "reserve_source_companion performs bare.finish_writer inside the callback of source_companion_snapshot."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+            "line": 309,
+            "end_line": 373
+          },
+          "fact": "protect_source_companion has the same nesting."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/database_io/bare.rs",
+            "line": 287,
+            "end_line": 313
+          },
+          "fact": "writer_close_result returns a single observer fault directly when the operation and actual close succeeded; that fault need not be Cause::Cleanup."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/database_io.rs",
+            "line": 143,
+            "end_line": 153
+          },
+          "fact": "The ordinary reader propagates Cleanup early, but a plain callback error reaches the concluding database.snapshot()."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/database_io.rs",
+            "line": 65,
+            "end_line": 79
+          },
+          "fact": "An existing read_cancellable_strict entry explicitly suppresses the concluding filesystem probe after any callback failure while retaining the mandatory real close."
+        }
+      ],
+      "correction": "Use the existing strict nested-reader failure policy for source_companion_snapshot, or an equivalent explicit ACK-error propagation path that closes retained connections but performs no concluding SQL/FS probe. Retain positive-close/readback behavior on success. ROOT should qualify standalone ACK refusal separately from actual SQLite close failure when native work is authorized.",
+      "confidence": "high",
+      "provenance": "Introduced in this proposal's new physical source-protection adapter.",
+      "execution_status": "SOURCE_REASONING_ONLY; dependent production lease integration remains unfinished"
+    },
+    {
+      "id": "C13-CR-002",
+      "severity": "high",
+      "priority": "P1",
+      "title": "Every first insertion of a companion deletion uses eight values for seven columns",
+      "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+      "line": 13,
+      "trigger": "A closed companion contains at least one deletion whose scalar row is absent, as required for a genuine new B Staging-to-Ready publication. insert_new_rows reaches insert_exact for that deletion.",
+      "consequence": "DELETION_INSERT names seven columns but supplies VALUES(?1,...,?8). deletion_values produces seven values. The insertion statement is invalid and the new publication cannot complete. In the managed B path, earlier mutations must roll back, so this is a deterministic publication failure rather than evidence of committed partial data. Exact-row replay can skip executing the invalid statement and therefore does not demonstrate that first publication works.",
+      "evidence": [
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+            "line": 92,
+            "end_line": 95
+          },
+          "fact": "Each new deletion executes DELETION_INSERT through insert_exact."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+            "line": 258,
+            "end_line": 267
+          },
+          "fact": "deletion_values returns exactly companion_id, path, base_file_id, base_executable, base_manifest_id, reason and digest."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions/sql.rs",
+            "line": 283,
+            "end_line": 297
+          },
+          "fact": "insert_exact executes the SQL only when the row is absent."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/source_companion.rs",
+            "line": 130,
+            "end_line": 136
+          },
+          "fact": "The newly added source publication path calls this primitive before claim/receipt publication."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+            "line": 523,
+            "end_line": 584
+          },
+          "fact": "The managed source path wraps the atom and rolls back operation failures before nested RO scopes close."
+        }
+      ],
+      "correction": "Make DELETION_INSERT's VALUES list match the seven declared columns and the seven-value projection. When ROOT authorizes execution, distinguish first insertion with a deletion from already-present replay in validation.",
+      "confidence": "high",
+      "provenance": "Inherited unchanged from the 23-file predecessor and present in the cumulative candidate. It is reported because the newly delivered B publication directly depends on it; predecessor delivery was not treated as acceptance.",
+      "execution_status": "SOURCE_REASONING_ONLY; no SQL was prepared or executed"
+    },
+    {
+      "id": "C13-CR-003",
+      "severity": "medium",
+      "priority": "P2",
+      "title": "The autonomous source-namespace reader accumulates all large root payloads before cross-group validation",
+      "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+      "line": 723,
+      "end_line": 737,
+      "trigger": "A family catalog contains many individually canonical source-companion roots and matching reservations. Each root can approach the 16 MiB per-root limit. retained_namespace reads and retains them all before returning to its admitted/terminal callers; those callers have not yet checked each root against its C group. Multiple such preliminary roots can reference one existing C group, so the earlier exact-journal row-count fence alone does not bound this collection.",
+      "consequence": "The Vec owns up to 4,096 SourceCompanionProtection values, each retaining its payload and manifest-ID collection. Payload retention alone can approach 64 GiB, with additional parsing/re-encoding temporaries. An oversized or ultimately invalid family can exhaust memory before the later group checks reject it. The existing destination-root walk explicitly streams one root at a time, but the new source-root prepass defeats that bound.",
+      "evidence": [
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+            "line": 165,
+            "end_line": 174
+          },
+          "fact": "SourceCompanionProtection owns payload: Vec<u8> and manifests: Vec<String>."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+            "line": 531,
+            "end_line": 566
+          },
+          "fact": "read_retained bounds a single payload at 16 MiB, materializes it, reconstructs it, and returns an owning protection value."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+            "line": 479,
+            "end_line": 499
+          },
+          "fact": "All source roots have already been collected before C-binding, U and member cross-checks begin."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+            "line": 506,
+            "end_line": 510
+          },
+          "fact": "The later destination-root loop explicitly avoids accumulating 4,096 large unions."
+        },
+        {
+          "location": {
+            "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready.rs",
+            "line": 101,
+            "end_line": 127
+          },
+          "fact": "The terminal Ready interpreter also consumes the fully accumulated source-root vector."
+        }
+      ],
+      "correction": "Stream source roots through the caller's validation and retain only bounded identifiers needed to account for reservations, or preflight and enforce a conservative aggregate payload/manifest budget before materializing the vector. Do not rely on later C-group or global-count rejection to bound earlier allocation.",
+      "confidence": "high_for_allocation_path; no memory-exhaustion experiment performed",
+      "provenance": "Introduced by the new retained_namespace implementation.",
+      "execution_status": "SOURCE_REASONING_ONLY"
+    }
+  ],
+  "checked_invariants": [
+    {
+      "id": "INV-01",
+      "invariant": "Complete exact private row, claim and mapping ownership, including capture coexistence",
+      "assessment": "Source-supported in the traced validators, subject to the publication failure in C13-CR-002; not runtime-qualified.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation.rs",
+          "line": 611,
+          "end_line": 638
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation/source_companion.rs",
+          "line": 164,
+          "end_line": 287
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation/capture.rs",
+          "line": 396,
+          "end_line": 515
+        }
+      ],
+      "reasoning": "Bounded capture history is DATA, then terminal transition/receipt ownership and outgoing v2 rows are interpreted, and only then is the final capture proof produced. Extra headers/orphan scalars/unowned companion claims and content outside the capture/outgoing reference union are rejected. A shared FileId must retain the same mapping, while Accepted capture content and claims remain mandatory."
+    },
+    {
+      "id": "INV-02",
+      "invariant": "Full publication/equality preserves outgoing companions without extending incoming ancestry",
+      "assessment": "Source-supported in the traced adapter and equality paths.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation.rs",
+          "line": 146,
+          "end_line": 193
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/import_validation/provider_proof.rs",
+          "line": 43,
+          "end_line": 61
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/import_validation/scoped.rs",
+          "line": 791,
+          "end_line": 835
+        },
+        {
+          "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/import_validation/ancestry.rs",
+          "line": 45,
+          "end_line": 54
+        }
+      ],
+      "reasoning": "Companion proof participates in publication hashing and mutation equality. Outgoing validation starts from receipt.source_prefix and its original ancestry root; it does not make the outgoing receipt a parent or mutate frozen selectors."
+    },
+    {
+      "id": "INV-03",
+      "invariant": "Descriptor-only preimages come from authenticated original descriptors; same FileId alternates remain distinct",
+      "assessment": "Source-supported in the concrete reconciliation path; full driver use remains an unfinished dependency.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/source.rs",
+          "line": 59,
+          "end_line": 98
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/source.rs",
+          "line": 294,
+          "end_line": 303
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_image/complete.rs",
+          "line": 69,
+          "end_line": 108
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions.rs",
+          "line": 306,
+          "end_line": 372
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 207,
+          "end_line": 227
+        }
+      ],
+      "reasoning": "The complete image adapter obtains a descriptor view from the private proof. Frozen mappings win over descriptors; a base/preimage without either refuses instead of using a recovery scalar. ManifestId, rather than FileId alone, keys the root union, with conflicting lengths rejected."
+    },
+    {
+      "id": "INV-04",
+      "invariant": "Q_B is independently fixed from actual SQL projections plus the bounded canonical root; no quota growth or capture borrowing",
+      "assessment": "Source-supported in the derivation and B reservation paths.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/source_companion.rs",
+          "line": 33,
+          "end_line": 82
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/source_companion.rs",
+          "line": 214,
+          "end_line": 248
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_reconcile/companions.rs",
+          "line": 426,
+          "end_line": 437
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation/source_companion.rs",
+          "line": 235,
+          "end_line": 255
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 228,
+          "end_line": 268
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 384,
+          "end_line": 396
+        }
+      ],
+      "reasoning": "The envelope charges reused mappings, actual header/scalars, claim, actual planned receipt and both terminal intent projections. A counting serializer and 19-digit sizing field bound the root before aggregate canonical encoding. Fixed remaining==Q_B is required; no B debit, top-up or quota mutation is introduced. The root-constructor bound does not cure the separate retained-namespace aggregate issue C13-CR-003."
+    },
+    {
+      "id": "INV-05",
+      "invariant": "Global capacity includes absent B and C reservations, all existing reservations, CAS and journal charges; C remains the exact debit owner",
+      "assessment": "Source-supported in the traced B capacity and C validation paths.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 445,
+          "end_line": 498
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared.rs",
+          "line": 930,
+          "end_line": 957
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/provider_import/content.rs",
+          "line": 519,
+          "end_line": 553
+        },
+        {
+          "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/shared/exact_content/sql.rs",
+          "line": 675,
+          "end_line": 679
+        }
+      ],
+      "reasoning": "B capacity adds both missing envelopes to complete family usage. Existing C reservation shape is checked there; C's independent validator retains quota-minus-durable-debit equality. B protection inserts only its reservation/root/membership and rejects B-owned exact journals."
+    },
+    {
+      "id": "INV-06",
+      "invariant": "New C effects require full source context and a genuine fixed B reservation; legacy None paths remain strict",
+      "assessment": "Fail-closed seam supported; complete companion lease integration is explicitly unfinished.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/provider_import/content.rs",
+          "line": 673,
+          "end_line": 695
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/provider_import/source.rs",
+          "line": 396,
+          "end_line": 439
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content.rs",
+          "line": 127,
+          "end_line": 147
+        }
+      ],
+      "reasoning": "New-companion installation/protection/reservation validators call require_source_envelope, bind plan/U and refuse absent B reservation. The complete proof's capture component is pointer-bound. The current legacy lease still supplies None and cannot be treated as a companion-capable driver."
+    },
+    {
+      "id": "INV-07",
+      "invariant": "Both B/C roots precede either new receipt; B private rows wait for independently genuine C private and family Ready",
+      "assessment": "Ordering is visible in the intended typed source path, but end-to-end proof remains blocked by declared genuine C Ready integration.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+          "line": 245,
+          "end_line": 304
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/provider_import/publication.rs",
+          "line": 140,
+          "end_line": 169
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+          "line": 97,
+          "end_line": 163
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+          "line": 299,
+          "end_line": 356
+        },
+        {
+          "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/ready_data.rs",
+          "line": 67,
+          "end_line": 82
+        }
+      ],
+      "reasoning": "B physical protection requires independently validated C Published installation SQL, C root and retained CAS proof. Family publication requires B Protected plus C protection. The source writer calls through genuine private/family Ready revalidation; OwnedReadyData::new still refuses a new companion. This is an unfinished prerequisite, not a bypass or permission to remove guards."
+    },
+    {
+      "id": "INV-08",
+      "invariant": "B mapping/header/scalars/claim/receipt/Ready commit atomically, with separate Published",
+      "assessment": "Transaction structure is source-supported; first deletion insertion is broken by C13-CR-002.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_sql/publication.rs",
+          "line": 129,
+          "end_line": 214
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+          "line": 473,
+          "end_line": 599
+        }
+      ],
+      "reasoning": "The low-level atom performs all B inserts and exact transition CAS in the caller's FK-enabled transaction and requires prospective interpretation. The managed writer rolls back atom/prospective failures within nested scopes. Successful Ready closes/readback precede a distinct Published writer iteration."
+    },
+    {
+      "id": "INV-09",
+      "invariant": "Retained physical pins span writers, closes and fresh readback; failed close/ACK permits no next SQL/FS probe",
+      "assessment": "Retention and normal success ordering are source-supported; the ACK stop contract is violated by C13-CR-001.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+          "line": 20,
+          "end_line": 59
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+          "line": 297,
+          "end_line": 409
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+          "line": 455,
+          "end_line": 606
+        }
+      ],
+      "reasoning": "The witness borrows the complete image/closed publication and owns PublishedCasProof. During source publication the witness is borrowed throughout both commits and readbacks. Actual close errors use Cleanup and propagate; a standalone observer ACK error inside the new B owner snapshot needs strict propagation."
+    },
+    {
+      "id": "INV-10",
+      "invariant": "Exact replay does not adopt partial state, and recovery does not manufacture authority",
+      "assessment": "Source-supported for the inspected DATA and writer routes; declared restart ownership restrictions remain.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 376,
+          "end_line": 443
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 477,
+          "end_line": 528
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 568,
+          "end_line": 600
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/transition_sql/publication.rs",
+          "line": 103,
+          "end_line": 127
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_publication.rs",
+          "line": 472,
+          "end_line": 478
+        }
+      ],
+      "reasoning": "Absent/reservation/protected are exact classifications; orphan membership, changed fixed remaining and partial roots refuse. Same-phase exact row replay returns AlreadyPresent; Published skips the writer loop. Physical protection reopening still requires actual original Staging and terminal retry requires the retained owner until a separate recovery owner exists."
+    },
+    {
+      "id": "INV-11",
+      "invariant": "Autonomous C relies on its own protection, with explicit retained-source namespace classification",
+      "assessment": "Own-C authority separation is source-supported; aggregate source-root allocation is defective (C13-CR-003), and corruption cases remain unexecuted.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/destination_ready/autonomous/family_read.rs",
+          "line": 240,
+          "end_line": 255
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+          "line": 477,
+          "end_line": 555
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog.rs",
+          "line": 628,
+          "end_line": 646
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready.rs",
+          "line": 101,
+          "end_line": 127
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/admitted_catalog/terminal_ready.rs",
+          "line": 190,
+          "end_line": 220
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/source_companion.rs",
+          "line": 719,
+          "end_line": 757
+        }
+      ],
+      "reasoning": "The new source namespace is parsed rather than excluded by prefix. Reservation-only/unowned source entries refuse. Callers compare retained source DATA to the C binding/union and independently validate C roots, journals and charged sets. These functions do not open B's database or native paths. No claim is made that source-only review exhaustively establishes every foreign-group corruption case."
+    },
+    {
+      "id": "INV-12",
+      "invariant": "No source-group release/GC fence weakening",
+      "assessment": "Source-supported within the reviewed changes.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider.rs",
+          "line": 176,
+          "end_line": 198
+        },
+        {
+          "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/shared/maintenance.rs",
+          "line": 200
+        }
+      ],
+      "reasoning": "The existing schema8 provider-evidence and admitted schema9/10 reclamation refusals remain. The new source functions reserve/protect/classify but do not release reservations, delete roots or weaken maintenance admission."
+    },
+    {
+      "id": "INV-13",
+      "invariant": "Borrow/type/visibility consistency at new seams",
+      "assessment": "No additional definite borrow/type/visibility defect established by this source inspection; not a typecheck.",
+      "evidence": [
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/validation.rs",
+          "line": 60,
+          "end_line": 75
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/shared/provider_import/source.rs",
+          "line": 368,
+          "end_line": 410
+        },
+        {
+          "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/files/crates/layrs-store-local/src/projection/provider/bootstrap/preparation/activation/managed_content/source_protection.rs",
+          "line": 20,
+          "end_line": 59
+        }
+      ],
+      "reasoning": "The examined projection-visible proof accessors and context borrows provide source-level paths for the new cross-module calls. Unwired complete-image lease integration is already declared and is not counted as an invented compiler failure."
+    }
+  ],
+  "documentation_corrections": [
+    {
+      "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/SOURCE-PROTOCOL-RECIPES.md",
+      "section": "W3",
+      "issue": "The phrase 'actual successful OS SQLite close' overstates what WriterCloseObserver observes.",
+      "correction": "Describe an ACK refusal after a successful SQLite connection close (Connection::close / sqlite3_close result). Do not infer independent OS file-handle-close evidence.",
+      "evidence": {
+        "path": "D:/Layrs/layrs/crates/layrs-store-local/src/projection/provider/database_io/bare.rs",
+        "line": 388,
+        "end_line": 407
+      },
+      "status": "Acknowledged wording correction only; document left unchanged."
+    },
+    {
+      "path": "D:/Layrs/tmp/c13-source-protection-source-proposal/SOURCE-PROTOCOL-RECIPES.md",
+      "section": "W4",
+      "issue": "Authored prospective recipe; no actual close-failure experiment was performed by this review.",
+      "correction": "Keep it explicitly prospective and separate from ACK injection. A future busy sqlite3_close failure must not be described as an observed OS handle-close failure without separate evidence.",
+      "status": "NOT_RUN; no runtime evidence credited."
+    }
+  ],
+  "unresolved_evidence": [
+    "Compilation/typechecking and runtime behavior remain unperformed. Formatting/self-review reports in the bundle were not treated as compiler or independent runtime evidence.",
+    "A genuine companion-capable OwnedReadyData/ManagedPrivateReady/ManagedFamilyReady route and a retained complete-image/source/remote-authority lease are still missing. Existing strict guards were not weakened in the inspected routes.",
+    "The new B publication/protection routes therefore do not establish a completed end-to-end C13 conversion. Findings about those routes are concrete source defects in the proposed implementation, not claims that the active native runner reached them.",
+    "Initial physical source protection reopening is limited to actual B Staging; terminal retry needs the retained original owner until a separately authenticated recovery owner exists. These are acknowledged limitations, not new findings.",
+    "No C14 durable-denied schema is delivered. This was not reclassified as a source-B defect.",
+    "Rollback atomicity under injected failures, zero-mutation replay, exact-capacity boundaries, foreign-group corruption, later capture coexistence and offline C autonomy were traced in source but not experimentally established.",
+    "The report does not authorize weakening C Ready/lease prerequisites, fixes, deployment, release, reclamation or further delegation. Those decisions remain with ROOT."
+  ],
+  "integrity": {
+    "begin": {
+      "head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+      "branch": "feature/worktrees-partial-vfs",
+      "manifest_sha256": "601c7e851214849c418c04d9852c8ccd1622243c8899a921e9e9c93aa3516c69",
+      "patch_sha256": "c1e53502d0691c1d27727435c555f0d5a70fece7f6f33aab20bbe3b098290987",
+      "candidate_entry_hash_and_size_matches": 53,
+      "candidate_entry_mismatches": [],
+      "main_base_hash_or_expected_absence_matches": 53,
+      "main_base_mismatches": [],
+      "predecessor_manifest_sha256": "0033a04e8831186c79b0d3b8581e1d36d1f5083a56470194c0a672ff4186835c",
+      "predecessor_entry_hash_matches": 23,
+      "full_bundle_files_hashed": {
+        "candidate": 73,
+        "predecessor": 31
+      }
+    },
+    "end": {
+      "head": "6b1f5632bd7f6092226d57e3c813033a82bcfc98",
+      "branch": "feature/worktrees-partial-vfs",
+      "manifest_sha256": "601c7e851214849c418c04d9852c8ccd1622243c8899a921e9e9c93aa3516c69",
+      "patch_sha256": "c1e53502d0691c1d27727435c555f0d5a70fece7f6f33aab20bbe3b098290987",
+      "candidate_entry_hash_and_size_matches": 53,
+      "candidate_entry_mismatches": [],
+      "main_base_hash_or_expected_absence_matches": 53,
+      "main_base_mismatches": [],
+      "predecessor_manifest_sha256": "0033a04e8831186c79b0d3b8581e1d36d1f5083a56470194c0a672ff4186835c",
+      "predecessor_entry_hash_matches": 23,
+      "predecessor_paths_and_manifest_input_output_references_matched": 23,
+      "full_bundle_files_hashed": {
+        "candidate": 73,
+        "predecessor": 31
+      },
+      "full_bundle_file_lists_and_sha256s_unchanged_since_begin": true,
+      "scoped_fallback_source_diff_against_HEAD": "Empty for the read main database_io, exact_content, admitted_catalog/groups, maintenance, ready_data, destination_ready/data, ancestry and ownership-design dependencies.",
+      "mismatches": []
+    }
+  }
+}

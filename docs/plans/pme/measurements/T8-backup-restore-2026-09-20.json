@@ -1,0 +1,52 @@
+{
+  "schema": "layrs.backup-validation-measurement.v1",
+  "date": "2026-09-20",
+  "result": "passed",
+  "configuration": {
+    "host": "Windows development host",
+    "database": "PostgreSQL 16 local Docker, disposable database and restricted runtime role",
+    "cas": "Local filesystem",
+    "backup_tools": "Real pg_dump exported snapshot and pg_restore in the local PostgreSQL container",
+    "scenario": "native_clients_v3 with actual HTTPS clients, pinned WASM and Docker runner",
+    "full_scenario_seconds": 263.44
+  },
+  "dataset": {
+    "canonical_objects": 563,
+    "canonical_bytes": 16679896,
+    "steps": 33,
+    "release_events": 6,
+    "includes": ["Chunked 16 MiB file", "Text/code conflict fragments and partial resolutions", "Weave and Choose Decisions", "Proof and Gate Products"]
+  },
+  "timing": {
+    "create_backup_ms": 8479,
+    "restore_backup_ms": 8924,
+    "whole_backup_restore_drill_ms": 20517,
+    "snapshot_to_cas_complete_seconds": 8,
+    "snapshot_to_cas_resolution": "Manifest Unix timestamps with second precision"
+  },
+  "recovery_point": {
+    "definition": "Exported PostgreSQL snapshot identified by database_watermark_unix; CAS closure is retained at least through that snapshot",
+    "potential_loss_window": "Age of the latest successfully verified backup's database snapshot at the incident time; writes committed after that snapshot may be absent",
+    "rpo_seconds": null,
+    "rpo_guarantee": false,
+    "cas_copy_window_is_rpo": false
+  },
+  "recovery_time": {
+    "measured_phase": "restore_backup including archive verification, CAS installation, pg_restore and native schema/identity verification",
+    "service_rto_seconds": null,
+    "excluded": ["Incident detection", "Operator response", "Provisioning the replacement host", "External backup download", "Server restart and readiness", "Traffic cutover"],
+    "enterprise_sla": false
+  },
+  "assertions": [
+    "Restored Views and generations exactly match the quiescent source",
+    "All 33 admitted Steps retained",
+    "All six immutable Release events retained with their CAS Evidence",
+    "Canonical closure verified; missing object, corrupt object and incomplete manifest refuse restoration",
+    "Restoration refuses a nonempty target"
+  ],
+  "limitations": [
+    "One local synthetic dataset; not a customer pilot or production-scale benchmark",
+    "No post-snapshot write-loss experiment or production scheduling SLA claimed",
+    "S3, offsite recovery and full service recovery time remain unqualified"
+  ]
+}

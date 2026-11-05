@@ -1,0 +1,459 @@
+//! One durable installation per reservation/FileId. A retry never adds a second
+//! physical attempt while the first attempt's bytes remain charged ambiguously.
+use super::*;
+use layrs_core::scm::FileId;
+#[cfg(windows)]
+mod cancellation;
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Intent {
+    incarnation: String,
+    reservation: String,
+    owner: WorktreeId,
+    database_identity: String,
+    operation: String,
+    file_id: FileId,
+    bytes: u64,
+    directory: String,
+    directory_identity: String,
+}
+pub(super) struct Stage {
+    intent: Intent,
+    payload: Vec<u8>,
+    pub manifest: Option<FileManifest>,
+    pub published: bool,
+}
+impl Stage {
+    pub fn reservation(&self) -> &str {
+        &self.intent.reservation
+    }
+    pub fn begin(lease: &Lease, reservation: &str, expected: &CapturedFile) -> Result<Self> {
+        lease.with_content_catalog(true, |c| {
+        lease.authorize_content_reservation(c, reservation)?;
+        let (owner, operation, database_identity): (String, String, String) = c.query_row(
+            "SELECT r.owner,r.operation,w.database_identity FROM reservations r JOIN worktrees w ON w.id=r.owner WHERE r.id=?1",
+            [reservation], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let existing = load(c, reservation, &expected.file_id)?;
+        let remaining: u64 = c.query_row(
+            "SELECT remaining FROM reservations WHERE id=?1",
+            [reservation],
+            |r| r.get(0),
+        )?;
+        let required = retention::budget_for(std::slice::from_ref(expected), 0)?;
+        if remaining < required && existing.is_none() {
+            lease.grow_reservation(c, reservation, remaining, required)?;
+        }
+        let stage = if let Some(stage) = existing {
+            stage
+        } else {
+            let parent = PinnedDirectory::open(&lease.family.root.join("staging"))?;
+            let name = unique_id()?;
+            let directory = parent.ensure_private_child(name.as_ref())?;
+            let intent = Intent {
+                incarnation: lease.family.marker.incarnation.clone(),
+                reservation: reservation.into(),
+                owner: WorktreeId::parse(owner.clone()).map_err(invalid)?,
+                database_identity: database_identity.clone(),
+                operation: operation.clone(),
+                file_id: expected.file_id.clone(),
+                bytes: expected.bytes,
+                directory: name,
+                directory_identity: directory.identity_token(),
+            };
+            let payload = canonical_json(&intent).map_err(invalid)?;
+            // No content is written before this row commits. A crash between the
+            // mkdir and this insert can leave only an empty directory.
+            c.execute(
+                "INSERT INTO installations VALUES(?1,?2,?3,NULL,0)",
+                params![reservation, expected.file_id.as_str(), payload],
+            )?;
+            Stage {
+                intent,
+                payload,
+                manifest: None,
+                published: false,
+            }
+        };
+        stage.validate_identity(lease, reservation, expected, &owner, &operation, &database_identity)?;
+        Ok(stage)
+        })
+    }
+    /// Pure comparison shared by creation/retry and read-only cancellation.
+    fn validate_identity(
+        &self,
+        lease: &Lease,
+        reservation: &str,
+        expected: &CapturedFile,
+        owner: &str,
+        operation: &str,
+        database_identity: &str,
+    ) -> Result<()> {
+        if self.intent.incarnation != lease.family.marker.incarnation
+            || self.intent.reservation != reservation
+            || self.intent.file_id != expected.file_id
+            || self.intent.bytes != expected.bytes
+            || self.intent.owner.as_str() != owner
+            || self.intent.operation != operation
+            || self.intent.database_identity != database_identity
+        {
+            return Err(invalid("installation ownership or source identity differs"));
+        }
+        if let Some(manifest) = &self.manifest {
+            if manifest.file_id() != &expected.file_id || manifest.byte_length() != expected.bytes {
+                return Err(invalid("installation manifest differs from its intent"));
+            }
+        }
+        Ok(())
+    }
+    pub fn directory(&self, lease: &Lease) -> Result<PinnedDirectory> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)?;
+                #[cfg(windows)]
+                cancellation::require_exclusive_installation_directories(
+                    c,
+                    std::slice::from_ref(self),
+                )?;
+                lease.authorize_content_directory(
+                    c,
+                    &self.intent.directory,
+                    &self.intent.directory_identity,
+                )
+            })?;
+        }
+        if self.intent.directory.is_empty()
+            || self.intent.directory.len() > 128
+            || !self
+                .intent
+                .directory
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'-')
+        {
+            return Err(invalid("installation directory is not bounded"));
+        }
+        let parent = if lease.is_admitted() {
+            PinnedDirectory::open(&lease.family.root)?
+                .open_private_child_for_write("staging".as_ref())?
+        } else {
+            PinnedDirectory::open(&lease.family.root.join("staging"))?
+        };
+        let directory = if lease.is_admitted() {
+            parent.open_private_child_for_write(self.intent.directory.as_ref())?
+        } else {
+            parent.open_child(self.intent.directory.as_ref())?
+        };
+        if directory.identity_token() != self.intent.directory_identity {
+            return Err(invalid("installation directory replaced"));
+        }
+        Ok(directory)
+    }
+    pub fn reset_unverified(&self, lease: &Lease) -> Result<()> {
+        if self.manifest.is_some() || self.published {
+            return Err(invalid("verified installation cannot be restaged"));
+        }
+        self.clean_files(lease)
+    }
+    fn clean_files(&self, lease: &Lease) -> Result<()> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)
+            })?;
+        }
+        let directory = self.directory(lease)?;
+        let names = self.inventory(lease, &directory)?;
+        for name in names {
+            let file = directory.open_file(&name)?;
+            #[cfg(windows)]
+            if lease.is_admitted() {
+                crate::projection::file::require_single_link(file.file())?;
+                self.directory(lease)?;
+            }
+            file.verify_parent()?;
+            file.unlink()?;
+        }
+        directory.sync()?;
+        directory.verify_path_identity()?;
+        Ok(())
+    }
+    /// Enumerate and validate everything before deleting the first child.
+    fn inventory(
+        &self,
+        lease: &Lease,
+        directory: &PinnedDirectory,
+    ) -> Result<Vec<std::ffi::OsString>> {
+        let path = lease
+            .family
+            .root
+            .join("staging")
+            .join(&self.intent.directory);
+        let mut names = Vec::new();
+        // Enumerate a bounded whitelist first. An unexpected entry or reparse
+        // point blocks cleanup and keeps the reservation; never recursively delete.
+        for item in fs::read_dir(path)?.take(1026) {
+            let name = item?.file_name();
+            let valid = name.to_str().is_some_and(|s| {
+                s == "manifest"
+                    || s.strip_prefix("chunk-")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .is_some_and(|n| n < 1024 && s == format!("chunk-{n}"))
+            });
+            if !valid || names.len() >= 1025 {
+                return Err(invalid(
+                    "unrecognized installation staging; reservation retained",
+                ));
+            }
+            #[cfg(windows)]
+            let pin = directory.open_readonly_file(&name)?;
+            #[cfg(not(windows))]
+            let pin = directory.open_file(&name)?;
+            #[cfg(windows)]
+            if lease.is_admitted() {
+                crate::projection::file::require_single_link(pin.file())?;
+            }
+            let limit = if name == "manifest" {
+                262144
+            } else {
+                CAPTURE_CHUNK_BYTES as u64
+            };
+            if pin.file().metadata()?.len() > limit {
+                return Err(invalid("installation staged file exceeds bound"));
+            }
+            names.push(name);
+        }
+        directory.verify_path_identity()?;
+        Ok(names)
+    }
+    pub fn verified(&mut self, lease: &Lease, manifest: &FileManifest) -> Result<()> {
+        let payload = canonical_json(manifest).map_err(invalid)?;
+        if manifest.file_id() != &self.intent.file_id || manifest.byte_length() != self.intent.bytes
+        {
+            return Err(invalid("verified installation identity mismatch"));
+        }
+        let changed = lease.with_content_catalog(true, |c| {
+            lease.authorize_content_reservation(c, &self.intent.reservation)?;
+            Ok(c.execute("UPDATE installations SET manifest=?1 WHERE reservation=?2 AND file_id=?3 AND payload=?4 AND published=0", params![payload, self.intent.reservation, self.intent.file_id.as_str(), self.payload])?)
+        })?;
+        if changed != 1 {
+            return Err(invalid("installation intent changed"));
+        }
+        self.manifest = Some(manifest.clone());
+        Ok(())
+    }
+    pub fn accept(&self, c: &Connection) -> Result<()> {
+        if c.execute("UPDATE installations SET published=1 WHERE reservation=?1 AND file_id=?2 AND payload=?3 AND manifest IS NOT NULL", params![self.intent.reservation, self.intent.file_id.as_str(), self.payload])? != 1 {
+            return Err(invalid("installation publication lost its intent"));
+        }
+        Ok(())
+    }
+    pub fn finish(&self, lease: &Lease) -> Result<()> {
+        if lease.is_admitted() {
+            lease.with_content_catalog(false, |c| {
+                lease.authorize_content_reservation(c, &self.intent.reservation)
+            })?;
+        }
+        // Fully admitted content is verified before caller permits this cleanup.
+        match self.directory(lease) {
+            Ok(directory) => {
+                self.clean_files(lease)?;
+                drop(directory);
+                let parent = if lease.is_admitted() {
+                    PinnedDirectory::open(&lease.family.root)?
+                        .open_private_child_for_write("staging".as_ref())?
+                } else {
+                    PinnedDirectory::open(&lease.family.root.join("staging"))?
+                };
+                parent.remove_empty_child(self.intent.directory.as_ref())?;
+            }
+            Err(ProjectionStoreError::Io(e))
+                if e.kind() == io::ErrorKind::NotFound
+                    && (self.published || self.manifest.is_none()) =>
+            {
+                ()
+            }
+            Err(e) => return Err(e),
+        }
+        if lease.with_content_catalog(true, |c| {
+            lease.authorize_content_reservation(c, &self.intent.reservation)?;
+            Ok(c.execute(
+                "DELETE FROM installations WHERE reservation=?1 AND file_id=?2 AND payload=?3",
+                params![
+                    self.intent.reservation,
+                    self.intent.file_id.as_str(),
+                    self.payload
+                ],
+            )?)
+        })? != 1
+        {
+            return Err(invalid("installation cleanup lost its intent"));
+        }
+        Ok(())
+    }
+    pub fn finish_existing(
+        lease: &Lease,
+        reservation: &str,
+        expected: &CapturedFile,
+    ) -> Result<()> {
+        let exists = lease.with_content_catalog(false, |c| {
+            lease.authorize_content_reservation(c, reservation)?;
+            Ok(load(c, reservation, &expected.file_id)?.is_some())
+        })?;
+        if exists {
+            let stage = Self::begin(lease, reservation, expected)?;
+            stage.finish(lease)?;
+        }
+        Ok(())
+    }
+}
+
+impl Lease {
+    pub(super) fn installation_dependencies(
+        &self,
+    ) -> Result<(
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    )> {
+        self.with_content_catalog(false, |c| {
+        let mut q = c.prepare("SELECT reservation,file_id FROM installations WHERE manifest IS NOT NULL ORDER BY reservation,file_id LIMIT 16385")?;
+        let keys = q
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if keys.len() > 16384 {
+            return Err(invalid(
+                "installation dependency bound exceeded; reclamation refused",
+            ));
+        }
+        let mut manifests = std::collections::BTreeSet::new();
+        let mut chunks = std::collections::BTreeSet::new();
+        let mut budget = 0usize;
+        for (reservation, file) in keys {
+            let stage = load(
+                c,
+                &reservation,
+                &FileId::parse(file).map_err(invalid)?,
+            )?
+            .ok_or_else(|| invalid("installation disappeared"))?;
+            let manifest = stage
+                .manifest
+                .ok_or_else(|| invalid("installation dependency missing"))?;
+            budget = budget
+                .checked_add(canonical_json(&manifest).map_err(invalid)?.len())
+                .filter(|n| *n <= 64 * 1024 * 1024)
+                .ok_or_else(|| invalid("installation dependency metadata exceeds bound"))?;
+            if stage.intent.incarnation != self.family.marker.incarnation
+                || manifest.file_id() != &stage.intent.file_id
+                || manifest.byte_length() != stage.intent.bytes
+            {
+                return Err(invalid("installation dependency identity mismatch"));
+            }
+            manifests.insert(manifest.id().to_string());
+            chunks.extend(manifest.chunks().iter().map(|p| p.chunk_id().to_string()));
+        }
+        Ok((manifests, chunks))
+        })
+    }
+    /// Caller holds either this owner's exclusive private lock or the exclusive
+    /// family lifecycle. Verified pieces are admitted before releasing their
+    /// charge; unverified owned staging is removed without touching checkout data.
+    pub(in crate::projection) fn cancel_installations(
+        &self,
+        reservation: &str,
+        owner: &WorktreeId,
+    ) -> Result<()> {
+        let stages = self.with_content_catalog(false, |c| {
+            let actual: Option<String> = c
+                .query_row(
+                    "SELECT owner FROM reservations WHERE id=?1",
+                    [reservation],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(actual) = actual else {
+                return Ok(None);
+            };
+            if actual != owner.as_str() {
+                return Err(invalid("reservation owner mismatch"));
+            }
+            let mut q = c.prepare(
+            "SELECT file_id FROM installations WHERE reservation=?1 ORDER BY file_id LIMIT 1025",
+        )?;
+            let files = q
+                .query_map([reservation], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if files.len() > 1024 {
+                return Err(invalid("installation recovery exceeds bound"));
+            }
+            let mut stages = Vec::new();
+            for file in files {
+                stages.push(
+                    load(c, reservation, &FileId::parse(file).map_err(invalid)?)?
+                        .ok_or_else(|| invalid("installation disappeared"))?,
+                );
+            }
+            Ok(Some(stages))
+        })?;
+        let Some(stages) = stages else {
+            return Ok(());
+        };
+        for stage in stages {
+            let expected = CapturedFile {
+                file_id: stage.intent.file_id.clone(),
+                bytes: stage.intent.bytes,
+                executable: false,
+            };
+            let stage = Stage::begin(self, reservation, &expected)?;
+            if let Some(manifest) = self.manifest_for(&expected.file_id)? {
+                self.verify_manifest(&manifest)?;
+                stage.finish(self)?;
+            } else if stage.manifest.is_some() {
+                self.publish_installation(stage, &mut |_| Ok(()))?;
+            } else {
+                stage.finish(self)?;
+            }
+        }
+        Ok(())
+    }
+}
+fn load(c: &Connection, reservation: &str, file: &FileId) -> Result<Option<Stage>> {
+    // Bound and type-check before materializing either payload. An oversized
+    // existing row must not masquerade as an absent retry intent.
+    let bounded: Option<bool> = c.query_row("SELECT typeof(reservation)='text' AND length(CAST(reservation AS BLOB)) BETWEEN 1 AND 128 AND typeof(file_id)='text' AND length(CAST(file_id AS BLOB))=71 AND typeof(payload)='blob' AND length(payload) BETWEEN 1 AND 8192 AND (manifest IS NULL OR (typeof(manifest)='blob' AND length(manifest) BETWEEN 1 AND 262144)) AND typeof(published)='integer' AND published IN (0,1) FROM installations WHERE reservation=?1 AND file_id=?2", params![reservation,file.as_str()], |r| r.get(0)).optional()?;
+    match bounded {
+        None => return Ok(None),
+        Some(false) => return Err(invalid("installation row exceeds bounds or scalar types")),
+        Some(true) => (),
+    }
+    let row: Option<(Vec<u8>, Option<Vec<u8>>, bool)> = c.query_row("SELECT payload,manifest,published FROM installations WHERE reservation=?1 AND file_id=?2", params![reservation, file.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+    row.map(|(payload, manifest, published)| {
+        let intent: Intent = serde_json::from_slice(&payload).map_err(invalid)?;
+        if canonical_json(&intent).map_err(invalid)? != payload
+            || intent.reservation != reservation
+            || &intent.file_id != file
+            || intent.bytes > MAX_CAPTURE_FILE_BYTES
+        {
+            return Err(invalid("installation intent is not canonical"));
+        }
+        let manifest = manifest
+            .map(|p| {
+                let value: FileManifest = serde_json::from_slice(&p).map_err(invalid)?;
+                if canonical_json(&value).map_err(invalid)? != p
+                    || value.byte_length() > MAX_CAPTURE_FILE_BYTES
+                    || value.chunks().len() > 1024
+                {
+                    return Err(invalid("installation manifest is not canonical or bounded"));
+                }
+                Ok(value)
+            })
+            .transpose()?;
+        if published && manifest.is_none() {
+            return Err(invalid("published installation lacks manifest"));
+        }
+        Ok(Stage {
+            intent,
+            payload,
+            manifest,
+            published,
+        })
+    })
+    .transpose()
+}
