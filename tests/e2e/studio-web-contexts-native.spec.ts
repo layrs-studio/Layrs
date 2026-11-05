@@ -38,7 +38,11 @@ test("context selection isolates company, personal and organisation projects on 
   const creation = page.waitForResponse(response => new URL(response.url()).pathname === "/v3/organisations" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Créer l’organisation", exact: true }).click();
   const creationResponse = await creation;
-  expect(creationResponse.status(), JSON.stringify(await creationResponse.json())).toBeLessThan(300);
+  // The app navigates once the organisation exists, and Chromium may then drop
+  // the response body: read it only to explain a failure.
+  const creationStatus = creationResponse.status();
+  const creationDetail = creationStatus < 300 ? "" : await creationResponse.text().catch(() => "response body unavailable");
+  expect(creationStatus, creationDetail).toBeLessThan(300);
   await expect(selector).toContainText("Équipe produit UI");
   await page.getByRole("button", { name: "Nouveau projet", exact: true }).click();
   await page.getByLabel("Nom du projet", { exact: true }).fill("Projet organisation UI");
