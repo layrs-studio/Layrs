@@ -150,7 +150,7 @@ pub(super) fn run(
                     );
                 }
                 ProviderCaptureState::Cancelled { .. } => {
-                    return Err(invalid("capture transaction was cancelled"))
+                    return Err(invalid("capture transaction was cancelled"));
                 }
                 _ => {}
             }
@@ -206,7 +206,7 @@ pub(super) fn run(
             _ => {
                 return Err(invalid(
                     "capture checkpoint differs from durable staged image",
-                ))
+                ));
             }
         }
         finish(
@@ -399,7 +399,7 @@ pub(super) fn cancel(
             ProviderCaptureState::Staging { stage } => Some(stage.clone()),
             ProviderCaptureState::Cancelled { .. } => return Ok(()),
             ProviderCaptureState::Accepted { .. } => {
-                return Err(invalid("accepted capture cannot be cancelled"))
+                return Err(invalid("accepted capture cannot be cancelled"));
             }
         };
         let mut next = prior.clone();

@@ -4,7 +4,7 @@ use super::*;
 use crate::projection::provider::{
     database_io::{self, DatabaseFile},
     records::AllocationRecord,
-    recovery::error::{invalid as provider_invalid, Result as ProviderResult},
+    recovery::error::{Result as ProviderResult, invalid as provider_invalid},
 };
 use std::{ffi::OsStr, fs::File};
 #[path = "provider_capture.rs"]
@@ -76,7 +76,7 @@ pub(in crate::projection) fn require_provider_catalog_schema(
         _ => {
             return Err(provider_invalid(
                 "provider family requires exact catalog schema1 or schema2",
-            ))
+            ));
         }
     };
     crate::projection::provider::cancellation::check(cancel)?;

@@ -17,6 +17,7 @@ use crate::projection::{
         destination_ready::{ManagedReadyClaim, ManagedReadyData, ManagedReadyOverlay},
         managed_budget,
         records::{
+            Record,
             import::{
                 ImportRowset, ImportSource, ProviderImportKind, ProviderImportPrefixRecord,
                 ProviderTransitionReceiptRecord,
@@ -25,15 +26,14 @@ use crate::projection::{
                 ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole,
                 TransitionState,
             },
-            Record,
         },
-        recovery::error::{invalid, Result as CauseResult},
+        recovery::error::{Result as CauseResult, invalid},
     },
     shared::{exact_content::canonical_manifest_bytes, exact_protection::ExactProtection},
 };
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileId, FileManifest, FileManifestId},
+    scm::{FileId, FileManifest, FileManifestId, canonical_json},
 };
 use layrs_vfs::Cancellation;
 use serde::Serialize;
@@ -537,7 +537,7 @@ fn build_overlay(
             _ => {
                 return Err(invalid(
                     "ordinary Ready overlay exact image path absent or conflicting",
-                ))
+                ));
             }
         };
         output.push(ManagedReadyOverlay {

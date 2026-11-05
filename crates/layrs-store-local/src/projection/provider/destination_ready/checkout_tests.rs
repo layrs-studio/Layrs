@@ -3,6 +3,7 @@
 //! copied Staging prefix. Journal inode strings remain synthetic DATA: these
 //! recipes do not qualify physical copying or ordinary destination admission.
 use super::*;
+use crate::projection::ProjectionStoreError;
 use crate::projection::provider::{
     checkout_journal::{self, CheckoutEntry, CheckoutFile, ExpectedCheckout, FileState, RowKey},
     database_io::BareConnection,
@@ -10,7 +11,6 @@ use crate::projection::provider::{
     records::Receipt,
     validation::tests::fixture::Fixture as SourceFixture,
 };
-use crate::projection::ProjectionStoreError;
 #[path = "tests/fixture.rs"]
 mod fixture;
 #[path = "tests/source.rs"]
@@ -147,9 +147,11 @@ fn complete(c: &Connection, expected: &ExpectedCheckout) {
         let next = previous.published_file().unwrap();
         checkout_journal::advance(c, expected, &previous, &next, None).unwrap();
     }
-    assert!(checkout_journal::read(c, expected, None)
-        .unwrap()
-        .is_complete());
+    assert!(
+        checkout_journal::read(c, expected, None)
+            .unwrap()
+            .is_complete()
+    );
 }
 fn refuses<T>(result: Result<T>, expected: &str) {
     let error = match result {
@@ -349,9 +351,11 @@ owned!(
             assert_eq!(count(c), rows);
             c.execute_batch("ROLLBACK TO aliased_inode; RELEASE aliased_inode")
                 .unwrap();
-            assert!(checkout_journal::read(c, expected, None)
-                .unwrap()
-                .is_complete());
+            assert!(
+                checkout_journal::read(c, expected, None)
+                    .unwrap()
+                    .is_complete()
+            );
         });
     }
 );

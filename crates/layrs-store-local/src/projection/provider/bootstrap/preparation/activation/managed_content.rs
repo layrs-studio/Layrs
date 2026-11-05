@@ -6,8 +6,8 @@ mod checkout;
 mod companion;
 pub(super) use companion::CompanionPins;
 mod denial;
-pub(super) use denial::commit_denial;
 pub(super) use denial::DenialPins;
+pub(super) use denial::commit_denial;
 #[cfg(test)]
 #[path = "managed_content/companion_guards.rs"]
 mod companion_guards;
@@ -26,9 +26,9 @@ use crate::projection::{
         destination_validation,
         import_validation::VerifiedImportClosure,
         records::{
+            Record,
             import::{ImportSource, ProviderImportKind},
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-            Record,
         },
         validation::PrivateActivePublicationValidation,
     },

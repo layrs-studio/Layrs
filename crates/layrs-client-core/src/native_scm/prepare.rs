@@ -406,7 +406,11 @@ impl NativeClient {
         // Spooled chunks already admitted to the Space (unchanged parts of a
         // changed file) are durable, verified and closed, like the objects
         // `retain_new_objects` drops: the batch carries only new content.
-        if snapshot.chunks.as_ref().is_some_and(|spool| std::sync::Arc::strong_count(spool) > 1) {
+        if snapshot
+            .chunks
+            .as_ref()
+            .is_some_and(|spool| std::sync::Arc::strong_count(spool) > 1)
+        {
             layrs_store_local::perf::count("capture.forget_admitted_skipped_shared", 1);
         }
         if let Some(spool) = snapshot.chunks.as_mut().and_then(std::sync::Arc::get_mut) {
@@ -419,7 +423,11 @@ impl NativeClient {
             })?;
         }
         let chunks = snapshot.chunks.clone();
-        let objects = retain_new_objects(&reader, worktree.space_id(), objects(snapshot, &step, &next))?;
+        let objects = retain_new_objects(
+            &reader,
+            worktree.space_id(),
+            objects(snapshot, &step, &next),
+        )?;
         let admissions = admissions_with_chunks(worktree.space_id(), &objects, chunks.as_deref());
         let batch = WriteBatch::new(
             stamp.transaction_id,

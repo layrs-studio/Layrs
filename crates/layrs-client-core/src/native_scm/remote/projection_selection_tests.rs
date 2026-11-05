@@ -1,11 +1,11 @@
 //! Isolated HTTP contract fixture: any unexpected content route fails the test.
 use super::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     net::TcpListener,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     thread,
 };
@@ -227,13 +227,11 @@ fn selected_clone_and_receive_transfer_no_excluded_or_denied_content() {
         std::fs::read(fixture.root.join("excluded.txt")).unwrap(),
         b"unowned excluded bytes"
     );
-    assert!(
-        store
-            .capture_patch(after.generation)
-            .unwrap()
-            .changes
-            .is_empty()
-    );
+    assert!(store
+        .capture_patch(after.generation)
+        .unwrap()
+        .changes
+        .is_empty());
     fixture.assert_no_content();
 }
 
@@ -248,22 +246,18 @@ fn empty_selection_clone_expansion_checks_current_authority_and_cas_without_tran
         PathSemantics::PortableWindows,
     )
     .unwrap();
-    assert!(
-        fixture
-            .remote
-            .expand_projection_selection(&store, before.generation + 1, &expanded)
-            .is_err()
-    );
+    assert!(fixture
+        .remote
+        .expand_projection_selection(&store, before.generation + 1, &expanded)
+        .is_err());
     {
         let mut state = fixture.state.lock().unwrap();
         state.0["authorizationEpoch"] = json!(2);
     }
-    assert!(
-        fixture
-            .remote
-            .expand_projection_selection(&store, before.generation, &expanded)
-            .is_err()
-    );
+    assert!(fixture
+        .remote
+        .expand_projection_selection(&store, before.generation, &expanded)
+        .is_err());
     assert_eq!(store.state().unwrap(), before);
     fixture.state.lock().unwrap().0["authorizationEpoch"] = json!(1);
     let after = fixture
@@ -279,24 +273,20 @@ fn empty_selection_clone_expansion_checks_current_authority_and_cas_without_tran
 #[test]
 fn default_clone_still_attempts_authorized_content_and_failure_leaves_no_metadata() {
     let fixture = Fixture::new();
-    assert!(
-        fixture
-            .remote
-            .clone_projection_into(
-                &fixture.root,
-                &SpaceId::parse("space:demo").unwrap(),
-                &StepId::parse(id(1)).unwrap()
-            )
-            .is_err()
-    );
+    assert!(fixture
+        .remote
+        .clone_projection_into(
+            &fixture.root,
+            &SpaceId::parse("space:demo").unwrap(),
+            &StepId::parse(id(1)).unwrap()
+        )
+        .is_err());
     assert!(!fixture.root.join(".layrs").exists());
-    assert!(
-        fixture
-            .state
-            .lock()
-            .unwrap()
-            .2
-            .iter()
-            .any(|p| !p.ends_with("/bootstrap") && !p.ends_with("/projection"))
-    );
+    assert!(fixture
+        .state
+        .lock()
+        .unwrap()
+        .2
+        .iter()
+        .any(|p| !p.ends_with("/bootstrap") && !p.ends_with("/projection")));
 }

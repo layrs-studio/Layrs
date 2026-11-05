@@ -3,17 +3,16 @@
 use crate::secure_fs::PinnedDirectory;
 mod projection;
 mod streaming;
-pub use streaming::{TrustedCapture, TrustedFile};
 pub use projection::{
     CheckoutProjectionContent, CheckoutProjectionEntry, projection_tree_id,
-    remember_projection_tree_id,
-    validate_streaming_projection,
+    remember_projection_tree_id, validate_streaming_projection,
 };
 use std::{
     fs,
     io::{self, Read},
     path::{Component, Path, PathBuf},
 };
+pub use streaming::{TrustedCapture, TrustedFile};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CheckoutLimits {

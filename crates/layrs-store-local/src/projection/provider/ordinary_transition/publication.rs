@@ -5,7 +5,7 @@
 //! No connection, physical C evidence, durable ACK or admission is created here.
 use super::*;
 use crate::projection::provider::{
-    import_validation::{require_live_source_quiescence, ImportDatabaseKind},
+    import_validation::{ImportDatabaseKind, require_live_source_quiescence},
     managed_admission::read_admitted_import,
     transition_sql::SourceIntentEffect,
 };

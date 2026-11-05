@@ -51,8 +51,11 @@ impl NativeWorkspace {
                 state,
             });
         }
-        let base = self.client().capture_base_with(&store, self.worktree_id())?;
-        let before = self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
+        let base = self
+            .client()
+            .capture_base_with(&store, self.worktree_id())?;
+        let before =
+            self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
         drop(store);
         drop(span);
         let changes = self.working_changes_from(trust_index, false, base, &state, before)?;
@@ -72,7 +75,9 @@ impl NativeWorkspace {
         let span = layrs_store_local::perf::span("dirty.base_state");
         let (base, state, before) = {
             let store = self.open_store()?;
-            let base = self.client().capture_base_with(&store, self.worktree_id())?;
+            let base = self
+                .client()
+                .capture_base_with(&store, self.worktree_id())?;
             let state = self.state_with(&store)?;
             let before =
                 self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
@@ -114,18 +119,17 @@ impl NativeWorkspace {
         drop(span);
         let after = match &index {
             Some(index) => {
-                let mut trust = |path: &str,
-                                 _full: &std::path::Path,
-                                 listed: &std::fs::Metadata| {
-                    let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
-                    index.trusted(path, &stat).map(|entry| {
-                        layrs_store_local::scm_v1::checkout::TrustedFile {
-                            file_id: entry.file_id.clone(),
-                            length: entry.length,
-                            executable: entry.executable,
-                        }
-                    })
-                };
+                let mut trust =
+                    |path: &str, _full: &std::path::Path, listed: &std::fs::Metadata| {
+                        let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
+                        index.trusted(path, &stat).map(|entry| {
+                            layrs_store_local::scm_v1::checkout::TrustedFile {
+                                file_id: entry.file_id.clone(),
+                                length: entry.length,
+                                executable: entry.executable,
+                            }
+                        })
+                    };
                 // Read-only: one stable pass, as git status (council r5, D4).
                 checkout
                     .capture_streaming_trusting_single_pass(
@@ -164,10 +168,14 @@ impl NativeWorkspace {
         if small_projection(&before, &after) {
             // Only paths whose projection differs can produce diff lines; read
             // (and verify) base content for those alone, not the whole Step.
-            let prior: std::collections::BTreeMap<_, _> =
-                before.iter().map(|e| (e.path.as_str(), &e.content)).collect();
-            let next: std::collections::BTreeMap<_, _> =
-                after.iter().map(|e| (e.path.as_str(), &e.content)).collect();
+            let prior: std::collections::BTreeMap<_, _> = before
+                .iter()
+                .map(|e| (e.path.as_str(), &e.content))
+                .collect();
+            let next: std::collections::BTreeMap<_, _> = after
+                .iter()
+                .map(|e| (e.path.as_str(), &e.content))
+                .collect();
             let changed: std::collections::BTreeSet<String> = prior
                 .keys()
                 .chain(next.keys())

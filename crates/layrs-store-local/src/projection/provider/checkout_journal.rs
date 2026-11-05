@@ -6,19 +6,19 @@ use super::{
     cancellation,
     import_validation::{self, ImportDatabaseKind},
     records::{
+        Record,
         import::{ImportSource, ProviderImportKind},
         transition::{ProviderTransitionIntentRecord, TransitionBackendKind, TransitionState},
-        Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
 use crate::projection::format;
 use layrs_core::{
     projection::{PathSemantics, ReservedPaths},
-    scm::{canonical_json, FileId, FileManifestId, RepoPath},
+    scm::{FileId, FileManifestId, RepoPath, canonical_json},
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +28,7 @@ mod inventory;
 mod sql;
 pub(in crate::projection::provider) use archive::read_archived;
 pub(in crate::projection::provider) use sql::{
-    advance, declare, read, AdvanceEffect, DeclareEffect,
+    AdvanceEffect, DeclareEffect, advance, declare, read,
 };
 
 const MAX_FILES: usize = 100_000;

@@ -4,12 +4,12 @@ use crate::projection::provider::{
     import_validation::{compute_scoped_closure, read_source_metadata},
     process_profile::tests::child,
     records::{
+        Receipt,
         import::{
             ImportClosure, ImportRowset, ImportSource, ImportVersion, ProviderImportKind,
             ProviderImportPrefixRecord,
         },
         transition::{TransitionObservation, TransitionPlan, TransitionRowset},
-        Receipt,
     },
     validation::{active_fixture, private_active_capture_with_source},
 };
@@ -218,15 +218,17 @@ fn source_intent_begin_retry_cas_cancel_and_rollback() {
                 apply(None, &initial, None).unwrap(),
                 SourceIntentEffect::AlreadyPresent
             );
-            assert!(private_active_capture_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                binding,
-                Some([0x41; 16]),
-                None
-            )
-            .is_err());
+            assert!(
+                private_active_capture_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    binding,
+                    Some([0x41; 16]),
+                    None
+                )
+                .is_err()
+            );
             let mut reserved =
                 ProviderTransitionIntentRecord::decode(&initial.encode().unwrap()).unwrap();
             reserved.reservation = Some(reserved.reservation_operation().unwrap());

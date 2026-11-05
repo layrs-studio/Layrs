@@ -6,7 +6,7 @@ use super::super::{
     records::{
         codec,
         companion_v2::*,
-        import::{ordered_companion_rowset, ImportSource},
+        import::{ImportSource, ordered_companion_rowset},
     },
 };
 use super::*;

@@ -94,13 +94,10 @@ fn canonical_source_root_binds_both_owners_and_all_alternates_without_large_mini
             .unwrap()
             .id()
     );
-    assert!(SourceCompanionProtection::new(
-        b,
-        &[required[0].clone(), required[0].clone()],
-        4096,
-        None
-    )
-    .is_err());
+    assert!(
+        SourceCompanionProtection::new(b, &[required[0].clone(), required[0].clone()], 4096, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -119,28 +116,64 @@ fn source_root_checks_bounds_before_aggregate_encoding() {
 #[test]
 #[ignore = "unrun owned audited SQL recipe; B reservation kernel only, no fabricated C Ready"]
 fn source_fixed_reservation_counts_b_plus_c_and_refuses_changed_remaining_without_writes() {
-    child::run(concat!(module_path!(),"::source_fixed_reservation_counts_b_plus_c_and_refuses_changed_remaining_without_writes"),120,|| {
-        child::declare();
-        with_reference("",|c| {
-            schema_v2::initialize_reference(c)?;c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")?;
-            let b=binding();let root=SourceCompanionProtection::new(b.clone(),&[],4096,None)?;
-            c.execute("INSERT INTO family VALUES(1,?1)",[b"family".as_slice()])?;
-            let exact=root.reservation_bytes()+b.destination.quota_bytes;
-            c.execute("INSERT INTO quota VALUES(1,?1)",[exact-1])?;
-            c.execute("INSERT INTO worktrees VALUES(?1,'b',?2,?3,'ready')",params![b.source_owner.as_str(),b.source_database,b"b".as_slice()])?;
-            c.execute("INSERT INTO worktrees VALUES(?1,'c',?2,?3,'initializing')",params![b.destination.owner.as_str(),b.destination.database_identity,b"c".as_slice()])?;
-            let changes=c.total_changes();assert!(root.reserve(c,None).is_err());assert_eq!(c.total_changes(),changes);
-            assert_eq!(root.inspect(c,None)?,SourceCompanionPresence::Absent);
-            c.execute("UPDATE quota SET bytes=?1",[exact])?;
-            assert_eq!(root.reserve(c,None)?,ProtectionEffect::Inserted);
-            let changes=c.total_changes();assert_eq!(root.reserve(c,None)?,ProtectionEffect::AlreadyPresent);assert_eq!(c.total_changes(),changes);
-            assert_eq!(root.recovery(c,TransitionState::Staging,false,None)?,SourceCompanionRecovery::ReservationOnly);
-            assert!(root.recovery(c,TransitionState::Ready,true,None).is_err());
-            c.execute("UPDATE reservations SET remaining=remaining-1 WHERE id=?1",[root.operation()])?;
-            let changes=c.total_changes();assert!(root.reserve(c,None).is_err());assert_eq!(c.total_changes(),changes);
-            c.execute_batch("ROLLBACK")?;Ok(())
-        }).unwrap();
-    });
+    child::run(
+        concat!(
+            module_path!(),
+            "::source_fixed_reservation_counts_b_plus_c_and_refuses_changed_remaining_without_writes"
+        ),
+        120,
+        || {
+            child::declare();
+            with_reference("", |c| {
+                schema_v2::initialize_reference(c)?;
+                c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")?;
+                let b = binding();
+                let root = SourceCompanionProtection::new(b.clone(), &[], 4096, None)?;
+                c.execute("INSERT INTO family VALUES(1,?1)", [b"family".as_slice()])?;
+                let exact = root.reservation_bytes() + b.destination.quota_bytes;
+                c.execute("INSERT INTO quota VALUES(1,?1)", [exact - 1])?;
+                c.execute(
+                    "INSERT INTO worktrees VALUES(?1,'b',?2,?3,'ready')",
+                    params![b.source_owner.as_str(), b.source_database, b"b".as_slice()],
+                )?;
+                c.execute(
+                    "INSERT INTO worktrees VALUES(?1,'c',?2,?3,'initializing')",
+                    params![
+                        b.destination.owner.as_str(),
+                        b.destination.database_identity,
+                        b"c".as_slice()
+                    ],
+                )?;
+                let changes = c.total_changes();
+                assert!(root.reserve(c, None).is_err());
+                assert_eq!(c.total_changes(), changes);
+                assert_eq!(root.inspect(c, None)?, SourceCompanionPresence::Absent);
+                c.execute("UPDATE quota SET bytes=?1", [exact])?;
+                assert_eq!(root.reserve(c, None)?, ProtectionEffect::Inserted);
+                let changes = c.total_changes();
+                assert_eq!(root.reserve(c, None)?, ProtectionEffect::AlreadyPresent);
+                assert_eq!(c.total_changes(), changes);
+                assert_eq!(
+                    root.recovery(c, TransitionState::Staging, false, None)?,
+                    SourceCompanionRecovery::ReservationOnly
+                );
+                assert!(
+                    root.recovery(c, TransitionState::Ready, true, None)
+                        .is_err()
+                );
+                c.execute(
+                    "UPDATE reservations SET remaining=remaining-1 WHERE id=?1",
+                    [root.operation()],
+                )?;
+                let changes = c.total_changes();
+                assert!(root.reserve(c, None).is_err());
+                assert_eq!(c.total_changes(), changes);
+                c.execute_batch("ROLLBACK")?;
+                Ok(())
+            })
+            .unwrap();
+        },
+    );
 }
 
 #[test]

@@ -3,13 +3,13 @@
 use crate::projection::{
     provider::{
         cancellation,
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
     },
     shared::exact_content::ExactBinding,
 };
-use layrs_core::scm::{canonical_json, FileManifest, WorktreeId};
+use layrs_core::scm::{FileManifest, WorktreeId, canonical_json};
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::collections::BTreeMap;
 

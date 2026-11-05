@@ -326,10 +326,7 @@ impl Context<'_> {
                             Some(location.path().to_path_buf()),
                             Some(id_text.clone()),
                             None,
-                            format!(
-                                "indexed length {byte_length}, actual {}",
-                                location.length()
-                            ),
+                            format!("indexed length {byte_length}, actual {}", location.length()),
                         );
                     }
                     location.length()

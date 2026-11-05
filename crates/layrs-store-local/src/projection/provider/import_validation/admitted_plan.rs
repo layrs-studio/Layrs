@@ -3,15 +3,14 @@
 use super::super::{
     managed_admission::read_admitted_import,
     records::{
-        codec,
+        Record, codec,
         import::{
-            imported_segments_rowset, AdmittedSourceBinding, ImportVersion, ProviderImportKind,
+            AdmittedSourceBinding, ImportVersion, ProviderImportKind, imported_segments_rowset,
         },
-        Record,
     },
 };
 use super::*;
-use crate::projection::{offline, ProjectionIdentity};
+use crate::projection::{ProjectionIdentity, offline};
 
 const MAX_ROWS: u64 = 1_000_000;
 // Internal, syntactically valid commitments only. No provisional prefix or

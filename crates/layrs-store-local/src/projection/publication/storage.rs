@@ -91,7 +91,10 @@ pub(in crate::projection) fn completed_record_for_origin(
 ) -> Result<Option<(CompletedPublication, Option<Vec<u8>>)>> {
     completed_record_with_capture(c, sequence, || {
         super::super::capture::storage::load_metadata_for_origin(
-            c, sequence, identity, maximum_generation,
+            c,
+            sequence,
+            identity,
+            maximum_generation,
         )
     })
 }

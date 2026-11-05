@@ -253,13 +253,17 @@ pub(super) fn run(
         ),
         before
     );
-    assert!(denial_receipt::reopen(a, prepared, Some(cancel))
-        .unwrap()
-        .is_none());
+    assert!(
+        denial_receipt::reopen(a, prepared, Some(cancel))
+            .unwrap()
+            .is_none()
+    );
     assert!(!ranges.funded.load(Ordering::SeqCst));
-    assert!(!std::path::Path::new(&planned.plan.destination_parent)
-        .join(&planned.plan.destination_leaf_nonce)
-        .exists());
+    assert!(
+        !std::path::Path::new(&planned.plan.destination_parent)
+            .join(&planned.plan.destination_leaf_nonce)
+            .exists()
+    );
     f.family
         .set_quota(crate::projection::SharedQuota { bytes: threshold })
         .unwrap();
@@ -457,10 +461,11 @@ pub(super) fn run(
         rows.header().is_some(),
         "Reserved modified README must derive a real companion header"
     );
-    assert!(rows
-        .authorized_files()
-        .iter()
-        .all(|row| row.path.as_str() != "README.md"));
+    assert!(
+        rows.authorized_files()
+            .iter()
+            .all(|row| row.path.as_str() != "README.md")
+    );
     assert_eq!(rows.manifests(), required);
     let derived = super::super::super::managed_plan::derive_reconciled_denial_data(
         &staging.plan.source_prefix,

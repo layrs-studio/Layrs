@@ -800,7 +800,9 @@ fn partial_command(cli: &Cli, args: &[String]) -> Result<Rendered, CliError> {
 }
 
 #[cfg(windows)]
-fn partial_provider_command(command: &crate::args::PartialProviderCommand) -> Result<Rendered, CliError> {
+fn partial_provider_command(
+    command: &crate::args::PartialProviderCommand,
+) -> Result<Rendered, CliError> {
     use crate::args::PartialProviderCommand;
     let data = match command {
         PartialProviderCommand::Status { ticket } => {
@@ -815,7 +817,9 @@ fn partial_provider_command(command: &crate::args::PartialProviderCommand) -> Re
 }
 #[cfg(not(windows))]
 fn partial_provider_command(_: &crate::args::PartialProviderCommand) -> Result<Rendered, CliError> {
-    Err(CliError::runtime("partial provider status requires Windows"))
+    Err(CliError::runtime(
+        "partial provider status requires Windows",
+    ))
 }
 fn error(e: impl std::fmt::Display) -> CliError {
     CliError::runtime(e.to_string())

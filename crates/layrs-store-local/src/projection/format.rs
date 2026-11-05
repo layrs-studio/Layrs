@@ -2,7 +2,7 @@ use super::*;
 mod connection;
 pub(in crate::projection) use connection::PrivateConnection;
 mod content_scope;
-pub(in crate::projection) use content_scope::{content_family, ContentScope, DenialReady};
+pub(in crate::projection) use content_scope::{ContentScope, DenialReady, content_family};
 mod family;
 mod recovery;
 use crate::{
@@ -601,12 +601,14 @@ fn access_with_settlement(
                     AccessPurpose::General | AccessPurpose::Open => {
                         provider::ordinary_transition::has_live(&result.connection)?
                     }
-                    AccessPurpose::LocalCapture | AccessPurpose::LocalRestore => match &result.connection {
-                        PrivateConnection::Admitted(handle) => handle
-                            .admission()
-                            .has_live(&result.connection, &result.marker)?,
-                        PrivateConnection::Legacy(_) => unreachable!("admitted dispatch"),
-                    },
+                    AccessPurpose::LocalCapture | AccessPurpose::LocalRestore => {
+                        match &result.connection {
+                            PrivateConnection::Admitted(handle) => handle
+                                .admission()
+                                .has_live(&result.connection, &result.marker)?,
+                            PrivateConnection::Legacy(_) => unreachable!("admitted dispatch"),
+                        }
+                    }
                 }
             {
                 retention::settle_with_lease(&result.connection, store, result.family.as_ref())?;

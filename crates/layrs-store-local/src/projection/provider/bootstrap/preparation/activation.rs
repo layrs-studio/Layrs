@@ -5,7 +5,7 @@ mod capture_image;
 mod managed_allocation;
 mod managed_checkout_fs;
 pub(in crate::projection::provider) use managed_checkout_fs::{
-    verify_managed_ready_checkout, CheckoutStorage, OwnedCheckoutFile, VerifiedCheckout,
+    CheckoutStorage, OwnedCheckoutFile, VerifiedCheckout, verify_managed_ready_checkout,
 };
 mod managed_content;
 mod managed_destination;
@@ -14,14 +14,14 @@ mod managed_journal;
 mod managed_plan;
 pub(in crate::projection::provider) use capture_image::hash_reader as hash_managed_file;
 pub(in crate::projection::provider) use managed_image::complete::{
-    plan as plan_complete_managed_image, VerifiedCompleteManagedImage,
+    VerifiedCompleteManagedImage, plan as plan_complete_managed_image,
 };
 pub(in crate::projection::provider) use managed_image::stream::{
     copy_verified as copy_managed_file, copy_verified_chunk as copy_managed_chunk,
 };
 pub(in crate::projection::provider) use managed_plan::{
-    derive_ordinary_data, derive_reconciled_data, derive_reconciled_denial_data,
-    require_manifest_union, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest,
+    ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest, derive_ordinary_data,
+    derive_reconciled_data, derive_reconciled_denial_data, require_manifest_union,
 };
 mod managed_staging;
 mod ranges;

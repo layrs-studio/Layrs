@@ -6,10 +6,10 @@ use crate::projection::{
     provider::{
         database_io::WriterCloseObserver,
         managed_admission::{
-            admit_denial_ready, admit_ready, read_admitted_import,
-            require_ready_admission_capacity, AdmissionCoverage, AdmissionWriteEffect,
+            AdmissionCoverage, AdmissionWriteEffect, admit_denial_ready, admit_ready,
+            read_admitted_import, require_ready_admission_capacity,
         },
-        published_handoff::{read_published_for_ready, PublicationSource},
+        published_handoff::{PublicationSource, read_published_for_ready},
         records::Record,
     },
     shared::{exact_content::validate_protected_installations, exact_protection::ExactProtection},

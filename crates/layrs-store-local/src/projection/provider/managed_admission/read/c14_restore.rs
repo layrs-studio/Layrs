@@ -1,12 +1,14 @@
 //! Local Restore suffix on the immutable C14 Ready generation: bounded raw
 //! rows, DATA-only journal interpretation and forced-append funding. This
 //! grants no writer, family, content, checkout or provenance authority.
-use super::c14_capture::{bounded_count, MAX_CONTENT_ROWS, MAX_LOCAL_CAPTURE_PAYLOAD, MAX_LOCAL_ROWS};
+use super::c14_capture::{
+    MAX_CONTENT_ROWS, MAX_LOCAL_CAPTURE_PAYLOAD, MAX_LOCAL_ROWS, bounded_count,
+};
 use super::*;
 use crate::projection::{
+    ProjectionSnapshot, VersionedProjection,
     capture::CapturedPatch,
     restore::{LocalRestorePlan, RestoreDestination, RestorePreview, RestoreSource},
-    ProjectionSnapshot, VersionedProjection,
 };
 use layrs_core::scm::{FileId, FileManifestId};
 use rusqlite::OptionalExtension;
@@ -27,7 +29,9 @@ pub(super) fn local_restore_inventory(c: &Connection, ready_sequence: u64) -> Re
         Some(bytes) if count <= MAX_LOCAL_ROWS && bytes <= MAX_LOCAL_RESTORE_PAYLOAD => {
             Ok((count, bytes))
         }
-        _ => Err(invalid("local denial Restore history exceeds aggregate bound")),
+        _ => Err(invalid(
+            "local denial Restore history exceeds aggregate bound",
+        )),
     }
 }
 
@@ -162,7 +166,9 @@ impl VerifiedAdmittedImport<'_> {
                 .is_some_and(|(sequence, _)| *sequence < before),
         };
         if !valid {
-            return Err(invalid("local denial Restore source escaped Capture suffix"));
+            return Err(invalid(
+                "local denial Restore source escaped Capture suffix",
+            ));
         }
         Ok(())
     }
@@ -201,7 +207,9 @@ impl VerifiedAdmittedImport<'_> {
                 || !sequences.insert(*sequence)
                 || !canonical_operation(id)
             {
-                return Err(invalid("local denial Restore history escaped Capture suffix"));
+                return Err(invalid(
+                    "local denial Restore history escaped Capture suffix",
+                ));
             }
             let capture = patches
                 .get(sequence)
@@ -237,9 +245,18 @@ impl VerifiedAdmittedImport<'_> {
                 Some(preview)
             }
         };
-        for preview in previews.iter().map(|(_, preview)| preview).chain(pending.iter()) {
+        for preview in previews
+            .iter()
+            .map(|(_, preview)| preview)
+            .chain(pending.iter())
+        {
             cancellation::check(cancel)?;
-            for file in preview.before.values().chain(preview.after.values()).flatten() {
+            for file in preview
+                .before
+                .values()
+                .chain(preview.after.values())
+                .flatten()
+            {
                 let claimed = captured.contains(&file.file_id);
                 if !(claimed || frozen.contains_key(&file.file_id))
                     || mappings
@@ -304,7 +321,9 @@ impl VerifiedAdmittedImport<'_> {
             || bounded_count(c, "projection_restore_pending", 1)? != 0
             || bounded_count(c, "projection_prejournal", 1)? != 0
         {
-            return Err(invalid("local denial Restore preflight escaped Ready scope"));
+            return Err(invalid(
+                "local denial Restore preflight escaped Ready scope",
+            ));
         }
         if budget.as_deref().is_some_and(|op| op != plan.operation())
             || bounded_count(c, "projection_budgets", 1)? != u64::from(budget.is_some())
@@ -389,13 +408,25 @@ pub(super) struct LocalRestoreCost {
 /// Pure arithmetic: one forced capture row, one history row (whose payload
 /// is first the pending journal), new claims plus the `restore` claim, and
 /// new content mappings. Each bound is the one the C14 reader enforces.
-pub(super) fn require_restore_fits(counts: &LocalRestoreCounts, cost: &LocalRestoreCost) -> Result<()> {
-    let fits = |value: u64, add: u64, maximum: u64| value.checked_add(add).is_some_and(|n| n <= maximum);
+pub(super) fn require_restore_fits(
+    counts: &LocalRestoreCounts,
+    cost: &LocalRestoreCost,
+) -> Result<()> {
+    let fits =
+        |value: u64, add: u64, maximum: u64| value.checked_add(add).is_some_and(|n| n <= maximum);
     if !fits(counts.captures, 1, MAX_LOCAL_ROWS)
-        || !fits(counts.capture_bytes, cost.capture_payload, MAX_LOCAL_CAPTURE_PAYLOAD)
+        || !fits(
+            counts.capture_bytes,
+            cost.capture_payload,
+            MAX_LOCAL_CAPTURE_PAYLOAD,
+        )
         || !fits(counts.all_captures, 1, MAX_CONTENT_ROWS)
         || !fits(counts.history, 1, MAX_LOCAL_ROWS)
-        || !fits(counts.history_bytes, cost.journal, MAX_LOCAL_RESTORE_PAYLOAD)
+        || !fits(
+            counts.history_bytes,
+            cost.journal,
+            MAX_LOCAL_RESTORE_PAYLOAD,
+        )
     {
         return Err(invalid("local denial Restore append exceeds history bound"));
     }
@@ -419,28 +450,62 @@ mod tests {
     #[ignore = "UNQUALIFIED Restore suffix inventory SQL bounds; ROOT review/release child120 required"]
     fn local_restore_inventory_bounds_history_and_pending_before_decoding() {
         child::run(
-            concat!(module_path!(), "::local_restore_inventory_bounds_history_and_pending_before_decoding"),
+            concat!(
+                module_path!(),
+                "::local_restore_inventory_bounds_history_and_pending_before_decoding"
+            ),
             120,
             || {
                 child::declare();
                 let c = Connection::open_in_memory().unwrap();
                 c.execute_batch("CREATE TABLE projection_restore_history(operation_id TEXT PRIMARY KEY,capture_sequence INTEGER NOT NULL,payload BLOB NOT NULL) STRICT; CREATE TABLE projection_restore_pending(singleton INTEGER PRIMARY KEY CHECK(singleton=1),payload BLOB NOT NULL) STRICT;").unwrap();
                 // Imported history at or below the Ready capture is excluded.
-                c.execute("INSERT INTO projection_restore_history VALUES('1-1',1,zeroblob(?1))", [MAX_LOCAL_RESTORE_PAYLOAD + 1]).unwrap();
+                c.execute(
+                    "INSERT INTO projection_restore_history VALUES('1-1',1,zeroblob(?1))",
+                    [MAX_LOCAL_RESTORE_PAYLOAD + 1],
+                )
+                .unwrap();
                 assert_eq!(local_restore_inventory(&c, 1).unwrap(), (0, 0));
                 // Aggregation rejects before any malformed payload is decoded.
-                c.execute("INSERT INTO projection_restore_history VALUES('2-1',2,zeroblob(?1))", [MAX_LOCAL_RESTORE_PAYLOAD - 1]).unwrap();
-                assert_eq!(local_restore_inventory(&c, 1).unwrap(), (1, MAX_LOCAL_RESTORE_PAYLOAD - 1));
-                c.execute("INSERT INTO projection_restore_pending VALUES(1,x'00')", []).unwrap();
-                assert_eq!(local_restore_inventory(&c, 1).unwrap(), (1, MAX_LOCAL_RESTORE_PAYLOAD));
-                c.execute("UPDATE projection_restore_pending SET payload=x'0000'", []).unwrap();
+                c.execute(
+                    "INSERT INTO projection_restore_history VALUES('2-1',2,zeroblob(?1))",
+                    [MAX_LOCAL_RESTORE_PAYLOAD - 1],
+                )
+                .unwrap();
+                assert_eq!(
+                    local_restore_inventory(&c, 1).unwrap(),
+                    (1, MAX_LOCAL_RESTORE_PAYLOAD - 1)
+                );
+                c.execute("INSERT INTO projection_restore_pending VALUES(1,x'00')", [])
+                    .unwrap();
+                assert_eq!(
+                    local_restore_inventory(&c, 1).unwrap(),
+                    (1, MAX_LOCAL_RESTORE_PAYLOAD)
+                );
+                c.execute("UPDATE projection_restore_pending SET payload=x'0000'", [])
+                    .unwrap();
                 let error = local_restore_inventory(&c, 1).unwrap_err();
-                assert!(error.to_string().contains("Restore history exceeds aggregate bound"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Restore history exceeds aggregate bound")
+                );
                 c.execute_batch("DELETE FROM projection_restore_history; DELETE FROM projection_restore_pending; WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<100000) INSERT INTO projection_restore_history SELECT i||'-1',i,x'00' FROM n;").unwrap();
-                assert_eq!(local_restore_inventory(&c, 0).unwrap(), (MAX_LOCAL_ROWS, MAX_LOCAL_ROWS));
-                c.execute("INSERT INTO projection_restore_history VALUES('100001-1',100001,x'00')", []).unwrap();
+                assert_eq!(
+                    local_restore_inventory(&c, 0).unwrap(),
+                    (MAX_LOCAL_ROWS, MAX_LOCAL_ROWS)
+                );
+                c.execute(
+                    "INSERT INTO projection_restore_history VALUES('100001-1',100001,x'00')",
+                    [],
+                )
+                .unwrap();
                 let error = local_restore_inventory(&c, 0).unwrap_err();
-                assert!(error.to_string().contains("Restore history exceeds aggregate bound"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Restore history exceeds aggregate bound")
+                );
             },
         );
     }
@@ -449,7 +514,10 @@ mod tests {
     #[ignore = "UNQUALIFIED Restore funding arithmetic; ROOT review/release child120 required"]
     fn restore_funding_arithmetic_is_exact_at_each_bound() {
         child::run(
-            concat!(module_path!(), "::restore_funding_arithmetic_is_exact_at_each_bound"),
+            concat!(
+                module_path!(),
+                "::restore_funding_arithmetic_is_exact_at_each_bound"
+            ),
             120,
             || {
                 child::declare();
@@ -462,18 +530,45 @@ mod tests {
                     claims: MAX_LOCAL_ROWS + 1 - 3,
                     content: MAX_CONTENT_ROWS - 4,
                 };
-                let cost = LocalRestoreCost { capture_payload: 10, journal: 20, claims: 2, mappings: 4 };
+                let cost = LocalRestoreCost {
+                    capture_payload: 10,
+                    journal: 20,
+                    claims: 2,
+                    mappings: 4,
+                };
                 require_restore_fits(&at_limit(), &cost).unwrap();
                 let history = "Restore append exceeds history bound";
                 let content = "Restore append exceeds content bound";
                 for (mutate, expected) in [
-                    (Box::new(|c: &mut LocalRestoreCounts| c.captures += 1) as Box<dyn Fn(&mut LocalRestoreCounts)>, history),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.capture_bytes += 1), history),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.all_captures += 1), history),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.history += 1), history),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.history_bytes += 1), history),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.claims += 1), content),
-                    (Box::new(|c: &mut LocalRestoreCounts| c.content += 1), content),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.captures += 1)
+                            as Box<dyn Fn(&mut LocalRestoreCounts)>,
+                        history,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.capture_bytes += 1),
+                        history,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.all_captures += 1),
+                        history,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.history += 1),
+                        history,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.history_bytes += 1),
+                        history,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.claims += 1),
+                        content,
+                    ),
+                    (
+                        Box::new(|c: &mut LocalRestoreCounts| c.content += 1),
+                        content,
+                    ),
                 ] {
                     let mut counts = at_limit();
                     mutate(&mut counts);
@@ -483,10 +578,19 @@ mod tests {
                 // The forced capture row is funded even with zero new files.
                 let mut counts = at_limit();
                 counts.captures = MAX_LOCAL_ROWS;
-                let empty = LocalRestoreCost { capture_payload: 0, journal: 0, claims: 0, mappings: 0 };
+                let empty = LocalRestoreCost {
+                    capture_payload: 0,
+                    journal: 0,
+                    claims: 0,
+                    mappings: 0,
+                };
                 assert!(require_restore_fits(&counts, &empty).is_err());
                 assert!(canonical_operation("1793664458797530400-78428"));
-                assert!(!canonical_operation("01-2") && !canonical_operation("1-") && !canonical_operation("1-4294967296"));
+                assert!(
+                    !canonical_operation("01-2")
+                        && !canonical_operation("1-")
+                        && !canonical_operation("1-4294967296")
+                );
             },
         );
     }

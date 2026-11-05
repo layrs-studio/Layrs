@@ -2,11 +2,11 @@
 //! Root reviews/releases this source and runs a pinned binary on a fresh C:
 //! parent, with the 240-second owned child inside its 300-second outer bound.
 use super::*;
+use crate::projection::ProjectionStoreError;
 use crate::projection::provider::{
     bootstrap::tests::capture_family::active_holder_with_writable_file_private,
     process_profile::tests::child,
 };
-use crate::projection::ProjectionStoreError;
 use layrs_core::scm::{Chunk, ChunkId, FileChunk, FileManifest, RepoPath};
 use std::fs;
 
@@ -158,9 +158,11 @@ fn retained_native_chunk_reads_exact_tail_and_refuses_changed_image() {
 
             let unknown = fixture.checkout.join("unknown.txt");
             fs::write(&unknown, b"outside the retained image").unwrap();
-            assert!(image
-                .copy_exact_chunk(&path, &manifest, 1, &mut refused, &cancel)
-                .is_err());
+            assert!(
+                image
+                    .copy_exact_chunk(&path, &manifest, 1, &mut refused, &cancel)
+                    .is_err()
+            );
             assert!(refused.is_empty(), "namespace drift precedes output");
             assert_eq!(fs::read(&native_path).unwrap(), replacement);
             assert_eq!(fs::read(&unknown).unwrap(), b"outside the retained image");

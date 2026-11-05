@@ -3,20 +3,20 @@
 mod engine;
 pub(super) use engine::resume_with_access;
 #[cfg(windows)]
-pub(in crate::projection) use engine::{recovery_preflight, RestoreRecoveryData};
+pub(in crate::projection) use engine::{RestoreRecoveryData, recovery_preflight};
 mod files;
 use super::*;
 use crate::secure_fs::PinnedDirectory;
+pub(in crate::projection) use engine::LocalRestorePlan;
 pub(in crate::projection) use engine::imported_history_preview;
+pub(super) use engine::verify_history;
 #[cfg(windows)]
 pub(in crate::projection) use engine::{local_history_preview, local_pending_preview};
-pub(in crate::projection) use engine::LocalRestorePlan;
-pub(super) use engine::{verify_history, verify_history_with_scope};
 use layrs_core::{
     projection::EntryState,
-    scm::{canonical_json, RepoPath},
+    scm::{RepoPath, canonical_json},
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{collections::BTreeMap, io::Read};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,7 +264,9 @@ fn require_local_source(
                     worktree_id,
                     generation,
                     digest,
-                } => worktree_id == own && *generation == ready.generation && *digest == ready.digest,
+                } => {
+                    worktree_id == own && *generation == ready.generation && *digest == ready.digest
+                }
                 ProjectionVersion::Capture {
                     worktree_id,
                     sequence,

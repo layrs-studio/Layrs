@@ -4,7 +4,7 @@
 use super::{child, database, fresh_ordinary_support::*, support};
 use crate::projection::provider::{
     database_io::{self, ReadState},
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
 };
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
@@ -71,10 +71,12 @@ fn run(busy_close: bool) {
                 .count(),
             2
         );
-        assert!(events
-            .borrow()
-            .iter()
-            .any(|(p, point)| p == path && *point == ReadBoundary::DatabaseIdentity));
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|(p, point)| p == path && *point == ReadBoundary::DatabaseIdentity)
+        );
     }
 
     let failed = Rc::new(Cell::new(false));
@@ -152,5 +154,12 @@ fn strict_nested_read_preserves_callback_failure_without_concluding_filesystem_p
 #[test]
 #[ignore = "ROOT source release and owned audited SQL child120/outer180; retains BUSY handle until exit"]
 fn strict_nested_read_preserves_primary_and_actual_busy_close_without_concluding_probes() {
-    child::run(concat!(module_path!(),"::strict_nested_read_preserves_primary_and_actual_busy_close_without_concluding_probes"),120,||run(true));
+    child::run(
+        concat!(
+            module_path!(),
+            "::strict_nested_read_preserves_primary_and_actual_busy_close_without_concluding_probes"
+        ),
+        120,
+        || run(true),
+    );
 }

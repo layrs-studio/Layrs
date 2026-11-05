@@ -3,12 +3,12 @@
 //! publication or admission is performed by this recipe.
 use crate::{
     projection::{
+        ProjectionStore, ProjectionStoreError, RestoreSource,
         provider::{
             import_validation::content_mapping_rowset_data,
             process_profile::tests::child,
             records::import::{ImportSource, ProviderImportKind},
         },
-        ProjectionStore, ProjectionStoreError, RestoreSource,
     },
     secure_fs::PinnedDirectory,
 };
@@ -205,13 +205,15 @@ fn managed_ordinary_export_owner_retains_current_and_restore_only_bytes() {
             let restored = store.apply_restore(&preview).unwrap();
             assert_eq!(fs::read(&checkout_file).unwrap(), TARGET);
             for sequence in 1..=restored.capture.sequence {
-                assert!(store
-                    .captured_patch(sequence)
-                    .unwrap()
-                    .changes
-                    .iter()
-                    .filter_map(|change| change.replacement.as_ref())
-                    .all(|file| file.file_id != preimage.file_id));
+                assert!(
+                    store
+                        .captured_patch(sequence)
+                        .unwrap()
+                        .changes
+                        .iter()
+                        .filter_map(|change| change.replacement.as_ref())
+                        .all(|file| file.file_id != preimage.file_id)
+                );
             }
             drop(store);
             // Ordinary reopen settles the committed restore reservation and
@@ -371,52 +373,70 @@ fn managed_ordinary_export_owner_retains_current_and_restore_only_bytes() {
             );
 
             let mut untouched = RecordingSink::default();
-            assert!(owner
-                .copy_current_file(&path, &historical, &mut untouched, &cancel)
-                .is_err());
-            assert!(owner
-                .copy_current_file(
-                    &RepoPath::parse("not-in-retained-image.md").unwrap(),
-                    &current,
-                    &mut untouched,
-                    &cancel,
-                )
-                .is_err());
-            assert!(owner
-                .copy_current_chunk(
-                    &path,
-                    &current,
-                    current.chunks().len(),
-                    &mut untouched,
-                    &cancel
-                )
-                .is_err());
+            assert!(
+                owner
+                    .copy_current_file(&path, &historical, &mut untouched, &cancel)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_current_file(
+                        &RepoPath::parse("not-in-retained-image.md").unwrap(),
+                        &current,
+                        &mut untouched,
+                        &cancel,
+                    )
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_current_chunk(
+                        &path,
+                        &current,
+                        current.chunks().len(),
+                        &mut untouched,
+                        &cancel
+                    )
+                    .is_err()
+            );
             // This current-only manifest has never joined historical authority.
-            assert!(owner
-                .copy_retained_file(&current, &mut untouched, &cancel)
-                .is_err());
-            assert!(owner
-                .copy_retained_chunk(
-                    &historical,
-                    historical.chunks().len(),
-                    &mut untouched,
-                    &cancel
-                )
-                .is_err());
+            assert!(
+                owner
+                    .copy_retained_file(&current, &mut untouched, &cancel)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_retained_chunk(
+                        &historical,
+                        historical.chunks().len(),
+                        &mut untouched,
+                        &cancel
+                    )
+                    .is_err()
+            );
             let cancelled = Cancellation::default();
             cancelled.cancel();
-            assert!(owner
-                .copy_current_file(&path, &current, &mut untouched, &cancelled)
-                .is_err());
-            assert!(owner
-                .copy_current_chunk(&path, &current, 0, &mut untouched, &cancelled)
-                .is_err());
-            assert!(owner
-                .copy_retained_file(&historical, &mut untouched, &cancelled)
-                .is_err());
-            assert!(owner
-                .copy_retained_chunk(&historical, 0, &mut untouched, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .copy_current_file(&path, &current, &mut untouched, &cancelled)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_current_chunk(&path, &current, 0, &mut untouched, &cancelled)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_retained_file(&historical, &mut untouched, &cancelled)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .copy_retained_chunk(&historical, 0, &mut untouched, &cancelled)
+                    .is_err()
+            );
             assert_eq!(untouched.writes, 0, "all refusals precede sink writes");
             assert!(untouched.bytes.is_empty());
 
@@ -424,9 +444,11 @@ fn managed_ordinary_export_owner_retains_current_and_restore_only_bytes() {
             let failure = owner
                 .copy_current_file(&path, &current, &mut failing, &cancel)
                 .unwrap_err();
-            assert!(failure
-                .to_string()
-                .contains("owned ordinary export sink refusal"));
+            assert!(
+                failure
+                    .to_string()
+                    .contains("owned ordinary export sink refusal")
+            );
             assert_eq!(
                 failing.bytes,
                 CURRENT[..1],
@@ -460,7 +482,11 @@ fn managed_ordinary_export_owner_retains_current_and_restore_only_bytes() {
                 );
             }
             owner.close().unwrap();
-            assert_eq!(trees(&root, &family), before, "failed acquisition, reads, DATA derivation and refusals preserve complete source/family bytes");
+            assert_eq!(
+                trees(&root, &family),
+                before,
+                "failed acquisition, reads, DATA derivation and refusals preserve complete source/family bytes"
+            );
             drop(store);
 
             let reopened = ProjectionStore::open(&root).unwrap();

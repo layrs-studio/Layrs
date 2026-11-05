@@ -6,9 +6,8 @@ use super::{
     *,
 };
 use rusqlite::{
-    params, params_from_iter,
+    OptionalExtension, params, params_from_iter,
     types::{Value, ValueRef},
-    OptionalExtension,
 };
 
 struct Layout {

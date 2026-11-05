@@ -139,11 +139,13 @@ fn source_stream_rejects_canonical_false_chunk_with_correct_file_id() {
 fn borrowed_path_budget_refuses_before_cloning_or_hashing() {
     let short = RepoPath::parse("file.txt").unwrap();
     let cancel = Cancellation::default();
-    assert!(bound_observation_paths(
-        std::iter::repeat(&short).take(recovery_export::PATH_LIMIT + 1),
-        &cancel,
-    )
-    .is_err());
+    assert!(
+        bound_observation_paths(
+            std::iter::repeat(&short).take(recovery_export::PATH_LIMIT + 1),
+            &cancel,
+        )
+        .is_err()
+    );
     let long = RepoPath::parse(vec!["part"; 50].join("/")).unwrap();
     let excess = recovery_export::PATH_BYTES_LIMIT / long.as_str().len() + 1;
     assert!(excess < recovery_export::PATH_LIMIT);
@@ -177,15 +179,17 @@ fn unchanged_protected_file_is_verified_and_modified_file_refused() {
             size: changed.byte_length(),
         },
     };
-    assert!(interpret(
-        &[observation],
-        &source,
-        &activated,
-        &cancel,
-        |_, _| panic!("native file cannot use source hash"),
-        |_, _| Ok(changed.clone()),
-    )
-    .is_err());
+    assert!(
+        interpret(
+            &[observation],
+            &source,
+            &activated,
+            &cancel,
+            |_, _| panic!("native file cannot use source hash"),
+            |_, _| Ok(changed.clone()),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -237,15 +241,17 @@ fn unknown_and_excluded_refuse_before_any_hash_callback() {
         },
     ];
     observations.sort_by(|a, b| a.path.cmp(&b.path));
-    assert!(interpret(
-        &observations,
-        &selected,
-        &activated,
-        &Cancellation::default(),
-        |_, _| panic!("preflight must run first"),
-        |_, _| panic!("preflight must run first"),
-    )
-    .is_err());
+    assert!(
+        interpret(
+            &observations,
+            &selected,
+            &activated,
+            &Cancellation::default(),
+            |_, _| panic!("preflight must run first"),
+            |_, _| panic!("preflight must run first"),
+        )
+        .is_err()
+    );
 
     let excluded = source(false, false);
     let activated = activation_snapshot(&excluded).unwrap();
@@ -257,15 +263,17 @@ fn unknown_and_excluded_refuse_before_any_hash_callback() {
             size: 3,
         },
     };
-    assert!(interpret(
-        &[observation],
-        &excluded,
-        &activated,
-        &Cancellation::default(),
-        |_, _| panic!("excluded path cannot be hashed as managed"),
-        |_, _| panic!("excluded path cannot be hashed as managed"),
-    )
-    .is_err());
+    assert!(
+        interpret(
+            &[observation],
+            &excluded,
+            &activated,
+            &Cancellation::default(),
+            |_, _| panic!("excluded path cannot be hashed as managed"),
+            |_, _| panic!("excluded path cannot be hashed as managed"),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -298,15 +306,17 @@ fn missing_source_and_cancellation_refuse_without_synthesized_content() {
     ));
     let cancelled = Cancellation::default();
     cancelled.cancel();
-    assert!(interpret(
-        &[immutable(&readonly)],
-        &readonly,
-        &activated,
-        &cancelled,
-        |_, _| panic!("cancel before hash"),
-        |_, _| panic!("cancel before hash"),
-    )
-    .is_err());
+    assert!(
+        interpret(
+            &[immutable(&readonly)],
+            &readonly,
+            &activated,
+            &cancelled,
+            |_, _| panic!("cancel before hash"),
+            |_, _| panic!("cancel before hash"),
+        )
+        .is_err()
+    );
 
     let writable = source(true, true);
     let activated = activation_snapshot(&writable).unwrap();
@@ -322,16 +332,18 @@ fn missing_source_and_cancellation_refuse_without_synthesized_content() {
     };
     let token = Cancellation::default();
     let signal = token.clone();
-    assert!(interpret(
-        &[observation],
-        &writable,
-        &activated,
-        &token,
-        |_, _| panic!("native path cannot use source hash"),
-        |_, _| {
-            signal.cancel();
-            Ok(changed.clone())
-        },
-    )
-    .is_err());
+    assert!(
+        interpret(
+            &[observation],
+            &writable,
+            &activated,
+            &token,
+            |_, _| panic!("native path cannot use source hash"),
+            |_, _| {
+                signal.cancel();
+                Ok(changed.clone())
+            },
+        )
+        .is_err()
+    );
 }

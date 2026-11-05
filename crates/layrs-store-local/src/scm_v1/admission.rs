@@ -16,8 +16,8 @@ use layrs_core::scm::{
 };
 use layrs_graph::scm::{OperationDag, StepDag};
 use layrs_store::scm::{
-    CanonicalObject, EntityRecord, FileAvailability, Result, ScmReader, StoreError, StoreMutation,
-    StoreObjectId, WriteBatch,
+    CanonicalObject, EntityRecord, Result, ScmReader, StoreError, StoreMutation, StoreObjectId,
+    WriteBatch,
 };
 
 // One initial capture of an N-file tree carries ~2N objects (manifest + chunk
@@ -310,7 +310,10 @@ impl<'a> CompositeAdmissionResolver<'a> {
 
         {
             let _span = crate::perf::span("validate.admissions");
-            crate::perf::count("validate.admission_roots", self.batch.admissions().len() as u64);
+            crate::perf::count(
+                "validate.admission_roots",
+                self.batch.admissions().len() as u64,
+            );
             for admission in self.batch.admissions() {
                 self.validate_admission(admission.space_id(), admission.object_id())?;
             }
@@ -351,8 +354,12 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 cache.insert(file, true);
             }
         }
-        let spaces: BTreeSet<&SpaceId> =
-            self.batch.admissions().iter().map(|a| a.space_id()).collect();
+        let spaces: BTreeSet<&SpaceId> = self
+            .batch
+            .admissions()
+            .iter()
+            .map(|a| a.space_id())
+            .collect();
         for space in spaces {
             self.prefetch_admitted_manifests(&files, space)?;
         }
@@ -363,7 +370,11 @@ impl<'a> CompositeAdmissionResolver<'a> {
     /// of each File without a manifest in this batch (the choice
     /// `admissible_manifest_for_file` makes for such a File). Files left out
     /// keep the per-File path.
-    pub(super) fn prefetch_admitted_manifests(&self, files: &[&FileId], space: &SpaceId) -> Result<()> {
+    pub(super) fn prefetch_admitted_manifests(
+        &self,
+        files: &[&FileId],
+        space: &SpaceId,
+    ) -> Result<()> {
         let unknown: Vec<&FileId> = {
             let cache = self.file_manifest_cache.lock().ok();
             files

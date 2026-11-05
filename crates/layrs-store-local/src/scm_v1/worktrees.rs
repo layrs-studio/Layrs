@@ -102,10 +102,11 @@ pub fn retired_worktrees(metadata_dir: &Path) -> io::Result<std::collections::BT
     if bytes.len() > MAX_RETIRED * 64 {
         return Err(invalid("retired Worktree registry exceeds its bound"));
     }
-    let ids: Vec<String> =
-        serde_json::from_slice(&bytes).map_err(|_| invalid("retired Worktree registry is invalid"))?;
+    let ids: Vec<String> = serde_json::from_slice(&bytes)
+        .map_err(|_| invalid("retired Worktree registry is invalid"))?;
     for id in &ids {
-        WorktreeId::parse(id.clone()).map_err(|_| invalid("retired Worktree registry is invalid"))?;
+        WorktreeId::parse(id.clone())
+            .map_err(|_| invalid("retired Worktree registry is invalid"))?;
     }
     Ok(ids.into_iter().collect())
 }
@@ -129,8 +130,8 @@ pub fn retire_worktree(
     if retired.len() > MAX_RETIRED {
         return Err(invalid("too many retired Worktrees"));
     }
-    let bytes = serde_json::to_vec(&retired.into_iter().collect::<Vec<_>>())
-        .map_err(io::Error::other)?;
+    let bytes =
+        serde_json::to_vec(&retired.into_iter().collect::<Vec<_>>()).map_err(io::Error::other)?;
     let staged = metadata.join(format!(".{RETIRED}.{}.tmp", std::process::id()));
     {
         let mut file = fs::File::create(&staged)?;

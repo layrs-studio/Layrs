@@ -78,7 +78,7 @@ impl<'a, 'c> CompleteSourceImageData<'a, 'c> {
             let actual = match &entry.evidence {
                 // Exports and reconciliation never admit a file from its listing.
                 CaptureEvidence::Vouched { .. } => {
-                    return Err(invalid("export evidence must be inspected, not listed"))
+                    return Err(invalid("export evidence must be inspected, not listed"));
                 }
                 CaptureEvidence::Immutable {
                     file_id,

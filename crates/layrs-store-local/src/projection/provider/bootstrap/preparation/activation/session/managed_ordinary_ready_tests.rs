@@ -4,28 +4,28 @@
 //! outside the qualification of this recipe.
 use super::managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree};
 use crate::projection::{
+    ProjectionStore,
     capture::scan::executable,
     database,
     provider::{
         bootstrap::ManagedPlanData,
         checkout_journal::{self, CheckoutFile, ExpectedCheckout},
         database_io::{
-            self,
-            tests::fresh_ordinary_support::{with_observer, ReadBoundary},
-            WriterCloseObserver, WriterOpenPoint,
+            self, WriterCloseObserver, WriterOpenPoint,
+            tests::fresh_ordinary_support::{ReadBoundary, with_observer},
         },
         destination_ready::ReadyEffect,
         managed_export::allocation,
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         process_profile::tests::child,
         records::{
+            Record,
             import::{ImportSource, ProviderTransitionReceiptRecord},
             transition::{
                 ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
             },
-            Record,
         },
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         transition_sql::SourceIntentEffect,
     },
     selection,
@@ -34,10 +34,9 @@ use crate::projection::{
         exact_protection::{ExactProtection, ProtectionPresence},
         provider_access::ImportRegistrationEffect,
     },
-    ProjectionStore,
 };
 use layrs_core::scm::{
-    canonical_json, FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId,
+    FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId, canonical_json,
 };
 use layrs_vfs::Cancellation;
 use rusqlite::ffi;
@@ -398,13 +397,14 @@ pub(super) fn require_ready_rows(
         assert_eq!(ready, expected_ready);
         let journal = checkout_journal::read(c, expected, None).unwrap();
         assert!(journal.is_complete());
-        assert!(!c
-            .query_row(
+        assert!(
+            !c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
                 [],
                 |r| r.get::<_, bool>(0)
             )
-            .unwrap());
+            .unwrap()
+        );
         let proof = stage.destination.as_ref().unwrap();
         let shared = proof.format.shared.as_ref().unwrap();
         let protection = ExactProtection::new(
@@ -756,16 +756,18 @@ fn ready_recipe() {
     };
     let cancelled = Cancellation::default();
     cancelled.cancel();
-    assert!(owner
-        .finalize_destination_ready(
-            &allocated,
-            &staging,
-            &protection,
-            &checkout,
-            &mut close,
-            &cancelled
-        )
-        .is_err());
+    assert!(
+        owner
+            .finalize_destination_ready(
+                &allocated,
+                &staging,
+                &protection,
+                &checkout,
+                &mut close,
+                &cancelled
+            )
+            .is_err()
+    );
     assert_eq!(close.counts(), (0, 0, 0, 0));
     assert_eq!(close.physical_checks, 0);
     assert_eq!(

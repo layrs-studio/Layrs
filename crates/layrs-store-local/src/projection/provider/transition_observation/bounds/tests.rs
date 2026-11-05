@@ -134,7 +134,9 @@ fn index_work_budget_still_accumulates_across_categories() {
     let error = (0..100)
         .find_map(|_| budget.snapshot_with_denied(&visible, &[], None).err())
         .expect("repeated categories must retain the shared index-work fence");
-    assert!(error
-        .to_string()
-        .contains("path index footprint exceeds bound"));
+    assert!(
+        error
+            .to_string()
+            .contains("path index footprint exceeds bound")
+    );
 }

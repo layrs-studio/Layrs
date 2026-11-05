@@ -3,7 +3,6 @@
 //! production guard. Native refusal is terminal; no close-and-retry fallback.
 use super::{disposable_run, native_info};
 use std::{
-    ffi::OsString,
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     mem::{offset_of, size_of, size_of_val},
@@ -15,6 +14,7 @@ use windows_sys::Win32::{
     Storage::{CloudFilters::*, FileSystem::*},
 };
 
+#[allow(clippy::duplicate_mod, dead_code)]
 #[path = "../../src/windows/api.rs"]
 mod api;
 
@@ -89,9 +89,11 @@ fn pins(api: &api::Api, path: &Path) -> Vec<File> {
     assert!(matches!(components.next(), Some(Component::RootDir)));
     assert!(components.all(|p| matches!(p, Component::Normal(_))));
     let spelling = path.to_str().unwrap().replace('/', "\\");
-    assert!(!spelling[3..]
-        .split('\\')
-        .any(|p| matches!(p, "." | "..") || p.ends_with(['.', ' ']) || p.contains(':')));
+    assert!(
+        !spelling[3..]
+            .split('\\')
+            .any(|p| matches!(p, "." | "..") || p.ends_with(['.', ' ']) || p.contains(':'))
+    );
     let mut held = Vec::new();
     for parent in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
         let file = open(
@@ -202,7 +204,7 @@ fn inspect_bytes(mut file: &File, expected: Expected) -> std::result::Result<(),
 fn exact_layout(path: &Path, single: &str) -> std::result::Result<(), Refusal> {
     let mut entries = std::fs::read_dir(path)?;
     let first = entries.next().transpose()?.ok_or(Refusal::Layout)?;
-    if first.file_name() != OsString::from(single) || entries.next().transpose()?.is_some() {
+    if first.file_name() != *single || entries.next().transpose()?.is_some() {
         return Err(Refusal::Layout);
     }
     Ok(())
@@ -348,8 +350,12 @@ fn arm(run: &Path, api: &api::Api, scenario: Arm) -> bool {
         .as_bytes(),
     );
     if let Err(error) = rename_no_replace(&directory, &root.join(".layrs")) {
-        eprintln!("HANDOFF {:?}: directory rename REFUSED Win32={:?} HRESULT=0x{:08x} ({error}); temporary FORMAT remains open; no close/retry",
-            scenario, error.raw_os_error(), 0x80070000u32 | error.raw_os_error().unwrap_or(0) as u32);
+        eprintln!(
+            "HANDOFF {:?}: directory rename REFUSED Win32={:?} HRESULT=0x{:08x} ({error}); temporary FORMAT remains open; no close/retry",
+            scenario,
+            error.raw_os_error(),
+            0x80070000u32 | error.raw_os_error().unwrap_or(0) as u32
+        );
         assert!(!root.join(".layrs").exists());
         assert_eq!(native_id(&directory), expected.directory);
         inspect_bytes(&temporary, expected).unwrap();
@@ -357,7 +363,10 @@ fn arm(run: &Path, api: &api::Api, scenario: Arm) -> bool {
         write_refused(&stage.join("FORMAT"), "temporary-after-refused-rename");
         return false;
     }
-    eprintln!("HANDOFF {:?}: same-handle/no-replace directory rename SUCCESS with original FORMAT READ_DATA|ATTR/shareREAD|DELETE held", scenario);
+    eprintln!(
+        "HANDOFF {:?}: same-handle/no-replace directory rename SUCCESS with original FORMAT READ_DATA|ATTR/shareREAD|DELETE held",
+        scenario
+    );
     assert!(!stage.exists());
     let format = root.join(".layrs/FORMAT");
     assert_eq!(native_id(&directory), expected.directory);
@@ -389,7 +398,11 @@ fn arm(run: &Path, api: &api::Api, scenario: Arm) -> bool {
             .unwrap();
             assert_ne!(native_id(&replacement), expected.format);
             assert_eq!(replacement.metadata().unwrap().len(), expected.size);
-            eprintln!("SAME-BYTE REPLACEMENT: original={:?}, replacement={:?}; identical length/bytes, original remains retained by handle+external name", expected.format, native_id(&replacement));
+            eprintln!(
+                "SAME-BYTE REPLACEMENT: original={:?}, replacement={:?}; identical length/bytes, original remains retained by handle+external name",
+                expected.format,
+                native_id(&replacement)
+            );
         }
         Arm::ExtraChild => write_new(
             &root.join(".layrs/EXTRA"),
@@ -423,7 +436,9 @@ fn arm(run: &Path, api: &api::Api, scenario: Arm) -> bool {
             write_refused(&format, "strong-after-temporary-drop");
             deletion_refused(&format, "strong-only");
             exact_layout(&root.join(".layrs"), "FORMAT").unwrap();
-            eprintln!("CLEAN HANDOFF: strong pin acquired before temporary drop; exact dir/FORMAT native IDs/size/links/fullbytes/EOF; post-handoff write/delete/rename refused32");
+            eprintln!(
+                "CLEAN HANDOFF: strong pin acquired before temporary drop; exact dir/FORMAT native IDs/size/links/fullbytes/EOF; post-handoff write/delete/rename refused32"
+            );
             drop(strong);
         }
         (Arm::SameBytesReplacement | Arm::WrongRecordedId, Err(Refusal::FormatIdentity))
@@ -432,11 +447,24 @@ fn arm(run: &Path, api: &api::Api, scenario: Arm) -> bool {
             // original temporary object before checking its preservation.
             inspect_bytes(&temporary, expected).unwrap();
             write_refused(&original_path, "temporary-after-validation-refusal");
-            eprintln!("NEGATIVE {:?}: exact validation refused; no final pin issued; original native ID/size/linkcount/full bytes/EOF intact and readable throughout", scenario);
+            eprintln!(
+                "NEGATIVE {:?}: exact validation refused; no final pin issued; original native ID/size/linkcount/full bytes/EOF intact and readable throughout",
+                scenario
+            );
         }
-        (_, Err(Refusal::Io(error))) => panic!("HANDOFF {:?}: native final-pin failure Win32={:?}, detail={error}; fixture retained; no close/retry", scenario, error.raw_os_error()),
-        (_, Err(error)) => panic!("HANDOFF {:?}: unexpected proof refusal {error:?}; fixture retained", scenario),
-        (_, Ok(_)) => panic!("HANDOFF {:?}: replacement/layout/recorded identity wrongly accepted", scenario),
+        (_, Err(Refusal::Io(error))) => panic!(
+            "HANDOFF {:?}: native final-pin failure Win32={:?}, detail={error}; fixture retained; no close/retry",
+            scenario,
+            error.raw_os_error()
+        ),
+        (_, Err(error)) => panic!(
+            "HANDOFF {:?}: unexpected proof refusal {error:?}; fixture retained",
+            scenario
+        ),
+        (_, Ok(_)) => panic!(
+            "HANDOFF {:?}: replacement/layout/recorded identity wrongly accepted",
+            scenario
+        ),
     }
     true
 }
@@ -448,7 +476,9 @@ pub(super) fn run() {
     );
     let _parent_pins = pins(&api, &parent);
     let (run, _) = disposable_run("control-handoff");
-    eprintln!("HANDOFF PREFLIGHT: all retained ancestors outside every sync root; exact accepted HRESULT=0x80070186; no CF registration/connection/source adapter used");
+    eprintln!(
+        "HANDOFF PREFLIGHT: all retained ancestors outside every sync root; exact accepted HRESULT=0x80070186; no CF registration/connection/source adapter used"
+    );
     let outcomes = [
         Arm::Clean,
         Arm::SameBytesReplacement,
@@ -456,7 +486,10 @@ pub(super) fn run() {
         Arm::WrongRecordedId,
     ]
     .map(|scenario| arm(&run, &api, scenario));
-    eprintln!("RETAINED FORMAT HANDOFF: clean/replaced/extra/wrong-id arms={outcomes:?}; root {}; original failing recipe unchanged; no production authority inferred", run.display());
+    eprintln!(
+        "RETAINED FORMAT HANDOFF: clean/replaced/extra/wrong-id arms={outcomes:?}; root {}; original failing recipe unchanged; no production authority inferred",
+        run.display()
+    );
     assert!(
         outcomes.into_iter().all(|passed| passed),
         "retained FORMAT handoff feasibility failed; no close-and-retry fallback authorized"

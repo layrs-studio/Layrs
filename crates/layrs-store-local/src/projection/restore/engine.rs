@@ -2,7 +2,7 @@ use super::*;
 #[cfg(windows)]
 mod recovery;
 #[cfg(windows)]
-pub(in crate::projection) use recovery::{recovery_preflight, RestoreRecoveryData};
+pub(in crate::projection) use recovery::{RestoreRecoveryData, recovery_preflight};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,7 +97,11 @@ fn local_restore_plan(
         .values()
         .chain(expected.after.values())
         .flatten()
-        .chain(changes.iter().filter_map(|change| change.replacement.as_ref()))
+        .chain(
+            changes
+                .iter()
+                .filter_map(|change| change.replacement.as_ref()),
+        )
         .filter(|file| seen.insert(file.file_id.clone()))
         .cloned()
         .collect();
@@ -183,9 +187,13 @@ pub(in crate::projection) fn local_pending_preview(
 fn require_mutable(access: &mut format::Access, store: &ProjectionStore) -> Result<bool> {
     let local = match &access.connection {
         #[cfg(windows)]
-        format::PrivateConnection::Admitted(handle) => {
-            handle.admission().data().ready().plan.denial_coverage.is_some()
-        }
+        format::PrivateConnection::Admitted(handle) => handle
+            .admission()
+            .data()
+            .ready()
+            .plan
+            .denial_coverage
+            .is_some(),
         _ => false,
     };
     if local {
@@ -235,7 +243,8 @@ pub(super) fn apply(
             // journal, history row, claims and mappings all fit before the
             // first reservation, staging or filesystem effect.
             let plan = local_restore_plan(expected, resulting)?;
-            access.with_content(|c, scope| scope.preflight_local_restore(c, store, &state, &plan))?;
+            access
+                .with_content(|c, scope| scope.preflight_local_restore(c, store, &state, &plan))?;
         }
         let changes = expected
             .after
@@ -724,8 +733,8 @@ fn validate_history_preview(
     {
         return Err(invalid("restore history capture mismatch"));
     }
-    validate_paths(&base, &journal.preview.before)?;
-    validate_paths(&base, &journal.preview.after)?;
+    validate_paths(base, &journal.preview.before)?;
+    validate_paths(base, &journal.preview.after)?;
     for (path, expected) in &journal.preview.after {
         let actual = if let Some(change) = capture.changes.iter().find(|ch| &ch.path == path) {
             change
@@ -799,7 +808,7 @@ mod local_bound_tests {
                 bytes: n as u64,
             })
         };
-        let path = |n: usize| RepoPath::parse(&format!("dir/file-{n:04}.txt")).unwrap();
+        let path = |n: usize| RepoPath::parse(format!("dir/file-{n:04}.txt")).unwrap();
         let mut value = RestorePreview {
             operation_id: format!("{}-{}", u128::MAX, u32::MAX),
             destination: Some(RestoreDestination {
@@ -861,7 +870,10 @@ mod local_bound_tests {
             replacement: preview.after.values().next().unwrap().clone(),
         }];
         let plan = local_restore_plan(&preview, changes.clone()).unwrap();
-        assert_eq!(plan.operation(), format!("restore:{}", preview.operation_id));
+        assert_eq!(
+            plan.operation(),
+            format!("restore:{}", preview.operation_id)
+        );
         assert_eq!(plan.changes(), changes.as_slice());
         // 3 preimages + 3 targets; the forced replacement is already a target.
         assert_eq!(plan.files().len(), 6);

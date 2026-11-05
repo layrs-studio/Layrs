@@ -1,4 +1,4 @@
-use super::{api::check, fs, Checkpoint, InspectionPurpose, Session};
+use super::{Checkpoint, InspectionPurpose, Session, api::check, fs};
 use crate::{CaptureEvidence, Error, Inspection, Result};
 use layrs_core::scm::{FileId, RepoPath};
 use std::{
@@ -44,7 +44,7 @@ impl Session {
                 | CaptureEvidence::NeedsHash { size, .. } => *size,
                 // Export never trusts a listing: every file holds a guard.
                 CaptureEvidence::Deleted { .. } | CaptureEvidence::Vouched { .. } => {
-                    return Err(Error::IdentityMismatch)
+                    return Err(Error::IdentityMismatch);
                 }
             };
             if proof.size != size || (proof.identity.is_some() && proof.backing != backing(entry)) {

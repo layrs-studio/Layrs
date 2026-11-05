@@ -397,6 +397,39 @@ fn inspect_local(root: &Path) -> std::result::Result<Option<LocalInspection>, &'
     Ok(Some((workspace, state, binding)))
 }
 
+fn reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn write_new_binding(workspace: &NativeWorkspace, binding: &Binding) -> RemoteResult<()> {
+    let path = workspace.store_root().join("native-remote.json");
+    let temp = workspace
+        .store_root()
+        .join(format!("native-remote-{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    file.write_all(&serde_json::to_vec(binding)?)?;
+    file.sync_all()?;
+    drop(file);
+    let result = std::fs::hard_link(&temp, &path);
+    let _ = std::fs::remove_file(&temp);
+    result?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,37 +490,4 @@ mod tests {
         drop((inspected, secondary, primary));
         std::fs::remove_dir_all(&root).unwrap();
     }
-}
-
-fn reparse(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-
-fn write_new_binding(workspace: &NativeWorkspace, binding: &Binding) -> RemoteResult<()> {
-    let path = workspace.store_root().join("native-remote.json");
-    let temp = workspace
-        .store_root()
-        .join(format!("native-remote-{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(&serde_json::to_vec(binding)?)?;
-    file.sync_all()?;
-    drop(file);
-    let result = std::fs::hard_link(&temp, &path);
-    let _ = std::fs::remove_file(&temp);
-    result?;
-    Ok(())
 }

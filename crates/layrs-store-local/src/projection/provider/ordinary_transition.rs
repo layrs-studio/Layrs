@@ -5,6 +5,7 @@ use super::{
     cancellation,
     managed_admission::ManagedAdmissionRecord,
     records::{
+        Record,
         import::{
             AdmittedSourceBinding, ImportSource, ImportSourceReferences, ProviderImportKind,
             ProviderTransitionReceiptRecord,
@@ -12,11 +13,10 @@ use super::{
         transition::{
             ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
         },
-        Record,
     },
-    recovery::error::{invalid, Result as CauseResult},
+    recovery::error::{Result as CauseResult, invalid},
 };
-use crate::projection::{format, Result};
+use crate::projection::{Result, format};
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
@@ -28,7 +28,7 @@ mod staging;
 mod write;
 pub(super) use allocation::{apply_copying, require_allocation_capacity};
 pub(super) use publication::{
-    apply_published, apply_ready, read_publication_state, PublicationCapacity, PublicationState,
+    PublicationCapacity, PublicationState, apply_published, apply_ready, read_publication_state,
 };
 pub(super) use receipts::preflight as preflight_receipts;
 pub(super) use staging::{apply_staging, proposed as proposed_staging};

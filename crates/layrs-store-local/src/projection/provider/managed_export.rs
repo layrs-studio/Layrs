@@ -51,7 +51,7 @@ pub(super) mod verification_cancellation;
 
 use super::{
     bootstrap::{self, ImageDeletion, ImageFile, ManagedPlanData, RequiredManifest},
-    import_validation::{plan_admitted_import, VerifiedImportClosure},
+    import_validation::{VerifiedImportClosure, plan_admitted_import},
     managed_admission::read_admitted_import,
     records::{
         import::ProviderImportPrefixRecord,
@@ -60,13 +60,13 @@ use super::{
     recovery::error::ProviderBootstrapCause,
 };
 use crate::projection::{
-    capture::MAX_CAPTURE_FILE_BYTES, database, format, invalid, selection, ProjectionIdentity,
-    ProjectionStore, ProjectionStoreError, Result, SessionMode,
+    ProjectionIdentity, ProjectionStore, ProjectionStoreError, Result, SessionMode,
+    capture::MAX_CAPTURE_FILE_BYTES, database, format, invalid, selection,
 };
 use crate::secure_fs::PinnedDirectory;
 use image::OrdinaryExportImage;
 use layrs_core::scm::{
-    canonical_json, FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget,
+    FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget, canonical_json,
 };
 use layrs_vfs::Cancellation;
 use rusqlite::{Connection, Transaction, TransactionBehavior};

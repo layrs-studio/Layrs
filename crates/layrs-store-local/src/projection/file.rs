@@ -35,7 +35,7 @@ pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
 pub(in crate::projection) fn identity(file: &File) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: file remains live and info is writable for the duration of call.
@@ -61,7 +61,7 @@ pub(in crate::projection) fn identity(_: &File) -> io::Result<String> {
 pub(in crate::projection) fn require_single_link(file: &File) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
     };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: file stays live and the complete output structure is writable.

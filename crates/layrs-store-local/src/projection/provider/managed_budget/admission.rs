@@ -1,7 +1,7 @@
 //! Pure admitted private9/private10 sizing DATA. Planners opt into each envelope;
 //! historical Ready8 readers retain their original accounting. No function here
 //! grows a reservation, validates SQL rows or authenticates a SourcePublished.
-use super::{add_metadata, invalid, Result, MAX_METADATA};
+use super::{MAX_METADATA, Result, add_metadata, invalid};
 
 const MAX_FILES: u64 = 100_000;
 const MAX_DIRECTORIES: u64 = 100_000;

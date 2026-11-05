@@ -3,7 +3,7 @@
 use super::super::{
     checkout_journal::{CheckoutJournal, ExpectedCheckout},
     import_validation::{
-        read_destination_prefix, DestinationOriginKind, VerifiedDestinationPrefix,
+        DestinationOriginKind, VerifiedDestinationPrefix, read_destination_prefix,
     },
     managed_admission::RequiredRepresentation,
     managed_budget,
@@ -15,8 +15,8 @@ use crate::projection::shared::exact_content::{self, ExactBinding, ExactInstallS
 mod family_read;
 mod ordinary_family_publication;
 pub(in crate::projection::provider) use ordinary_family_publication::{
-    read_ordinary_family_publication, read_ordinary_private_ready, OrdinaryPrivateReadySnapshot,
-    VerifiedOrdinaryFamilyPublication,
+    OrdinaryPrivateReadySnapshot, VerifiedOrdinaryFamilyPublication,
+    read_ordinary_family_publication, read_ordinary_private_ready,
 };
 pub(super) mod inventory;
 #[cfg(test)]

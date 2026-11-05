@@ -250,6 +250,7 @@ mod fault {
     use super::*;
     use std::cell::RefCell;
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[allow(clippy::enum_variant_names)]
     pub(super) enum Point {
         BeforeStrong,
         BeforeRead,

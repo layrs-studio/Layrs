@@ -350,10 +350,12 @@ owned!(protected_placeholder_mutation_refuses_accepted_history, {
         .capture("protected-mutation", &Cancellation::default())
         .unwrap_err();
     assert_eq!(failure.step, ProviderCaptureStep::Hashing);
-    assert!(failure
-        .cause
-        .to_string()
-        .contains("provider protected file changed"));
+    assert!(
+        failure
+            .cause
+            .to_string()
+            .contains("provider protected file changed")
+    );
     let proof = private_proof(&f, &allocation, &prepared, &binding);
     assert!(proof.patches.is_empty());
     assert!(proof.receipts.is_empty());
@@ -597,12 +599,14 @@ owned!(durable_staging_reservation_resumes_same_native_image, {
     session.connect().unwrap();
     session.cancel_capture(cancelled_id).unwrap();
     let proof = private_proof(&f, &allocation, &prepared, &binding);
-    assert!(proof
-        .transactions
-        .iter()
-        .any(|row| row.transaction_id == cancelled_id
-            && matches!(&row.state, ProviderCaptureState::Cancelled { stage: Some(stage) }
-                if stage.reservation == cancelled_reservation)));
+    assert!(
+        proof
+            .transactions
+            .iter()
+            .any(|row| row.transaction_id == cancelled_id
+                && matches!(&row.state, ProviderCaptureState::Cancelled { stage: Some(stage) }
+                if stage.reservation == cancelled_reservation))
+    );
     let catalog = Connection::open_with_flags(
         f.family.root().join("metadata/catalog.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY,

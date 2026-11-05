@@ -16,26 +16,26 @@ mod windows;
 pub use catalog::{Cancellation, Catalog, CatalogEntry, SnapshotSource};
 pub use control::{ControlFileIdentity, ControlPublishFaults, NoControlPublishFaults};
 pub use control_directory::{
+    CONTROL_DIRECTORY_MAX_ENCODED_BYTES, CONTROL_DIRECTORY_MAX_FORMAT_BYTES,
+    CONTROL_DIRECTORY_MAX_PATH_UTF8_BYTES, CONTROL_DIRECTORY_STAGE_MAX_ENCODED_BYTES,
     ControlDirectoryFailure, ControlDirectoryIdentity, ControlDirectoryPublishFaults,
     ControlDirectoryPublishPoint, ControlDirectoryStageIdentity, NoControlDirectoryPublishFaults,
     ObservedControlDirectory, ObservedControlDirectoryIdentity,
-    CONTROL_DIRECTORY_MAX_ENCODED_BYTES, CONTROL_DIRECTORY_MAX_FORMAT_BYTES,
-    CONTROL_DIRECTORY_MAX_PATH_UTF8_BYTES, CONTROL_DIRECTORY_STAGE_MAX_ENCODED_BYTES,
 };
 pub use evidence::{
-    classify_placeholder, CaptureEvidence, Inspection, ListedFile, ListedPlaceholder,
-    PlaceholderEvidence, Vouch,
+    CaptureEvidence, Inspection, ListedFile, ListedPlaceholder, PlaceholderEvidence, Vouch,
+    classify_placeholder,
 };
-pub use range::{checked_range, HydrationRange, READ_BUFFER_SIZE};
+pub use range::{HydrationRange, READ_BUFFER_SIZE, checked_range};
 pub use registration::Registration;
 #[cfg(windows)]
 pub use windows::{
-    capability, discover_control_directory, observe_allocated_control_stage,
-    observe_control_directory_stage, publish_control_directory_recoverable, read_control_file,
-    CallbackFailure, Checkpoint, ControlDirectoryGuard, ControlRootPreflight, ExportCheckpoint,
-    ExportParentGuard, HydrationRequest, ObservedAllocatedControlStage,
+    CallbackFailure, CaptureFilter, Checkpoint, ControlDirectoryGuard, ControlRootPreflight,
+    ExportCheckpoint, ExportParentGuard, HydrationRequest, ObservedAllocatedControlStage,
     ObservedAllocatedControlStageIdentity, ObservedRootNamespace, OrdinaryRootGuard,
-    CaptureFilter, ProviderRootGuard, Session, TrustHook, unregister_root,
+    ProviderRootGuard, Session, TrustHook, capability, discover_control_directory,
+    observe_allocated_control_stage, observe_control_directory_stage,
+    publish_control_directory_recoverable, read_control_file, unregister_root,
 };
 
 use std::fmt;

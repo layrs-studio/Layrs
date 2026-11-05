@@ -14,7 +14,7 @@ struct Rule {
     include: bool,
 }
 impl IgnoreRules {
-    pub fn load(root: &PinnedDirectory) -> io::Result<Self> {
+    pub(crate) fn load(root: &PinnedDirectory) -> io::Result<Self> {
         let file = match root.open_file(".layrsignore".as_ref()) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),

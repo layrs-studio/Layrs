@@ -7,15 +7,15 @@ use crate::projection::provider::{
     import_validation::{self, ImportDatabaseKind},
     process_profile::tests::child,
     records::{
+        Record,
         import::ImportSourceReferences,
         transition::{ProviderTransitionIntentRecord, TransitionState},
-        Record,
     },
     transition_sql::SourceIntentEffect,
     validation,
 };
-use layrs_core::scm::{canonical_json, FileManifest};
-use rusqlite::{ffi, Connection, OpenFlags};
+use layrs_core::scm::{FileManifest, canonical_json};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Default)]

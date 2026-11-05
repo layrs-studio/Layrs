@@ -19,8 +19,8 @@ fn path(value: &str) -> RepoPath {
     RepoPath::parse(value).unwrap()
 }
 
-pub(in crate::projection::provider) fn observation(
-) -> (ProviderImportPrefixRecord, TransitionObservationData) {
+pub(in crate::projection::provider) fn observation()
+-> (ProviderImportPrefixRecord, TransitionObservationData) {
     let fixture = Fixture::new("G1", false);
     let identity = fixture.allocation.format.identity.clone();
     let mut destination = identity.clone();

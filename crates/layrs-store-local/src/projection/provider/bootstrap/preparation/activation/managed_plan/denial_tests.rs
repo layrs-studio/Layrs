@@ -2,7 +2,7 @@
 use super::*;
 use crate::projection::provider::{
     records::transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-    transition_reconcile::companions::denial_tests::{with_fixture, TX},
+    transition_reconcile::companions::denial_tests::{TX, with_fixture},
 };
 const DIR: &str = "fs:v1:1111111111111111:2222222222222222";
 fn data(

@@ -2,7 +2,7 @@ use super::*;
 use crate::{ControlDirectoryIdentity, ControlDirectoryStageIdentity};
 
 fn id(byte: char) -> FileId {
-    FileId::parse(&format!("blake3:{}", byte.to_string().repeat(64))).unwrap()
+    FileId::parse(format!("blake3:{}", byte.to_string().repeat(64))).unwrap()
 }
 fn control() -> ControlDirectoryIdentity {
     ControlDirectoryIdentity {

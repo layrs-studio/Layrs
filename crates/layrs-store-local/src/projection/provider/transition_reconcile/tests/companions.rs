@@ -89,9 +89,11 @@ fn observed_alternate_representation_requires_durable_reopen_provenance_before_p
     )
     .err()
     .expect("observation-only alternate must refuse before planning");
-    assert!(error
-        .to_string()
-        .contains("union cannot be reconstructed by autonomous Ready"));
+    assert!(
+        error
+            .to_string()
+            .contains("union cannot be reconstructed by autonomous Ready")
+    );
 
     // The alternate is supported when it survives in the actual checkout;
     // this must not become a blanket ban on multiple representations.
@@ -115,10 +117,12 @@ fn observed_alternate_representation_requires_durable_reopen_provenance_before_p
         &[data.readme.clone(), data.a.clone(), alternate.clone()],
     )
     .unwrap();
-    assert!(supported
-        .authorized_files()
-        .iter()
-        .any(|f| f.manifest_id == *alternate.id()));
+    assert!(
+        supported
+            .authorized_files()
+            .iter()
+            .any(|f| f.manifest_id == *alternate.id())
+    );
 }
 
 #[test]
@@ -160,9 +164,11 @@ fn fresh_remote_change_or_creation_at_known_path_is_refused_by_normalizer() {
         )
         .err()
         .expect("immutable known target cannot change");
-        assert!(error
-            .to_string()
-            .contains("changed an immutable source target"));
+        assert!(
+            error
+                .to_string()
+                .contains("changed an immutable source target")
+        );
     }
 }
 
@@ -240,9 +246,11 @@ fn newly_readable_original_reserved_file_without_source_image_refuses_before_pla
     )
     .err()
     .expect("remote-only selected path has no reconstructible B image evidence");
-    assert!(error
-        .to_string()
-        .contains("checkout invents an original image file"));
+    assert!(
+        error
+            .to_string()
+            .contains("checkout invents an original image file")
+    );
 }
 
 #[test]
@@ -590,9 +598,11 @@ fn c13_v2_accepted_deletion_refuses_changed_immutable_base_and_retains_authorize
     )
     .err()
     .expect("immutable target substitution must refuse");
-    assert!(error
-        .to_string()
-        .contains("changed an immutable source target"));
+    assert!(
+        error
+            .to_string()
+            .contains("changed an immutable source target")
+    );
     // A legitimate reobservation keeps the base. The accepted deletion is
     // transported as the authorized destination diff; its original Capture
     // and exact preimage remain in the imported source history and union.
@@ -730,12 +740,14 @@ fn c13_v2_two_manifests_same_fileid_are_both_retained() {
     assert!(owned.manifests().iter().any(|m| m.id() == alternate.id()));
     assert!(owned.manifests().iter().any(|m| m.id() == data.a.id()));
     assert_eq!(owned.header().unwrap().preserved_representations.len(), 2);
-    assert!(owned
-        .header()
-        .unwrap()
-        .preserved_representations
-        .iter()
-        .any(|r| r.manifest_id == *alternate.id()));
+    assert!(
+        owned
+            .header()
+            .unwrap()
+            .preserved_representations
+            .iter()
+            .any(|r| r.manifest_id == *alternate.id())
+    );
 }
 
 #[test]
@@ -805,10 +817,12 @@ fn c13_v2_inherited_payload_keeps_alternate_representation_after_image_disappear
     )
     .unwrap();
     let result = reconcile(&source, &image, &current, None).unwrap();
-    assert!(result
-        .representations
-        .iter()
-        .any(|r| r.file_id == *data.a.file_id() && r.manifest_id == *alternate.id()));
+    assert!(
+        result
+            .representations
+            .iter()
+            .any(|r| r.file_id == *data.a.file_id() && r.manifest_id == *alternate.id())
+    );
     assert_eq!(
         persisted.as_ref().encode().unwrap(),
         previous.header().unwrap().encode().unwrap()

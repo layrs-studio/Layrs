@@ -2,20 +2,20 @@
 //! Fresh Ordinary routes require their own source/destination owner capabilities.
 //! No route performs recovery or cleanup.
 use super::{
-    bootstrap::{verify_managed_ready_checkout, VerifiedCheckout},
+    bootstrap::{VerifiedCheckout, verify_managed_ready_checkout},
     database_io::{self, ReadState},
-    destination_ready::{read_managed_ready, OwnedReadySnapshot},
+    destination_ready::{OwnedReadySnapshot, read_managed_ready},
     records::{
         import::ProviderTransitionReceiptRecord, transition::ProviderTransitionIntentRecord,
     },
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
 };
 use crate::{
     lock::StoreLock,
     projection::{
-        provider::checkout_journal::{CheckoutJournal, ExpectedCheckout},
-        shared::exact_content::{verify_published_cas, ExactStorage, PublishedCasProof},
         SessionMode,
+        provider::checkout_journal::{CheckoutJournal, ExpectedCheckout},
+        shared::exact_content::{ExactStorage, PublishedCasProof, verify_published_cas},
     },
 };
 use layrs_core::scm::FileManifest;

@@ -471,7 +471,7 @@ fn protected_allocation_verifier_refuses_inherit_only_directory_ace() {
         .access_mode(READ_CONTROL_ACCESS | FILE_READ_ATTRIBUTES | 0x0004_0000) // WRITE_DAC.
         .share_mode(ALL_SHARING)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(f.0.join(&name))
+        .open(f.0.join(name))
         .unwrap();
     let mut descriptor = ptr::null_mut();
     let mut acl = ptr::null_mut();

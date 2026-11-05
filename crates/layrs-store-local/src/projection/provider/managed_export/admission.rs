@@ -10,14 +10,14 @@ use crate::{
     projection::{
         provider::{
             database_io::{self, DatabaseFile, WriterCloseObserver},
-            destination_ready::{read_ordinary_managed_ready, OwnedReadySnapshot},
+            destination_ready::{OwnedReadySnapshot, read_ordinary_managed_ready},
             managed_admission::{
-                admit_ordinary_ready, AdmissionWriteEffect, RequiredRepresentation,
+                AdmissionWriteEffect, RequiredRepresentation, admit_ordinary_ready,
             },
             published_handoff::read_ordinary_published_for_ready,
             records::Record,
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
         },
         shared::admitted_catalog::validate_terminal_ready_catalog,

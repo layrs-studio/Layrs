@@ -6,11 +6,12 @@
 use super::{
     managed_ordinary_installing_tests::{self as witness, Database},
     managed_ordinary_ready_tests::CURRENT,
-    managed_ordinary_source_publication_tests::{with_admission_data, PublicationFixture, HISTORY},
+    managed_ordinary_source_publication_tests::{HISTORY, PublicationFixture, with_admission_data},
 };
 use crate::{
     lock::StoreLock,
     projection::{
+        CapturedPatch, ProjectionStore, RestoreSource, SessionMode,
         capture::storage,
         format,
         provider::{
@@ -20,11 +21,10 @@ use crate::{
             managed_export::{AdmissionStep, OrdinaryManagedExport, OrdinaryReadyAdmission},
             managed_ready_reopen::OrdinaryTerminalResolution,
             process_profile::tests::child,
-            records::{transition::TransitionState, Record},
+            records::{Record, transition::TransitionState},
             recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult},
         },
         shared::provider_access::FamilyAccess,
-        CapturedPatch, ProjectionStore, RestoreSource, SessionMode,
     },
 };
 use layrs_core::scm::{FileId, RepoPath};
@@ -337,135 +337,232 @@ fn expected_bytes(file_id: &FileId) -> &'static [u8] {
 fn managed_ordinary_c10_reopens_and_captures_restores_after_all_holders_and_ancestors_release() {
     // Finite diagnostic proposal: prior B publication setup took 1438s;
     // retained C10 admission and this autonomy cycle remain unmeasured.
-    child::run(concat!(module_path!(), "::managed_ordinary_c10_reopens_and_captures_restores_after_all_holders_and_ancestors_release"), 3600, || {
-        let f = with_admission_data(before_published, admit_and_close);
-        // A disconnected positively inside admitted_destination_with_source;
-        // B closed positively in admit_and_close; helper return dropped every
-        // C allocation, checkout/CAS proof and store. Only DATA remains here.
-        for pin in &f.pins {
-            drop(OpenOptions::new().write(true).share_mode(7).open(pin)
-                .expect("all setup checkout/CAS pins must have been released"));
-        }
-        let moved = move_ancestor_checkouts(&f);
-        require_source_unchanged(&f);
-        // Keep B's actual private DB inaccessible during every C operation,
-        // as well as its moved checkout. This fixture-only deny-share handle
-        // is released solely for the final independent B baseline check.
-        let source_database_unavailable = OpenOptions::new().read(true).share_mode(0)
-            .open(&f.source_database).unwrap();
-        let denied = OpenOptions::new().read(true).share_mode(7)
-            .open(&f.source_database).unwrap_err();
-        assert_eq!(denied.raw_os_error(), Some(32));
-        eprintln!("C10_AUTONOMY_PHASE=released-and-ancestors-unavailable");
-        let cancel = Cancellation::default();
-        let terminal = OrdinaryTerminalResolution::open(&f.destination, &cancel).unwrap();
-        assert_eq!(terminal.admission_digest(), f.destination_admission.admission_digest());
-        f.destination_admission.require_same_import(terminal.admitted()).unwrap();
-        terminal.require(&cancel).unwrap();
-        drop(terminal); // Release its newly acquired owner and immutable byte pins.
-        require_ancestors_unavailable(&f, &moved);
-        let store = ProjectionStore::open(&f.destination).unwrap();
-        let state = store.state().unwrap();
-        let path = RepoPath::parse("README.md").unwrap();
-        assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), CURRENT);
-        assert!(f.captures.iter().any(|(_, origin)| origin.imported()
-            && origin.identity() == &f.source_marker.identity));
-        // A -> B's Ready capture is authored by B, not by Provider A. The
-        // genuine B captures stay imported in C; C's Ready suffix is local.
-        assert!(f.captures.iter().any(|(_, origin)| !origin.imported()
-            && origin.identity() == store.identity()));
-        let mut empty_admission_seen = false;
-        let mut historical_bytes_seen = false;
-        let mut current_bytes_seen = false;
-        for (patch, origin) in &f.captures {
-            assert_eq!(store.captured_patch(patch.sequence).unwrap(), *patch);
-            assert_eq!(&patch.identity, origin.identity());
-            if patch.sequence == f.source_admission.ready_capture_sequence() {
-                assert_eq!(patch.identity, f.source_marker.identity);
-                assert!(origin.imported());
-                assert!(patch.changes.is_empty(), "initial B Ready preserves the unchanged provider base");
-                assert!(!empty_admission_seen);
-                empty_admission_seen = true;
-                continue;
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_c10_reopens_and_captures_restores_after_all_holders_and_ancestors_release"
+        ),
+        3600,
+        || {
+            let f = with_admission_data(before_published, admit_and_close);
+            // A disconnected positively inside admitted_destination_with_source;
+            // B closed positively in admit_and_close; helper return dropped every
+            // C allocation, checkout/CAS proof and store. Only DATA remains here.
+            for pin in &f.pins {
+                drop(
+                    OpenOptions::new()
+                        .write(true)
+                        .share_mode(7)
+                        .open(pin)
+                        .expect("all setup checkout/CAS pins must have been released"),
+                );
             }
-            assert!(!patch.changes.is_empty(), "only the initial B Ready capture is empty in this fixture");
-            for change in &patch.changes {
-                assert_eq!(change.path, path);
-                let replacement = change.replacement.as_ref().expect("fresh HISTORY/CURRENT replacement");
-                let expected = expected_bytes(&replacement.file_id);
-                let mut bytes = Vec::new();
-                store.write_captured_file(patch.sequence, &change.path, &mut bytes).unwrap();
-                assert_eq!(bytes, expected);
-                if expected == HISTORY {
-                    assert!(origin.imported());
+            let moved = move_ancestor_checkouts(&f);
+            require_source_unchanged(&f);
+            // Keep B's actual private DB inaccessible during every C operation,
+            // as well as its moved checkout. This fixture-only deny-share handle
+            // is released solely for the final independent B baseline check.
+            let source_database_unavailable = OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&f.source_database)
+                .unwrap();
+            let denied = OpenOptions::new()
+                .read(true)
+                .share_mode(7)
+                .open(&f.source_database)
+                .unwrap_err();
+            assert_eq!(denied.raw_os_error(), Some(32));
+            eprintln!("C10_AUTONOMY_PHASE=released-and-ancestors-unavailable");
+            let cancel = Cancellation::default();
+            let terminal = OrdinaryTerminalResolution::open(&f.destination, &cancel).unwrap();
+            assert_eq!(
+                terminal.admission_digest(),
+                f.destination_admission.admission_digest()
+            );
+            f.destination_admission
+                .require_same_import(terminal.admitted())
+                .unwrap();
+            terminal.require(&cancel).unwrap();
+            drop(terminal); // Release its newly acquired owner and immutable byte pins.
+            require_ancestors_unavailable(&f, &moved);
+            let store = ProjectionStore::open(&f.destination).unwrap();
+            let state = store.state().unwrap();
+            let path = RepoPath::parse("README.md").unwrap();
+            assert_eq!(
+                fs::read(f.destination.join(path.as_str())).unwrap(),
+                CURRENT
+            );
+            assert!(
+                f.captures.iter().any(|(_, origin)| origin.imported()
+                    && origin.identity() == &f.source_marker.identity)
+            );
+            // A -> B's Ready capture is authored by B, not by Provider A. The
+            // genuine B captures stay imported in C; C's Ready suffix is local.
+            assert!(
+                f.captures
+                    .iter()
+                    .any(|(_, origin)| !origin.imported() && origin.identity() == store.identity())
+            );
+            let mut empty_admission_seen = false;
+            let mut historical_bytes_seen = false;
+            let mut current_bytes_seen = false;
+            for (patch, origin) in &f.captures {
+                assert_eq!(store.captured_patch(patch.sequence).unwrap(), *patch);
+                assert_eq!(&patch.identity, origin.identity());
+                if patch.sequence == f.source_admission.ready_capture_sequence() {
                     assert_eq!(patch.identity, f.source_marker.identity);
-                    historical_bytes_seen = true;
-                } else {
-                    assert_eq!(expected, CURRENT);
-                    assert!(!origin.imported());
-                    assert_eq!(patch.sequence, f.destination_admission.ready_capture_sequence());
-                    current_bytes_seen = true;
+                    assert!(origin.imported());
+                    assert!(
+                        patch.changes.is_empty(),
+                        "initial B Ready preserves the unchanged provider base"
+                    );
+                    assert!(!empty_admission_seen);
+                    empty_admission_seen = true;
+                    continue;
+                }
+                assert!(
+                    !patch.changes.is_empty(),
+                    "only the initial B Ready capture is empty in this fixture"
+                );
+                for change in &patch.changes {
+                    assert_eq!(change.path, path);
+                    let replacement = change
+                        .replacement
+                        .as_ref()
+                        .expect("fresh HISTORY/CURRENT replacement");
+                    let expected = expected_bytes(&replacement.file_id);
+                    let mut bytes = Vec::new();
+                    store
+                        .write_captured_file(patch.sequence, &change.path, &mut bytes)
+                        .unwrap();
+                    assert_eq!(bytes, expected);
+                    if expected == HISTORY {
+                        assert!(origin.imported());
+                        assert_eq!(patch.identity, f.source_marker.identity);
+                        historical_bytes_seen = true;
+                    } else {
+                        assert_eq!(expected, CURRENT);
+                        assert!(!origin.imported());
+                        assert_eq!(
+                            patch.sequence,
+                            f.destination_admission.ready_capture_sequence()
+                        );
+                        current_bytes_seen = true;
+                    }
                 }
             }
-        }
-        assert!(empty_admission_seen && historical_bytes_seen && current_bytes_seen);
-        format::access(&store, SessionMode::Shared).unwrap().run(|access| {
-            f.destination_admission.require_same_import(
-                &admitted_ordinary::inspect(&access.connection, &store.marker, None)?)?;
-            for (patch, origin) in &f.captures {
-                assert_eq!(admitted_ordinary::capture_origin(&access.connection, &store.marker, patch.sequence, None)?, *origin);
+            assert!(empty_admission_seen && historical_bytes_seen && current_bytes_seen);
+            format::access(&store, SessionMode::Shared)
+                .unwrap()
+                .run(|access| {
+                    f.destination_admission
+                        .require_same_import(&admitted_ordinary::inspect(
+                            &access.connection,
+                            &store.marker,
+                            None,
+                        )?)?;
+                    for (patch, origin) in &f.captures {
+                        assert_eq!(
+                            admitted_ordinary::capture_origin(
+                                &access.connection,
+                                &store.marker,
+                                patch.sequence,
+                                None
+                            )?,
+                            *origin
+                        );
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            fs::write(f.destination.join(path.as_str()), EDIT).unwrap();
+            let captured = store.capture_patch(state.generation).unwrap();
+            assert_eq!(captured.identity, *store.identity());
+            assert_eq!(
+                captured.sequence,
+                f.destination_admission.ready_capture_sequence() + 1
+            );
+            assert_eq!(
+                store.capture_patch(state.generation).unwrap(),
+                captured,
+                "unchanged edit deduplicates"
+            );
+            let mut bytes = Vec::new();
+            store
+                .write_captured_file(captured.sequence, &path, &mut bytes)
+                .unwrap();
+            assert_eq!(bytes, EDIT);
+            fs::write(f.destination.join(path.as_str()), DIRTY).unwrap();
+            let preview = store
+                .preview_restore(
+                    state.generation,
+                    &RestoreSource::Capture {
+                        sequence: captured.sequence,
+                        paths: vec![path.clone()],
+                    },
+                )
+                .unwrap();
+            let receipt = store.apply_restore(&preview).unwrap();
+            assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), EDIT);
+            let inverse = store
+                .preview_restore(
+                    state.generation,
+                    &RestoreSource::Inverse {
+                        operation_id: receipt.operation_id,
+                    },
+                )
+                .unwrap();
+            store.apply_restore(&inverse).unwrap();
+            assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), DIRTY);
+            bytes.clear();
+            store
+                .write_captured_file(captured.sequence, &path, &mut bytes)
+                .unwrap();
+            assert_eq!(bytes, EDIT, "inverse preserves immutable captured bytes");
+            format::access(&store, SessionMode::Shared)
+                .unwrap()
+                .run(|access| {
+                    let current =
+                        admitted_ordinary::inspect(&access.connection, &store.marker, None)?;
+                    f.destination_admission.require_same_import(&current)?;
+                    let origin = admitted_ordinary::capture_origin(
+                        &access.connection,
+                        &store.marker,
+                        captured.sequence,
+                        None,
+                    )?;
+                    assert!(!origin.imported());
+                    assert_eq!(origin.identity(), store.identity());
+                    Ok(())
+                })
+                .unwrap();
+            drop(store);
+            // Restore the original checkout bytes before testing the terminal
+            // fence. Real captures/restores add C retention roots, so the complete
+            // family interpreter rejects this mutable state before private-row
+            // inventory. The SQL-only recipe separately exercises that inventory.
+            fs::write(f.destination.join(path.as_str()), CURRENT).unwrap();
+            match OrdinaryTerminalResolution::open(&f.destination, &cancel) {
+                Err(error) => assert_eq!(
+                    error.to_string(),
+                    "exact protection owner has additional roots"
+                ),
+                Ok(_) => panic!("terminal resolution accepted coherent later ordinary mutations"),
             }
-            Ok(())
-        }).unwrap();
-        fs::write(f.destination.join(path.as_str()), EDIT).unwrap();
-        let captured = store.capture_patch(state.generation).unwrap();
-        assert_eq!(captured.identity, *store.identity());
-        assert_eq!(captured.sequence, f.destination_admission.ready_capture_sequence() + 1);
-        assert_eq!(store.capture_patch(state.generation).unwrap(), captured, "unchanged edit deduplicates");
-        let mut bytes = Vec::new();
-        store.write_captured_file(captured.sequence, &path, &mut bytes).unwrap();
-        assert_eq!(bytes, EDIT);
-        fs::write(f.destination.join(path.as_str()), DIRTY).unwrap();
-        let preview = store.preview_restore(state.generation, &RestoreSource::Capture {
-            sequence: captured.sequence, paths: vec![path.clone()],
-        }).unwrap();
-        let receipt = store.apply_restore(&preview).unwrap();
-        assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), EDIT);
-        let inverse = store.preview_restore(state.generation, &RestoreSource::Inverse {
-            operation_id: receipt.operation_id,
-        }).unwrap();
-        store.apply_restore(&inverse).unwrap();
-        assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), DIRTY);
-        bytes.clear();
-        store.write_captured_file(captured.sequence, &path, &mut bytes).unwrap();
-        assert_eq!(bytes, EDIT, "inverse preserves immutable captured bytes");
-        format::access(&store, SessionMode::Shared).unwrap().run(|access| {
-            let current = admitted_ordinary::inspect(&access.connection, &store.marker, None)?;
-            f.destination_admission.require_same_import(&current)?;
-            let origin = admitted_ordinary::capture_origin(&access.connection, &store.marker, captured.sequence, None)?;
-            assert!(!origin.imported());
-            assert_eq!(origin.identity(), store.identity());
-            Ok(())
-        }).unwrap();
-        drop(store);
-        // Restore the original checkout bytes before testing the terminal
-        // fence. Real captures/restores add C retention roots, so the complete
-        // family interpreter rejects this mutable state before private-row
-        // inventory. The SQL-only recipe separately exercises that inventory.
-        fs::write(f.destination.join(path.as_str()), CURRENT).unwrap();
-        match OrdinaryTerminalResolution::open(&f.destination, &cancel) {
-            Err(error) => assert_eq!(error.to_string(), "exact protection owner has additional roots"),
-            Ok(_) => panic!("terminal resolution accepted coherent later ordinary mutations"),
-        }
-        fs::write(f.destination.join(path.as_str()), DIRTY).unwrap();
-        let reopened = ProjectionStore::open(&f.destination).unwrap();
-        assert_eq!(reopened.state().unwrap(), state);
-        assert_eq!(reopened.captured_patch(captured.sequence).unwrap(), captured);
-        assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), DIRTY);
-        drop(reopened);
-        drop(source_database_unavailable);
-        require_source_unchanged(&f);
-        require_ancestors_unavailable(&f, &moved);
-        eprintln!("C10_AUTONOMY_PHASE=public-reopen-capture-restore-inverse-complete");
-    });
+            fs::write(f.destination.join(path.as_str()), DIRTY).unwrap();
+            let reopened = ProjectionStore::open(&f.destination).unwrap();
+            assert_eq!(reopened.state().unwrap(), state);
+            assert_eq!(
+                reopened.captured_patch(captured.sequence).unwrap(),
+                captured
+            );
+            assert_eq!(fs::read(f.destination.join(path.as_str())).unwrap(), DIRTY);
+            drop(reopened);
+            drop(source_database_unavailable);
+            require_source_unchanged(&f);
+            require_ancestors_unavailable(&f, &moved);
+            eprintln!("C10_AUTONOMY_PHASE=public-reopen-capture-restore-inverse-complete");
+        },
+    );
 }

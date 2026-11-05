@@ -2,12 +2,11 @@
 //! return errors; no process crash, hot journal or source deletion is claimed.
 use super::*;
 use crate::projection::{
-    format,
+    CapturedFile, ProjectionRecoveryReason, ProjectionStore, RestoreFaults, RestorePoint,
+    RestoreSource, SessionMode, format,
     provider::{admitted_ordinary, process_profile::tests::child},
     retention,
     shared::InstallationPoint,
-    CapturedFile, ProjectionRecoveryReason, ProjectionStore, RestoreFaults, RestorePoint,
-    RestoreSource, SessionMode,
 };
 use layrs_core::scm::{FileId, RepoPath};
 use std::{fs, io, path::Path};
@@ -486,10 +485,12 @@ fn managed_admitted_restore_cancels_prejournal_and_partial_installations_then_re
                 }
                 store.cancel_shared_reservation().unwrap(); // Empty terminal retry performs no cleanup.
                 assert_eq!(fs::read(root.join(path.as_str())).unwrap(), dirty);
-                assert!(ProjectionStore::inspect_recovery(&root)
-                    .unwrap()
-                    .recovery
-                    .is_empty());
+                assert!(
+                    ProjectionStore::inspect_recovery(&root)
+                        .unwrap()
+                        .recovery
+                        .is_empty()
+                );
                 format::access(&store, SessionMode::Shared).unwrap().run(|access| {
                 let count: u64 = access.connection.query_row("SELECT (SELECT count(*) FROM projection_budgets)+(SELECT count(*) FROM projection_prejournal)", [], |r| r.get(0))?;
                 assert_eq!(count, 0);

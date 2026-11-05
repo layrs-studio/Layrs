@@ -2,7 +2,7 @@
 //! they do not claim physical destination or ordinary admission qualification.
 use super::*;
 use crate::projection::provider::{
-    published_handoff::{read_published_for_ready, PublicationSource},
+    published_handoff::{PublicationSource, read_published_for_ready},
     records::{
         activation::{ProviderActivationRecord, ProviderActiveMountRecord},
         capture::{
@@ -14,7 +14,7 @@ use crate::projection::provider::{
     },
     validation::{private_active_publication_with_source, private_active_transition_with_source},
 };
-use crate::projection::{capture::CapturedPatch, VersionedProjection};
+use crate::projection::{VersionedProjection, capture::CapturedPatch};
 use layrs_core::scm::canonical_json;
 use serde_json::json;
 
@@ -343,15 +343,17 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
                 vec![ProviderTransitionReceiptRecord::decode(&receipt.encode().unwrap()).unwrap()]
             );
             assert!(proof.require_no_pending_transition().is_err());
-            assert!(private_active_transition_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &activation.binding,
-                None,
-                None
-            )
-            .is_err());
+            assert!(
+                private_active_transition_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &activation.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK").unwrap();
             let before = publication(c, &f, &activation);
             assert_eq!(before.transitions, vec![copy(&staging)]);
@@ -379,9 +381,11 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
                 .unwrap();
             let published_closure = verify_import(&published_proof).unwrap();
             assert_eq!(published_closure.closure(), staging_closure.closure());
-            assert!(ready_closure
-                .require_publication_inputs(&published_proof)
-                .is_err());
+            assert!(
+                ready_closure
+                    .require_publication_inputs(&published_proof)
+                    .is_err()
+            );
             let published_gate = validation::private_active_capture_mutation_with_source(
                 c,
                 &f.allocation,
@@ -404,14 +408,10 @@ fn source_publication_ready_published_replay_rollback_and_future_capture() {
             );
             let mut wrong_destination = copy(&destination_ready);
             wrong_destination.transaction_id = "different-destination".into();
-            assert!(read_published_for_ready(
-                c,
-                publication_source,
-                &wrong_destination,
-                &receipt,
-                None
-            )
-            .is_err());
+            assert!(
+                read_published_for_ready(c, publication_source, &wrong_destination, &receipt, None)
+                    .is_err()
+            );
             let mut different_plan = copy(&destination_ready);
             different_plan.plan.quota_bytes += 1;
             let mut different_receipt =

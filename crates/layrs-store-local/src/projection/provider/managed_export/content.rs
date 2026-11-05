@@ -10,7 +10,7 @@ use crate::{
             admitted_ordinary,
             database_io::{self, WriterCloseObserver},
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
         },
         shared::{

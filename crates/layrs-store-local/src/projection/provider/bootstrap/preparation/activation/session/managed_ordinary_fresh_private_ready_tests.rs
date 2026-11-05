@@ -5,25 +5,25 @@
 use super::{
     managed_ordinary_family_ready_tests::family,
     managed_ordinary_installing_tests::{self as witness, Database, Node, Tree},
-    managed_ordinary_ready_tests::{self as ready_witness, ReadyRows, CURRENT},
+    managed_ordinary_ready_tests::{self as ready_witness, CURRENT, ReadyRows},
     managed_ordinary_source_publication_tests::{
-        ingress, source, with_complete_checkout_data, CheckoutFixture,
+        CheckoutFixture, ingress, source, with_complete_checkout_data,
     },
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             bootstrap::ManagedPlanData,
             checkout_journal::{self, ExpectedCheckout},
             database_io::{
+                WriterCloseObserver, WriterOpenPoint,
                 tests::{
-                    fresh_ordinary_support::{with_observer, ReadBoundary},
+                    fresh_ordinary_support::{ReadBoundary, with_observer},
                     writer_support::{self, AdmissionPoint},
                 },
-                WriterCloseObserver, WriterOpenPoint,
             },
             destination_ready::ReadyEffect,
             managed_admission::read_admitted_import,
@@ -34,12 +34,11 @@ use crate::{
             managed_ready_reopen::AdmissionStep,
             process_profile::tests::child,
             records::{
-                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
                 Record,
+                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         },
-        SessionMode,
     },
 };
 use layrs_core::scm::FileManifest;
@@ -308,9 +307,11 @@ fn require_unchanged_staging(f: &Fixture) {
             ProviderTransitionIntentRecord::decode(&payload).unwrap(),
             f.destination_staging
         );
-        assert!(checkout_journal::read(c, &f.expected, None)
-            .unwrap()
-            .is_complete());
+        assert!(
+            checkout_journal::read(c, &f.expected, None)
+                .unwrap()
+                .is_complete()
+        );
     });
 }
 
@@ -465,7 +466,10 @@ impl WriterCloseObserver for Close {
         None
     }
     fn after_close(&mut self, success: bool) -> Option<Cause> {
-        assert!(success, "requires actual SQLite connection close success, without native xClose/OS-close inference");
+        assert!(
+            success,
+            "requires actual SQLite connection close success, without native xClose/OS-close inference"
+        );
         self.counts.2 += 1;
         self.require_pins();
         self.after_close.set(true);
@@ -549,139 +553,241 @@ fn require_fresh_no_writer_replay(f: &Fixture, expected: &ReadyRows, cancel: &Ca
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_private_ready_refuses_changed_b_and_c_then_appends_exact_suffix_and_replays_without_writer(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_private_ready_refuses_changed_b_and_c_then_appends_exact_suffix_and_replays_without_writer"), 3600, || {
-        let _total = child::phase("fresh-private-success.total");
-        let f = fresh_checkout_fixture();
-        let mut phase = child::phase("fresh-private-success.baseline-witness");
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let cancelled = Cancellation::default();
-        cancelled.cancel();
-        phase.next("fresh-private-success.precancel");
-        assert!(OrdinaryPrivateReadyFinalization::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancelled).is_err());
-        phase.next("fresh-private-success.precancel-witness");
-        require_unchanged_staging(&f);
-        for (path, replacement, image_error) in [(&f.pins[0], B_DRIFT, true), (&f.pins[1], C_DRIFT, false)] {
-            phase.next(if image_error { "fresh-private-success.negative-b-drift" } else { "fresh-private-success.negative-c-drift" });
-            fs::write(path, replacement).unwrap();
-            let writer_attempts = Rc::new(Cell::new(0usize));
-            let observed_attempts = writer_attempts.clone();
-            let preflights = Rc::new(RefCell::new(Vec::new()));
-            let observed_preflights = preflights.clone();
-            let refused = with_writer_probe(move |path, point| {
-                observed_preflights.borrow_mut().push((path.to_owned(), point));
-                if point == AdmissionPoint::BeforeWritableOpen { observed_attempts.set(observed_attempts.get()+1); return Err(invalid("changed actual B/C bytes must refuse before writable open")); }
-                Ok(())
-            }, || OrdinaryPrivateReadyFinalization::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancel))
-                .err().expect("actual changed B/C bytes must not finalize from complete SQL journal alone");
-            phase.next("fresh-private-success.negative-witness-and-restore");
-            if image_error { assert!(refused.to_string().contains("image"), "{refused}"); }
-            assert_eq!(writer_attempts.get(), 0);
-            assert!(preflights.borrow().iter().any(|(path, point)| path == &f.source_database && *point == AdmissionPoint::ReadonlyClosed));
+fn managed_ordinary_fresh_private_ready_refuses_changed_b_and_c_then_appends_exact_suffix_and_replays_without_writer()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_private_ready_refuses_changed_b_and_c_then_appends_exact_suffix_and_replays_without_writer"
+        ),
+        3600,
+        || {
+            let _total = child::phase("fresh-private-success.total");
+            let f = fresh_checkout_fixture();
+            let mut phase = child::phase("fresh-private-success.baseline-witness");
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let cancelled = Cancellation::default();
+            cancelled.cancel();
+            phase.next("fresh-private-success.precancel");
+            assert!(
+                OrdinaryPrivateReadyFinalization::open(
+                    &f.source,
+                    &f.destination,
+                    &f.source_staging.transaction_id,
+                    &cancelled
+                )
+                .is_err()
+            );
+            phase.next("fresh-private-success.precancel-witness");
             require_unchanged_staging(&f);
-            // Restore only this fresh fixture's original actual bytes. No SQL
-            // phase, identity, journal, manifest, quota or grant is repaired.
-            fs::write(path, CURRENT).unwrap();
-            assert_eq!(trees(&f), before_trees);
-            require_released_pins(&f);
-        }
-        phase.next("fresh-private-success.fresh-open");
-        let held = OrdinaryPrivateReadyFinalization::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancel)
+            for (path, replacement, image_error) in
+                [(&f.pins[0], B_DRIFT, true), (&f.pins[1], C_DRIFT, false)]
+            {
+                phase.next(if image_error {
+                    "fresh-private-success.negative-b-drift"
+                } else {
+                    "fresh-private-success.negative-c-drift"
+                });
+                fs::write(path, replacement).unwrap();
+                let writer_attempts = Rc::new(Cell::new(0usize));
+                let observed_attempts = writer_attempts.clone();
+                let preflights = Rc::new(RefCell::new(Vec::new()));
+                let observed_preflights = preflights.clone();
+                let refused = with_writer_probe(
+                    move |path, point| {
+                        observed_preflights
+                            .borrow_mut()
+                            .push((path.to_owned(), point));
+                        if point == AdmissionPoint::BeforeWritableOpen {
+                            observed_attempts.set(observed_attempts.get() + 1);
+                            return Err(invalid(
+                                "changed actual B/C bytes must refuse before writable open",
+                            ));
+                        }
+                        Ok(())
+                    },
+                    || {
+                        OrdinaryPrivateReadyFinalization::open(
+                            &f.source,
+                            &f.destination,
+                            &f.source_staging.transaction_id,
+                            &cancel,
+                        )
+                    },
+                )
+                .err()
+                .expect(
+                    "actual changed B/C bytes must not finalize from complete SQL journal alone",
+                );
+                phase.next("fresh-private-success.negative-witness-and-restore");
+                if image_error {
+                    assert!(refused.to_string().contains("image"), "{refused}");
+                }
+                assert_eq!(writer_attempts.get(), 0);
+                assert!(
+                    preflights
+                        .borrow()
+                        .iter()
+                        .any(|(path, point)| path == &f.source_database
+                            && *point == AdmissionPoint::ReadonlyClosed)
+                );
+                require_unchanged_staging(&f);
+                // Restore only this fresh fixture's original actual bytes. No SQL
+                // phase, identity, journal, manifest, quota or grant is repaired.
+                fs::write(path, CURRENT).unwrap();
+                assert_eq!(trees(&f), before_trees);
+                require_released_pins(&f);
+            }
+            phase.next("fresh-private-success.fresh-open");
+            let held = OrdinaryPrivateReadyFinalization::open(
+                &f.source,
+                &f.destination,
+                &f.source_staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh genuine complete Staging checkout {e}"));
-        phase.next("fresh-private-success.open-witness");
-        require_held_owners(&f);
-        let mut close = Close::new(&f, false);
-        close.require_pins();
-        let after_close = close.after_close.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let post_close_reads = Rc::new(RefCell::new(Vec::new()));
-        let observed_post_close = post_close_reads.clone();
-        phase.next("fresh-private-success.finalize");
-        let progress = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() && point == ReadBoundary::BeforeSnapshot { observed_post_close.borrow_mut().push(path.to_owned()); }
-            Ok(())
-        }, || held.finalize_ready(&mut close, &cancel))
-            .unwrap_or_else(|e| panic!("fresh private Ready finalization {:?}: {}", e.step, e.cause));
-        phase.next("fresh-private-success.finalized-witness");
-        assert_eq!(progress.effect(), ReadyEffect::Finalized);
-        assert_eq!(close.counts, (1,1,1,0));
-        require_read_controls(&events.borrow(), &f);
-        for path in [&f.source_database, &f.destination_database, &f.family_database] {
-            assert!(post_close_reads.borrow().contains(path), "fresh actual {path:?} readback follows positive SQLite C close");
-        }
-        let ready = require_only_private_ready(&f);
-        assert_eq!(progress.ready(), &ready.ready);
-        assert_eq!(progress.receipt(), &ready.receipt);
-        drop(progress);
-        only_c_database_changed(&before_trees, &trees(&f), &f.destination_database);
-        require_released_pins(&f);
-        phase.next("fresh-private-success.replay-and-witness");
-        require_fresh_no_writer_replay(&f, &ready, &cancel);
-        // Inspect the next independently fresh family adapter only. It must
-        // leave the actual B Staging/family Initializing phases unchanged.
-        phase.next("fresh-private-success.family-handoff-open");
-        let handoff = OrdinaryFamilyReadyPublication::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancel)
+            phase.next("fresh-private-success.open-witness");
+            require_held_owners(&f);
+            let mut close = Close::new(&f, false);
+            close.require_pins();
+            let after_close = close.after_close.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let post_close_reads = Rc::new(RefCell::new(Vec::new()));
+            let observed_post_close = post_close_reads.clone();
+            phase.next("fresh-private-success.finalize");
+            let progress = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() && point == ReadBoundary::BeforeSnapshot {
+                        observed_post_close.borrow_mut().push(path.to_owned());
+                    }
+                    Ok(())
+                },
+                || held.finalize_ready(&mut close, &cancel),
+            )
+            .unwrap_or_else(|e| {
+                panic!("fresh private Ready finalization {:?}: {}", e.step, e.cause)
+            });
+            phase.next("fresh-private-success.finalized-witness");
+            assert_eq!(progress.effect(), ReadyEffect::Finalized);
+            assert_eq!(close.counts, (1, 1, 1, 0));
+            require_read_controls(&events.borrow(), &f);
+            for path in [
+                &f.source_database,
+                &f.destination_database,
+                &f.family_database,
+            ] {
+                assert!(
+                    post_close_reads.borrow().contains(path),
+                    "fresh actual {path:?} readback follows positive SQLite C close"
+                );
+            }
+            let ready = require_only_private_ready(&f);
+            assert_eq!(progress.ready(), &ready.ready);
+            assert_eq!(progress.receipt(), &ready.receipt);
+            drop(progress);
+            only_c_database_changed(&before_trees, &trees(&f), &f.destination_database);
+            require_released_pins(&f);
+            phase.next("fresh-private-success.replay-and-witness");
+            require_fresh_no_writer_replay(&f, &ready, &cancel);
+            // Inspect the next independently fresh family adapter only. It must
+            // leave the actual B Staging/family Initializing phases unchanged.
+            phase.next("fresh-private-success.family-handoff-open");
+            let handoff = OrdinaryFamilyReadyPublication::open(
+                &f.source,
+                &f.destination,
+                &f.source_staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh private Ready -> family adapter handoff {e}"));
-        drop(handoff);
-        phase.next("fresh-private-success.family-handoff-witness");
-        assert_eq!(require_only_private_ready(&f).rows, ready.rows);
-        require_released_pins(&f);
-    });
+            drop(handoff);
+            phase.next("fresh-private-success.family-handoff-witness");
+            assert_eq!(require_only_private_ready(&f).rows, ready.rows);
+            require_released_pins(&f);
+        },
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_private_ready_withheld_sqlite_close_ack_reopens_ready_after_explicit_holder_release(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_private_ready_withheld_sqlite_close_ack_reopens_ready_after_explicit_holder_release"), 3600, || {
-        let _total = child::phase("fresh-private-ack.total");
-        let f = fresh_checkout_fixture(); // Separate genuine setup/parent.
-        let mut phase = child::phase("fresh-private-ack.baseline-witness");
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        phase.next("fresh-private-ack.fresh-open");
-        let held = OrdinaryPrivateReadyFinalization::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancel)
+fn managed_ordinary_fresh_private_ready_withheld_sqlite_close_ack_reopens_ready_after_explicit_holder_release()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_private_ready_withheld_sqlite_close_ack_reopens_ready_after_explicit_holder_release"
+        ),
+        3600,
+        || {
+            let _total = child::phase("fresh-private-ack.total");
+            let f = fresh_checkout_fixture(); // Separate genuine setup/parent.
+            let mut phase = child::phase("fresh-private-ack.baseline-witness");
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            phase.next("fresh-private-ack.fresh-open");
+            let held = OrdinaryPrivateReadyFinalization::open(
+                &f.source,
+                &f.destination,
+                &f.source_staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh genuine complete Staging checkout {e}"));
-        phase.next("fresh-private-ack.open-witness");
-        require_held_owners(&f);
-        let mut close = Close::new(&f, true);
-        close.require_pins();
-        let after_close = close.after_close.clone();
-        let after_close_boundaries = Rc::new(Cell::new(0usize));
-        let observed_after_close = after_close_boundaries.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        phase.next("fresh-private-ack.finalize");
-        let result = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() { observed_after_close.set(observed_after_close.get()+1); return Err(invalid("failed private Ready close ACK forbids later observed SQL/identity/snapshot probes")); }
-            Ok(())
-        }, || held.finalize_ready(&mut close, &cancel));
-        phase.next("fresh-private-ack.failure-witness-and-explicit-release");
-        let OrdinaryPrivateReadyFinalizationFailure { step, cause, held } = result.err()
-            .expect("withheld SQLite close ACK retains genuine fresh B/C authority");
-        assert_eq!(step, AdmissionStep::CommitReturned);
-        let primary = cause.to_string();
-        assert!(primary.contains(WITHHELD_ACK), "{primary}");
-        assert_eq!(close.counts, (1,1,1,1));
-        assert_eq!(after_close_boundaries.get(), 0, "only mandatory closes follow failed ACK");
-        require_read_controls(&events.borrow(), &f);
-        close.require_pins();
-        require_held_owners(&f);
-        // Deliberate caller observations outside the failed driver do not
-        // acknowledge its uncertain result or infer native close outcomes.
-        let ready = require_only_private_ready(&f);
-        only_c_database_changed(&before_trees, &trees(&f), &f.destination_database);
-        drop(held);
-        require_released_pins(&f);
-        phase.next("fresh-private-ack.replay-and-witness");
-        require_fresh_no_writer_replay(&f, &ready, &cancel);
-        phase.next("fresh-private-ack.final-cause-witness");
-        assert_eq!(cause.to_string(), primary, "fresh replay preserves original ACK error");
-        assert_eq!(close.counts, (1,1,1,1));
-    });
+            phase.next("fresh-private-ack.open-witness");
+            require_held_owners(&f);
+            let mut close = Close::new(&f, true);
+            close.require_pins();
+            let after_close = close.after_close.clone();
+            let after_close_boundaries = Rc::new(Cell::new(0usize));
+            let observed_after_close = after_close_boundaries.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            phase.next("fresh-private-ack.finalize");
+            let result = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() {
+                        observed_after_close.set(observed_after_close.get() + 1);
+                        return Err(invalid(
+                            "failed private Ready close ACK forbids later observed SQL/identity/snapshot probes",
+                        ));
+                    }
+                    Ok(())
+                },
+                || held.finalize_ready(&mut close, &cancel),
+            );
+            phase.next("fresh-private-ack.failure-witness-and-explicit-release");
+            let OrdinaryPrivateReadyFinalizationFailure { step, cause, held } = result
+                .err()
+                .expect("withheld SQLite close ACK retains genuine fresh B/C authority");
+            assert_eq!(step, AdmissionStep::CommitReturned);
+            let primary = cause.to_string();
+            assert!(primary.contains(WITHHELD_ACK), "{primary}");
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(
+                after_close_boundaries.get(),
+                0,
+                "only mandatory closes follow failed ACK"
+            );
+            require_read_controls(&events.borrow(), &f);
+            close.require_pins();
+            require_held_owners(&f);
+            // Deliberate caller observations outside the failed driver do not
+            // acknowledge its uncertain result or infer native close outcomes.
+            let ready = require_only_private_ready(&f);
+            only_c_database_changed(&before_trees, &trees(&f), &f.destination_database);
+            drop(held);
+            require_released_pins(&f);
+            phase.next("fresh-private-ack.replay-and-witness");
+            require_fresh_no_writer_replay(&f, &ready, &cancel);
+            phase.next("fresh-private-ack.final-cause-witness");
+            assert_eq!(
+                cause.to_string(),
+                primary,
+                "fresh replay preserves original ACK error"
+            );
+            assert_eq!(close.counts, (1, 1, 1, 1));
+        },
+    );
 }

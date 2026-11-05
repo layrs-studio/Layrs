@@ -137,9 +137,11 @@ fn coverage_reconstruction_rejects_relabelled_path_semantics() {
         PathSemantics::PortableWindows => PathSemantics::CaseSensitive,
     };
     changed.validate_fields().unwrap();
-    assert!(changed
-        .require_observation(&intent.plan.source_prefix, TX, &observation, None)
-        .is_err());
+    assert!(
+        changed
+            .require_observation(&intent.plan.source_prefix, TX, &observation, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -197,27 +199,33 @@ fn coverage_stored_rows_bind_commitments_and_actual_namespace() {
         &body.observation_selection_digest,
     )
     .unwrap();
-    assert!(check(
-        observation.snapshot(),
-        body.observation_generation + 1,
-        &body.observation_snapshot_digest,
-        &body.observation_selection_digest
-    )
-    .is_err());
-    assert!(check(
-        observation.snapshot(),
-        body.observation_generation,
-        &"b".repeat(64),
-        &body.observation_selection_digest
-    )
-    .is_err());
-    assert!(check(
-        observation.snapshot(),
-        body.observation_generation,
-        &body.observation_snapshot_digest,
-        &"b".repeat(64)
-    )
-    .is_err());
+    assert!(
+        check(
+            observation.snapshot(),
+            body.observation_generation + 1,
+            &body.observation_snapshot_digest,
+            &body.observation_selection_digest
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            observation.snapshot(),
+            body.observation_generation,
+            &"b".repeat(64),
+            &body.observation_selection_digest
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            observation.snapshot(),
+            body.observation_generation,
+            &body.observation_snapshot_digest,
+            &"b".repeat(64)
+        )
+        .is_err()
+    );
     for field in ["epoch", "semantics", "overlap", "alias", "deniedAncestor"] {
         let mut snapshot = observation.snapshot().clone();
         match field {
@@ -273,8 +281,8 @@ fn coverage_stored_rows_bind_commitments_and_actual_namespace() {
     }
     let cancelled = Cancellation::default();
     cancelled.cancel();
-    assert!(body
-        .require_observation_rows(
+    assert!(
+        body.require_observation_rows(
             observation.snapshot(),
             observation.selection(),
             body.observation_generation,
@@ -282,7 +290,8 @@ fn coverage_stored_rows_bind_commitments_and_actual_namespace() {
             &body.observation_selection_digest,
             Some(&cancelled)
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]

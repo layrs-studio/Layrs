@@ -3,30 +3,29 @@
 //! owner-loss recovery, crash or autonomous C admission is qualified here.
 use crate::{
     projection::{
-        format,
+        ProjectionStore, format,
         provider::{
             database_io::{self, WriterCloseObserver, WriterOpenPoint},
             managed_admission::read_admitted_import,
             managed_export::allocation,
-            ordinary_destination::{staging::StageEffect, CopyEffect},
+            ordinary_destination::{CopyEffect, staging::StageEffect},
             process_profile::tests::child,
             records::{
-                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
                 Record,
+                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
             transition_sql::SourceIntentEffect,
         },
         shared::{
             admitted_catalog::ExportReservationEffect, provider_access::ImportRegistrationEffect,
         },
-        ProjectionStore,
     },
     secure_fs::PinnedDirectory,
 };
-use layrs_core::scm::{canonical_json, Chunk, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
+use layrs_core::scm::{Chunk, FileManifest, RepoPath, TreeEntryTarget, WorktreeId, canonical_json};
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, types::ValueRef, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi, types::ValueRef};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
@@ -243,9 +242,11 @@ pub(super) fn database(c: &Connection) -> Database {
     let mut result = BTreeMap::new();
     let mut bytes = 0usize;
     for table in tables {
-        assert!(table
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        assert!(
+            table
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
         let mut q = c
             .prepare(&format!("SELECT * FROM \"{table}\" LIMIT 129"))
             .unwrap();
@@ -391,7 +392,9 @@ fn catalog(path: &Path, stage: &ProviderTransitionIntentRecord) -> Catalog {
         for sql in [
             "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
             "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
-        ] { assert!(!c.query_row(sql,[owner],|r|r.get::<_,bool>(0)).unwrap()); }
+        ] {
+            assert!(!c.query_row(sql, [owner], |r| r.get::<_, bool>(0)).unwrap());
+        }
         let operation = stage.reservation_operation().unwrap();
         assert_eq!(
             c.query_row(
@@ -825,9 +828,11 @@ fn managed_ordinary_installing_replays_declared_close_ack_and_publishes_complete
             let before = catalog(&family_database, &staging);
             assert!(before.records.is_empty());
             assert_eq!(before.remaining, staging.plan.quota_bytes);
-            assert!(!before.rows["manifests"]
-                .iter()
-                .any(|r| r[0] == Cell::Text(current.id().as_str().as_bytes().to_vec())));
+            assert!(
+                !before.rows["manifests"]
+                    .iter()
+                    .any(|r| r[0] == Cell::Text(current.id().as_str().as_bytes().to_vec()))
+            );
             assert!(!object(&family, "chunks", current.chunks()[0].chunk_id().as_str()).exists());
             let initial_trees = trees(&root, &family, &destination_root, locks);
             let mut close = Close {
@@ -840,17 +845,21 @@ fn managed_ordinary_installing_replays_declared_close_ack_and_publishes_complete
             };
             let cancelled = Cancellation::default();
             cancelled.cancel();
-            assert!(owner
-                .install_content(&allocated, &staging, current.id(), &mut close, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .install_content(&allocated, &staging, current.id(), &mut close, &cancelled)
+                    .is_err()
+            );
             let foreign = FileManifest::from_chunks(
                 layrs_core::scm::ChunkingDescriptor::single(),
                 &[Chunk::new(b"foreign Installing ID".to_vec()).unwrap()],
             )
             .unwrap();
-            assert!(owner
-                .install_content(&allocated, &staging, foreign.id(), &mut close, &cancel)
-                .is_err());
+            assert!(
+                owner
+                    .install_content(&allocated, &staging, foreign.id(), &mut close, &cancel)
+                    .is_err()
+            );
             assert_eq!(close.counts(), (0, 0, 0, 0));
             assert_eq!(close.pin_checks, 0);
             assert_eq!(
@@ -877,10 +886,12 @@ fn managed_ordinary_installing_replays_declared_close_ack_and_publishes_complete
             assert_eq!(record["debitBytes"], 8192);
             assert_eq!(record["directoryIdentity"], serde_json::Value::Null);
             assert_eq!(declared.remaining, staging.plan.quota_bytes - 8192);
-            assert!(!family
-                .join("staging")
-                .join(record["directory"].as_str().unwrap())
-                .exists());
+            assert!(
+                !family
+                    .join("staging")
+                    .join(record["directory"].as_str().unwrap())
+                    .exists()
+            );
             only_catalog_changed(
                 &initial_trees,
                 &trees(&root, &family, &destination_root, locks),

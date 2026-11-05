@@ -228,7 +228,9 @@ impl NativeWorkspace {
         {
             let store = self.open_store()?;
             let reader = NativeScmReader::new(&store)?;
-            if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), source.space.id())? {
+            if !reader
+                .object_admitted_to_space(&StoreObjectId::Step(step.clone()), source.space.id())?
+            {
                 return Err(NativeClientError::Missing("Step admitted to this Space"));
             }
         }
@@ -604,7 +606,8 @@ impl NativeWorkspace {
                 restore_projection::write_file(reader, batch.canonical_objects(), entry, output)
             })
         };
-        let mut write_file = |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
+        let mut write_file =
+            |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
         let mut read_chunk = |_: &ChunkId| {
             Err(StoreError::Corruption {
                 message: "unexpected restore chunk source".into(),

@@ -10,15 +10,15 @@ use crate::projection::provider::{
     bootstrap::tests::{capture_family, fixture::Fixture, transition_capture},
     capture_lock::CaptureAttemptLock,
     database_io::{
-        self, tests::fresh_ordinary_support::with_observer, WriterCloseObserver, WriterOpenPoint,
+        self, WriterCloseObserver, WriterOpenPoint, tests::fresh_ordinary_support::with_observer,
     },
     family_upgrade::upgrade_source_family,
     import_validation::{self, ImportDatabaseKind},
     process_profile::tests::child,
     records::{
+        ProviderBootstrapSource, ProviderSourceDescriptor, Record,
         denied_coverage::DerivedDeniedCoverage, import::ImportSourceReferences,
-        transition::ProviderTransitionIntentRecord, ProviderBootstrapSource,
-        ProviderSourceDescriptor, Record,
+        transition::ProviderTransitionIntentRecord,
     },
     transition_observation::{
         AuthorityObservationData, DeniedPathData, ObservationCoverageData, SourceObservationData,
@@ -37,19 +37,23 @@ use std::{
     fs,
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
 #[path = "c14_denial_start_tests/admission.rs"]
 mod admission;
+#[path = "c14_denial_start_tests/allocation_arm.rs"]
+mod allocation_arm;
 #[path = "c14_denial_start_tests/capture.rs"]
 mod capture;
 #[path = "c14_denial_start_tests/content.rs"]
 mod content;
 #[path = "c14_denial_start_tests/content_plain.rs"]
 mod content_plain;
+#[path = "c14_denial_start_tests/prospective_capacity_arm.rs"]
+mod prospective_capacity_arm;
 #[path = "c14_denial_start_tests/recovery_refusals.rs"]
 mod recovery_refusals;
 #[path = "c14_denial_start_tests/restore.rs"]
@@ -90,90 +94,6 @@ enum PreimageCase {
     CurrentAlias,
     Nonresident,
     DescriptorOnly,
-}
-
-fn source_with_immutable(case: PreimageCase) -> ProviderBootstrapSource {
-    let old = Fixture::writable_file_source();
-    let bytes = if !matches!(case, PreimageCase::CurrentAlias) {
-        b"C14 distinct immutable bytes".as_slice()
-    } else {
-        b"provider base content".as_slice()
-    };
-    let manifest = FileManifest::from_chunks(
-        ChunkingDescriptor::deterministic_fixed(1048576).unwrap(),
-        &[Chunk::new(bytes.to_vec()).unwrap()],
-    )
-    .unwrap();
-    let mut snapshot = old.initial().clone();
-    snapshot.entries.push(ProjectionEntry {
-        path: RepoPath::parse("unchanged.txt").unwrap(),
-        target: Some(TreeEntryTarget::File {
-            file_id: manifest.file_id().clone(),
-        }),
-        executable: false,
-        writable: false,
-        state: EntryState::Unavailable,
-    });
-    snapshot.entries.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut descriptors = old
-        .descriptors()
-        .iter()
-        .map(|row| ProviderSourceDescriptor {
-            path: row.path.clone(),
-            // Public preparation installs fixed1MiB representations. Match it
-            // before bootstrap for a genuinely resident descriptor-only base.
-            manifest: if !matches!(case, PreimageCase::CurrentAlias)
-                && row.path.as_str() == "README.md"
-            {
-                let manifest = FileManifest::from_chunks(
-                    ChunkingDescriptor::deterministic_fixed(1048576).unwrap(),
-                    &[Chunk::new(b"provider base content".to_vec()).unwrap()],
-                )
-                .unwrap();
-                assert_eq!(manifest.file_id(), row.manifest.file_id());
-                manifest
-            } else {
-                row.manifest.clone()
-            },
-        })
-        .collect::<Vec<_>>();
-    descriptors.push(ProviderSourceDescriptor {
-        path: RepoPath::parse("unchanged.txt").unwrap(),
-        manifest,
-    });
-    descriptors.sort_by(|a, b| a.path.cmp(&b.path));
-    ProviderBootstrapSource::validate(snapshot, old.selection().clone(), descriptors).unwrap()
-}
-
-fn require_retained_preimage(
-    image: &super::super::managed_image::complete::VerifiedCompleteManagedImage<'_, '_>,
-    case: PreimageCase,
-    preimage: &FileManifest,
-    immutable: &FileManifest,
-) {
-    let pinned = image.retained_offline_manifests();
-    match case {
-        PreimageCase::CurrentAlias => {
-            panic!("ambiguous original descriptors unexpectedly admitted");
-        }
-        PreimageCase::DescriptorOnly => {
-            assert!(
-                image
-                    .retained()
-                    .files()
-                    .iter()
-                    .all(|file| file.manifest.manifest().file_id() != preimage.file_id()),
-                "descriptor-only preimage has a current byte producer"
-            );
-            assert_eq!(pinned.len(), 2);
-            assert!(
-                pinned.contains(preimage),
-                "exact historical representation was not pinned"
-            );
-            assert!(pinned.contains(immutable));
-        }
-        PreimageCase::Nonresident => panic!("nonresident preimage unexpectedly prepared"),
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -220,39 +140,6 @@ impl AllocationCase {
     }
 }
 
-/// Explicit server-side fixture input, established before bootstrap/observation.
-/// An absent writable leaf grants this test's later creation; native existence
-/// is never used to infer that grant.
-fn source_for_configuration(case: PreimageCase, capture: bool) -> ProviderBootstrapSource {
-    let source = source_with_immutable(case);
-    if !capture {
-        return source;
-    }
-    let mut snapshot = source.initial().clone();
-    snapshot.entries.push(ProjectionEntry {
-        path: RepoPath::parse("recovery.txt").unwrap(),
-        target: None,
-        executable: false,
-        writable: true,
-        state: EntryState::Absent,
-    });
-    snapshot.entries.sort_by(|a, b| a.path.cmp(&b.path));
-    source.selection().validate_snapshot(&snapshot).unwrap();
-    ProviderBootstrapSource::validate(
-        snapshot,
-        source.selection().clone(),
-        source
-            .descriptors()
-            .iter()
-            .map(|row| ProviderSourceDescriptor {
-                path: row.path.clone(),
-                manifest: row.manifest.clone(),
-            })
-            .collect(),
-    )
-    .unwrap()
-}
-
 #[derive(Clone, Copy)]
 enum CopyCase {
     Publish,
@@ -261,48 +148,6 @@ enum CopyCase {
 }
 
 type CatalogSnapshot = BTreeMap<String, Vec<Vec<rusqlite::types::Value>>>;
-
-// Read-only logical evidence covers all application tables: restoring this
-// baseline proves the exact B row was the only catalog DATA removed.
-fn catalog_snapshot(f: &Fixture, cancel: &Cancellation) -> CatalogSnapshot {
-    let family =
-        crate::projection::shared::provider_access::FamilyAccess::open(f.family.root()).unwrap();
-    let _locks = family.locks(&f.worktree, false).unwrap();
-    super::super::managed_destination::valid(
-        database_io::read_cancellable_strict(&family.catalog, cancel, table_snapshot).unwrap(),
-    )
-    .unwrap()
-}
-
-fn table_snapshot(c: &rusqlite::Connection) -> CauseResult<CatalogSnapshot> {
-    let mut names = c.prepare(
-                "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE BINARY",
-            )?;
-    let names = names
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut tables = BTreeMap::new();
-    for name in names {
-        let quoted = name.replace('"', "\"\"");
-        let columns = c
-            .prepare(&format!("SELECT * FROM \"{quoted}\""))?
-            .column_count();
-        let order = (1..=columns)
-            .map(|column| format!("{column} COLLATE BINARY"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut statement = c.prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY {order}"))?;
-        let rows = statement
-            .query_map([], |row| {
-                (0..columns)
-                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
-                    .collect::<std::result::Result<Vec<_>, _>>()
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        tables.insert(name, rows);
-    }
-    Ok(tables)
-}
 
 #[derive(Default)]
 struct Close {
@@ -343,159 +188,6 @@ impl WriterCloseObserver for Close {
         }
         Ok(())
     }
-}
-
-fn require_validation_message(error: Cause, expected: &str) {
-    require_validation_message_ref(&error, expected);
-}
-
-fn require_validation_message_ref(error: &Cause, expected: &str) {
-    match error {
-        Cause::Validation(error) => match error.as_ref() {
-            crate::projection::ProjectionStoreError::Invalid(message) => {
-                assert_eq!(message, expected);
-            }
-            error => panic!("legacy driver returned another validation error: {error}"),
-        },
-        error => panic!("legacy driver returned another error category: {error}"),
-    }
-}
-
-fn require_denial_guard(error: Cause) {
-    require_validation_message(error, "managed allocation requires a denial-aware driver");
-}
-
-#[allow(clippy::too_many_arguments)]
-fn require_denial_copy_state(
-    held: &crate::projection::provider::bootstrap::outcome::PublicationPins,
-    owner: &super::super::managed_journal::denial_start::PendingDenialStart<'_, '_, '_, '_>,
-    copying: &ProviderTransitionIntentRecord,
-    destination: &super::super::managed_allocation::ManagedDestinationAllocation<'_>,
-    coverage: &DerivedDeniedCoverage,
-    copied: bool,
-    cancel: &Cancellation,
-) {
-    let _locks = held
-        .family
-        .locks(
-            &held.artifacts.allocation.format.identity.worktree_id,
-            false,
-        )
-        .unwrap();
-    owner.with_copying_destination_source(held, copying, destination, false, cancel, |source, proof, closure, current| {
-        let a = &held.artifacts.allocation;
-        let p = held.artifacts.prepared.as_ref().unwrap();
-        let prefix = &copying.plan.source_prefix;
-        let intent = super::super::managed_destination::destination_intent(copying)?;
-        current.require_destination(&intent, Some(cancel))?;
-        let source_body = crate::projection::provider::denied_coverage_storage::read_required(
-            source, copying.plan.denial_coverage.as_ref().unwrap(), Some(cancel))?;
-        assert_eq!(&source_body, coverage.record());
-        let registration = super::super::managed_destination::valid(database_io::read_cancellable_strict(
-            &held.family.catalog, cancel, |c| held.family.validate_import_initializing(
-                c, a, p, &proof.active.activation, &proof.capture, copying, Some(cancel)),
-        )?)?;
-        assert_eq!(registration, crate::projection::shared::provider_access::ImportRegistration::Initializing);
-        if copied {
-            super::super::managed_destination::valid(database_io::read_cancellable_strict(
-                destination.destination_database(), cancel, |c| {
-                    let marker = &destination.proof().format;
-                    closure.require_copied_prefix_scope(source, c, marker, prefix, Some(cancel))?;
-                    crate::projection::provider::destination_validation::read_copied(
-                        c, marker, &proof.active.source, a, p, &proof.active.activation,
-                        prefix, &intent, closure, Some(cancel),
-                    )?;
-                    let actual = crate::projection::provider::denied_coverage_storage::read_required(
-                        c, copying.plan.denial_coverage.as_ref().unwrap(), Some(cancel))?;
-                    assert_eq!(actual, source_body);
-                    actual.require_intent(&intent, Some(cancel))?;
-                    Ok(())
-                },
-            )?)?;
-        } else {
-            assert_eq!(fs::metadata(destination.destination_database().path()).unwrap().len(), 0,
-                "family ACK refusal initialized destination SQL");
-        }
-        Ok(())
-    }).unwrap();
-}
-
-fn observe(
-    active: &PrivateActiveCaptureValidation,
-    identity: &crate::projection::ProjectionIdentity,
-    planned: &ProviderTransitionIntentRecord,
-    epoch_increment: u64,
-    cancel: &Cancellation,
-) -> TransitionObservationData {
-    observe_with_reserved_image(active, identity, planned, epoch_increment, false, cancel)
-}
-
-fn observe_with_reserved_image(
-    active: &PrivateActiveCaptureValidation,
-    identity: &crate::projection::ProjectionIdentity,
-    planned: &ProviderTransitionIntentRecord,
-    epoch_increment: u64,
-    reserve_readme: bool,
-    cancel: &Cancellation,
-) -> TransitionObservationData {
-    let source = &active.active.source;
-    let mut fresh = source.initial().clone();
-    fresh.observed_authorization_epoch += epoch_increment;
-    if reserve_readme {
-        let row = fresh
-            .entries
-            .iter_mut()
-            .find(|row| row.path.as_str() == "README.md")
-            .unwrap();
-        row.state = EntryState::Reserved;
-        row.writable = false;
-    }
-    let authority = AuthorityObservationData::ReobservedExpandedScope {
-        policy_set_id: fresh.observed_policy_set_id.clone(),
-        authorization_epoch: fresh.observed_authorization_epoch,
-    };
-    TransitionObservationData::normalize(
-        SourceObservationData {
-            prefix: &planned.plan.source_prefix,
-            identity,
-            snapshot: &active.active.activated.snapshot,
-            snapshot_parent_digest: Some(&active.active.activation.source_digest),
-            selection: source.selection(),
-            selection_generation: source.commitment().source_generation,
-            selection_snapshot_digest: &source.commitment().snapshot_digest,
-        },
-        planned.plan.source_prefix.destination_identity.clone(),
-        active.active.activated.generation + 1,
-        fresh,
-        source.selection().clone(),
-        source
-            .descriptors()
-            .iter()
-            .filter(|row| !reserve_readme || row.path.as_str() != "README.md")
-            .map(|row| ProviderSourceDescriptor {
-                path: row.path.clone(),
-                manifest: row.manifest.clone(),
-            })
-            .collect(),
-        ObservationCoverageData {
-            denied_paths: vec![DeniedPathData {
-                path: RepoPath::parse("secret.txt").unwrap(),
-            }],
-        },
-        authority,
-        Some(cancel),
-    )
-    .unwrap()
-}
-
-fn run_start(retry: bool, pending_capture: bool, recovery: Option<RecoveryCase>) {
-    run_start_configuration(
-        retry,
-        pending_capture,
-        recovery,
-        PreimageCase::DescriptorOnly,
-        None,
-    );
 }
 
 fn run_start_configuration(
@@ -600,15 +292,17 @@ fn run_start_configuration(
         range_watch.reads.load(Ordering::SeqCst) > 0,
         "current ImmutableSource was never read"
     );
-    assert!(image
-        .retained()
-        .files()
-        .iter()
-        .any(|file| file.path.as_str() == "unchanged.txt"
-            && matches!(
-                &file.manifest,
-                super::super::managed_image::ManagedManifest::Source(_)
-            )));
+    assert!(
+        image
+            .retained()
+            .files()
+            .iter()
+            .any(|file| file.path.as_str() == "unchanged.txt"
+                && matches!(
+                    &file.manifest,
+                    super::super::managed_image::ManagedManifest::Source(_)
+                ))
+    );
     // Authenticate the allocation parent before deriving any immutable plan.
     // Allocation modes stop at FORMAT with empty destination SQL.
     let mut planned =
@@ -985,11 +679,13 @@ fn run_start_configuration(
         &ChunkingDescriptor::deterministic_fixed(1048576).unwrap()
     );
     assert_ne!(preimage.file_id(), immutable.file_id());
-    assert!(image
-        .retained()
-        .files()
-        .iter()
-        .all(|file| file.manifest.manifest().file_id() != preimage.file_id()));
+    assert!(
+        image
+            .retained()
+            .files()
+            .iter()
+            .all(|file| file.manifest.manifest().file_id() != preimage.file_id())
+    );
     omitted.retain(|manifest| manifest != preimage);
     assert_eq!(omitted.len(), required.len() - 1);
     for (label, candidate, observation, manifests, expected) in [
@@ -1193,12 +889,14 @@ fn run_start_configuration(
                     Some(session.source.root.registration().root_id()),
                     Some(&cancel),
                 )?;
-                assert!(state
-                    .capture
-                    .transactions
-                    .iter()
-                    .any(|record| record.transaction_id == tx.transaction_id
-                        && matches!(&record.state, ProviderCaptureState::Staging { .. })));
+                assert!(
+                    state
+                        .capture
+                        .transactions
+                        .iter()
+                        .any(|record| record.transaction_id == tx.transaction_id
+                            && matches!(&record.state, ProviderCaptureState::Staging { .. }))
+                );
                 Ok(())
             })
             .unwrap(),
@@ -1248,453 +946,29 @@ fn run_start_configuration(
         return;
     }
     if matches!(allocation_case, Some(AllocationCase::ProspectiveCapacity)) {
-        use crate::projection::SharedQuota;
-        let funding =
-            crate::projection::shared::source_denial::SourceDeniedCoverageReservation::new(
-                &allocation,
-                &planned,
-                coverage.record(),
-                Some(&cancel),
-            )
-            .unwrap();
-        let usage = f.family.usage().unwrap();
-        // Only source denial d and this plan's future C quota q are tested;
-        // a later source-companion charge is outside this boundary.
-        let d = funding.reservation_bytes();
-        let q = planned.plan.quota_bytes;
-        assert!(d > 0 && q > 0);
-        let used_and_reserved = usage
-            .content_bytes
-            .checked_add(usage.reserved_bytes)
-            .unwrap();
-        let threshold = used_and_reserved
-            .checked_add(d)
-            .unwrap()
-            .checked_add(q)
-            .unwrap();
-        let insufficient = threshold - 1;
-        assert!(
-            used_and_reserved + d <= insufficient,
-            "B alone must fit this negative quota"
-        );
-        let target = std::path::Path::new(&planned.plan.destination_parent)
-            .join(&planned.plan.destination_leaf_nonce);
-        let control = f.metadata.join("provider-control");
-        let control_inventory = || {
-            fs::read_dir(&control)
-                .unwrap()
-                .map(|entry| {
-                    let entry = entry.unwrap();
-                    assert!(entry.file_type().unwrap().is_file());
-                    (
-                        entry.file_name(),
-                        database_io::tests::support::witness(&entry.path()),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        let original_control = control_inventory();
-        let private_before = database_io::tests::support::witness(&private_path);
-        let family_before = database_io::tests::support::witness(&family_path);
-        let other_parent = f.outer.join("r1-other-parent");
-        fs::create_dir(&other_parent).unwrap();
-        let error = super::super::managed_journal::denial_start::PendingDenialStart::prepare(
-            held,
-            session.session.guard_export_parent(&other_parent).unwrap(),
-            &session.source.root,
-            &session.source.record,
-            &session.source.activation,
+        prospective_capacity_arm::run(
+            preimage_case,
+            &cancel,
+            &f,
+            &allocation,
+            &prepared,
+            &binding,
+            &session,
             &attempt,
-            &planned,
-            &coverage,
-            &observed,
+            &range_watch,
             &mut image,
-            &required,
-            &cancel,
-        )
-        .err()
-        .expect("different real parent guard admitted");
-        require_validation_message(error, "denial start retained destination parent differs");
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before
-        );
-        assert_eq!(control_inventory(), original_control);
-        assert!(!target.exists());
-
-        // Replace only the dedicated empty destination parent. The new guard
-        // has the exact spelling but another inode, so only identity can reject.
-        let retained_parent = f.outer.join("r1-original-parent");
-        assert_eq!(plan_parent, f.outer.join("r1-destination-parent"));
-        fs::rename(&plan_parent, &retained_parent).unwrap();
-        fs::create_dir(&plan_parent).unwrap();
-        let replacement = session.session.guard_export_parent(&plan_parent).unwrap();
-        assert_ne!(
-            replacement.filesystem_identity(),
-            planned.plan.destination_parent_identity
-        );
-        let error = super::super::managed_journal::denial_start::PendingDenialStart::prepare(
-            held,
-            replacement,
-            &session.source.root,
-            &session.source.record,
-            &session.source.activation,
-            &attempt,
             &planned,
-            &coverage,
+            &plan_parent,
             &observed,
-            &mut image,
-            &required,
-            &cancel,
-        )
-        .err()
-        .expect("same-path replacement parent admitted");
-        require_validation_message(error, "denial start retained destination parent differs");
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before
-        );
-        assert_eq!(control_inventory(), original_control);
-        assert!(!target.exists());
-        fs::remove_dir(&plan_parent).unwrap(); // empty fixture directory only
-        fs::rename(&retained_parent, &plan_parent).unwrap();
-
-        // A real guard from another Provider Session cannot stand in for the
-        // source owner merely because its parent path and inode are correct.
-        let (_foreign_fixture, foreign_holder, _, _, _) =
-            capture_family::active_holder_with_source(None);
-        let foreign_session = foreign_holder
-            .into_disconnected_session()
-            .unwrap_or_else(|error| panic!("foreign session: {}", error.cause()));
-        let foreign_parent = foreign_session
-            .session
-            .guard_export_parent(&plan_parent)
-            .unwrap();
-        assert_eq!(
-            foreign_parent.filesystem_identity(),
-            planned.plan.destination_parent_identity
-        );
-        let error = super::super::managed_journal::denial_start::PendingDenialStart::prepare(
-            held,
-            foreign_parent,
-            &session.source.root,
-            &session.source.record,
-            &session.source.activation,
-            &attempt,
-            &planned,
             &coverage,
-            &observed,
-            &mut image,
+            &private_path,
+            &family_path,
             &required,
-            &cancel,
-        )
-        .err()
-        .expect("foreign source Session parent admitted");
-        assert!(
-            matches!(error, Cause::Vfs(layrs_vfs::Error::IdentityMismatch)),
-            "{error}"
+            preimage,
+            immutable,
         );
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before
-        );
-        assert_eq!(control_inventory(), original_control);
-        assert!(!target.exists());
-
-        f.family
-            .set_quota(SharedQuota {
-                bytes: insufficient,
-            })
-            .unwrap();
-        let before_low = catalog_snapshot(&f, &cancel);
-        let family_before_low = database_io::tests::support::witness(&family_path);
-        let error = super::super::managed_journal::denial_start::PendingDenialStart::prepare(
-            held,
-            session
-                .session
-                .guard_export_parent(std::path::Path::new(&planned.plan.destination_parent))
-                .unwrap(),
-            &session.source.root,
-            &session.source.record,
-            &session.source.activation,
-            &attempt,
-            &planned,
-            &coverage,
-            &observed,
-            &mut image,
-            &required,
-            &cancel,
-        )
-        .err()
-        .expect("unfundable d+q admitted because d alone fits");
-        require_validation_message(
-            error,
-            "partial_store_quota: denial source and future destination unfunded",
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before_low
-        );
-        assert_eq!(catalog_snapshot(&f, &cancel), before_low);
-        assert_eq!(control_inventory(), original_control);
-        assert!(
-            denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                .unwrap()
-                .is_none()
-        );
-        assert!(!target.exists());
-        assert_eq!(
-            f.family.usage().unwrap().reserved_bytes,
-            usage.reserved_bytes
-        );
-
-        f.family
-            .set_quota(SharedQuota { bytes: threshold })
-            .unwrap();
-        let family_at_threshold = database_io::tests::support::witness(&family_path);
-        let mut pending = super::super::managed_journal::denial_start::PendingDenialStart::prepare(
-            held,
-            session
-                .session
-                .guard_export_parent(std::path::Path::new(&planned.plan.destination_parent))
-                .unwrap(),
-            &session.source.root,
-            &session.source.record,
-            &session.source.activation,
-            &attempt,
-            &planned,
-            &coverage,
-            &observed,
-            &mut image,
-            &required,
-            &cancel,
-        )
-        .unwrap();
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_at_threshold
-        );
-        assert_eq!(control_inventory(), original_control);
-        assert!(!target.exists());
-
-        // A quota change after prepare must be rechecked before receipt/B.
-        f.family
-            .set_quota(SharedQuota {
-                bytes: insufficient,
-            })
-            .unwrap();
-        let family_before_begin = database_io::tests::support::witness(&family_path);
-        let catalog_before_begin = catalog_snapshot(&f, &cancel);
-        let mut family_close = Close::default();
-        let mut source_close = Close::default();
-        let error = pending
-            .begin(&mut family_close, &mut source_close, &cancel)
-            .unwrap_err();
-        require_validation_message(
-            error,
-            "partial_store_quota: denial source and future destination unfunded",
-        );
-        assert_eq!(
-            (
-                family_close.opened,
-                family_close.closed,
-                source_close.opened,
-                source_close.closed
-            ),
-            (0, 0, 0, 0)
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before_begin
-        );
-        assert_eq!(catalog_snapshot(&f, &cancel), catalog_before_begin);
-        assert_eq!(control_inventory(), original_control);
-        assert!(
-            denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                .unwrap()
-                .is_none()
-        );
-        assert!(!target.exists());
-
-        f.family
-            .set_quota(SharedQuota { bytes: threshold })
-            .unwrap();
-        // Stop at the real family COMMIT to exercise capacity with B already
-        // reserved but Planned absent. Re-adding d would exceed this exact limit.
-        let refused = Rc::new(Cell::new(false));
-        let mut family_close = Close::default();
-        family_close.funded = Some(range_watch.funded.clone());
-        family_close.refused = Some(refused.clone());
-        let mut source_close = Close::default();
-        let error = pending
-            .begin(&mut family_close, &mut source_close, &cancel)
-            .unwrap_err();
-        require_validation_message(error, "C14 start SQLite close ACK withheld");
-        assert!(refused.get());
-        assert_eq!((family_close.opened, family_close.closed), (1, 1));
-        assert_eq!((source_close.opened, source_close.closed), (0, 0));
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert!(!target.exists());
-        let funded_usage = f.family.usage().unwrap();
-        assert_eq!(funded_usage.content_bytes, usage.content_bytes);
-        assert_eq!(funded_usage.reserved_bytes, usage.reserved_bytes + d);
-        assert_eq!(
-            funded_usage.content_bytes + funded_usage.reserved_bytes + q,
-            threshold
-        );
-        assert!(
-            denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                .unwrap()
-                .is_some()
-        );
-        let family_funded = database_io::tests::support::witness(&family_path);
-        let mut family_close = Close::default();
-        let mut source_close = Close::default();
-        let source_refused = Rc::new(Cell::new(false));
-        source_close.refused = Some(source_refused.clone());
-        require_validation_message(
-            pending
-                .begin(&mut family_close, &mut source_close, &cancel)
-                .unwrap_err(),
-            "C14 start SQLite close ACK withheld",
-        );
-        assert!(source_refused.get());
-        assert_eq!((family_close.opened, family_close.closed), (0, 0));
-        assert_eq!((source_close.opened, source_close.closed), (1, 1));
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_funded
-        );
-        let actual = super::super::managed_destination::valid(
-            database_io::read_cancellable_strict(&held.artifacts.database, &cancel, |c| {
-                validation::private_active_transition_with_source(
-                    c,
-                    &allocation,
-                    &prepared,
-                    &binding,
-                    Some(session.source.root.registration().root_id()),
-                    Some(&cancel),
-                )
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(actual.transitions, std::slice::from_ref(&planned));
-        assert!(
-            denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                .unwrap()
-                .is_some()
-        );
-        let private_committed = database_io::tests::support::witness(&private_path);
-        // Planned is already durable. Lowering prospective C capacity must not
-        // prevent this exact no-writer replay or cleanup of the compact receipt.
-        f.family
-            .set_quota(SharedQuota {
-                bytes: insufficient,
-            })
-            .unwrap();
-        let family_lowered = database_io::tests::support::witness(&family_path);
-        let usage_lowered = f.family.usage().unwrap();
-        let mut family_close = Close::default();
-        let mut source_close = Close::default();
-        assert_eq!(
-            pending
-                .begin(&mut family_close, &mut source_close, &cancel)
-                .unwrap(),
-            SourceIntentEffect::AlreadyPresent
-        );
-        assert_eq!(
-            (
-                family_close.opened,
-                family_close.closed,
-                source_close.opened,
-                source_close.closed
-            ),
-            (0, 0, 0, 0)
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_committed
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_lowered
-        );
-        assert_eq!(f.family.usage().unwrap(), usage_lowered);
-        assert_eq!(control_inventory(), original_control);
-        assert!(
-            denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                .unwrap()
-                .is_none()
-        );
-        assert!(!target.exists());
-        f.family
-            .set_quota(SharedQuota { bytes: threshold })
-            .unwrap();
-        assert_eq!(f.family.usage().unwrap(), funded_usage);
-        let private_before_foreign = database_io::tests::support::witness(&private_path);
-        let family_before_foreign = database_io::tests::support::witness(&family_path);
-        let failure = super::super::managed_allocation::allocate_denial(
-            &foreign_session.session,
-            held,
-            &mut pending,
-            &planned,
-            &cancel,
-        )
-        .err()
-        .expect("foreign allocation Session created C");
-        assert!(
-            matches!(
-                &failure.cause,
-                Cause::Vfs(layrs_vfs::Error::IdentityMismatch)
-            ),
-            "{}",
-            failure.cause
-        );
-        assert!(failure.effects.is_empty());
-        assert!(!target.exists());
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before_foreign
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before_foreign
-        );
-        drop(failure);
-        drop(foreign_session);
-        drop(pending);
-        require_retained_preimage(&image, preimage_case, preimage, immutable);
         drop(image);
         drop(checkpoint);
-        assert_eq!(range_watch.late.load(Ordering::SeqCst), 0);
         drop(range_watch);
         drop(attempt);
         session.disconnect().unwrap();
@@ -2260,685 +1534,24 @@ fn run_start_configuration(
     );
     assert_eq!(fs::read(&path).unwrap(), b"C14 current native image");
     if let Some(case) = allocation_case {
-        use super::super::managed_allocation::{ManagedFormatState, ManagedFormatStep};
-        use crate::projection::provider::records::transition::TransitionState;
-        let family_before = database_io::tests::support::witness(&family_path);
-        let catalog_before = catalog_snapshot(&f, &cancel);
-        let read_source = || {
-            super::super::managed_destination::valid(
-                database_io::read_cancellable_strict(
-                    &held.artifacts.database,
-                    &cancel,
-                    table_snapshot,
-                )
-                .unwrap(),
-            )
-            .unwrap()
-        };
-        let source_before = read_source();
-        let private_before = database_io::tests::support::witness(&private_path);
-        if matches!(
-            case,
-            AllocationCase::AlteredPlanned
-                | AllocationCase::LegacyRoutes
-                | AllocationCase::ImageChanged
-        ) {
-            let mut candidate =
-                ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
-            if matches!(case, AllocationCase::AlteredPlanned) {
-                candidate.plan.destination_leaf_nonce = "ffffffffffffffffffffffffffffffff".into();
-                assert_ne!(candidate.plan, planned.plan);
-                candidate.encode().unwrap();
-            }
-            if matches!(case, AllocationCase::ImageChanged) {
-                fs::write(
-                    f.checkout.join("c14-after-planned.txt"),
-                    b"external namespace change after Planned",
-                )
-                .unwrap();
-            }
-            let target = f.outer.join(&candidate.plan.destination_leaf_nonce);
-            let error = if matches!(case, AllocationCase::LegacyRoutes) {
-                super::super::managed_allocation::allocate(
-                    &session.session,
-                    held,
-                    &session.source.root,
-                    &session.source.record,
-                    &session.source.activation,
-                    &attempt,
-                    &candidate,
-                    &cancel,
-                )
-            } else {
-                super::super::managed_allocation::allocate_denial(
-                    &session.session,
-                    held,
-                    &mut pending,
-                    &candidate,
-                    &cancel,
-                )
-            }
-            .err()
-            .expect("negative allocation guard created C");
-            assert!(error.effects.is_empty());
-            assert_eq!(error.attempted_root, target);
-            match case {
-                AllocationCase::ImageChanged => {
-                    assert!(
-                        matches!(&error.cause, Cause::Vfs(layrs_vfs::Error::Busy)),
-                        "{}",
-                        error.cause
-                    )
-                }
-                AllocationCase::LegacyRoutes => require_validation_message_ref(
-                    &error.cause,
-                    "managed allocation requires a denial-aware driver",
-                ),
-                _ => require_validation_message_ref(
-                    &error.cause,
-                    "denial allocation owner or immutable plan differs",
-                ),
-            }
-            assert!(!target.exists());
-            assert!(!f.outer.join(&planned.plan.destination_leaf_nonce).exists());
-            assert_eq!(read_source(), source_before);
-            assert_eq!(
-                database_io::tests::support::witness(&private_path),
-                private_before
-            );
-            assert_eq!(
-                database_io::tests::support::witness(&family_path),
-                family_before
-            );
-            assert_eq!(catalog_snapshot(&f, &cancel), catalog_before);
-            drop(error);
-            if matches!(case, AllocationCase::ImageChanged) {
-                drop(pending);
-                drop(image);
-                drop(checkpoint);
-                assert_eq!(range_watch.late.load(Ordering::SeqCst), 0);
-                drop(range_watch);
-                drop(attempt);
-                session.disconnect().unwrap();
-                return;
-            }
-        }
-        let mut destination = super::super::managed_allocation::allocate_denial(
-            &session.session,
-            held,
-            &mut pending,
-            &planned,
+        if allocation_arm::run(
             &cancel,
-        )
-        .unwrap_or_else(|error| panic!("denial allocation failed: {error:?}"));
-        destination.verify(&planned.plan).unwrap();
-        assert_eq!(
-            destination.root(),
-            f.outer.join(&planned.plan.destination_leaf_nonce)
-        );
-        let proof_digest = destination.proof().digest(&planned.plan).unwrap();
-        let temporary = destination.root().join(".layrs").join(format!(
-            "FORMAT.pending-{}",
-            planned.plan.destination_leaf_nonce,
-        ));
-        let final_format = destination.root().join(".layrs/FORMAT");
-        assert!(!final_format.exists());
-        assert_eq!(fs::metadata(&temporary).unwrap().len(), 0);
-        assert_eq!(
-            fs::metadata(destination.destination_database().path())
-                .unwrap()
-                .len(),
-            0
-        );
-        let destination_before =
-            database_io::tests::support::witness(destination.destination_database().path());
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before
-        );
-
-        let mut bind_close = Close::default();
-        let (copying, effect) = if matches!(case, AllocationCase::WithheldCopyingAck) {
-            let refused = Rc::new(Cell::new(false));
-            let probes = Rc::new(Cell::new(0));
-            bind_close.refused = Some(refused.clone());
-            let watch_refused = refused.clone();
-            let watch_probes = probes.clone();
-            let error = with_observer(
-                move |_, _| {
-                    if watch_refused.get() {
-                        watch_probes.set(watch_probes.get() + 1);
-                        return Err(invalid("forbidden probe after SourceCopying ACK"));
-                    }
-                    Ok(())
-                },
-                || pending.bind_denial_allocation(&destination, &mut bind_close, &cancel),
-            )
-            .unwrap_err();
-            require_validation_message(error, "C14 start SQLite close ACK withheld");
-            assert!(refused.get());
-            assert_eq!(probes.get(), 0);
-            assert_eq!((bind_close.opened, bind_close.closed), (1, 1));
-            assert!(
-                !final_format.exists(),
-                "failed Copying ACK published FORMAT"
-            );
-            assert_eq!(fs::metadata(&temporary).unwrap().len(), 0);
-            assert_eq!(
-                database_io::tests::support::witness(&family_path),
-                family_before
-            );
-            assert_eq!(
-                database_io::tests::support::witness(destination.destination_database().path()),
-                destination_before
-            );
-            let before_retry = database_io::tests::support::witness(&private_path);
-            let mut retry_close = Close::default();
-            let result = pending
-                .bind_denial_allocation(&destination, &mut retry_close, &cancel)
-                .unwrap();
-            assert_eq!((retry_close.opened, retry_close.closed), (0, 0));
-            assert_eq!(
-                database_io::tests::support::witness(&private_path),
-                before_retry
-            );
-            assert_eq!(result.1, SourceIntentEffect::AlreadyPresent);
-            result
-        } else {
-            let result = pending
-                .bind_denial_allocation(&destination, &mut bind_close, &cancel)
-                .unwrap();
-            assert_eq!((bind_close.opened, bind_close.closed), (1, 1));
-            assert_eq!(result.1, SourceIntentEffect::Updated);
-            result
-        };
-        assert_eq!(
-            effect,
-            if matches!(case, AllocationCase::WithheldCopyingAck) {
-                SourceIntentEffect::AlreadyPresent
-            } else {
-                SourceIntentEffect::Updated
-            }
-        );
-        assert_eq!(copying.state, TransitionState::Copying);
-        assert_eq!(copying.plan, planned.plan);
-        assert_eq!(copying.transaction_id, planned.transaction_id);
-        assert_eq!(copying.destination.as_ref(), Some(destination.proof()));
-        copying.require_transition(&planned).unwrap();
-        destination.verify(&copying.plan).unwrap();
-        assert!(!final_format.exists());
-        assert_eq!(fs::metadata(&temporary).unwrap().len(), 0);
-        let source_after = read_source();
-        let mut unchanged_before = source_before;
-        let mut unchanged_after = source_after.clone();
-        assert_eq!(
-            unchanged_before
-                .remove("projection_provider_transitions")
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            unchanged_after
-                .remove("projection_provider_transitions")
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            unchanged_after, unchanged_before,
-            "Copying changed DATA outside its exact intent row"
-        );
-        let private_before = database_io::tests::support::witness(&private_path);
-        let mut replay_close = Close::default();
-        let (replay_copying, replay_effect) = pending
-            .bind_denial_allocation(&destination, &mut replay_close, &cancel)
-            .unwrap();
-        assert_eq!(replay_copying, copying);
-        assert_eq!(replay_effect, SourceIntentEffect::AlreadyPresent);
-        assert_eq!((replay_close.opened, replay_close.closed), (0, 0));
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-
-        if matches!(
+            &f,
+            &allocation,
+            &prepared,
+            &binding,
+            &session,
+            &attempt,
+            &range_watch,
+            &planned,
+            &coverage,
+            &private_path,
+            &family_path,
+            pending,
             case,
-            AllocationCase::LegacyRoutes | AllocationCase::AlteredCopying
         ) {
-            let before = database_io::tests::support::witness(&private_path);
-            let temporary_before = database_io::tests::support::witness(&temporary);
-            let error = if matches!(case, AllocationCase::LegacyRoutes) {
-                destination
-                    .publish_format(
-                        &session.source.root,
-                        &session.source.record,
-                        &session.source.activation,
-                        &attempt,
-                        &copying,
-                        &cancel,
-                    )
-                    .unwrap_err()
-            } else {
-                let mut altered =
-                    ProviderTransitionIntentRecord::decode(&copying.encode().unwrap()).unwrap();
-                let digest = &mut altered.destination.as_mut().unwrap().family_marker_digest;
-                *digest = format!(
-                    "blake3:{}",
-                    if digest.ends_with('0') { "1" } else { "0" }.repeat(64)
-                );
-                altered.encode().unwrap();
-                let error = pending
-                    .observe_copying_allocation(held, &altered, &destination, &cancel)
-                    .unwrap_err();
-                require_validation_message(
-                    error,
-                    "denial FORMAT requires exact retained Copying proof",
-                );
-                destination
-                    .publish_format_denial(&mut pending, &altered, &cancel)
-                    .unwrap_err()
-            };
-            assert!(error.effects.is_empty());
-            if matches!(case, AllocationCase::LegacyRoutes) {
-                require_denial_guard(error.cause);
-            } else {
-                require_validation_message(
-                    error.cause,
-                    "managed FORMAT publication requires exact source Copying",
-                );
-            }
-            assert!(!final_format.exists());
-            assert_eq!(
-                database_io::tests::support::witness(&temporary),
-                temporary_before
-            );
-            assert_eq!(
-                database_io::tests::support::witness(destination.destination_database().path()),
-                destination_before
-            );
-            assert_eq!(database_io::tests::support::witness(&private_path), before);
-            assert_eq!(
-                database_io::tests::support::witness(&family_path),
-                family_before
-            );
-            destination.verify(&copying.plan).unwrap();
-        }
-        let publication = destination
-            .publish_format_denial(&mut pending, &copying, &cancel)
-            .unwrap();
-        assert_eq!(publication.state, ManagedFormatState::Published);
-        assert!(publication
-            .effects
-            .iter()
-            .any(|effect| effect.step == ManagedFormatStep::Rename && effect.confirmed));
-        destination.require_published(&copying.plan).unwrap();
-        assert!(!temporary.exists());
-        assert_eq!(
-            fs::read(&final_format).unwrap(),
-            destination.proof().format.bytes().unwrap()
-        );
-        assert_eq!(
-            destination.proof().digest(&copying.plan).unwrap(),
-            proof_digest
-        );
-        let format_before = database_io::tests::support::witness(&final_format);
-        let replay = destination
-            .publish_format_denial(&mut pending, &copying, &cancel)
-            .unwrap();
-        assert_eq!(replay.state, ManagedFormatState::AlreadyPublished);
-        assert!(!replay.effects.iter().any(|effect| matches!(
-            effect.step,
-            ManagedFormatStep::Append | ManagedFormatStep::Rename
-        )));
-        destination.require_published(&copying.plan).unwrap();
-        destination.verify(&copying.plan).unwrap();
-        assert_eq!(
-            database_io::tests::support::witness(&final_format),
-            format_before
-        );
-        assert_eq!(
-            read_source(),
-            source_after,
-            "FORMAT publication changed source body or intent"
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&private_path),
-            private_before
-        );
-        assert_eq!(
-            database_io::tests::support::witness(&family_path),
-            family_before
-        );
-        assert_eq!(catalog_snapshot(&f, &cancel), catalog_before);
-        let destination_owner = copying
-            .plan
-            .source_prefix
-            .destination_identity
-            .worktree_id
-            .as_str();
-        let registered = super::super::managed_destination::valid(
-            database_io::read_cancellable_strict(&held.family.catalog, &cancel, |c| {
-                Ok(c.query_row(
-                    "SELECT count(*) FROM worktrees WHERE id=?1",
-                    [destination_owner],
-                    |row| row.get::<_, u64>(0),
-                )?)
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            registered, 0,
-            "allocation/FORMAT registered destination family state"
-        );
-        assert_eq!(
-            fs::metadata(destination.destination_database().path())
-                .unwrap()
-                .len(),
-            0
-        );
-        assert_eq!(
-            database_io::tests::support::witness(destination.destination_database().path()),
-            destination_before
-        );
-        super::super::managed_destination::valid(
-            database_io::read_cancellable_strict(&held.artifacts.database, &cancel, |c| {
-                let state = validation::private_active_transition_with_source(
-                    c,
-                    &allocation,
-                    &prepared,
-                    &binding,
-                    Some(session.source.root.registration().root_id()),
-                    Some(&cancel),
-                )?;
-                assert_eq!(state.transitions.as_slice(), std::slice::from_ref(&copying));
-                let actual = crate::projection::provider::denied_coverage_storage::read_required(
-                    c,
-                    copying.plan.denial_coverage.as_ref().unwrap(),
-                    Some(&cancel),
-                )?;
-                assert_eq!(&actual, coverage.record());
-                Ok(())
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        if let AllocationCase::Stage(stage_case) = case {
-            let mut close = Close::default();
-            let copied = super::super::managed_destination::register_and_copy_denial(
-                held,
-                &mut pending,
-                &copying,
-                &destination,
-                &mut close,
-                &cancel,
-            )
-            .unwrap();
-            assert_eq!(
-                copied.family,
-                crate::projection::shared::provider_access::ImportRegistrationEffect::Inserted
-            );
-            assert_eq!(
-                copied.destination,
-                super::super::managed_destination::DestinationSqlState::FreshCopied
-            );
-            assert_eq!((close.opened, close.closed), (2, 2));
-            require_denial_copy_state(
-                held,
-                &pending,
-                &copying,
-                &destination,
-                &coverage,
-                true,
-                &cancel,
-            );
-            staging::run(
-                &f,
-                held,
-                &session.source.root,
-                &mut pending,
-                &copying,
-                &destination,
-                &coverage,
-                stage_case,
-                &cancel,
-            );
-            assert_eq!(range_watch.late.load(Ordering::SeqCst), 0);
-            drop(destination);
-            drop(pending);
             require_retained_preimage(&image, preimage_case, preimage, immutable);
-            drop(image);
-            drop(checkpoint);
-            drop(range_watch);
-            drop(attempt);
-            session.disconnect().unwrap();
-            return;
         }
-        if let AllocationCase::Copy(copy_case) = case {
-            use super::super::managed_destination::DestinationSqlState;
-            use crate::projection::shared::provider_access::ImportRegistrationEffect;
-            let family_before_copy = database_io::tests::support::witness(&family_path);
-            let catalog_before_copy = catalog_snapshot(&f, &cancel);
-            let source_before_copy = read_source();
-            let private_before_copy = database_io::tests::support::witness(&private_path);
-            let destination_before_copy =
-                database_io::tests::support::witness(destination.destination_database().path());
-            // This source is genuinely Copying and FORMAT is published, so an
-            // absent predecessor cannot satisfy the legacy-route assertion.
-            let mut legacy_close = Close::default();
-            require_denial_guard(
-                super::super::managed_destination::register_and_copy(
-                    held,
-                    &session.source.root,
-                    &session.source.record,
-                    &session.source.activation,
-                    &attempt,
-                    &copying,
-                    &destination,
-                    &mut legacy_close,
-                    &cancel,
-                )
-                .unwrap_err(),
-            );
-            assert_eq!((legacy_close.opened, legacy_close.closed), (0, 0));
-            assert_eq!(
-                database_io::tests::support::witness(&private_path),
-                private_before_copy
-            );
-            assert_eq!(
-                database_io::tests::support::witness(&family_path),
-                family_before_copy
-            );
-            assert_eq!(
-                database_io::tests::support::witness(destination.destination_database().path()),
-                destination_before_copy
-            );
-
-            let mut copy_close = Close::default();
-            let result = if matches!(copy_case, CopyCase::Publish) {
-                let effect = super::super::managed_destination::register_and_copy_denial(
-                    held,
-                    &mut pending,
-                    &copying,
-                    &destination,
-                    &mut copy_close,
-                    &cancel,
-                )
-                .unwrap();
-                assert_eq!((copy_close.opened, copy_close.closed), (2, 2));
-                assert_eq!(effect.family, ImportRegistrationEffect::Inserted);
-                assert_eq!(effect.destination, DestinationSqlState::FreshCopied);
-                effect
-            } else {
-                let refused = Rc::new(Cell::new(false));
-                let probes = Rc::new(Cell::new(0));
-                copy_close.refused = Some(refused.clone());
-                let ordinal = if matches!(copy_case, CopyCase::WithheldFamilyAck) {
-                    1
-                } else {
-                    2
-                };
-                copy_close.refuse_at = Some(ordinal);
-                let watch_refused = refused.clone();
-                let watch_probes = probes.clone();
-                let error = with_observer(
-                    move |_, _| {
-                        if watch_refused.get() {
-                            watch_probes.set(watch_probes.get() + 1);
-                            return Err(invalid("forbidden probe after denial C copy ACK"));
-                        }
-                        Ok(())
-                    },
-                    || {
-                        super::super::managed_destination::register_and_copy_denial(
-                            held,
-                            &mut pending,
-                            &copying,
-                            &destination,
-                            &mut copy_close,
-                            &cancel,
-                        )
-                    },
-                )
-                .unwrap_err();
-                require_validation_message(error, "C14 start SQLite close ACK withheld");
-                assert!(refused.get());
-                assert_eq!(probes.get(), 0);
-                assert_eq!((copy_close.opened, copy_close.closed), (ordinal, ordinal));
-                let copied = matches!(copy_case, CopyCase::WithheldDestinationAck);
-                require_denial_copy_state(
-                    held,
-                    &pending,
-                    &copying,
-                    &destination,
-                    &coverage,
-                    copied,
-                    &cancel,
-                );
-                if !copied {
-                    assert_eq!(
-                        database_io::tests::support::witness(
-                            destination.destination_database().path()
-                        ),
-                        destination_before_copy,
-                        "family ACK failure wrote C SQLite"
-                    );
-                }
-                let family_before_retry = database_io::tests::support::witness(&family_path);
-                let destination_before_retry =
-                    database_io::tests::support::witness(destination.destination_database().path());
-                let mut retry_close = Close::default();
-                let effect = super::super::managed_destination::register_and_copy_denial(
-                    held,
-                    &mut pending,
-                    &copying,
-                    &destination,
-                    &mut retry_close,
-                    &cancel,
-                )
-                .unwrap();
-                assert_eq!(effect.family, ImportRegistrationEffect::AlreadyPresent);
-                assert_eq!(
-                    database_io::tests::support::witness(&family_path),
-                    family_before_retry,
-                    "copy retry reopened family writer"
-                );
-                if copied {
-                    assert_eq!((retry_close.opened, retry_close.closed), (0, 0));
-                    assert_eq!(effect.destination, DestinationSqlState::ReplayedCopied);
-                    assert_eq!(
-                        database_io::tests::support::witness(
-                            destination.destination_database().path()
-                        ),
-                        destination_before_retry
-                    );
-                } else {
-                    assert_eq!((retry_close.opened, retry_close.closed), (1, 1));
-                    assert_eq!(effect.destination, DestinationSqlState::FreshCopied);
-                }
-                effect
-            };
-            assert!(matches!(
-                result.destination,
-                DestinationSqlState::FreshCopied | DestinationSqlState::ReplayedCopied
-            ));
-            require_denial_copy_state(
-                held,
-                &pending,
-                &copying,
-                &destination,
-                &coverage,
-                true,
-                &cancel,
-            );
-            let family_before_replay = database_io::tests::support::witness(&family_path);
-            let destination_before_replay =
-                database_io::tests::support::witness(destination.destination_database().path());
-            let mut replay_close = Close::default();
-            let replay = super::super::managed_destination::register_and_copy_denial(
-                held,
-                &mut pending,
-                &copying,
-                &destination,
-                &mut replay_close,
-                &cancel,
-            )
-            .unwrap();
-            assert_eq!(replay.family, ImportRegistrationEffect::AlreadyPresent);
-            assert_eq!(replay.destination, DestinationSqlState::ReplayedCopied);
-            assert_eq!((replay_close.opened, replay_close.closed), (0, 0));
-            require_denial_copy_state(
-                held,
-                &pending,
-                &copying,
-                &destination,
-                &coverage,
-                true,
-                &cancel,
-            );
-            assert_eq!(
-                database_io::tests::support::witness(&family_path),
-                family_before_replay
-            );
-            assert_eq!(
-                database_io::tests::support::witness(destination.destination_database().path()),
-                destination_before_replay
-            );
-            assert_eq!(
-                read_source(),
-                source_before_copy,
-                "C copy changed source intent or current denial body"
-            );
-            assert_eq!(
-                database_io::tests::support::witness(&private_path),
-                private_before_copy
-            );
-            let catalog_after_copy = catalog_snapshot(&f, &cancel);
-            assert_eq!(
-                catalog_after_copy.get("reservations"),
-                catalog_before_copy.get("reservations"),
-                "registration or C copy changed B funding"
-            );
-            destination.require_published(&copying.plan).unwrap();
-            assert_eq!(
-                database_io::tests::support::witness(&final_format),
-                format_before
-            );
-            assert!(
-                denial_receipt::reopen(&allocation, &prepared, Some(&cancel))
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        assert_eq!(range_watch.late.load(Ordering::SeqCst), 0);
-        drop(destination);
-        drop(pending);
-        require_retained_preimage(&image, preimage_case, preimage, immutable);
         drop(image);
         drop(checkpoint);
         drop(range_watch);
@@ -3325,3 +1938,7 @@ fn c14_denial_recovery_retries_withheld_release_ack_without_late_probes() {
         },
     );
 }
+
+#[path = "c14_denial_start_tests/support.rs"]
+mod support;
+use support::*;

@@ -32,9 +32,11 @@ fn state(c: &Connection) -> State {
     let mut result = BTreeMap::new();
     let mut bytes = 0usize;
     for table in tables {
-        assert!(table
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        assert!(
+            table
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
         let mut q = c
             .prepare(&format!("SELECT * FROM \"{table}\" LIMIT 129"))
             .unwrap();
@@ -218,13 +220,15 @@ owned!(
                     super::super::staging::read_stageable(c, target, &inputs, None).is_err(),
                     "old Staging never accepts checkout progress"
                 );
-                assert!(super::super::read_copied(
-                    c,
-                    target,
-                    &OrdinaryCopyInputs::new(source, marker, copying, closure),
-                    None
-                )
-                .is_err());
+                assert!(
+                    super::super::read_copied(
+                        c,
+                        target,
+                        &OrdinaryCopyInputs::new(source, marker, copying, closure),
+                        None
+                    )
+                    .is_err()
+                );
                 assert_eq!(c.total_changes(), changes);
                 assert_eq!(state(c), declared);
                 advance(c, target, &inputs, expected, RowKey::Stage, |r| {
@@ -361,18 +365,20 @@ owned!(
                         .unwrap();
                 refusal(source, c, target, &inputs, &wrong);
                 for sql in [
-            "DELETE FROM projection_prejournal WHERE path LIKE '%:header'",
-            "INSERT INTO projection_prejournal VALUES('foreign','foreign','foreign',x'00','owned')",
-            "UPDATE projection_prejournal SET operation='foreign' WHERE path LIKE '%:stage'",
-            "UPDATE projection_restore_history SET payload=x'00'",
-            "UPDATE projection_provider_transitions SET reservation=NULL",
-            "DELETE FROM projection_imports",
-        ] {
-            c.execute_batch("SAVEPOINT corrupt_checkout").unwrap(); c.execute_batch(sql).unwrap();
-            refusal(source,c,target,&inputs,expected);
-            c.execute_batch("ROLLBACK TO corrupt_checkout; RELEASE corrupt_checkout").unwrap();
-            inspect(c,target,&inputs,expected);
-        }
+                    "DELETE FROM projection_prejournal WHERE path LIKE '%:header'",
+                    "INSERT INTO projection_prejournal VALUES('foreign','foreign','foreign',x'00','owned')",
+                    "UPDATE projection_prejournal SET operation='foreign' WHERE path LIKE '%:stage'",
+                    "UPDATE projection_restore_history SET payload=x'00'",
+                    "UPDATE projection_provider_transitions SET reservation=NULL",
+                    "DELETE FROM projection_imports",
+                ] {
+                    c.execute_batch("SAVEPOINT corrupt_checkout").unwrap();
+                    c.execute_batch(sql).unwrap();
+                    refusal(source, c, target, &inputs, expected);
+                    c.execute_batch("ROLLBACK TO corrupt_checkout; RELEASE corrupt_checkout")
+                        .unwrap();
+                    inspect(c, target, &inputs, expected);
+                }
                 source
                     .execute_batch("SAVEPOINT source_predecessor")
                     .unwrap();
@@ -385,14 +391,16 @@ owned!(
                 cancel.cancel();
                 let before = (state(source), state(c));
                 let changes = (source.total_changes(), c.total_changes());
-                assert!(super::super::read_checkout_staging(
-                    c,
-                    target,
-                    &inputs,
-                    expected,
-                    Some(&cancel)
-                )
-                .is_err());
+                assert!(
+                    super::super::read_checkout_staging(
+                        c,
+                        target,
+                        &inputs,
+                        expected,
+                        Some(&cancel)
+                    )
+                    .is_err()
+                );
                 assert_eq!((source.total_changes(), c.total_changes()), changes);
                 assert_eq!((state(source), state(c)), before);
                 inspect(c, target, &inputs, expected);

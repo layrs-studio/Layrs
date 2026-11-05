@@ -4,13 +4,13 @@ use crate::projection::provider::{
     database_io::BareConnection,
     process_profile::tests::child,
     records::{
+        ProviderBootstrapBinding, Receipt, Record,
         activation::ProviderActivationRecord,
         import::{ImportVersion, ProviderImportKind},
         transition::{
             ProviderTransitionIntentRecord, TransitionObservation, TransitionPlan, TransitionRole,
             TransitionRowset, TransitionState,
         },
-        ProviderBootstrapBinding, Receipt, Record,
     },
     validation::{
         active_fixture, private_active_capture_with_source, private_active_publication_with_source,
@@ -226,16 +226,18 @@ fn publication_closure_keeps_modes_distinct_and_refuses_stale_terminal_scope() {
             .unwrap();
             assert!(full.require_publication_inputs(&current).is_err());
             let changes = c.total_changes();
-            assert!(verify_source_publication(
-                c,
-                &fixture.allocation.format,
-                &prefix,
-                refs(),
-                &publication,
-                RAW,
-                None
-            )
-            .is_err());
+            assert!(
+                verify_source_publication(
+                    c,
+                    &fixture.allocation.format,
+                    &prefix,
+                    refs(),
+                    &publication,
+                    RAW,
+                    None
+                )
+                .is_err()
+            );
             let fresh = verify_source_publication(
                 c,
                 &fixture.allocation.format,

@@ -5,13 +5,13 @@ use crate::projection::provider::{
     import_validation::VerifiedImportClosure,
     managed_budget::{self, DeniedCoverageCost},
     records::{
+        AllocationRecord, Record,
         denied_coverage::DerivedDeniedCoverage,
         transition::{
             ProviderTransitionIntentRecord, TransitionPlan, TransitionRole, TransitionState,
         },
-        AllocationRecord, Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     source_companion::ProspectiveCompanionCost,
     transition_observation::TransitionObservationData,
     transition_reconcile::{companions::OwnedCompanionData, source_sql},

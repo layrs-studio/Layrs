@@ -2,7 +2,7 @@
 //! publishes its exact FORMAT inode. C remains Initializing with an empty DB;
 //! this recipe does not claim content transfer, Ready, admission or crash resume.
 use crate::projection::{
-    format,
+    ProjectionStore, ProjectionStoreError, SessionMode, format,
     provider::{
         database_io,
         managed_admission::read_admitted_import,
@@ -11,13 +11,12 @@ use crate::projection::{
         },
         process_profile::tests::child,
         records::{
-            transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             Record,
+            transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
         },
         transition_sql::SourceIntentEffect,
     },
     shared::provider_access::ImportRegistrationEffect,
-    ProjectionStore, ProjectionStoreError, SessionMode,
 };
 use layrs_core::scm::WorktreeId;
 use layrs_vfs::Cancellation;
@@ -186,7 +185,10 @@ fn registry(family: &Path, owner: &WorktreeId) -> Option<RegistryRow> {
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
-        assert!(!c.query_row(sql, [owner.as_str()], |row| row.get::<_, bool>(0)).unwrap());
+        assert!(
+            !c.query_row(sql, [owner.as_str()], |row| row.get::<_, bool>(0))
+                .unwrap()
+        );
     }
     c.execute_batch("ROLLBACK").unwrap();
     c.close().unwrap();
@@ -273,10 +275,12 @@ fn managed_ordinary_allocation_binds_copying_and_initializing_without_admitting_
                     ManagedAllocationStep::TemporaryFormat,
                 ]
             );
-            assert!(allocated
-                .allocation_effects()
-                .iter()
-                .all(|effect| effect.confirmed));
+            assert!(
+                allocated
+                    .allocation_effects()
+                    .iter()
+                    .all(|effect| effect.confirmed)
+            );
             let metadata = allocated.family().member(&destination.worktree_id);
             let temporary = target.join(".layrs").join(format!("FORMAT.pending-{LEAF}"));
             let final_format = target.join(".layrs/FORMAT");
@@ -371,9 +375,11 @@ fn managed_ordinary_allocation_binds_copying_and_initializing_without_admitting_
             changed.plan.destination_leaf_nonce = "00000000000000000000000000000093".into();
             changed.encode().unwrap();
             assert!(allocated.verify(&changed.plan).is_err());
-            assert!(owner
-                .commit_allocation(&changed, &allocated, &cancel)
-                .is_err());
+            assert!(
+                owner
+                    .commit_allocation(&changed, &allocated, &cancel)
+                    .is_err()
+            );
             let mut changed_parent =
                 ProviderTransitionIntentRecord::decode(&planned.encode().unwrap()).unwrap();
             let last = changed_parent
@@ -387,12 +393,16 @@ fn managed_ordinary_allocation_binds_copying_and_initializing_without_admitting_
                 .push(if last == '0' { '1' } else { '0' });
             changed_parent.encode().unwrap();
             assert!(allocated.verify(&changed_parent.plan).is_err());
-            assert!(owner
-                .commit_allocation(&changed_parent, &allocated, &cancel)
-                .is_err());
-            assert!(owner
-                .commit_allocation(&planned, &allocated, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .commit_allocation(&changed_parent, &allocated, &cancel)
+                    .is_err()
+            );
+            assert!(
+                owner
+                    .commit_allocation(&planned, &allocated, &cancelled)
+                    .is_err()
+            );
             owner.close().unwrap();
             assert_eq!(trees(&root, &family, &target, None), allocated_trees);
             require_source(&evidence(&store), &original, &planned);
@@ -468,10 +478,12 @@ fn managed_ordinary_allocation_binds_copying_and_initializing_without_admitting_
                 .unwrap();
             assert_eq!(publication.state, ManagedFormatState::Published);
             assert!(publication.effects.iter().all(|effect| effect.confirmed));
-            assert!(publication
-                .effects
-                .iter()
-                .any(|effect| effect.step == ManagedFormatStep::Rename));
+            assert!(
+                publication
+                    .effects
+                    .iter()
+                    .any(|effect| effect.step == ManagedFormatStep::Rename)
+            );
             allocated.require_published(&copying.plan).unwrap();
             owner.close().unwrap();
             assert!(!temporary.exists());

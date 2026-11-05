@@ -1,8 +1,8 @@
 //! Private-database-only admitted provenance. No source/family opener and no
 //! call to database::validate, format::access or a shared catalog policy.
 use super::super::{
-    destination_ready::{read_frozen_ready_rows, FrozenReadyRows},
-    import_validation::{read_admitted_destination_prefix, VerifiedDestinationPrefix},
+    destination_ready::{FrozenReadyRows, read_frozen_ready_rows},
+    import_validation::{VerifiedDestinationPrefix, read_admitted_destination_prefix},
 };
 use super::*;
 

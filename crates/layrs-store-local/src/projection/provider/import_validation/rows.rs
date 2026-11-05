@@ -2,7 +2,7 @@
 //! content capability; callers first authenticate schema and rowset scope.
 use super::*;
 use layrs_core::scm::{FileId, FileManifestId};
-use rusqlite::{types::ValueRef, Connection, ToSql};
+use rusqlite::{Connection, ToSql, types::ValueRef};
 #[cfg(test)]
 #[path = "rows_tests.rs"]
 mod tests;

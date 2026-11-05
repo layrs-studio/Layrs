@@ -23,22 +23,22 @@ mod stage2_tests;
 mod visibility;
 
 use crate::{
-    classify_placeholder, Capability, CaptureEvidence, Error, Inspection, PlaceholderEvidence,
-    Registration, Result, SnapshotSource,
+    Capability, CaptureEvidence, Error, Inspection, PlaceholderEvidence, Registration, Result,
+    SnapshotSource, classify_placeholder,
 };
-use api::{check, Api};
+use api::{Api, check};
 use attached::AttachedControl;
 pub use callback::{CallbackFailure, HydrationRequest};
 pub use checkpoint::{CaptureFilter, Checkpoint, TrustHook};
 pub use control::read_control_file;
 pub use control_directory::{
-    discover_control_directory, observe_control_directory_stage, ControlDirectoryGuard,
-    ControlRootPreflight,
+    ControlDirectoryGuard, ControlRootPreflight, discover_control_directory,
+    observe_control_directory_stage,
 };
 pub use control_directory_publish::publish_control_directory_recoverable;
 pub use control_stage_observation::{
-    observe_allocated_control_stage, ObservedAllocatedControlStage,
-    ObservedAllocatedControlStageIdentity, ObservedRootNamespace,
+    ObservedAllocatedControlStage, ObservedAllocatedControlStageIdentity, ObservedRootNamespace,
+    observe_allocated_control_stage,
 };
 pub use export::ExportCheckpoint;
 use layrs_core::scm::RepoPath;
@@ -53,11 +53,11 @@ use std::{
     sync::Arc,
 };
 use windows_sys::{
-    core::GUID,
     Win32::{
         Foundation::ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT,
         Storage::{CloudFilters::*, FileSystem::*},
     },
+    core::GUID,
 };
 
 // One policy for both registration and reconnect verification. Existing
@@ -88,7 +88,9 @@ pub fn capability() -> Result<Capability> {
 pub fn unregister_root(root: &std::path::Path) -> Result<()> {
     let api = Api::load()?;
     let root = fs::wide(root.as_os_str())?;
-    check("CfUnregisterSyncRoot", unsafe { (api.unregister)(root.as_ptr()) })
+    check("CfUnregisterSyncRoot", unsafe {
+        (api.unregister)(root.as_ptr())
+    })
 }
 
 /// One private NTFS namespace over an immutable source. Multiple sessions may

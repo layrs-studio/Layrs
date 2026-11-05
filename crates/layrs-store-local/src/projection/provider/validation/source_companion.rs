@@ -137,12 +137,24 @@ fn fence(c: &Connection, table: &str, max: u64, bad: &str) -> Result<()> {
 }
 pub(super) fn preflight(c: &Connection, cancel: Option<&Cancellation>) -> Result<()> {
     super::super::cancellation::check(cancel)?;
-    fence(c, "projection_provider_companions", 4096,
-        "length(CAST(id AS BLOB))!=71 OR typeof(payload)!='blob' OR length(payload)>65536 OR file_count<0 OR file_count>100000 OR deletion_count<0 OR deletion_count>100000 OR length(CAST(files_digest AS BLOB))!=71 OR length(CAST(deletions_digest AS BLOB))!=71")?;
-    fence(c, "projection_provider_companion_files", 100000,
-        "length(CAST(companion_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(file_id AS BLOB))!=71 OR length(CAST(manifest_id AS BLOB))!=71 OR length(CAST(base_file_id AS BLOB))!=71 OR length(CAST(reason AS BLOB))>64 OR length(CAST(digest AS BLOB))!=71 OR bytes<0 OR bytes>1073741824 OR executable NOT IN (0,1) OR base_executable NOT IN (0,1)")?;
-    fence(c, "projection_provider_companion_deletions", 100000,
-        "length(CAST(companion_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(base_file_id AS BLOB))!=71 OR length(CAST(base_manifest_id AS BLOB))!=71 OR length(CAST(reason AS BLOB))>64 OR length(CAST(digest AS BLOB))!=71 OR base_executable NOT IN (0,1)")?;
+    fence(
+        c,
+        "projection_provider_companions",
+        4096,
+        "length(CAST(id AS BLOB))!=71 OR typeof(payload)!='blob' OR length(payload)>65536 OR file_count<0 OR file_count>100000 OR deletion_count<0 OR deletion_count>100000 OR length(CAST(files_digest AS BLOB))!=71 OR length(CAST(deletions_digest AS BLOB))!=71",
+    )?;
+    fence(
+        c,
+        "projection_provider_companion_files",
+        100000,
+        "length(CAST(companion_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(file_id AS BLOB))!=71 OR length(CAST(manifest_id AS BLOB))!=71 OR length(CAST(base_file_id AS BLOB))!=71 OR length(CAST(reason AS BLOB))>64 OR length(CAST(digest AS BLOB))!=71 OR bytes<0 OR bytes>1073741824 OR executable NOT IN (0,1) OR base_executable NOT IN (0,1)",
+    )?;
+    fence(
+        c,
+        "projection_provider_companion_deletions",
+        100000,
+        "length(CAST(companion_id AS BLOB))!=71 OR length(CAST(path AS BLOB))=0 OR length(CAST(path AS BLOB))>4096 OR length(CAST(base_file_id AS BLOB))!=71 OR length(CAST(base_manifest_id AS BLOB))!=71 OR length(CAST(reason AS BLOB))>64 OR length(CAST(digest AS BLOB))!=71 OR base_executable NOT IN (0,1)",
+    )?;
     let total: u64 = c.query_row(
         "SELECT coalesce(sum(length(payload)),0) FROM projection_provider_companions",
         [],
@@ -229,8 +241,11 @@ pub(super) fn validate(
             return Err(invalid("outgoing companion private claim differs"));
         }
         let row_digests = |table: &str| -> Result<Vec<(String, String)>> {
-            Ok(c.prepare(&format!("SELECT path,digest FROM {table} WHERE companion_id=?1 ORDER BY path COLLATE BINARY"))?
-                .query_map([id], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+            Ok(c.prepare(&format!(
+                "SELECT path,digest FROM {table} WHERE companion_id=?1 ORDER BY path COLLATE BINARY"
+            ))?
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
         };
         // Reproduce the exact independently funded B envelope from actual
         // bounded SQL, including reused mappings and both terminal intents.

@@ -2,18 +2,18 @@
 //! exclusive family/member locks, transaction, COMMIT and observable close.
 use super::{
     cancellation, database_io, destination_validation,
-    import_validation::{copy_verified_prefix, VerifiedImportClosure},
+    import_validation::{VerifiedImportClosure, copy_verified_prefix},
     records::{
+        AllocationRecord, PreparedRecord, ProviderBootstrapSource, Record,
         activation::ProviderActivationRecord, import::ProviderImportPrefixRecord,
-        transition::ProviderTransitionIntentRecord, AllocationRecord, PreparedRecord,
-        ProviderBootstrapSource, Record,
+        transition::ProviderTransitionIntentRecord,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     schema,
 };
 use crate::projection::{database, format, retention, selection};
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Insert only the empty schema-8 ingress. The caller must issue BEGIN
 /// IMMEDIATE before this call and roll back on failure. No filesystem or
@@ -92,7 +92,7 @@ fn initialize_empty_inner(
         _ => {
             return Err(invalid(
                 "destination initialization requires exact current document scope",
-            ))
+            ));
         }
     }
     let foreign_keys: u64 = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;

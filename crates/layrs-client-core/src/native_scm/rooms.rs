@@ -70,7 +70,11 @@ pub fn room_layer_name(name: &str) -> String {
 /// its Store's volume (journaled materialization renames), so when that user
 /// directory is on another volume the Rooms go next to the project instead:
 /// `<project parent>/<project>.rooms/`.
-pub fn default_rooms_parent(project_root: &Path, space_name: &str, space_id: &str) -> Result<PathBuf> {
+pub fn default_rooms_parent(
+    project_root: &Path,
+    space_name: &str,
+    space_id: &str,
+) -> Result<PathBuf> {
     let base = default_rooms_base()?;
     if !same_volume_prefix(&base, project_root) {
         let name = project_root
@@ -79,12 +83,20 @@ pub fn default_rooms_parent(project_root: &Path, space_name: &str, space_id: &st
             .unwrap_or_else(|| "project".into());
         let parent = project_root
             .parent()
-            .ok_or(NativeClientError::InvalidState("project folder has no parent"))?;
+            .ok_or(NativeClientError::InvalidState(
+                "project folder has no parent",
+            ))?;
         return Ok(parent.join(format!("{name}.rooms")));
     }
     let slug: String = space_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|part| !part.is_empty())
@@ -144,7 +156,10 @@ fn default_rooms_base() -> Result<PathBuf> {
     {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".local").join("share"))
+            })
             .map(|base| base.join("layrs").join("rooms"))
             .ok_or_else(missing)
     }
@@ -210,9 +225,9 @@ impl NativeWorkspace {
         let _ = std::fs::remove_file(&staged);
         match linked {
             Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(NativeClientError::InvalidState("a Room with this name already exists"))
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(
+                NativeClientError::InvalidState("a Room with this name already exists"),
+            ),
             Err(error) => Err(error.into()),
         }
     }
@@ -245,7 +260,9 @@ impl NativeWorkspace {
     pub fn retire_worktree(&self, id: &str) -> Result<()> {
         let id = layrs_core::scm::WorktreeId::parse(id.to_owned())?;
         if &id == self.worktree_id() {
-            return Err(NativeClientError::InvalidState("cannot retire the current folder"));
+            return Err(NativeClientError::InvalidState(
+                "cannot retire the current folder",
+            ));
         }
         layrs_store_local::scm_v1::worktrees::retire_worktree(
             self.store_root(),
@@ -299,7 +316,9 @@ pub fn unregister_virtual_room(root: &Path) -> Result<()> {
     #[cfg(not(windows))]
     {
         let _ = root;
-        Err(NativeClientError::InvalidState("virtual Rooms need Windows"))
+        Err(NativeClientError::InvalidState(
+            "virtual Rooms need Windows",
+        ))
     }
 }
 
@@ -325,7 +344,9 @@ pub fn virtual_room_origin(start: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
                         .source
                         .store_root
                         .parent()
-                        .ok_or(NativeClientError::InvalidState("Store has no project folder"))?
+                        .ok_or(NativeClientError::InvalidState(
+                            "Store has no project folder",
+                        ))?
                         .to_path_buf();
                     return Ok(Some((root.to_path_buf(), project)));
                 }
@@ -380,7 +401,11 @@ mod tests {
         #[cfg(windows)]
         {
             let base = default_rooms_base().unwrap();
-            let other = if base.starts_with("C:") { r"Q:\work\game" } else { r"C:\work\game" };
+            let other = if base.starts_with("C:") {
+                r"Q:\work\game"
+            } else {
+                r"C:\work\game"
+            };
             assert_eq!(
                 default_rooms_parent(Path::new(other), "x", "space:1").unwrap(),
                 Path::new(other).parent().unwrap().join("game.rooms")

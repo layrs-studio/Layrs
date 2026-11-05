@@ -2,6 +2,7 @@
 //! scanned image is an independent DATA witness, not physical export authority.
 //! No destination allocation, B-to-C transport or admission is exercised here.
 use crate::projection::{
+    ProjectionIdentity, ProjectionStore, RestoreSource, SessionMode,
     capture::{self, CapturedFile},
     database, format,
     provider::{
@@ -10,11 +11,11 @@ use crate::projection::{
         managed_admission::read_admitted_import,
         process_profile::tests::child,
         records::{
-            import::{ImportSource, ImportSourceReferences, ProviderImportPrefixRecord},
             Record,
+            import::{ImportSource, ImportSourceReferences, ProviderImportPrefixRecord},
         },
     },
-    shared, ProjectionIdentity, ProjectionStore, RestoreSource, SessionMode,
+    shared,
 };
 use layrs_core::scm::{FileId, FileManifestId, RepoPath, WorktreeId};
 use std::{collections::BTreeMap, fs};
@@ -71,11 +72,12 @@ fn plan_under_owner(
                     scan.files["README.md"].as_ref().unwrap().file_id,
                     FileId::from_bytes(TARGET)
                 );
-                assert!(scan
-                    .files
-                    .values()
-                    .flatten()
-                    .all(|file| file.file_id != preimage.file_id));
+                assert!(
+                    scan.files
+                        .values()
+                        .flatten()
+                        .all(|file| file.file_id != preimage.file_id)
+                );
                 let (prefix, proof) = import_validation::plan_admitted_import(
                     &tx,
                     &store.marker,
@@ -162,39 +164,45 @@ fn plan_under_owner(
                             None,
                         );
                         assert!(failure.is_err());
-                        assert!(failure
-                            .err()
-                            .unwrap()
-                            .to_string()
-                            .contains("genuine admission"));
+                        assert!(
+                            failure
+                                .err()
+                                .unwrap()
+                                .to_string()
+                                .contains("genuine admission")
+                        );
                     }
                     let false_image = "c".repeat(64);
                     assert_ne!(false_image, image);
-                    assert!(import_validation::verify_source(
-                        &tx,
-                        &store.marker,
-                        ImportDatabaseKind::AdmittedOrdinary,
-                        &prefix,
-                        ImportSourceReferences::AdmittedOrdinary {
-                            marker: &store.marker,
-                            admission: binding,
-                        },
-                        None,
-                        &false_image,
-                        None,
-                    )
-                    .is_err());
-                    assert!(import_validation::verify_source(
-                        &tx,
-                        &store.marker,
-                        ImportDatabaseKind::AdmittedOrdinary,
-                        &prefix,
-                        ImportSourceReferences::Ordinary(&store.marker),
-                        None,
-                        &image,
-                        None,
-                    )
-                    .is_err());
+                    assert!(
+                        import_validation::verify_source(
+                            &tx,
+                            &store.marker,
+                            ImportDatabaseKind::AdmittedOrdinary,
+                            &prefix,
+                            ImportSourceReferences::AdmittedOrdinary {
+                                marker: &store.marker,
+                                admission: binding,
+                            },
+                            None,
+                            &false_image,
+                            None,
+                        )
+                        .is_err()
+                    );
+                    assert!(
+                        import_validation::verify_source(
+                            &tx,
+                            &store.marker,
+                            ImportDatabaseKind::AdmittedOrdinary,
+                            &prefix,
+                            ImportSourceReferences::Ordinary(&store.marker),
+                            None,
+                            &image,
+                            None,
+                        )
+                        .is_err()
+                    );
                 }
                 baseline.require_same_import(&admitted_ordinary::inspect(
                     &tx,
@@ -273,11 +281,13 @@ fn managed_admitted_export_plans_restore_preimage_without_mutating_admission() {
             assert_eq!(fs::read(root.join(path.as_str())).unwrap(), TARGET);
             for sequence in 1..=restored.capture.sequence {
                 let patch = store.captured_patch(sequence).unwrap();
-                assert!(patch
-                    .changes
-                    .iter()
-                    .filter_map(|change| change.replacement.as_ref())
-                    .all(|file| file.file_id != preimage.file_id));
+                assert!(
+                    patch
+                        .changes
+                        .iter()
+                        .filter_map(|change| change.replacement.as_ref())
+                        .all(|file| file.file_id != preimage.file_id)
+                );
             }
             let mut destination = store.identity().clone();
             destination.worktree_id =

@@ -8,7 +8,7 @@ use crate::{
                 CheckoutEntry, CheckoutFile, CheckoutHeader, CheckoutJournal, CheckoutRow,
                 DirectoryState, ExpectedCheckout, FileState, RowKey,
             },
-            recovery::error::{invalid, Result},
+            recovery::error::{Result, invalid},
         },
     },
     secure_fs::{PinnedDirectory, PinnedFile},
@@ -524,7 +524,7 @@ impl CheckoutStorage {
             _ => {
                 return Err(invalid(
                     "checkout Publishing requires exactly temporary or final inode",
-                ))
+                ));
             }
         }
         let final_pin = parent.open_readonly_file(OsStr::new(&leaf))?;

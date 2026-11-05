@@ -9,7 +9,7 @@ use crate::projection::{
     },
     shared::{
         exact_content::{
-            validate_protected_installations, verify_published_cas, PublishedCasProof,
+            PublishedCasProof, validate_protected_installations, verify_published_cas,
         },
         exact_protection::{ExactProtection, ProtectionPresence},
         source_companion::{SourceCompanionFamilyContext, SourceCompanionPresence},

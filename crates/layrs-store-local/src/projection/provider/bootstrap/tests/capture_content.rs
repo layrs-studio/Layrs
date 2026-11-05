@@ -4,20 +4,20 @@ use crate::projection::{
     capture::{CapturedChange, CapturedFile},
     provider::{
         records::{
+            Record,
             capture::{
                 ProviderCaptureStage, ProviderCaptureState, ProviderCaptureTransactionRecord,
             },
-            Record,
         },
         validation::{self, PrivateCaptureProof},
     },
     shared::{
-        provider_access::{provider_capture::operation, FamilyAccess},
+        provider_access::{FamilyAccess, provider_capture::operation},
         provider_content_lease,
     },
 };
 use layrs_core::scm::{Chunk, ChunkingDescriptor, FileManifest, RepoPath, WorktreeId};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 fn private_proof(
     f: &Fixture,
@@ -154,38 +154,62 @@ fn durable_staging_reserve_install_protect_uses_rebound_proof() {
             };
             let mut foreign_marker = allocation.format.clone();
             foreign_marker.identity.worktree_id = foreign_owner.clone();
-            assert!(lease
-                .reserve_exact(reservation, &foreign_owner, &op, budget)
-                .is_err());
-            assert!(lease
-                .reserve_exact("foreign-reservation", &f.worktree, &op, budget)
-                .is_err());
-            assert!(lease
-                .reserve_exact(reservation, &f.worktree, "foreign-operation", budget)
-                .is_err());
-            assert!(lease
-                .reserve_exact(reservation, &f.worktree, &op, budget + 1)
-                .is_err());
-            assert!(lease
-                .install_file(&mut bytes.as_slice(), &foreign_file, reservation)
-                .is_err());
-            assert!(lease
-                .install_file(&mut bytes.as_slice(), &wrong_mode, reservation)
-                .is_err());
-            assert!(lease
-                .install_file(&mut bytes.as_slice(), &replacement, "foreign-reservation")
-                .is_err());
+            assert!(
+                lease
+                    .reserve_exact(reservation, &foreign_owner, &op, budget)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .reserve_exact("foreign-reservation", &f.worktree, &op, budget)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .reserve_exact(reservation, &f.worktree, "foreign-operation", budget)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .reserve_exact(reservation, &f.worktree, &op, budget + 1)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .install_file(&mut bytes.as_slice(), &foreign_file, reservation)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .install_file(&mut bytes.as_slice(), &wrong_mode, reservation)
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .install_file(&mut bytes.as_slice(), &replacement, "foreign-reservation")
+                    .is_err()
+            );
             assert!(lease.protect(&foreign_marker, &op, &[]).is_err());
-            assert!(lease
-                .protect(&allocation.format, "foreign-operation", &[])
-                .is_err());
-            assert!(lease
-                .protect(&allocation.format, &op, &[foreign_manifest])
-                .is_err());
+            assert!(
+                lease
+                    .protect(&allocation.format, "foreign-operation", &[])
+                    .is_err()
+            );
+            assert!(
+                lease
+                    .protect(&allocation.format, &op, &[foreign_manifest])
+                    .is_err()
+            );
             assert_eq!(family_counts(&f), before);
-            assert!(lease
-                .release_accepted_reservation(reservation, &f.worktree, "capture-content-attempt")
-                .is_err());
+            assert!(
+                lease
+                    .release_accepted_reservation(
+                        reservation,
+                        &f.worktree,
+                        "capture-content-attempt"
+                    )
+                    .is_err()
+            );
             assert_eq!(family_counts(&f), before);
             lease
                 .reserve_exact(reservation, &f.worktree, &op, budget)
@@ -230,9 +254,11 @@ fn durable_staging_reserve_install_protect_uses_rebound_proof() {
             .unwrap();
             assert_eq!(alternate.file_id(), installed.file_id());
             assert_ne!(alternate.id(), installed.id());
-            assert!(lease
-                .protect(&allocation.format, &op, &[alternate])
-                .is_err());
+            assert!(
+                lease
+                    .protect(&allocation.format, &op, &[alternate])
+                    .is_err()
+            );
             assert_eq!(family_counts(&f), before_protection);
             let (root, digest) = lease
                 .protect(&allocation.format, &op, &[installed.clone()])

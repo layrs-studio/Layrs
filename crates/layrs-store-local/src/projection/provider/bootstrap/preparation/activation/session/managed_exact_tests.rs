@@ -6,14 +6,14 @@ use crate::projection::{
         database_io::{self, WriterCloseObserver, WriterOpenPoint},
         process_profile::tests::child,
         records::{
-            transition::{ProviderTransitionIntentRecord, TransitionState},
             Record,
+            transition::{ProviderTransitionIntentRecord, TransitionState},
         },
     },
-    shared::exact_content::{validate_installations, ExactRecord, Phase, PREPARE_CHARGE},
+    shared::exact_content::{ExactRecord, PREPARE_CHARGE, Phase, validate_installations},
 };
-use layrs_core::scm::{canonical_json, FileManifest};
-use rusqlite::{ffi, params, Connection, OpenFlags};
+use layrs_core::scm::{FileManifest, canonical_json};
+use rusqlite::{Connection, OpenFlags, ffi, params};
 use std::{
     collections::BTreeMap,
     fs,
@@ -178,7 +178,7 @@ fn assert_published(
         "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
-        assert!(!c.query_row(sql, [owner], |r| r.get::<_,bool>(0)).unwrap());
+        assert!(!c.query_row(sql, [owner], |r| r.get::<_, bool>(0)).unwrap());
     }
     let (file, bytes, indexed): (String, u64, Vec<u8>) = c
         .query_row(
@@ -326,13 +326,14 @@ fn case(reopen: bool) {
                         .unwrap(),
                     0
                 );
-                assert!(!c
-                    .query_row(
+                assert!(
+                    !c.query_row(
                         "SELECT EXISTS(SELECT 1 FROM manifests WHERE id=?1)",
                         [manifest.id().as_str()],
                         |r| r.get::<_, bool>(0)
                     )
-                    .unwrap());
+                    .unwrap()
+                );
                 let unique: BTreeMap<_, _> = manifest
                     .chunks()
                     .iter()

@@ -5,16 +5,16 @@ use crate::projection::{
         bootstrap::tests::capture_family::active_holder_with_private,
         process_profile::tests::child,
         records::{
-            capture::{ProviderCaptureStage, ProviderCaptureTransactionRecord},
             Record,
+            capture::{ProviderCaptureStage, ProviderCaptureTransactionRecord},
         },
     },
     shared::{
-        provider_access::{provider_capture::operation, FamilyAccess},
+        provider_access::{FamilyAccess, provider_capture::operation},
         provider_publication_content_lease,
     },
 };
-use layrs_core::scm::{canonical_json, FileId};
+use layrs_core::scm::{FileId, canonical_json};
 use layrs_vfs::{Cancellation, Catalog, SnapshotSource};
 use rusqlite::ffi;
 use std::sync::Arc;

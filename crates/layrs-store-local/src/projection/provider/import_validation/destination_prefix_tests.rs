@@ -9,16 +9,16 @@ use crate::projection::provider::{
     destination_sql,
     process_profile::tests::child,
     records::{
+        ProviderBootstrapSource, Receipt, Record,
         activation::ProviderActivationRecord,
         import::{ImportSource, ProviderImportPrefixRecord, ProviderTransitionReceiptRecord},
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        ProviderBootstrapSource, Receipt, Record,
     },
     validation::tests::fixture::Fixture as SourceFixture,
 };
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileId, FileManifest},
+    scm::{FileId, FileManifest, canonical_json},
 };
 use rusqlite::params;
 

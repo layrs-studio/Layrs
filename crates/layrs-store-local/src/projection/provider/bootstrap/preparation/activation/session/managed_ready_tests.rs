@@ -8,12 +8,12 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
+        Record,
         import::ProviderTransitionReceiptRecord,
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        Record,
     },
 };
-use rusqlite::{ffi, Connection, DatabaseName, OpenFlags};
+use rusqlite::{Connection, DatabaseName, OpenFlags, ffi};
 use std::{
     collections::BTreeSet,
     fs,
@@ -179,13 +179,14 @@ fn assert_ready(
             receipt.destination_capture_sequence,
             staging.plan.capture_sequence
         );
-        assert!(!c
-            .query_row(
+        assert!(
+            !c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
                 [],
                 |r| r.get::<_, bool>(0)
             )
-            .unwrap());
+            .unwrap()
+        );
         (payload, receipt_payload)
     })
 }

@@ -2,9 +2,9 @@
 //! family marker's real canonical digest is bound by every source reference.
 use super::*;
 use crate::projection::provider::records::{
+    MountPhase, PreparedBinding, ProviderBootstrapBinding, ProviderSourceDescriptor,
     activation::{ProviderActivationRecord, ProviderActiveMountRecord},
     preparation::{PreparationState, ProviderPreparationRecord},
-    MountPhase, PreparedBinding, ProviderBootstrapBinding, ProviderSourceDescriptor,
 };
 use crate::projection::{RecoveryBinding, VersionedProjection};
 

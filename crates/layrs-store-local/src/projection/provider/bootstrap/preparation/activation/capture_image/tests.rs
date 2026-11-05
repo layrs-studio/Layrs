@@ -258,22 +258,26 @@ fn unknown_alias_missing_catalog_and_readonly_change_refuse_at_correct_boundary(
         },
     };
     let mut called = false;
-    assert!(reconcile(
-        &[original(&source), unknown],
-        &source,
-        &activated,
-        &cancel,
-        |_, _, _| {
-            called = true;
-            panic!("unknown path must refuse before hashing")
-        }
-    )
-    .is_err());
+    assert!(
+        reconcile(
+            &[original(&source), unknown],
+            &source,
+            &activated,
+            &cancel,
+            |_, _, _| {
+                called = true;
+                panic!("unknown path must refuse before hashing")
+            }
+        )
+        .is_err()
+    );
     assert!(!called);
-    assert!(reconcile(&[], &source, &activated, &cancel, |_, _, _| {
-        panic!("omitted catalog must refuse before hashing")
-    })
-    .is_err());
+    assert!(
+        reconcile(&[], &source, &activated, &cancel, |_, _, _| {
+            panic!("omitted catalog must refuse before hashing")
+        })
+        .is_err()
+    );
     let alias = ImageObservation {
         path: RepoPath::parse("readme.md").unwrap(),
         evidence: CaptureEvidence::NeedsHash {
@@ -281,14 +285,16 @@ fn unknown_alias_missing_catalog_and_readonly_change_refuse_at_correct_boundary(
             size: 1,
         },
     };
-    assert!(reconcile(
-        &[original(&source), alias],
-        &source,
-        &activated,
-        &cancel,
-        |_, _, _| { panic!("alias must refuse before hashing") }
-    )
-    .is_err());
+    assert!(
+        reconcile(
+            &[original(&source), alias],
+            &source,
+            &activated,
+            &cancel,
+            |_, _, _| { panic!("alias must refuse before hashing") }
+        )
+        .is_err()
+    );
     let readonly = make_source(false, false);
     let activated = activation_snapshot(&readonly).unwrap();
     let manifest = replacement();
@@ -318,12 +324,14 @@ fn stream_hash_enforces_declared_length_and_cancellation() {
     )
     .unwrap();
     assert_eq!(manifest.file_id(), &FileId::from_bytes(&bytes));
-    assert!(hash_reader(
-        &mut std::io::Cursor::new(&bytes),
-        bytes.len() as u64 + 1,
-        &cancel
-    )
-    .is_err());
+    assert!(
+        hash_reader(
+            &mut std::io::Cursor::new(&bytes),
+            bytes.len() as u64 + 1,
+            &cancel
+        )
+        .is_err()
+    );
     cancel.cancel();
     assert!(matches!(
         hash_reader(

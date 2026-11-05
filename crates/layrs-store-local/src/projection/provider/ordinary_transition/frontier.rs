@@ -1,7 +1,7 @@
 //! Point reads for declared SQL frontiers. No admission/provenance dispatcher,
 //! source image, content mapping, family opener or filesystem reader is used.
 use super::*;
-use crate::projection::{capture, offline, selection, VersionedProjection};
+use crate::projection::{VersionedProjection, capture, offline, selection};
 
 const MAX_ROWS: u64 = 1_000_000;
 
@@ -68,7 +68,7 @@ pub(super) fn require_version(
         _ => {
             return Err(invalid(
                 "ordinary outgoing frontier requires ordinary source",
-            ))
+            ));
         }
     };
     if version.generation < admission.boundaries.ready_generation

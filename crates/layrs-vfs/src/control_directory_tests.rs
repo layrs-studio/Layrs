@@ -25,7 +25,7 @@ fn identity() -> ControlDirectoryIdentity {
     ControlDirectoryIdentity {
         stage: stage(),
         size: 7,
-        content: FileId::parse(&format!("blake3:{}", "0".repeat(64))).unwrap(),
+        content: FileId::parse(format!("blake3:{}", "0".repeat(64))).unwrap(),
     }
 }
 #[test]
@@ -168,7 +168,7 @@ fn observed_control_identity_compares_physical_fields_only_and_is_not_expected_d
 fn path_of_utf8_length(length: usize, multibyte: bool) -> String {
     let mut path = r"C:\r".to_owned();
     let component = if multibyte { "\\é" } else { "\\a" };
-    while path.len() + component.len() + 1 <= length {
+    while path.len() + component.len() < length {
         path.push_str(component);
     }
     path.push_str(&"x".repeat(length - path.len()));

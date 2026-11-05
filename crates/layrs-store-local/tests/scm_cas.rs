@@ -217,7 +217,10 @@ fn ordered_batches_publish_every_object_in_each_durability_mode() {
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("scm-v1-"))
             .collect();
-        assert!(leftovers.is_empty(), "{mode:?}: staging leftovers {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "{mode:?}: staging leftovers {leftovers:?}"
+        );
         // A second identical batch reuses every object.
         let mut again = objects.iter();
         for outcome in cas

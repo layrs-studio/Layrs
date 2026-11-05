@@ -3,7 +3,7 @@ use super::{NativeClientError, NativeWorkspace, Result};
 use layrs_core::scm::LayerId;
 use layrs_store::scm::ScmReader;
 use layrs_store_local::scm_v1::NativeScmReader;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Names belong to the current View. An exact ID may select an existing Layer
 /// from another Worktree's private history, but never from another Space.

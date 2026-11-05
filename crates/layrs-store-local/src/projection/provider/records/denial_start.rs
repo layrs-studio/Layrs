@@ -2,10 +2,10 @@
 //! receipt authentication, complete source absence, locks and SQL ownership are
 //! separate caller obligations. Decoding this record never constructs funding.
 use super::{
-    codec, invalid, AllocationRecord, PreparedRecord, Receipt, ReceiptRef, Record, Result,
+    AllocationRecord, PreparedRecord, Receipt, ReceiptRef, Record, Result, codec, invalid,
 };
 use crate::projection::shared::source_denial::{
-    charges_for, operation_for, SourceDeniedCoverageBinding, SourceDeniedCoverageReservation,
+    SourceDeniedCoverageBinding, SourceDeniedCoverageReservation, charges_for, operation_for,
 };
 use serde::{Deserialize, Serialize};
 

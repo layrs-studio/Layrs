@@ -190,7 +190,7 @@ fn export_impl(
         return Err(BridgeError::Limit("export checkpoint bytes"));
     }
     let initialize = if resume {
-        let checkpoint_only = validate_resume_directory(&destination, limits)?;
+        let checkpoint_only = validate_resume_directory(destination, limits)?;
         let bytes = reviewed_destination
             .read_incomplete_checkpoint()
             .map_err(invalid)?;

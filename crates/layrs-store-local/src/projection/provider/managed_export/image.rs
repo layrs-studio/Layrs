@@ -3,9 +3,10 @@
 //! not claim quiescence against arbitrary writers or future absent-path writes.
 use crate::{
     projection::{
+        ProjectionStore, Result,
         capture::{
-            scan::{executable, scan_selected_readonly},
             CapturedFile, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES,
+            scan::{executable, scan_selected_readonly},
         },
         file, format, invalid,
         provider::{
@@ -15,13 +16,13 @@ use crate::{
             },
             recovery::ProviderBootstrapCause as Cause,
         },
-        selection, ProjectionStore, Result,
+        selection,
     },
     secure_fs::{PinnedDirectory, PinnedFile},
 };
 use layrs_core::{
     projection::{EntryState, ProjectionSelection, ProjectionSnapshot},
-    scm::{canonical_json, FileId, FileManifest, RepoPath, TreeEntryTarget},
+    scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, canonical_json},
 };
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
@@ -142,7 +143,7 @@ impl OrdinaryExportImage {
                 _ => {
                     return Err(invalid(
                         "ordinary export image requires regular-file leaves",
-                    ))
+                    ));
                 }
             };
             let Some(actual) = actual else {

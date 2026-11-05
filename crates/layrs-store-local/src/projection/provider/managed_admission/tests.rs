@@ -10,13 +10,13 @@ use crate::projection::provider::{
     import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
     process_profile::tests::child,
     published_handoff::{self, PublicationSource},
-    records::{activation::ProviderActivationRecord, ProviderBootstrapSource, Receipt},
+    records::{ProviderBootstrapSource, Receipt, activation::ProviderActivationRecord},
     validation::{private_active_capture_with_source, tests::fixture::Fixture as SourceFixture},
 };
-use crate::projection::{capture::CapturedPatch, database, selection, VersionedProjection};
+use crate::projection::{VersionedProjection, capture::CapturedPatch, database, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileManifest},
+    scm::{FileManifest, canonical_json},
 };
 use rusqlite::params;
 use serde_json::json;
@@ -669,7 +669,7 @@ owned!(
 /// declared image and synthetic parent are not native or byte authority.
 fn ordinary_source_planned(c: &Connection, f: &Fixture) -> ProviderTransitionIntentRecord {
     use crate::projection::provider::bootstrap::{
-        derive_ordinary_data, ImageFile, RequiredManifest,
+        ImageFile, RequiredManifest, derive_ordinary_data,
     };
     use layrs_core::scm::WorktreeId;
     let mut destination = f.marker.identity.clone();
@@ -857,21 +857,20 @@ owned!(
                 params!["00000000000000000000000000000093", format!("blake3:{}", "1".repeat(64))]).unwrap();
             let changes = c.total_changes();
             assert!(read_admitted_import(c, &f.marker, None).is_err());
-            assert!(ordinary_transition::apply_planned(
-                c,
-                &f.marker,
-                &planned.plan.source_prefix,
-                &planned,
-                None
-            )
-            .is_err());
-            assert!(ordinary_transition::cancel_planned(
-                c,
-                &f.marker,
-                &planned.transaction_id,
-                None
-            )
-            .is_err());
+            assert!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None
+                )
+                .is_err()
+            );
+            assert!(
+                ordinary_transition::cancel_planned(c, &f.marker, &planned.transaction_id, None)
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             c.execute(
                 "UPDATE projection_provider_transitions SET payload=zeroblob(262145) WHERE id=?1",
@@ -883,21 +882,20 @@ owned!(
                 .err()
                 .expect("oversized extra row must refuse");
             assert!(error.to_string().contains("SQL bounds"), "{error}");
-            assert!(ordinary_transition::apply_planned(
-                c,
-                &f.marker,
-                &planned.plan.source_prefix,
-                &planned,
-                None
-            )
-            .is_err());
-            assert!(ordinary_transition::cancel_planned(
-                c,
-                &f.marker,
-                &planned.transaction_id,
-                None
-            )
-            .is_err());
+            assert!(
+                ordinary_transition::apply_planned(
+                    c,
+                    &f.marker,
+                    &planned.plan.source_prefix,
+                    &planned,
+                    None
+                )
+                .is_err()
+            );
+            assert!(
+                ordinary_transition::cancel_planned(c, &f.marker, &planned.transaction_id, None)
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             c.execute_batch("ROLLBACK TO malformed_outgoing; RELEASE malformed_outgoing")
                 .unwrap();
@@ -923,10 +921,12 @@ owned!(
             let mut unrelated = proof.record().clone();
             unrelated.transaction_id = "00000000000000000000000000000094".into();
             let changes = c.total_changes();
-            assert!(import_validation::read_admitted_destination_prefix(
-                c, &f.marker, &permit, &unrelated, None
-            )
-            .is_err());
+            assert!(
+                import_validation::read_admitted_destination_prefix(
+                    c, &f.marker, &permit, &unrelated, None
+                )
+                .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             c.execute_batch("SAVEPOINT rebound_admission").unwrap();
             let mut actual = proof.record().clone();
@@ -1216,41 +1216,49 @@ owned!(
                     read_admitted_import(c, &f.marker, None).is_err(),
                     "reader accepted {substitution}"
                 );
-                assert!(ordinary_transition::apply_copying(
-                    c,
-                    &f.marker,
-                    &planned.plan.source_prefix,
-                    &copying,
-                    None,
-                )
-                .is_err());
-                assert!(ordinary_transition::apply_copying(
-                    c,
-                    &f.marker,
-                    &planned.plan.source_prefix,
-                    &altered,
-                    None,
-                )
-                .is_err());
-                assert!(ordinary_transition::apply_planned(
-                    c,
-                    &f.marker,
-                    &planned.plan.source_prefix,
-                    &planned,
-                    None,
-                )
-                .is_err());
-                assert!(ordinary_transition::cancel_planned(
-                    c,
-                    &f.marker,
-                    &planned.transaction_id,
-                    None,
-                )
-                .is_err());
-                assert!(ordinary_transition::require_allocation_capacity(
-                    c, &f.marker, &planned, None,
-                )
-                .is_err());
+                assert!(
+                    ordinary_transition::apply_copying(
+                        c,
+                        &f.marker,
+                        &planned.plan.source_prefix,
+                        &copying,
+                        None,
+                    )
+                    .is_err()
+                );
+                assert!(
+                    ordinary_transition::apply_copying(
+                        c,
+                        &f.marker,
+                        &planned.plan.source_prefix,
+                        &altered,
+                        None,
+                    )
+                    .is_err()
+                );
+                assert!(
+                    ordinary_transition::apply_planned(
+                        c,
+                        &f.marker,
+                        &planned.plan.source_prefix,
+                        &planned,
+                        None,
+                    )
+                    .is_err()
+                );
+                assert!(
+                    ordinary_transition::cancel_planned(
+                        c,
+                        &f.marker,
+                        &planned.transaction_id,
+                        None,
+                    )
+                    .is_err()
+                );
+                assert!(
+                    ordinary_transition::require_allocation_capacity(c, &f.marker, &planned, None,)
+                        .is_err()
+                );
                 assert_eq!(c.total_changes(), changes);
                 assert_eq!(ordinary_transition_rows(c), rows);
                 c.execute_batch("ROLLBACK TO rebound_copying; RELEASE rebound_copying")

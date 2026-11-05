@@ -1,18 +1,18 @@
 //! Retained image/owners and actual family reservation; ROOT releases execution.
 use super::*;
+use crate::projection::ProjectionStoreError;
 use crate::projection::provider::{
     bootstrap::tests::fixture::Fixture,
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
 };
 use crate::projection::shared::provider_access::provider_import::content::ImportReservationEffect;
-use crate::projection::ProjectionStoreError;
 use layrs_core::scm::FileManifest;
-use rusqlite::{ffi, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::path::PathBuf;
 
 #[derive(Default)]
@@ -147,7 +147,11 @@ fn assert_reservation(
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
-        assert!(!catalog.query_row(sql, [owner], |row| row.get::<_, bool>(0)).unwrap());
+        assert!(
+            !catalog
+                .query_row(sql, [owner], |row| row.get::<_, bool>(0))
+                .unwrap()
+        );
     }
     catalog.close().unwrap();
 }
@@ -326,9 +330,11 @@ fn case(kind: Case) {
                 let effect = lease.reserve_plan(&mut close, &cancel);
                 if matches!(kind, Case::Acknowledgement) {
                     let error = effect.unwrap_err();
-                    assert!(error
-                        .to_string()
-                        .contains("managed reservation close acknowledgement withheld"));
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("managed reservation close acknowledgement withheld")
+                    );
                 } else {
                     assert_eq!(effect.unwrap(), ImportReservationEffect::Inserted);
                     let durable = database_io::tests::support::witness(&family_path);

@@ -1,7 +1,7 @@
 //! Canonical, non-recursive source provenance. A receipt row is decoded only
 //! after a matching schema fingerprint and its bounded SQL length/count probe.
-use super::super::records::{import::ImportSource, Record};
-use super::scoped::{compute_from_scope, ScopeView};
+use super::super::records::{Record, import::ImportSource};
+use super::scoped::{ScopeView, compute_from_scope};
 use super::*;
 use crate::projection::capture;
 use std::collections::{BTreeMap, BTreeSet};

@@ -369,10 +369,11 @@ pub(super) enum Point {
 pub(super) fn test_point(point: Point) -> Result<()> {
     #[cfg(test)]
     {
-        return test_hooks::at(point);
+        test_hooks::at(point)
     }
     #[cfg(not(test))]
     {
+        #[allow(clippy::type_complexity)]
         let _ = point;
         Ok(())
     }
@@ -380,7 +381,8 @@ pub(super) fn test_point(point: Point) -> Result<()> {
 #[cfg(test)]
 pub(super) mod test_hooks {
     use super::*;
-    std::thread_local! { static HOOK: std::cell::RefCell<Option<Box<dyn Fn(Point) -> Result<()>>>> = const { std::cell::RefCell::new(None) }; }
+    type Hook = Box<dyn Fn(Point) -> Result<()>>;
+    std::thread_local! { static HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) }; }
     pub fn at(point: Point) -> Result<()> {
         HOOK.with(|hook| match &*hook.borrow() {
             Some(hook) => hook(point),

@@ -2,21 +2,21 @@
 //! and a separate reservation SQL primitive. The ordinary gate stays read-only.
 //! No private opener, owner lock, recovery, COMMIT, release or content I/O here.
 use super::{
+    FamilyMarker,
     exact_content::{ExactBinding, ExactInstallState, ExactRecord},
     exact_protection::{ExactProtection, ProtectionEffect, ProtectionPresence},
-    FamilyMarker,
 };
 use crate::projection::{
     format,
     provider::{
         admitted_ordinary::AdmittedOrdinaryData,
         cancellation,
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
     },
 };
-use layrs_core::scm::{canonical_json, FileManifest};
+use layrs_core::scm::{FileManifest, canonical_json};
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_GROUPS: usize = 4096;

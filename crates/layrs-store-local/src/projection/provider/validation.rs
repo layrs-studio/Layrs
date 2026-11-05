@@ -7,9 +7,9 @@ use super::{
         preparation::{MountRowData, ProviderPreparationRecord},
         *,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
-use crate::projection::{database, retention, selection, VersionedProjection};
+use crate::projection::{VersionedProjection, database, retention, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
     scm::{FileManifest, RepoPath},
@@ -973,7 +973,7 @@ fn private_interpret(
         PrivateMode::Active { .. }
         | PrivateMode::ActiveCapture { .. }
         | PrivateMode::ActiveTransition { .. }
-            | PrivateMode::ActivePublication { .. } => {
+        | PrivateMode::ActivePublication { .. } => {
             "length(CAST(id AS BLOB))>128 OR length(CAST(catalog_id AS BLOB))!=71 OR length(CAST(digest AS BLOB))!=71 OR phase!='active'"
         }
     };
@@ -981,7 +981,7 @@ fn private_interpret(
         PrivateMode::Active { .. }
         | PrivateMode::ActiveCapture { .. }
         | PrivateMode::ActiveTransition { .. }
-            | PrivateMode::ActivePublication { .. } => {
+        | PrivateMode::ActivePublication { .. } => {
             "generation NOT IN (0,1) OR length(CAST(digest AS BLOB))!=64 OR (generation=0 AND parent_digest IS NOT NULL) OR (generation=1 AND (parent_digest IS NULL OR length(CAST(parent_digest AS BLOB))!=64))"
         }
         _ => "length(CAST(digest AS BLOB))!=64 OR parent_digest IS NOT NULL",

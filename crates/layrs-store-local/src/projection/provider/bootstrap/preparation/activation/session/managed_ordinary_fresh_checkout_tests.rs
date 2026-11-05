@@ -8,25 +8,25 @@ use super::{
     managed_ordinary_installing_tests::{self as witness, Database, Node, Tree},
     managed_ordinary_ready_tests::CURRENT,
     managed_ordinary_source_publication_tests::{
-        ingress, source, with_protected_checkout_data, ProtectedCheckoutFixture,
+        ProtectedCheckoutFixture, ingress, source, with_protected_checkout_data,
     },
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             checkout_journal::{
                 self, CheckoutEntry, CheckoutJournal, DirectoryState, ExpectedCheckout, FileState,
                 RowKey,
             },
             database_io::{
+                WriterCloseObserver, WriterOpenPoint,
                 tests::{
-                    fresh_ordinary_support::{with_observer, ReadBoundary},
+                    fresh_ordinary_support::{ReadBoundary, with_observer},
                     writer_support::{self, AdmissionPoint},
                 },
-                WriterCloseObserver, WriterOpenPoint,
             },
             managed_export::{
                 CheckoutPopulationEffect, OrdinaryCheckoutPopulation,
@@ -35,12 +35,11 @@ use crate::{
             managed_ready_reopen::AdmissionStep,
             process_profile::tests::child,
             records::{
-                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
                 Record,
+                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         },
-        SessionMode,
     },
 };
 use layrs_core::scm::FileManifest;
@@ -65,9 +64,11 @@ fn require_copy_io_primary(cause: &Cause) {
         Cause::Cleanup { primary, .. } => require_copy_io_primary(primary),
         Cause::Io(error) => {
             assert_eq!(error.kind(), std::io::ErrorKind::Other);
-            assert!(error
-                .get_ref()
-                .is_some_and(|inner| inner.is::<InjectedCopyError>()));
+            assert!(
+                error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<InjectedCopyError>())
+            );
         }
         other => panic!("original typed copy I/O error required: {other}"),
     }
@@ -325,14 +326,16 @@ fn close_after_protection(
             }
         }
     }
-    assert!(!f
-        .destination_root
-        .join(f.expected.stage_relative_path())
-        .exists());
-    assert!(!f
-        .destination_root
-        .join(f.expected.files()[0].path.as_str())
-        .exists());
+    assert!(
+        !f.destination_root
+            .join(f.expected.stage_relative_path())
+            .exists()
+    );
+    assert!(
+        !f.destination_root
+            .join(f.expected.files()[0].path.as_str())
+            .exists()
+    );
     let source_staging =
         ProviderTransitionIntentRecord::decode(&f.source_staging.encode().unwrap()).unwrap();
     let destination_staging =
@@ -767,60 +770,78 @@ fn replay_without_writer(f: &Fixture, cancel: &Cancellation) {
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_checkout_refuses_drift_then_populates_absent_and_replays_without_writer()
 {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_refuses_drift_then_populates_absent_and_replays_without_writer"), 3600, || {
-        let _total = child::phase("fresh-checkout-success.total");
-        let f = fixture();
-        let mut phase = child::phase("fresh-checkout-success.baseline-witness");
-        let before = trees(&f);
-        let cancel = Cancellation::default();
-        let cancelled = Cancellation::default();
-        cancelled.cancel();
-        phase.next("fresh-checkout-success.precancel");
-        let _ = refuse_open_without_writer(&f, &cancelled);
-        require_rows(&f);
-        assert_eq!(trees(&f), before);
-        phase.next("fresh-checkout-success.changed-b");
-        fs::write(&f.pins[0], B_DRIFT).unwrap();
-        let refused = refuse_open_without_writer(&f, &cancel);
-        assert!(refused.to_string().contains("image"), "{refused}");
-        require_rows(&f);
-        assert_eq!(snapshot(&f.destination_database), f.destination_rows);
-        fs::write(&f.pins[0], CURRENT).unwrap();
-        assert_eq!(trees(&f), before);
-        require_released(&f);
-        phase.next("fresh-checkout-success.foreign-c-namespace");
-        fs::write(final_path(&f), FOREIGN).unwrap();
-        let _ = refuse_open_without_writer(&f, &cancel);
-        assert_eq!(fs::read(final_path(&f)).unwrap(), FOREIGN);
-        require_rows(&f);
-        assert_eq!(snapshot(&f.destination_database), f.destination_rows);
-        fs::remove_file(final_path(&f)).unwrap();
-        assert_eq!(trees(&f), before);
-        require_released(&f);
-        phase.next("fresh-checkout-success.fresh-open");
-        let held = OrdinaryCheckoutPopulation::open(&f.source, &f.destination, &f.source_staging.transaction_id, &cancel)
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_refuses_drift_then_populates_absent_and_replays_without_writer"
+        ),
+        3600,
+        || {
+            let _total = child::phase("fresh-checkout-success.total");
+            let f = fixture();
+            let mut phase = child::phase("fresh-checkout-success.baseline-witness");
+            let before = trees(&f);
+            let cancel = Cancellation::default();
+            let cancelled = Cancellation::default();
+            cancelled.cancel();
+            phase.next("fresh-checkout-success.precancel");
+            let _ = refuse_open_without_writer(&f, &cancelled);
+            require_rows(&f);
+            assert_eq!(trees(&f), before);
+            phase.next("fresh-checkout-success.changed-b");
+            fs::write(&f.pins[0], B_DRIFT).unwrap();
+            let refused = refuse_open_without_writer(&f, &cancel);
+            assert!(refused.to_string().contains("image"), "{refused}");
+            require_rows(&f);
+            assert_eq!(snapshot(&f.destination_database), f.destination_rows);
+            fs::write(&f.pins[0], CURRENT).unwrap();
+            assert_eq!(trees(&f), before);
+            require_released(&f);
+            phase.next("fresh-checkout-success.foreign-c-namespace");
+            fs::write(final_path(&f), FOREIGN).unwrap();
+            let _ = refuse_open_without_writer(&f, &cancel);
+            assert_eq!(fs::read(final_path(&f)).unwrap(), FOREIGN);
+            require_rows(&f);
+            assert_eq!(snapshot(&f.destination_database), f.destination_rows);
+            fs::remove_file(final_path(&f)).unwrap();
+            assert_eq!(trees(&f), before);
+            require_released(&f);
+            phase.next("fresh-checkout-success.fresh-open");
+            let held = OrdinaryCheckoutPopulation::open(
+                &f.source,
+                &f.destination,
+                &f.source_staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh protected checkout open: {e}"));
-        require_owners(&f);
-        let mut close = Close::new(&f, None);
-        close.require_pins();
-        phase.next("fresh-checkout-success.populate");
-        let progress = held.populate_checkout(&mut close, &cancel)
-            .unwrap_or_else(|e| panic!("fresh checkout populate {:?}: {}", e.step, e.cause));
-        phase.next("fresh-checkout-success.complete-witness");
-        assert_eq!(progress.effect(), CheckoutPopulationEffect::Updated);
-        assert_eq!(progress.expected().header(), f.expected.header());
-        assert_eq!(progress.expected().files(), f.expected.files());
-        require_complete(&f, Some(progress.journal()));
-        assert_eq!(close.counts.0, close.counts.1);
-        assert_eq!(close.counts.1, close.counts.2);
-        assert_eq!(close.counts.3, 0);
-        assert!(close.counts.2 > 0);
-        drop(progress);
-        require_released(&f);
-        only_checkout_changed(&f, &before, &trees(&f), BTreeSet::from([stage_path(&f), final_path(&f)]));
-        phase.next("fresh-checkout-success.fresh-complete-replay");
-        replay_without_writer(&f, &cancel);
-    });
+            require_owners(&f);
+            let mut close = Close::new(&f, None);
+            close.require_pins();
+            phase.next("fresh-checkout-success.populate");
+            let progress = held
+                .populate_checkout(&mut close, &cancel)
+                .unwrap_or_else(|e| panic!("fresh checkout populate {:?}: {}", e.step, e.cause));
+            phase.next("fresh-checkout-success.complete-witness");
+            assert_eq!(progress.effect(), CheckoutPopulationEffect::Updated);
+            assert_eq!(progress.expected().header(), f.expected.header());
+            assert_eq!(progress.expected().files(), f.expected.files());
+            require_complete(&f, Some(progress.journal()));
+            assert_eq!(close.counts.0, close.counts.1);
+            assert_eq!(close.counts.1, close.counts.2);
+            assert_eq!(close.counts.3, 0);
+            assert!(close.counts.2 > 0);
+            drop(progress);
+            require_released(&f);
+            only_checkout_changed(
+                &f,
+                &before,
+                &trees(&f),
+                BTreeSet::from([stage_path(&f), final_path(&f)]),
+            );
+            phase.next("fresh-checkout-success.fresh-complete-replay");
+            replay_without_writer(&f, &cancel);
+        },
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -936,7 +957,9 @@ fn withheld_ack_recipe(cut: Cut) {
                     observed_events.borrow_mut().push((path.to_owned(), point));
                     if withheld.get() {
                         observed_reads.set(observed_reads.get() + 1);
-                        return Err(invalid("withheld checkout ACK forbids subsequent read/identity/snapshot probes"));
+                        return Err(invalid(
+                            "withheld checkout ACK forbids subsequent read/identity/snapshot probes",
+                        ));
                     }
                     observed_before_reads.set(observed_before_reads.get() + 1);
                     Ok(())
@@ -983,11 +1006,13 @@ fn withheld_ack_recipe(cut: Cut) {
             );
         }
     }
-    assert!(read_events
-        .borrow()
-        .iter()
-        .any(|(path, point)| path == &f.source_database
-            && *point == ReadBoundary::OrdinarySourceIdentity));
+    assert!(
+        read_events
+            .borrow()
+            .iter()
+            .any(|(path, point)| path == &f.source_database
+                && *point == ReadBoundary::OrdinarySourceIdentity)
+    );
     close.require_pins();
     require_owners(&f);
     let retained_temp_identity = if let Cut::Owned = cut {
@@ -1124,13 +1149,27 @@ fn require_cut_declared_rows_only(f: &Fixture) {
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_checkout_withheld_declare_ack_releases_then_reopens_and_completes() {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_withheld_declare_ack_releases_then_reopens_and_completes"), 3600, || withheld_ack_recipe(Cut::Declare));
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_withheld_declare_ack_releases_then_reopens_and_completes"
+        ),
+        3600,
+        || withheld_ack_recipe(Cut::Declare),
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_checkout_withheld_owned_ack_releases_then_reopens_and_completes() {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_withheld_owned_ack_releases_then_reopens_and_completes"), 3600, || withheld_ack_recipe(Cut::Owned));
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_withheld_owned_ack_releases_then_reopens_and_completes"
+        ),
+        3600,
+        || withheld_ack_recipe(Cut::Owned),
+    );
 }
 
 // Later cutpoints below are a SOURCE-ONLY proposal. Their distinct native
@@ -1488,22 +1527,43 @@ fn late_cut_recipe(cut: LateCut) {
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_checkout_withheld_verified_ack_reopens_exact_temp_and_finishes_with_two_writers(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_withheld_verified_ack_reopens_exact_temp_and_finishes_with_two_writers"), 3600, || late_cut_recipe(LateCut::Verified));
+fn managed_ordinary_fresh_checkout_withheld_verified_ack_reopens_exact_temp_and_finishes_with_two_writers()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_withheld_verified_ack_reopens_exact_temp_and_finishes_with_two_writers"
+        ),
+        3600,
+        || late_cut_recipe(LateCut::Verified),
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_checkout_withheld_publishing_ack_reopens_exact_temp_and_finishes_with_one_writer(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_withheld_publishing_ack_reopens_exact_temp_and_finishes_with_one_writer"), 3600, || late_cut_recipe(LateCut::Publishing));
+fn managed_ordinary_fresh_checkout_withheld_publishing_ack_reopens_exact_temp_and_finishes_with_one_writer()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_withheld_publishing_ack_reopens_exact_temp_and_finishes_with_one_writer"
+        ),
+        3600,
+        || late_cut_recipe(LateCut::Publishing),
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_checkout_rename_gap_reopens_exact_final_and_finishes_with_one_writer() {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_rename_gap_reopens_exact_final_and_finishes_with_one_writer"), 3600, || late_cut_recipe(LateCut::RenameGap));
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_rename_gap_reopens_exact_final_and_finishes_with_one_writer"
+        ),
+        3600,
+        || late_cut_recipe(LateCut::RenameGap),
+    );
 }
 
 fn require_unowned_namespace_refusal(mut cause: &Cause) {
@@ -1713,14 +1773,28 @@ fn allocation_gap_recipe(gap: AllocationGap) {
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_checkout_stage_allocation_gap_retains_then_refuses_without_adoption_or_cleanup(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_stage_allocation_gap_retains_then_refuses_without_adoption_or_cleanup"), 3600, || allocation_gap_recipe(AllocationGap::Stage));
+fn managed_ordinary_fresh_checkout_stage_allocation_gap_retains_then_refuses_without_adoption_or_cleanup()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_stage_allocation_gap_retains_then_refuses_without_adoption_or_cleanup"
+        ),
+        3600,
+        || allocation_gap_recipe(AllocationGap::Stage),
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_checkout_file_allocation_gap_retains_then_refuses_without_adoption_or_cleanup(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_checkout_file_allocation_gap_retains_then_refuses_without_adoption_or_cleanup"), 3600, || allocation_gap_recipe(AllocationGap::File));
+fn managed_ordinary_fresh_checkout_file_allocation_gap_retains_then_refuses_without_adoption_or_cleanup()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_checkout_file_allocation_gap_retains_then_refuses_without_adoption_or_cleanup"
+        ),
+        3600,
+        || allocation_gap_recipe(AllocationGap::File),
+    );
 }

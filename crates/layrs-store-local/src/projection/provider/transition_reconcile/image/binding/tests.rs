@@ -40,13 +40,15 @@ fn checkpoint_owner_metadata_refuses_foreign_root_control_format_and_ordinary() 
     let fs = f.allocation.format.checkout_identity();
     require_owner(&source, control, fs, &bytes).unwrap();
     assert!(require_owner(&source, "foreign", fs, &bytes).is_err());
-    assert!(require_owner(
-        &source,
-        control,
-        "fs:v1:0000000000000001:000000000000ffff",
-        &bytes
-    )
-    .is_err());
+    assert!(
+        require_owner(
+            &source,
+            control,
+            "fs:v1:0000000000000001:000000000000ffff",
+            &bytes
+        )
+        .is_err()
+    );
     let mut changed_bytes = bytes.clone();
     changed_bytes.push(b' ');
     assert!(require_owner(&source, control, fs, &changed_bytes).is_err());

@@ -2,8 +2,8 @@
 //! FORMAT, private ownership, contents, readiness or permission to mutate it.
 use super::{api::Api, control_directory_io as io};
 use crate::{
-    control_directory::{filesystem_identity, validate_control_paths},
     Error, Result,
+    control_directory::{filesystem_identity, validate_control_paths},
 };
 use std::{path::Path, sync::Arc};
 

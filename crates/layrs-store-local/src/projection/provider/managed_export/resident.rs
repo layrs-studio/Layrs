@@ -6,14 +6,14 @@
 use crate::{
     lock::StoreLock,
     projection::{
-        provider::recovery::error::{invalid, Result as CauseResult},
+        provider::recovery::error::{Result as CauseResult, invalid},
         shared::{exact_content::canonical_manifest_bytes, provider_access::FamilyAccess},
     },
     secure_fs::{PinnedDirectory, PinnedFile},
 };
 use layrs_core::scm::{ChunkId, FileId, FileManifest};
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},

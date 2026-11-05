@@ -1,12 +1,13 @@
 //! Pure provider capture transaction and acknowledgement DATA. These records
 //! never prove a checkpoint, staged bytes, SQL history, or native READY.
 use super::{
-    activation::{owner_identity_digest, ProviderActivationRecord, ProviderActiveMountRecord},
-    codec, invalid, AllocationRecord, Receipt, Record,
+    AllocationRecord, Receipt, Record,
+    activation::{ProviderActivationRecord, ProviderActiveMountRecord, owner_identity_digest},
+    codec, invalid,
 };
 use crate::projection::{
-    capture::{CapturedChange, CapturedPatch, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES},
     Result,
+    capture::{CapturedChange, CapturedPatch, MAX_CAPTURE_BYTES, MAX_CAPTURE_FILE_BYTES},
 };
 use layrs_core::scm::canonical_json;
 use serde::{Deserialize, Serialize};

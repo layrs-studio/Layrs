@@ -7,9 +7,9 @@ use super::*;
 use crate::projection::provider::{
     owned_test as child,
     records::{
+        Record,
         import::{ImportSourceReferences, ProviderImportPrefixRecord},
         transition::ProviderTransitionIntentRecord,
-        Record,
     },
 };
 use layrs_core::scm::WorktreeId;
@@ -343,12 +343,16 @@ fn refuses_without_writes(
 ) {
     let before = state(c);
     let changes = c.total_changes();
-    assert!(retained
-        .validate_export_reserve_only(c, family, target, None)
-        .is_err());
-    assert!(retained
-        .reserve_export_only(c, family, target, None)
-        .is_err());
+    assert!(
+        retained
+            .validate_export_reserve_only(c, family, target, None)
+            .is_err()
+    );
+    assert!(
+        retained
+            .reserve_export_only(c, family, target, None)
+            .is_err()
+    );
     assert_eq!(c.total_changes(), changes);
     assert_eq!(state(c), before);
 }
@@ -652,12 +656,16 @@ owned!(
             cancel.cancel();
             let before = state(c);
             let changes = c.total_changes();
-            assert!(retained
-                .validate_export_reserve_only(c, family, target, Some(&cancel))
-                .is_err());
-            assert!(retained
-                .reserve_export_only(c, family, target, Some(&cancel))
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_reserve_only(c, family, target, Some(&cancel))
+                    .is_err()
+            );
+            assert!(
+                retained
+                    .reserve_export_only(c, family, target, Some(&cancel))
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(state(c), before);
             c.execute_batch("COMMIT; PRAGMA foreign_keys=OFF; BEGIN DEFERRED")
@@ -707,9 +715,11 @@ owned!(
                     .contains("exact journal count exceeds bound"),
                 "{refusal}"
             );
-            assert!(retained
-                .reserve_export_only(c, family, target, None)
-                .is_err());
+            assert!(
+                retained
+                    .reserve_export_only(c, family, target, None)
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(
                 c.query_row("SELECT count(*) FROM exact_installations", [], |row| row
@@ -717,13 +727,14 @@ owned!(
                     .unwrap(),
                 count
             );
-            assert!(!c
-                .query_row(
+            assert!(
+                !c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM reservations WHERE id=?1)",
                     [&target.binding().reservation],
                     |row| row.get::<_, bool>(0)
                 )
-                .unwrap());
+                .unwrap()
+            );
         });
     }
 );

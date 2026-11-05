@@ -6,21 +6,22 @@ use super::{
     managed_ordinary_ready_tests::require_ready_read_controls,
 };
 use crate::projection::{
+    ProjectionStore,
     provider::{
         checkout_journal::{
             self, CheckoutEntry, CheckoutFile, DirectoryState, ExpectedCheckout, FileState, RowKey,
         },
         database_io::{
-            tests::fresh_ordinary_support::with_observer, WriterCloseObserver, WriterOpenPoint,
+            WriterCloseObserver, WriterOpenPoint, tests::fresh_ordinary_support::with_observer,
         },
         managed_export::allocation,
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         process_profile::tests::child,
         records::{
-            transition::{ProviderTransitionIntentRecord, TransitionState},
             Record,
+            transition::{ProviderTransitionIntentRecord, TransitionState},
         },
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         transition_sql::SourceIntentEffect,
     },
     shared::{
@@ -28,7 +29,6 @@ use crate::projection::{
         exact_protection::{ExactProtection, ProtectionPresence},
         provider_access::ImportRegistrationEffect,
     },
-    ProjectionStore,
 };
 use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
 use layrs_vfs::Cancellation;
@@ -113,7 +113,10 @@ impl WriterCloseObserver for Close {
         None
     }
     fn after_close(&mut self, succeeded: bool) -> Option<Cause> {
-        assert!(succeeded, "observer requires SQLite connection close success; no native xClose/OS-close inference");
+        assert!(
+            succeeded,
+            "observer requires SQLite connection close success; no native xClose/OS-close inference"
+        );
         self.closes += 1;
         if std::mem::take(&mut self.withhold) {
             let (stage, final_file) = self.withheld_namespace.as_ref().unwrap();
@@ -481,9 +484,11 @@ fn managed_ordinary_checkout_protects_complete_union_and_replays_declared_close_
             };
             let cancelled = Cancellation::default();
             cancelled.cancel();
-            assert!(owner
-                .protect_content(&allocated, &staging, &mut close, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .protect_content(&allocated, &staging, &mut close, &cancelled)
+                    .is_err()
+            );
             assert_eq!(close.counts(), (0, 0, 0, 0));
             assert_eq!(
                 witness::trees(&root, &family, &destination_root, locks),
@@ -518,9 +523,11 @@ fn managed_ordinary_checkout_protects_complete_union_and_replays_declared_close_
                 protected_trees
             );
             drop(replay);
-            assert!(owner
-                .copy_checkout(&allocated, &staging, &protected, &mut close, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .copy_checkout(&allocated, &staging, &protected, &mut close, &cancelled)
+                    .is_err()
+            );
             assert_eq!(close.counts(), (1, 1, 1, 0));
             assert_eq!(
                 witness::trees(&root, &family, &destination_root, locks),
@@ -541,7 +548,9 @@ fn managed_ordinary_checkout_protects_complete_union_and_replays_declared_close_
                     observed_events.borrow_mut().push((path.to_owned(), point));
                     if after_ack.get() {
                         observed_later.set(observed_later.get() + 1);
-                        return Err(invalid("failed checkout Declare ACK forbids later observed SQL/identity/snapshot probes"));
+                        return Err(invalid(
+                            "failed checkout Declare ACK forbids later observed SQL/identity/snapshot probes",
+                        ));
                     }
                     Ok(())
                 },
@@ -586,9 +595,11 @@ fn managed_ordinary_checkout_protects_complete_union_and_replays_declared_close_
                     }
                 }
             });
-            assert!(!destination_root
-                .join(expected.stage_relative_path())
-                .exists());
+            assert!(
+                !destination_root
+                    .join(expected.stage_relative_path())
+                    .exists()
+            );
             assert!(!destination_root.join(path.as_str()).exists());
             assert_eq!(
                 witness::source(&source_database, &store.marker, Some(&staging)),

@@ -1,6 +1,9 @@
 //! `layrs room` (ADR 0025). `loom` is an alias; `worktree` keeps the historical
 //! subcommands. Room-only subcommands: new, list, path.
-use super::{CliCommand, CliParseError, take_bool_flag, take_required_positional, take_string_option, worktree};
+use super::{
+    CliCommand, CliParseError, take_bool_flag, take_required_positional, take_string_option,
+    worktree,
+};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +39,9 @@ fn optional_name(args: Vec<String>, command: &str) -> Result<Option<String>, Cli
     match args.as_slice() {
         [] => Ok(None),
         [name] if !name.starts_with("--") => Ok(Some(name.clone())),
-        _ => Err(CliParseError::new(format!("usage: layrs room {command} [NAME]"))),
+        _ => Err(CliParseError::new(format!(
+            "usage: layrs room {command} [NAME]"
+        ))),
     }
 }
 
@@ -144,7 +149,9 @@ mod tests {
                 CliCommand::Worktree(WorktreeCommand::Create { .. })
             ));
             assert_eq!(
-                parse_args([name, "merge", "--into", "main"]).unwrap().command,
+                parse_args([name, "merge", "--into", "main"])
+                    .unwrap()
+                    .command,
                 CliCommand::Room(RoomCommand::Merge {
                     name: None,
                     into: Some("main".into()),
@@ -152,7 +159,9 @@ mod tests {
                 })
             );
             assert_eq!(
-                parse_args([name, "drop", "agent-a", "--force"]).unwrap().command,
+                parse_args([name, "drop", "agent-a", "--force"])
+                    .unwrap()
+                    .command,
                 CliCommand::Room(RoomCommand::Drop {
                     name: Some("agent-a".into()),
                     force: true
@@ -162,7 +171,12 @@ mod tests {
                 parse_args([name, "step"]).unwrap().command,
                 CliCommand::Room(RoomCommand::Step { name: None })
             );
-            for bad in [vec![name], vec![name, "new"], vec![name, "list", "x"], vec![name, "drop", "a", "b"]] {
+            for bad in [
+                vec![name],
+                vec![name, "new"],
+                vec![name, "list", "x"],
+                vec![name, "drop", "a", "b"],
+            ] {
                 assert!(parse_args(bad.clone()).is_err(), "accepted {bad:?}");
             }
         }

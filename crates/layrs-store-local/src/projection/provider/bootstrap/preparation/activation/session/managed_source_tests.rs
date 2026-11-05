@@ -96,9 +96,11 @@ fn retained_native_reader_copies_exact_manifest_then_rejects_namespace_change() 
             let unknown = fixture.checkout.join("unknown.txt");
             fs::write(&unknown, b"outside the fixed image").unwrap();
             let mut refused = Vec::new();
-            assert!(image
-                .copy_exact_file(&file_path, &manifest, &mut refused, &cancel)
-                .is_err());
+            assert!(
+                image
+                    .copy_exact_file(&file_path, &manifest, &mut refused, &cancel)
+                    .is_err()
+            );
             assert!(refused.is_empty(), "namespace refusal precedes output");
             assert_eq!(fs::read(&path).unwrap(), replacement);
             assert_eq!(fs::read(&unknown).unwrap(), b"outside the fixed image");

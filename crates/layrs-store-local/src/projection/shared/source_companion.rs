@@ -5,17 +5,17 @@ use crate::projection::{
     provider::{
         cancellation,
         records::{
+            AllocationRecord, Record,
             import::ImportSource,
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-            AllocationRecord, Record,
         },
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
     },
     shared::{exact_content::ExactBinding, exact_protection::ProtectionEffect},
 };
-use layrs_core::scm::{canonical_json, FileManifest, WorktreeId};
+use layrs_core::scm::{FileManifest, WorktreeId, canonical_json};
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Write};
 
@@ -509,7 +509,7 @@ impl SourceCompanionProtection {
             SourceCompanionPresence::Protected => return Ok(ProtectionEffect::AlreadyPresent),
             SourceCompanionPresence::Reserved => {}
             SourceCompanionPresence::Absent => {
-                return Err(invalid("source root requires fixed reservation first"))
+                return Err(invalid("source root requires fixed reservation first"));
             }
         }
         self.require_capacity(c, cancel)?;
@@ -595,7 +595,7 @@ impl SourceCompanionProtection {
             _ => {
                 return Err(invalid(
                     "source companion recovery order or protection differs",
-                ))
+                ));
             }
         })
     }

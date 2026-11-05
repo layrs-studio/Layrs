@@ -1,8 +1,8 @@
 //! Selection adapters retain the existing authenticated remote mutation engine.
-use super::{NativeRemote, remote_error};
+use super::{remote_error, NativeRemote};
 use layrs_core::projection::{PathSemantics, ProjectionSelection};
 use layrs_store_local::projection::ProjectionStore;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 
 pub(super) fn describe(store: &ProjectionStore, status: &str) -> Result<Value, String> {
@@ -115,14 +115,12 @@ mod tests {
             .unwrap(),
             ProjectionSelection::All
         );
-        assert!(
-            union(
-                &before,
-                &selected(&["readme.md"], &[]),
-                PathSemantics::PortableWindows
-            )
-            .is_err()
-        );
+        assert!(union(
+            &before,
+            &selected(&["readme.md"], &[]),
+            PathSemantics::PortableWindows
+        )
+        .is_err());
     }
 
     #[test]

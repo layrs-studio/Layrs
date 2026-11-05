@@ -11,14 +11,14 @@ use crate::projection::provider::{
     import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
     process_profile::tests::child,
     published_handoff::{self, PublicationSource},
-    records::{activation::ProviderActivationRecord, ProviderBootstrapSource, Receipt},
+    records::{ProviderBootstrapSource, Receipt, activation::ProviderActivationRecord},
     validation::{private_active_capture_with_source, tests::fixture::Fixture as SourceFixture},
 };
 use crate::projection::provider::{destination_ready::read_managed_ready, managed_budget};
-use crate::projection::{capture::CapturedPatch, database, selection, VersionedProjection};
+use crate::projection::{VersionedProjection, capture::CapturedPatch, database, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileManifest},
+    scm::{FileManifest, canonical_json},
 };
 use rusqlite::params;
 use serde_json::json;

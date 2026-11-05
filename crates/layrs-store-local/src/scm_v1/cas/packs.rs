@@ -68,7 +68,14 @@ impl PackKey {
             expected: StoreObjectKind::ChunkRaw,
             actual: format!("pack kind code {}", self.kind),
         })?;
-        let hex: String = self.digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        let hex = self
+            .digest
+            .iter()
+            .fold(String::with_capacity(64), |mut hex, byte| {
+                use std::fmt::Write;
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
         parse_object_id(kind, &format!("blake3:{hex}"))
     }
 }
@@ -169,7 +176,12 @@ pub(super) fn is_invalid_pack(error: &CasError) -> bool {
     matches!(error, CasError::Io { operation, .. } if *operation == INVALID_PACK)
 }
 
-fn read_exact_at(file: &mut fs::File, path: &Path, offset: u64, buffer: &mut [u8]) -> CasResult<()> {
+fn read_exact_at(
+    file: &mut fs::File,
+    path: &Path,
+    offset: u64,
+    buffer: &mut [u8],
+) -> CasResult<()> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| io_error("seek CAS pack", path, error))?;
     read_exact(file, path, buffer)
@@ -219,7 +231,10 @@ pub(super) fn load_index(file: &mut fs::File, path: &Path, name: OsString) -> Ca
         .map_err(|error| io_error("stat CAS pack", path, error))?
         .len();
     if file_len < HEADER_LEN + FOOTER_LEN {
-        return Err(invalid_pack(path, "pack is shorter than its header and footer"));
+        return Err(invalid_pack(
+            path,
+            "pack is shorter than its header and footer",
+        ));
     }
     let mut header = [0_u8; HEADER_LEN as usize];
     read_exact_at(file, path, 0, &mut header)?;
@@ -265,7 +280,10 @@ fn parse_entries(index: &[u8], records_end: u64, path: &Path) -> CasResult<Vec<P
     for raw in index.chunks_exact(ENTRY_LEN as usize) {
         let kind = raw[0];
         if kind_from_code(kind).is_none() {
-            return Err(invalid_pack(path, format!("pack index has unknown kind {kind}")));
+            return Err(invalid_pack(
+                path,
+                format!("pack index has unknown kind {kind}"),
+            ));
         }
         let mut digest = [0_u8; 32];
         digest.copy_from_slice(&raw[1..33]);
@@ -278,13 +296,19 @@ fn parse_entries(index: &[u8], records_end: u64, path: &Path) -> CasResult<Vec<P
             return Err(invalid_pack(path, "pack index is not strictly sorted"));
         }
         if entry.length as usize > PACK_MAX_OBJECT_BYTES {
-            return Err(invalid_pack(path, "pack index entry exceeds the object limit"));
+            return Err(invalid_pack(
+                path,
+                "pack index entry exceeds the object limit",
+            ));
         }
         let end = entry
             .offset
             .checked_add(RECORD_HEADER_LEN + u64::from(entry.length));
         if entry.offset < HEADER_LEN || end.is_none_or(|end| end > records_end) {
-            return Err(invalid_pack(path, "pack index entry is outside the records"));
+            return Err(invalid_pack(
+                path,
+                "pack index entry is outside the records",
+            ));
         }
         entries.push(entry);
     }
@@ -305,13 +329,23 @@ fn parse_entries(index: &[u8], records_end: u64, path: &Path) -> CasResult<Vec<P
 }
 
 /// Positional exact read through a shared handle (no seek state).
-fn read_exact_at_shared(file: &fs::File, path: &Path, offset: u64, buffer: &mut [u8]) -> CasResult<()> {
+fn read_exact_at_shared(
+    file: &fs::File,
+    path: &Path,
+    offset: u64,
+    buffer: &mut [u8],
+) -> CasResult<()> {
     let mut done = 0usize;
     while done < buffer.len() {
         #[cfg(windows)]
-        let read = std::os::windows::fs::FileExt::seek_read(file, &mut buffer[done..], offset + done as u64);
+        let read = std::os::windows::fs::FileExt::seek_read(
+            file,
+            &mut buffer[done..],
+            offset + done as u64,
+        );
         #[cfg(unix)]
-        let read = std::os::unix::fs::FileExt::read_at(file, &mut buffer[done..], offset + done as u64);
+        let read =
+            std::os::unix::fs::FileExt::read_at(file, &mut buffer[done..], offset + done as u64);
         match read {
             Ok(0) => return Err(invalid_pack(path, "pack is truncated")),
             Ok(count) => done += count,
@@ -327,7 +361,10 @@ fn read_member_shared(file: &fs::File, path: &Path, entry: &PackEntry) -> CasRes
     let mut header = [0_u8; RECORD_HEADER_LEN as usize];
     read_exact_at_shared(file, path, entry.offset, &mut header)?;
     if header != record_header(&entry.key, entry.length) {
-        return Err(invalid_pack(path, "pack record differs from its index entry"));
+        return Err(invalid_pack(
+            path,
+            "pack record differs from its index entry",
+        ));
     }
     let mut bytes = vec![0_u8; entry.length as usize];
     read_exact_at_shared(file, path, entry.offset + RECORD_HEADER_LEN, &mut bytes)?;
@@ -336,11 +373,18 @@ fn read_member_shared(file: &fs::File, path: &Path, entry: &PackEntry) -> CasRes
 
 /// Reads exactly one member's canonical bytes after checking its record
 /// header against the index entry. The caller validates the content.
-pub(super) fn read_member(file: &mut fs::File, path: &Path, entry: &PackEntry) -> CasResult<Vec<u8>> {
+pub(super) fn read_member(
+    file: &mut fs::File,
+    path: &Path,
+    entry: &PackEntry,
+) -> CasResult<Vec<u8>> {
     let mut header = [0_u8; RECORD_HEADER_LEN as usize];
     read_exact_at(file, path, entry.offset, &mut header)?;
     if header != record_header(&entry.key, entry.length) {
-        return Err(invalid_pack(path, "pack record differs from its index entry"));
+        return Err(invalid_pack(
+            path,
+            "pack record differs from its index entry",
+        ));
     }
     let mut bytes = vec![0_u8; entry.length as usize];
     read_exact(file, path, &mut bytes)?;
@@ -544,7 +588,10 @@ impl PackWriter {
         let _span = crate::perf::span("cas.pack_verify");
         let reread = load_index(file, &path, OsString::new())?;
         if reread.entries != sorted {
-            return Err(invalid_pack(&path, "pack index reread differs from the written one"));
+            return Err(invalid_pack(
+                &path,
+                "pack index reread differs from the written one",
+            ));
         }
         file.seek(SeekFrom::Start(HEADER_LEN))
             .map_err(|error| io_error("seek CAS pack", &path, error))?;
@@ -556,7 +603,10 @@ impl PackWriter {
             bytes.resize(entry.length as usize, 0);
             read_exact(&mut reader, &path, &mut bytes)?;
             if header != record_header(&entry.key, entry.length) || blake3::hash(&bytes) != *hash {
-                return Err(invalid_pack(&path, "pack record reread differs from the written bytes"));
+                return Err(invalid_pack(
+                    &path,
+                    "pack record reread differs from the written bytes",
+                ));
             }
         }
         Ok(reread)
@@ -619,7 +669,11 @@ impl Packer {
     }
 
     fn append(&mut self, cas: &NativeCas, key: PackKey, bytes: &[u8]) -> CasResult<()> {
-        if !self.writers.last().is_some_and(|writer| writer.fits(bytes.len())) {
+        if !self
+            .writers
+            .last()
+            .is_some_and(|writer| writer.fits(bytes.len()))
+        {
             let staging = cas.pinned_staging()?;
             self.writers
                 .push(PackWriter::create(&staging, &cas.staging_dir)?);
@@ -645,7 +699,10 @@ impl Packer {
     }
 }
 
-fn publish_loose(cas: &NativeCas, objects: Vec<(PackKey, StoreObjectId, Vec<u8>)>) -> CasResult<()> {
+fn publish_loose(
+    cas: &NativeCas,
+    objects: Vec<(PackKey, StoreObjectId, Vec<u8>)>,
+) -> CasResult<()> {
     use std::sync::atomic::AtomicUsize;
     if objects.is_empty() {
         return Ok(());
@@ -702,8 +759,15 @@ impl PackIndex {
 /// still verifies the bytes against the content address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasLocation {
-    Loose { path: PathBuf, length: u64 },
-    Packed { pack: PathBuf, offset: u64, length: u64 },
+    Loose {
+        path: PathBuf,
+        length: u64,
+    },
+    Packed {
+        pack: PathBuf,
+        offset: u64,
+        length: u64,
+    },
 }
 
 impl CasLocation {
@@ -822,7 +886,10 @@ impl NativeCas {
                 .filter_map(|index| index.find(&key).map(|entry| (Arc::clone(index), entry)))
                 .collect());
         }
-        let listed = catalog.read().map_err(|_| poisoned(&self.objects_dir))?.listed;
+        let listed = catalog
+            .read()
+            .map_err(|_| poisoned(&self.objects_dir))?
+            .listed;
         if !listed {
             // A listing failure leaves the catalog unlisted: later lookups
             // retry, and the separate file and the fresh listing still run.
@@ -853,7 +920,10 @@ impl NativeCas {
             .map_err(|error| io_error("stat CAS pack", &path, error))?
             .len();
         if length != index.file_len {
-            return Err(invalid_pack(&path, "pack length changed since its index was read"));
+            return Err(invalid_pack(
+                &path,
+                "pack length changed since its index was read",
+            ));
         }
         let bytes = read_member_shared(file.file(), &path, entry)?;
         let _ = index.reader.set(file);
@@ -938,18 +1008,23 @@ impl NativeCas {
     /// Where a copy of `object_id` is (see `CasLocation`), or `None`.
     pub fn locate(&self, object_id: &StoreObjectId) -> CasResult<Option<CasLocation>> {
         let packed = |candidates: Vec<(Arc<PackIndex>, PackEntry)>| {
-            candidates.first().map(|(index, entry)| CasLocation::Packed {
-                pack: self.packs_path().join(&index.name),
-                offset: entry.offset,
-                length: u64::from(entry.length),
-            })
+            candidates
+                .first()
+                .map(|(index, entry)| CasLocation::Packed {
+                    pack: self.packs_path().join(&index.name),
+                    offset: entry.offset,
+                    length: u64::from(entry.length),
+                })
         };
         if let Some(location) = packed(self.pack_candidates(object_id, None)?) {
             return Ok(Some(location));
         }
         let relative = object_relative_path(object_id)?;
         let path = self.objects_dir.join(&relative);
-        match self.pinned_objects_for_read()?.open_relative_file(&relative) {
+        match self
+            .pinned_objects_for_read()?
+            .open_relative_file(&relative)
+        {
             Ok(file) => {
                 let length = file
                     .file()
@@ -983,10 +1058,7 @@ impl NativeCas {
                 .read_pack_member(&index, &entry)
                 .is_ok_and(|stored| stored == bytes)
             {
-                let mut batch = self
-                    .batch
-                    .lock()
-                    .map_err(|_| poisoned(&self.objects_dir))?;
+                let mut batch = self.batch.lock().map_err(|_| poisoned(&self.objects_dir))?;
                 if let Some(state) = batch.as_mut() {
                     if state.mode == BatchDurability::Coalesced {
                         state.reused_packs.insert(index.name.clone());
@@ -1032,7 +1104,10 @@ impl NativeCas {
             .open_file(&name)
             .map_err(|error| io_error("reread published CAS pack", &target, error))?;
         if !writer.file.same_file(&installed) {
-            return Err(invalid_pack(&target, "published pack is not the file written"));
+            return Err(invalid_pack(
+                &target,
+                "published pack is not the file written",
+            ));
         }
         self.hit(CasFaultPoint::AfterPackPublication)?;
         if !deferred {
@@ -1191,7 +1266,8 @@ mod tests {
         let mut offset = HEADER_LEN;
         let mut entries = Vec::new();
         for (key, bytes) in records {
-            file.write_all(&record_header(key, bytes.len() as u32)).unwrap();
+            file.write_all(&record_header(key, bytes.len() as u32))
+                .unwrap();
             file.write_all(bytes).unwrap();
             entries.push(PackEntry {
                 key: *key,
@@ -1214,7 +1290,8 @@ mod tests {
         file.write_all(&index).unwrap();
         file.write_all(&offset.to_le_bytes()).unwrap();
         file.write_all(&(index.len() as u64).to_le_bytes()).unwrap();
-        file.write_all(&(entries.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&(entries.len() as u64).to_le_bytes())
+            .unwrap();
         file.write_all(hasher.finalize().as_bytes()).unwrap();
         file.write_all(FOOTER_MAGIC).unwrap();
         entries
@@ -1237,7 +1314,10 @@ mod tests {
     #[test]
     fn damaged_index_or_truncation_is_refused() {
         let (path, mut file) = temp_file("damage");
-        write_pack(&mut file, &[(key(1), b"one".to_vec()), (key(2), b"two".to_vec())]);
+        write_pack(
+            &mut file,
+            &[(key(1), b"one".to_vec()), (key(2), b"two".to_vec())],
+        );
         let len = file.metadata().unwrap().len();
         // One flipped index byte breaks the checksum.
         file.seek(SeekFrom::Start(len - FOOTER_LEN - 5)).unwrap();
@@ -1246,7 +1326,9 @@ mod tests {
         assert!(is_invalid_pack(&error), "{error}");
         // Truncation loses the footer.
         file.set_len(len - 3).unwrap();
-        assert!(is_invalid_pack(&load_index(&mut file, &path, OsString::new()).unwrap_err()));
+        assert!(is_invalid_pack(
+            &load_index(&mut file, &path, OsString::new()).unwrap_err()
+        ));
         drop(file);
         let _ = fs::remove_file(&path);
     }
@@ -1254,14 +1336,19 @@ mod tests {
     #[test]
     fn a_damaged_record_is_named_by_its_header() {
         let (path, mut file) = temp_file("record");
-        write_pack(&mut file, &[(key(1), b"one".to_vec()), (key(2), b"two".to_vec())]);
+        write_pack(
+            &mut file,
+            &[(key(1), b"one".to_vec()), (key(2), b"two".to_vec())],
+        );
         let index = load_index(&mut file, &path, OsString::new()).unwrap();
         // Change the length in the first record header: the index no longer
         // matches it.
         file.seek(SeekFrom::Start(HEADER_LEN + 33)).unwrap();
         file.write_all(&7_u32.to_le_bytes()).unwrap();
         let first = index.find(&key(1)).unwrap();
-        assert!(is_invalid_pack(&read_member(&mut file, &path, &first).unwrap_err()));
+        assert!(is_invalid_pack(
+            &read_member(&mut file, &path, &first).unwrap_err()
+        ));
         let second = index.find(&key(2)).unwrap();
         assert_eq!(read_member(&mut file, &path, &second).unwrap(), b"two");
         drop(file);
@@ -1290,8 +1377,12 @@ mod tests {
 
     #[test]
     fn pack_names_are_strict() {
-        assert!(valid_pack_name(OsStr::new("pack-0123456789abcdef0123456789abcdef.lpk")));
-        assert!(!valid_pack_name(OsStr::new("pack-0123456789ABCDEF0123456789abcdef.lpk")));
+        assert!(valid_pack_name(OsStr::new(
+            "pack-0123456789abcdef0123456789abcdef.lpk"
+        )));
+        assert!(!valid_pack_name(OsStr::new(
+            "pack-0123456789ABCDEF0123456789abcdef.lpk"
+        )));
         assert!(!valid_pack_name(OsStr::new("pack-01.lpk")));
         assert!(valid_pack_name(&new_pack_name()));
     }

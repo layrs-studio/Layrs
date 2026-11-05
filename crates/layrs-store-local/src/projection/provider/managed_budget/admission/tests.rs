@@ -10,12 +10,16 @@ fn ordinary_admission_funds_the_exact_bounded_witness_without_growing_quota() {
         ordinary.minimum_metadata(),
         provider.minimum_metadata() + 15_000_000
     );
-    assert!(ordinary
-        .require_metadata(provider.minimum_metadata())
-        .is_err());
-    assert!(ordinary
-        .require_quota(65536 + provider.minimum_metadata(), 65536)
-        .is_err());
+    assert!(
+        ordinary
+            .require_metadata(provider.minimum_metadata())
+            .is_err()
+    );
+    assert!(
+        ordinary
+            .require_quota(65536 + provider.minimum_metadata(), 65536)
+            .is_err()
+    );
     assert!(ordinary_admission_budget(0, 0, 0, 100_001).is_err());
     assert!(ordinary_admission_budget(0, 0, 0, u64::MAX).is_err());
     let zero = ordinary_admission_budget(4096, 1, 0, 0).unwrap();
@@ -38,14 +42,18 @@ fn ordinary_admission_cost_rejects_missing_extra_or_mischarged_witness() {
     let extra = ordinary_admission_cost(100, 200, 4, 1024, 3, 450).unwrap();
     let provider = admission_cost(100, 200, 4, 1024).unwrap();
     for other in [missing, extra, provider] {
-        assert!(budget
-            .require_actual(budget.minimum_metadata(), &other)
-            .is_err());
+        assert!(
+            budget
+                .require_actual(budget.minimum_metadata(), &other)
+                .is_err()
+        );
     }
-    assert!(admission_budget(1234, 1, 1)
-        .unwrap()
-        .require_actual(budget.minimum_metadata(), &actual)
-        .is_err());
+    assert!(
+        admission_budget(1234, 1, 1)
+            .unwrap()
+            .require_actual(budget.minimum_metadata(), &actual)
+            .is_err()
+    );
     assert!(ordinary_admission_cost(100, 200, 4, 1024, 2, 299).is_err());
     assert!(ordinary_admission_cost(100, 200, 4, 1024, 2, 301).is_err());
     assert!(ordinary_admission_cost(100, 200, 4, 1024, 100_001, 15_000_150).is_err());
@@ -135,13 +143,17 @@ fn admission_actual_cost_preserves_peak_and_refuses_a_smaller_envelope() {
     budget
         .require_actual(budget.minimum_metadata(), &actual)
         .unwrap();
-    assert!(budget
-        .require_actual(1234 + actual.copy_peak_bytes().unwrap(), &actual)
-        .is_err());
+    assert!(
+        budget
+            .require_actual(1234 + actual.copy_peak_bytes().unwrap(), &actual)
+            .is_err()
+    );
     let different_inventory = admission_cost(100, 200, 3, 1024).unwrap();
-    assert!(budget
-        .require_actual(budget.minimum_metadata(), &different_inventory)
-        .is_err());
+    assert!(
+        budget
+            .require_actual(budget.minimum_metadata(), &different_inventory)
+            .is_err()
+    );
 }
 
 #[test]
@@ -186,12 +198,16 @@ fn admission_remaining_retains_the_existing_root_relations_and_frame_margin() {
             .unwrap(),
         needed
     );
-    assert!(budget
-        .require_remaining(needed - 1, root_bytes, manifests)
-        .is_err());
-    assert!(budget
-        .require_remaining(needed, 16 * 1024 * 1024 + 1, 0)
-        .is_err());
+    assert!(
+        budget
+            .require_remaining(needed - 1, root_bytes, manifests)
+            .is_err()
+    );
+    assert!(
+        budget
+            .require_remaining(needed, 16 * 1024 * 1024 + 1, 0)
+            .is_err()
+    );
     assert!(budget.require_remaining(needed, 0, 100001).is_err());
     assert!(budget.require_remaining(u64::MAX, 0, 0).is_err());
 }

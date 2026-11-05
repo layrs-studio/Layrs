@@ -2,12 +2,13 @@
 //! authority is implied by these normalized DATA fixtures.
 use super::*;
 use crate::projection::{
+    VersionedProjection,
     provider::{
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
-            activation::ProviderActivationRecord, denied_coverage::TransitionDeniedCoverageRecord,
-            ProviderSourceDescriptor,
+            ProviderSourceDescriptor, activation::ProviderActivationRecord,
+            denied_coverage::TransitionDeniedCoverageRecord,
         },
         transition_observation::{
             AuthorityObservationData, DeniedPathData, ObservationCoverageData,
@@ -15,7 +16,6 @@ use crate::projection::{
         },
         validation::{active_fixture, tests::fixture::Fixture},
     },
-    VersionedProjection,
 };
 use layrs_core::scm::RepoPath;
 

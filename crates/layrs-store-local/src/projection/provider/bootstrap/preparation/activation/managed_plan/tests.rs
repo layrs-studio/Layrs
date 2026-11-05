@@ -232,64 +232,70 @@ fn fresh_identity_and_rights_must_match_entire_fixed_observation() {
     let manifests = [d.manifest.clone()];
     let mut fresh = source.initial().clone();
     fresh.entries[0].writable = true;
-    assert!(derive_data(
-        &prefix,
-        &identity,
-        &source,
-        &activation_snapshot(&source).unwrap(),
-        &fresh,
-        &input,
-        &[],
-        destination.clone(),
-        "C:\\managed-parent",
-        DIR,
-        NONCE,
-        TX,
-        &[],
-        &manifests,
-        0
-    )
-    .is_err());
+    assert!(
+        derive_data(
+            &prefix,
+            &identity,
+            &source,
+            &activation_snapshot(&source).unwrap(),
+            &fresh,
+            &input,
+            &[],
+            destination.clone(),
+            "C:\\managed-parent",
+            DIR,
+            NONCE,
+            TX,
+            &[],
+            &manifests,
+            0
+        )
+        .is_err()
+    );
     let mut stale_identity = destination.clone();
     stale_identity.worktree_id = identity.worktree_id.clone();
-    assert!(derive_data(
-        &prefix,
-        &identity,
-        &source,
-        &activation_snapshot(&source).unwrap(),
-        source.initial(),
-        &input,
-        &[],
-        stale_identity,
-        "C:\\managed-parent",
-        DIR,
-        NONCE,
-        TX,
-        &[],
-        &manifests,
-        0
-    )
-    .is_err());
+    assert!(
+        derive_data(
+            &prefix,
+            &identity,
+            &source,
+            &activation_snapshot(&source).unwrap(),
+            source.initial(),
+            &input,
+            &[],
+            stale_identity,
+            "C:\\managed-parent",
+            DIR,
+            NONCE,
+            TX,
+            &[],
+            &manifests,
+            0
+        )
+        .is_err()
+    );
     let mut other_family = destination;
     other_family.store_id = StoreId::parse("store:other").unwrap();
-    assert!(derive_data(
-        &prefix,
-        &identity,
-        &source,
-        &activation_snapshot(&source).unwrap(),
-        source.initial(),
-        &input,
-        &[],
-        other_family,
-        "C:\\managed-parent",
-        DIR,
-        NONCE,
-        TX,
-        &[],
-        &manifests,
-        0
-    )
-    .is_err());
+    assert!(
+        derive_data(
+            &prefix,
+            &identity,
+            &source,
+            &activation_snapshot(&source).unwrap(),
+            source.initial(),
+            &input,
+            &[],
+            other_family,
+            "C:\\managed-parent",
+            DIR,
+            NONCE,
+            TX,
+            &[],
+            &manifests,
+            0
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -330,17 +336,19 @@ fn writable_diff_binds_exact_manifest_and_readonly_change_refuses() {
         expected: Some((d.file_id.clone(), d.executable)),
     }];
     let prefix = prefix(&readonly, &identity, &destination(&identity), 0, None);
-    assert!(plan(
-        &prefix,
-        &readonly,
-        &identity,
-        &input,
-        &[],
-        &[],
-        &supplied,
-        0
-    )
-    .is_err());
+    assert!(
+        plan(
+            &prefix,
+            &readonly,
+            &identity,
+            &input,
+            &[],
+            &[],
+            &supplied,
+            0
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -362,28 +370,32 @@ fn exact_manifest_coverage_and_size_are_required() {
         manifest_id: d.manifest_id.clone(),
         bytes: d.bytes + 1,
     };
-    assert!(plan(
-        &prefix,
-        &source,
-        &identity,
-        &input,
-        &[],
-        &[contradictory],
-        &[d.manifest.clone()],
-        0
-    )
-    .is_err());
-    assert!(plan(
-        &prefix,
-        &source,
-        &identity,
-        &input,
-        &[],
-        &[],
-        &[d.manifest.clone()],
-        u64::MAX
-    )
-    .is_err());
+    assert!(
+        plan(
+            &prefix,
+            &source,
+            &identity,
+            &input,
+            &[],
+            &[contradictory],
+            &[d.manifest.clone()],
+            0
+        )
+        .is_err()
+    );
+    assert!(
+        plan(
+            &prefix,
+            &source,
+            &identity,
+            &input,
+            &[],
+            &[],
+            &[d.manifest.clone()],
+            u64::MAX
+        )
+        .is_err()
+    );
 }
 
 #[test]

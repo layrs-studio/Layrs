@@ -10,7 +10,7 @@ use crate::projection::{
 };
 use layrs_core::{
     projection::{EntryState, ReservedPaths},
-    scm::{canonical_json, FileId, FileManifestId, TreeEntryTarget},
+    scm::{FileId, FileManifestId, TreeEntryTarget, canonical_json},
 };
 use std::collections::{BTreeMap, BTreeSet};
 

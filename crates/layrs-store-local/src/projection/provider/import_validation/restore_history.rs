@@ -155,10 +155,8 @@ mod tests {
             destination_identity: destination,
             // Segment validation recomputes the exact empty-ancestry commitment;
             // a placeholder digest is not a valid fixture for it.
-            inherited_segments: crate::projection::provider::records::import::imported_segments_rowset(
-                &[],
-            )
-            .unwrap(),
+            inherited_segments:
+                crate::projection::provider::records::import::imported_segments_rowset(&[]).unwrap(),
             ancestry_root_receipt: None,
             closure: ImportClosure {
                 denial_observations: None,
@@ -291,14 +289,16 @@ mod tests {
                     [preimage.file_id.as_str()],
                 )
                 .unwrap();
-                assert!(scoped::compute_from_scope(
-                    c,
-                    ImportDatabaseKind::SharedOrdinary,
-                    &prefix,
-                    &scope,
-                    None
-                )
-                .is_err());
+                assert!(
+                    scoped::compute_from_scope(
+                        c,
+                        ImportDatabaseKind::SharedOrdinary,
+                        &prefix,
+                        &scope,
+                        None
+                    )
+                    .is_err()
+                );
                 bare.finish(Ok(())).unwrap();
             },
         );
@@ -416,10 +416,12 @@ mod tests {
                     ["1".repeat(97)],
                 )
                 .unwrap();
-                assert!(read()
-                    .unwrap_err()
-                    .to_string()
-                    .contains("row or aggregate exceeds bound"));
+                assert!(
+                    read()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("row or aggregate exceeds bound")
+                );
                 bare.finish(Ok(())).unwrap();
             },
         );

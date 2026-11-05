@@ -3,11 +3,11 @@
 use super::{
     cancellation,
     records::{
+        Record,
         import::{ImportSource, ProviderImportPrefixRecord, ProviderTransitionReceiptRecord},
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
 use crate::projection::{format, shared::exact_content::ExactBinding};
 use layrs_core::scm::{FileId, FileManifestId};
@@ -24,11 +24,11 @@ pub(super) mod schema;
 pub(in crate::projection::provider) mod tests;
 mod write;
 pub(super) use ordinary_write::admit_ordinary_ready;
+pub(in crate::projection) use read::VerifiedAdmittedImport;
 pub(super) use read::read_admitted_import;
 pub(super) use read::read_record;
-pub(in crate::projection) use read::VerifiedAdmittedImport;
 pub(super) use record::{ArchiveCommitment, ManagedAdmissionRecord};
-pub(super) use write::{admit_denial_ready, admit_ready, AdmissionWriteEffect};
+pub(super) use write::{AdmissionWriteEffect, admit_denial_ready, admit_ready};
 
 /// Explicit protocol selection; the legacy writer never opts into C14 merely
 /// because a newly decoded record happens to carry a denial reference.

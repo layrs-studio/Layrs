@@ -2,12 +2,12 @@
 //! authority are deliberately separate from this private row interpretation.
 use super::*;
 use crate::projection::provider::records::{
+    Record,
     capture::ProviderCaptureState,
     import::{ImportSource, ImportSourceReferences},
     transition::{
         ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
     },
-    Record,
 };
 use std::collections::BTreeSet;
 
@@ -113,10 +113,14 @@ fn preflight_view(c: &Connection, view: View, cancel: Option<&Cancellation>) -> 
     // Terminal rows need receipt and destination proof interpretation, which is
     // not part of this source-only mode.
     let phase = match view {
-        View::Intent => "state NOT IN ('planned','copying','staging','cancelled') OR receipt_id IS NOT NULL",
-        View::Publication => "state NOT IN ('planned','copying','staging','ready','published','cancelled') OR \
+        View::Intent => {
+            "state NOT IN ('planned','copying','staging','cancelled') OR receipt_id IS NOT NULL"
+        }
+        View::Publication => {
+            "state NOT IN ('planned','copying','staging','ready','published','cancelled') OR \
             (state IN ('ready','published') AND (receipt_id IS NULL OR typeof(receipt_id)!='text' OR length(CAST(receipt_id AS BLOB))!=71)) OR \
-            (state NOT IN ('ready','published') AND receipt_id IS NOT NULL)",
+            (state NOT IN ('ready','published') AND receipt_id IS NOT NULL)"
+        }
     };
     let bad: bool = c.query_row(
         &format!("SELECT EXISTS(SELECT 1 FROM projection_provider_transitions WHERE \

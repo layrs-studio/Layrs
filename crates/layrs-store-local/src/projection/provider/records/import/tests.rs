@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection::{provider::validation::tests::fixture::Fixture as Pure, RecoveryBinding};
+use crate::projection::{RecoveryBinding, provider::validation::tests::fixture::Fixture as Pure};
 use layrs_core::scm::{SpaceId, StoreId, WorktreeId};
 
 const ID0: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
@@ -345,9 +345,11 @@ fn prefix_v2_ordinary_checkout_must_match_exact_source_marker() {
         );
     }
     prefix.validate_fields().unwrap();
-    assert!(prefix
-        .require_references(ImportSourceReferences::Ordinary(marker))
-        .is_err());
+    assert!(
+        prefix
+            .require_references(ImportSourceReferences::Ordinary(marker))
+            .is_err()
+    );
 }
 
 #[test]
@@ -400,13 +402,15 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(forged
-        .require_references(ImportSourceReferences::Provider {
-            allocation: &f.allocation,
-            prepared: &f.prepared,
-            activation: &forged_map,
-        })
-        .is_err());
+    assert!(
+        forged
+            .require_references(ImportSourceReferences::Provider {
+                allocation: &f.allocation,
+                prepared: &f.prepared,
+                activation: &forged_map,
+            })
+            .is_err()
+    );
 
     let alternate = Pure::new("G0", false);
     assert_ne!(
@@ -428,13 +432,15 @@ fn provider_import_rejects_rehashed_family_and_control_forgery() {
     forged_map.binding = ProviderBootstrapBinding::decode(&binding.encode().unwrap()).unwrap();
     *activation_map_id = forged_map.digest().unwrap();
     forged.validate_fields().unwrap();
-    assert!(forged
-        .require_references(ImportSourceReferences::Provider {
-            allocation: &f.allocation,
-            prepared: &f.prepared,
-            activation: &forged_map,
-        })
-        .is_err());
+    assert!(
+        forged
+            .require_references(ImportSourceReferences::Provider {
+                allocation: &f.allocation,
+                prepared: &f.prepared,
+                activation: &forged_map,
+            })
+            .is_err()
+    );
 }
 fn segments_digest(segments: &[ImportedSegment]) -> String {
     let mut h = blake3::Hasher::new();
@@ -663,17 +669,21 @@ fn admitted_source_references_require_exact_marker_database_checkout_and_binding
             admission: &binding,
         })
         .unwrap();
-    assert!(prefix
-        .require_references(ImportSourceReferences::Ordinary(&marker))
-        .is_err());
+    assert!(
+        prefix
+            .require_references(ImportSourceReferences::Ordinary(&marker))
+            .is_err()
+    );
     let mut wrong_binding = binding.clone();
     wrong_binding.admission_digest = ID1.into();
-    assert!(prefix
-        .require_references(ImportSourceReferences::AdmittedOrdinary {
-            marker: &marker,
-            admission: &wrong_binding
-        })
-        .is_err());
+    assert!(
+        prefix
+            .require_references(ImportSourceReferences::AdmittedOrdinary {
+                marker: &marker,
+                admission: &wrong_binding
+            })
+            .is_err()
+    );
     let original = prefix.encode().unwrap();
     for field in ["database", "incoming", "identity", "checkout", "format"] {
         prefix = ProviderImportPrefixRecord::decode(&original).unwrap();
@@ -712,12 +722,14 @@ fn admitted_source_references_require_exact_marker_database_checkout_and_binding
             "{field}"
         );
     }
-    assert!(prefix_v2()
-        .require_references(ImportSourceReferences::AdmittedOrdinary {
-            marker: &marker,
-            admission: &binding
-        })
-        .is_err());
+    assert!(
+        prefix_v2()
+            .require_references(ImportSourceReferences::AdmittedOrdinary {
+                marker: &marker,
+                admission: &binding
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -739,17 +751,21 @@ fn admitted_source_parent_requires_exact_receipt_prefix_and_destination() {
         admission.incoming_prefix_id = ID1.into();
     }
     wrong_prefix.validate_fields().unwrap();
-    assert!(wrong_prefix
-        .require_admission_parent(Some(&parent))
-        .is_err());
+    assert!(
+        wrong_prefix
+            .require_admission_parent(Some(&parent))
+            .is_err()
+    );
     let mut wrong_origin = ProviderImportPrefixRecord::decode(&bytes).unwrap();
     if let ImportSource::Ordinary { identity, .. } = &mut wrong_origin.source {
         identity.worktree_id = WorktreeId::parse("worktree:unrelated").unwrap();
     }
     wrong_origin.validate_fields().unwrap();
-    assert!(wrong_origin
-        .require_admission_parent(Some(&parent))
-        .is_err());
+    assert!(
+        wrong_origin
+            .require_admission_parent(Some(&parent))
+            .is_err()
+    );
     prefix_v2().require_admission_parent(None).unwrap();
     prefix_v2().require_admission_parent(Some(&other)).unwrap();
 }
@@ -966,8 +982,8 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
         digest: &file_digest,
     };
     file.require_row(ID0, projection).unwrap();
-    assert!(file
-        .require_row(
+    assert!(
+        file.require_row(
             ID0,
             CompanionFileRowData {
                 companion_id: ID0,
@@ -982,7 +998,8 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
                 digest: &file_digest,
             }
         )
-        .is_err());
+        .is_err()
+    );
     deletion
         .require_row(
             ID0,
@@ -1023,20 +1040,24 @@ fn companion_rows_project_exact_ids_modes_reason_and_order() {
     header
         .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
         .unwrap();
-    assert!(header
-        .require_row(CompanionHeaderRowData {
-            id: &header.digest().unwrap(),
-            file_count: 1,
-            deletion_count: 1,
-            files_digest: &header.files_digest,
-            deletions_digest: &header.deletions_digest,
-            payload: &header.encode().unwrap(),
-        })
-        .is_ok());
+    assert!(
+        header
+            .require_row(CompanionHeaderRowData {
+                id: &header.digest().unwrap(),
+                file_count: 1,
+                deletion_count: 1,
+                files_digest: &header.files_digest,
+                deletions_digest: &header.deletions_digest,
+                payload: &header.encode().unwrap(),
+            })
+            .is_ok()
+    );
     deletion.path = RepoPath::parse("a.txt").unwrap();
-    assert!(header
-        .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
-        .is_err());
+    assert!(
+        header
+            .validate_rows(std::slice::from_ref(&file), std::slice::from_ref(&deletion))
+            .is_err()
+    );
     header.files_digest = RAW.into(); // raw64 is never a schema8 rowset digest
     assert!(header.validate_fields().is_err());
     assert!(

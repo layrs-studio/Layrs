@@ -1,14 +1,15 @@
 //! Retained export destination identity, including the gap after a point probe.
 use super::{
-    compatibility::{raw_tag, Disguise},
-    disposable_run, native_file_id, Fixture,
+    Fixture,
+    compatibility::{Disguise, raw_tag},
+    disposable_run, native_file_id,
 };
 use layrs_vfs::{Error, Result, Session};
 use std::{
     io::Write,
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 use windows_sys::Win32::Storage::FileSystem::*;
 
@@ -62,7 +63,9 @@ fn short_alias(path: &Path) -> Option<PathBuf> {
     let value = String::from_utf16(&output[..length as usize]).unwrap();
     let value = value.strip_prefix("\\\\?\\").unwrap_or(&value);
     if !value.contains('~') || value.eq_ignore_ascii_case(path.to_str().unwrap()) {
-        eprintln!("SHORT-NAME ARM UNAVAILABLE: no genuinely distinct 8.3 alias; no volume settings changed");
+        eprintln!(
+            "SHORT-NAME ARM UNAVAILABLE: no genuinely distinct 8.3 alias; no volume settings changed"
+        );
         return None;
     }
     Some(PathBuf::from(value))
@@ -108,7 +111,9 @@ pub(super) fn run() {
         guard.revalidate().unwrap();
         disguise.assert_preserved();
         assert_eq!(source.reads.load(Ordering::SeqCst), 0);
-        eprintln!("RETAINED EXPORT PARENT: three DELETE opens + three renames + empty-leaf deletion refused32; exact identity revalidated; source_reads0");
+        eprintln!(
+            "RETAINED EXPORT PARENT: three DELETE opens + three renames + empty-leaf deletion refused32; exact identity revalidated; source_reads0"
+        );
     }
     // Release really ends the sharing protection; retain the renamed fixture.
     let released = parent.join("released-leaf");
@@ -226,5 +231,7 @@ pub(super) fn run() {
         assert!(session.guard_export_parent(Path::new(alias)).is_err());
     }
     assert_eq!(source.reads.load(Ordering::SeqCst), 0);
-    eprintln!("EXPORT PARENT RACE: initial probe -> foreign/disguised replacement refused at leaf/ancestor; ordinary replacement bound only to newly acquired ID; volume/sibling/Unicode verified; all fixtures retained; source_reads0");
+    eprintln!(
+        "EXPORT PARENT RACE: initial probe -> foreign/disguised replacement refused at leaf/ancestor; ordinary replacement bound only to newly acquired ID; volume/sibling/Unicode verified; all fixtures retained; source_reads0"
+    );
 }

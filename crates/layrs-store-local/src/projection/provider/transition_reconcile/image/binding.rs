@@ -1,8 +1,8 @@
 use super::*;
 use crate::projection::provider::{
     bootstrap::{
-        recovery_image_digest, ProviderRecoveryExportClass, ProviderRecoveryExportDeletion,
-        ProviderRecoveryExportFile,
+        ProviderRecoveryExportClass, ProviderRecoveryExportDeletion, ProviderRecoveryExportFile,
+        recovery_image_digest,
     },
     records::{codec, import::ImportSource},
 };

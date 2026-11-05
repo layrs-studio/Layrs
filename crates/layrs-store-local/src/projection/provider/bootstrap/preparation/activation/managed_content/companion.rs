@@ -1,7 +1,7 @@
 //! Complete-checkpoint route. All immutable DATA is rederived from the actual
 //! source transaction before any C callback. No network callback runs here.
 use super::super::managed_image::{
-    self, complete::VerifiedCompleteManagedImage, ManagedDeletion, ManagedFile,
+    self, ManagedDeletion, ManagedFile, complete::VerifiedCompleteManagedImage,
 };
 use super::*;
 use crate::projection::{
@@ -503,7 +503,7 @@ impl<'h, 'i, 'd, 'a, 'c> ManagedImportLease<'h, 'i, 'd, 'a, 'c> {
                         self.staging,
                         self.manifests,
                         cancel,
-                    )
+                    );
                 }
                 _ => return Err(invalid("content lease modes overlap")),
             };

@@ -3,13 +3,13 @@ mod bare;
 mod sidecars;
 use super::{
     journal,
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
 };
-#[cfg(test)]
-pub(super) use bare::{writer_close_result, WriterOpenPoint};
 pub(super) use bare::{BareConnection, WriterCloseObserver};
+#[cfg(test)]
+pub(super) use bare::{WriterOpenPoint, writer_close_result};
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 pub(in crate::projection) use sidecars::DatabaseFile;
 use std::sync::Arc;
 

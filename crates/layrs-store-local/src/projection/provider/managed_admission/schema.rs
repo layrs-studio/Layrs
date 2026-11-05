@@ -90,7 +90,7 @@ pub(in crate::projection::provider) fn require_schema<'a>(
         _ => {
             return Err(invalid(
                 "admitted import requires exact private schema9 or schema10",
-            ))
+            ));
         }
     };
     let mut ddl = [

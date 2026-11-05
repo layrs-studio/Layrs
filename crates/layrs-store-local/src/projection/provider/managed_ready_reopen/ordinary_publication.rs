@@ -10,8 +10,8 @@ use crate::projection::provider::{
     ordinary_transition::{self, PublicationCapacity, PublicationState},
     published_handoff::read_ordinary_published_for_ready,
     records::{
-        transition::{TransitionRole, TransitionState},
         Record,
+        transition::{TransitionRole, TransitionState},
     },
     transition_sql::SourceIntentEffect,
 };

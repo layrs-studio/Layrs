@@ -18,15 +18,15 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{FreeLibrary, HANDLE, HMODULE},
     Storage::{CloudFilters::*, FileSystem::*},
-    System::{LibraryLoader::*, IO::OVERLAPPED},
+    System::{IO::OVERLAPPED, LibraryLoader::*},
 };
 
 fn probe_child(root: &Path, action: &str, value: &str) -> ProbeResult<()> {

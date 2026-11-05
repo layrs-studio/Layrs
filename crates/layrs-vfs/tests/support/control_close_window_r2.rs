@@ -25,6 +25,7 @@ use windows_sys::{
     core::GUID,
 };
 
+#[allow(clippy::duplicate_mod, dead_code)]
 #[path = "../../src/windows/api.rs"]
 mod cfapi;
 
@@ -449,6 +450,7 @@ fn pins(native: &Native, path: &Path) -> Vec<Pin> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum Error {
     Io(io::Error),
     RootState {
@@ -1468,6 +1470,7 @@ pub(super) fn run() {
         "R2 TEST ONLY retained fixtures {}; ONE attempt/call, no source or production guard, no callbacks/connect/hydration",
         run.display()
     );
+    #[allow(clippy::type_complexity)]
     let gates: [(&str, fn(&Native, &Path)); 8] = [
         ("G-A", interop),
         ("G-C", leaked_readers),

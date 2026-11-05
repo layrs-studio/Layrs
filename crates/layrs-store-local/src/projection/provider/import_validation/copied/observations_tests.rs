@@ -8,11 +8,11 @@ use crate::projection::provider::{
     records::{
         codec,
         denied_coverage::DeniedAuthorityData,
-        import::{imported_segments_rowset, ImportVersion, ProviderImportKind},
+        import::{ImportVersion, ProviderImportKind, imported_segments_rowset},
     },
 };
 use layrs_core::scm::{ObjectId, SpaceId, StepId, StoreId, TreeId, WorktreeId};
-use rusqlite::{params, ToSql};
+use rusqlite::{ToSql, params};
 use std::collections::BTreeSet;
 const ID: &str = "blake3:1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -298,21 +298,25 @@ fn copied_observations_refuse_extras_missing_and_substituted_bodies_without_repa
                 TransitionDeniedCoverageRecord::decode(&current.encode().unwrap()).unwrap();
             wrong.source_prefix_id = ID.into();
             let before = c.total_changes();
-            assert!(check(c, &prefix, &ids, Some(&wrong))
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("prefix/destination"));
+            assert!(
+                check(c, &prefix, &ids, Some(&wrong))
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("prefix/destination")
+            );
             assert_eq!(before, c.total_changes());
             wrong = TransitionDeniedCoverageRecord::decode(&current.encode().unwrap()).unwrap();
             wrong.destination_identity.worktree_id =
                 WorktreeId::parse("worktree:other-destination").unwrap();
             let before = c.total_changes();
-            assert!(check(c, &prefix, &ids, Some(&wrong))
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("prefix/destination"));
+            assert!(
+                check(c, &prefix, &ids, Some(&wrong))
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("prefix/destination")
+            );
             assert_eq!(before, c.total_changes());
             c.execute_batch("ROLLBACK").unwrap();
             bare.finish(Ok(())).unwrap();
@@ -323,17 +327,47 @@ fn copied_observations_refuse_extras_missing_and_substituted_bodies_without_repa
 #[test]
 #[ignore = "owned audited SQLite child120; explicit inherited/current selector collision guard"]
 fn copied_observations_refuse_current_in_inherited_selector_despite_matching_global_count() {
-    child::run(concat!(module_path!(),"::copied_observations_refuse_current_in_inherited_selector_despite_matching_global_count"),120,|| {
-        child::declare();let bare=BareConnection::reference().unwrap();let c=bare.connection();let (prefix,ids,current)=setup(c);
-        let current_id=current.reference().unwrap().id;let selector=serde_json::to_string(&[&current_id]).unwrap();let bound:[&dyn ToSql;1]=[&selector];
-        let collision=rows::Spec{kind:rows::Kind::DenialObservations,preflight_sql:scoped::denial_history::PREFLIGHT_SQL,
-            rows_sql:scoped::denial_history::ROWS_SQL,params:&bound,max_rows:1_000_000,max_bytes:1024*1024*1024};
-        // Deliberately inconsistent selector DATA targets this defensive guard;
-        // no source proof is manufactured. A real with_scope selector is sealed
-        // by its incoming receipts and was already checked by the outer reader.
-        let before=c.total_changes();let error=require_observation_inventory(c,&prefix,&[collision],&prefix.closure,Some(&current),None).err().unwrap();
-        assert!(error.to_string().contains("aliases inherited scope"));assert_eq!(before,c.total_changes());
-        check(c,&prefix,&ids,Some(&current)).unwrap();
-        c.execute_batch("ROLLBACK").unwrap();bare.finish(Ok(())).unwrap();
-    });
+    child::run(
+        concat!(
+            module_path!(),
+            "::copied_observations_refuse_current_in_inherited_selector_despite_matching_global_count"
+        ),
+        120,
+        || {
+            child::declare();
+            let bare = BareConnection::reference().unwrap();
+            let c = bare.connection();
+            let (prefix, ids, current) = setup(c);
+            let current_id = current.reference().unwrap().id;
+            let selector = serde_json::to_string(&[&current_id]).unwrap();
+            let bound: [&dyn ToSql; 1] = [&selector];
+            let collision = rows::Spec {
+                kind: rows::Kind::DenialObservations,
+                preflight_sql: scoped::denial_history::PREFLIGHT_SQL,
+                rows_sql: scoped::denial_history::ROWS_SQL,
+                params: &bound,
+                max_rows: 1_000_000,
+                max_bytes: 1024 * 1024 * 1024,
+            };
+            // Deliberately inconsistent selector DATA targets this defensive guard;
+            // no source proof is manufactured. A real with_scope selector is sealed
+            // by its incoming receipts and was already checked by the outer reader.
+            let before = c.total_changes();
+            let error = require_observation_inventory(
+                c,
+                &prefix,
+                &[collision],
+                &prefix.closure,
+                Some(&current),
+                None,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("aliases inherited scope"));
+            assert_eq!(before, c.total_changes());
+            check(c, &prefix, &ids, Some(&current)).unwrap();
+            c.execute_batch("ROLLBACK").unwrap();
+            bare.finish(Ok(())).unwrap();
+        },
+    );
 }

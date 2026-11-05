@@ -86,7 +86,7 @@ impl<'a> ContentScope<'a> {
             if let Some(admission) = &self.admission {
                 return admission.has_live(c, self.marker).map_err(Into::into);
             }
-            return provider::ordinary_transition::has_live(c);
+            provider::ordinary_transition::has_live(c)
         }
         #[cfg(not(windows))]
         Ok(false)
@@ -117,6 +117,7 @@ impl<'a> ContentScope<'a> {
         verify_boundaries(self.root, self.marker, self.metadata, self.database)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         marker: &'a Marker,
         root: &'a Path,

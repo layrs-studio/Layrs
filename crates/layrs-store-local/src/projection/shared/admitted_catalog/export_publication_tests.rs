@@ -58,7 +58,10 @@ fn inspect(
 #[test]
 #[ignore = "ROOT source release and audited family publication DATA child120/outer180 required"]
 fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting() {
-    let test=concat!(module_path!(),"::export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting");
+    let test = concat!(
+        module_path!(),
+        "::export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves_accounting"
+    );
     child::run(test, 120, || {
         child::declare();
         export_tests::fixture(|c, family, retained, target, required| {
@@ -73,9 +76,11 @@ fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves
                 (65536, u64::MAX, 0),
                 (65536, 16384, u64::MAX),
             ] {
-                assert!(target
-                    .require_publication_envelope(before.protection, &p, floor, journal, bytes)
-                    .is_err());
+                assert!(
+                    target
+                        .require_publication_envelope(before.protection, &p, floor, journal, bytes)
+                        .is_err()
+                );
             }
             let rows = installing::state(c);
             let changes = c.total_changes();
@@ -110,15 +115,21 @@ fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves
                 }
             }
             let changes = c.total_changes();
-            assert!(retained
-                .validate_export_reserve_only(c, family, target, None)
-                .is_err());
-            assert!(retained
-                .validate_export_installing(c, family, target, required, None)
-                .is_err());
-            assert!(retained
-                .validate_export_protection(c, family, target, required, &p, None)
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_reserve_only(c, family, target, None)
+                    .is_err()
+            );
+            assert!(
+                retained
+                    .validate_export_installing(c, family, target, required, None)
+                    .is_err()
+            );
+            assert!(
+                retained
+                    .validate_export_protection(c, family, target, required, &p, None)
+                    .is_err()
+            );
             assert_eq!(installing::state(c), actual);
             assert_eq!(c.total_changes(), changes);
             c.execute_batch(
@@ -128,17 +139,19 @@ fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves
             assert_eq!(inspect(c, family, retained, target, required, &p), after);
             let cancel = Cancellation::default();
             cancel.cancel();
-            assert!(publication_parts(
-                retained,
-                c,
-                family,
-                target,
-                required,
-                &p,
-                ExportPublicationMember::Ready,
-                Some(&cancel)
-            )
-            .is_err());
+            assert!(
+                publication_parts(
+                    retained,
+                    c,
+                    family,
+                    target,
+                    required,
+                    &p,
+                    ExportPublicationMember::Ready,
+                    Some(&cancel)
+                )
+                .is_err()
+            );
             assert_eq!(installing::state(c), actual);
             assert_eq!(c.total_changes(), changes);
             // The outer retained fixture owns the final transaction rollback.
@@ -148,9 +161,12 @@ fn export_publication_fullwalk_cas_changes_only_c_member_and_ro_replay_preserves
 }
 #[test]
 #[ignore = "ROOT source release and audited family publication refusal DATA child120/outer180 required"]
-fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair(
-) {
-    let test=concat!(module_path!(),"::export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair");
+fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair()
+ {
+    let test = concat!(
+        module_path!(),
+        "::export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incomplete_journals_without_repair"
+    );
     child::run(test, 120, || {
         child::declare();
         export_tests::fixture(|c, family, retained, target, required| {
@@ -168,17 +184,19 @@ fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incompl
                 assert_eq!(c.execute(sql, [owner]).unwrap(), 1);
                 let rows = installing::state(c);
                 let changes = c.total_changes();
-                assert!(publication_parts(
-                    retained,
-                    c,
-                    family,
-                    target,
-                    required,
-                    &p,
-                    ExportPublicationMember::Initializing,
-                    None
-                )
-                .is_err());
+                assert!(
+                    publication_parts(
+                        retained,
+                        c,
+                        family,
+                        target,
+                        required,
+                        &p,
+                        ExportPublicationMember::Initializing,
+                        None
+                    )
+                    .is_err()
+                );
                 assert_eq!(installing::state(c), rows);
                 assert_eq!(c.total_changes(), changes);
                 c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
@@ -202,17 +220,19 @@ fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incompl
                 }
                 let rows = installing::state(c);
                 let changes = c.total_changes();
-                assert!(publication_parts(
-                    retained,
-                    c,
-                    family,
-                    target,
-                    required,
-                    &p,
-                    ExportPublicationMember::Initializing,
-                    None
-                )
-                .is_err());
+                assert!(
+                    publication_parts(
+                        retained,
+                        c,
+                        family,
+                        target,
+                        required,
+                        &p,
+                        ExportPublicationMember::Initializing,
+                        None
+                    )
+                    .is_err()
+                );
                 assert_eq!(installing::state(c), rows);
                 assert_eq!(c.total_changes(), changes);
                 c.execute_batch("ROLLBACK TO root_corrupt; RELEASE root_corrupt")
@@ -228,17 +248,19 @@ fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incompl
                 );
                 let rows = installing::state(c);
                 let changes = c.total_changes();
-                assert!(publication_parts(
-                    retained,
-                    c,
-                    family,
-                    target,
-                    required,
-                    &p,
-                    ExportPublicationMember::Initializing,
-                    None
-                )
-                .is_err());
+                assert!(
+                    publication_parts(
+                        retained,
+                        c,
+                        family,
+                        target,
+                        required,
+                        &p,
+                        ExportPublicationMember::Initializing,
+                        None
+                    )
+                    .is_err()
+                );
                 assert_eq!(installing::state(c), rows);
                 assert_eq!(c.total_changes(), changes);
                 c.execute_batch("ROLLBACK TO incomplete; RELEASE incomplete")
@@ -255,17 +277,19 @@ fn export_publication_fullwalk_refuses_corrupt_registry_roots_debits_and_incompl
             );
             let rows = installing::state(c);
             let changes = c.total_changes();
-            assert!(publication_parts(
-                retained,
-                c,
-                family,
-                target,
-                required,
-                &p,
-                ExportPublicationMember::Initializing,
-                None
-            )
-            .is_err());
+            assert!(
+                publication_parts(
+                    retained,
+                    c,
+                    family,
+                    target,
+                    required,
+                    &p,
+                    ExportPublicationMember::Initializing,
+                    None
+                )
+                .is_err()
+            );
             assert_eq!(installing::state(c), rows);
             assert_eq!(c.total_changes(), changes);
             c.execute_batch("ROLLBACK TO retained; RELEASE retained; COMMIT; PRAGMA foreign_keys=OFF; BEGIN DEFERRED").unwrap();

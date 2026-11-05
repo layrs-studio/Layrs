@@ -6,10 +6,10 @@ use crate::projection::{
     provider::{
         database_io,
         records::{
+            Record,
             capture::{ProviderCaptureReceiptRecord, ProviderCaptureState},
             import::ProviderTransitionReceiptRecord,
             transition::{ProviderTransitionIntentRecord, TransitionState},
-            Record,
         },
     },
     shared::{provider_access::ActivationRegistration, provider_content},
@@ -39,11 +39,13 @@ pub(super) fn capture_after_published(
         &session.source.activation,
     )
     .unwrap();
-    assert!(!before
-        .capture()
-        .transactions
-        .iter()
-        .any(|tx| tx.transaction_id == ATTEMPT));
+    assert!(
+        !before
+            .capture()
+            .transactions
+            .iter()
+            .any(|tx| tx.transaction_id == ATTEMPT)
+    );
     let (transitions, receipts) = before.outgoing();
     assert_eq!(transitions.len(), 1);
     assert_eq!(receipts.len(), 1);
@@ -124,16 +126,20 @@ pub(super) fn capture_after_published(
         capture_receipt.digest().unwrap(),
         acknowledgement.receipt_digest
     );
-    assert!(after
-        .capture()
-        .receipts
-        .iter()
-        .any(|receipt| receipt == &capture_receipt));
-    assert!(after
-        .capture()
-        .claims
-        .iter()
-        .any(|claim| claim.owner == ATTEMPT && claim.kind == "provider-capture"));
+    assert!(
+        after
+            .capture()
+            .receipts
+            .iter()
+            .any(|receipt| receipt == &capture_receipt)
+    );
+    assert!(
+        after
+            .capture()
+            .claims
+            .iter()
+            .any(|claim| claim.owner == ATTEMPT && claim.kind == "provider-capture")
+    );
     let (transitions, receipts) = after.outgoing();
     assert_eq!(transitions.len(), 1);
     assert_eq!(receipts.len(), 1);

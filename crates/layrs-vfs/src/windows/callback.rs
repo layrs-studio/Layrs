@@ -245,9 +245,9 @@ fn failure_status(error: &Error) -> i32 {
 
 // Windows guarantees valid, call-scoped buffers. Length checks bound every
 // opaque identity read; no Rust panic is allowed to cross the system ABI.
-unsafe fn context<'a>(
-    info: &'a CF_CALLBACK_INFO,
-) -> Option<(&'a Context, &'a CF_CALLBACK_INFO, CallbackGuard<'a>)> {
+unsafe fn context(
+    info: &CF_CALLBACK_INFO,
+) -> Option<(&Context, &CF_CALLBACK_INFO, CallbackGuard<'_>)> {
     if info.CallbackContext.is_null() {
         return None;
     }
@@ -433,31 +433,6 @@ fn covers(cancel_start: i64, cancel_length: i64, start: i64, length: i64, size: 
         && cancel_start <= start
         && matches!((end, cancel_end), (Some(end), Some(cancel_end)) if cancel_end >= end)
 }
-
-#[cfg(test)]
-mod cancellation_tests {
-    use super::covers;
-
-    #[test]
-    fn cancellation_does_not_discard_still_required_random_access_bytes() {
-        // Background and foreground fetches may overlap or arrive out of order.
-        assert!(!covers(8192, 4096, 4096, 8192, 16384));
-        assert!(!covers(4096, 4096, 8192, 4096, 16384));
-        assert!(covers(4096, 8192, 8192, 4096, 16384));
-        assert!(covers(8192, -1, 8192, 4096, 16384));
-        assert!(covers(8192, -1, 8192, -1, 16384));
-        assert!(!covers(12288, -1, 8192, -1, 16384));
-    }
-
-    #[test]
-    fn malformed_cancellation_cannot_cancel_a_request() {
-        for (offset, length) in [(-1, 4096), (4096, 0), (4096, -2), (4096, i64::MAX)] {
-            assert!(!covers(offset, length, 4096, 4096, 16384));
-        }
-        assert!(!covers(0, -1, 0, 1, -1));
-        assert!(!covers(0, -1, 16384, -1, 16384));
-    }
-}
 /// Renames and moves inside the root are accepted (ADR 0025): the platform
 /// clears the placeholder's in-sync state and the next capture hashes it at
 /// its new path. Moving a placeholder out of the root is refused, as it would
@@ -544,4 +519,29 @@ pub(super) fn table() -> [CF_CALLBACK_REGISTRATION; 5] {
             Callback: None,
         },
     ]
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::covers;
+
+    #[test]
+    fn cancellation_does_not_discard_still_required_random_access_bytes() {
+        // Background and foreground fetches may overlap or arrive out of order.
+        assert!(!covers(8192, 4096, 4096, 8192, 16384));
+        assert!(!covers(4096, 4096, 8192, 4096, 16384));
+        assert!(covers(4096, 8192, 8192, 4096, 16384));
+        assert!(covers(8192, -1, 8192, 4096, 16384));
+        assert!(covers(8192, -1, 8192, -1, 16384));
+        assert!(!covers(12288, -1, 8192, -1, 16384));
+    }
+
+    #[test]
+    fn malformed_cancellation_cannot_cancel_a_request() {
+        for (offset, length) in [(-1, 4096), (4096, 0), (4096, -2), (4096, i64::MAX)] {
+            assert!(!covers(offset, length, 4096, 4096, 16384));
+        }
+        assert!(!covers(0, -1, 0, 1, -1));
+        assert!(!covers(0, -1, 16384, -1, 16384));
+    }
 }

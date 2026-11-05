@@ -140,7 +140,9 @@ impl Session {
         let mut vouched = 0u64;
         for path in paths {
             let admitted = match (namespace.get(path.as_str()), listing.get(path.as_str())) {
-                (Some(node), Some(listed)) if !node.directory && purpose == InspectionPurpose::Capture => {
+                (Some(node), Some(listed))
+                    if !node.directory && purpose == InspectionPurpose::Capture =>
+                {
                     trust
                         .as_mut()
                         .and_then(|trust| trust(&path, listed))

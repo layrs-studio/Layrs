@@ -4,11 +4,11 @@ use crate::{
     lock::StoreLock,
     projection::{
         file,
-        provider::recovery::error::{invalid, Result},
+        provider::recovery::error::{Result, invalid},
     },
     secure_fs::{PinnedDirectory, PinnedFile},
 };
-use layrs_core::scm::{canonical_json, FileId, FileManifest, FileManifestId, WorktreeId};
+use layrs_core::scm::{FileId, FileManifest, FileManifestId, WorktreeId, canonical_json};
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -28,11 +28,11 @@ mod tests;
 pub(in crate::projection) use journal::{ExactRecord, Phase};
 pub(in crate::projection) use publish::publish;
 pub(in crate::projection) use published_cas::{
-    pin_resident_cas, verify_published_cas, PublishedCasProof, ResidentCasProof,
+    PublishedCasProof, ResidentCasProof, pin_resident_cas, verify_published_cas,
 };
-pub(in crate::projection) use spool::{finish_piece, prepare_piece, verify_staged, OwnedPiece};
+pub(in crate::projection) use spool::{OwnedPiece, finish_piece, prepare_piece, verify_staged};
 pub(in crate::projection) use sql::{
-    validate_installations, validate_protected_installations, ExactInstallState,
+    ExactInstallState, validate_installations, validate_protected_installations,
 };
 
 pub(in crate::projection) fn canonical_manifest_bytes(manifest: &FileManifest) -> Result<Vec<u8>> {

@@ -6,7 +6,7 @@ use crate::projection::provider::{
     admitted_catalog_io,
     admitted_ordinary::AdmittedOrdinaryData,
     recovery::error::{
-        invalid as rejected, ProviderBootstrapCause as Cause, Result as CauseResult,
+        ProviderBootstrapCause as Cause, Result as CauseResult, invalid as rejected,
     },
 };
 

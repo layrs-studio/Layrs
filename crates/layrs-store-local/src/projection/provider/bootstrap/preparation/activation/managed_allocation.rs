@@ -10,12 +10,12 @@ use crate::{
             capture_lock::CaptureAttemptLock,
             database_io::DatabaseFile,
             records::{
+                Record,
                 import::ProviderImportKind,
                 transition::{
                     ProviderTransitionIntentRecord, TransitionBackendKind,
                     TransitionDestinationProof, TransitionPlan, TransitionRole, TransitionState,
                 },
-                Record,
             },
         },
         shared::provider_access::exact_path,

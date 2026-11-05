@@ -1,5 +1,5 @@
 //! Restore-only bounded DATA and private, non-creating checkout cleanup.
-use super::super::cancellation::{canonical_number, restore_id, RestoreCancellationPoint};
+use super::super::cancellation::{RestoreCancellationPoint, canonical_number, restore_id};
 use super::*;
 
 #[derive(Debug, PartialEq, Eq)]

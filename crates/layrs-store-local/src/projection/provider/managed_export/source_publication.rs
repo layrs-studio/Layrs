@@ -17,9 +17,9 @@ use crate::{
             destination_ready::{self, OrdinaryReadyInputs},
             ordinary_publication::OrdinaryPublicationSource,
             ordinary_transition::{self, PublicationCapacity, PublicationState},
-            records::{import::ProviderTransitionReceiptRecord, Record},
+            records::{Record, import::ProviderTransitionReceiptRecord},
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
             transition_sql::SourceIntentEffect,
         },

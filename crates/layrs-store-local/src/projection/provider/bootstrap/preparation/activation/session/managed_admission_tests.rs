@@ -6,7 +6,7 @@ use super::*;
 use crate::{
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             admitted_ordinary::{self, AdmittedOrdinaryData},
             database_io::{self, DatabaseFile, ReadState, WriterCloseObserver, WriterOpenPoint},
@@ -15,7 +15,6 @@ use crate::{
             records::transition::{TransitionRole, TransitionState},
         },
         shared::{admitted_catalog::AdmittedFamilyContext, provider_access::FamilyAccess},
-        SessionMode,
     },
 };
 use rusqlite::ffi;
@@ -200,10 +199,12 @@ fn managed_admission_commit_ack_refusal_resolves_after_source_disconnect_without
                         .admit_ready_destination(withheld.held, &mut close, &cancel)
                         .expect_err("after-close observer must withhold admission ACK");
                     assert_eq!(failure.step, AdmissionStep::CommitReturned);
-                    assert!(failure
-                        .cause
-                        .to_string()
-                        .contains("acknowledgement withheld"));
+                    assert!(
+                        failure
+                            .cause
+                            .to_string()
+                            .contains("acknowledgement withheld")
+                    );
                     assert_eq!((close.opens, close.closes), (1, 1));
                     assert_eq!(version_under_owner(&destination, &cancel), 9);
                     let data = inspect_under_owner(&destination, &cancel);
@@ -259,155 +260,234 @@ fn managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_tran
     // recipes sharing this admitted setup took 611.529-785.795s. Allow over
     // twice that maximum plus the repeated ordinary reopen/cleanup checks,
     // retaining the owned child's finite kill-and-reap boundary.
-    child::run(concat!(module_path!(), "::managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_transactions"), 1800, || {
-        let started = std::time::Instant::now();
-        let checkpoint = |step: &str| {
-            eprintln!("ADMITTED_ORDINARY_REOPEN_CHECKPOINT elapsed={:.3}s step={step}", started.elapsed().as_secs_f64());
-        };
-        checkpoint("declare:begin");
-        child::declare();
-        checkpoint("declare:done");
-        let mut destination = None;
-        checkpoint("setup:begin");
-        super::managed_staging_tests::with_content_planned_bytes_then(
-            b"provider base content",
-            |_, session, attempt, planned| {
-                checkpoint("setup:source-plan-ready");
-                checkpoint("setup:publish-destination:begin");
-                let root = super::managed_ready_reopen_tests::publish_destination(session, attempt, planned);
-                checkpoint("setup:publish-destination:done");
-                root
-            },
-            |_, session, root| {
-                checkpoint("setup:capture-lane-released");
-                let cancel = Cancellation::default();
-                checkpoint("admission:open:begin");
-                let held = ManagedReadyAdmission::open(&root, &cancel).unwrap();
-                checkpoint("admission:open:done");
-                let mut close = Close::default();
-                checkpoint("admission:commit:begin");
-                let digest = session.admit_ready_destination(held, &mut close, &cancel)
-                    .unwrap_or_else(|failure| panic!("admission {:?}: {}", failure.step, failure.cause));
-                assert_eq!((close.opens, close.closes), (1, 1));
-                checkpoint("admission:commit-and-close:done");
-                destination = Some((root, digest));
-            },
-        );
-        checkpoint("setup:holders-released");
-        let (root, digest) = destination.unwrap();
-        checkpoint("baseline:markers-and-trees:begin");
-        let marker = format::read_marker(&root).unwrap();
-        let family = marker.shared.as_ref().unwrap().root.clone();
-        let before = witnesses(&root, &family);
-        checkpoint("baseline:markers-and-trees:done");
-        checkpoint("ordinary:open:begin");
-        let store = crate::projection::ProjectionStore::open(&root).unwrap();
-        checkpoint("ordinary:open:done");
-        checkpoint("ordinary:initial-state:begin");
-        let state = store.state().unwrap();
-        checkpoint("ordinary:initial-state:done");
-        checkpoint("stale-capture:begin");
-        assert!(matches!(store.capture_patch(state.generation + 1),
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_admitted_ordinary_reopen_finalizes_success_errors_and_unfinished_transactions"
+        ),
+        1800,
+        || {
+            let started = std::time::Instant::now();
+            let checkpoint = |step: &str| {
+                eprintln!(
+                    "ADMITTED_ORDINARY_REOPEN_CHECKPOINT elapsed={:.3}s step={step}",
+                    started.elapsed().as_secs_f64()
+                );
+            };
+            checkpoint("declare:begin");
+            child::declare();
+            checkpoint("declare:done");
+            let mut destination = None;
+            checkpoint("setup:begin");
+            super::managed_staging_tests::with_content_planned_bytes_then(
+                b"provider base content",
+                |_, session, attempt, planned| {
+                    checkpoint("setup:source-plan-ready");
+                    checkpoint("setup:publish-destination:begin");
+                    let root = super::managed_ready_reopen_tests::publish_destination(
+                        session, attempt, planned,
+                    );
+                    checkpoint("setup:publish-destination:done");
+                    root
+                },
+                |_, session, root| {
+                    checkpoint("setup:capture-lane-released");
+                    let cancel = Cancellation::default();
+                    checkpoint("admission:open:begin");
+                    let held = ManagedReadyAdmission::open(&root, &cancel).unwrap();
+                    checkpoint("admission:open:done");
+                    let mut close = Close::default();
+                    checkpoint("admission:commit:begin");
+                    let digest = session
+                        .admit_ready_destination(held, &mut close, &cancel)
+                        .unwrap_or_else(|failure| {
+                            panic!("admission {:?}: {}", failure.step, failure.cause)
+                        });
+                    assert_eq!((close.opens, close.closes), (1, 1));
+                    checkpoint("admission:commit-and-close:done");
+                    destination = Some((root, digest));
+                },
+            );
+            checkpoint("setup:holders-released");
+            let (root, digest) = destination.unwrap();
+            checkpoint("baseline:markers-and-trees:begin");
+            let marker = format::read_marker(&root).unwrap();
+            let family = marker.shared.as_ref().unwrap().root.clone();
+            let before = witnesses(&root, &family);
+            checkpoint("baseline:markers-and-trees:done");
+            checkpoint("ordinary:open:begin");
+            let store = crate::projection::ProjectionStore::open(&root).unwrap();
+            checkpoint("ordinary:open:done");
+            checkpoint("ordinary:initial-state:begin");
+            let state = store.state().unwrap();
+            checkpoint("ordinary:initial-state:done");
+            checkpoint("stale-capture:begin");
+            assert!(matches!(store.capture_patch(state.generation + 1),
             Err(crate::projection::ProjectionStoreError::Stale { expected, actual })
                 if expected == state.generation + 1 && actual == state.generation));
-        checkpoint("stale-capture:returned");
-        assert_eq!(store.state().unwrap(), state, "early error still positively closes");
-        checkpoint("stale-capture:fresh-state-verified");
-        checkpoint("unfinished-transaction:access:begin");
-        let unfinished = format::access(&store, SessionMode::Exclusive).unwrap().run(|access| {
-            checkpoint("unfinished-transaction:body");
-            access.connection.execute_batch("BEGIN IMMEDIATE")?;
-            Ok(())
-        });
-        checkpoint("unfinished-transaction:returned");
-        assert!(unfinished.is_err(), "unfinished transaction cannot be acknowledged");
-        assert_eq!(store.state().unwrap(), state, "unfinished transaction rolled back and closed");
-        checkpoint("unfinished-transaction:fresh-state-verified");
-        checkpoint("operation-error:access:begin");
-        let failed: crate::projection::Result<()> = format::access(&store, SessionMode::Exclusive).unwrap().run(|access| {
-            checkpoint("operation-error:body");
-            access.connection.execute_batch("BEGIN IMMEDIATE")?;
-            Err(crate::projection::invalid("owned ordinary operation failure"))
-        });
-        checkpoint("operation-error:returned");
-        assert!(failed.unwrap_err().to_string().contains("owned ordinary operation failure"));
-        // An enclosing operation can fail after a separately owned close.
-        // Its cleanup must not start fresh admission validation SQL. Make the
-        // uncommitted admission invalid so ordinary finish() would add a
-        // validation error; the narrow error-only path must preserve exactly
-        // the operation error while rolling the mutation back and closing.
-        checkpoint("error-only-cleanup:access:begin");
-        let access = format::access(&store, SessionMode::Exclusive).unwrap();
-        checkpoint("error-only-cleanup:access:done");
-        access.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
-        access.connection.execute("UPDATE projection_provider_transitions SET digest=?1", [format!("blake3:{}", "0".repeat(64))]).unwrap();
-        checkpoint("error-only-cleanup:corrupted-uncommitted-admission");
-        checkpoint("error-only-cleanup:close:begin");
-        let failed: crate::projection::Result<()> = access.close_failed_operation(
-            crate::projection::invalid("enclosing publication operation failed"),
-        );
-        checkpoint("error-only-cleanup:close:returned");
-        assert!(matches!(failed,
+            checkpoint("stale-capture:returned");
+            assert_eq!(
+                store.state().unwrap(),
+                state,
+                "early error still positively closes"
+            );
+            checkpoint("stale-capture:fresh-state-verified");
+            checkpoint("unfinished-transaction:access:begin");
+            let unfinished =
+                format::access(&store, SessionMode::Exclusive)
+                    .unwrap()
+                    .run(|access| {
+                        checkpoint("unfinished-transaction:body");
+                        access.connection.execute_batch("BEGIN IMMEDIATE")?;
+                        Ok(())
+                    });
+            checkpoint("unfinished-transaction:returned");
+            assert!(
+                unfinished.is_err(),
+                "unfinished transaction cannot be acknowledged"
+            );
+            assert_eq!(
+                store.state().unwrap(),
+                state,
+                "unfinished transaction rolled back and closed"
+            );
+            checkpoint("unfinished-transaction:fresh-state-verified");
+            checkpoint("operation-error:access:begin");
+            let failed: crate::projection::Result<()> =
+                format::access(&store, SessionMode::Exclusive)
+                    .unwrap()
+                    .run(|access| {
+                        checkpoint("operation-error:body");
+                        access.connection.execute_batch("BEGIN IMMEDIATE")?;
+                        Err(crate::projection::invalid(
+                            "owned ordinary operation failure",
+                        ))
+                    });
+            checkpoint("operation-error:returned");
+            assert!(
+                failed
+                    .unwrap_err()
+                    .to_string()
+                    .contains("owned ordinary operation failure")
+            );
+            // An enclosing operation can fail after a separately owned close.
+            // Its cleanup must not start fresh admission validation SQL. Make the
+            // uncommitted admission invalid so ordinary finish() would add a
+            // validation error; the narrow error-only path must preserve exactly
+            // the operation error while rolling the mutation back and closing.
+            checkpoint("error-only-cleanup:access:begin");
+            let access = format::access(&store, SessionMode::Exclusive).unwrap();
+            checkpoint("error-only-cleanup:access:done");
+            access.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            access
+                .connection
+                .execute(
+                    "UPDATE projection_provider_transitions SET digest=?1",
+                    [format!("blake3:{}", "0".repeat(64))],
+                )
+                .unwrap();
+            checkpoint("error-only-cleanup:corrupted-uncommitted-admission");
+            checkpoint("error-only-cleanup:close:begin");
+            let failed: crate::projection::Result<()> = access.close_failed_operation(
+                crate::projection::invalid("enclosing publication operation failed"),
+            );
+            checkpoint("error-only-cleanup:close:returned");
+            assert!(matches!(failed,
             Err(crate::projection::ProjectionStoreError::Invalid(message))
                 if message == "enclosing publication operation failed"));
-        assert_eq!(store.state().unwrap(), state, "error-only cleanup rolls back and positively closes");
-        checkpoint("error-only-cleanup:fresh-state-verified");
-        // A deliberately invalid ROLLBACK tests authority invalidation, not an
-        // OS rollback failure. Later validation must reject the poisoned token.
-        checkpoint("poisoned-scope:access:begin");
-        let mut access = format::access(&store, SessionMode::Exclusive).unwrap();
-        checkpoint("poisoned-scope:access:done");
-        let failed = access.with_content(|c, scope| -> crate::projection::Result<()> {
-            checkpoint("poisoned-scope:body");
-            assert!(c.is_autocommit());
-            let rollback = scope.rollback_transaction(c).unwrap_err();
-            assert!(scope.verify(c, &store).unwrap_err().to_string().contains("failed rollback"));
-            checkpoint("poisoned-scope:invalid-rollback-rejected");
-            Err(rollback)
-        });
-        checkpoint("poisoned-scope:close:begin");
-        let failed: crate::projection::Result<()> = access.close_failed_operation(failed.unwrap_err());
-        checkpoint("poisoned-scope:close:returned");
-        assert!(matches!(failed, Err(crate::projection::ProjectionStoreError::Database(_))));
-        assert_eq!(store.state().unwrap(), state, "fresh preflight remains independent of poisoned clones");
-        checkpoint("poisoned-scope:fresh-state-verified");
-        drop(store);
-        checkpoint("ordinary:reopen:begin");
-        let reopened = crate::projection::ProjectionStore::open(&root).unwrap();
-        checkpoint("ordinary:reopen:done");
-        assert_eq!(reopened.state().unwrap(), state);
-        checkpoint("ordinary:reopened-state-verified");
-        drop(reopened);
-        checkpoint("admission-digest:reopen-and-access:begin");
-        let access = format::access(&crate::projection::ProjectionStore::open(&root).unwrap(), SessionMode::Shared).unwrap();
-        checkpoint("admission-digest:access:done");
-        access.run(|access| {
-            checkpoint("admission-digest:inspect:begin");
-            let data = admitted_ordinary::inspect(&access.connection, &marker, None)?;
-            assert_eq!(data.admission_digest(), digest);
-            checkpoint("admission-digest:inspect:done");
-            Ok(())
-        }).unwrap();
-        checkpoint("admission-digest:close:done");
-        checkpoint("final-trees:begin");
-        assert_eq!(witnesses(&root, &family), before);
-        checkpoint("final-trees:verified");
-        checkpoint("ordinary-observation:begin");
-        let observed_store = crate::projection::ProjectionStore::open(&root).unwrap();
-        let selected = observed_store.selection().unwrap();
-        let observation = observed_store.record_version_observation(&state.snapshot, &selected).unwrap();
-        assert!(matches!(observation, layrs_core::projection::ProjectionVersion::Remote { .. }));
-        assert_eq!(observed_store.state().unwrap(), state);
-        drop(observed_store);
-        let after_observation = crate::projection::ProjectionStore::open(&root).unwrap();
-        assert_eq!(after_observation.state().unwrap(), state);
-        assert_eq!(after_observation.selection().unwrap(), selected);
-        // Replay must read the committed observation without locking the store.
-        assert_eq!(after_observation.record_version_observation(&state.snapshot, &selected).unwrap(), observation);
-        drop(after_observation);
-        checkpoint("ordinary-observation:committed-reopened-and-replayed");
-        checkpoint("recipe:done");
-    });
+            assert_eq!(
+                store.state().unwrap(),
+                state,
+                "error-only cleanup rolls back and positively closes"
+            );
+            checkpoint("error-only-cleanup:fresh-state-verified");
+            // A deliberately invalid ROLLBACK tests authority invalidation, not an
+            // OS rollback failure. Later validation must reject the poisoned token.
+            checkpoint("poisoned-scope:access:begin");
+            let mut access = format::access(&store, SessionMode::Exclusive).unwrap();
+            checkpoint("poisoned-scope:access:done");
+            let failed = access.with_content(|c, scope| -> crate::projection::Result<()> {
+                checkpoint("poisoned-scope:body");
+                assert!(c.is_autocommit());
+                let rollback = scope.rollback_transaction(c).unwrap_err();
+                assert!(
+                    scope
+                        .verify(c, &store)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("failed rollback")
+                );
+                checkpoint("poisoned-scope:invalid-rollback-rejected");
+                Err(rollback)
+            });
+            checkpoint("poisoned-scope:close:begin");
+            let failed: crate::projection::Result<()> =
+                access.close_failed_operation(failed.unwrap_err());
+            checkpoint("poisoned-scope:close:returned");
+            assert!(matches!(
+                failed,
+                Err(crate::projection::ProjectionStoreError::Database(_))
+            ));
+            assert_eq!(
+                store.state().unwrap(),
+                state,
+                "fresh preflight remains independent of poisoned clones"
+            );
+            checkpoint("poisoned-scope:fresh-state-verified");
+            drop(store);
+            checkpoint("ordinary:reopen:begin");
+            let reopened = crate::projection::ProjectionStore::open(&root).unwrap();
+            checkpoint("ordinary:reopen:done");
+            assert_eq!(reopened.state().unwrap(), state);
+            checkpoint("ordinary:reopened-state-verified");
+            drop(reopened);
+            checkpoint("admission-digest:reopen-and-access:begin");
+            let access = format::access(
+                &crate::projection::ProjectionStore::open(&root).unwrap(),
+                SessionMode::Shared,
+            )
+            .unwrap();
+            checkpoint("admission-digest:access:done");
+            access
+                .run(|access| {
+                    checkpoint("admission-digest:inspect:begin");
+                    let data = admitted_ordinary::inspect(&access.connection, &marker, None)?;
+                    assert_eq!(data.admission_digest(), digest);
+                    checkpoint("admission-digest:inspect:done");
+                    Ok(())
+                })
+                .unwrap();
+            checkpoint("admission-digest:close:done");
+            checkpoint("final-trees:begin");
+            assert_eq!(witnesses(&root, &family), before);
+            checkpoint("final-trees:verified");
+            checkpoint("ordinary-observation:begin");
+            let observed_store = crate::projection::ProjectionStore::open(&root).unwrap();
+            let selected = observed_store.selection().unwrap();
+            let observation = observed_store
+                .record_version_observation(&state.snapshot, &selected)
+                .unwrap();
+            assert!(matches!(
+                observation,
+                layrs_core::projection::ProjectionVersion::Remote { .. }
+            ));
+            assert_eq!(observed_store.state().unwrap(), state);
+            drop(observed_store);
+            let after_observation = crate::projection::ProjectionStore::open(&root).unwrap();
+            assert_eq!(after_observation.state().unwrap(), state);
+            assert_eq!(after_observation.selection().unwrap(), selected);
+            // Replay must read the committed observation without locking the store.
+            assert_eq!(
+                after_observation
+                    .record_version_observation(&state.snapshot, &selected)
+                    .unwrap(),
+                observation
+            );
+            drop(after_observation);
+            checkpoint("ordinary-observation:committed-reopened-and-replayed");
+            checkpoint("recipe:done");
+        },
+    );
 }
 
 #[test]

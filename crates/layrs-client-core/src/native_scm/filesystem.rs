@@ -3,11 +3,11 @@ use super::{
     SnapshotLimits,
 };
 use layrs_core::scm::{RepoPath, WorktreeId};
+use layrs_store_local::scm_v1;
 use layrs_store_local::scm_v1::checkout::{
     CheckoutContent, CheckoutLimits, CheckoutProjectionContent, CheckoutProjectionEntry,
     CheckoutReader,
 };
-use layrs_store_local::scm_v1;
 use std::path::Path;
 
 /// Captures regular files and symlink targets; reserved metadata is excluded.
@@ -56,6 +56,7 @@ fn capture_checkout_tracked(
 /// A first capture (nothing tracked; content spooled, never a whole-file Vec)
 /// also returning the change-index entries (ADR 0025) it proves: each hashed
 /// file with the listing metadata observed before it was read.
+#[allow(clippy::type_complexity)]
 pub(super) fn capture_checkout_streaming_indexed(
     root: &Path,
     limits: SnapshotLimits,
@@ -277,7 +278,10 @@ impl super::NativeWorkspace {
             Some(&base),
             &mut trust,
             &mut |chunk| {
-                if known.as_ref().is_some_and(|known| known.contains(chunk.id())) {
+                if known
+                    .as_ref()
+                    .is_some_and(|known| known.contains(chunk.id()))
+                {
                     Ok(())
                 } else {
                     chunks.insert(chunk)
@@ -320,7 +324,10 @@ impl super::NativeWorkspace {
                     }
                 }
                 None => {
-                    if let Some(old) = index.entry(&entry.path).filter(|old| &old.file_id == file_id) {
+                    if let Some(old) = index
+                        .entry(&entry.path)
+                        .filter(|old| &old.file_id == file_id)
+                    {
                         next.insert(entry.path.clone(), old.clone());
                     }
                 }

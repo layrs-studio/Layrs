@@ -7,8 +7,8 @@ use crate::projection::{
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
-            import::{ImportVersion, ProviderImportKind},
             Record,
+            import::{ImportVersion, ProviderImportKind},
         },
         validation::tests::fixture::Fixture,
     },
@@ -266,78 +266,170 @@ fn count(c: &Connection, table: &str) -> u64 {
 #[test]
 #[ignore = "owned audited Windows SQLite process; complete schema8 restore-prefix copy"]
 fn verified_restore_prefix_copy_is_exact_idempotent_and_refuses_collision_before_inserts() {
-    child::run(concat!(module_path!(), "::verified_restore_prefix_copy_is_exact_idempotent_and_refuses_collision_before_inserts"), 120, || {
-        child::declare();
-        let source_handle = BareConnection::reference().unwrap();
-        let source = source_handle.connection();
-        let (marker, mut prefix, history) = source_fixture(source);
-        let mut destination_marker = marker.clone();
-        destination_marker.identity = prefix.destination_identity.clone();
-        let destination_handle = BareConnection::reference().unwrap();
-        let destination = destination_handle.connection();
-        schema8(destination, &destination_marker);
-        for connection in [source, destination] {
-            assert_eq!(connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u8>(0)).unwrap(), 1);
-        }
-        source.execute_batch("BEGIN DEFERRED").unwrap();
-        destination.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let proof = verify(source, &marker, &mut prefix);
-        assert_eq!(proof.closure().restore_history.as_ref().unwrap().count, 1);
-        copy_verified_prefix(source, destination, &destination_marker, &prefix, &proof, None).unwrap();
-        let copied: (u64, Vec<u8>) = destination.query_row(
+    child::run(
+        concat!(
+            module_path!(),
+            "::verified_restore_prefix_copy_is_exact_idempotent_and_refuses_collision_before_inserts"
+        ),
+        120,
+        || {
+            child::declare();
+            let source_handle = BareConnection::reference().unwrap();
+            let source = source_handle.connection();
+            let (marker, mut prefix, history) = source_fixture(source);
+            let mut destination_marker = marker.clone();
+            destination_marker.identity = prefix.destination_identity.clone();
+            let destination_handle = BareConnection::reference().unwrap();
+            let destination = destination_handle.connection();
+            schema8(destination, &destination_marker);
+            for connection in [source, destination] {
+                assert_eq!(
+                    connection
+                        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, u8>(0))
+                        .unwrap(),
+                    1
+                );
+            }
+            source.execute_batch("BEGIN DEFERRED").unwrap();
+            destination.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let proof = verify(source, &marker, &mut prefix);
+            assert_eq!(proof.closure().restore_history.as_ref().unwrap().count, 1);
+            copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .unwrap();
+            let copied: (u64, Vec<u8>) = destination.query_row(
             "SELECT capture_sequence,payload FROM projection_restore_history WHERE operation_id='1-1'", [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
-        assert_eq!(copied, (1, history.clone()));
-        require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None).unwrap();
-        let changes = destination.total_changes();
-        copy_verified_prefix(source, destination, &destination_marker, &prefix, &proof, None).unwrap();
-        assert_eq!(destination.total_changes(), changes);
-        assert_eq!(count(destination, "projection_restore_history"), 1);
-        assert_eq!(count(destination, "projection_content"), 2);
+            assert_eq!(copied, (1, history.clone()));
+            require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None)
+                .unwrap();
+            let changes = destination.total_changes();
+            copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .unwrap();
+            assert_eq!(destination.total_changes(), changes);
+            assert_eq!(count(destination, "projection_restore_history"), 1);
+            assert_eq!(count(destination, "projection_content"), 2);
 
-        destination.execute_batch("SAVEPOINT operation_collision").unwrap();
-        let mut collision: serde_json::Value = serde_json::from_slice(&history).unwrap();
-        collision["directory"] = "restore-2-1".into();
-        let collision = canonical_json(&collision).unwrap();
-        destination.execute("UPDATE projection_restore_history SET payload=?1 WHERE operation_id='1-1'", [&collision]).unwrap();
-        // These earlier rowsets now need inserts. The later operation collision
-        // must still be rejected before even the first such insertion.
-        destination.execute("DELETE FROM projection_selections", []).unwrap();
-        destination.execute("DELETE FROM projection_content", []).unwrap();
-        let changes = destination.total_changes();
-        let refusal = copy_verified_prefix(source, destination, &destination_marker, &prefix, &proof, None).unwrap_err();
-        assert!(refusal.to_string().contains("collision"), "{refusal}");
-        assert_eq!(destination.total_changes(), changes);
-        assert_eq!(count(destination, "projection_selections"), 0);
-        assert_eq!(count(destination, "projection_content"), 0);
-        let unchanged: Vec<u8> = destination.query_row("SELECT payload FROM projection_restore_history WHERE operation_id='1-1'", [], |row| row.get(0)).unwrap();
-        assert_eq!(unchanged, collision);
-        destination.execute_batch("ROLLBACK TO operation_collision; RELEASE operation_collision").unwrap();
-        require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None).unwrap();
-        destination.execute_batch("ROLLBACK").unwrap();
-        for table in ["projection_snapshots", "projection_selections", "projection_captures", "projection_restore_history", "projection_content"] {
-            assert_eq!(count(destination, table), 0, "{table}");
-        }
-        assert_eq!(count(source, "projection_restore_history"), 1);
-        assert_eq!(destination.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0)).unwrap(), 8);
+            destination
+                .execute_batch("SAVEPOINT operation_collision")
+                .unwrap();
+            let mut collision: serde_json::Value = serde_json::from_slice(&history).unwrap();
+            collision["directory"] = "restore-2-1".into();
+            let collision = canonical_json(&collision).unwrap();
+            destination
+                .execute(
+                    "UPDATE projection_restore_history SET payload=?1 WHERE operation_id='1-1'",
+                    [&collision],
+                )
+                .unwrap();
+            // These earlier rowsets now need inserts. The later operation collision
+            // must still be rejected before even the first such insertion.
+            destination
+                .execute("DELETE FROM projection_selections", [])
+                .unwrap();
+            destination
+                .execute("DELETE FROM projection_content", [])
+                .unwrap();
+            let changes = destination.total_changes();
+            let refusal = copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &prefix,
+                &proof,
+                None,
+            )
+            .unwrap_err();
+            assert!(refusal.to_string().contains("collision"), "{refusal}");
+            assert_eq!(destination.total_changes(), changes);
+            assert_eq!(count(destination, "projection_selections"), 0);
+            assert_eq!(count(destination, "projection_content"), 0);
+            let unchanged: Vec<u8> = destination
+                .query_row(
+                    "SELECT payload FROM projection_restore_history WHERE operation_id='1-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(unchanged, collision);
+            destination
+                .execute_batch("ROLLBACK TO operation_collision; RELEASE operation_collision")
+                .unwrap();
+            require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None)
+                .unwrap();
+            destination.execute_batch("ROLLBACK").unwrap();
+            for table in [
+                "projection_snapshots",
+                "projection_selections",
+                "projection_captures",
+                "projection_restore_history",
+                "projection_content",
+            ] {
+                assert_eq!(count(destination, table), 0, "{table}");
+            }
+            assert_eq!(count(source, "projection_restore_history"), 1);
+            assert_eq!(
+                destination
+                    .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                    .unwrap(),
+                8
+            );
 
-        // The legacy twelve-rowset path remains valid without an optional
-        // restore spec. This is a separate valid source proof, not a relabelled9.
-        source.execute_batch("SAVEPOINT legacy_source").unwrap();
-        source.execute("DELETE FROM projection_restore_history", []).unwrap();
-        let mut legacy = ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap();
-        legacy.schema_version = "layrs.projection-provider-import-prefix.v1".into();
-        legacy.closure.restore_history = None;
-        if let ImportSource::Ordinary { checkout_identity, .. } = &mut legacy.source { *checkout_identity = None; }
-        let legacy_proof = verify(source, &marker, &mut legacy);
-        destination.execute_batch("BEGIN IMMEDIATE").unwrap();
-        copy_verified_prefix(source, destination, &destination_marker, &legacy, &legacy_proof, None).unwrap();
-        require_exact_copied_rows(destination, &destination_marker, &legacy, &legacy_proof, None).unwrap();
-        assert_eq!(count(destination, "projection_restore_history"), 0);
-        destination.execute_batch("ROLLBACK").unwrap();
-        source.execute_batch("ROLLBACK TO legacy_source; RELEASE legacy_source; COMMIT").unwrap();
-        source_handle.finish(Ok(())).unwrap();
-        destination_handle.finish(Ok(())).unwrap();
-    });
+            // The legacy twelve-rowset path remains valid without an optional
+            // restore spec. This is a separate valid source proof, not a relabelled9.
+            source.execute_batch("SAVEPOINT legacy_source").unwrap();
+            source
+                .execute("DELETE FROM projection_restore_history", [])
+                .unwrap();
+            let mut legacy = ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap();
+            legacy.schema_version = "layrs.projection-provider-import-prefix.v1".into();
+            legacy.closure.restore_history = None;
+            if let ImportSource::Ordinary {
+                checkout_identity, ..
+            } = &mut legacy.source
+            {
+                *checkout_identity = None;
+            }
+            let legacy_proof = verify(source, &marker, &mut legacy);
+            destination.execute_batch("BEGIN IMMEDIATE").unwrap();
+            copy_verified_prefix(
+                source,
+                destination,
+                &destination_marker,
+                &legacy,
+                &legacy_proof,
+                None,
+            )
+            .unwrap();
+            require_exact_copied_rows(
+                destination,
+                &destination_marker,
+                &legacy,
+                &legacy_proof,
+                None,
+            )
+            .unwrap();
+            assert_eq!(count(destination, "projection_restore_history"), 0);
+            destination.execute_batch("ROLLBACK").unwrap();
+            source
+                .execute_batch("ROLLBACK TO legacy_source; RELEASE legacy_source; COMMIT")
+                .unwrap();
+            source_handle.finish(Ok(())).unwrap();
+            destination_handle.finish(Ok(())).unwrap();
+        },
+    );
 }

@@ -12,19 +12,19 @@ use crate::projection::{
     provider::{
         destination_ready::{ManagedReadyClaim, ManagedReadyData, ManagedReadyOverlay},
         records::{
+            Record,
             denied_coverage::DerivedDeniedCoverage,
             import::{
                 ImportRowset, ImportSource, ProviderImportKind, ProviderImportPrefixRecord,
                 ProviderTransitionReceiptRecord,
             },
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-            Record,
         },
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
     },
     shared::exact_protection::ExactProtection,
 };
-use layrs_core::scm::{canonical_json, FileManifest, FileManifestId};
+use layrs_core::scm::{FileManifest, FileManifestId, canonical_json};
 use layrs_vfs::Cancellation;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -350,7 +350,7 @@ impl OwnedReadyData {
                         _ => {
                             return Err(invalid(
                                 "companion Ready overlay escaped authorized checkout",
-                            ))
+                            ));
                         }
                     };
                     overlay.push(ManagedReadyOverlay {
@@ -599,7 +599,7 @@ fn build_overlay(
             _ => {
                 return Err(invalid(
                     "Ready overlay exact image path absent or conflicting",
-                ))
+                ));
             }
         };
         output.push(ManagedReadyOverlay {

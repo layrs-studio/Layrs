@@ -243,7 +243,9 @@ mod tests {
             file("d/b.txt", b"bb"),
             CheckoutProjectionEntry {
                 path: "d/link".into(),
-                content: CheckoutProjectionContent::Symlink { target: "b.txt".into() },
+                content: CheckoutProjectionContent::Symlink {
+                    target: "b.txt".into(),
+                },
             },
             file("d/sub/c.txt", b"ccc"),
         ]
@@ -251,7 +253,8 @@ mod tests {
 
     #[test]
     fn roundtrip_binding_and_corruption_fall_back_to_none() {
-        let root = std::env::temp_dir().join(format!("layrs-projection-cache-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("layrs-projection-cache-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let tree = TreeId::parse(format!("blake3:{}", blake3::hash(b"tree"))).unwrap();
         save(&root, &tree, &tree, &entries());

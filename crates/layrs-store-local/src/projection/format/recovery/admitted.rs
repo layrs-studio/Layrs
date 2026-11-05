@@ -4,7 +4,7 @@
 use super::*;
 use crate::projection::provider::{
     admitted_private_io::{AdmittedPreflight, AdmittedPrivateHandle},
-    recovery::error::{invalid as rejected, Result as CauseResult},
+    recovery::error::{Result as CauseResult, invalid as rejected},
 };
 use rusqlite::Connection;
 
@@ -145,6 +145,7 @@ pub(super) fn restore_access(
 /// Preflight callback runs inside the clean private RO transaction; the family
 /// callback runs only after that real connection has positively closed. All
 /// validation preceding into_handle is read-only and preserves budgets.
+#[allow(clippy::too_many_arguments)]
 fn open_access<T>(
     store: &ProjectionStore,
     mut family: Option<shared::Lease>,

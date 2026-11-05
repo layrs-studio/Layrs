@@ -9,12 +9,12 @@ use crate::{
             database_io::{self, ReadState, WriterCloseObserver},
             ordinary_destination::{self, CopyEffect, OrdinaryCopyInputs},
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
         },
         shared::{
             admitted_catalog::AdmittedFamilyContext,
-            provider_access::{provider_import::source::OrdinarySourceInputs, ImportRegistration},
+            provider_access::{ImportRegistration, provider_import::source::OrdinarySourceInputs},
         },
     },
 };

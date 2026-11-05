@@ -5,17 +5,17 @@ use super::*;
 use crate::projection::provider::{
     database_io::WriterCloseObserver,
     records::{
+        Record,
         capture::{
             ProviderCaptureReceiptRecord, ProviderCaptureState, ProviderCaptureTransactionRecord,
         },
-        Record,
     },
     validation::{CaptureContentProof, PrivateCaptureMutationValidation, PrivateCaptureProof},
 };
 use crate::projection::shared::provider_access::ActivationRegistration;
 use layrs_core::scm::canonical_json;
 use layrs_vfs::Checkpoint;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 fn valid_read<T>(state: database_io::ReadState<T>) -> CauseResult<T> {
     match state {

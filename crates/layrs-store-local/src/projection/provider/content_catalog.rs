@@ -5,26 +5,26 @@ use super::{
     artifacts::Artifacts,
     database_io::{self, BareConnection, ReadState, WriterCloseObserver},
     records::{
-        capture::{ProviderCaptureStage, ProviderCaptureState},
         AllocationRecord, Record,
+        capture::{ProviderCaptureStage, ProviderCaptureState},
     },
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+    recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
     validation,
     validation::{PrivateCaptureMutationValidation, PrivateCaptureProof},
 };
 use crate::{
     lock::StoreLock,
     projection::{
+        ProjectionStoreError, Result, SessionMode,
         capture::CapturedFile,
         format,
         shared::provider_access::{
-            provider_capture::operation, ActivationRegistration, FamilyAccess,
+            ActivationRegistration, FamilyAccess, provider_capture::operation,
         },
-        ProjectionStoreError, Result, SessionMode,
     },
 };
 use layrs_core::scm::{FileManifest, WorktreeId};
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(in crate::projection) struct ProviderContext {

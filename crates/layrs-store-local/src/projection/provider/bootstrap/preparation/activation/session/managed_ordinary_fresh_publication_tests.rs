@@ -6,19 +6,19 @@
 use super::{
     managed_ordinary_installing_tests::{self as witness, Database, Tree},
     managed_ordinary_source_publication_tests::{
-        ingress, only_source_database_changed, only_source_rows_changed, source,
-        with_source_ready_data, PublicationFixture,
+        PublicationFixture, ingress, only_source_database_changed, only_source_rows_changed,
+        source, with_source_ready_data,
     },
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        ProjectionStore, SessionMode, format,
         provider::{
             database_io::{
-                tests::fresh_ordinary_support::{with_observer, ReadBoundary},
                 WriterCloseObserver, WriterOpenPoint,
+                tests::fresh_ordinary_support::{ReadBoundary, with_observer},
             },
             managed_admission::read_admitted_import,
             managed_export::OrdinaryManagedExport,
@@ -28,13 +28,12 @@ use crate::{
             },
             process_profile::tests::child,
             records::{
+                Record,
                 import::ProviderTransitionReceiptRecord,
                 transition::{ProviderTransitionIntentRecord, TransitionState},
-                Record,
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         },
-        ProjectionStore, SessionMode,
     },
 };
 use layrs_vfs::Cancellation;
@@ -348,158 +347,251 @@ fn read_counts(events: &[(PathBuf, ReadBoundary)], f: &Fixture) -> (usize, usize
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer()
 {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer"), 3600, || {
-        let f = fresh_ready_fixture();
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        // An authentic family-unavailable refusal; no catalog mutation,
-        // detached receipt or repaired schema can bless the attempt.
-        let denied = OpenOptions::new().read(true).share_mode(0).open(&f.family_database).unwrap();
-        assert!(OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).is_err());
-        drop(denied);
-        assert_eq!(ready_rows(&f), f.source_rows);
-        require_unchanged_destination(&f);
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_publication_advances_released_ready_and_replays_published_without_writer"
+        ),
+        3600,
+        || {
+            let f = fresh_ready_fixture();
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            // An authentic family-unavailable refusal; no catalog mutation,
+            // detached receipt or repaired schema can bless the attempt.
+            let denied = OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&f.family_database)
+                .unwrap();
+            assert!(OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).is_err());
+            drop(denied);
+            assert_eq!(ready_rows(&f), f.source_rows);
+            require_unchanged_destination(&f);
 
-        let held = OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
-        let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
-        let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
-        require_owner_contention(&b_lock, SessionMode::Shared);
-        require_owner_contention(&c_lock, SessionMode::Exclusive);
-        // A still-Ready source cannot be resolved as if it were Published.
-        let failure = held.resolve(&cancel).err().expect("actual Ready must refuse Published resolution");
-        assert_eq!(failure.step, AdmissionStep::Validating);
-        assert!(failure.cause.to_string().contains("requires actual Published"));
-        assert_eq!(ready_rows(&f), f.source_rows);
-        require_unchanged_destination(&f);
-        let mut close = Close::new(&f, false);
-        let after_close = close.after_close.clone();
-        let source_path = f.source_database.clone();
-        let destination_path = f.destination_database.clone();
-        let family_path = f.family_database.clone();
-        let readback = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
-        let observed_readback = readback.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let progress = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() && point == ReadBoundary::BeforeSnapshot {
-                let mut reads = observed_readback.borrow_mut();
-                if path == source_path.as_path() { reads.0 += 1; }
-                else if path == destination_path.as_path() { reads.1 += 1; }
-                else if path == family_path.as_path() { reads.2 += 1; }
-                else { panic!("unexpected post-close publication readback {path:?}"); }
-            }
-            Ok(())
-        }, || failure.held.publish(&mut close, &cancel))
+            let held = OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
+            let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
+            let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
+            require_owner_contention(&b_lock, SessionMode::Shared);
+            require_owner_contention(&c_lock, SessionMode::Exclusive);
+            // A still-Ready source cannot be resolved as if it were Published.
+            let failure = held
+                .resolve(&cancel)
+                .err()
+                .expect("actual Ready must refuse Published resolution");
+            assert_eq!(failure.step, AdmissionStep::Validating);
+            assert!(
+                failure
+                    .cause
+                    .to_string()
+                    .contains("requires actual Published")
+            );
+            assert_eq!(ready_rows(&f), f.source_rows);
+            require_unchanged_destination(&f);
+            let mut close = Close::new(&f, false);
+            let after_close = close.after_close.clone();
+            let source_path = f.source_database.clone();
+            let destination_path = f.destination_database.clone();
+            let family_path = f.family_database.clone();
+            let readback = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
+            let observed_readback = readback.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let progress = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() && point == ReadBoundary::BeforeSnapshot {
+                        let mut reads = observed_readback.borrow_mut();
+                        if path == source_path.as_path() {
+                            reads.0 += 1;
+                        } else if path == destination_path.as_path() {
+                            reads.1 += 1;
+                        } else if path == family_path.as_path() {
+                            reads.2 += 1;
+                        } else {
+                            panic!("unexpected post-close publication readback {path:?}");
+                        }
+                    }
+                    Ok(())
+                },
+                || failure.held.publish(&mut close, &cancel),
+            )
             .unwrap_or_else(|e| panic!("fresh publication {:?}: {}", e.step, e.cause));
-        assert_eq!(progress.effect(), OrdinaryReadyPublicationEffect::Updated);
-        assert_eq!(progress.published(), &f.published);
-        assert_eq!(progress.receipt(), &f.receipt);
-        let digest = progress.published_digest().to_owned();
-        assert_eq!(digest, f.published.digest().unwrap());
-        assert_eq!(close.counts, (1, 1, 1, 0));
-        assert_eq!(*readback.borrow(), (1, 1, 1), "fresh B/C/family readback follows positive writer close");
-        require_read_controls(&events.borrow(), &f);
-        drop(progress);
-        let published = require_only_published(&f);
-        let after_trees = trees(&f);
-        only_source_database_changed(&before_trees, &after_trees, &f.source_database);
+            assert_eq!(progress.effect(), OrdinaryReadyPublicationEffect::Updated);
+            assert_eq!(progress.published(), &f.published);
+            assert_eq!(progress.receipt(), &f.receipt);
+            let digest = progress.published_digest().to_owned();
+            assert_eq!(digest, f.published.digest().unwrap());
+            assert_eq!(close.counts, (1, 1, 1, 0));
+            assert_eq!(
+                *readback.borrow(),
+                (1, 1, 1),
+                "fresh B/C/family readback follows positive writer close"
+            );
+            require_read_controls(&events.borrow(), &f);
+            drop(progress);
+            let published = require_only_published(&f);
+            let after_trees = trees(&f);
+            only_source_database_changed(&before_trees, &after_trees, &f.source_database);
 
-        let replay = OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
-        let mut replay_close = Close::new(&f, false);
-        let progress = replay.publish(&mut replay_close, &cancel)
-            .unwrap_or_else(|e| panic!("fresh Published replay {:?}: {}", e.step, e.cause));
-        assert_eq!(progress.effect(), OrdinaryReadyPublicationEffect::AlreadyPublished);
-        assert_eq!(progress.published_digest(), digest);
-        assert_eq!(progress.published(), &f.published);
-        assert_eq!(progress.receipt(), &f.receipt);
-        assert_eq!(replay_close.counts, (0, 0, 0, 0), "Published replay never opens a writer");
-        drop(progress);
-        assert_eq!(published_rows(&f), published);
-        require_unchanged_destination(&f);
-        assert_eq!(trees(&f), after_trees, "exact replay preserves all checkout/CAS/database evidence");
-        let reopened = ProjectionStore::open(&f.source).unwrap();
-        reopened.state().unwrap();
-        drop(reopened);
-        assert_eq!(published_rows(&f), published);
-    });
+            let replay =
+                OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
+            let mut replay_close = Close::new(&f, false);
+            let progress = replay
+                .publish(&mut replay_close, &cancel)
+                .unwrap_or_else(|e| panic!("fresh Published replay {:?}: {}", e.step, e.cause));
+            assert_eq!(
+                progress.effect(),
+                OrdinaryReadyPublicationEffect::AlreadyPublished
+            );
+            assert_eq!(progress.published_digest(), digest);
+            assert_eq!(progress.published(), &f.published);
+            assert_eq!(progress.receipt(), &f.receipt);
+            assert_eq!(
+                replay_close.counts,
+                (0, 0, 0, 0),
+                "Published replay never opens a writer"
+            );
+            drop(progress);
+            assert_eq!(published_rows(&f), published);
+            require_unchanged_destination(&f);
+            assert_eq!(
+                trees(&f),
+                after_trees,
+                "exact replay preserves all checkout/CAS/database evidence"
+            );
+            let reopened = ProjectionStore::open(&f.source).unwrap();
+            reopened.state().unwrap();
+            drop(reopened);
+            assert_eq!(published_rows(&f), published);
+        },
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer"), 3600, || {
-        let f = fresh_ready_fixture(); // Independent fresh fixture, never recipe 1's paths.
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let held = OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
-        let mut close = Close::new(&f, true);
-        let after_close = close.after_close.clone();
-        let after_close_boundaries = Rc::new(Cell::new(0usize));
-        let observed_after_close = after_close_boundaries.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let result = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() {
-                observed_after_close.set(observed_after_close.get() + 1);
-                return Err(invalid("failed B close ACK forbids later SQL/identity/snapshot probes"));
-            }
-            Ok(())
-        }, || held.publish(&mut close, &cancel));
-        let OrdinaryReadyPublicationFailure { step, cause, held } = result.err()
-            .expect("withheld B close ACK must retain independent fresh authority");
-        assert_eq!(step, AdmissionStep::CommitReturned);
-        let primary = cause.to_string();
-        assert!(primary.contains(WITHHELD_ACK), "{primary}");
-        assert_eq!(close.counts, (1, 1, 1, 1));
-        assert_eq!(after_close_boundaries.get(), 0, "only mandatory close cleanup may follow the failed ACK");
-        require_read_controls(&events.borrow(), &f);
-        // Explicit caller observation, outside the failed call. The durable
-        // actual row is Published despite uncertain enclosing acknowledgement.
-        let committed = require_only_published(&f);
-        let published_trees = trees(&f);
-        only_source_database_changed(&before_trees, &published_trees, &f.source_database);
+fn managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_publication_withheld_b_close_ack_resolves_actual_published_with_b_without_writer"
+        ),
+        3600,
+        || {
+            let f = fresh_ready_fixture(); // Independent fresh fixture, never recipe 1's paths.
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let held = OrdinaryReadyPublication::open(&f.source, &f.destination, &cancel).unwrap();
+            let mut close = Close::new(&f, true);
+            let after_close = close.after_close.clone();
+            let after_close_boundaries = Rc::new(Cell::new(0usize));
+            let observed_after_close = after_close_boundaries.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let result = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() {
+                        observed_after_close.set(observed_after_close.get() + 1);
+                        return Err(invalid(
+                            "failed B close ACK forbids later SQL/identity/snapshot probes",
+                        ));
+                    }
+                    Ok(())
+                },
+                || held.publish(&mut close, &cancel),
+            );
+            let OrdinaryReadyPublicationFailure { step, cause, held } = result
+                .err()
+                .expect("withheld B close ACK must retain independent fresh authority");
+            assert_eq!(step, AdmissionStep::CommitReturned);
+            let primary = cause.to_string();
+            assert!(primary.contains(WITHHELD_ACK), "{primary}");
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(
+                after_close_boundaries.get(),
+                0,
+                "only mandatory close cleanup may follow the failed ACK"
+            );
+            require_read_controls(&events.borrow(), &f);
+            // Explicit caller observation, outside the failed call. The durable
+            // actual row is Published despite uncertain enclosing acknowledgement.
+            let committed = require_only_published(&f);
+            let published_trees = trees(&f);
+            only_source_database_changed(&before_trees, &published_trees, &f.source_database);
 
-        let source_path = f.source_database.clone();
-        let b_refusals = Rc::new(Cell::new(0usize));
-        let observed_refusals = b_refusals.clone();
-        let blocked = with_observer(move |path, point| {
-            if path == source_path.as_path() && point == ReadBoundary::BeforeSnapshot {
-                observed_refusals.set(observed_refusals.get() + 1);
-                return Err(invalid(B_READ_REFUSED));
-            }
-            Ok(())
-        }, || held.resolve(&cancel)).err().expect("resolution really requires current B evidence");
-        assert!(blocked.cause.to_string().contains(B_READ_REFUSED));
-        assert_eq!(b_refusals.get(), 1);
-        assert_eq!(close.counts, (1, 1, 1, 1));
-        assert_eq!(published_rows(&f), committed);
-        require_unchanged_destination(&f);
+            let source_path = f.source_database.clone();
+            let b_refusals = Rc::new(Cell::new(0usize));
+            let observed_refusals = b_refusals.clone();
+            let blocked = with_observer(
+                move |path, point| {
+                    if path == source_path.as_path() && point == ReadBoundary::BeforeSnapshot {
+                        observed_refusals.set(observed_refusals.get() + 1);
+                        return Err(invalid(B_READ_REFUSED));
+                    }
+                    Ok(())
+                },
+                || held.resolve(&cancel),
+            )
+            .err()
+            .expect("resolution really requires current B evidence");
+            assert!(blocked.cause.to_string().contains(B_READ_REFUSED));
+            assert_eq!(b_refusals.get(), 1);
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(published_rows(&f), committed);
+            require_unchanged_destination(&f);
 
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let progress = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            Ok(())
-        }, || blocked.held.resolve(&cancel))
-            .unwrap_or_else(|e| panic!("explicit actual-Published resolution {:?}: {}", e.step, e.cause));
-        assert_eq!(progress.effect(), OrdinaryReadyPublicationEffect::AlreadyPublished);
-        assert_eq!(progress.published_digest(), f.published.digest().unwrap());
-        assert_eq!(progress.published(), &f.published);
-        assert_eq!(progress.receipt(), &f.receipt);
-        require_read_controls(&events.borrow(), &f);
-        assert_eq!(read_counts(&events.borrow(), &f), (2, 2, 2), "resolution reads actual Published twice");
-        assert_eq!(close.counts, (1, 1, 1, 1), "explicit resolution has no writer parameter or extra writer");
-        assert_eq!(cause.to_string(), primary, "later explicit actions preserve the original ACK error");
-        drop(progress);
-        assert_eq!(published_rows(&f), committed);
-        require_unchanged_destination(&f);
-        assert_eq!(trees(&f), published_trees, "resolution preserves durable evidence");
-        let reopened = ProjectionStore::open(&f.source).unwrap();
-        reopened.state().unwrap();
-        drop(reopened);
-        assert_eq!(published_rows(&f), committed);
-    });
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let progress = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    Ok(())
+                },
+                || blocked.held.resolve(&cancel),
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "explicit actual-Published resolution {:?}: {}",
+                    e.step, e.cause
+                )
+            });
+            assert_eq!(
+                progress.effect(),
+                OrdinaryReadyPublicationEffect::AlreadyPublished
+            );
+            assert_eq!(progress.published_digest(), f.published.digest().unwrap());
+            assert_eq!(progress.published(), &f.published);
+            assert_eq!(progress.receipt(), &f.receipt);
+            require_read_controls(&events.borrow(), &f);
+            assert_eq!(
+                read_counts(&events.borrow(), &f),
+                (2, 2, 2),
+                "resolution reads actual Published twice"
+            );
+            assert_eq!(
+                close.counts,
+                (1, 1, 1, 1),
+                "explicit resolution has no writer parameter or extra writer"
+            );
+            assert_eq!(
+                cause.to_string(),
+                primary,
+                "later explicit actions preserve the original ACK error"
+            );
+            drop(progress);
+            assert_eq!(published_rows(&f), committed);
+            require_unchanged_destination(&f);
+            assert_eq!(
+                trees(&f),
+                published_trees,
+                "resolution preserves durable evidence"
+            );
+            let reopened = ProjectionStore::open(&f.source).unwrap();
+            reopened.state().unwrap();
+            drop(reopened);
+            assert_eq!(published_rows(&f), committed);
+        },
+    );
 }

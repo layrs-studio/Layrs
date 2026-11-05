@@ -3,19 +3,20 @@
 //! and runs the ignored recipe; no crash, owner-loss or close-failure claim.
 use super::{
     managed_ordinary_autonomy_tests::released_source10,
-    managed_ordinary_family_ready_tests::{family, text, Close},
+    managed_ordinary_family_ready_tests::{Close, family, text},
     managed_ordinary_installing_tests::{self as witness, Cell, Database},
     managed_ordinary_ready_tests::CURRENT,
     managed_ordinary_source_publication_tests::{self as publication, HISTORY},
 };
 use crate::projection::{
+    CapturedPatch, ProjectionStore,
     provider::{
         admitted_ordinary,
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         destination_ready::ReadyEffect,
         managed_admission::read_admitted_import,
-        managed_export::{allocation, AdmissionStep, OrdinaryReadyAdmission},
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        managed_export::{AdmissionStep, OrdinaryReadyAdmission, allocation},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         process_profile::tests::child,
         records::{
             import::ImportSource,
@@ -27,7 +28,6 @@ use crate::projection::{
         admitted_catalog::{ExportPublicationEffect, ExportReservationEffect},
         provider_access::ImportRegistrationEffect,
     },
-    CapturedPatch, ProjectionStore,
 };
 use layrs_core::{
     projection::EntryState,
@@ -183,18 +183,24 @@ fn source10_export_recipe() {
             (patch, bytes)
         })
         .collect();
-    assert!(captures
-        .iter()
-        .any(|(patch, bytes)| patch.identity == b_identity
-            && bytes.iter().any(|(_, bytes)| bytes == HISTORY)));
-    assert!(captures
-        .iter()
-        .any(|(patch, bytes)| patch.identity == *store.identity()
-            && bytes.iter().any(|(_, bytes)| bytes == CURRENT)));
-    assert!(captures
-        .iter()
-        .any(|(patch, bytes)| patch.identity == *store.identity()
-            && bytes.iter().any(|(_, bytes)| bytes == NESTED)));
+    assert!(
+        captures
+            .iter()
+            .any(|(patch, bytes)| patch.identity == b_identity
+                && bytes.iter().any(|(_, bytes)| bytes == HISTORY))
+    );
+    assert!(
+        captures
+            .iter()
+            .any(|(patch, bytes)| patch.identity == *store.identity()
+                && bytes.iter().any(|(_, bytes)| bytes == CURRENT))
+    );
+    assert!(
+        captures
+            .iter()
+            .any(|(patch, bytes)| patch.identity == *store.identity()
+                && bytes.iter().any(|(_, bytes)| bytes == NESTED))
+    );
     let source_marker = store.marker.clone();
     let source_database = source_marker
         .metadata_path(&root)

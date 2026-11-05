@@ -12,11 +12,9 @@ use layrs_sync::v3::{ObjectDescriptor, ObjectKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
-/// Files are verified one chunk at a time (memory is one chunk), so their
-/// size is unbounded (ADR 0027). Chunk references stay bounded, like a
-/// manifest object's size.
-const MAX_FILE_BYTES: u64 = u64::MAX;
-const MAX_STREAM_BYTES: u64 = u64::MAX;
+/// Files are verified one chunk at a time (memory is one chunk), so file and
+/// streamed sizes are unbounded (ADR 0027); only overflow refuses. Chunk
+/// references stay bounded, like a manifest object's size.
 const MAX_FILE_CHUNKS: usize = 1 << 24;
 /// Verification work is charged only beyond `AMPLIFICATION` times the
 /// distinct chunk bytes a manifest references: an ordinary file (even a new
@@ -45,12 +43,6 @@ async fn verified_manifest_budgeted(
         serde_json::from_slice(&bytes).map_err(|e| V3StoreError::CorruptObject(e.to_string()))?;
     if manifest.id().as_str() != descriptor.object_id.as_str() {
         return Err(V3StoreError::IdentityMismatch);
-    }
-    if manifest.byte_length() > MAX_FILE_BYTES {
-        return Err(V3StoreError::LimitExceeded {
-            resource: "reconstructed service file",
-            limit: MAX_FILE_BYTES,
-        });
     }
     if manifest.chunks().len() > MAX_FILE_CHUNKS {
         return Err(V3StoreError::LimitExceeded {
@@ -422,10 +414,9 @@ fn charge_amplified(total: &mut u64, bytes: u64) -> V3StoreResult<()> {
 fn charge_stream(total: &mut u64, bytes: u64) -> V3StoreResult<()> {
     let next = total
         .checked_add(bytes)
-        .filter(|next| *next <= MAX_STREAM_BYTES)
         .ok_or(V3StoreError::LimitExceeded {
             resource: "transaction streamed content bytes",
-            limit: MAX_STREAM_BYTES,
+            limit: u64::MAX,
         })?;
     *total = next;
     Ok(())
@@ -477,7 +468,7 @@ mod tests {
         assert!(super::charge_amplified(&mut overflow, 1).is_err());
         // 100,000 references to one 16 MiB chunk: ~1.5 TiB logical against
         // 1 GiB of amplification-free work, far beyond the allowance.
-        let excess = (100_000u64 * 16 << 20).saturating_sub((16u64 << 20) * super::AMPLIFICATION);
+        let excess = ((100_000u64 * 16) << 20).saturating_sub((16u64 << 20) * super::AMPLIFICATION);
         assert!(super::charge_amplified(&mut 0, excess).is_err());
     }
 
@@ -490,7 +481,7 @@ mod tests {
             super::charge_stream(&mut streamed, 1024 * 1024 * 1024).unwrap();
         }
         assert_eq!(streamed, 4 * 1024 * 1024 * 1024);
-        let mut full = super::MAX_STREAM_BYTES;
+        let mut full = u64::MAX;
         assert!(super::charge_stream(&mut full, 1).is_err());
         let mut metadata = 0;
         assert!(super::charge_closure(&mut metadata, 1024 * 1024 * 1024).is_err());

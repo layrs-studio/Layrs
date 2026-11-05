@@ -1,8 +1,8 @@
 //! Companion v2 DATA. The existing SQL header BLOB carries every new intent;
 //! deletion scalar rows alone must never be used to reconstruct provenance.
 //! No schema8 DDL is changed. An old v1 decoder rejects this header verbatim.
-use super::{codec, import::*, Record};
-use crate::projection::{capture::CapturedChange, format, invalid, ProjectionIdentity, Result};
+use super::{Record, codec, import::*};
+use crate::projection::{ProjectionIdentity, Result, capture::CapturedChange, format, invalid};
 use layrs_core::scm::{FileId, FileManifestId, RepoPath};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

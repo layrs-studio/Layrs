@@ -9,7 +9,9 @@ pub(in crate::scm_v1) fn preflight(batch: &WriteBatch, chunks: &[(ChunkId, u64)]
     if chunks.len().saturating_add(batch.canonical_objects().len())
         > super::super::admission::MAX_BATCH_OBJECTS
     {
-        return Err(invalid("combined canonical object count exceeds the batch object bound"));
+        return Err(invalid(
+            "combined canonical object count exceeds the batch object bound",
+        ));
     }
     let admitted: BTreeSet<_> = batch.admissions().iter().map(|a| a.object_id()).collect();
     let inline: BTreeSet<_> = batch

@@ -1,17 +1,17 @@
 mod blocks;
 mod git;
 pub(crate) mod offline;
-mod vfs;
 mod partial_provider;
 mod room;
+mod vfs;
 mod worktree;
 pub use blocks::BlockChoice;
 pub use offline::OfflineCommand;
+pub use partial_provider::PartialProviderCommand;
+pub use room::RoomCommand;
 use std::fmt;
 use std::path::PathBuf;
 pub use vfs::VfsCommand;
-pub use partial_provider::PartialProviderCommand;
-pub use room::RoomCommand;
 pub use worktree::WorktreeCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,7 +395,9 @@ where
             CliCommand::Offline(offline::parse(args.into_iter().skip(1).collect())?)
         }
         "partial" if args.first().is_some_and(|arg| arg == "provider") => {
-            CliCommand::PartialProvider(partial_provider::parse(args.into_iter().skip(1).collect())?)
+            CliCommand::PartialProvider(partial_provider::parse(
+                args.into_iter().skip(1).collect(),
+            )?)
         }
         "partial" => CliCommand::Partial { args },
         "init" => parse_init(args)?,

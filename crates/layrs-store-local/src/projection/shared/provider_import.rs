@@ -5,18 +5,18 @@ use super::*;
 use crate::projection::provider::{
     cancellation,
     records::{
+        AllocationRecord, PreparedRecord, Record,
         activation::ProviderActivationRecord,
         import::{ImportSource, ImportSourceReferences, ProviderImportKind},
         transition::{
             ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole, TransitionState,
         },
-        AllocationRecord, PreparedRecord, Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     validation::PrivateCaptureProof,
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[path = "provider_import/content.rs"]
 pub(in crate::projection) mod content;
@@ -135,7 +135,9 @@ fn validate_unreserved_for_source(
     ] {
         cancellation::check(cancel)?;
         if c.query_row(sql, [owner], |row| row.get::<_, bool>(0))? {
-            return Err(invalid("import destination has a root/reservation/installation"));
+            return Err(invalid(
+                "import destination has a root/reservation/installation",
+            ));
         }
     }
     family.verify()?;
@@ -306,7 +308,7 @@ fn validate_import_base_at_member_for_source(
         Some(_) => {
             return Err(invalid(
                 "import target registry row differs from expected member phase",
-            ))
+            ));
         }
     };
     if (phase == UnreservedPhase::Staging || member_phase == ImportMemberPhase::Ready)

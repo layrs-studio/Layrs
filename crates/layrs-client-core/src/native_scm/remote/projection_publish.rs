@@ -1,6 +1,6 @@
 //! Exact, durable publications from a format3 capture. No complete local Step.
 use super::*;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use layrs_core::projection::{EntryState, ProjectionSnapshot};
 use layrs_store_local::projection::{
     CompletedPublication, ProjectionIdentity, ProjectionStore, VersionedProjection,

@@ -6,7 +6,7 @@ use crate::projection::{
     provider::records::{AllocationRecord, PreparedRecord, ProviderBootstrapBinding},
     shared::source_denial::SourceDeniedCoverageReservation,
 };
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use std::path::Path;
 
 #[derive(Clone, Copy)]

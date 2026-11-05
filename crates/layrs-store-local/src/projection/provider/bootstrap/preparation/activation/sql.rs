@@ -69,7 +69,9 @@ pub(super) fn private_transition(
         let c = bare.connection();
         c.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;")?;
         validate(c)?;
-        let snapshot_bytes = snapshot.canonical_bytes().map_err(|error| invalid(error.to_string()))?;
+        let snapshot_bytes = snapshot
+            .canonical_bytes()
+            .map_err(|error| invalid(error.to_string()))?;
         let inserted = c.execute("INSERT INTO projection_snapshots(generation,digest,parent_digest,payload) VALUES(1,?1,?2,?3)",
             params![activation.activated_digest, activation.source_digest, snapshot_bytes])?;
         if inserted != 1 {

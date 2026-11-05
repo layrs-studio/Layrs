@@ -316,6 +316,7 @@ struct BatchState {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct CasPins {
     root: PinnedDirectory,
     objects: PinnedDirectory,
@@ -787,7 +788,11 @@ impl NativeCas {
             .unwrap_or_else(|| self.objects_dir.clone());
         if !self.defer_directory(&shard, &directory)? {
             let mut synced = self.synced_shards.lock().map_err(|_| {
-                io_error("lock synced shard set", &target, io::Error::other("poisoned"))
+                io_error(
+                    "lock synced shard set",
+                    &target,
+                    io::Error::other("poisoned"),
+                )
             })?;
             if !synced.contains(&shard) {
                 sync_directory_compatible(directory.sync())
@@ -1147,7 +1152,10 @@ impl NativeCas {
             return Ok(());
         }
         let _span = crate::perf::span("cas.batch_durability");
-        for (directory, path) in [(&state.staging, &self.staging_dir), (&state.objects, &self.objects_dir)] {
+        for (directory, path) in [
+            (&state.staging, &self.staging_dir),
+            (&state.objects, &self.objects_dir),
+        ] {
             directory
                 .verify_path_identity()
                 .map_err(|error| io_error("verify batch pin", path, error))?;
@@ -1162,14 +1170,20 @@ impl NativeCas {
                 let failure = std::sync::Mutex::new(None);
                 std::thread::scope(|scope| {
                     for _ in 0..threads {
-                        scope.spawn(|| loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some((path, directory)) = directories.get(index) else { break };
-                            if let Err(error) = sync_directory_compatible(directory.sync()) {
-                                if let Ok(mut failure) = failure.lock() {
-                                    failure.get_or_insert_with(|| io_error("sync batch directory", path, error));
+                        scope.spawn(|| {
+                            loop {
+                                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let Some((path, directory)) = directories.get(index) else {
+                                    break;
+                                };
+                                if let Err(error) = sync_directory_compatible(directory.sync()) {
+                                    if let Ok(mut failure) = failure.lock() {
+                                        failure.get_or_insert_with(|| {
+                                            io_error("sync batch directory", path, error)
+                                        });
+                                    }
+                                    break;
                                 }
-                                break;
                             }
                         });
                     }
@@ -1294,9 +1308,12 @@ impl NativeCas {
                 Some(child) => child,
                 None => {
                     let child = if self.batch_mode()?.is_some() {
-                        let child = directory.ensure_child_unsynced(&component).map_err(|error| {
-                            io_error("create pinned object shard", &path, error)
-                        })?;
+                        let child =
+                            directory
+                                .ensure_child_unsynced(&component)
+                                .map_err(|error| {
+                                    io_error("create pinned object shard", &path, error)
+                                })?;
                         let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
                         self.defer_directory(&parent, &directory)?;
                         self.defer_directory(&path, &child)?;
@@ -1510,8 +1527,7 @@ impl<'store> NativeCasWriter<'store> {
                                 Err(CasError::Corruption {
                                     kind: item.object().object_id().kind(),
                                     id: item.object().object_id().to_string(),
-                                    reason: "not installed after an earlier install failed"
-                                        .into(),
+                                    reason: "not installed after an earlier install failed".into(),
                                 })
                             } else {
                                 let result = cas.put_in_batch(item.object());
@@ -1542,7 +1558,9 @@ impl<'store> NativeCasWriter<'store> {
                     Some(Ok(item)) => {
                         let size = item.owned_bytes();
                         if size > 0 {
-                            let Ok(mut bytes) = in_flight.0.lock() else { break };
+                            let Ok(mut bytes) = in_flight.0.lock() else {
+                                break;
+                            };
                             while *bytes > 0
                                 && bytes.saturating_add(size) > MAX_IN_FLIGHT_BYTES
                                 && alive.load(Ordering::Acquire) > 0
@@ -1631,7 +1649,11 @@ impl<'store> NativeCasWriter<'store> {
             }
             end_batch.1 = true;
             let complete = complete && ordered.iter().all(|outcome| outcome.is_ok());
-            let durable = if batch_started { cas.end_batch(complete) } else { Ok(()) };
+            let durable = if batch_started {
+                cas.end_batch(complete)
+            } else {
+                Ok(())
+            };
             if let Err(error) = durable {
                 ordered.truncate(0);
                 ordered.push(Err(error));

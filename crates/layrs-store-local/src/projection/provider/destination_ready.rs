@@ -9,20 +9,20 @@ use super::{
     cancellation, database_io, destination_validation,
     import_validation::{OrdinaryFrozenBasis, VerifiedImportClosure},
     records::{
+        AllocationRecord, PreparedRecord, ProviderBootstrapSource, Record,
         activation::ProviderActivationRecord,
         import::{ImportSource, ProviderImportPrefixRecord, ProviderTransitionReceiptRecord},
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        AllocationRecord, PreparedRecord, ProviderBootstrapSource, Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
 use crate::projection::{capture::CapturedPatch, database, format, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileId, FileManifest, FileManifestId, RepoPath},
+    scm::{FileId, FileManifest, FileManifestId, RepoPath, canonical_json},
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod autonomous;
@@ -32,18 +32,18 @@ mod family;
 mod historical;
 mod ordinary;
 mod retained_companion;
-pub(in crate::projection::provider) use historical::{read_frozen_ready_rows, FrozenReadyRows};
+pub(in crate::projection::provider) use historical::{FrozenReadyRows, read_frozen_ready_rows};
 pub(in crate::projection::provider) use ordinary::{
-    finalize_ordinary_checkout_or_replay, read_ordinary_checkout_finalizable,
-    read_ordinary_checkout_progress, read_ordinary_checkout_ready,
-    read_ordinary_checkout_ready_for_publication, read_ordinary_ready_for_source_publication,
-    OrdinaryPublicationReady, OrdinaryReadyInputs,
+    OrdinaryPublicationReady, OrdinaryReadyInputs, finalize_ordinary_checkout_or_replay,
+    read_ordinary_checkout_finalizable, read_ordinary_checkout_progress,
+    read_ordinary_checkout_ready, read_ordinary_checkout_ready_for_publication,
+    read_ordinary_ready_for_source_publication,
 };
 mod read;
 pub(in crate::projection::provider) use autonomous::{
-    read_managed_ready, read_ordinary_family_publication, read_ordinary_managed_ready,
-    read_ordinary_private_ready, OrdinaryPrivateReadySnapshot, OwnedReadySnapshot,
-    VerifiedManagedReady, VerifiedOrdinaryFamilyPublication,
+    OrdinaryPrivateReadySnapshot, OwnedReadySnapshot, VerifiedManagedReady,
+    VerifiedOrdinaryFamilyPublication, read_managed_ready, read_ordinary_family_publication,
+    read_ordinary_managed_ready, read_ordinary_private_ready,
 };
 
 pub(in crate::projection::provider) struct ManagedReadyOverlay {
@@ -712,7 +712,7 @@ fn require_checkout_inventory(
             _ => {
                 return Err(invalid(
                     "checkout Ready base is not a selected file or absence",
-                ))
+                ));
             }
         };
         let change = patch

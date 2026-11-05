@@ -2,13 +2,13 @@
 //! canonical IDs derived from the verified source/ancestor records, never a
 //! whole mutable provider table.
 use super::super::records::{
+    Record,
     activation::{ActivationRowData, ProviderActivationRecord},
     import::{
         CompanionDeletionRowData, CompanionFileRowData, CompanionHeaderRowData, CompanionReason,
         ImportSource, ProviderCompanionDeletionRecord, ProviderCompanionFileRecord,
         ProviderCompanionHeaderRecord,
     },
-    Record,
 };
 use super::rows::{Kind, Spec};
 use super::*;

@@ -53,30 +53,29 @@ pub use vfs_source::{VerifiedVfsSnapshot, VerifiedVfsSnapshotBinding};
 #[cfg(windows)]
 mod vfs_capture;
 #[cfg(windows)]
-mod vfs_worktree;
+mod vfs_commands;
 #[cfg(windows)]
 mod vfs_host;
 #[cfg(windows)]
-mod vfs_commands;
+mod vfs_worktree;
 #[cfg(windows)]
 pub use vfs_capture::{VfsCaptureCounts, VfsFileRecord};
 #[cfg(windows)]
+pub use vfs_commands::{execute_vfs_control, prepare_vfs_host, VfsControlRequest, VfsLaunchAction};
+#[cfg(windows)]
+pub use vfs_host::{VfsHost, VfsHostClient, VfsHostCommand, VfsHostResponse, VfsHostTicket};
+#[cfg(windows)]
 pub use vfs_worktree::{
-    VfsWorktree, VfsWorktreeLocator, VfsWorktreeStatus, VfsCaptureReport, VfsCaptureBlockedReason,
-    VfsExportReport, VfsWorktreeFaults, NoVfsWorktreeFaults, is_vfs_worktree,
-    inspect_vfs_checkout, verify_registered_vfs_root,
+    inspect_vfs_checkout, is_vfs_worktree, verify_registered_vfs_root, NoVfsWorktreeFaults,
+    VfsCaptureBlockedReason, VfsCaptureReport, VfsExportReport, VfsWorktree, VfsWorktreeFaults,
+    VfsWorktreeLocator, VfsWorktreeStatus,
 };
-#[cfg(windows)]
-pub use vfs_host::{VfsHost, VfsHostClient, VfsHostTicket, VfsHostCommand, VfsHostResponse};
-#[cfg(windows)]
-pub use vfs_commands::{prepare_vfs_host, execute_vfs_control, VfsLaunchAction, VfsControlRequest};
 mod worktrees;
 pub use worktrees::{NoWorktreeCreationFaults, WorktreeCreationFaults};
 mod rooms;
 pub use rooms::{
     default_rooms_parent, is_virtual_room_root, room_layer_name, unregister_virtual_room,
-    validate_room_name,
-    virtual_room_origin, RoomKind, RoomRecord,
+    validate_room_name, virtual_room_origin, RoomKind, RoomRecord,
 };
 mod worktree_operations;
 pub use remote::{
@@ -92,9 +91,10 @@ mod partial;
 #[cfg(windows)]
 mod partial_provider;
 #[cfg(windows)]
-pub use partial_provider::{provider_status, ProviderStatus, ProviderStatusError, ProviderStatusTicket};
+pub use partial_provider::{
+    provider_status, ProviderStatus, ProviderStatusError, ProviderStatusTicket,
+};
 mod projection_offline_commands;
-pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
 pub use diff::{NativeDiffLine, NativeFileChange, StatusReport};
 pub use filesystem::capture_checkout;
 pub use layrs_graph::scm::{ReferenceSelector, StepSelector};
@@ -107,6 +107,7 @@ pub use partial::{checkout_kind, execute_projection, ProjectionAction};
 pub use prepare::{
     prepare_initialize, CaptureBase, CapturePlan, MutationStamp, NativeClient, PreparedMutation,
 };
+pub use projection_offline_commands::{execute_projection_offline, ProjectionOfflineAction};
 pub use selection::ResolvedStep;
 pub use snapshot::{PreparedSnapshot, SnapshotBuilder, SnapshotLimits};
 pub use workspace::{NativeWorkspace, WorkspaceState};

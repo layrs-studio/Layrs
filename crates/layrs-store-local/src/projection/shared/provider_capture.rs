@@ -7,13 +7,13 @@ use crate::projection::shared::source_denial::{
 };
 use crate::{
     projection::provider::{
-        records::{capture::ProviderCaptureState, AllocationRecord},
-        recovery::error::{invalid, Result},
+        records::{AllocationRecord, capture::ProviderCaptureState},
+        recovery::error::{Result, invalid},
         validation::PrivateCaptureProof,
     },
     secure_fs::PinnedDirectory,
 };
-use layrs_core::scm::{canonical_json, FileManifest};
+use layrs_core::scm::{FileManifest, canonical_json};
 use layrs_vfs::Cancellation;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};

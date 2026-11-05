@@ -86,7 +86,11 @@ pub fn emit(label: &str) {
     match std::env::var_os("LAYRS_PERF_OUT") {
         Some(path) => {
             use std::io::Write;
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(
                     file,
                     "{{\"label\":{},\"pid\":{},{}",

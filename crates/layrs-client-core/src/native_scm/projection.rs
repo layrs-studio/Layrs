@@ -37,20 +37,17 @@ impl NativeWorkspace {
             space.clone(),
             step.clone(),
         );
-        if let Some(cached) = projection_cache()
-            .lock()
-            .ok()
-            .and_then(|cache| cache.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()))
-        {
+        if let Some(cached) = projection_cache().lock().ok().and_then(|cache| {
+            cache
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone())
+        }) {
             return Ok(cached.as_ref().clone());
         }
         let reader = NativeScmReader::new(store)?;
-        let projection = read_admitted_step_projection(
-            &reader,
-            space,
-            step,
-            Some(store.layout().root()),
-        )?;
+        let projection =
+            read_admitted_step_projection(&reader, space, step, Some(store.layout().root()))?;
         if let Ok(mut cache) = projection_cache().lock() {
             if cache.len() >= 4 {
                 cache.remove(0);
@@ -101,10 +98,14 @@ pub(super) fn verify_changed_content(
     target_side: bool,
 ) -> Result<()> {
     let _span = layrs_store_local::perf::span("transition.verify_changed_content");
-    let prior: BTreeMap<&str, &CheckoutProjectionContent> =
-        before.iter().map(|e| (e.path.as_str(), &e.content)).collect();
-    let next: BTreeMap<&str, &CheckoutProjectionContent> =
-        after.iter().map(|e| (e.path.as_str(), &e.content)).collect();
+    let prior: BTreeMap<&str, &CheckoutProjectionContent> = before
+        .iter()
+        .map(|e| (e.path.as_str(), &e.content))
+        .collect();
+    let next: BTreeMap<&str, &CheckoutProjectionContent> = after
+        .iter()
+        .map(|e| (e.path.as_str(), &e.content))
+        .collect();
     // Target side: the bytes this transition writes. Base side: the Store copy
     // of every file the transition moves to backups or replaces must be intact
     // too, otherwise the backup would become its only copy.
@@ -139,9 +140,10 @@ type ProjectionKey = (String, String, SpaceId, StepId);
 
 /// Last few admitted Step projections read by this process (see
 /// `read_step_projection`).
+#[allow(clippy::type_complexity)]
 fn projection_cache(
-) -> &'static std::sync::Mutex<Vec<(ProjectionKey, std::sync::Arc<Vec<CheckoutProjectionEntry>>)>>
-{
+) -> &'static std::sync::Mutex<Vec<(ProjectionKey, std::sync::Arc<Vec<CheckoutProjectionEntry>>)>> {
+    #[allow(clippy::type_complexity)]
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<Vec<(ProjectionKey, std::sync::Arc<Vec<CheckoutProjectionEntry>>)>>,
     > = std::sync::OnceLock::new();

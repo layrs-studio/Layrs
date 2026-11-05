@@ -419,10 +419,9 @@ impl ScmReader for NativeScmReader<'_> {
             )
             .map_err(sqlite_backend)?;
         statement
-            .query_row(
-                [StoreObjectId::ChunkRaw(id.clone()).as_str()],
-                |row| row.get(0),
-            )
+            .query_row([StoreObjectId::ChunkRaw(id.clone()).as_str()], |row| {
+                row.get(0)
+            })
             .map_err(sqlite_backend)
     }
 

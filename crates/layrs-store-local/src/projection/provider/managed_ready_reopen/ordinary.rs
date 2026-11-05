@@ -7,10 +7,10 @@ use crate::projection::{
     provider::{
         admitted_ordinary::{self, AdmittedOrdinaryData},
         destination_ready::read_ordinary_managed_ready,
-        managed_admission::{read_admitted_import, RequiredRepresentation},
+        managed_admission::{RequiredRepresentation, read_admitted_import},
     },
     shared::{
-        admitted_catalog::{validate_terminal_ready_catalog, AdmittedFamilyContext},
+        admitted_catalog::{AdmittedFamilyContext, validate_terminal_ready_catalog},
         exact_content::{ExactBinding, ExactInstallState},
         exact_protection::ExactProtection,
     },

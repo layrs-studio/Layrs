@@ -1,14 +1,14 @@
 //! Destination-local interpretation of the immutable incoming prefix only.
 //! The caller pins the genuine destination FORMAT and retains its transaction.
 //! No live source, native authority, Ready suffix or content bytes are proved.
-use super::super::managed_admission::schema::{AdmittedLayout, AdmittedSchemaPermit};
 use super::super::managed_admission::ManagedAdmissionRecord;
+use super::super::managed_admission::schema::{AdmittedLayout, AdmittedSchemaPermit};
 use super::super::records::{
+    ProviderBootstrapSource, Record,
     activation::ProviderActivationRecord,
     transition::{
         ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
     },
-    ProviderBootstrapSource, Record,
 };
 use super::*;
 use layrs_core::projection::{ProjectionSelection, ProjectionSnapshot};
@@ -551,7 +551,7 @@ fn read_prefix_rows<'a>(
         _ => {
             return Err(invalid(
                 "destination ordinary prefix requires admitted source",
-            ))
+            ));
         }
     };
     require_bounded_foreign_keys(c, cancel)?;

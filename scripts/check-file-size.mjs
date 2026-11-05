@@ -19,6 +19,9 @@ const generatedOrExternalPatterns = [
   /(^|[\\/])Cargo\.lock$/,
   /(^|[\\/])pnpm-lock\.yaml$/,
   /(^|[\\/])apps[\\/]studio-desktop[\\/]src-tauri[\\/]gen([\\/]|$)/,
+  // Machine-written evidence records (inventories, checkpoints) of the
+  // continuation bundles, like the lockfiles: data, not source.
+  /^docs[\\/]continuation[\\/].*\.json$/,
 ];
 
 const sourceExtensions = new Set([

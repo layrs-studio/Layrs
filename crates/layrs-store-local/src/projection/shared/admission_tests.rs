@@ -55,12 +55,14 @@ fn schema_dispatch_is_exact_and_exact_stages_block_ordinary_access() {
                     require_no_exact_installations(c, CatalogSchema::V2).is_err(),
                     "ordinary readers and GC must not ignore an exact stage"
                 );
-                assert!(provider_access::require_no_owner_exact_installations(
-                    c,
-                    CatalogSchema::V2,
-                    "owner"
-                )
-                .is_err());
+                assert!(
+                    provider_access::require_no_owner_exact_installations(
+                        c,
+                        CatalogSchema::V2,
+                        "owner"
+                    )
+                    .is_err()
+                );
                 provider_access::require_no_owner_exact_installations(
                     c,
                     CatalogSchema::V2,

@@ -26,11 +26,9 @@ fn assert_cold(store: &ProjectionStore, request: &AvailabilityRequest) {
         .unwrap();
     assert!(cold.manifest_id.is_none());
     assert_eq!(cold.blockers, vec![AvailabilityBlocker::MissingContent]);
-    assert!(
-        store
-            .read_version_file(&request.version, &cold.path, &mut Vec::new())
-            .is_err()
-    );
+    assert!(store
+        .read_version_file(&request.version, &cold.path, &mut Vec::new())
+        .is_err());
 }
 
 fn prepare_from_anchored_base(f: &Fixture, store: &ProjectionStore, patch: &CapturedPatch) {
@@ -113,16 +111,14 @@ fn prepare_from_anchored_base(f: &Fixture, store: &ProjectionStore, patch: &Capt
             .unwrap();
         assert_eq!(bytes, expected);
     }
-    assert!(
-        store
-            .compare_versions(&AvailabilityRequest {
-                other: Some(req.version.clone()),
-                operation: OfflineOperation::CompareContent,
-                ..req
-            })
-            .unwrap()
-            .is_empty()
-    );
+    assert!(store
+        .compare_versions(&AvailabilityRequest {
+            other: Some(req.version.clone()),
+            operation: OfflineOperation::CompareContent,
+            ..req
+        })
+        .unwrap()
+        .is_empty());
     assert_eq!(f.server.lock().unwrap().events.len(), events);
     store.fsck().unwrap();
 }
@@ -179,20 +175,17 @@ fn imported_capture_unchanged_path_uses_copied_generation_and_preserves_source_i
         sequence: patch.sequence,
         digest: patch.digest.clone(),
     };
-    assert!(
-        f.remote
-            .prepare_projection_offline(&store, 1, &wrong)
-            .is_err()
-    );
-    assert!(
-        store
-            .version_metadata(&ProjectionVersion::Generation {
-                worktree_id: identity.worktree_id,
-                generation: patch.projection_generation,
-                digest: patch.projection_digest.clone()
-            })
-            .is_err()
-    );
+    assert!(f
+        .remote
+        .prepare_projection_offline(&store, 1, &wrong)
+        .is_err());
+    assert!(store
+        .version_metadata(&ProjectionVersion::Generation {
+            worktree_id: identity.worktree_id,
+            generation: patch.projection_generation,
+            digest: patch.projection_digest.clone()
+        })
+        .is_err());
     assert!(f.server.lock().unwrap().events.is_empty());
     assert!(store.preparations().unwrap().is_empty());
     prepare_from_anchored_base(&f, &store, &patch);
@@ -228,11 +221,9 @@ fn capture_deletion_is_explicit_absence_and_never_fetches_its_base_file() {
     assert_eq!(deleted.state, EntryState::Absent);
     assert!(deleted.target.is_none());
     let mut bytes = Vec::new();
-    assert!(
-        store
-            .read_version_file(&req.version, &req.paths[0], &mut bytes)
-            .is_err()
-    );
+    assert!(store
+        .read_version_file(&req.version, &req.paths[0], &mut bytes)
+        .is_err());
     assert!(bytes.is_empty());
     assert!(f.server.lock().unwrap().events.is_empty());
     assert_cold(&store, &capture_request(&store, &patch));

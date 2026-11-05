@@ -4,14 +4,14 @@ use super::*;
 use crate::projection::{
     provider::{
         capture_lock::{CaptureAttemptLock, CaptureAttemptLockError},
-        records::{capture::ProviderCaptureState, Receipt},
+        records::{Receipt, capture::ProviderCaptureState},
     },
     shared::provider_access::FamilyAccess,
 };
 use crate::scm_v1::vfs_recovery::VfsExportWriter;
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileId, RepoPath, TreeEntryTarget},
+    scm::{FileId, RepoPath, TreeEntryTarget, canonical_json},
 };
 use layrs_vfs::{Cancellation, CaptureEvidence, SnapshotSource};
 use serde::Serialize;
@@ -27,7 +27,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
 };
 
 const FILE_LIMIT: u64 = 1024 * 1024 * 1024;
@@ -281,7 +281,7 @@ pub(super) fn plan(
         match &observation.evidence {
             // Exports and reconciliation never admit a file from its listing.
             CaptureEvidence::Vouched { .. } => {
-                return Err(invalid("export evidence must be inspected, not listed"))
+                return Err(invalid("export evidence must be inspected, not listed"));
             }
             CaptureEvidence::Deleted { base } => {
                 if observation.original_path.is_some() {

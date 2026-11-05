@@ -175,14 +175,16 @@ fn ordinary_plan_protects_base_and_current_with_empty_historical_mapping() {
         *current.file_id()
     );
     require_manifest_union(&result.plan, &supplied).unwrap();
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &current)],
-        &[],
-        &[current.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &current)],
+            &[],
+            &[current.clone()]
+        )
+        .is_err()
+    );
 
     let unchanged = plan(
         &data,
@@ -260,14 +262,16 @@ fn ordinary_base_manifest_covers_shared_file_paths_once() {
     let result = plan(&data, &[&data.base], &files, &[], &[data.base.clone()]).unwrap();
     assert!(result.capture.changes.is_empty());
     assert_eq!(result.required_manifests.len(), 1);
-    assert!(plan(
-        &data,
-        &[&data.base, &data.base],
-        &files,
-        &[],
-        &[data.base.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base, &data.base],
+            &files,
+            &[],
+            &[data.base.clone()]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -276,22 +280,26 @@ fn ordinary_plan_refuses_missing_extra_wrong_and_conflicting_length_bases() {
     let files = [image(&data, &data.base)];
     assert!(plan(&data, &[], &files, &[], &[data.base.clone()]).is_err());
     let other = manifest(b"wrong snapshot base");
-    assert!(plan(
-        &data,
-        &[&other],
-        &files,
-        &[],
-        &[data.base.clone(), other.clone()]
-    )
-    .is_err());
-    assert!(plan(
-        &data,
-        &[&data.base, &other],
-        &files,
-        &[],
-        &[data.base.clone(), other.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&other],
+            &files,
+            &[],
+            &[data.base.clone(), other.clone()]
+        )
+        .is_err()
+    );
+    assert!(
+        plan(
+            &data,
+            &[&data.base, &other],
+            &files,
+            &[],
+            &[data.base.clone(), other.clone()]
+        )
+        .is_err()
+    );
     let longer = manifest(&vec![b'x'; data.base.byte_length() as usize + 1]);
     let wrong_length = FileManifest::new(
         data.base.file_id().clone(),
@@ -301,14 +309,16 @@ fn ordinary_plan_refuses_missing_extra_wrong_and_conflicting_length_bases() {
     )
     .unwrap();
     assert_ne!(wrong_length.byte_length(), data.base.byte_length());
-    assert!(plan(
-        &data,
-        &[&wrong_length],
-        &files,
-        &[],
-        &[data.base.clone(), wrong_length.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&wrong_length],
+            &files,
+            &[],
+            &[data.base.clone(), wrong_length.clone()]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -325,58 +335,68 @@ fn ordinary_plan_requires_exact_admitted_source_selection_and_history_commitment
         *admission = None;
     }
     data.prefix.validate_fields().unwrap();
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &data.base)],
-        &[],
-        &[data.base.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &data.base)],
+            &[],
+            &[data.base.clone()]
+        )
+        .is_err()
+    );
     data.prefix = ProviderImportPrefixRecord::decode(&original).unwrap();
     if let ImportSource::Ordinary { version, .. } = &mut data.prefix.source {
         version.selection_digest = "b".repeat(64);
     }
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &data.base)],
-        &[],
-        &[data.base.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &data.base)],
+            &[],
+            &[data.base.clone()]
+        )
+        .is_err()
+    );
     data.prefix = ProviderImportPrefixRecord::decode(&original).unwrap();
     data.selection =
         ProjectionSelection::selected(vec![], vec![], data.current.path_semantics).unwrap();
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &data.base)],
-        &[],
-        &[data.base.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &data.base)],
+            &[],
+            &[data.base.clone()]
+        )
+        .is_err()
+    );
     data.selection = ProjectionSelection::All;
     data.historical.clear();
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &data.base)],
-        &[],
-        &[data.base.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &data.base)],
+            &[],
+            &[data.base.clone()]
+        )
+        .is_err()
+    );
     let substitute = manifest(b"substituted history");
     data.historical
         .push(RequiredManifest::from_manifest(&substitute));
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &data.base)],
-        &[],
-        &[data.base.clone(), substitute]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &data.base)],
+            &[],
+            &[data.base.clone(), substitute]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -387,23 +407,27 @@ fn ordinary_plan_keeps_writable_exact_image_and_protected_union_fences() {
     let mut wrong = image(&data, &edited);
     wrong.expected = Some((edited.file_id().clone(), false));
     assert!(plan(&data, &[&data.base], &[wrong], &[], &supplied).is_err());
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &edited)],
-        &[],
-        &[edited.clone()]
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &edited)],
+            &[],
+            &[edited.clone()]
+        )
+        .is_err()
+    );
     data.current.entries[0].writable = false;
-    assert!(plan(
-        &data,
-        &[&data.base],
-        &[image(&data, &edited)],
-        &[],
-        &supplied
-    )
-    .is_err());
+    assert!(
+        plan(
+            &data,
+            &[&data.base],
+            &[image(&data, &edited)],
+            &[],
+            &supplied
+        )
+        .is_err()
+    );
     data.current.entries[0].writable = true;
     let deletion = ImageDeletion {
         path: &data.current.entries[0].path,

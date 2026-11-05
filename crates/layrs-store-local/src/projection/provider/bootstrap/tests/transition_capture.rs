@@ -5,6 +5,7 @@ use crate::projection::provider::{
     database_io::{self, BareConnection, WriterCloseObserver},
     import_validation::{self, ImportDatabaseKind},
     records::{
+        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt, Record,
         import::{
             ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
             ProviderImportKind, ProviderImportPrefixRecord,
@@ -13,7 +14,6 @@ use crate::projection::provider::{
             ProviderTransitionIntentRecord, TransitionObservation, TransitionPlan, TransitionRole,
             TransitionRowset, TransitionState,
         },
-        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt, Record,
     },
     transition_sql::{self, SourceIntentEffect},
     validation,
@@ -21,7 +21,7 @@ use crate::projection::provider::{
 use crate::projection::shared::provider_access::FamilyAccess;
 use layrs_core::scm::{FileId, WorktreeId};
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::{fs, path::Path};
 
 const ROOT_ID: [u8; 16] = [0x63; 16];

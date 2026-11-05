@@ -8,16 +8,16 @@
 use super::{
     cancellation,
     records::{
+        Record,
         denied_coverage::{
             DeniedCoverageRef, DerivedDeniedCoverage, TransitionDeniedCoverageRecord,
         },
-        Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
 use layrs_vfs::Cancellation;
 use rusqlite::{
-    params, types::ValueRef, Connection, DatabaseName, OptionalExtension, TransactionState,
+    Connection, DatabaseName, OptionalExtension, TransactionState, params, types::ValueRef,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

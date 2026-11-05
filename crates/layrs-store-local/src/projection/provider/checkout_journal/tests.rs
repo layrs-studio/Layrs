@@ -1,16 +1,16 @@
 use super::*;
 use crate::projection::{
+    ProjectionStoreError,
     provider::{
         database_io::BareConnection, process_profile::tests::child,
         recovery::error::ProviderBootstrapCause,
     },
-    ProjectionStoreError,
 };
 #[path = "tests/fixture.rs"]
 mod fixture;
 #[path = "tests/ordinary.rs"]
 mod ordinary;
-use fixture::{Fixture, DIRECTORY, IMAGE, STAGE};
+use fixture::{DIRECTORY, Fixture, IMAGE, STAGE};
 
 fn refuses<T>(result: Result<T>, message: &str) {
     let error = match result {
@@ -322,18 +322,41 @@ owned!(
     {
         memory(|c, expected| {
             declare(c, expected, None).unwrap();
-            for (sql,message) in [
-            ("DELETE FROM projection_prejournal WHERE path LIKE '%:header'","checkout journal is incomplete or has foreign rows"),
-            ("INSERT INTO projection_prejournal VALUES('foreign','foreign','foreign',x'7b7d','owned')","checkout journal is incomplete or has foreign rows"),
-            ("UPDATE projection_prejournal SET state='cleaning' WHERE path LIKE '%:file:000000'","checkout journal SQL scalar or operation differs"),
-            ("UPDATE projection_prejournal SET payload=zeroblob(8193) WHERE path LIKE '%:file:000000'","checkout journal SQL scalar or operation differs"),
-            ("UPDATE projection_prejournal SET path=printf('%01000d',1) WHERE path LIKE '%:file:000000'","checkout journal SQL scalar or operation differs"),
-            ("UPDATE projection_prejournal SET operation='another-operation' WHERE path LIKE '%:file:000000'","checkout journal SQL scalar or operation differs"),
-        ] {
-            c.execute_batch("SAVEPOINT tamper").unwrap();c.execute_batch(sql).unwrap();let before=c.total_changes();
-            refuses(read(c,expected,None),message);refuses(declare(c,expected,None),message);assert_eq!(c.total_changes(),before);
-            c.execute_batch("ROLLBACK TO tamper; RELEASE tamper").unwrap();
-        }
+            for (sql, message) in [
+                (
+                    "DELETE FROM projection_prejournal WHERE path LIKE '%:header'",
+                    "checkout journal is incomplete or has foreign rows",
+                ),
+                (
+                    "INSERT INTO projection_prejournal VALUES('foreign','foreign','foreign',x'7b7d','owned')",
+                    "checkout journal is incomplete or has foreign rows",
+                ),
+                (
+                    "UPDATE projection_prejournal SET state='cleaning' WHERE path LIKE '%:file:000000'",
+                    "checkout journal SQL scalar or operation differs",
+                ),
+                (
+                    "UPDATE projection_prejournal SET payload=zeroblob(8193) WHERE path LIKE '%:file:000000'",
+                    "checkout journal SQL scalar or operation differs",
+                ),
+                (
+                    "UPDATE projection_prejournal SET path=printf('%01000d',1) WHERE path LIKE '%:file:000000'",
+                    "checkout journal SQL scalar or operation differs",
+                ),
+                (
+                    "UPDATE projection_prejournal SET operation='another-operation' WHERE path LIKE '%:file:000000'",
+                    "checkout journal SQL scalar or operation differs",
+                ),
+            ] {
+                c.execute_batch("SAVEPOINT tamper").unwrap();
+                c.execute_batch(sql).unwrap();
+                let before = c.total_changes();
+                refuses(read(c, expected, None), message);
+                refuses(declare(c, expected, None), message);
+                assert_eq!(c.total_changes(), before);
+                c.execute_batch("ROLLBACK TO tamper; RELEASE tamper")
+                    .unwrap();
+            }
             c.execute_batch("SAVEPOINT canonical_tamper").unwrap();
             let mut row = expected.declared_row(RowKey::File(0)).unwrap();
             row.header_digest = format!("blake3:{}", "0".repeat(64));

@@ -5,7 +5,7 @@ use crate::projection::provider::{
     process_profile::tests::child,
     records::transition::ProviderTransitionIntentRecord,
 };
-use rusqlite::{ffi, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::fs;
 
 #[derive(Default)]

@@ -52,6 +52,7 @@ pub(in crate::projection) fn scan_with_scope(
 /// leaf open, including namespace checks and identity reopens, must therefore
 /// avoid the DELETE right requested by the ordinary capture opener.
 #[cfg(windows)]
+#[allow(dead_code)]
 pub(in crate::projection) fn scan_readonly_with_scope(
     store: &ProjectionStore,
     c: &rusqlite::Connection,

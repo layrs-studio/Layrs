@@ -3,7 +3,7 @@ use super::*;
 mod capture_tests;
 #[path = "projection_offline_fixture.rs"]
 mod fixture;
-use fixture::{Fixture, path};
+use fixture::{path, Fixture};
 
 fn request(store: &ProjectionStore, name: &str) -> AvailabilityRequest {
     AvailabilityRequest {
@@ -34,11 +34,9 @@ fn explicit_generation_preparation_uses_exact_excluded_path_and_offline_read_has
     let f = Fixture::new();
     let store = f.store();
     let req = request(&store, "excluded.txt");
-    assert!(
-        store
-            .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
-            .is_err()
-    );
+    assert!(store
+        .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
+        .is_err());
     assert!(f.server.lock().unwrap().events.is_empty());
     let prepared = f
         .remote
@@ -151,11 +149,10 @@ fn acquisition_refuses_new_denial_same_file_alias_stale_authority_and_wrong_root
     hydrate(&store);
     // Same FileId is retained via allowed.txt, but private.txt stays unreadable.
     let before = f.server.lock().unwrap().events.len();
-    assert!(
-        f.remote
-            .prepare_projection_offline(&store, 1, &request(&store, "private.txt"))
-            .is_err()
-    );
+    assert!(f
+        .remote
+        .prepare_projection_offline(&store, 1, &request(&store, "private.txt"))
+        .is_err());
     assert_eq!(f.server.lock().unwrap().events.len(), before);
 }
 
@@ -173,19 +170,16 @@ fn final_authority_and_generation_checks_leave_resumable_intent_without_private_
                 s.advance_after_download = Some(store.checkout_root().into());
             }
         }
-        assert!(
-            f.remote
-                .prepare_projection_offline(&store, 0, &req)
-                .is_err()
-        );
+        assert!(f
+            .remote
+            .prepare_projection_offline(&store, 0, &req)
+            .is_err());
         let p = store.preparations().unwrap().pop().unwrap();
         assert_eq!(p.status, "acquiring");
         assert_eq!(p.request, req);
-        assert!(
-            store
-                .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
-                .is_err()
-        );
+        assert!(store
+            .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
+            .is_err());
         if drift == "epoch" {
             f.server.lock().unwrap().base.authorization_epoch = 1;
         }
@@ -251,11 +245,10 @@ fn resume_uses_exact_stored_request_outside_bounded_history_and_reauthorizes() {
     assert_eq!(listed.iter().filter(|p| p.status == "released").count(), 64);
     assert!(!listed.iter().any(|p| p.id == wanted.id));
     assert_eq!(store.preparation(&wanted.id).unwrap(), Some(wanted.clone()));
-    assert!(
-        f.remote
-            .resume_projection_offline(&store, 0, &wanted.id)
-            .is_err()
-    );
+    assert!(f
+        .remote
+        .resume_projection_offline(&store, 0, &wanted.id)
+        .is_err());
     for id in ["unknown-preparation", "legacy-released-0064"] {
         assert!(f.remote.resume_projection_offline(&store, 1, id).is_err());
     }
@@ -355,17 +348,14 @@ fn corrupt_download_and_missing_captured_chunk_never_become_ready_or_remote_repa
     let store = f.store();
     let req = request(&store, "allowed.txt");
     f.server.lock().unwrap().corrupt_payload = true;
-    assert!(
-        f.remote
-            .prepare_projection_offline(&store, 0, &req)
-            .is_err()
-    );
+    assert!(f
+        .remote
+        .prepare_projection_offline(&store, 0, &req)
+        .is_err());
     assert_eq!(store.preparations().unwrap()[0].status, "acquiring");
-    assert!(
-        store
-            .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
-            .is_err()
-    );
+    assert!(store
+        .read_version_file(&req.version, &req.paths[0], &mut Vec::new())
+        .is_err());
     let f = Fixture::with_excluded_bytes(b"cold unchanged bytes\n");
     let store = f.store();
     hydrate(&store);
@@ -399,11 +389,10 @@ fn corrupt_download_and_missing_captured_chunk_never_become_ready_or_remote_repa
         paths: vec![path("allowed.txt"), path("excluded.txt")],
         operation: OfflineOperation::Read,
     };
-    assert!(
-        f.remote
-            .prepare_projection_offline(&store, 1, &req)
-            .is_err()
-    );
+    assert!(f
+        .remote
+        .prepare_projection_offline(&store, 1, &req)
+        .is_err());
     assert!(store.preparations().unwrap().is_empty());
     assert!(f.server.lock().unwrap().events.is_empty());
 }
@@ -499,17 +488,14 @@ fn imported_capture_refuses_network_and_receipt_replay_uses_original_identity() 
             .remote
             .publish_projection(&store, capture.sequence, &layer);
         if protocol == 0 {
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("imported_capture_not_publishable")
-            );
-            assert!(
-                f.remote
-                    .publish_projection_candidate(&store, capture.sequence, &layer)
-                    .is_err()
-            );
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("imported_capture_not_publishable"));
+            assert!(f
+                .remote
+                .publish_projection_candidate(&store, capture.sequence, &layer)
+                .is_err());
         } else {
             let result = result.unwrap();
             assert!(result.historical);

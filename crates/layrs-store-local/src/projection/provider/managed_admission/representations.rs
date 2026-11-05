@@ -1,7 +1,7 @@
 //! Bounded immutable Ordinary10 union witness. No manifest bodies, family
 //! connection or arbitrary FileId mapping can substitute for these triples.
 use super::*;
-use layrs_core::scm::{canonical_json, FileManifest};
+use layrs_core::scm::{FileManifest, canonical_json};
 use std::collections::BTreeMap;
 
 pub(super) fn column_bytes(rows: u64) -> Result<u64> {

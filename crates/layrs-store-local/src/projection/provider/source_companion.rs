@@ -3,14 +3,14 @@
 //! and both genuine C Ready scopes before this DATA reaches a source writer.
 use super::{
     records::{
+        AllocationRecord, Record,
         denied_coverage::DerivedDeniedCoverage,
         import::{
             ImportRowset, ImportSource, ProviderImportPrefixRecord, ProviderTransitionReceiptRecord,
         },
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        AllocationRecord, Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     transition_reconcile::companions::OwnedCompanionData,
 };
 use crate::projection::shared::{
@@ -18,7 +18,7 @@ use crate::projection::shared::{
     source_companion::{SourceCompanionBinding, SourceCompanionProtection},
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 mod prospective;
 pub(in crate::projection) use prospective::ProspectiveCompanionCost;

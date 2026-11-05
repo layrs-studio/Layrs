@@ -5,18 +5,18 @@
 //! route only; retained source pins do not make B physically unavailable.
 use super::{
     managed_ordinary_installing_tests::{self as witness, Database},
-    managed_ordinary_source_publication_tests::{with_admission_data, PublicationFixture},
+    managed_ordinary_source_publication_tests::{PublicationFixture, with_admission_data},
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        ProjectionStore, SessionMode, format,
         provider::{
             admitted_ordinary::{self, AdmittedOrdinaryData},
             database_io::{
-                tests::fresh_ordinary_support::{with_observer, ReadBoundary},
                 WriterCloseObserver, WriterOpenPoint,
+                tests::fresh_ordinary_support::{ReadBoundary, with_observer},
             },
             managed_admission::read_admitted_import,
             managed_export::OrdinaryManagedExport,
@@ -26,13 +26,12 @@ use crate::{
             },
             process_profile::tests::child,
             records::{
+                Record,
                 import::ProviderTransitionReceiptRecord,
                 transition::{ProviderTransitionIntentRecord, TransitionState},
-                Record,
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         },
-        ProjectionStore, SessionMode,
     },
 };
 use layrs_core::scm::RepoPath;
@@ -308,163 +307,242 @@ fn require_terminal(f: &Fixture, digest: &str, cancel: &Cancellation) {
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_admission_accepts_advanced_published_b_after_all_publication_holders_release(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_admission_accepts_advanced_published_b_after_all_publication_holders_release"), 3600, || {
-        let f = fresh_fixture();
-        let cancel = Cancellation::default();
-        let inspection = OrdinaryReadyInspection::open(&f.destination, &cancel).unwrap();
-        inspection.require(&cancel).unwrap();
-        assert_eq!(inspection.ready(), &f.ready);
-        assert_eq!(inspection.receipt(), &f.receipt);
-        let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
-        let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
-        require_owner_contention(&c_lock, SessionMode::Exclusive);
-        drop(inspection); // No shared-to-exclusive upgrade, nor retained proof reuse.
-        assert_eq!(snapshot(&f.destination_database), f.destination_rows);
-        assert_eq!(snapshot(&f.family_database), f.family_rows);
+fn managed_ordinary_fresh_admission_accepts_advanced_published_b_after_all_publication_holders_release()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_admission_accepts_advanced_published_b_after_all_publication_holders_release"
+        ),
+        3600,
+        || {
+            let f = fresh_fixture();
+            let cancel = Cancellation::default();
+            let inspection = OrdinaryReadyInspection::open(&f.destination, &cancel).unwrap();
+            inspection.require(&cancel).unwrap();
+            assert_eq!(inspection.ready(), &f.ready);
+            assert_eq!(inspection.receipt(), &f.receipt);
+            let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
+            let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
+            require_owner_contention(&c_lock, SessionMode::Exclusive);
+            drop(inspection); // No shared-to-exclusive upgrade, nor retained proof reuse.
+            assert_eq!(snapshot(&f.destination_database), f.destination_rows);
+            assert_eq!(snapshot(&f.family_database), f.family_rows);
 
-        // Fresh failure is filesystem-real: no B pins remain from setup. This
-        // read handle denies all sharing without changing a byte or moving B.
-        let denied = OpenOptions::new().read(true).share_mode(0).open(&f.source_database).unwrap();
-        assert!(OrdinaryAdmissionSource::open(&f.source, &cancel).is_err());
-        assert_eq!(snapshot(&f.destination_database), f.destination_rows);
-        assert_eq!(snapshot(&f.family_database), f.family_rows);
-        drop(denied);
-        assert_eq!(snapshot(&f.source_database), f.source_rows);
+            // Fresh failure is filesystem-real: no B pins remain from setup. This
+            // read handle denies all sharing without changing a byte or moving B.
+            let denied = OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&f.source_database)
+                .unwrap();
+            assert!(OrdinaryAdmissionSource::open(&f.source, &cancel).is_err());
+            assert_eq!(snapshot(&f.destination_database), f.destination_rows);
+            assert_eq!(snapshot(&f.family_database), f.family_rows);
+            drop(denied);
+            assert_eq!(snapshot(&f.source_database), f.source_rows);
 
-        capture_source_suffix(&f, SUFFIX, f.source_capture_count + 1);
-        let source_rows = snapshot(&f.source_database);
-        let family_rows = snapshot(&f.family_database);
-        let source = OrdinaryAdmissionSource::open(&f.source, &cancel).unwrap();
-        require_owner_contention(&b_lock, SessionMode::Exclusive);
-        let held = OrdinaryFreshAdmission::open(&source, &f.destination, &cancel).unwrap();
-        require_owner_contention(&c_lock, SessionMode::Shared);
-        let mut close = Close::new(&f, false);
-        let after_close = close.after_close.clone();
-        let source_path = f.source_database.clone();
-        let destination_path = f.destination_database.clone();
-        let family_path = f.family_database.clone();
-        let readback = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
-        let observed_readback = readback.clone();
-        let digest = with_observer(move |path, point| {
-            if after_close.get() && point == ReadBoundary::BeforeSnapshot {
-                let mut reads = observed_readback.borrow_mut();
-                if path == source_path.as_path() { reads.0 += 1; }
-                else if path == destination_path.as_path() { reads.1 += 1; }
-                else if path == family_path.as_path() { reads.2 += 1; }
-                else { panic!("unexpected post-close readback path {path:?}"); }
-            }
-            Ok(())
-        }, || held.commit(&mut close, &cancel))
+            capture_source_suffix(&f, SUFFIX, f.source_capture_count + 1);
+            let source_rows = snapshot(&f.source_database);
+            let family_rows = snapshot(&f.family_database);
+            let source = OrdinaryAdmissionSource::open(&f.source, &cancel).unwrap();
+            require_owner_contention(&b_lock, SessionMode::Exclusive);
+            let held = OrdinaryFreshAdmission::open(&source, &f.destination, &cancel).unwrap();
+            require_owner_contention(&c_lock, SessionMode::Shared);
+            let mut close = Close::new(&f, false);
+            let after_close = close.after_close.clone();
+            let source_path = f.source_database.clone();
+            let destination_path = f.destination_database.clone();
+            let family_path = f.family_database.clone();
+            let readback = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
+            let observed_readback = readback.clone();
+            let digest = with_observer(
+                move |path, point| {
+                    if after_close.get() && point == ReadBoundary::BeforeSnapshot {
+                        let mut reads = observed_readback.borrow_mut();
+                        if path == source_path.as_path() {
+                            reads.0 += 1;
+                        } else if path == destination_path.as_path() {
+                            reads.1 += 1;
+                        } else if path == family_path.as_path() {
+                            reads.2 += 1;
+                        } else {
+                            panic!("unexpected post-close readback path {path:?}");
+                        }
+                    }
+                    Ok(())
+                },
+                || held.commit(&mut close, &cancel),
+            )
             .unwrap_or_else(|e| panic!("fresh admission {:?}: {}", e.step, e.cause));
-        assert_eq!(close.counts, (1, 1, 1, 0));
-        assert_eq!(*readback.borrow(), (0, 1, 1), "fresh C/family readback follows positive closes");
-        assert_eq!(snapshot(&f.source_database), source_rows);
-        assert_eq!(snapshot(&f.family_database), family_rows);
-        require_source_import(&f);
-        drop(source); // Shared B ownership ends before the next mutable session.
-        capture_source_suffix(&f, LATER_SUFFIX, f.source_capture_count + 2);
-        require_terminal(&f, &digest, &cancel);
-        require_source_import(&f);
-    });
+            assert_eq!(close.counts, (1, 1, 1, 0));
+            assert_eq!(
+                *readback.borrow(),
+                (0, 1, 1),
+                "fresh C/family readback follows positive closes"
+            );
+            assert_eq!(snapshot(&f.source_database), source_rows);
+            assert_eq!(snapshot(&f.family_database), family_rows);
+            require_source_import(&f);
+            drop(source); // Shared B ownership ends before the next mutable session.
+            capture_source_suffix(&f, LATER_SUFFIX, f.source_capture_count + 2);
+            require_terminal(&f, &digest, &cancel);
+            require_source_import(&f);
+        },
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
 fn managed_ordinary_fresh_admission_withheld_c_ack_resolves_without_b_reads_or_identity_checks() {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_admission_withheld_c_ack_resolves_without_b_reads_or_identity_checks"), 3600, || {
-        let f = fresh_fixture(); // A separate fresh physical fixture from recipe 1.
-        let cancel = Cancellation::default();
-        let source = OrdinaryAdmissionSource::open(&f.source, &cancel).unwrap();
-        let held = OrdinaryFreshAdmission::open(&source, &f.destination, &cancel).unwrap();
-        let mut close = Close::new(&f, true);
-        let after_close = close.after_close.clone();
-        let after_close_boundaries = Rc::new(Cell::new(0usize));
-        let observed_after_close = after_close_boundaries.clone();
-        let boundaries = Rc::new(RefCell::new(Vec::new()));
-        let observed = boundaries.clone();
-        let result = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() {
-                observed_after_close.set(observed_after_close.get() + 1);
-                return Err(invalid("no readback or B identity check after withheld close ACK"));
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_admission_withheld_c_ack_resolves_without_b_reads_or_identity_checks"
+        ),
+        3600,
+        || {
+            let f = fresh_fixture(); // A separate fresh physical fixture from recipe 1.
+            let cancel = Cancellation::default();
+            let source = OrdinaryAdmissionSource::open(&f.source, &cancel).unwrap();
+            let held = OrdinaryFreshAdmission::open(&source, &f.destination, &cancel).unwrap();
+            let mut close = Close::new(&f, true);
+            let after_close = close.after_close.clone();
+            let after_close_boundaries = Rc::new(Cell::new(0usize));
+            let observed_after_close = after_close_boundaries.clone();
+            let boundaries = Rc::new(RefCell::new(Vec::new()));
+            let observed = boundaries.clone();
+            let result = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() {
+                        observed_after_close.set(observed_after_close.get() + 1);
+                        return Err(invalid(
+                            "no readback or B identity check after withheld close ACK",
+                        ));
+                    }
+                    Ok(())
+                },
+                || held.commit(&mut close, &cancel),
+            );
+            let OrdinaryFreshAdmissionFailure { step, cause, held } = result
+                .err()
+                .expect("successful C physical close with withheld ACK must retain the holder");
+            assert_eq!(step, AdmissionStep::CommitReturned);
+            assert!(cause.to_string().contains(WITHHELD_ACK), "{cause}");
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(
+                after_close_boundaries.get(),
+                0,
+                "no implicit read/identity boundary after failed ACK"
+            );
+            // Positive controls establish that the scoped observer saw the actual
+            // B read and source identity route, not merely an unused callback.
+            for (path, point) in [
+                (&f.source_database, ReadBoundary::BeforeSnapshot),
+                (&f.source_database, ReadBoundary::DatabaseSnapshot),
+                (&f.source_database, ReadBoundary::DatabaseIdentity),
+                (&f.source_database, ReadBoundary::OrdinarySourceIdentity),
+                (&f.destination_database, ReadBoundary::BeforeSnapshot),
+                (&f.destination_database, ReadBoundary::DatabaseSnapshot),
+                (&f.destination_database, ReadBoundary::DatabaseIdentity),
+                (&f.family_database, ReadBoundary::BeforeSnapshot),
+                (&f.family_database, ReadBoundary::DatabaseSnapshot),
+                (&f.family_database, ReadBoundary::DatabaseIdentity),
+            ] {
+                assert!(
+                    boundaries
+                        .borrow()
+                        .iter()
+                        .any(|(actual, actual_point)| actual == path && *actual_point == point)
+                );
             }
-            Ok(())
-        }, || held.commit(&mut close, &cancel));
-        let OrdinaryFreshAdmissionFailure { step, cause, held } = result.err()
-            .expect("successful C physical close with withheld ACK must retain the holder");
-        assert_eq!(step, AdmissionStep::CommitReturned);
-        assert!(cause.to_string().contains(WITHHELD_ACK), "{cause}");
-        assert_eq!(close.counts, (1, 1, 1, 1));
-        assert_eq!(after_close_boundaries.get(), 0, "no implicit read/identity boundary after failed ACK");
-        // Positive controls establish that the scoped observer saw the actual
-        // B read and source identity route, not merely an unused callback.
-        for (path, point) in [
-            (&f.source_database, ReadBoundary::BeforeSnapshot),
-            (&f.source_database, ReadBoundary::DatabaseSnapshot),
-            (&f.source_database, ReadBoundary::DatabaseIdentity),
-            (&f.source_database, ReadBoundary::OrdinarySourceIdentity),
-            (&f.destination_database, ReadBoundary::BeforeSnapshot),
-            (&f.destination_database, ReadBoundary::DatabaseSnapshot),
-            (&f.destination_database, ReadBoundary::DatabaseIdentity),
-            (&f.family_database, ReadBoundary::BeforeSnapshot),
-            (&f.family_database, ReadBoundary::DatabaseSnapshot),
-            (&f.family_database, ReadBoundary::DatabaseIdentity),
-        ] {
-            assert!(boundaries.borrow().iter().any(|(actual, actual_point)| actual == path && *actual_point == point));
-        }
-        // The external caller's deliberate observation is separate from the
-        // failed commit. C has durable C10, with B/family exact and unchanged.
-        let destination_marker = format::read_marker(&f.destination).unwrap();
-        let (committed_rows, digest) = witness::read(&f.destination_database, |c| {
-            let admitted = read_admitted_import(c, &destination_marker, None).unwrap();
-            assert_eq!(admitted.private_schema(), 10);
-            assert_eq!(admitted.source_published().encode().unwrap(), f.published);
-            (witness::database(c), admitted.record().digest().unwrap())
-        });
-        assert_eq!(snapshot(&f.source_database), f.source_rows);
-        assert_eq!(snapshot(&f.family_database), f.family_rows);
+            // The external caller's deliberate observation is separate from the
+            // failed commit. C has durable C10, with B/family exact and unchanged.
+            let destination_marker = format::read_marker(&f.destination).unwrap();
+            let (committed_rows, digest) = witness::read(&f.destination_database, |c| {
+                let admitted = read_admitted_import(c, &destination_marker, None).unwrap();
+                assert_eq!(admitted.private_schema(), 10);
+                assert_eq!(admitted.source_published().encode().unwrap(), f.published);
+                (witness::database(c), admitted.record().digest().unwrap())
+            });
+            assert_eq!(snapshot(&f.source_database), f.source_rows);
+            assert_eq!(snapshot(&f.family_database), f.family_rows);
 
-        // Retained DatabasePin read handles normally forbid this guard. Do not
-        // force it, release the capability or pretend B is physically absent.
-        let denied = match OpenOptions::new().read(true).share_mode(0).open(&f.source_database) {
-            Ok(file) => Some(file),
-            Err(error) => {
-                assert_eq!(error.raw_os_error(), Some(32), "retained source DB pin sharing conflict");
-                eprintln!("FRESH_ORDINARY_ACK_B_DENY_SHARE=blocked-by-retained-source-pins; resolve proof is instrumented");
-                None
-            }
-        };
-        let source_path = f.source_database.clone();
-        let destination_path = f.destination_database.clone();
-        let family_path = f.family_database.clone();
-        let calls = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
-        let observed_calls = calls.clone();
-        let resolved = with_observer(move |path, point| {
-            let mut calls = observed_calls.borrow_mut();
-            if path == source_path.as_path() {
-                calls.0 += 1;
-                return Err(invalid("explicit resolution must not read or verify B identity"));
-            }
-            assert!(matches!(point, ReadBoundary::BeforeSnapshot | ReadBoundary::DatabaseSnapshot | ReadBoundary::DatabaseIdentity));
-            assert!(path == destination_path.as_path() || path == family_path.as_path(), "unexpected resolution read path {path:?}");
-            if point == ReadBoundary::BeforeSnapshot {
-                if path == destination_path.as_path() { calls.1 += 1; }
-                else { calls.2 += 1; }
-            }
-            Ok(())
-        }, || held.resolve(&cancel))
+            // Retained DatabasePin read handles normally forbid this guard. Do not
+            // force it, release the capability or pretend B is physically absent.
+            let denied = match OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&f.source_database)
+            {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    assert_eq!(
+                        error.raw_os_error(),
+                        Some(32),
+                        "retained source DB pin sharing conflict"
+                    );
+                    eprintln!(
+                        "FRESH_ORDINARY_ACK_B_DENY_SHARE=blocked-by-retained-source-pins; resolve proof is instrumented"
+                    );
+                    None
+                }
+            };
+            let source_path = f.source_database.clone();
+            let destination_path = f.destination_database.clone();
+            let family_path = f.family_database.clone();
+            let calls = Rc::new(RefCell::new((0usize, 0usize, 0usize)));
+            let observed_calls = calls.clone();
+            let resolved = with_observer(
+                move |path, point| {
+                    let mut calls = observed_calls.borrow_mut();
+                    if path == source_path.as_path() {
+                        calls.0 += 1;
+                        return Err(invalid(
+                            "explicit resolution must not read or verify B identity",
+                        ));
+                    }
+                    assert!(matches!(
+                        point,
+                        ReadBoundary::BeforeSnapshot
+                            | ReadBoundary::DatabaseSnapshot
+                            | ReadBoundary::DatabaseIdentity
+                    ));
+                    assert!(
+                        path == destination_path.as_path() || path == family_path.as_path(),
+                        "unexpected resolution read path {path:?}"
+                    );
+                    if point == ReadBoundary::BeforeSnapshot {
+                        if path == destination_path.as_path() {
+                            calls.1 += 1;
+                        } else {
+                            calls.2 += 1;
+                        }
+                    }
+                    Ok(())
+                },
+                || held.resolve(&cancel),
+            )
             .unwrap_or_else(|e| panic!("explicit B-free resolution {:?}: {}", e.step, e.cause));
-        assert_eq!(resolved, digest);
-        assert_eq!(*calls.borrow(), (0, 2, 2), "only two fresh C/family scopes, no B boundary");
-        assert_eq!(close.counts, (1, 1, 1, 1), "resolution never opens another writer");
-        assert_eq!(snapshot(&f.destination_database), committed_rows);
-        drop(denied);
-        drop(source); // Only now release B's independent fresh owner and pins.
-        require_terminal(&f, &digest, &cancel);
-        assert_eq!(snapshot(&f.source_database), f.source_rows);
-        assert_eq!(snapshot(&f.family_database), f.family_rows);
-        require_source_import(&f);
-    });
+            assert_eq!(resolved, digest);
+            assert_eq!(
+                *calls.borrow(),
+                (0, 2, 2),
+                "only two fresh C/family scopes, no B boundary"
+            );
+            assert_eq!(
+                close.counts,
+                (1, 1, 1, 1),
+                "resolution never opens another writer"
+            );
+            assert_eq!(snapshot(&f.destination_database), committed_rows);
+            drop(denied);
+            drop(source); // Only now release B's independent fresh owner and pins.
+            require_terminal(&f, &digest, &cancel);
+            assert_eq!(snapshot(&f.source_database), f.source_rows);
+            assert_eq!(snapshot(&f.family_database), f.family_rows);
+            require_source_import(&f);
+        },
+    );
 }

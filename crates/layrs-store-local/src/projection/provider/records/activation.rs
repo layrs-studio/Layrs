@@ -1,15 +1,14 @@
 //! Pure source-to-capture generation placement DATA. SQL, native READY, and
 //! family registry authority belong to later validators and consuming holders.
 use super::{
-    codec, invalid,
-    preparation::{MountRowData, PreparationState, ProviderPreparationRecord},
     AllocationRecord, PreparedRecord, ProviderBootstrapBinding, ProviderBootstrapSource, Record,
-    SourceCommitment,
+    SourceCommitment, codec, invalid,
+    preparation::{MountRowData, PreparationState, ProviderPreparationRecord},
 };
-use crate::projection::{database, Result};
+use crate::projection::{Result, database};
 use layrs_core::{
     projection::{EntryState, ProjectionSnapshot},
-    scm::{canonical_json, TreeEntryTarget},
+    scm::{TreeEntryTarget, canonical_json},
 };
 use serde::{Deserialize, Serialize};
 

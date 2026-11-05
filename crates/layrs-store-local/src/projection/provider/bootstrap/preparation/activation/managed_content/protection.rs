@@ -3,7 +3,7 @@
 pub(super) use super::source_protection::ManagedSourceCompanionProtection;
 use super::*;
 use crate::projection::shared::{
-    exact_content::{verify_published_cas, ExactBinding, PublishedCasProof},
+    exact_content::{ExactBinding, PublishedCasProof, verify_published_cas},
     exact_protection::{ExactProtection, ProtectionEffect, ProtectionPresence},
     provider_access::provider_import::content::ImportProtectionState,
 };

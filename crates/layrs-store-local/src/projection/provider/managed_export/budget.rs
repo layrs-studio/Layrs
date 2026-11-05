@@ -8,12 +8,11 @@ use crate::projection::{
         bootstrap::{ImageDeletion, ImageFile, ManagedPlanData},
         managed_budget::{self, AdmissionBudget, IntentSize},
         records::{
-            codec,
+            Record, codec,
             import::{ImportSource, ProviderImportKind, ProviderTransitionReceiptRecord},
             transition::ProviderTransitionIntentRecord,
-            Record,
         },
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
     },
     shared::exact_content::canonical_manifest_bytes,
 };

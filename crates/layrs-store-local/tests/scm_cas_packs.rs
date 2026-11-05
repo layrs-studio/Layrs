@@ -18,7 +18,9 @@ static SERIAL: Mutex<()> = Mutex::new(());
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn serial() -> MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 struct TestRoot(PathBuf);
@@ -65,7 +67,10 @@ fn chunks(prefix: &str, count: usize) -> Vec<CanonicalObject> {
         .collect()
 }
 
-fn put_all(cas: &NativeCasWriter<'_>, objects: &[CanonicalObject]) -> Vec<CasResult<InstallOutcome>> {
+fn put_all(
+    cas: &NativeCasWriter<'_>,
+    objects: &[CanonicalObject],
+) -> Vec<CasResult<InstallOutcome>> {
     let mut items = objects.iter();
     cas.put_ordered::<()>(|| items.next().map(|object| Ok(PutItem::Borrowed(object))))
         .unwrap()
@@ -100,7 +105,11 @@ fn packed_at(cas: &NativeCas, id: &StoreObjectId) -> (PathBuf, u64) {
 }
 
 fn flip_byte(path: &Path, at: u64) {
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
     let mut byte = [0_u8; 1];
     file.seek(SeekFrom::Start(at)).unwrap();
     std::io::Read::read_exact(&mut file, &mut byte).unwrap();
@@ -143,7 +152,9 @@ fn sixty_three_new_small_objects_stay_separate_and_sixty_four_are_packed() {
         assert!(cas.contains(&id).unwrap());
         cas.verify(&id).unwrap();
         assert_eq!(cas.read(&id).unwrap(), *object);
-        let CanonicalObject::ChunkRaw(chunk) = object else { unreachable!() };
+        let CanonicalObject::ChunkRaw(chunk) = object else {
+            unreachable!()
+        };
         let mut streamed = Vec::new();
         cas.stream_verified_chunk(chunk.id(), |bytes| streamed.extend_from_slice(bytes))
             .unwrap();
@@ -172,12 +183,18 @@ fn duplicates_are_packed_once_and_large_objects_stay_separate() {
         .into_iter()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(outcomes.iter().filter(|outcome| !outcome.existed).count(), 72);
+    assert_eq!(
+        outcomes.iter().filter(|outcome| !outcome.existed).count(),
+        72
+    );
     assert_eq!(packs(&cas).len(), 1);
     for object in &large {
         let id = object.object_id();
         assert!(cas.object_path(&id).unwrap().is_file());
-        assert!(matches!(cas.locate(&id).unwrap(), Some(CasLocation::Loose { .. })));
+        assert!(matches!(
+            cas.locate(&id).unwrap(),
+            Some(CasLocation::Loose { .. })
+        ));
     }
     for object in &objects {
         assert_eq!(cas.read(&object.object_id()).unwrap(), *object);
@@ -303,7 +320,8 @@ fn a_format_2_store_never_receives_a_pack() {
     }
     drop(cas);
     drop(exclusive);
-    let format = fs::read_to_string(open_exclusive(&root.0).unwrap().layout().format_path()).unwrap();
+    let format =
+        fs::read_to_string(open_exclusive(&root.0).unwrap().layout().format_path()).unwrap();
     assert!(format.contains("\"formatVersion\":2"), "{format}");
 
     let root = TestRoot::new("format-5");
@@ -379,7 +397,10 @@ fn a_failed_pack_publication_is_retried_and_an_orphan_pack_is_reused() {
             .collect();
         // An orphan pack from the failed batch is verified and reused.
         let reused = point == CasFaultPoint::AfterPackPublication;
-        assert!(outcomes.iter().all(|outcome| outcome.existed == reused), "{point:?}");
+        assert!(
+            outcomes.iter().all(|outcome| outcome.existed == reused),
+            "{point:?}"
+        );
         assert_eq!(packs(&cas).len(), 1, "{point:?}");
         for object in &objects {
             assert_eq!(cas.read(&object.object_id()).unwrap(), *object);

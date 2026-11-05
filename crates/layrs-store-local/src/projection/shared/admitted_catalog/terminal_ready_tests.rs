@@ -109,21 +109,22 @@ owned!(
             retained::install(c, &foreign, manifests);
             inspect(c, family, terminal, manifests, true);
             for sql in [
-            "UPDATE exact_installations SET published=0 WHERE reservation=(SELECT id FROM reservations WHERE owner='worktree:member2')",
-            "UPDATE reservations SET remaining=remaining+1 WHERE owner='worktree:member2'",
-            "UPDATE worktrees SET state='initializing' WHERE id='worktree:member2'",
-            "DELETE FROM root_manifests WHERE root_id IN (SELECT id FROM roots WHERE owner='worktree:member2')",
-            "UPDATE roots SET digest='wrong' WHERE owner='worktree:member2'",
-            "DELETE FROM roots WHERE owner='worktree:member2'",
-            "INSERT INTO reservations SELECT 'provider-transition:unknown',owner,'provider-transition:unknown',0 FROM reservations LIMIT 1",
-            "UPDATE quota SET bytes=1",
-        ] {
-            c.execute_batch("SAVEPOINT corrupt").unwrap();
-            c.execute_batch(sql).unwrap();
-            inspect(c, family, terminal, manifests, false);
-            c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt").unwrap();
-            inspect(c, family, terminal, manifests, true);
-        }
+                "UPDATE exact_installations SET published=0 WHERE reservation=(SELECT id FROM reservations WHERE owner='worktree:member2')",
+                "UPDATE reservations SET remaining=remaining+1 WHERE owner='worktree:member2'",
+                "UPDATE worktrees SET state='initializing' WHERE id='worktree:member2'",
+                "DELETE FROM root_manifests WHERE root_id IN (SELECT id FROM roots WHERE owner='worktree:member2')",
+                "UPDATE roots SET digest='wrong' WHERE owner='worktree:member2'",
+                "DELETE FROM roots WHERE owner='worktree:member2'",
+                "INSERT INTO reservations SELECT 'provider-transition:unknown',owner,'provider-transition:unknown',0 FROM reservations LIMIT 1",
+                "UPDATE quota SET bytes=1",
+            ] {
+                c.execute_batch("SAVEPOINT corrupt").unwrap();
+                c.execute_batch(sql).unwrap();
+                inspect(c, family, terminal, manifests, false);
+                c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
+                    .unwrap();
+                inspect(c, family, terminal, manifests, true);
+            }
         });
     }
 );
@@ -144,7 +145,8 @@ owned!(terminal_ready_exact_member_root_and_union_are_mandatory, {
             c.execute_batch("SAVEPOINT corrupt").unwrap();
             c.execute_batch(sql).unwrap();
             inspect(c, family, terminal, manifests, false);
-            c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt").unwrap();
+            c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
+                .unwrap();
             inspect(c, family, terminal, manifests, true);
         }
         let binding = terminal.binding();
@@ -161,16 +163,18 @@ owned!(terminal_ready_exact_member_root_and_union_are_mandatory, {
         cancelled.cancel();
         let before = state(c);
         let changes = c.total_changes();
-        assert!(validate_terminal_ready_catalog(
-            c,
-            family,
-            terminal.marker(),
-            binding,
-            manifests,
-            &protection,
-            Some(&cancelled)
-        )
-        .is_err());
+        assert!(
+            validate_terminal_ready_catalog(
+                c,
+                family,
+                terminal.marker(),
+                binding,
+                manifests,
+                &protection,
+                Some(&cancelled)
+            )
+            .is_err()
+        );
         assert_eq!(changes, c.total_changes());
         assert_eq!(before, state(c));
     });

@@ -7,7 +7,7 @@ use crate::projection::{
     capture::{CapturedFile, CapturedPatch},
     offline,
     provider::{
-        bootstrap::{derive_ordinary_data, ImageFile, RequiredManifest},
+        bootstrap::{ImageFile, RequiredManifest, derive_ordinary_data},
         database_io::BareConnection,
         managed_admission::tests::with_admitted_source_sql,
         ordinary_transition,
@@ -18,7 +18,7 @@ use crate::projection::{
     restore::{RestoreDestination, RestorePreview, RestoreSource},
 };
 use layrs_core::scm::{
-    canonical_json, Chunk, ChunkingDescriptor, FileManifest, TreeEntryTarget, WorktreeId,
+    Chunk, ChunkingDescriptor, FileManifest, TreeEntryTarget, WorktreeId, canonical_json,
 };
 use std::collections::BTreeMap;
 

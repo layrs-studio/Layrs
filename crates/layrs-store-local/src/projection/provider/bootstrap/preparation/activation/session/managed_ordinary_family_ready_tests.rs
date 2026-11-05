@@ -6,21 +6,22 @@
 //! and owner-loss recovery remain unqualified.
 use super::{
     managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
-    managed_ordinary_ready_tests::{self as ready_witness, Physical, CURRENT},
+    managed_ordinary_ready_tests::{self as ready_witness, CURRENT, Physical},
 };
 use crate::projection::{
+    ProjectionStore,
     provider::{
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         database_io::{
-            tests::fresh_ordinary_support::{with_observer, ReadBoundary},
             WriterCloseObserver, WriterOpenPoint,
+            tests::fresh_ordinary_support::{ReadBoundary, with_observer},
         },
         destination_ready::ReadyEffect,
         managed_export::allocation,
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         process_profile::tests::child,
         records::transition::{ProviderTransitionIntentRecord, TransitionState},
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         transition_sql::SourceIntentEffect,
     },
     selection,
@@ -29,7 +30,6 @@ use crate::projection::{
         exact_protection::{ExactProtection, ProtectionPresence},
         provider_access::ImportRegistrationEffect,
     },
-    ProjectionStore,
 };
 use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
 use layrs_vfs::Cancellation;
@@ -159,13 +159,14 @@ pub(super) fn family(
             protection.inspect(c, None).unwrap(),
             ProtectionPresence::Present
         );
-        assert!(!c
-            .query_row(
+        assert!(
+            !c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
                 [],
                 |r| r.get::<_, bool>(0)
             )
-            .unwrap());
+            .unwrap()
+        );
         witness::database(c)
     })
 }
@@ -250,8 +251,8 @@ fn only_catalog_changed(before: &(Tree, Tree, Tree), after: &(Tree, Tree, Tree),
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3000/outer3060 required"]
-fn managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c(
-) {
+fn managed_ordinary_family_ready_replays_withheld_catalog_close_ack_without_promoting_b_or_admitting_c()
+ {
     // Same owned child3000/outer3060 proposal as private Ready. This recipe
     // reaches that frontier normally and withholds only the new family ACK.
     child::run(
@@ -493,16 +494,18 @@ fn family_ready_recipe(withhold_close_ack: bool) {
     };
     let cancelled = Cancellation::default();
     cancelled.cancel();
-    assert!(owner
-        .publish_destination_family_ready(
-            &allocated,
-            &staging,
-            &protection,
-            &checkout,
-            &mut close,
-            &cancelled,
-        )
-        .is_err());
+    assert!(
+        owner
+            .publish_destination_family_ready(
+                &allocated,
+                &staging,
+                &protection,
+                &checkout,
+                &mut close,
+                &cancelled,
+            )
+            .is_err()
+    );
     assert_eq!(close.counts(), (0, 0, 0, 0));
     assert_eq!(close.physical_checks, 0);
     assert_eq!(

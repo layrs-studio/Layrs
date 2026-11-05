@@ -2,17 +2,17 @@
 //! DATA result here establishes network authority or durable recovery safety.
 use super::super::{
     records::{
+        ProviderSourceDescriptor,
         import::{
             ImportClosure, ImportRowset, ImportSource, ImportVersion, ProviderImportKind,
             ProviderImportPrefixRecord,
         },
-        ProviderSourceDescriptor,
     },
     transition_observation::{AuthorityObservationData, DeniedPathData, ObservationCoverageData},
     validation::tests::fixture::Fixture,
 };
 use super::*;
-use crate::projection::{database, selection, ProjectionIdentity};
+use crate::projection::{ProjectionIdentity, database, selection};
 use layrs_core::{
     projection::{ProjectionEntry, ProjectionSelection, ProjectionSnapshot},
     scm::{Chunk, ChunkingDescriptor, WorktreeId},
@@ -461,46 +461,52 @@ fn complete_inventory_missing_fixed_catalog_unknown_mode_and_alias_are_refused()
         &observation,
     )
     .unwrap();
-    assert!(image::from_test_inventory(&source, &[], &[])
+    assert!(
+        image::from_test_inventory(&source, &[], &[])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("omitted fixed catalog")
+    );
+    let path = p("README.md");
+    assert!(
+        image::from_test_inventory(
+            &source,
+            &[ImageFileData {
+                path: &path,
+                manifest: &data.readme,
+                executable: None
+            }],
+            &[]
+        )
         .err()
         .unwrap()
         .to_string()
-        .contains("omitted fixed catalog"));
-    let path = p("README.md");
-    assert!(image::from_test_inventory(
-        &source,
-        &[ImageFileData {
-            path: &path,
-            manifest: &data.readme,
-            executable: None
-        }],
-        &[]
-    )
-    .err()
-    .unwrap()
-    .to_string()
-    .contains("mode is unknown"));
+        .contains("mode is unknown")
+    );
     let alias = p("readme.md");
-    assert!(image::from_test_inventory(
-        &source,
-        &[
-            ImageFileData {
-                path: &path,
-                manifest: &data.readme,
-                executable: Some(false)
-            },
-            ImageFileData {
-                path: &alias,
-                manifest: &data.b,
-                executable: Some(false)
-            },
-        ],
-        &[]
-    )
-    .err()
-    .unwrap()
-    .to_string()
-    .contains("alias"));
+    assert!(
+        image::from_test_inventory(
+            &source,
+            &[
+                ImageFileData {
+                    path: &path,
+                    manifest: &data.readme,
+                    executable: Some(false)
+                },
+                ImageFileData {
+                    path: &alias,
+                    manifest: &data.b,
+                    executable: Some(false)
+                },
+            ],
+            &[]
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("alias")
+    );
 }
 
 #[test]
@@ -532,12 +538,14 @@ fn accepted_deletion_wrong_path_expected_capture_or_prefix_sequence_is_refused()
             &observation,
         )
         .unwrap();
-        assert!(source
-            .accepted_deletion(&p("new.txt"))
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("escaped source prefix"));
+        assert!(
+            source
+                .accepted_deletion(&p("new.txt"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("escaped source prefix")
+        );
     }
     data.captures[0].changes[0]
         .expected
@@ -554,12 +562,14 @@ fn accepted_deletion_wrong_path_expected_capture_or_prefix_sequence_is_refused()
             &observation,
         )
         .unwrap();
-        assert!(source
-            .accepted_deletion(&p("new.txt"))
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("escaped source prefix"));
+        assert!(
+            source
+                .accepted_deletion(&p("new.txt"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("escaped source prefix")
+        );
     }
     data.captures[0].sequence = 1;
     data.captures[0].digest = TOKEN.into();
@@ -571,17 +581,19 @@ fn accepted_deletion_wrong_path_expected_capture_or_prefix_sequence_is_refused()
         &observation,
     )
     .unwrap();
-    assert!(source
-        .accepted_deletion(&p("new.txt"))
-        .err()
-        .unwrap()
-        .to_string()
-        .contains("escaped source prefix"));
+    assert!(
+        source
+            .accepted_deletion(&p("new.txt"))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("escaped source prefix")
+    );
 }
 
 #[test]
-fn same_file_multiple_manifest_representations_are_not_collapsed_and_new_grant_does_not_promote_unknown(
-) {
+fn same_file_multiple_manifest_representations_are_not_collapsed_and_new_grant_does_not_promote_unknown()
+ {
     let mut data = Data::new(false);
     let other = manifest(b"live edit B", false);
     assert_eq!(other.file_id(), data.b.file_id());

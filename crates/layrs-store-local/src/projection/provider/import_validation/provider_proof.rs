@@ -2,14 +2,14 @@
 //! capture permission, and no outgoing receipt becomes incoming ancestry.
 use super::*;
 use crate::projection::{
+    VersionedProjection,
     provider::{
         records::{
-            activation::{ProviderActivationRecord, ProviderActiveMountRecord},
             ProviderBootstrapSource, Record,
+            activation::{ProviderActivationRecord, ProviderActiveMountRecord},
         },
         validation::PrivateCaptureProof,
     },
-    VersionedProjection,
 };
 
 type Parts<'a> = (

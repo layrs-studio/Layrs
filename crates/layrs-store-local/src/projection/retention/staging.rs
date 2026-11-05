@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 #[cfg(windows)]
 mod restore;
 #[cfg(windows)]
-pub(super) use restore::{read_restore, RestoreStage};
+pub(super) use restore::{RestoreStage, read_restore};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

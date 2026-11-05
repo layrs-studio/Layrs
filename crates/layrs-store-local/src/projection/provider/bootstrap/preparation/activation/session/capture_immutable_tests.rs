@@ -8,7 +8,7 @@ use crate::{
     },
     secure_fs::PinnedDirectory,
 };
-use layrs_core::scm::{canonical_json, FileId, FileManifest};
+use layrs_core::scm::{FileId, FileManifest, canonical_json};
 use std::{collections::BTreeMap, ffi::OsStr, fs, io::Read, path::PathBuf};
 
 #[test]

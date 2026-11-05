@@ -2,12 +2,12 @@
 //! opener, lock acquisition or physical authority. Any failed write/postcheck
 //! requires caller rollback before this connection may be reused.
 use super::super::{
-    destination_ready::{read_ordinary_managed_ready, ManagedReadyClaim, VerifiedManagedReady},
+    destination_ready::{ManagedReadyClaim, VerifiedManagedReady, read_ordinary_managed_ready},
     import_validation::read_destination_prefix,
     managed_budget,
     published_handoff::OrdinaryPublishedForReady,
 };
-use super::write::{journal_commitment, same_representations, AdmissionWriteEffect};
+use super::write::{AdmissionWriteEffect, journal_commitment, same_representations};
 use super::*;
 use crate::projection::{
     capture::storage::load_metadata_for_origin, shared::exact_protection::ExactProtection,

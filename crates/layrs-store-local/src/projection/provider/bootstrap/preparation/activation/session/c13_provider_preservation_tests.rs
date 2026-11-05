@@ -6,12 +6,12 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
 };
 use layrs_core::scm::{Chunk, ChunkingDescriptor, FileManifest, RepoPath};
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 use std::fs;
 
 #[derive(Default)]
@@ -120,21 +120,23 @@ fn c13_unknown_creation_preserved_complete_reader_and_legacy_staging_stays_unrea
                     staging.state = TransitionState::Staging;
                     staging.reservation = Some(staging.reservation_operation().unwrap());
                     let mut refused = Close::default();
-                    assert!(super::super::managed_staging::stage(
-                        held,
-                        &session.source.root,
-                        &session.source.record,
-                        &session.source.activation,
-                        attempt,
-                        &copying,
-                        &staging,
-                        &destination,
-                        &mut legacy,
-                        &manifests,
-                        &mut refused,
-                        &cancel
-                    )
-                    .is_err());
+                    assert!(
+                        super::super::managed_staging::stage(
+                            held,
+                            &session.source.root,
+                            &session.source.record,
+                            &session.source.activation,
+                            attempt,
+                            &copying,
+                            &staging,
+                            &destination,
+                            &mut legacy,
+                            &manifests,
+                            &mut refused,
+                            &cancel
+                        )
+                        .is_err()
+                    );
                     assert_eq!(
                         (refused.opens, refused.closes),
                         (0, 0),

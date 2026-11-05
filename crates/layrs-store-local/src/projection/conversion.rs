@@ -1,8 +1,8 @@
 //! Explicit copy conversion. No source SQL, marker, history, or checkout is rewritten.
 use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
-use layrs_core::scm::{canonical_json, FileId};
-use rusqlite::{params, Connection};
+use layrs_core::scm::{FileId, canonical_json};
+use rusqlite::{Connection, params};
 use std::{
     io::{Read, Seek, SeekFrom},
     time::Duration,
@@ -363,7 +363,7 @@ impl ProjectionStore {
                 origin: family.identity().origin.clone(),
                 principal_id: family.identity().principal_id.clone(),
             };
-            let proof = receipt(self, &source_access, identity.clone())?;
+            let proof = receipt(self, source_access, identity.clone())?;
             let initial = offline::snapshot_at(&source_access.connection, 0, None)?;
             let selection = selection::at(&source_access.connection, 0)?;
             let target = format::create_shared_import(
@@ -375,7 +375,7 @@ impl ProjectionStore {
                 shared::digest(&proof)?,
             )?;
             faults.check(ConversionPoint::DestinationCreated)?;
-            convert(self, &source_access, target, proof, faults)
+            convert(self, source_access, target, proof, faults)
         })
     }
     pub fn resume_conversion_into(
@@ -390,7 +390,7 @@ impl ProjectionStore {
         }
         let source_access = format::access(self, SessionMode::Exclusive)?;
         source_access.run(|source_access: &mut format::Access| -> Result<_> {
-            let proof = receipt(self, &source_access, marker.identity.clone())?;
+            let proof = receipt(self, source_access, marker.identity.clone())?;
             if marker.import_digest.as_deref() != Some(shared::digest(&proof)?.as_str()) {
                 return Err(invalid(
                     "conversion source changed; retained source and destination require inspection",
@@ -398,7 +398,7 @@ impl ProjectionStore {
             }
             convert(
                 self,
-                &source_access,
+                source_access,
                 ProjectionStore { root, marker },
                 proof,
                 &NoConversionFaults,

@@ -144,7 +144,8 @@ pub(super) fn load_record(
 /// path at claim, heartbeat and release. Any other record keeps one lease per
 /// path, so a journal written by an earlier binary recovers as before.
 pub(super) fn resource_keys(record: &RecoveryRecord) -> Vec<String> {
-    let worktree_scope = record.payload.get("leaseScope").and_then(|v| v.as_str()) == Some("worktree");
+    let worktree_scope =
+        record.payload.get("leaseScope").and_then(|v| v.as_str()) == Some("worktree");
     let mut resources: BTreeSet<String> = if worktree_scope {
         std::iter::once("checkout:worktree".to_owned()).collect()
     } else {

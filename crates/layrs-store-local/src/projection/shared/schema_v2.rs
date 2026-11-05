@@ -4,7 +4,7 @@ use super::SQL as SQL1;
 use crate::projection::provider::{
     cancellation,
     database_io::{schema_inventory, with_reference},
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
 };
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;

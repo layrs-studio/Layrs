@@ -5,7 +5,7 @@ use super::*;
 use crate::projection::provider::{
     transition_observation::TransitionObservationData,
     transition_reconcile::{
-        companions::OwnedCompanionData, CompleteSourceImageData, ImageFileData, ReconcileSourceData,
+        CompleteSourceImageData, ImageFileData, ReconcileSourceData, companions::OwnedCompanionData,
     },
     validation::PrivateActiveCaptureValidation,
 };

@@ -4,9 +4,9 @@ mod admitted_access;
 #[cfg(windows)]
 pub(in crate::projection) mod admitted_catalog;
 mod content;
+pub(in crate::projection) use content::Protection;
 #[cfg(windows)]
 pub(in crate::projection) use content::read_manifest_exact;
-pub(in crate::projection) use content::Protection;
 #[cfg(windows)]
 pub(in crate::projection) mod exact_content;
 #[cfg(windows)]
@@ -27,8 +27,8 @@ use super::*;
 use crate::{lock::StoreLock, secure_fs::PinnedDirectory};
 #[cfg(test)]
 pub(in crate::projection) use content::InstallationPoint;
-use layrs_core::scm::{canonical_json, FileManifest};
-use rusqlite::{params, Connection, OptionalExtension};
+use layrs_core::scm::{FileManifest, canonical_json};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs,
     io::{Read, Write},
@@ -739,8 +739,8 @@ impl Lease {
         })
     }
     fn validate_ordinary_catalog(&self, c: &Connection) -> Result<()> {
-        let schema = require_catalog_schema(&c)?;
-        require_no_exact_installations(&c, schema)?;
+        let schema = require_catalog_schema(c)?;
+        require_no_exact_installations(c, schema)?;
         let bytes: Vec<u8> = c.query_row(
             "SELECT marker FROM family WHERE singleton=1 AND length(marker)<=65536",
             [],

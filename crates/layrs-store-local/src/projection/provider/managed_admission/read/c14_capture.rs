@@ -1,7 +1,7 @@
 //! Closed local Capture suffix on the immutable C14 Ready generation.
 //! No source/family opener, byte authority or provenance-dispatching loader.
 use super::*;
-use crate::projection::{capture::CapturedChange, VersionedProjection};
+use crate::projection::{VersionedProjection, capture::CapturedChange};
 use layrs_core::scm::{FileId, FileManifestId};
 use rusqlite::{DatabaseName, OptionalExtension, TransactionState};
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,8 +160,11 @@ impl VerifiedAdmittedImport<'_> {
             return Err(invalid("local denial Capture sequence inventory differs"));
         }
         // Local Restore rows are bounded before any journal is decoded.
-        let restore_rows =
-            super::c14_restore::read_local_restore_rows(c, boundaries.ready_capture_sequence, cancel)?;
+        let restore_rows = super::c14_restore::read_local_restore_rows(
+            c,
+            boundaries.ready_capture_sequence,
+            cancel,
+        )?;
 
         // Incoming mappings and Ready additions remain exact. New mappings
         // belong only to same-file captured-content claims; the family reader
@@ -391,7 +394,9 @@ impl VerifiedAdmittedImport<'_> {
             // writer transaction; otherwise a committed budget owns nothing.
             Some((id, false)) => {
                 restore_rows.prejournal.is_none()
-                    && pending.as_ref().is_none_or(|operation| write && operation == id)
+                    && pending
+                        .as_ref()
+                        .is_none_or(|operation| write && operation == id)
             }
         };
         if !owned {
@@ -474,28 +479,55 @@ mod tests {
     #[ignore = "UNQUALIFIED Capture suffix inventory SQL bounds; ROOT review/release child120 required"]
     fn local_capture_inventory_bounds_payload_before_loading_and_excludes_imported_prefix() {
         child::run(
-            concat!(module_path!(), "::local_capture_inventory_bounds_payload_before_loading_and_excludes_imported_prefix"),
+            concat!(
+                module_path!(),
+                "::local_capture_inventory_bounds_payload_before_loading_and_excludes_imported_prefix"
+            ),
             120,
             || {
                 child::declare();
                 let c = Connection::open_in_memory().unwrap();
                 c.execute_batch("CREATE TABLE projection_captures(sequence INTEGER PRIMARY KEY,payload BLOB NOT NULL) STRICT;").unwrap();
                 // The prefix is outside this fixed-Ready suffix allowance.
-                c.execute("INSERT INTO projection_captures VALUES(1,zeroblob(?1))", [MAX_LOCAL_CAPTURE_PAYLOAD + 1]).unwrap();
+                c.execute(
+                    "INSERT INTO projection_captures VALUES(1,zeroblob(?1))",
+                    [MAX_LOCAL_CAPTURE_PAYLOAD + 1],
+                )
+                .unwrap();
                 assert_eq!(local_capture_inventory(&c, 1).unwrap(), (0, 0));
                 // Length aggregation must reject before any malformed payload
                 // can be read or parsed. These rows carry no admission proof.
-                c.execute("INSERT INTO projection_captures VALUES(2,zeroblob(?1))", [MAX_LOCAL_CAPTURE_PAYLOAD]).unwrap();
-                assert_eq!(local_capture_inventory(&c, 1).unwrap(), (1, MAX_LOCAL_CAPTURE_PAYLOAD));
-                c.execute("INSERT INTO projection_captures VALUES(3,x'00')", []).unwrap();
+                c.execute(
+                    "INSERT INTO projection_captures VALUES(2,zeroblob(?1))",
+                    [MAX_LOCAL_CAPTURE_PAYLOAD],
+                )
+                .unwrap();
+                assert_eq!(
+                    local_capture_inventory(&c, 1).unwrap(),
+                    (1, MAX_LOCAL_CAPTURE_PAYLOAD)
+                );
+                c.execute("INSERT INTO projection_captures VALUES(3,x'00')", [])
+                    .unwrap();
                 let error = local_capture_inventory(&c, 1).unwrap_err();
-                assert!(error.to_string().contains("history exceeds aggregate bound"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("history exceeds aggregate bound")
+                );
                 c.execute("DELETE FROM projection_captures", []).unwrap();
                 c.execute_batch("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<100000) INSERT INTO projection_captures SELECT i,x'00' FROM n;").unwrap();
-                assert_eq!(local_capture_inventory(&c, 0).unwrap(), (MAX_LOCAL_ROWS, MAX_LOCAL_ROWS));
-                c.execute("INSERT INTO projection_captures VALUES(100001,x'00')", []).unwrap();
+                assert_eq!(
+                    local_capture_inventory(&c, 0).unwrap(),
+                    (MAX_LOCAL_ROWS, MAX_LOCAL_ROWS)
+                );
+                c.execute("INSERT INTO projection_captures VALUES(100001,x'00')", [])
+                    .unwrap();
                 let error = local_capture_inventory(&c, 0).unwrap_err();
-                assert!(error.to_string().contains("history exceeds aggregate bound"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("history exceeds aggregate bound")
+                );
             },
         );
     }

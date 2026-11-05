@@ -4,6 +4,7 @@ use crate::projection::provider::{
     import_validation::{self, ImportDatabaseKind},
     process_profile::tests::child,
     records::{
+        Receipt,
         import::{
             ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
             ProviderImportKind, ProviderImportPrefixRecord,
@@ -13,7 +14,6 @@ use crate::projection::provider::{
             TransitionObservation, TransitionPlan, TransitionRole, TransitionRowset,
             TransitionState,
         },
-        Receipt,
     },
     validation::{active_fixture, private_active_capture_with_source},
 };
@@ -273,18 +273,20 @@ fn empty_ingress_roundtrip_and_transaction_rollback() {
                 .as_mut()
                 .unwrap()
                 .family_marker_digest = TOKEN.into();
-            assert!(initialize_empty(
-                c,
-                &data.marker,
-                &data.fixture.source,
-                &data.fixture.allocation,
-                &data.fixture.prepared,
-                &data.activation,
-                &data.prefix,
-                &wrong_intent,
-                None,
-            )
-            .is_err());
+            assert!(
+                initialize_empty(
+                    c,
+                    &data.marker,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &wrong_intent,
+                    None,
+                )
+                .is_err()
+            );
             assert!(database_io::schema_inventory(c).unwrap().is_empty());
             initialize(c, &data).unwrap();
             inspect(c, &data).unwrap();
@@ -326,18 +328,20 @@ fn empty_ingress_refuses_marker_backend_and_foreign_rows() {
             initialize(c, &data).unwrap();
             let mut wrong = data.marker.clone();
             wrong.identity.worktree_id = WorktreeId::parse("worktree:wrong").unwrap();
-            assert!(destination_validation::read_empty(
-                c,
-                &wrong,
-                &data.fixture.source,
-                &data.fixture.allocation,
-                &data.fixture.prepared,
-                &data.activation,
-                &data.prefix,
-                &data.intent,
-                None
-            )
-            .is_err());
+            assert!(
+                destination_validation::read_empty(
+                    c,
+                    &wrong,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &data.intent,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch("SAVEPOINT backend").unwrap();
             c.execute(
                 "UPDATE projection_backend SET backend='provider',mount_id='bad'",
@@ -509,20 +513,22 @@ fn copied_prefix_promotes_replays_and_refuses_tail_or_head_corruption() {
                 .connection()
                 .execute_batch("BEGIN DEFERRED")
                 .unwrap();
-            assert!(promote_or_replay_copied(
-                wrong_source.connection(),
-                c,
-                &data.marker,
-                &data.fixture.source,
-                &data.fixture.allocation,
-                &data.fixture.prepared,
-                &data.activation,
-                &data.prefix,
-                &data.intent,
-                &proof,
-                None,
-            )
-            .is_err());
+            assert!(
+                promote_or_replay_copied(
+                    wrong_source.connection(),
+                    c,
+                    &data.marker,
+                    &data.fixture.source,
+                    &data.fixture.allocation,
+                    &data.fixture.prepared,
+                    &data.activation,
+                    &data.prefix,
+                    &data.intent,
+                    &proof,
+                    None,
+                )
+                .is_err()
+            );
             inspect(c, &data).unwrap();
             wrong_source.connection().execute_batch("COMMIT").unwrap();
             wrong_source.finish(Ok(())).unwrap();

@@ -16,16 +16,17 @@ use std::{
     sync::atomic::{AtomicI32, AtomicU64, Ordering},
 };
 use windows_sys::{
-    core::GUID,
     Win32::{
         Foundation::*,
         Storage::{CloudFilters::*, FileSystem::*},
         System::LibraryLoader::*,
     },
+    core::GUID,
 };
 
 // Reuse the dynamically loaded native table, without adding public production
 // surface or statically importing CldApi. All functions remain test-private.
+#[allow(clippy::duplicate_mod, dead_code)]
 #[path = "../../src/windows/api.rs"]
 mod api;
 
@@ -157,7 +158,10 @@ fn not_registered(api: &api::Api, file: &File) {
             std::ptr::null_mut(),
         )
     };
-    eprintln!("FRESH-ROOT PREFLIGHT: CfGetSyncRootInfoByHandle HRESULT=0x{:08x}; only exact ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT accepted", hr as u32);
+    eprintln!(
+        "FRESH-ROOT PREFLIGHT: CfGetSyncRootInfoByHandle HRESULT=0x{:08x}; only exact ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT accepted",
+        hr as u32
+    );
     assert_eq!(
         hr,
         (0x80070000u32 | ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT) as i32,
@@ -278,7 +282,10 @@ fn rename_arm(run: &Path, api: &api::Api, strong: bool) -> bool {
         exact_bytes(format);
     }
     exact_bytes(&reopened_format);
-    eprintln!("G2 {label}: directory={before:?}, FORMAT={format_before:?}, exact same native IDs/bytes at {}; fixtures retained", actual.display());
+    eprintln!(
+        "G2 {label}: directory={before:?}, FORMAT={format_before:?}, exact same native IDs/bytes at {}; fixtures retained",
+        actual.display()
+    );
     result.is_ok()
 }
 
@@ -624,7 +631,10 @@ fn registration_arm(run: &Path) -> bool {
         format!("TEST ONLY no product ticket\nroot={}\nids={ids:?}\nprepared={PREPARED:?}\nready={READY:?}\nPROGRESSIVE ALWAYS_FULL no hardlinks\n", root.display()).as_bytes());
     for (update, blob) in [(false, PREPARED), (true, READY)] {
         let hr = register(&api, &root, blob, update);
-        eprintln!("G3 REGISTER update={update}: HRESULT=0x{:08x}, root/control/strong FORMAT pins all retained", hr as u32);
+        eprintln!(
+            "G3 REGISTER update={update}: HRESULT=0x{:08x}, root/control/strong FORMAT pins all retained",
+            hr as u32
+        );
         if hr < 0 {
             return false;
         }
@@ -637,8 +647,8 @@ fn registration_arm(run: &Path) -> bool {
     write_delete_refused(&root.join(".layrs/FORMAT"));
     let observer = Box::leak(Box::new(Observer {
         api,
-        directory: ids.1 .1,
-        format: ids.2 .1,
+        directory: ids.1.1,
+        format: ids.2.1,
         callbacks: AtomicU64::new(0),
         control_callbacks: AtomicU64::new(0),
         fetches: AtomicU64::new(0),
@@ -712,8 +722,15 @@ fn registration_arm(run: &Path) -> bool {
         }
         assert_eq!((id(&directory), id(&file)), (ids.1, ids.2));
         exact_bytes(&file);
-        eprintln!("G5 mode={mode}: root attrs={:08x}/tag={:08x}; control={:08x}/{:08x}, FORMAT={:08x}/{:08x}; exact IDs/bytes; ordinary control has no placeholder tag",
-            r.FileAttributes, r.ReparseTag, d.FileAttributes, d.ReparseTag, f.FileAttributes, f.ReparseTag);
+        eprintln!(
+            "G5 mode={mode}: root attrs={:08x}/tag={:08x}; control={:08x}/{:08x}, FORMAT={:08x}/{:08x}; exact IDs/bytes; ordinary control has no placeholder tag",
+            r.FileAttributes,
+            r.ReparseTag,
+            d.FileAttributes,
+            d.ReparseTag,
+            f.FileAttributes,
+            f.ReparseTag
+        );
         scope.restore();
     }
     let hr = unsafe { (observer.api.disconnect)(key) };
@@ -729,7 +746,11 @@ fn registration_arm(run: &Path) -> bool {
         observer.fetches.load(Ordering::SeqCst),
         observer.malformed.load(Ordering::SeqCst),
     );
-    eprintln!("G4 callbacks total/control/fetch/malformed={counts:?}; bad_headers={}; last_refusal_execute_HRESULT=0x{:08x}; source reads/transfers=0 (no source adapter installed)", BAD_CALLBACKS.load(Ordering::SeqCst), observer.last_execute.load(Ordering::SeqCst) as u32);
+    eprintln!(
+        "G4 callbacks total/control/fetch/malformed={counts:?}; bad_headers={}; last_refusal_execute_HRESULT=0x{:08x}; source reads/transfers=0 (no source adapter installed)",
+        BAD_CALLBACKS.load(Ordering::SeqCst),
+        observer.last_execute.load(Ordering::SeqCst) as u32
+    );
     assert_eq!(
         counts.1, 0,
         "ordinary control unexpectedly produced callbacks"
@@ -744,7 +765,9 @@ fn registration_arm(run: &Path) -> bool {
     plain(&control, true);
     plain(&format, false);
     exact_bytes(&format);
-    eprintln!("G3/G4/G5: native registration/update and ordinary control evidence verified. Actual Store API admission remains a separate unqualified integration gate.");
+    eprintln!(
+        "G3/G4/G5: native registration/update and ordinary control evidence verified. Actual Store API admission remains a separate unqualified integration gate."
+    );
     true
 }
 
@@ -755,7 +778,12 @@ pub(super) fn run() {
     let directory_only = rename_arm(&run, &api, false);
     collision_arm(&run);
     let registration = registration_arm(&run);
-    eprintln!("STAGE1B FEASIBILITY strong_format_pin_rename={strong} directory_only_control={directory_only} pinned_registration={registration}; all fixtures retained at {}; no production guarantee inferred", run.display());
-    assert!(strong && directory_only && registration,
-        "Stage1b native prerequisite failed; retain exact evidence and review handoff design before production relaxation");
+    eprintln!(
+        "STAGE1B FEASIBILITY strong_format_pin_rename={strong} directory_only_control={directory_only} pinned_registration={registration}; all fixtures retained at {}; no production guarantee inferred",
+        run.display()
+    );
+    assert!(
+        strong && directory_only && registration,
+        "Stage1b native prerequisite failed; retain exact evidence and review handoff design before production relaxation"
+    );
 }

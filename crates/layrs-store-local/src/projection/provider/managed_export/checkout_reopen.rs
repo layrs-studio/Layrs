@@ -12,20 +12,20 @@ use crate::{
             },
             database_io::{self, WriterCloseObserver},
             destination_ready::{self, OrdinaryReadyInputs},
-            import_validation::{verify_source, ImportDatabaseKind},
+            import_validation::{ImportDatabaseKind, verify_source},
             managed_ready_reopen::{
                 AdmissionStep, OrdinaryCheckoutParts, OrdinaryCheckoutResources,
                 OrdinaryExclusiveSource,
             },
             ordinary_transition,
             records::{
+                Record,
                 import::{
                     AdmittedSourceBinding, ImportSourceReferences, ProviderTransitionReceiptRecord,
                 },
-                Record,
             },
             recovery::error::{
-                invalid as rejected, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as rejected,
             },
         },
         shared::{

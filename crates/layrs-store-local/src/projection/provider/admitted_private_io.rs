@@ -5,15 +5,15 @@
 use super::{
     admitted_ordinary::{self, AdmittedOrdinaryData},
     database_io::{self, BareConnection, CleanWriteAdmission, DatabaseFile, WriterCloseObserver},
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
 };
 use crate::projection::format;
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -237,7 +237,9 @@ impl AdmittedPreflight {
         self,
         data: &crate::projection::restore::RestoreRecoveryData,
     ) -> Result<AdmittedPrivateHandle> {
-        if !data.local_scope().is_some_and(|scope| scope.matches(self.data()))
+        if !data
+            .local_scope()
+            .is_some_and(|scope| scope.matches(self.data()))
             || self.data().ready().plan.denial_coverage.is_none()
         {
             return Err(invalid(

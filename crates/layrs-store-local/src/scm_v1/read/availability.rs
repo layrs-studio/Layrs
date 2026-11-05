@@ -106,14 +106,9 @@ impl NativeScmReader<'_> {
         let _span = crate::perf::span("read.file_length_metadata");
         let connection = self.connection()?;
         let state: Option<String> = connection
-            .prepare_cached(
-                "SELECT availability FROM file_availability WHERE file_id = ?1",
-            )
+            .prepare_cached("SELECT availability FROM file_availability WHERE file_id = ?1")
             .map_err(sqlite_backend)?
-            .query_row(
-                [id.as_str()],
-                |row| row.get(0),
-            )
+            .query_row([id.as_str()], |row| row.get(0))
             .optional()
             .map_err(sqlite_backend)?;
         let Some(state) = state else {
@@ -176,8 +171,10 @@ impl NativeScmReader<'_> {
                 ))
                 .map_err(sqlite_backend)?;
             let names: Vec<&str> = batch.iter().map(|file| file.as_str()).collect();
-            let parameters: Vec<&dyn rusqlite::ToSql> =
-                names.iter().map(|name| name as &dyn rusqlite::ToSql).collect();
+            let parameters: Vec<&dyn rusqlite::ToSql> = names
+                .iter()
+                .map(|name| name as &dyn rusqlite::ToSql)
+                .collect();
             let mut rows = statement
                 .query(parameters.as_slice())
                 .map_err(sqlite_backend)?;
@@ -321,14 +318,9 @@ impl NativeScmReader<'_> {
     pub fn file_manifest_ids_metadata(&self, id: &FileId) -> Result<Vec<FileManifestId>> {
         let connection = self.connection()?;
         let state: Option<String> = connection
-            .prepare_cached(
-                "SELECT availability FROM file_availability WHERE file_id = ?1",
-            )
+            .prepare_cached("SELECT availability FROM file_availability WHERE file_id = ?1")
             .map_err(sqlite_backend)?
-            .query_row(
-                [id.as_str()],
-                |row| row.get(0),
-            )
+            .query_row([id.as_str()], |row| row.get(0))
             .optional()
             .map_err(sqlite_backend)?;
         match state.as_deref() {
@@ -337,7 +329,7 @@ impl NativeScmReader<'_> {
             Some(other) => {
                 return Err(corruption(format!(
                     "file_availability for {id} has invalid state {other}"
-                )))
+                )));
             }
         }
         // Same row set and corruption checks as `file_availability_with_budget`

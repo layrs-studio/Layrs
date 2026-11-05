@@ -25,15 +25,16 @@ pub mod recovery;
 mod repository;
 pub mod schema;
 mod sqlite;
-pub mod worktrees;
-pub mod worktree_audit;
 pub mod vfs_recovery;
+pub mod worktree_audit;
+pub mod worktrees;
 mod write_batch;
 
 pub use admission::CompositeAdmissionResolver;
 pub use cas::{
-    CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue, CasScrubReport,
-    InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PreparedObject, PutItem,
+    CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue,
+    CasScrubReport, InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PreparedObject,
+    PutItem,
 };
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
@@ -41,10 +42,9 @@ pub use fsck::{
 };
 
 pub use format::{
-    FORMAT_MAGIC, FORMAT_SCHEMA, FORMAT_VERSION, FormatMarker, NEWEST_FORMAT_VERSION,
-    PACKED_FORMAT_VERSION, FormatState, NativeStoreError,
-    NativeStoreInspection, SharedReadLock, SharedReadLocks, init, inspect, open, open_audit,
-    open_exclusive,
+    FORMAT_MAGIC, FORMAT_SCHEMA, FORMAT_VERSION, FormatMarker, FormatState, NEWEST_FORMAT_VERSION,
+    NativeStoreError, NativeStoreInspection, PACKED_FORMAT_VERSION, SharedReadLock,
+    SharedReadLocks, init, inspect, open, open_audit, open_exclusive,
 };
 pub use layout::{
     FORMAT_FILE_NAME, LOCK_FILE_NAME, METADATA_DIR_NAME, NativeStoreAudit, NativeStoreExclusive,

@@ -3,12 +3,12 @@ use crate::projection::provider::{
     database_io::BareConnection,
     process_profile::tests::child,
     records::{
+        Receipt,
         import::{
             ImportClosure, ImportRowset, ImportVersion, ProviderImportKind,
             ProviderImportPrefixRecord,
         },
         transition::{TransitionObservation, TransitionPlan, TransitionRowset},
-        Receipt,
     },
 };
 use layrs_core::scm::{ObjectId, StepId, TreeId, WorktreeId};
@@ -173,15 +173,17 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
             assert_eq!(readable.transitions.len(), 1);
             assert_eq!(readable.transitions[0], intent);
             assert!(readable.require_no_active_transition().is_err());
-            assert!(super::super::private_active_capture_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &mount.prepared.binding,
-                None,
-                None,
-            )
-            .is_err());
+            assert!(
+                super::super::private_active_capture_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &mount.prepared.binding,
+                    None,
+                    None,
+                )
+                .is_err()
+            );
             let mut competing =
                 ProviderTransitionIntentRecord::decode(&intent.encode().unwrap()).unwrap();
             competing.transaction_id = "00000000000000000000000000000003".into();
@@ -212,15 +214,17 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
                 params![forged.encode().unwrap(), forged.digest().unwrap()],
             )
             .unwrap();
-            assert!(super::super::private_active_transition_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &mount.prepared.binding,
-                None,
-                None,
-            )
-            .is_err());
+            assert!(
+                super::super::private_active_transition_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &mount.prepared.binding,
+                    None,
+                    None,
+                )
+                .is_err()
+            );
             c.execute(
                 "UPDATE projection_provider_transitions SET payload=?1,digest=?2",
                 params![intent.encode().unwrap(), intent.digest().unwrap()],
@@ -231,29 +235,33 @@ fn planned_source_is_exact_and_legacy_active_capture_stays_strict() {
                 [],
             )
             .unwrap();
-            assert!(super::super::private_active_transition_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &mount.prepared.binding,
-                None,
-                None,
-            )
-            .is_err());
+            assert!(
+                super::super::private_active_transition_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &mount.prepared.binding,
+                    None,
+                    None,
+                )
+                .is_err()
+            );
             c.execute(
                 "UPDATE projection_provider_transitions SET role='source',digest=?1",
                 [TOKEN],
             )
             .unwrap();
-            assert!(super::super::private_active_transition_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &mount.prepared.binding,
-                None,
-                None,
-            )
-            .is_err());
+            assert!(
+                super::super::private_active_transition_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &mount.prepared.binding,
+                    None,
+                    None,
+                )
+                .is_err()
+            );
             database.finish(Ok(())).unwrap();
         },
     );

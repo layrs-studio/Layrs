@@ -10,7 +10,9 @@ fn main() {
     }
     #[cfg(windows)]
     if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_VIRTUAL_COMMAND) {
-        std::process::exit(layrs_cli::native_room::purge_dropped_virtual(&raw_args[1..]));
+        std::process::exit(layrs_cli::native_room::purge_dropped_virtual(
+            &raw_args[1..],
+        ));
     }
     let wants_json = raw_args.iter().any(|arg| arg == "--json");
 

@@ -8,10 +8,10 @@ use crate::{
         provider::{
             admitted_ordinary,
             database_io::{self, ReadState, WriterCloseObserver},
-            ordinary_destination::{staging::read_stageable, OrdinaryCopyInputs},
+            ordinary_destination::{OrdinaryCopyInputs, staging::read_stageable},
             records::Record,
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
         },
         shared::{

@@ -98,7 +98,10 @@ pub trait ScmReader: Send + Sync {
     /// re-hashing chunks; the default performs full `file_availability`.
     /// Never use this as proof that bytes are intact: verify them at use.
     fn file_present_metadata(&self, id: &FileId) -> Result<bool> {
-        Ok(matches!(self.file_availability(id)?, FileAvailability::Present(_)))
+        Ok(matches!(
+            self.file_availability(id)?,
+            FileAvailability::Present(_)
+        ))
     }
     /// Manifest ids of a present File, possibly from metadata only; the
     /// default performs full `file_availability`. Empty when absent.

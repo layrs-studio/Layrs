@@ -9,7 +9,7 @@ use crate::{
     },
     secure_fs::PinnedDirectory,
 };
-use layrs_core::scm::{canonical_json, FileId, FileManifest, FileManifestId};
+use layrs_core::scm::{FileId, FileManifest, FileManifestId, canonical_json};
 use layrs_vfs::Cancellation;
 use rusqlite::{Connection, OptionalExtension};
 use std::{ffi::OsStr, io::Read};

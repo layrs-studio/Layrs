@@ -1,8 +1,8 @@
 //! Permanent private9 archive interpreter. No operational prejournal selector,
 //! writer, migration, filesystem check or adoption is available through this API.
 use super::super::managed_admission::{
-    schema::{AdmittedLayout, AdmittedSchemaPermit},
     ArchiveCommitment,
+    schema::{AdmittedLayout, AdmittedSchemaPermit},
 };
 use super::*;
 

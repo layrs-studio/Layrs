@@ -3,29 +3,28 @@
 //! deliberate observation errors, not simulated OS failures or crash recovery.
 //! No C reservation, content transfer, Ready or admission is qualified here.
 use crate::projection::{
-    format,
+    ProjectionStore, ProjectionStoreError, SessionMode, format,
     provider::{
         database_io::{WriterCloseObserver, WriterOpenPoint},
         managed_admission::read_admitted_import,
         managed_export::allocation,
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         ordinary_transition,
         process_profile::tests::child,
         records::{
+            Record,
             transition::{
                 ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
             },
-            Record,
         },
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         transition_sql::SourceIntentEffect,
     },
     shared::provider_access::ImportRegistrationEffect,
-    ProjectionStore, ProjectionStoreError, SessionMode,
 };
 use layrs_core::scm::WorktreeId;
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, types::ValueRef, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi, types::ValueRef};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -387,7 +386,10 @@ fn require_initializing_without_reservation(
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
-        assert!(!c.query_row(sql, [owner], |row| row.get::<_, bool>(0)).unwrap());
+        assert!(
+            !c.query_row(sql, [owner], |row| row.get::<_, bool>(0))
+                .unwrap()
+        );
     }
     c.execute_batch("ROLLBACK").unwrap();
     c.close().unwrap();

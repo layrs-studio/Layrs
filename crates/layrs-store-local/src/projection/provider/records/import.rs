@@ -1,14 +1,15 @@
 //! Immutable import/companion DATA with versioned source bindings.
 //! These codecs authenticate no SQL rowset, source store, native root or claim.
 use super::{
-    activation::{owner_identity_digest, ProviderActivationRecord},
+    AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt, ReceiptBindingCheck,
+    ReceiptRef, Record,
+    activation::{ProviderActivationRecord, owner_identity_digest},
     codec,
     denied_coverage::DeniedCoverageRef,
-    invalid, AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Receipt,
-    ReceiptBindingCheck, ReceiptRef, Record,
+    invalid,
 };
-use crate::projection::{format, ProjectionIdentity, Result};
-use layrs_core::scm::{canonical_json, FileId, FileManifestId, RepoPath};
+use crate::projection::{ProjectionIdentity, Result, format};
+use layrs_core::scm::{FileId, FileManifestId, RepoPath, canonical_json};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -305,7 +306,7 @@ impl Record for ProviderImportPrefixRecord {
             _ => {
                 return Err(invalid(
                     "import prefix version/restore history fields differ",
-                ))
+                ));
             }
         }
         self.source.validate()?;
@@ -833,7 +834,7 @@ impl Record for ProviderTransitionReceiptRecord {
             _ => {
                 return Err(invalid(
                     "transition receipt version/denial coverage differs",
-                ))
+                ));
             }
         }
         if let Some(reference) = &self.denial_coverage {

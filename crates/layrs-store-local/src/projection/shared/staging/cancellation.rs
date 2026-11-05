@@ -269,12 +269,12 @@ impl Lease {
                     true
                 }
                 Some(_) => {
-                    return Err(invalid("restore installation exact representation differs"))
+                    return Err(invalid("restore installation exact representation differs"));
                 }
                 None if stage.published => {
                     return Err(invalid(
                         "published restore installation lacks exact catalog representation",
-                    ))
+                    ));
                 }
                 None => false,
             },

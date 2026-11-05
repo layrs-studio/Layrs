@@ -10,9 +10,9 @@ use crate::projection::{
         destination_sql, destination_validation,
         import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
         records::{
+            Record,
             import::{ImportSource, ImportSourceReferences},
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-            Record,
         },
         validation::{self, PrivateActiveCaptureValidation},
     },

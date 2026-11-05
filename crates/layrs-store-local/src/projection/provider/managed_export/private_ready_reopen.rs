@@ -10,20 +10,20 @@ use crate::{
             checkout_journal::{CheckoutJournal, ExpectedCheckout},
             database_io::{self, WriterCloseObserver},
             destination_ready::{self, OrdinaryReadyInputs, ReadyEffect},
-            import_validation::{verify_source, ImportDatabaseKind},
+            import_validation::{ImportDatabaseKind, verify_source},
             managed_ready_reopen::{
                 AdmissionStep, OrdinaryExclusiveSource, OrdinaryPrivateReadyParts,
                 OrdinaryPrivateReadyPhysical, OrdinaryPrivateReadyResources,
             },
             ordinary_transition,
             records::{
+                Record,
                 import::{
                     AdmittedSourceBinding, ImportSourceReferences, ProviderTransitionReceiptRecord,
                 },
-                Record,
             },
             recovery::error::{
-                invalid as rejected, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as rejected,
             },
         },
         shared::{
@@ -323,7 +323,9 @@ impl OrdinaryPrivateReadyFinalization {
                                 )?;
                                 before.data.require_same_image(&after.data)?;
                                 if after.data.phase != Phase::Ready {
-                                    return Err(rejected("fresh private Ready finalizer did not produce actual Ready"));
+                                    return Err(rejected(
+                                        "fresh private Ready finalizer did not produce actual Ready",
+                                    ));
                                 }
                                 reconstruction.require_identity(cancel)?;
                                 cancel.check()?;

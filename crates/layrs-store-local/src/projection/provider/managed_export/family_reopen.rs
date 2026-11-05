@@ -9,20 +9,20 @@ use crate::{
             admitted_ordinary, checkout_journal,
             database_io::{self, WriterCloseObserver},
             destination_ready::{self, OrdinaryReadyInputs, OwnedReadySnapshot},
-            import_validation::{verify_source, ImportDatabaseKind},
+            import_validation::{ImportDatabaseKind, verify_source},
             managed_ready_reopen::{
                 AdmissionStep, OrdinaryExclusiveSource, OrdinaryFamilyPhysical,
                 OrdinaryFamilyResources,
             },
             ordinary_transition,
             records::{
+                Record,
                 import::{
                     AdmittedSourceBinding, ImportSourceReferences, ProviderTransitionReceiptRecord,
                 },
-                Record,
             },
             recovery::error::{
-                invalid as rejected, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as rejected,
             },
         },
         shared::admitted_catalog::{

@@ -209,7 +209,10 @@ pub(super) fn dos_device(drive: &[u16]) -> io::Result<Vec<u16>> {
         return Err(io::Error::last_os_error());
     }
     // The first of the NUL-separated targets is the active mapping.
-    let end = buffer[..length].iter().position(|c| *c == 0).unwrap_or(length);
+    let end = buffer[..length]
+        .iter()
+        .position(|c| *c == 0)
+        .unwrap_or(length);
     buffer.truncate(end);
     Ok(buffer)
 }
@@ -237,7 +240,9 @@ pub(super) fn final_path(file: &File) -> io::Result<Vec<u16>> {
         }
         // Too small: `length` is the required size including the terminator.
         if length > 32_768 {
-            return Err(io::Error::other("final path exceeds the Windows path limit"));
+            return Err(io::Error::other(
+                "final path exceeds the Windows path limit",
+            ));
         }
         buffer.resize(length + 1, 0);
     }
@@ -352,8 +357,13 @@ pub(super) fn open_file_for_sync_at(parent: &File, name: &OsStr) -> io::Result<F
 
 pub(super) fn open_immutable_file_at(parent: &File, name: &OsStr) -> io::Result<File> {
     open_at_with_security_and_share(
-        parent, name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_OPEN, FILE_NON_DIRECTORY_FILE, ptr::null_mut(), 0x0000_0001,
+        parent,
+        name,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        ptr::null_mut(),
+        0x0000_0001,
     )
 }
 
@@ -563,7 +573,15 @@ fn open_at_with_security(
     kind: u32,
     security_descriptor: *mut c_void,
 ) -> io::Result<File> {
-    open_at_with_security_and_share(parent, name, access, disposition, kind, security_descriptor, FILE_SHARE_ALL)
+    open_at_with_security_and_share(
+        parent,
+        name,
+        access,
+        disposition,
+        kind,
+        security_descriptor,
+        FILE_SHARE_ALL,
+    )
 }
 
 fn open_at_with_security_and_share(

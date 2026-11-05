@@ -350,6 +350,7 @@ fn tree(
     max_entries: usize,
     max_bytes: Option<usize>,
 ) -> io::Result<([u8; 32], Vec<PathBuf>)> {
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         directory: &PinnedDirectory,
         path: &Path,

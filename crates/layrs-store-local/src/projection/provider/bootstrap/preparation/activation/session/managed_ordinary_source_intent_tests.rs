@@ -1,17 +1,16 @@
 //! One genuine admitted source exercises the preallocation intent lifecycle.
 //! No destination resources, transfer, publication or new admission are created.
 use crate::projection::{
-    format,
+    ProjectionStore, ProjectionStoreError, SessionMode, format,
     provider::{
         managed_admission::read_admitted_import,
         process_profile::tests::child,
         records::{
-            transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             Record,
+            transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
         },
         transition_sql::SourceIntentEffect,
     },
-    ProjectionStore, ProjectionStoreError, SessionMode,
 };
 use layrs_core::scm::{FileId, RepoPath, WorktreeId};
 use layrs_vfs::Cancellation;
@@ -233,9 +232,11 @@ fn managed_ordinary_source_plan_retries_cancels_and_preserves_incoming_admission
                     .is_err(),
                 "incoming ID cannot become outgoing"
             );
-            assert!(owner
-                .begin_plan(parent, LEAF, "invalid-id", &cancel)
-                .is_err());
+            assert!(
+                owner
+                    .begin_plan(parent, LEAF, "invalid-id", &cancel)
+                    .is_err()
+            );
             assert!(
                 owner
                     .begin_plan(parent, OTHER_LEAF, NEXT_TX, &cancel)

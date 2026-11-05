@@ -34,7 +34,7 @@ pub(in crate::projection) fn resume_with_access(
         if encode(&journal)? != bytes {
             return Err(invalid("refresh journal is not canonical"));
         }
-        let current = validate(&access, &journal)?;
+        let current = validate(access, &journal)?;
         if !journal.ready {
             // Only private staging may exist. No checkout operation precedes Ready.
             // Incomplete staged bytes are retained privately; retry supplies bytes again.

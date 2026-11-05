@@ -139,12 +139,12 @@ fn expected_parts(
             version
         }
         (_, SourceKind::Provider) => {
-            return Err(invalid("checkout requires provider source prefix"))
+            return Err(invalid("checkout requires provider source prefix"));
         }
         (_, SourceKind::AdmittedOrdinary) => {
             return Err(invalid(
                 "ordinary checkout requires admitted source and checkout identity",
-            ))
+            ));
         }
     };
     codec::raw_digest(image_digest)?;
@@ -435,7 +435,7 @@ fn read_ready_parts(
         _ => {
             return Err(invalid(
                 "checkout Ready origin differs from terminal reader",
-            ))
+            ));
         }
     };
     let expected = expected_ready_parts(ready, &files, deletions, image, source, cancel)?;

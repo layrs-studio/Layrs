@@ -2,19 +2,19 @@
 //! opener, byte proof or ordinary/reclamation admission is granted here.
 use super::{
     cancellation,
-    managed_admission::{read_admitted_import, ManagedAdmissionRecord, VerifiedAdmittedImport},
+    managed_admission::{ManagedAdmissionRecord, VerifiedAdmittedImport, read_admitted_import},
     records::{
+        Record,
         import::{ProviderImportPrefixRecord, ProviderTransitionReceiptRecord},
         transition::ProviderTransitionIntentRecord,
-        Record,
     },
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
 };
 use crate::projection::{
-    capture::CapturedPatch, format, publication::CompletedPublication,
-    shared::exact_content::ExactBinding, ProjectionIdentity,
+    ProjectionIdentity, capture::CapturedPatch, format, publication::CompletedPublication,
+    shared::exact_content::ExactBinding,
 };
-use layrs_core::scm::{canonical_json, FileId, FileManifestId, RepoPath};
+use layrs_core::scm::{FileId, FileManifestId, RepoPath, canonical_json};
 use layrs_vfs::Cancellation;
 use rusqlite::Connection;
 
@@ -28,8 +28,8 @@ pub(in crate::projection) use data::{
     AdmittedRepresentation,
 };
 pub(in crate::projection) use origins::{
-    capture_origin, imported, imported_publication, restore_history_origin,
-    validate_capture_identity, CaptureOrigin,
+    CaptureOrigin, capture_origin, imported, imported_publication, restore_history_origin,
+    validate_capture_identity,
 };
 
 /// Interpret true private9 in a retained caller transaction or a short owned

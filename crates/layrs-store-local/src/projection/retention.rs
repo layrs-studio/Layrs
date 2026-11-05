@@ -7,15 +7,15 @@ mod staging;
 use crate::secure_fs::PinnedFile;
 #[cfg(windows)]
 pub(in crate::projection) use cancellation::{
-    cancel_admitted_with_access, restore_cancellation_preflight, LocalCaptureCancellation,
-    LocalRestoreScope, RestoreCancellationData,
+    LocalCaptureCancellation, LocalRestoreScope, RestoreCancellationData,
+    cancel_admitted_with_access, restore_cancellation_preflight,
 };
 #[cfg(all(windows, test))]
 pub(in crate::projection) use cancellation::{
-    cancel_admitted_with_faults, RestoreCancellationPoint,
+    RestoreCancellationPoint, cancel_admitted_with_faults,
 };
 use layrs_core::scm::{FileId, FileManifest, FileManifestId};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 pub(super) use staging::{accept_staging, require_no_staging, track_directory, track_file};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -282,6 +282,7 @@ pub(super) fn retain_pinned_with_scope(
     accept_claim(c, store, lease, kind, owner, &[manifest])?;
     Ok(())
 }
+#[allow(dead_code)]
 pub(super) fn manifest(
     c: &Connection,
     store: &ProjectionStore,

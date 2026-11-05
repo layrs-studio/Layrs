@@ -2,6 +2,7 @@
 //! native and shared-content proofs through the eventual destination writer.
 use super::managed_image::VerifiedManagedImage;
 use crate::projection::{
+    ProjectionIdentity,
     capture::{
         CapturedChange, CapturedFile, CapturedPatch, CapturedTarget, MAX_CAPTURE_BYTES,
         MAX_CAPTURE_FILE_BYTES,
@@ -10,20 +11,19 @@ use crate::projection::{
     provider::{
         import_validation::VerifiedImportClosure,
         records::{
+            ProviderBootstrapSource, Record,
             activation::activation_snapshot,
             denied_coverage::DerivedDeniedCoverage,
             import::{ImportSource, ProviderImportKind, ProviderImportPrefixRecord},
             transition::{TransitionObservation, TransitionPlan, TransitionRowset},
-            ProviderBootstrapSource, Record,
         },
-        recovery::error::{invalid, Result},
+        recovery::error::{Result, invalid},
         validation::{PrivateActiveCaptureValidation, PrivateActivePublicationValidation},
     },
-    ProjectionIdentity,
 };
 use layrs_core::{
     projection::{EntryState, ProjectionSelection, ProjectionSnapshot},
-    scm::{canonical_json, FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget},
+    scm::{FileId, FileManifest, FileManifestId, RepoPath, TreeEntryTarget, canonical_json},
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -592,7 +592,7 @@ pub(in crate::projection::provider) fn derive_ordinary_data(
         _ => {
             return Err(invalid(
                 "managed ordinary plan requires admitted schema9 source",
-            ))
+            ));
         }
     };
     selection

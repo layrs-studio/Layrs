@@ -3,17 +3,16 @@
 //! created here. Required versioned plan/receipt links and scoped SQL readers
 //! must authenticate this entire body before a live transition can use it.
 use super::{
-    codec,
+    Record, Result, codec,
     import::{ImportSource, ImportVersion, ProviderImportPrefixRecord},
-    invalid, Record, Result,
+    invalid,
 };
 use crate::projection::{
-    format,
+    ProjectionIdentity, format,
     provider::{
         cancellation,
         transition_observation::{AuthorityObservationData, TransitionObservationData},
     },
-    ProjectionIdentity,
 };
 use layrs_core::{
     projection::{PathSemantics, ProjectionSnapshot, ReservedPaths},

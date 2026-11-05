@@ -99,12 +99,14 @@ fn coverage_body_roundtrip_binds_exact_rows_and_every_reference_field() {
     }
     let mut changed = TransitionDeniedCoverageRecord::decode(&payload).unwrap();
     changed.transaction_id = "00000000000000000000000000000002".into();
-    assert!(TransitionDeniedCoverageRecord::read_body(
-        &reference.id,
-        &changed.encode().unwrap(),
-        &reference
-    )
-    .is_err());
+    assert!(
+        TransitionDeniedCoverageRecord::read_body(
+            &reference.id,
+            &changed.encode().unwrap(),
+            &reference
+        )
+        .is_err()
+    );
     changed = TransitionDeniedCoverageRecord::decode(&payload).unwrap();
     changed.source_version.effective_image_digest = "f".repeat(64);
     assert_ne!(changed.digest().unwrap(), reference.id);
@@ -122,10 +124,10 @@ fn coverage_codec_rejects_unknown_duplicate_missing_and_noncanonical_fields() {
     assert!(TransitionDeniedCoverageRecord::decode(duplicate.as_bytes()).is_err());
     let mut missing: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     missing.as_object_mut().unwrap().remove("authority");
-    assert!(TransitionDeniedCoverageRecord::decode(
-        &layrs_core::scm::canonical_json(&missing).unwrap()
-    )
-    .is_err());
+    assert!(
+        TransitionDeniedCoverageRecord::decode(&layrs_core::scm::canonical_json(&missing).unwrap())
+            .is_err()
+    );
     let pretty =
         serde_json::to_vec_pretty(&serde_json::from_slice::<serde_json::Value>(&payload).unwrap())
             .unwrap();

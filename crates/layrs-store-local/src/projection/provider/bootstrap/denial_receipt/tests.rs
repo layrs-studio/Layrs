@@ -153,10 +153,12 @@ fn denial_receipt_replacement_with_identical_bytes_is_never_verified_or_unlinked
             let (parent, published) = component_receipt();
             let bytes = published.record().encode().unwrap();
             let original_id = file::identity(published.file.file()).unwrap();
-            assert!(!published
-                .file
-                .rename_to(&parent, OsStr::new("retained-original.json"))
-                .unwrap());
+            assert!(
+                !published
+                    .file
+                    .rename_to(&parent, OsStr::new("retained-original.json"))
+                    .unwrap()
+            );
             let mut replacement = parent
                 .create_new_private_file(OsStr::new(FILE_NAME))
                 .unwrap();

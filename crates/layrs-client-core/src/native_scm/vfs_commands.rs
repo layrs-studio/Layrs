@@ -135,18 +135,14 @@ mod tests {
         ] {
             let request =
                 serde_json::from_value(json!({"ticket":ticket,"command":command})).unwrap();
-            assert!(
-                execute_vfs_control(request)
-                    .unwrap_err()
-                    .contains("stop Worktree writers")
-            );
+            assert!(execute_vfs_control(request)
+                .unwrap_err()
+                .contains("stop Worktree writers"));
         }
-        assert!(
-            serde_json::from_value::<VfsControlRequest>(
-                json!({"ticket":ticket,"command":{"action":"capture"}})
-            )
-            .is_err()
-        );
+        assert!(serde_json::from_value::<VfsControlRequest>(
+            json!({"ticket":ticket,"command":{"action":"capture"}})
+        )
+        .is_err());
         assert!(
             !serde_json::to_string(&serde_json::from_value::<VfsHostTicket>(ticket).unwrap())
                 .unwrap()

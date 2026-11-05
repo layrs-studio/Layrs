@@ -2,6 +2,7 @@ use super::*;
 use layrs_core::scm::{ChunkId, FileId};
 
 /// All callbacks are local prepared I/O, never network operations.
+#[allow(clippy::type_complexity)]
 pub struct CheckoutSources<'a> {
     pub chunks: &'a [(ChunkId, u64)],
     pub read_chunk: &'a mut dyn FnMut(&ChunkId) -> layrs_store::scm::Result<Vec<u8>>,
@@ -97,7 +98,9 @@ pub(super) fn stage_files(
         staged.insert(jobs[position].index, result?);
     }
     if staged.len() != jobs.len() {
-        return Err(error("checkout staging stopped before every file was written"));
+        return Err(error(
+            "checkout staging stopped before every file was written",
+        ));
     }
     Ok(staged)
 }

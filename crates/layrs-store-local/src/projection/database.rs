@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 // Keep the exact v5 fingerprint for non-destructive legacy validation. Current
 // databases append selection::SQL and set user_version=6 in one transaction.

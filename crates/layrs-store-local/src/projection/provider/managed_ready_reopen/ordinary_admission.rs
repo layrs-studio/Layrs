@@ -7,8 +7,8 @@ use crate::projection::{
         database_io::WriterCloseObserver,
         destination_ready::read_ordinary_managed_ready,
         managed_admission::{
-            admit_ordinary_ready, read_admitted_import, AdmissionWriteEffect,
-            RequiredRepresentation,
+            AdmissionWriteEffect, RequiredRepresentation, admit_ordinary_ready,
+            read_admitted_import,
         },
         published_handoff::read_ordinary_published_for_ready,
         records::Record,

@@ -43,7 +43,8 @@ pub(super) fn update_placeholder(
         }
     }
     let _module = Module(module);
-    let pointer = unsafe { GetProcAddress(module, b"CfUpdatePlaceholder\0".as_ptr()) }.unwrap();
+    let pointer =
+        unsafe { GetProcAddress(module, c"CfUpdatePlaceholder".as_ptr().cast()) }.unwrap();
     let update: Update = unsafe { std::mem::transmute(pointer) };
     let file = fs::open(
         path,

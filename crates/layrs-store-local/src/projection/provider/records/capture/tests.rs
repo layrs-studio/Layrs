@@ -1,14 +1,14 @@
 use super::*;
 use crate::projection::{
+    RecoveryBinding,
     capture::{CapturedFile, CapturedTarget},
     provider::{
         records::{
-            preparation::{PreparationState, ProviderPreparationRecord},
             MountPhase, PreparedBinding, ProviderBootstrapBinding, Receipt,
+            preparation::{PreparationState, ProviderPreparationRecord},
         },
         validation::tests::fixture::Fixture,
     },
-    RecoveryBinding,
 };
 use layrs_core::scm::{FileId, RepoPath, TreeEntryTarget};
 
@@ -300,9 +300,11 @@ fn patch_history_mode_and_bounds_refuse_alternate_or_truncated_data() {
     assert!(wrong_head.encode().is_err());
     let mut wrong_map = hashing.clone();
     wrong_map.activation_digest = codec::hash("other-map", b"other");
-    assert!(wrong_map
-        .require_references(&f.allocation, &mount, &activation)
-        .is_err());
+    assert!(
+        wrong_map
+            .require_references(&f.allocation, &mount, &activation)
+            .is_err()
+    );
     let receipt = ProviderCaptureReceiptRecord::derive(&{
         let mut valid = hashing;
         valid.state = ProviderCaptureState::Accepted {
@@ -314,15 +316,17 @@ fn patch_history_mode_and_bounds_refuse_alternate_or_truncated_data() {
     .unwrap();
     let mut altered = receipt.clone();
     altered.capture_digest = codec::hash("other-capture", b"other");
-    assert!(altered
-        .require_row(ProviderCaptureReceiptRowData {
-            transaction_id: &receipt.transaction_id,
-            capture_sequence: receipt.capture_sequence,
-            capture_digest: &receipt.capture_digest,
-            payload: &receipt.encode().unwrap(),
-            digest: &receipt.digest().unwrap(),
-        })
-        .is_err());
+    assert!(
+        altered
+            .require_row(ProviderCaptureReceiptRowData {
+                transaction_id: &receipt.transaction_id,
+                capture_sequence: receipt.capture_sequence,
+                capture_digest: &receipt.capture_digest,
+                payload: &receipt.encode().unwrap(),
+                digest: &receipt.digest().unwrap(),
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -342,15 +346,17 @@ fn copied_owner_digest_cannot_rebind_another_allocation_mount() {
     );
     b_activation.owner_identity_digest = owner_identity_digest(&a.allocation).unwrap();
     let b_mount = ProviderActiveMountRecord::derive(&prepared(&b), &b_activation).unwrap();
-    assert!(ProviderCaptureTransactionRecord::begin(
-        &a.allocation,
-        &b_mount,
-        &b_activation,
-        "attempt-mixed".into(),
-        0,
-        None,
-    )
-    .is_err());
+    assert!(
+        ProviderCaptureTransactionRecord::begin(
+            &a.allocation,
+            &b_mount,
+            &b_activation,
+            "attempt-mixed".into(),
+            0,
+            None,
+        )
+        .is_err()
+    );
 }
 
 #[test]

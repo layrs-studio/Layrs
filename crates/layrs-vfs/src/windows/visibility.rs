@@ -4,7 +4,7 @@ use crate::{Error, Result};
 use std::{marker::PhantomData, rc::Rc, sync::OnceLock};
 use windows_sys::Win32::{
     Foundation::{FreeLibrary, HMODULE},
-    System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
+    System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW},
 };
 
 type SetMode = unsafe extern "system" fn(i8) -> i8;
@@ -211,7 +211,7 @@ mod tests {
         use windows_sys::Win32::{
             Foundation::INVALID_HANDLE_VALUE,
             Storage::FileSystem::{
-                FileAttributeTagInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_TAG_INFO,
+                FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo, GetFileInformationByHandleEx,
             },
         };
         let api = Api::load().unwrap();

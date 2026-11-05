@@ -8,17 +8,17 @@ use crate::{
         provider::{
             admitted_ordinary,
             database_io::{self, ReadState, WriterCloseObserver},
-            ordinary_destination::{self, staging as destination_staging, OrdinaryCopyInputs},
+            ordinary_destination::{self, OrdinaryCopyInputs, staging as destination_staging},
             ordinary_transition,
             records::Record,
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
             transition_sql::SourceIntentEffect,
         },
         shared::{
             admitted_catalog::AdmittedFamilyContext,
-            provider_access::{provider_import::source::OrdinarySourceInputs, ImportRegistration},
+            provider_access::{ImportRegistration, provider_import::source::OrdinarySourceInputs},
         },
     },
 };

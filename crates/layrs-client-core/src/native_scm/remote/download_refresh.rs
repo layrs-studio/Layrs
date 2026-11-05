@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) const CLAIM_BATCH: usize = 32;
 
+#[allow(clippy::large_enum_variant)]
 enum BatchPlan {
     Ready(FetchPlanResponse),
     Split,

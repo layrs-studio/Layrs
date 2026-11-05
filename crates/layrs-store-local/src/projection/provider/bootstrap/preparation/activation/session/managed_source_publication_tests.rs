@@ -7,16 +7,15 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
+        Record,
         import::{ProviderTransitionReceiptRecord, TransitionReceiptRowData},
         transition::{ProviderTransitionIntentRecord, TransitionRowData, TransitionState},
-        Record,
     },
     validation,
 };
 use rusqlite::{
-    ffi,
+    Connection, DatabaseName, OpenFlags, ffi,
     types::{Value, ValueRef},
-    Connection, DatabaseName, OpenFlags,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -79,19 +78,25 @@ fn sql_witness(c: &Connection, exclude_source_publication: bool) -> SqlWitness {
         .query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     assert_eq!(tables.len() as u64, count);
     if exclude_source_publication {
-        assert!(tables
-            .iter()
-            .any(|s| s == "projection_provider_transitions"));
-        assert!(tables
-            .iter()
-            .any(|s| s == "projection_provider_transition_receipts"));
+        assert!(
+            tables
+                .iter()
+                .any(|s| s == "projection_provider_transitions")
+        );
+        assert!(
+            tables
+                .iter()
+                .any(|s| s == "projection_provider_transition_receipts")
+        );
     }
     let mut all = BTreeMap::new();
     let mut aggregate = 0usize;
     for table in tables {
-        assert!(table
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        assert!(
+            table
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
         if exclude_source_publication
             && matches!(
                 table.as_str(),
@@ -414,7 +419,11 @@ fn managed_source_ready_ack_refusal_retries_published_then_replays_without_write
                         >,
                          expected: &ProviderTransitionIntentRecord| {
                             private.require_physical(lease, &cancel).unwrap();
-                            assert_eq!(witnesses(&stable_paths),stable_fs,"source publication cannot alter family/quota/private Ready/outputs/FORMAT");
+                            assert_eq!(
+                                witnesses(&stable_paths),
+                                stable_fs,
+                                "source publication cannot alter family/quota/private Ready/outputs/FORMAT"
+                            );
                             no_sidecars(&databases);
                             super::managed_live_read_tests::assert_retained_terminal_reads(
                                 session,

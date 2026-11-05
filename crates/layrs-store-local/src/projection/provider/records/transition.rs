@@ -1,15 +1,15 @@
 //! Closed v1/v2 transition intent DATA. This codec reads no SQL or filesystem,
 //! and proves neither permissions, resident bytes, native READY nor publication.
 use super::{
-    codec,
+    Record, Result, codec,
     denied_coverage::DeniedCoverageRef,
     import::{
         ImportRowset, ImportSource, ProviderImportKind, ProviderImportPrefixRecord,
         ProviderTransitionReceiptRecord,
     },
-    invalid, Record, Result,
+    invalid,
 };
-use crate::projection::{format, ProjectionIdentity};
+use crate::projection::{ProjectionIdentity, format};
 use layrs_core::scm::{ObjectId, StepId, TreeId};
 use serde::{Deserialize, Serialize};
 use std::path::Path;

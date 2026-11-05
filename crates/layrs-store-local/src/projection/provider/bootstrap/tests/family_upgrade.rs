@@ -3,7 +3,7 @@ use super::*;
 use crate::projection::provider::{
     database_io::{self, WriterCloseObserver},
     family_upgrade::upgrade_source_family,
-    recovery::error::{invalid, ProviderBootstrapCause as Cause},
+    recovery::error::{ProviderBootstrapCause as Cause, invalid},
 };
 use crate::projection::shared::schema_v2::MigrationEffect;
 use crate::projection::{ProjectionStoreError, SharedQuota};
@@ -174,9 +174,11 @@ owned!(
             &Cancellation::default(),
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("family upgrade close acknowledgement withheld"));
+        assert!(
+            error
+                .to_string()
+                .contains("family upgrade close acknowledgement withheld")
+        );
         assert_eq!(refusal.calls, 1);
         let mut retry = Close::default();
         assert_eq!(
@@ -264,10 +266,12 @@ fn leave_family_journal_hot(fixture: &Fixture, database: &Path) -> PathBuf {
     helper
         .kill()
         .expect("terminate only this owned helper handle");
-    assert!(!helper
-        .wait()
-        .expect("reap exact owned family helper")
-        .success());
+    assert!(
+        !helper
+            .wait()
+            .expect("reap exact owned family helper")
+            .success()
+    );
     let journal = PathBuf::from(format!("{}-journal", database.display()));
     assert!(fs::metadata(&journal).unwrap().len() > 28);
     let probe =
@@ -340,13 +344,14 @@ owned!(ordinary_hot_family_v1_and_v2_exact_stage_never_recovers, {
                 rusqlite::params![manifest, file, b"owned-exact-intent".as_slice()],
             )
             .unwrap();
-            assert!(!c
-                .query_row(
+            assert!(
+                !c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
                     [],
                     |row| { row.get::<_, bool>(0) }
                 )
-                .unwrap());
+                .unwrap()
+            );
             c.execute_batch("COMMIT").unwrap();
             c.close().unwrap();
         }

@@ -2,7 +2,7 @@
 //! Real admitted files and production writers; no process-crash claim.
 use super::*;
 use crate::projection::{
-    format, provider::process_profile::tests::child, ProjectionStore, RestoreSource, SessionMode,
+    ProjectionStore, RestoreSource, SessionMode, format, provider::process_profile::tests::child,
 };
 use layrs_core::scm::RepoPath;
 use std::fs;

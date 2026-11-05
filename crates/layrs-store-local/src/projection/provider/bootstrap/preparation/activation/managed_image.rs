@@ -2,8 +2,8 @@
 //! grants no fresh remote rights, source SQL/family authority or destination.
 use super::{capture_image, recovery_export};
 use crate::projection::provider::{
-    records::{activation::activation_snapshot, ProviderBootstrapSource},
-    recovery::error::{invalid, Result},
+    records::{ProviderBootstrapSource, activation::activation_snapshot},
+    recovery::error::{Result, invalid},
 };
 use layrs_core::{
     projection::ProjectionSnapshot,

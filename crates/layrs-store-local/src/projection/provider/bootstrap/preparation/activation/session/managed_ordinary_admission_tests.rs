@@ -6,10 +6,11 @@ use super::{
     managed_ordinary_family_ready_tests::text,
     managed_ordinary_installing_tests::{self as witness, Cell, Database},
     managed_ordinary_source_publication_tests::{
-        with_admission_hooks, AdmissionHooks, PublicationFixture,
+        AdmissionHooks, PublicationFixture, with_admission_hooks,
     },
 };
 use crate::projection::{
+    ProjectionStore,
     provider::{
         database_io::{WriterCloseObserver, WriterOpenPoint},
         managed_admission::read_admitted_import,
@@ -18,9 +19,8 @@ use crate::projection::{
         },
         process_profile::tests::child,
         records::Record,
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
     },
-    ProjectionStore,
 };
 use layrs_vfs::Cancellation;
 use rusqlite::ffi;

@@ -158,7 +158,7 @@ impl RootPins {
             .iter()
             .position(|value| *value == 0)
             .ok_or(Error::IdentityMismatch)?;
-        if &filesystem[..end] != [b'N' as u16, b'T' as u16, b'F' as u16, b'S' as u16] {
+        if filesystem[..end] != [b'N' as u16, b'T' as u16, b'F' as u16, b'S' as u16] {
             return Err(Error::Unsupported("control requires local NTFS"));
         }
         let value = Self {

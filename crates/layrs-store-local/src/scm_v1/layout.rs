@@ -372,7 +372,6 @@ impl NativeStoreAudit {
         self
     }
 
-
     pub fn layout(&self) -> &NativeStoreLayout {
         &self.layout
     }
@@ -427,7 +426,6 @@ impl NativeStoreExclusive {
         self.format_version = format_version;
         self
     }
-
 
     pub fn layout(&self) -> &NativeStoreLayout {
         &self.layout

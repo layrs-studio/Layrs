@@ -207,7 +207,9 @@ impl VfsHost {
             VfsHostCommand::Capture {
                 writers_quiesced: true,
             } => json(self.worktree.capture_quiesced()?),
-            VfsHostCommand::CaptureVerifying {} => json(self.worktree.capture_quiesced_verifying()?),
+            VfsHostCommand::CaptureVerifying {} => {
+                json(self.worktree.capture_quiesced_verifying()?)
+            }
             VfsHostCommand::Export {
                 parent,
                 writers_quiesced: true,

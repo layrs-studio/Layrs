@@ -7,7 +7,7 @@
 use super::{
     artifacts::Artifacts,
     records::Record,
-    recovery::error::{invalid, ProviderBootstrapCause},
+    recovery::error::{ProviderBootstrapCause, invalid},
 };
 use crate::projection::{file, shared::provider_access::FamilyAccess};
 use std::{

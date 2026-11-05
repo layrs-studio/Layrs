@@ -5,18 +5,18 @@ use crate::projection::{
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
+            ProviderBootstrapBinding, Receipt, Record,
             activation::ProviderActivationRecord,
             import::{
                 ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
                 ImportedSegment, ProviderImportKind, ProviderImportPrefixRecord,
                 ProviderTransitionReceiptRecord,
             },
-            ProviderBootstrapBinding, Receipt, Record,
         },
         validation::active_fixture,
     },
 };
-use layrs_core::scm::{canonical_json, WorktreeId};
+use layrs_core::scm::{WorktreeId, canonical_json};
 use rusqlite::params;
 
 const ZERO: &str = "blake3:0000000000000000000000000000000000000000000000000000000000000000";

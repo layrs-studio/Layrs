@@ -318,11 +318,12 @@ fn denied_former_absence_is_not_fabricated_as_an_absence_or_write_grant() {
         .unwrap();
     assert_eq!(data.denied_paths().len(), 1);
     assert_eq!(data.binding().denied_path_count, 1);
-    assert!(data
-        .snapshot()
-        .entries
-        .iter()
-        .all(|e| e.path.as_str() != "created.txt"));
+    assert!(
+        data.snapshot()
+            .entries
+            .iter()
+            .all(|e| e.path.as_str() != "created.txt")
+    );
     assert!(data.selection().includes(&p("created.txt")));
 }
 
@@ -332,35 +333,41 @@ fn shrink_and_missing_old_or_added_coverage_are_refused() {
     let mut fresh = source.fresh();
     fresh.entries = vec![source.readable("new.txt")];
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        selected(&["new.txt"]),
-        vec![source.descriptor("new.txt")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("selection shrink"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            selected(&["new.txt"]),
+            vec![source.descriptor("new.txt")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("selection shrink")
+    );
     let mut fresh = source.fresh();
     fresh.entries = vec![source.readable("new.txt")];
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        selected(&["README.md", "new.txt"]),
-        vec![source.descriptor("new.txt")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("omitted old selected namespace"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            selected(&["README.md", "new.txt"]),
+            vec![source.descriptor("new.txt")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("omitted old selected namespace")
+    );
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        selected(&["README.md", "new.txt"]),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("omitted a selected scope anchor"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            selected(&["README.md", "new.txt"]),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("omitted a selected scope anchor")
+    );
 }
 
 #[test]
@@ -385,24 +392,28 @@ fn preserved_epoch_does_not_bypass_old_access_consistency() {
     let mut fresh = source.snapshot.clone();
     fresh.entries[0].writable = false;
     let mode = preserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("changed original access DATA"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("changed original access DATA")
+    );
     let fresh = source.fresh();
     let mode = preserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("preserved epoch DATA changed"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("preserved epoch DATA changed")
+    );
 }
 
 #[test]
@@ -430,11 +441,12 @@ fn explicit_reserved_tree_frontier_covers_known_old_descendants_without_revealin
             mode,
         )
         .unwrap();
-    assert!(data
-        .snapshot()
-        .entries
-        .iter()
-        .all(|entry| entry.path.as_str() != "src/a.txt"));
+    assert!(
+        data.snapshot()
+            .entries
+            .iter()
+            .all(|entry| entry.path.as_str() != "src/a.txt")
+    );
     assert!(data.selection().includes(&p("src/a.txt")));
 }
 
@@ -455,25 +467,29 @@ fn preserved_epoch_cannot_lift_an_unselected_ancestor_frontier() {
     frontier.state = EntryState::Unavailable;
     fresh.entries = vec![frontier, child.clone()];
     let mode = preserved(&fresh);
-    assert!(error(source.normalize(
-        fresh.clone(),
-        source.selected.clone(),
-        vec![source.descriptor("src/a.txt")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("changed original access DATA"));
+    assert!(
+        error(source.normalize(
+            fresh.clone(),
+            source.selected.clone(),
+            vec![source.descriptor("src/a.txt")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("changed original access DATA")
+    );
     let mut omitted = source.fresh();
     omitted.entries = vec![child];
     let mode = reobserved(&omitted);
-    assert!(error(source.normalize(
-        omitted,
-        source.selected.clone(),
-        vec![source.descriptor("src/a.txt")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("omitted old selected namespace"));
+    assert!(
+        error(source.normalize(
+            omitted,
+            source.selected.clone(),
+            vec![source.descriptor("src/a.txt")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("omitted old selected namespace")
+    );
     fresh.observed_authorization_epoch += 1;
     let mode = reobserved(&fresh);
     source
@@ -492,14 +508,16 @@ fn descriptor_coverage_and_cross_view_aliases_remain_exact() {
     let source = Source::new();
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("readable file descriptor is missing"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("readable file descriptor is missing")
+    );
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
     let wrong = ProviderSourceDescriptor {
@@ -511,50 +529,58 @@ fn descriptor_coverage_and_cross_view_aliases_remain_exact() {
         .unwrap(),
     };
     assert_ne!(wrong.manifest.file_id(), source.manifest.file_id());
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![wrong],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("descriptor differs from exact observed target"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![wrong],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("descriptor differs from exact observed target")
+    );
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![
-            source.descriptor("README.md"),
-            source.descriptor("README.md")
-        ],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("descriptors repeat"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![
+                source.descriptor("README.md"),
+                source.descriptor("README.md")
+            ],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("descriptors repeat")
+    );
     let mut fresh = source.fresh();
     fresh.entries[0].path = p("readme.md");
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        ProjectionSelection::All,
-        vec![source.descriptor("readme.md")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("alias"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            ProjectionSelection::All,
+            vec![source.descriptor("readme.md")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("alias")
+    );
     let mut fresh = source.fresh();
     fresh.entries[0].state = EntryState::Reserved;
     fresh.entries[0].writable = false;
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("extra or denied descriptor"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("extra or denied descriptor")
+    );
 }
 
 #[test]
@@ -565,76 +591,88 @@ fn changed_target_step_identity_and_denied_visible_overlap_are_refused() {
         b"other",
     )));
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("changed an immutable source target"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("changed an immutable source target")
+    );
     let mut fresh = source.fresh();
     fresh.base_step_id = layrs_core::scm::StepId::parse(TOKEN.replace('1', "2")).unwrap();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("Step/root or placement"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("Step/root or placement")
+    );
     let mut fresh = source.fresh();
     fresh.path_semantics = PathSemantics::CaseSensitive;
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("Step/root or placement"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("Step/root or placement")
+    );
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData {
-            denied_paths: vec![DeniedPathData {
-                path: p("README.md")
-            }]
-        },
-        mode
-    ))
-    .contains("overlap"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData {
+                denied_paths: vec![DeniedPathData {
+                    path: p("README.md")
+                }]
+            },
+            mode
+        ))
+        .contains("overlap")
+    );
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        ProjectionSelection::All,
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData {
-            denied_paths: vec![DeniedPathData {
-                path: p("README.md/child")
-            }]
-        },
-        mode
-    ))
-    .contains("denied path scope is ambiguous"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            ProjectionSelection::All,
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData {
+                denied_paths: vec![DeniedPathData {
+                    path: p("README.md/child")
+                }]
+            },
+            mode
+        ))
+        .contains("denied path scope is ambiguous")
+    );
     let mut source = Source::new();
     source.destination.principal_id = "principal:different".into();
     let fresh = source.fresh();
     let mode = reobserved(&fresh);
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("identity, version, Step/root or placement"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("identity, version, Step/root or placement")
+    );
 }
 
 #[test]
@@ -660,14 +698,16 @@ fn historical_selection_anchor_is_supported_and_large_rules_stop_before_normaliz
         paths: vec![p("README.md"); 100_001],
         subtrees: vec![],
     };
-    assert!(error(source.normalize(
-        fresh,
-        oversized,
-        vec![],
-        ObservationCoverageData::default(),
-        mode
-    ))
-    .contains("path count exceeds bound"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            oversized,
+            vec![],
+            ObservationCoverageData::default(),
+            mode
+        ))
+        .contains("path count exceeds bound")
+    );
     let cancel = Cancellation::default();
     cancel.cancel();
     let fresh = source.fresh();
@@ -699,14 +739,16 @@ fn normalization_rejects_combined_visible_and_denied_count_before_duplicate_chec
             .map(|_| DeniedPathData { path: p("denied") })
             .collect(),
     };
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        coverage,
-        mode,
-    ))
-    .contains("path count exceeds bound"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            coverage,
+            mode,
+        ))
+        .contains("path count exceeds bound")
+    );
 }
 
 #[test]
@@ -734,12 +776,14 @@ fn normalization_rejects_combined_visible_and_denied_bytes_before_scope_checks()
             .sum::<usize>(),
         PATH_BYTES
     );
-    assert!(error(source.normalize(
-        fresh,
-        source.selected.clone(),
-        vec![source.descriptor("README.md")],
-        ObservationCoverageData { denied_paths },
-        mode,
-    ))
-    .contains("path bytes exceed bound"));
+    assert!(
+        error(source.normalize(
+            fresh,
+            source.selected.clone(),
+            vec![source.descriptor("README.md")],
+            ObservationCoverageData { denied_paths },
+            mode,
+        ))
+        .contains("path bytes exceed bound")
+    );
 }

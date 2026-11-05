@@ -67,7 +67,11 @@ fn room_at(workspace: &NativeWorkspace, root: &Path) -> Result<Option<String>, C
 fn same_path(a: &Path, b: &Path) -> bool {
     let normalize = |p: &Path| {
         let text = p.to_string_lossy().trim_end_matches(['\\', '/']).to_owned();
-        if cfg!(windows) { text.to_lowercase() } else { text }
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text
+        }
     };
     normalize(a) == normalize(b)
 }
@@ -207,8 +211,11 @@ fn new(
     // captured first, as for any Layer creation).
     // A dropped Room keeps its Layer (and history): a new Room of the same
     // name gets the next free Layer name.
-    let taken: std::collections::BTreeSet<String> =
-        state.layers.iter().map(|layer| layer.name().to_owned()).collect();
+    let taken: std::collections::BTreeSet<String> = state
+        .layers
+        .iter()
+        .map(|layer| layer.name().to_owned())
+        .collect();
     let layer_name = std::iter::once(room_layer_name(name))
         .chain((2..1000).map(|n| format!("{}-{n}", room_layer_name(name))))
         .find(|candidate| !taken.contains(candidate))
@@ -386,7 +393,9 @@ fn step(cli: &Cli, project: &NativeWorkspace, room: &mut RoomRecord) -> Result<V
                 Some(step) => Value::String(step.to_owned()),
                 None => status(cli, project, room)?["stepId"].clone(),
             };
-            Ok(json!({ "changed": value["changed"] == true, "stepId": step_id, "counts": value["counts"] }))
+            Ok(
+                json!({ "changed": value["changed"] == true, "stepId": step_id, "counts": value["counts"] }),
+            )
         }
         #[cfg(not(windows))]
         RoomKind::Virtual => {
@@ -432,9 +441,9 @@ fn merge(
         Some(layer) => layer.to_owned(),
         None => layer_name_of(
             project,
-            room.source_layer_id
-                .as_deref()
-                .ok_or_else(|| CliError::usage("this Room has no source Layer: pass --into LAYER"))?,
+            room.source_layer_id.as_deref().ok_or_else(|| {
+                CliError::usage("this Room has no source Layer: pass --into LAYER")
+            })?,
         )?,
     };
     let span = layrs_store_local::perf::span("room.merge.capture_room");
@@ -459,7 +468,8 @@ fn merge(
         .clone()
         .unwrap_or_else(|| room.base_step_id.clone());
     let parse = |step: &str| {
-        layrs_core::scm::StepId::parse(step.to_owned()).map_err(|e| CliError::runtime(e.to_string()))
+        layrs_core::scm::StepId::parse(step.to_owned())
+            .map_err(|e| CliError::runtime(e.to_string()))
     };
     if !preview {
         let span = layrs_store_local::perf::span("room.merge.fast_forward_attempt");
@@ -473,7 +483,11 @@ fn merge(
                     human: format!(
                         "Room {} merged into {target} (fast-forward to {head}){}",
                         room.name,
-                        if materialized { "; project files updated" } else { "" }
+                        if materialized {
+                            "; project files updated"
+                        } else {
+                            ""
+                        }
                     ),
                     data: json!({ "room": room, "target": target, "merged": true, "fastForward": true, "materialized": materialized, "stepId": head }),
                 });
@@ -622,7 +636,11 @@ fn discard_virtual_folder(path: &Path) -> Result<Option<String>, CliError> {
         .ok_or_else(|| CliError::runtime("Room folder has no UTF-8 name"))?;
     let aside = path.with_file_name(format!(".{name}{DROPPED_MARK}{}", unix_millis()));
     let renamed = std::fs::rename(path, &aside).is_ok();
-    let target = if renamed { aside.clone() } else { path.to_path_buf() };
+    let target = if renamed {
+        aside.clone()
+    } else {
+        path.to_path_buf()
+    };
     let mut command = std::process::Command::new(std::env::current_exe().map_err(error)?);
     command
         .arg(PURGE_VIRTUAL_COMMAND)
@@ -643,8 +661,10 @@ fn discard_virtual_folder(path: &Path) -> Result<Option<String>, CliError> {
             layrs_client_core::native_scm::unregister_virtual_room(&target).map_err(error)?;
         }
         return if renamed {
-            Ok((purge_dropped(&[target.to_string_lossy().into_owned()]) != 0)
-                .then(|| target.to_string_lossy().into_owned()))
+            Ok(
+                (purge_dropped(&[target.to_string_lossy().into_owned()]) != 0)
+                    .then(|| target.to_string_lossy().into_owned()),
+            )
         } else {
             discard_folder(path)
         };
@@ -659,7 +679,9 @@ fn discard_virtual_folder(path: &Path) -> Result<Option<String>, CliError> {
 /// root, under either name, then deletes it like `purge_dropped`.
 #[cfg(windows)]
 pub fn purge_dropped_virtual(args: &[String]) -> i32 {
-    let [target, identity, original] = args else { return 2 };
+    let [target, identity, original] = args else {
+        return 2;
+    };
     let target = PathBuf::from(target);
     let original = PathBuf::from(original);
     let same_folder = || {
@@ -765,7 +787,11 @@ pub fn purge_dropped(args: &[String]) -> i32 {
 
 /// Captures the Room again reading every local byte (no change-index trust)
 /// and returns its resulting Step: the verification required before deleting.
-fn verify_all(cli: &Cli, project: &NativeWorkspace, room: &mut RoomRecord) -> Result<String, CliError> {
+fn verify_all(
+    cli: &Cli,
+    project: &NativeWorkspace,
+    room: &mut RoomRecord,
+) -> Result<String, CliError> {
     match room.kind {
         #[cfg(windows)]
         RoomKind::Virtual => {
@@ -802,9 +828,8 @@ fn verify_all(cli: &Cli, project: &NativeWorkspace, room: &mut RoomRecord) -> Re
 /// `parent/name`, or `parent/name-2`, `-3`... while that folder is taken
 /// (a dropped Room's folder may still be being removed in the background).
 fn free_room_folder(parent: &Path, name: &str) -> PathBuf {
-    let taken = |path: &Path| {
-        std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
-    };
+    let taken =
+        |path: &Path| std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some());
     let first = parent.join(name);
     if !taken(&first) {
         return first;

@@ -6,6 +6,7 @@ use super::super::super::{
 };
 use super::*;
 use crate::projection::{
+    SharedQuota,
     provider::{
         bootstrap::outcome::PublicationPins,
         denied_coverage_storage,
@@ -17,9 +18,8 @@ use crate::projection::{
         },
     },
     shared::source_denial::SourceDeniedCoverageReservation,
-    SharedQuota,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 #[derive(Clone, Copy)]
 pub(super) enum Case {

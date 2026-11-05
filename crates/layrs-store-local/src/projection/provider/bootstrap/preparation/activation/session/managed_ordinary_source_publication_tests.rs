@@ -3,27 +3,27 @@
 //! private C8 Ready and unadmitted. No close-failure, ACK-withholding, crash,
 //! owner-loss, historical handoff or autonomous C9 admission is qualified.
 use super::{
-    managed_ordinary_family_ready_tests::{copy_cell, family, text, Close},
+    managed_ordinary_family_ready_tests::{Close, copy_cell, family, text},
     managed_ordinary_installing_tests::{self as witness, Cell, Database, Node, Tree},
-    managed_ordinary_ready_tests::{self as ready_witness, Physical, CURRENT},
+    managed_ordinary_ready_tests::{self as ready_witness, CURRENT, Physical},
 };
 use crate::projection::{
-    database, format,
+    ProjectionStore, database, format,
     provider::{
         bootstrap::ManagedPlanData,
         checkout_journal::{CheckoutFile, ExpectedCheckout},
         destination_ready::ReadyEffect,
         managed_admission::read_admitted_import,
         managed_export::{
-            allocation::{self, ManagedDestinationAllocation},
             OrdinaryCheckoutProof, OrdinaryImportProtection, OrdinaryManagedExport,
+            allocation::{self, ManagedDestinationAllocation},
         },
-        ordinary_destination::{staging::StageEffect, CopyEffect},
+        ordinary_destination::{CopyEffect, staging::StageEffect},
         process_profile::tests::child,
         records::{
+            Record,
             import::ProviderTransitionReceiptRecord,
             transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-            Record,
         },
         transition_sql::SourceIntentEffect,
     },
@@ -32,7 +32,6 @@ use crate::projection::{
         admitted_catalog::{ExportPublicationEffect, ExportReservationEffect},
         provider_access::ImportRegistrationEffect,
     },
-    ProjectionStore,
 };
 use layrs_core::scm::{FileId, FileManifest, RepoPath, TreeEntryTarget, WorktreeId};
 use layrs_vfs::Cancellation;
@@ -797,17 +796,19 @@ fn source_publication_inner<T>(
     // C8 Ready alone cannot publish B while the exact family member is still
     // Initializing. The retained owner survives this ordinary refusal.
     phase.next("source-setup.early-source-ready-refusal");
-    assert!(owner
-        .publish_source_ready(
-            &allocated,
-            &staging,
-            &protection,
-            &checkout,
-            &durable.ready,
-            &durable.receipt,
-            &cancel,
-        )
-        .is_err());
+    assert!(
+        owner
+            .publish_source_ready(
+                &allocated,
+                &staging,
+                &protection,
+                &checkout,
+                &durable.ready,
+                &durable.receipt,
+                &cancel,
+            )
+            .is_err()
+    );
     phase.next("source-setup.early-refusal-witness");
     assert_eq!(
         source(

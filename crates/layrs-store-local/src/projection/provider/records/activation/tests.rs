@@ -1,5 +1,5 @@
 use super::*;
-use crate::projection::{provider::validation::tests::fixture::Fixture, RecoveryBinding};
+use crate::projection::{RecoveryBinding, provider::validation::tests::fixture::Fixture};
 use layrs_core::{
     projection::{EntryState, PathSemantics, ProjectionEntry, ProjectionSelection},
     scm::{FileId, RepoPath},
@@ -154,15 +154,17 @@ fn activation_changes_only_selected_placeholder_state_and_has_exact_rows() {
         ProviderActiveMountRecord::decode(&new_payload).unwrap(),
         mount
     );
-    assert!(mount
-        .require_row(MountRowData {
-            id: &map.mount_id,
-            catalog_id: &map.catalog_id,
-            phase: "provider_prepared",
-            payload: &new_payload,
-            digest: &new_digest,
-        })
-        .is_err());
+    assert!(
+        mount
+            .require_row(MountRowData {
+                id: &map.mount_id,
+                catalog_id: &map.catalog_id,
+                phase: "provider_prepared",
+                payload: &new_payload,
+                digest: &new_digest,
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -226,21 +228,24 @@ fn map_and_v3_reject_cross_owner_generation_selection_and_observation_changes() 
         owner_identity_digest(&f.allocation).unwrap(),
         owner_identity_digest(&other.allocation).unwrap()
     );
-    assert!(map
-        .require_references(
+    assert!(
+        map.require_references(
             &other.allocation,
             &other.prepared,
             &predecessor,
             &other.source,
             &after
         )
-        .is_err());
+        .is_err()
+    );
     let mut wrong = copy(&map);
     wrong.owner_identity_digest = codec::hash(OWNER_DOMAIN, b"other owner");
     wrong.validate_fields().unwrap();
-    assert!(wrong
-        .require_references(&f.allocation, &f.prepared, &predecessor, &f.source, &after)
-        .is_err());
+    assert!(
+        wrong
+            .require_references(&f.allocation, &f.prepared, &predecessor, &f.source, &after)
+            .is_err()
+    );
     wrong = copy(&map);
     wrong.activated_generation = 2;
     assert!(wrong.encode().is_err());
@@ -249,29 +254,33 @@ fn map_and_v3_reject_cross_owner_generation_selection_and_observation_changes() 
     assert!(wrong.encode().is_err());
     let mut observed = after.clone();
     observed.observed_authorization_epoch += 1;
-    assert!(map
-        .require_references(
+    assert!(
+        map.require_references(
             &f.allocation,
             &f.prepared,
             &predecessor,
             &f.source,
             &observed
         )
-        .is_err());
+        .is_err()
+    );
     observed = after.clone();
     observed.entries[0].writable = !observed.entries[0].writable;
-    assert!(map
-        .require_references(
+    assert!(
+        map.require_references(
             &f.allocation,
             &f.prepared,
             &predecessor,
             &f.source,
             &observed
         )
-        .is_err());
+        .is_err()
+    );
     let mut mount = ProviderActiveMountRecord::derive(&predecessor, &map).unwrap();
     mount.activation_digest = codec::hash(ACTIVE_MOUNT_DOMAIN, b"another map");
-    assert!(mount
-        .require_references(&f.allocation, &f.prepared, &f.source, &map, &after)
-        .is_err());
+    assert!(
+        mount
+            .require_references(&f.allocation, &f.prepared, &f.source, &map, &after)
+            .is_err()
+    );
 }

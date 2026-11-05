@@ -24,7 +24,7 @@ use crate::projection::{
     shared::schema_v2,
 };
 use layrs_core::scm::{Chunk, ChunkingDescriptor, TreeEntryTarget, WorktreeId};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub(super) const TX: &str = "00000000000000000000000000000002";
 const LEAF: &str = "00000000000000000000000000000003";
@@ -605,13 +605,14 @@ impl Fixture {
                 .unwrap();
             }
         }
-        assert!(!c
-            .query_row(
+        assert!(
+            !c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
                 [],
                 |r| r.get::<_, bool>(0)
             )
-            .unwrap());
+            .unwrap()
+        );
         c.execute_batch("BEGIN DEFERRED").unwrap();
     }
 }

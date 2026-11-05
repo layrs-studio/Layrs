@@ -20,7 +20,6 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 

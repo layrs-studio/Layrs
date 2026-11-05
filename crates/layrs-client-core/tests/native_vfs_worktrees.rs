@@ -469,7 +469,11 @@ fn large_hydrated_and_relocated_files_export_with_streaming_hashes() {
             let reader = NativeScmReader::new(&store).unwrap();
             assert_eq!(after.accepted_step_id, report.step_id);
             assert_eq!(
-                reader.get_step(&report.step_id).unwrap().unwrap().root_tree_id(),
+                reader
+                    .get_step(&report.step_id)
+                    .unwrap()
+                    .unwrap()
+                    .root_tree_id(),
                 expected_tree.id()
             );
         } else {
@@ -742,14 +746,21 @@ fn disconnected_renamed_placeholders_export_actual_bytes_then_capture_the_move()
             let reader = NativeScmReader::new(&store).unwrap();
             let step = reader.get_step(&report.step_id).unwrap().unwrap();
             let tree = reader.get_tree(step.root_tree_id()).unwrap().unwrap();
-            let names: Vec<_> = tree.entries().iter().map(|e| e.name().as_str().to_owned()).collect();
+            let names: Vec<_> = tree
+                .entries()
+                .iter()
+                .map(|e| e.name().as_str().to_owned())
+                .collect();
             assert!(names.contains(&actual) && !names.iter().any(|name| name == original));
             let moved = tree
                 .entries()
                 .iter()
                 .find(|entry| entry.name().as_str() == actual)
                 .unwrap();
-            assert_eq!(moved.target().file_id(), Some(&FileId::from_bytes(&expected)));
+            assert_eq!(
+                moved.target().file_id(),
+                Some(&FileId::from_bytes(&expected))
+            );
         }
         assert_ne!(
             serde_json::to_vec(&journal_events(&fixture.source, &worktree_id)).unwrap(),

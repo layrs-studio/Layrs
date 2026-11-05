@@ -567,7 +567,10 @@ mod chunking_tests {
 
     #[test]
     fn only_a_manifest_built_from_hashed_bytes_is_proven() {
-        let chunks = [Chunk::new(b"ab".to_vec()).unwrap(), Chunk::new(b"c".to_vec()).unwrap()];
+        let chunks = [
+            Chunk::new(b"ab".to_vec()).unwrap(),
+            Chunk::new(b"c".to_vec()).unwrap(),
+        ];
         let built = FileManifest::from_chunks(fixed_chunking(3), &chunks).unwrap();
         assert!(built.is_proven());
         let declared = FileManifest::new(

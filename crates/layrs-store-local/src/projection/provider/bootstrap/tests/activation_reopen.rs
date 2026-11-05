@@ -153,11 +153,13 @@ owned!(disk_resume_after_private_commit_only_writes_family_ready, {
             | Step::SqlCommit(Phase::PrivateActivation)
             | Step::SqlClose(Phase::PrivateActivation)
     )));
-    assert!(active
-        .report()
-        .effects
-        .iter()
-        .any(|effect| effect.step == Step::SqlCommit(Phase::FamilyReady)));
+    assert!(
+        active
+            .report()
+            .effects
+            .iter()
+            .any(|effect| effect.step == Step::SqlCommit(Phase::FamilyReady))
+    );
     active.revalidate().unwrap();
     drop(active);
     let before = f.witness();
@@ -214,9 +216,9 @@ owned!(
     canonical_alternate_native_ticket_passes_sql_but_refuses_reopen,
     {
         use crate::projection::provider::records::{
-            activation::{ProviderActivationRecord, ProviderActiveMountRecord},
-        preparation::PreparationState,
             Record,
+            activation::{ProviderActivationRecord, ProviderActiveMountRecord},
+            preparation::PreparationState,
         };
         let f = Fixture::new();
         let (expected, prepared) = prepared(&f, false);

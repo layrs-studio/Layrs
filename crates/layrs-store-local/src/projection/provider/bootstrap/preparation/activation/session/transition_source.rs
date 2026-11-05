@@ -3,12 +3,12 @@
 //! freeze mutable checkout bytes or grant remote authority or a Store writer.
 use super::*;
 use crate::projection::{
+    ProjectionIdentity, VersionedProjection,
     capture::CapturedPatch,
     provider::{
         cancellation, records::capture::ProviderCaptureState,
         validation::PrivateCaptureMutationValidation,
     },
-    ProjectionIdentity, VersionedProjection,
 };
 use layrs_core::{
     projection::{ProjectionSelection, ProjectionSnapshot},

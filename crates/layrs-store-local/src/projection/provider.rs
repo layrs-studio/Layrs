@@ -123,8 +123,8 @@ pub(in crate::projection) mod validation;
 pub use journal::Refusal as ProviderJournalRefusal;
 #[cfg(windows)]
 pub use process_profile::{
-    declare_provider_sqlite_process_profile, ProviderSqliteBuildProfile,
-    ProviderSqliteProcessDeclaration, ProviderSqliteProfileError, PROVIDER_SQLITE_SOURCE_ID,
+    PROVIDER_SQLITE_SOURCE_ID, ProviderSqliteBuildProfile, ProviderSqliteProcessDeclaration,
+    ProviderSqliteProfileError, declare_provider_sqlite_process_profile,
 };
 #[cfg(windows)]
 pub use records::{

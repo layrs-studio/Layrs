@@ -523,10 +523,11 @@ pub(super) fn run(
     };
     assert!(rows.header().is_none());
     assert_eq!(rows.manifests(), required);
-    assert!(rows
-        .authorized_files()
-        .iter()
-        .any(|row| row.path.as_str() == "README.md"));
+    assert!(
+        rows.authorized_files()
+            .iter()
+            .any(|row| row.path.as_str() == "README.md")
+    );
     let derived = super::super::super::managed_plan::derive_reconciled_denial_data(
         &staging.plan.source_prefix,
         &rows,

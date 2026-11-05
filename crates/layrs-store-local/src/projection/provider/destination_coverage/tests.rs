@@ -4,7 +4,7 @@
 use super::*;
 use crate::projection::{
     provider::{
-        database_io::{with_reference, BareConnection},
+        database_io::{BareConnection, with_reference},
         owned_test as child,
         records::{
             activation::ProviderActivationRecord,
@@ -286,9 +286,11 @@ fn current_coverage_revalidates_exact_source_intent_and_body_before_copy() {
                     assert!(read().is_err());
                     with_destination(|destination| {
                         let before = destination.total_changes();
-                        assert!(current
-                            .copy_fresh_into(destination, destination_intent, None)
-                            .is_err());
+                        assert!(
+                            current
+                                .copy_fresh_into(destination, destination_intent, None)
+                                .is_err()
+                        );
                         assert_eq!(destination.total_changes(), before);
                         let count: u64 = destination.query_row(
                             "SELECT count(*) FROM projection_observations",
@@ -305,14 +307,18 @@ fn current_coverage_revalidates_exact_source_intent_and_body_before_copy() {
                 assert!(read().is_ok());
                 source.execute_batch("ROLLBACK").unwrap();
                 assert!(read().is_err());
-                assert!(current
-                    .require_destination(destination_intent, None)
-                    .is_err());
+                assert!(
+                    current
+                        .require_destination(destination_intent, None)
+                        .is_err()
+                );
                 with_destination(|destination| {
                     let before = destination.total_changes();
-                    assert!(current
-                        .copy_fresh_into(destination, destination_intent, None)
-                        .is_err());
+                    assert!(
+                        current
+                            .copy_fresh_into(destination, destination_intent, None)
+                            .is_err()
+                    );
                     assert_eq!(destination.total_changes(), before);
                     Ok(())
                 });
@@ -369,9 +375,11 @@ fn current_coverage_refuses_foreign_destination_and_any_preexisting_id_without_r
                             params![reference.id, payload],
                         )?;
                         let before = destination.total_changes();
-                        assert!(current
-                            .copy_fresh_into(destination, destination_intent, None)
-                            .is_err());
+                        assert!(
+                            current
+                                .copy_fresh_into(destination, destination_intent, None)
+                                .is_err()
+                        );
                         assert_eq!(destination.total_changes(), before);
                         let retained: Vec<u8> = destination.query_row(
                             "SELECT payload FROM projection_observations WHERE digest=?1",
@@ -430,26 +438,34 @@ fn current_coverage_requires_distinct_write_transaction_fk_and_live_cancellation
                 with_destination(|destination| {
                     let before = destination.total_changes();
                     destination.execute_batch("ROLLBACK")?;
-                    assert!(current
-                        .copy_fresh_into(destination, destination_intent, None)
-                        .is_err());
+                    assert!(
+                        current
+                            .copy_fresh_into(destination, destination_intent, None)
+                            .is_err()
+                    );
                     for begin in ["BEGIN DEFERRED", "SAVEPOINT outer_copy"] {
                         destination.execute_batch(begin)?;
-                        assert!(current
-                            .copy_fresh_into(destination, destination_intent, None)
-                            .is_err());
+                        assert!(
+                            current
+                                .copy_fresh_into(destination, destination_intent, None)
+                                .is_err()
+                        );
                         destination.execute_batch("ROLLBACK")?;
                     }
                     destination.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")?;
-                    assert!(current
-                        .copy_fresh_into(destination, destination_intent, None)
-                        .is_err());
+                    assert!(
+                        current
+                            .copy_fresh_into(destination, destination_intent, None)
+                            .is_err()
+                    );
                     destination.execute_batch(
                         "ROLLBACK; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE; PRAGMA query_only=ON",
                     )?;
-                    assert!(current
-                        .copy_fresh_into(destination, destination_intent, None)
-                        .is_err());
+                    assert!(
+                        current
+                            .copy_fresh_into(destination, destination_intent, None)
+                            .is_err()
+                    );
                     destination.execute_batch("PRAGMA query_only=OFF")?;
                     let cancel = Cancellation::default();
                     cancel.cancel();
@@ -498,51 +514,133 @@ fn assert_invalid<T>(result: Result<T>, expected: &str) {
 #[test]
 #[ignore = "ROOT release and owned audited SQL child120/outer180 required; unmeasured"]
 fn current_coverage_requires_actual_unreserved_source_copying_and_exact_destination_proof() {
-    child::run(concat!(module_path!(),"::current_coverage_requires_actual_unreserved_source_copying_and_exact_destination_proof"),120,|| {
-        child::declare();
-        with_source_phase(false,|source,f,activation,planned,_,_| {
-            let before=source.total_changes();
-            assert_invalid(read_source(source,&f.allocation,&f.prepared,&activation.binding,[0x41;16],planned,None),
-                "current coverage requires unreserved source Copying with destination proof");
-            assert_eq!(before,source.total_changes());
-        });
-        with_source(|source,f,activation,copying,destination,coverage| {
-            let current=read_source(source,&f.allocation,&f.prepared,&activation.binding,[0x41;16],copying,None).unwrap();
-            with_destination(|c| {
-                for changed in 0..3 {
-                    let mut wrong=ProviderTransitionIntentRecord::decode(&destination.encode()?)?;
-                    match changed {
-                        0=>wrong.destination.as_mut().unwrap().format_file_identity="1:0:999".into(),
-                        1=>{wrong.state=TransitionState::Staging;wrong.reservation=Some(wrong.reservation_operation()?);},
-                        _=>wrong.state=TransitionState::Cancelled,
-                    }
-                    wrong.validate_fields()?;
-                    let before=c.total_changes();
-                    assert_invalid(current.require_destination(&wrong,None),"current coverage requires unreserved destination Copying with matching destination proof");
-                    assert_invalid(current.copy_fresh_into(c,&wrong,None),"current coverage requires unreserved destination Copying with matching destination proof");
-                    assert_eq!(before,c.total_changes());
-                }
-                // Source Copying with a reservation is a valid DATA codec but
-                // cannot manufacture a current transport scope in this API.
-                let mut reserved=ProviderTransitionIntentRecord::decode(&copying.encode()?)?;
-                reserved.reservation=Some(reserved.reservation_operation()?);reserved.validate_fields()?;
-                assert_invalid(read_source(source,&f.allocation,&f.prepared,&activation.binding,[0x41;16],&reserved,None),
-                    "current coverage requires unreserved source Copying with destination proof");
-                // A real source cancellation retains its document. Reading that
-                // actual Cancelled row must still refuse a fresh C transport.
-                let mut cancelled=ProviderTransitionIntentRecord::decode(&copying.encode()?)?;
-                cancelled.state=TransitionState::Cancelled;
-                apply_source_intent_with_coverage(source,&f.allocation,&f.prepared,&activation.binding,[0x41;16],Some(copying),&cancelled,Some(coverage),None)?;
-                let before_source=source.total_changes();let before=c.total_changes();
-                assert_invalid(read_source(source,&f.allocation,&f.prepared,&activation.binding,[0x41;16],&cancelled,None),
-                    "current coverage requires unreserved source Copying with destination proof");
-                assert_invalid(current.require_destination(destination,None),"current coverage exact source intent is absent or differs");
-                assert_invalid(current.copy_fresh_into(c,destination,None),"current coverage exact source intent is absent or differs");
-                assert_eq!(before_source,source.total_changes());assert_eq!(before,c.total_changes());
-                let body=denied_coverage_storage::read_required(source,&coverage.record().reference()?,None)?;
-                assert_eq!(&body,coverage.record());
-                Ok(())
+    child::run(
+        concat!(
+            module_path!(),
+            "::current_coverage_requires_actual_unreserved_source_copying_and_exact_destination_proof"
+        ),
+        120,
+        || {
+            child::declare();
+            with_source_phase(false, |source, f, activation, planned, _, _| {
+                let before = source.total_changes();
+                assert_invalid(
+                    read_source(
+                        source,
+                        &f.allocation,
+                        &f.prepared,
+                        &activation.binding,
+                        [0x41; 16],
+                        planned,
+                        None,
+                    ),
+                    "current coverage requires unreserved source Copying with destination proof",
+                );
+                assert_eq!(before, source.total_changes());
             });
-        });
-    });
+            with_source(|source, f, activation, copying, destination, coverage| {
+                let current = read_source(
+                    source,
+                    &f.allocation,
+                    &f.prepared,
+                    &activation.binding,
+                    [0x41; 16],
+                    copying,
+                    None,
+                )
+                .unwrap();
+                with_destination(|c| {
+                    for changed in 0..3 {
+                        let mut wrong =
+                            ProviderTransitionIntentRecord::decode(&destination.encode()?)?;
+                        match changed {
+                            0 => {
+                                wrong.destination.as_mut().unwrap().format_file_identity =
+                                    "1:0:999".into()
+                            }
+                            1 => {
+                                wrong.state = TransitionState::Staging;
+                                wrong.reservation = Some(wrong.reservation_operation()?);
+                            }
+                            _ => wrong.state = TransitionState::Cancelled,
+                        }
+                        wrong.validate_fields()?;
+                        let before = c.total_changes();
+                        assert_invalid(
+                            current.require_destination(&wrong, None),
+                            "current coverage requires unreserved destination Copying with matching destination proof",
+                        );
+                        assert_invalid(
+                            current.copy_fresh_into(c, &wrong, None),
+                            "current coverage requires unreserved destination Copying with matching destination proof",
+                        );
+                        assert_eq!(before, c.total_changes());
+                    }
+                    // Source Copying with a reservation is a valid DATA codec but
+                    // cannot manufacture a current transport scope in this API.
+                    let mut reserved = ProviderTransitionIntentRecord::decode(&copying.encode()?)?;
+                    reserved.reservation = Some(reserved.reservation_operation()?);
+                    reserved.validate_fields()?;
+                    assert_invalid(
+                        read_source(
+                            source,
+                            &f.allocation,
+                            &f.prepared,
+                            &activation.binding,
+                            [0x41; 16],
+                            &reserved,
+                            None,
+                        ),
+                        "current coverage requires unreserved source Copying with destination proof",
+                    );
+                    // A real source cancellation retains its document. Reading that
+                    // actual Cancelled row must still refuse a fresh C transport.
+                    let mut cancelled = ProviderTransitionIntentRecord::decode(&copying.encode()?)?;
+                    cancelled.state = TransitionState::Cancelled;
+                    apply_source_intent_with_coverage(
+                        source,
+                        &f.allocation,
+                        &f.prepared,
+                        &activation.binding,
+                        [0x41; 16],
+                        Some(copying),
+                        &cancelled,
+                        Some(coverage),
+                        None,
+                    )?;
+                    let before_source = source.total_changes();
+                    let before = c.total_changes();
+                    assert_invalid(
+                        read_source(
+                            source,
+                            &f.allocation,
+                            &f.prepared,
+                            &activation.binding,
+                            [0x41; 16],
+                            &cancelled,
+                            None,
+                        ),
+                        "current coverage requires unreserved source Copying with destination proof",
+                    );
+                    assert_invalid(
+                        current.require_destination(destination, None),
+                        "current coverage exact source intent is absent or differs",
+                    );
+                    assert_invalid(
+                        current.copy_fresh_into(c, destination, None),
+                        "current coverage exact source intent is absent or differs",
+                    );
+                    assert_eq!(before_source, source.total_changes());
+                    assert_eq!(before, c.total_changes());
+                    let body = denied_coverage_storage::read_required(
+                        source,
+                        &coverage.record().reference()?,
+                        None,
+                    )?;
+                    assert_eq!(&body, coverage.record());
+                    Ok(())
+                });
+            });
+        },
+    );
 }

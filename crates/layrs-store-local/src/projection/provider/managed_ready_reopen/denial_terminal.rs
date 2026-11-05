@@ -8,7 +8,7 @@ use crate::projection::{
         managed_admission::read_admitted_import,
     },
     shared::{
-        admitted_catalog::{validate_terminal_ready_catalog, AdmittedFamilyContext},
+        admitted_catalog::{AdmittedFamilyContext, validate_terminal_ready_catalog},
         exact_content::{ExactBinding, ExactInstallState},
         exact_protection::ExactProtection,
     },

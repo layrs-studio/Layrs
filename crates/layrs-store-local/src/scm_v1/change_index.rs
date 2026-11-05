@@ -83,7 +83,12 @@ impl StatKey {
 impl StatKey {
     /// From a Windows directory listing (FILETIME values, attributes): the
     /// same key `StatKey::of` derives from that file's std metadata.
-    pub fn from_listing(length: u64, last_write: i64, creation: i64, attributes: u32) -> Option<Self> {
+    pub fn from_listing(
+        length: u64,
+        last_write: i64,
+        creation: i64,
+        attributes: u32,
+    ) -> Option<Self> {
         Some(Self {
             length,
             modified: filetime_nanos(last_write)?,
@@ -137,7 +142,13 @@ impl ChangeIndex {
         let name: String = worktree_id
             .as_str()
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         store_root
             .join("metadata")
@@ -147,7 +158,11 @@ impl ChangeIndex {
 
     /// Turns the mechanism on for a Worktree whose checkout is `checkout_root`
     /// (an empty index). Existing entries are kept.
-    pub fn enable(store_root: &Path, worktree_id: &WorktreeId, checkout_root: &Path) -> io::Result<()> {
+    pub fn enable(
+        store_root: &Path,
+        worktree_id: &WorktreeId,
+        checkout_root: &Path,
+    ) -> io::Result<()> {
         if fs::symlink_metadata(Self::file(store_root, worktree_id)).is_ok() {
             return Ok(());
         }
@@ -318,7 +333,10 @@ fn encode_binary(document: &Document) -> Vec<u8> {
         optional(&mut out, entry.stat.created.map(i64::to_le_bytes));
         optional(&mut out, entry.stat.inode.map(u64::to_le_bytes));
         optional(&mut out, entry.stat.changed.map(i64::to_le_bytes));
-        optional(&mut out, entry.stat.mode.map(|mode| u64::from(mode).to_le_bytes()));
+        optional(
+            &mut out,
+            entry.stat.mode.map(|mode| u64::from(mode).to_le_bytes()),
+        );
         out.extend_from_slice(&entry.verified_at.to_le_bytes());
         optional(&mut out, entry.native.map(u64::to_le_bytes));
     }
@@ -594,7 +612,10 @@ mod tests {
         index.insert("old".into(), entry(stat(0), margin + 1));
         index.insert("racy".into(), entry(stat(0), margin));
         assert!(index.trusted("old", &stat(0)).is_some());
-        assert!(index.trusted("racy", &stat(0)).is_none(), "same tick as proof");
+        assert!(
+            index.trusted("racy", &stat(0)).is_none(),
+            "same tick as proof"
+        );
         assert!(index.trusted("old", &stat(1)).is_none(), "other mtime");
         let mut grown = stat(0);
         grown.length = 2;

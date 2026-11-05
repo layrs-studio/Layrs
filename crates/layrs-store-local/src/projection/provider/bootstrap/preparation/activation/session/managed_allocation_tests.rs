@@ -9,13 +9,13 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
     transition_sql::SourceIntentEffect,
     validation,
 };
-use rusqlite::{ffi, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::fs;
 
 #[derive(Default)]

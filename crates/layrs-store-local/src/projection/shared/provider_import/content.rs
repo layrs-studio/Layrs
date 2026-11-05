@@ -2,7 +2,7 @@
 //! No SQLite opener, transaction completion, lock or content effect lives here.
 use super::*;
 use crate::projection::provider::records::ProviderBootstrapSource;
-use layrs_core::scm::{canonical_json, FileId, FileManifest, FileManifestId};
+use layrs_core::scm::{FileId, FileManifest, FileManifestId, canonical_json};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -292,7 +292,9 @@ fn validate_reservation_only(
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
         if c.query_row(sql, [spec.owner], |row| row.get::<_, bool>(0))? {
-            return Err(invalid("managed reserve-only owner has root or legacy installation"));
+            return Err(invalid(
+                "managed reserve-only owner has root or legacy installation",
+            ));
         }
         cancellation::check(cancel)?;
     }
@@ -339,7 +341,7 @@ fn validate_reservation_only(
         Some(_) => {
             return Err(invalid(
                 "managed reservation identity or exact charge differs",
-            ))
+            ));
         }
     };
     cancellation::check(cancel)?;

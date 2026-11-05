@@ -77,8 +77,9 @@ fn projection_fingerprint(entries: &[CheckoutProjectionEntry]) -> [u8; 32] {
 }
 
 fn projection_memo() -> &'static std::sync::Mutex<std::collections::HashMap<[u8; 32], TreeId>> {
-    static MEMO: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<[u8; 32], TreeId>>> =
-        std::sync::OnceLock::new();
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<[u8; 32], TreeId>>,
+    > = std::sync::OnceLock::new();
     MEMO.get_or_init(Default::default)
 }
 
@@ -101,7 +102,11 @@ pub fn remember_projection_tree_id(entries: &[CheckoutProjectionEntry], tree: &T
 /// before/after projections several times.
 pub fn projection_tree_id(entries: &[CheckoutProjectionEntry]) -> io::Result<TreeId> {
     let key = projection_fingerprint(entries);
-    if let Some(tree) = projection_memo().lock().ok().and_then(|memo| memo.get(&key).cloned()) {
+    if let Some(tree) = projection_memo()
+        .lock()
+        .ok()
+        .and_then(|memo| memo.get(&key).cloned())
+    {
         crate::perf::count("projection.tree_id_memo", 1);
         return Ok(tree);
     }

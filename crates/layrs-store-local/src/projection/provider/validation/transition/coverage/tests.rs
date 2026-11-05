@@ -2,7 +2,7 @@
 use super::*;
 use crate::projection::{
     provider::{
-        database_io::{with_reference, BareConnection},
+        database_io::{BareConnection, with_reference},
         process_profile::tests::child,
         records::{denied_coverage::TransitionDeniedCoverageRecord, import::ImportRowset},
         transition_sql::coverage_tests::planned_with_coverage,
@@ -52,15 +52,17 @@ fn source_denial_reader_binds_namespace_and_legacy_modes_keep_empty_guards() {
                 )
             };
             assert_eq!(read().unwrap().transitions[0], intent);
-            assert!(validation::private_active_publication_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &activation.binding,
-                None,
-                None,
-            )
-            .is_ok());
+            assert!(
+                validation::private_active_publication_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &activation.binding,
+                    None,
+                    None,
+                )
+                .is_ok()
+            );
             c.execute_batch("COMMIT; PRAGMA query_only=ON; BEGIN DEFERRED")
                 .unwrap();
             let before = c.total_changes();
@@ -149,24 +151,28 @@ fn source_denial_reader_binds_namespace_and_legacy_modes_keep_empty_guards() {
             assert_eq!(read().unwrap().transitions[0], legacy);
             c.execute_batch("ROLLBACK TO legacy_guard; RELEASE legacy_guard; SAVEPOINT observations_only; DELETE FROM projection_provider_transitions").unwrap();
             assert!(read().is_err()); // a canonical unowned observation is refused.
-            assert!(validation::private_active_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &activation.binding,
-                None,
-                None
-            )
-            .is_err());
-            assert!(validation::private_active_capture_with_source(
-                c,
-                &f.allocation,
-                &f.prepared,
-                &activation.binding,
-                None,
-                None
-            )
-            .is_err());
+            assert!(
+                validation::private_active_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &activation.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
+            assert!(
+                validation::private_active_capture_with_source(
+                    c,
+                    &f.allocation,
+                    &f.prepared,
+                    &activation.binding,
+                    None,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO observations_only; RELEASE observations_only; ROLLBACK")
                 .unwrap();
             bare.finish(Ok(())).unwrap();

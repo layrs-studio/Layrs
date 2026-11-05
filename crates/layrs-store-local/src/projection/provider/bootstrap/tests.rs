@@ -8,8 +8,8 @@ mod activation_session;
 mod capture_content;
 pub(in crate::projection::provider::bootstrap) mod capture_family;
 mod capture_lock;
-mod family_upgrade;
 mod catalog;
+mod family_upgrade;
 pub(in crate::projection::provider::bootstrap) mod fixture;
 pub(super) mod hooks;
 mod preparation;
@@ -21,7 +21,7 @@ mod recipes;
 mod recovery_export;
 mod recovery_export_writer;
 pub(in crate::projection::provider::bootstrap) mod transition_capture;
-use fixture::{failure, has, Fixture};
+use fixture::{Fixture, failure, has};
 use std::path::PathBuf;
 
 fn attempt() -> ProviderBootstrapAttempt {

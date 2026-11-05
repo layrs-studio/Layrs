@@ -13,14 +13,14 @@
 use super::*;
 use crate::projection::{
     provider::records::{
+        Record,
         import::{ImportSource, ImportSourceReferences, ProviderImportKind},
         transition::{
             ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole, TransitionState,
         },
-        Record,
     },
     shared::{
-        exact_content::{canonical_manifest_bytes, PREPARE_CHARGE},
+        exact_content::{PREPARE_CHARGE, canonical_manifest_bytes},
         provider_access::exact_path,
     },
 };
@@ -531,8 +531,10 @@ impl ExportReserveOnlyTarget {
             "SELECT EXISTS(SELECT 1 FROM exact_installations e JOIN reservations r ON r.id=e.reservation WHERE r.owner=?1)",
         ] {
             cancellation::check(cancel)?;
-            if c.query_row(sql, [owner], |r|r.get::<_,bool>(0))? {
-                return Err(invalid("export ReserveOnly target has root or installation effects"));
+            if c.query_row(sql, [owner], |r| r.get::<_, bool>(0))? {
+                return Err(invalid(
+                    "export ReserveOnly target has root or installation effects",
+                ));
             }
         }
         if c.query_row(
@@ -877,15 +879,17 @@ mod tests {
     fn retained_content_overflow_and_overcommit_refuse_before_reservation() {
         assert!(usage(u64::MAX, 1, 0, 0, u64::MAX).is_err());
         assert!(usage(100, 1, 10, 10, 100 + PREPARE_CHARGE + 19).is_err());
-        assert!(require_additional_capacity(
-            ExportUsage {
-                content_bytes: 1,
-                reserved_bytes: 0,
-                limit_bytes: u64::MAX
-            },
-            u64::MAX
-        )
-        .is_err());
+        assert!(
+            require_additional_capacity(
+                ExportUsage {
+                    content_bytes: 1,
+                    reserved_bytes: 0,
+                    limit_bytes: u64::MAX
+                },
+                u64::MAX
+            )
+            .is_err()
+        );
     }
 
     #[test]

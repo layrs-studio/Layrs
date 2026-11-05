@@ -3,7 +3,7 @@
 //! or destination writer gates, rollback, positive close and fresh strict read.
 //! It must protect the complete exact union before publishing either receipt.
 use super::*;
-use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value};
 
 const HEADER_SELECT: &str = "SELECT id,file_count,deletion_count,files_digest,deletions_digest,payload FROM projection_provider_companions WHERE id=?1";
 const FILE_SELECT: &str = "SELECT companion_id,path,file_id,bytes,executable,manifest_id,base_file_id,base_executable,reason,digest FROM projection_provider_companion_files WHERE companion_id=?1 AND path=?2";

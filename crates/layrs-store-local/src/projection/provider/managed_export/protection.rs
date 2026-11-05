@@ -7,7 +7,7 @@ use super::{
 use crate::projection::{
     provider::{
         database_io::WriterCloseObserver,
-        recovery::error::{invalid as cause_invalid, Result as CauseResult},
+        recovery::error::{Result as CauseResult, invalid as cause_invalid},
     },
     shared::{
         exact_content::{self, ExactBinding, ExactCatalog, PublishedCasProof},

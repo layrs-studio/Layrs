@@ -127,8 +127,8 @@ fn bound_reads_wait_for_writer_release_and_preserve_own_operation() {
                 started.send(()).unwrap();
                 let state = match mode {
                     0 => secondary.state(),
-                    1 => NativeWorkspace::open(&root).and_then(|w| w.state()),
-                    _ => NativeWorkspace::discover(&root).and_then(|w| w.state()),
+                    1 => NativeWorkspace::open(root).and_then(|w| w.state()),
+                    _ => NativeWorkspace::discover(root).and_then(|w| w.state()),
                 };
                 finished
                     .send(state.map(|s| s.operation.id().clone()))

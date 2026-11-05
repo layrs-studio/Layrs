@@ -6,8 +6,8 @@ use crate::projection::provider::{
     admitted_ordinary,
     admitted_private_io::{AdmittedPreflight, DurableAdmission},
     records::{
-        import::{AdmittedSourceBinding, ImportSource, ImportSourceReferences},
         Record,
+        import::{AdmittedSourceBinding, ImportSource, ImportSourceReferences},
     },
 };
 use rusqlite::Connection;

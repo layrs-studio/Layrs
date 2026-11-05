@@ -159,6 +159,7 @@ impl CheckoutReader {
     /// its own handle shows the file unchanged and reachable at exactly that
     /// path. Every other entry, the listings and the identities are checked
     /// as before; a mismatch falls back to the untrusting two-pass capture.
+    #[allow(clippy::type_complexity)]
     pub fn matches_projection_trusting(
         &self,
         limits: CheckoutLimits,
@@ -169,7 +170,14 @@ impl CheckoutReader {
     ) -> io::Result<bool> {
         let _span = crate::perf::span("checkout.matches_projection");
         progress()?;
-        match self.scan_streaming(limits, tracked, &mut |_| Ok(()), trust, Some(expected), progress) {
+        match self.scan_streaming(
+            limits,
+            tracked,
+            &mut |_| Ok(()),
+            trust,
+            Some(expected),
+            progress,
+        ) {
             Ok((entries, _)) if entries == expected => return Ok(true),
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -181,6 +189,7 @@ impl CheckoutReader {
             == expected)
     }
 
+    #[allow(clippy::type_complexity)]
     fn scan_streaming(
         &self,
         limits: CheckoutLimits,
@@ -195,6 +204,7 @@ impl CheckoutReader {
         Ok((scanned.entries, scanned.manifests))
     }
 
+    #[allow(clippy::type_complexity)]
     fn scan_streaming_listed(
         &self,
         limits: CheckoutLimits,
@@ -265,6 +275,7 @@ pub struct TrustedCapture {
 /// directory's listing is thus compared over a window covering all reads
 /// below it, as in a sequential walk, and only the current directory chain
 /// plus a bounded batch of directories stay open.
+#[allow(clippy::type_complexity)]
 struct StreamScan<'a> {
     limits: CheckoutLimits,
     tracked: &'a BTreeSet<String>,
@@ -628,9 +639,12 @@ fn hash_file(
     let chunk_bytes = layrs_core::scm::fixed_chunk_bytes(first.len());
     let chunks = usize::try_from(first.len().div_ceil(chunk_bytes))
         .map_err(|_| invalid("file chunk count exceeds this platform"))?;
-    let mut builder =
-        FileManifestBuilder::new(layrs_core::scm::fixed_chunking(first.len()), first.len(), chunks)
-            .map_err(|e| invalid(&e.to_string()))?;
+    let mut builder = FileManifestBuilder::new(
+        layrs_core::scm::fixed_chunking(first.len()),
+        first.len(),
+        chunks,
+    )
+    .map_err(|e| invalid(&e.to_string()))?;
     let mut remaining = first.len();
     while remaining != 0 {
         if observer_failed.load(std::sync::atomic::Ordering::Relaxed) {

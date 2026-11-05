@@ -7,20 +7,20 @@ use crate::projection::{
         database_io::{self, WriterCloseObserver, WriterOpenPoint},
         process_profile::tests::child,
         records::{
-            transition::{ProviderTransitionIntentRecord, TransitionState},
             Record,
+            transition::{ProviderTransitionIntentRecord, TransitionState},
         },
     },
     shared::{
         exact_content::{
-            validate_installations, validate_protected_installations, ExactInstallState,
-            ExactRecord, Phase, PREPARE_CHARGE,
+            ExactInstallState, ExactRecord, PREPARE_CHARGE, Phase, validate_installations,
+            validate_protected_installations,
         },
         exact_protection::{ExactProtection, ProtectionPresence},
     },
 };
-use layrs_core::scm::{canonical_json, FileManifest};
-use rusqlite::{ffi, Connection, OpenFlags};
+use layrs_core::scm::{FileManifest, canonical_json};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::{
     collections::BTreeMap,
     fs,

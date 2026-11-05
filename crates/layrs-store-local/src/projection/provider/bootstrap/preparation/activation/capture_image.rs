@@ -162,7 +162,7 @@ pub(super) fn reconcile(
             _ => {
                 return Err(invalid(
                     "provider checkpoint evidence differs from fixed catalog/absence",
-                ))
+                ));
             }
         }
         if observed
@@ -194,7 +194,7 @@ pub(super) fn reconcile(
             _ => {
                 return Err(invalid(
                     "provider capture selected target is not a file/absence",
-                ))
+                ));
             }
         };
         let evidence = observed.get(path).copied();

@@ -10,12 +10,12 @@ use crate::projection::provider::{
     managed_ready_reopen::ManagedReadyInspection,
     process_profile::tests::child,
     records::{
+        ProviderBootstrapSource, ProviderSourceDescriptor, Record,
         import::{
             ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
             ProviderImportKind, ProviderImportPrefixRecord,
         },
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        ProviderBootstrapSource, ProviderSourceDescriptor, Record,
     },
     source_companion::SourceCompanionPublication,
     transition_observation::{
@@ -29,7 +29,7 @@ use layrs_core::{
     projection::{AvailabilityRequest, EntryState, OfflineOperation, ProjectionEntry},
     scm::{Chunk, ChunkingDescriptor, FileManifest, RepoPath, TreeEntryTarget, WorktreeId},
 };
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 use std::{
     collections::BTreeMap,
     fs,
@@ -326,10 +326,12 @@ fn with_source_configuration(
     // file correctly requires native hashing, even when it is read-only. Its
     // immutable bytes are already resident in CAS through seed preparation.
     hydrate_originals(&f.checkout, seed_readme);
-    assert!(session
-        .hydration_requests()
-        .iter()
-        .any(|r| r.source_bytes_read > 0 && r.transferred_bytes > 0));
+    assert!(
+        session
+            .hydration_requests()
+            .iter()
+            .any(|r| r.source_bytes_read > 0 && r.transferred_bytes > 0)
+    );
     assert!(session.callback_failures().is_empty());
     replace(&f.checkout.join("README.md"), HISTORICAL);
     let historical = session

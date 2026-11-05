@@ -2,15 +2,14 @@
 //! Fault callbacks return errors; no process crash or SQLite-journal recovery.
 use super::*;
 use crate::projection::{
-    format,
+    ProjectionRecoveryReason, ProjectionStore, RestoreFaults, RestorePoint, RestoreSource,
+    SessionMode, format,
     provider::{
         admitted_ordinary,
         database_io::{WriterCloseObserver, WriterOpenPoint},
         managed_ready_reopen::ManagedReadyAdmission,
         process_profile::tests::child,
     },
-    ProjectionRecoveryReason, ProjectionStore, RestoreFaults, RestorePoint, RestoreSource,
-    SessionMode,
 };
 use layrs_core::scm::RepoPath;
 use rusqlite::ffi;
@@ -177,82 +176,159 @@ fn malformed_journal_refuses_without_effects(store: &ProjectionStore, family: &P
 #[ignore = "UNQUALIFIED interrupted admitted restore; ROOT source release, owned child1800 / outer1860 required"]
 fn managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection() {
     // r205: iteration 0 of 4 completed, iteration 1 still running at 720s.
-    child::run(concat!(module_path!(), "::managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection"), 1800, || {
-        child::declare();
-        let root = admitted_destination();
-        let store = ProjectionStore::open(&root).unwrap();
-        let marker = format::read_marker(&root).unwrap();
-        let family = marker.shared.as_ref().unwrap().root.clone();
-        let state = store.state().unwrap();
-        let path = RepoPath::parse("README.md").unwrap();
-        let baseline = format::access(&store, SessionMode::Shared).unwrap().run(|access| {
-            admitted_ordinary::inspect(&access.connection, &marker, None).map_err(Into::into)
-        }).unwrap();
-        drop(store);
-        for (index, point) in [RestorePoint::JournalDurable, RestorePoint::PathQuarantined,
-            RestorePoint::PathInstalled, RestorePoint::BeforeCommit].into_iter().enumerate() {
-            eprintln!("RESTORE_RECOVERY_PHASE={point:?}");
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_admitted_restore_resumes_four_durable_interruptions_with_readonly_inspection"
+        ),
+        1800,
+        || {
+            child::declare();
+            let root = admitted_destination();
             let store = ProjectionStore::open(&root).unwrap();
-            let target = format!("target capture {index}").into_bytes();
-            let dirty = format!("preserved dirty bytes {index}").into_bytes();
-            fs::write(root.join(path.as_str()), &target).unwrap();
-            let captured = store.capture_patch(state.generation).unwrap();
-            fs::write(root.join(path.as_str()), &dirty).unwrap();
-            let preview = store.preview_restore(state.generation, &RestoreSource::Capture {
-                sequence: captured.sequence, paths: vec![path.clone()],
-            }).unwrap();
-            let error = store.apply_restore_with_faults(&preview, &Stop(point)).unwrap_err();
-            assert!(error.to_string().contains("owned restore stop"), "{error}");
-            if index == 0 {
-                pending_data_refusals(&store, &preview.operation_id);
-                malformed_journal_refuses_without_effects(&store, &family);
-            }
+            let marker = format::read_marker(&root).unwrap();
+            let family = marker.shared.as_ref().unwrap().root.clone();
+            let state = store.state().unwrap();
+            let path = RepoPath::parse("README.md").unwrap();
+            let baseline = format::access(&store, SessionMode::Shared)
+                .unwrap()
+                .run(|access| {
+                    admitted_ordinary::inspect(&access.connection, &marker, None)
+                        .map_err(Into::into)
+                })
+                .unwrap();
             drop(store);
-            let before = witnesses(&root, &family);
-            let inspection = ProjectionStore::inspect_recovery(&root).unwrap();
-            assert_eq!(inspection.recovery, vec![ProjectionRecoveryReason::FilesystemOperation]);
-            assert_eq!(witnesses(&root, &family), before, "inspection is nonmutating");
-            let mut wrong = inspection.binding.clone();
-            wrong.database_identity.push_str("-changed");
-            assert!(ProjectionStore::open_bound_recovery(&root, &wrong).is_err());
-            assert_eq!(witnesses(&root, &family), before, "wrong binding has no effects");
-            let bound = ProjectionStore::open_bound_recovery(&root, &inspection.binding).unwrap();
-            if index == 0 {
-                assert!(bound.resume_installation().is_err());
-                assert!(bound.resume_namespace().is_err());
-                assert!(bound.resume_refresh().is_err());
-                assert!(bound.resume_rebase().is_err());
-                assert!(bound.cancel_shared_reservation().is_err());
-                assert!(bound.recover_databases().is_err());
-                assert_eq!(witnesses(&root, &family), before, "other recovery routes remain fenced");
+            for (index, point) in [
+                RestorePoint::JournalDurable,
+                RestorePoint::PathQuarantined,
+                RestorePoint::PathInstalled,
+                RestorePoint::BeforeCommit,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                eprintln!("RESTORE_RECOVERY_PHASE={point:?}");
+                let store = ProjectionStore::open(&root).unwrap();
+                let target = format!("target capture {index}").into_bytes();
+                let dirty = format!("preserved dirty bytes {index}").into_bytes();
+                fs::write(root.join(path.as_str()), &target).unwrap();
+                let captured = store.capture_patch(state.generation).unwrap();
+                fs::write(root.join(path.as_str()), &dirty).unwrap();
+                let preview = store
+                    .preview_restore(
+                        state.generation,
+                        &RestoreSource::Capture {
+                            sequence: captured.sequence,
+                            paths: vec![path.clone()],
+                        },
+                    )
+                    .unwrap();
+                let error = store
+                    .apply_restore_with_faults(&preview, &Stop(point))
+                    .unwrap_err();
+                assert!(error.to_string().contains("owned restore stop"), "{error}");
+                if index == 0 {
+                    pending_data_refusals(&store, &preview.operation_id);
+                    malformed_journal_refuses_without_effects(&store, &family);
+                }
+                drop(store);
+                let before = witnesses(&root, &family);
+                let inspection = ProjectionStore::inspect_recovery(&root).unwrap();
+                assert_eq!(
+                    inspection.recovery,
+                    vec![ProjectionRecoveryReason::FilesystemOperation]
+                );
+                assert_eq!(
+                    witnesses(&root, &family),
+                    before,
+                    "inspection is nonmutating"
+                );
+                let mut wrong = inspection.binding.clone();
+                wrong.database_identity.push_str("-changed");
+                assert!(ProjectionStore::open_bound_recovery(&root, &wrong).is_err());
+                assert_eq!(
+                    witnesses(&root, &family),
+                    before,
+                    "wrong binding has no effects"
+                );
+                let bound =
+                    ProjectionStore::open_bound_recovery(&root, &inspection.binding).unwrap();
+                if index == 0 {
+                    assert!(bound.resume_installation().is_err());
+                    assert!(bound.resume_namespace().is_err());
+                    assert!(bound.resume_refresh().is_err());
+                    assert!(bound.resume_rebase().is_err());
+                    assert!(bound.cancel_shared_reservation().is_err());
+                    assert!(bound.recover_databases().is_err());
+                    assert_eq!(
+                        witnesses(&root, &family),
+                        before,
+                        "other recovery routes remain fenced"
+                    );
+                }
+                let receipt = if index % 2 == 0 {
+                    bound.resume_restore().unwrap()
+                } else {
+                    drop(bound);
+                    ProjectionStore::resume_restore(&root).unwrap()
+                };
+                let store = ProjectionStore::open(&root).unwrap();
+                assert_eq!(fs::read(root.join(path.as_str())).unwrap(), target);
+                assert_eq!(
+                    store.apply_restore(&preview).unwrap(),
+                    receipt,
+                    "completed operation replays its receipt"
+                );
+                let mut retained = Vec::new();
+                store
+                    .write_captured_file(captured.sequence, &path, &mut retained)
+                    .unwrap();
+                assert_eq!(retained, target);
+                let inverse = store
+                    .preview_restore(
+                        state.generation,
+                        &RestoreSource::Inverse {
+                            operation_id: receipt.operation_id,
+                        },
+                    )
+                    .unwrap();
+                store.apply_restore(&inverse).unwrap();
+                assert_eq!(fs::read(root.join(path.as_str())).unwrap(), dirty);
+                format::access(&store, SessionMode::Shared)
+                    .unwrap()
+                    .run(|access| {
+                        baseline.require_same_import(&admitted_ordinary::inspect(
+                            &access.connection,
+                            &marker,
+                            None,
+                        )?)?;
+                        access.with_content(|c, scope| {
+                            crate::projection::retention::fsck_with_scope(c, &store, Some(scope))
+                        })
+                    })
+                    .unwrap();
+                // A completed ordinary restore leaves only its committed budget;
+                // inspection reports it until the next Exclusive entry settles it.
+                assert_eq!(
+                    ProjectionStore::inspect_recovery(&root).unwrap().recovery,
+                    vec![ProjectionRecoveryReason::Reservation]
+                );
+                format::access(&store, SessionMode::Exclusive)
+                    .unwrap()
+                    .run(|access| access.verify())
+                    .unwrap();
+                drop(store);
+                assert!(
+                    ProjectionStore::inspect_recovery(&root)
+                        .unwrap()
+                        .recovery
+                        .is_empty()
+                );
             }
-            let receipt = if index % 2 == 0 { bound.resume_restore().unwrap() }
-                else { drop(bound); ProjectionStore::resume_restore(&root).unwrap() };
-            let store = ProjectionStore::open(&root).unwrap();
-            assert_eq!(fs::read(root.join(path.as_str())).unwrap(), target);
-            assert_eq!(store.apply_restore(&preview).unwrap(), receipt, "completed operation replays its receipt");
-            let mut retained = Vec::new();
-            store.write_captured_file(captured.sequence, &path, &mut retained).unwrap();
-            assert_eq!(retained, target);
-            let inverse = store.preview_restore(state.generation, &RestoreSource::Inverse {
-                operation_id: receipt.operation_id,
-            }).unwrap();
-            store.apply_restore(&inverse).unwrap();
-            assert_eq!(fs::read(root.join(path.as_str())).unwrap(), dirty);
-            format::access(&store, SessionMode::Shared).unwrap().run(|access| {
-                baseline.require_same_import(&admitted_ordinary::inspect(&access.connection, &marker, None)?)?;
-                access.with_content(|c, scope| crate::projection::retention::fsck_with_scope(c, &store, Some(scope)))
-            }).unwrap();
-            // A completed ordinary restore leaves only its committed budget;
-            // inspection reports it until the next Exclusive entry settles it.
             assert_eq!(
-                ProjectionStore::inspect_recovery(&root).unwrap().recovery,
-                vec![ProjectionRecoveryReason::Reservation]
+                ProjectionStore::open(&root).unwrap().state().unwrap(),
+                state
             );
-            format::access(&store, SessionMode::Exclusive).unwrap().run(|access| access.verify()).unwrap();
-            drop(store);
-            assert!(ProjectionStore::inspect_recovery(&root).unwrap().recovery.is_empty());
-        }
-        assert_eq!(ProjectionStore::open(&root).unwrap().state().unwrap(), state);
-    });
+        },
+    );
 }

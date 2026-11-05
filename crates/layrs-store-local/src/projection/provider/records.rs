@@ -30,9 +30,9 @@ pub(in crate::projection) mod source;
 #[path = "records/transition.rs"]
 pub(in crate::projection) mod transition;
 
-use crate::projection::{invalid, Result};
+use crate::projection::{Result, invalid};
 use layrs_core::scm::canonical_json;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub(in crate::projection) use receipts::*;
 pub use receipts::{PreparedBinding, ProviderBootstrapBinding, ReceiptRef};

@@ -328,6 +328,7 @@ fn same_fence(base: &SpaceBootstrap, current: &SpaceBootstrap) -> RemoteResult<(
 impl NativeRemote {
     /// Complete bounded metadata collection. Call before acquiring Store SQL or
     /// operation gates. No local source acceptance or transition is performed.
+    #[allow(clippy::nonminimal_bool)]
     pub fn observe_provider_transition(
         &self,
         request: &ProviderTransitionObservationRequest<'_>,

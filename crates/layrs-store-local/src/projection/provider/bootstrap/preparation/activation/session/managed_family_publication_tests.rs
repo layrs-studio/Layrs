@@ -6,14 +6,13 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
 };
 use rusqlite::{
-    ffi,
+    Connection, DatabaseName, OpenFlags, ffi,
     types::{Value, ValueRef},
-    Connection, DatabaseName, OpenFlags,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -331,7 +330,11 @@ fn managed_family_ready_committed_ack_refusal_replays_without_writer() {
                                 false,
                             )
                             .unwrap();
-                        assert_eq!(read_only(&family_path,family_rows),expected_family,"only the exact destination worktrees.state cell changes; reservations/quota/journals/protection remain retained");
+                        assert_eq!(
+                            read_only(&family_path, family_rows),
+                            expected_family,
+                            "only the exact destination worktrees.state cell changes; reservations/quota/journals/protection remain retained"
+                        );
                     }
                     let family_durable = database_io::tests::support::witness(&family_path);
                     assert_eq!(family_durable.0, family_file_before.0);

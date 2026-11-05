@@ -4,7 +4,7 @@ use super::{
     artifacts::Artifacts,
     database_io::{self, ReadState, WriterCloseObserver},
     records::capture::ProviderCaptureState,
-    recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+    recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
     validation::{self, PrivateActiveCaptureValidation},
 };
 use crate::projection::shared::{

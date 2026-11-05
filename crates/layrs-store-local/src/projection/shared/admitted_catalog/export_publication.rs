@@ -5,6 +5,7 @@
 use super::*;
 use crate::projection::{
     provider::records::{
+        Record,
         import::{
             ImportSource, ImportSourceReferences, ProviderImportKind,
             ProviderTransitionReceiptRecord,
@@ -12,7 +13,6 @@ use crate::projection::{
         transition::{
             ProviderTransitionIntentRecord, TransitionBackendKind, TransitionRole, TransitionState,
         },
-        Record,
     },
     shared::provider_access::exact_path,
 };

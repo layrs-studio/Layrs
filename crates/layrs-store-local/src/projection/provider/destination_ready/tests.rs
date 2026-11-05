@@ -2,11 +2,11 @@
 //! these 120-second children. Synthetic identities prove DATA consistency;
 //! no filesystem/native/content capability or ordinary admission is asserted.
 use super::*;
+use crate::projection::ProjectionStoreError;
 use crate::projection::provider::{
     database_io::BareConnection, process_profile::tests::child, records::Receipt,
     validation::tests::fixture::Fixture as SourceFixture,
 };
-use crate::projection::ProjectionStoreError;
 #[path = "tests/fixture.rs"]
 mod fixture;
 #[path = "tests/source.rs"]
@@ -140,19 +140,21 @@ owned!(
                     .unwrap(),
                 3
             );
-            assert!(destination_validation::read_staging(
-                c,
-                &f.marker,
-                &f.source.source,
-                &f.source.allocation,
-                &f.source.prepared,
-                &f.activation,
-                &f.prefix,
-                &f.staging,
-                closure,
-                None
-            )
-            .is_err());
+            assert!(
+                destination_validation::read_staging(
+                    c,
+                    &f.marker,
+                    &f.source.source,
+                    &f.source.allocation,
+                    &f.source.prepared,
+                    &f.activation,
+                    &f.prefix,
+                    &f.staging,
+                    closure,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch(
                 "COMMIT; PRAGMA foreign_keys=OFF; PRAGMA query_only=ON; BEGIN DEFERRED",
             )
@@ -190,11 +192,12 @@ owned!(
                     .unwrap(),
                 1
             );
-            assert!(!c
-                .query_row("SELECT EXISTS(SELECT 1 FROM projection_claims)", [], |r| {
+            assert!(
+                !c.query_row("SELECT EXISTS(SELECT 1 FROM projection_claims)", [], |r| {
                     r.get::<_, bool>(0)
                 })
-                .unwrap());
+                .unwrap()
+            );
             c.execute_batch("ROLLBACK; PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE")
                 .unwrap();
             let before = c.total_changes();
@@ -337,13 +340,15 @@ owned!(
                     params![f.destination_root.0, oversized],
                 )
                 .unwrap();
-            assert!(!family
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
-                    [],
-                    |r| r.get::<_, bool>(0)
-                )
-                .unwrap());
+            assert!(
+                !family
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+                        [],
+                        |r| r.get::<_, bool>(0)
+                    )
+                    .unwrap()
+            );
             assert_invalid(
                 finalize_staged_or_replay(s, c, family, &inputs, None),
                 "destination Ready protection membership identity exceeds bound",

@@ -3,7 +3,7 @@
 //! and physical ownership. This result never admits an ordinary worktree.
 use super::super::{
     denied_coverage_storage,
-    records::{denied_coverage::TransitionDeniedCoverageRecord, Record},
+    records::{Record, denied_coverage::TransitionDeniedCoverageRecord},
 };
 use super::*;
 

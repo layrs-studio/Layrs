@@ -7,8 +7,8 @@ use crate::projection::{
     shared::exact_content::{ExactInstallState, PREPARE_CHARGE},
 };
 use layrs_core::scm::{Chunk, ChunkingDescriptor};
-use rusqlite::{types::ValueRef, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{OptionalExtension, types::ValueRef};
+use serde_json::{Value, json};
 
 macro_rules! owned {
     ($name:ident, $body:block) => {
@@ -140,9 +140,11 @@ fn refusal(
 ) {
     let before = state(c);
     let changes = c.total_changes();
-    assert!(retained
-        .validate_export_installing(c, family, target, required, None)
-        .is_err());
+    assert!(
+        retained
+            .validate_export_installing(c, family, target, required, None)
+            .is_err()
+    );
     assert_eq!(c.total_changes(), changes);
     assert_eq!(state(c), before);
 }
@@ -333,9 +335,11 @@ owned!(
                 }
             }
             assert!(retained.validate_catalog(c, family, None).is_err());
-            assert!(retained
-                .validate_export_reserve_only(c, family, target, None)
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_reserve_only(c, family, target, None)
+                    .is_err()
+            );
         });
     }
 );
@@ -476,9 +480,11 @@ owned!(
             cancel.cancel();
             let snapshot = state(c);
             let changes = c.total_changes();
-            assert!(retained
-                .validate_export_installing(c, family, target, required, Some(&cancel))
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_installing(c, family, target, required, Some(&cancel))
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(state(c), snapshot);
             inspect(c, family, retained, target, required);

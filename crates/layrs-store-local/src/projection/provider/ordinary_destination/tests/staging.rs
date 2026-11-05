@@ -478,14 +478,16 @@ owned!(
                     read_admitted_import(source, marker, None).is_err(),
                     "live Staging accepted later {mutation}"
                 );
-                assert!(ordinary_transition::apply_staging(
-                    source,
-                    marker,
-                    &copying.plan.source_prefix,
-                    &staging,
-                    None
-                )
-                .is_err());
+                assert!(
+                    ordinary_transition::apply_staging(
+                        source,
+                        marker,
+                        &copying.plan.source_prefix,
+                        &staging,
+                        None
+                    )
+                    .is_err()
+                );
                 assert!(
                     destination_staging::read_stageable(c, &target, &staging_inputs, None).is_err()
                 );

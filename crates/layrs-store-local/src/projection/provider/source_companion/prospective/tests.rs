@@ -121,8 +121,7 @@ fn prospective_count_accounts_for_known_json_escaping_and_exact_ceiling() {
         family_incarnation: "quote\" slash\\ newline\ncontrol\u{0001} é",
         family_root_identity: "fs:v1:1111111111111111:2222222222222222",
         family_catalog_identity: "4:5:6",
-        family_marker_digest:
-            "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        family_marker_digest: "blake3:1111111111111111111111111111111111111111111111111111111111111111",
     };
     let canonical = layrs_core::scm::canonical_json(&frame).unwrap();
     let length = canonical.len() as u64;

@@ -1,8 +1,6 @@
 use super::*;
-use crate::native_scm::{prepare, references::base_step, rewrite, SnapshotLimits};
-use layrs_store_local::scm_v1::materialize::{
-    self, MaterializationFaults, NoMaterializationFaults,
-};
+use crate::native_scm::{prepare, references::base_step, SnapshotLimits};
+use layrs_store_local::scm_v1::materialize::{MaterializationFaults, NoMaterializationFaults};
 use layrs_sync::v3::{ProductEnvelope, WeaveLogicalId};
 use layrs_weave::graph_merge::ReceiptContext;
 use std::collections::BTreeSet;
@@ -127,7 +125,10 @@ impl NativeWorkspace {
                 self.worktree_id(),
             ) {
                 // Precedes writing the merge result: two equal passes.
-                Some(index) => self.capture_projection_indexed(source, limits, &index, false)?.0,
+                Some(index) => {
+                    self.capture_projection_indexed(source, limits, &index, false)?
+                        .0
+                }
                 None => self.capture_projection_streaming(source, limits)?.1,
             };
             if worktree.materialized_tree_id() != Some(captured.root_tree_id()) {
@@ -285,7 +286,9 @@ fn result_projection(
     let mut pending = vec![(String::new(), root.clone(), 0usize)];
     while let Some((prefix, id, depth)) = pending.pop() {
         if depth > 128 || entries.len() + pending.len() >= 100_000 {
-            return Err(NativeClientError::InvalidState("merge result exceeds checkout limits"));
+            return Err(NativeClientError::InvalidState(
+                "merge result exceeds checkout limits",
+            ));
         }
         let stored;
         let tree = match trees.get(&id) {

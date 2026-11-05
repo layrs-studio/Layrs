@@ -4,7 +4,7 @@
 //! C remains Copying/Initializing: no content reservation, Ready, admission,
 //! inherited inverse, process-crash recovery or autonomous C is qualified here.
 use crate::projection::{
-    format,
+    ProjectionStore, RestoreSource, SessionMode, format,
     provider::{
         database_io::{self, WriterCloseObserver, WriterOpenPoint},
         managed_admission::read_admitted_import,
@@ -12,22 +12,21 @@ use crate::projection::{
         ordinary_destination::CopyEffect,
         process_profile::tests::child,
         records::{
+            Record,
             import::ImportSource,
             transition::{
                 ProviderTransitionIntentRecord, TransitionRole, TransitionRowData, TransitionState,
             },
-            Record,
         },
-        recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+        recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         transition_sql::SourceIntentEffect,
     },
     selection,
     shared::provider_access::ImportRegistrationEffect,
-    ProjectionStore, RestoreSource, SessionMode,
 };
 use layrs_core::scm::{FileId, RepoPath, WorktreeId};
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, types::ValueRef, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi, types::ValueRef};
 use std::{
     collections::BTreeMap,
     fs,
@@ -334,7 +333,10 @@ fn require_initializing_without_reservation(
         "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
         "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
     ] {
-        assert!(!c.query_row(sql, [owner], |row| row.get::<_, bool>(0)).unwrap());
+        assert!(
+            !c.query_row(sql, [owner], |row| row.get::<_, bool>(0))
+                .unwrap()
+        );
     }
     c.execute_batch("ROLLBACK").unwrap();
     c.close().unwrap();
@@ -377,13 +379,15 @@ fn managed_ordinary_metadata_copies_restore_only_history_and_retries_without_wri
             assert_eq!(restored.capture.sequence, target.sequence + 1);
             assert_eq!(fs::read(&checkout).unwrap(), TARGET);
             for sequence in 1..=restored.capture.sequence {
-                assert!(store
-                    .captured_patch(sequence)
-                    .unwrap()
-                    .changes
-                    .iter()
-                    .filter_map(|change| change.replacement.as_ref())
-                    .all(|file| file.file_id != preimage.file_id));
+                assert!(
+                    store
+                        .captured_patch(sequence)
+                        .unwrap()
+                        .changes
+                        .iter()
+                        .filter_map(|change| change.replacement.as_ref())
+                        .all(|file| file.file_id != preimage.file_id)
+                );
             }
             drop(store);
             // Settle the completed restore budget before any byte witness is
@@ -450,18 +454,22 @@ fn managed_ordinary_metadata_copies_restore_only_history_and_retries_without_wri
                 1
             );
             assert_eq!(source_metadata.preimage_mapping.1, PREIMAGE.len() as u64);
-            assert!(source_metadata
-                .transitions
-                .contains(&copying.encode().unwrap()));
+            assert!(
+                source_metadata
+                    .transitions
+                    .contains(&copying.encode().unwrap())
+            );
             require_initializing_without_reservation(&family, &copying);
 
             let mut close = Close::default();
             let mut owner = store
                 .begin_managed_export(state.generation, destination.clone(), &cancel)
                 .unwrap();
-            assert!(owner
-                .copy_metadata(&allocated, &copying, &mut close, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .copy_metadata(&allocated, &copying, &mut close, &cancelled)
+                    .is_err()
+            );
             let mut wrong =
                 ProviderTransitionIntentRecord::decode(&copying.encode().unwrap()).unwrap();
             let proof = wrong.destination.as_mut().unwrap();
@@ -472,9 +480,11 @@ fn managed_ordinary_metadata_copies_restore_only_history_and_retries_without_wri
             }
             .into();
             wrong.encode().unwrap();
-            assert!(owner
-                .copy_metadata(&allocated, &wrong, &mut close, &cancel)
-                .is_err());
+            assert!(
+                owner
+                    .copy_metadata(&allocated, &wrong, &mut close, &cancel)
+                    .is_err()
+            );
             owner.close().unwrap();
             assert_eq!((close.opens, close.successful_closes), (0, 0));
             assert_eq!(close.withheld_acknowledgements, 0);

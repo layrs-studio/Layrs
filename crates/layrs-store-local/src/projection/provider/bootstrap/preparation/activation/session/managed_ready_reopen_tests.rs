@@ -7,8 +7,8 @@ use crate::projection::provider::{
     managed_ready_reopen::ManagedReadyInspection,
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
     },
 };
 use crate::secure_fs::PinnedDirectory;

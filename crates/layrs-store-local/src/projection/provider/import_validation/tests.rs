@@ -56,9 +56,11 @@ impl VerifiedImportClosure {
         last.source_prefix_id = last.source_prefix.digest().unwrap();
         let error =
             ancestry::verify_historical_closures(c, prefix, &self.metadata, None).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("ancestor immutable SQL closure differs"));
+        assert!(
+            error
+                .to_string()
+                .contains("ancestor immutable SQL closure differs")
+        );
     }
 }
 
@@ -152,11 +154,11 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
+            ProviderBootstrapBinding, Receipt, Record,
             import::{
                 ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
                 ProviderImportKind, ProviderImportPrefixRecord,
             },
-            ProviderBootstrapBinding, Receipt, Record,
         },
         validation::{active_fixture, private_active_capture_with_source},
     };
@@ -303,21 +305,23 @@ fn active_source_closure_is_exact_and_map_tamper_is_refused() {
                 rusqlite::params!["0".repeat(64), activation.digest().unwrap()],
             )
             .unwrap();
-            assert!(verify_source(
-                c,
-                marker,
-                ImportDatabaseKind::Provider,
-                &prefix,
-                ImportSourceReferences::Provider {
-                    allocation: &f.allocation,
-                    prepared: &f.prepared,
-                    activation: &activation,
-                },
-                Some(&proof),
-                RAW,
-                None
-            )
-            .is_err());
+            assert!(
+                verify_source(
+                    c,
+                    marker,
+                    ImportDatabaseKind::Provider,
+                    &prefix,
+                    ImportSourceReferences::Provider {
+                        allocation: &f.allocation,
+                        prepared: &f.prepared,
+                        activation: &activation,
+                    },
+                    Some(&proof),
+                    RAW,
+                    None
+                )
+                .is_err()
+            );
             c.execute_batch("ROLLBACK TO tamper; RELEASE tamper; COMMIT")
                 .unwrap();
             c.execute_batch("PRAGMA foreign_keys=OFF; BEGIN DEFERRED")
@@ -356,11 +360,11 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
         database_io::BareConnection,
         process_profile::tests::child,
         records::{
+            Receipt, Record,
             import::{
                 ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportVersion,
                 ProviderImportKind, ProviderImportPrefixRecord,
             },
-            Receipt, Record,
         },
         validation::{active_fixture, private_active_capture_with_source},
     };
@@ -576,14 +580,10 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
                 "INSERT INTO projection_snapshots(generation,digest,parent_digest,payload) SELECT 2,?1,digest,payload FROM projection_snapshots WHERE generation=1",
                 ["9".repeat(64)],
             ).unwrap();
-            assert!(require_exact_copied_rows(
-                destination,
-                &destination_marker,
-                &prefix,
-                &proof,
-                None
-            )
-            .is_err());
+            assert!(
+                require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None)
+                    .is_err()
+            );
             destination
                 .execute_batch("ROLLBACK TO foreign_tail; RELEASE foreign_tail")
                 .unwrap();
@@ -594,14 +594,10 @@ fn verified_prefix_copy_is_idempotent_and_refuses_collision() {
                     [],
                 )
                 .unwrap();
-            assert!(require_exact_copied_rows(
-                destination,
-                &destination_marker,
-                &prefix,
-                &proof,
-                None
-            )
-            .is_err());
+            assert!(
+                require_exact_copied_rows(destination, &destination_marker, &prefix, &proof, None)
+                    .is_err()
+            );
             let refusal = copy_verified_prefix(
                 source,
                 destination,

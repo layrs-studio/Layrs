@@ -15,9 +15,9 @@ use crate::{
             destination_ready::{self, OrdinaryReadyInputs, ReadyEffect},
             import_validation::{self, ImportDatabaseKind},
             ordinary_destination::{self, OrdinaryCopyInputs},
-            records::{import::ProviderTransitionReceiptRecord, Record},
+            records::{Record, import::ProviderTransitionReceiptRecord},
             recovery::error::{
-                invalid as cause_invalid, ProviderBootstrapCause as Cause, Result as CauseResult,
+                ProviderBootstrapCause as Cause, Result as CauseResult, invalid as cause_invalid,
             },
         },
         shared::{

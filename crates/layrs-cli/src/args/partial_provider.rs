@@ -1,4 +1,4 @@
-use super::{take_string_option, CliParseError};
+use super::{CliParseError, take_string_option};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +29,7 @@ fn usage() -> CliParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::{parse_args, CliCommand};
+    use crate::args::{CliCommand, parse_args};
 
     #[test]
     fn exact_provider_status_command_has_separate_route() {

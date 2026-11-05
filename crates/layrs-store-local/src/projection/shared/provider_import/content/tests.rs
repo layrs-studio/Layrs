@@ -99,10 +99,12 @@ fn exact_managed_reservation_replays_without_writes_and_rolls_back() {
                     "UPDATE reservations SET remaining=remaining-1 WHERE id=?1",
                     [OPERATION],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("exact charge differs"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("exact charge differs")
+                );
                 c.execute_batch("ROLLBACK")?;
                 assert!(!c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM reservations WHERE id=?1)",
@@ -138,35 +140,43 @@ fn managed_reservation_refuses_foreign_charge_and_untyped_effects() {
                 c.execute_batch("BEGIN IMMEDIATE")?;
                 require_transaction(c, true, None)?;
                 let before = c.total_changes();
-                assert!(insert_or_replay_reservation(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("insufficient unreserved"));
+                assert!(
+                    insert_or_replay_reservation(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("insufficient unreserved")
+                );
                 assert_eq!(c.total_changes(), before);
                 c.execute("UPDATE quota SET bytes=100000", [])?;
                 c.execute(
                     "INSERT INTO reservations VALUES(?1,'sibling',?1,?2)",
                     params![OPERATION, CHARGE],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("identity or exact charge differs"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("identity or exact charge differs")
+                );
                 c.execute("DELETE FROM reservations WHERE id=?1", [OPERATION])?;
                 c.execute(
                     "INSERT INTO reservations VALUES('other-attempt','destination','operation',1)",
                     [],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("foreign reservation"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("foreign reservation")
+                );
                 c.execute("DELETE FROM reservations WHERE id='other-attempt'", [])?;
                 c.execute("INSERT INTO roots VALUES('root','destination','database','operation','digest',?1)", [b"root".as_slice()])?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("root or legacy installation"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("root or legacy installation")
+                );
                 c.execute("DELETE FROM roots WHERE id='root'", [])?;
                 insert_or_replay_reservation(c, &spec(), None)?;
                 let file = format!("blake3:{}", "a".repeat(64));
@@ -174,10 +184,12 @@ fn managed_reservation_refuses_foreign_charge_and_untyped_effects() {
                     "INSERT INTO installations VALUES(?1,?2,?3,NULL,0)",
                     params![OPERATION, file, b"legacy".as_slice()],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("root or legacy installation"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("root or legacy installation")
+                );
                 c.execute(
                     "DELETE FROM installations WHERE reservation=?1",
                     [OPERATION],
@@ -186,10 +198,12 @@ fn managed_reservation_refuses_foreign_charge_and_untyped_effects() {
                     "INSERT INTO exact_installations VALUES(?1,?2,?2,0,?3,NULL,0)",
                     params![OPERATION, file, b"exact".as_slice()],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("unsupported exact installations"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("unsupported exact installations")
+                );
                 c.execute(
                     "DELETE FROM exact_installations WHERE reservation=?1",
                     [OPERATION],
@@ -198,10 +212,12 @@ fn managed_reservation_refuses_foreign_charge_and_untyped_effects() {
                     "UPDATE reservations SET operation=?1 WHERE id=?2",
                     params!["x".repeat(129), OPERATION],
                 )?;
-                assert!(validate_reservation_only(c, &spec(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("text exceeds bound"));
+                assert!(
+                    validate_reservation_only(c, &spec(), None)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("text exceeds bound")
+                );
                 c.execute(
                     "UPDATE reservations SET operation=?1 WHERE id=?1",
                     [OPERATION],

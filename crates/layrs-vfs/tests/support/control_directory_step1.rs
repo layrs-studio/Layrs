@@ -33,6 +33,7 @@ use windows_sys::{
     },
     core::GUID,
 };
+#[allow(clippy::duplicate_mod, dead_code)]
 #[path = "../../src/windows/api.rs"]
 mod api;
 
@@ -1410,6 +1411,7 @@ fn connected_metadata(native: &Native, run: &Path) {
 pub(super) fn run_native() {
     let (run, _) = disposable_run("control-step1-native");
     let native = Native::load();
+    #[allow(clippy::type_complexity)]
     let gates: [(&str, fn(&Native, &Path)); 8] = [
         ("clean/reopen/legacy", clean_and_reopen),
         ("refusals/replay", publication_refusals),

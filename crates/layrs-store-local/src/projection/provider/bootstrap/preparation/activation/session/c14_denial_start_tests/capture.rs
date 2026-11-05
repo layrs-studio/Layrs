@@ -1,15 +1,15 @@
 //! Public local Capture on a genuine C14 admission after B is unavailable.
 //! The explicit writable absence is part of the bootstrap server fixture.
+use super::restore::forged_ready_version;
 use super::*;
+use crate::SessionMode;
 use crate::projection::{
+    ProjectionStore, RestoreSource,
     capture::{CaptureFaults, CapturePoint, CapturedPatch},
     format,
     provider::{admitted_ordinary, admitted_ordinary::AdmittedOrdinaryData},
     shared::provider_access::FamilyAccess,
-    ProjectionStore, RestoreSource,
 };
-use super::restore::forged_ready_version;
-use crate::SessionMode;
 use layrs_core::projection::ProjectionVersion;
 
 pub(super) struct Immutable {
@@ -111,7 +111,12 @@ impl Immutable {
     }
 }
 
-pub(super) fn require_bytes(store: &ProjectionStore, patch: &CapturedPatch, path: &RepoPath, bytes: &[u8]) {
+pub(super) fn require_bytes(
+    store: &ProjectionStore,
+    patch: &CapturedPatch,
+    path: &RepoPath,
+    bytes: &[u8],
+) {
     assert_eq!(store.captured_patch(patch.sequence).unwrap(), *patch);
     let mut streamed = Vec::new();
     store
@@ -167,9 +172,11 @@ fn require_capture_recovery(
     let failure = store
         .capture_patch_with_faults(generation, &FailCapture(CapturePoint::BeforeCommit))
         .unwrap_err();
-    assert!(failure
-        .to_string()
-        .contains("injected C14 Capture boundary"));
+    assert!(
+        failure
+            .to_string()
+            .contains("injected C14 Capture boundary")
+    );
     assert_eq!(
         store.latest_captured_patch().unwrap().as_ref(),
         Some(previous)
@@ -193,10 +200,12 @@ fn require_capture_recovery(
     let resumed = store.capture_patch(generation).unwrap();
     assert_eq!(resumed.sequence, previous.sequence + 1);
     require_bytes(store, &resumed, path, changed);
-    assert!(!ProjectionStore::inspect_recovery(&completed.root)
-        .unwrap()
-        .recovery
-        .contains(&crate::projection::ProjectionRecoveryReason::Reservation));
+    assert!(
+        !ProjectionStore::inspect_recovery(&completed.root)
+            .unwrap()
+            .recovery
+            .contains(&crate::projection::ProjectionRecoveryReason::Reservation)
+    );
 
     // A caller error after COMMIT preserves the accepted capture. The bound
     // recovery API settles its committed reservation and remains replayable.
@@ -204,16 +213,20 @@ fn require_capture_recovery(
     let failure = store
         .capture_patch_with_faults(generation, &FailCapture(CapturePoint::AfterCommit))
         .unwrap_err();
-    assert!(failure
-        .to_string()
-        .contains("injected C14 Capture boundary"));
+    assert!(
+        failure
+            .to_string()
+            .contains("injected C14 Capture boundary")
+    );
     let committed = store.latest_captured_patch().unwrap().unwrap();
     assert_eq!(committed.sequence, resumed.sequence + 1);
     require_bytes(store, &committed, path, AFTER_COMMIT_BYTES);
     let inspection = ProjectionStore::inspect_recovery(&completed.root).unwrap();
-    assert!(inspection
-        .recovery
-        .contains(&crate::projection::ProjectionRecoveryReason::Reservation));
+    assert!(
+        inspection
+            .recovery
+            .contains(&crate::projection::ProjectionRecoveryReason::Reservation)
+    );
     let recovery =
         ProjectionStore::open_bound_recovery(&completed.root, &inspection.binding).unwrap();
     recovery.cancel_shared_reservation().unwrap();
@@ -252,22 +265,28 @@ fn require_closed_operations(
             .contains("admitted denial coverage remains read-only"),
         "{error}"
     );
-    assert!(store
-        .record_version_observation(&state.snapshot, selected)
-        .is_err());
-    assert!(store
-        .refresh_projection(state.generation, &state.snapshot, &mut |_, _| panic!(
-            "closed refresh must not request bytes"
-        ))
-        .is_err());
-    assert!(store
-        .expand_selection(
-            state.generation,
-            selected,
-            &state.snapshot,
-            &mut |_, _| panic!("closed selection must not request bytes")
-        )
-        .is_err());
+    assert!(
+        store
+            .record_version_observation(&state.snapshot, selected)
+            .is_err()
+    );
+    assert!(
+        store
+            .refresh_projection(state.generation, &state.snapshot, &mut |_, _| panic!(
+                "closed refresh must not request bytes"
+            ))
+            .is_err()
+    );
+    assert!(
+        store
+            .expand_selection(
+                state.generation,
+                selected,
+                &state.snapshot,
+                &mut |_, _| panic!("closed selection must not request bytes")
+            )
+            .is_err()
+    );
     let request = AvailabilityRequest {
         version: ProjectionVersion::Capture {
             worktree_id: store.identity().worktree_id.clone(),
@@ -376,11 +395,13 @@ pub(super) fn run(
     assert!(first.changes.iter().any(|change| change.path == path
         && change.expected.is_none()
         && change.replacement.is_some()));
-    assert!(first
-        .changes
-        .iter()
-        .all(|change| change.path.as_str() != "secret.txt"
-            && (!has_companion || change.path.as_str() != "README.md")));
+    assert!(
+        first
+            .changes
+            .iter()
+            .all(|change| change.path.as_str() != "secret.txt"
+                && (!has_companion || change.path.as_str() != "README.md"))
+    );
     assert_eq!(
         store.capture_patch(state.generation).unwrap(),
         first,

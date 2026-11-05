@@ -51,22 +51,26 @@ fn ordinary_checkout_inventory_keeps_provider_and_ready_constructors_strict() {
     );
     assert!(ExpectedCheckout::new(&f.staging, &f.files, &f.deletions, IMAGE, None).is_err());
     let provider = Fixture::new();
-    assert!(ExpectedCheckout::ordinary(
-        &provider.staging,
-        &provider.files,
-        &provider.deletions,
-        IMAGE,
-        None
-    )
-    .is_err());
-    assert!(ExpectedCheckout::new(
-        &provider.staging,
-        &provider.files,
-        &provider.deletions,
-        IMAGE,
-        None
-    )
-    .is_ok());
+    assert!(
+        ExpectedCheckout::ordinary(
+            &provider.staging,
+            &provider.files,
+            &provider.deletions,
+            IMAGE,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        ExpectedCheckout::new(
+            &provider.staging,
+            &provider.files,
+            &provider.deletions,
+            IMAGE,
+            None
+        )
+        .is_ok()
+    );
     let mut ready = ProviderTransitionIntentRecord::decode(&f.staging.encode().unwrap()).unwrap();
     ready.state = TransitionState::Ready;
     ready.receipt_id = Some(TOKEN.into());
@@ -78,14 +82,10 @@ fn ordinary_checkout_inventory_keeps_provider_and_ready_constructors_strict() {
         ProviderTransitionIntentRecord::decode(&provider.staging.encode().unwrap()).unwrap();
     ready.state = TransitionState::Ready;
     ready.receipt_id = Some(TOKEN.into());
-    assert!(ExpectedCheckout::from_ready(
-        &ready,
-        &provider.files,
-        &provider.deletions,
-        IMAGE,
-        None
-    )
-    .is_ok());
+    assert!(
+        ExpectedCheckout::from_ready(&ready, &provider.files, &provider.deletions, IMAGE, None)
+            .is_ok()
+    );
 }
 
 #[test]

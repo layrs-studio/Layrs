@@ -94,6 +94,7 @@ pub fn apply_checkout_bound(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_checkout_bound_metadata(
     store_root: &Path,
     store_identity: &str,
@@ -171,6 +172,7 @@ pub fn apply_checkout_with_sources(
 }
 
 /// Bind every journal, lease and publication capability to the caller's Store.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_checkout_with_sources_bound(
     store_root: &Path,
     store_identity: &str,
@@ -195,6 +197,7 @@ pub fn apply_checkout_with_sources_bound(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_checkout_with_sources_bound_metadata(
     store_root: &Path,
     store_identity: &str,
@@ -685,7 +688,6 @@ pub fn apply_checkout_with_sources_bound_metadata(
         ));
     }
     drop(postcheck);
-    drop(trust);
     // Closing a freshly written file is where the antivirus scans it: close
     // the staged handles on a few threads while the metadata commits. They
     // are joined before this function returns.
@@ -772,6 +774,7 @@ struct BackupSeal {
 }
 impl BackupSeal {
     fn of(leaf: &PinnedLeaf) -> Option<Self> {
+        #[allow(irrefutable_let_patterns)]
         let PinnedLeaf::File(file) = leaf else {
             return None;
         };
@@ -805,7 +808,9 @@ fn purge_completed_backup(
         // must refuse any existing write handle fails if another process
         // still holds one, and the backup is then retained.
         #[cfg(windows)]
-        let checked = backup.open_immutable_file(name.as_ref()).map(PinnedLeaf::File);
+        let checked = backup
+            .open_immutable_file(name.as_ref())
+            .map(PinnedLeaf::File);
         #[cfg(not(windows))]
         let checked = backup.open_leaf(name.as_ref());
         let unchanged = checked.is_ok_and(|leaf| {
@@ -1086,8 +1091,13 @@ fn touched_paths_installed(
     for path in paths {
         progress()?;
         if matches!(next.get(path), Some(CheckoutProjectionContent::File { .. }))
-            && trust(path, &path.split('/').fold(root.to_path_buf(), |full, part| full.join(part)))
-                .is_some()
+            && trust(
+                path,
+                &path
+                    .split('/')
+                    .fold(root.to_path_buf(), |full, part| full.join(part)),
+            )
+            .is_some()
         {
             continue;
         }
@@ -1620,7 +1630,9 @@ fn staged_by_us(
     let Some(current) = current else {
         return false;
     };
-    if current.identity_token().as_deref() != staged["identity"].as_str() || staged["identity"].is_null() {
+    if current.identity_token().as_deref() != staged["identity"].as_str()
+        || staged["identity"].is_null()
+    {
         return false;
     }
     if !unchanged {

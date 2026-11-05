@@ -2,7 +2,7 @@ use super::*;
 use crate::projection::{
     provider::{database_io::with_reference, owned_test as child},
     shared::{
-        exact_content::{validate_installations, validate_protected_installations, PREPARE_CHARGE},
+        exact_content::{PREPARE_CHARGE, validate_installations, validate_protected_installations},
         schema_v2,
     },
 };
@@ -78,15 +78,17 @@ fn canonical_protection_preserves_exact_representations_and_claim_digest() {
     hash.update(b"layrs-partial-retention-v1\0");
     hash.update(protection.payload());
     assert_eq!(protection.digest(), hash.finalize().to_hex().as_str());
-    assert!(ExactProtection::new(
-        "family",
-        &binding.owner,
-        "1:0:4",
-        &binding.transaction_id,
-        &[required[0].clone(), required[0].clone()],
-        None
-    )
-    .is_err());
+    assert!(
+        ExactProtection::new(
+            "family",
+            &binding.owner,
+            "1:0:4",
+            &binding.transaction_id,
+            &[required[0].clone(), required[0].clone()],
+            None
+        )
+        .is_err()
+    );
     let mut wrong = binding.clone();
     wrong.database_identity = "1:0:99".into();
     assert!(protection.require_binding(&wrong, &required, None).is_err());
@@ -94,9 +96,11 @@ fn canonical_protection_preserves_exact_representations_and_claim_digest() {
     let minimum = protection.payload().len() as u64 + 2 * 256 + 65536 + floor;
     assert!(protection.require_envelope(minimum - 1, floor).is_err());
     protection.require_envelope(minimum, floor).unwrap();
-    assert!(protection
-        .require_envelope(u64::MAX, 1024 * 1024 * 1024 + 1)
-        .is_err());
+    assert!(
+        protection
+            .require_envelope(u64::MAX, 1024 * 1024 * 1024 + 1)
+            .is_err()
+    );
 }
 
 fn populate(c: &Connection, binding: &ExactBinding, required: &[FileManifest]) {
@@ -280,14 +284,10 @@ fn protection_refuses_partial_journals_and_root_membership_without_mutation() {
                     "partial installation remains a valid installation prefix"
                 );
                 let changes = c.total_changes();
-                assert!(validate_protected_installations(
-                    c,
-                    &binding,
-                    &required,
-                    &protection,
-                    None
-                )
-                .is_err());
+                assert!(
+                    validate_protected_installations(c, &binding, &required, &protection, None)
+                        .is_err()
+                );
                 assert_eq!(c.total_changes(), changes);
                 assert_eq!(protection.inspect(c, None)?, ProtectionPresence::Absent);
                 c.execute_batch("ROLLBACK TO incomplete; RELEASE incomplete")?;
@@ -298,14 +298,10 @@ fn protection_refuses_partial_journals_and_root_membership_without_mutation() {
                 )?;
                 let changes = c.total_changes();
                 assert!(protection.insert_or_replay(c, None).is_err());
-                assert!(validate_protected_installations(
-                    c,
-                    &binding,
-                    &required,
-                    &protection,
-                    None
-                )
-                .is_err());
+                assert!(
+                    validate_protected_installations(c, &binding, &required, &protection, None)
+                        .is_err()
+                );
                 assert_eq!(
                     c.total_changes(),
                     changes,

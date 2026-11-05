@@ -3,32 +3,31 @@
 //! owner-loss recovery, content-transfer or autonomous C admission recipe.
 use crate::{
     projection::{
-        format,
+        ProjectionStore, format,
         provider::{
             admitted_ordinary,
             database_io::{self, WriterCloseObserver, WriterOpenPoint},
             managed_admission::read_admitted_import,
             managed_export::allocation,
-            ordinary_destination::{staging::StageEffect, CopyEffect},
+            ordinary_destination::{CopyEffect, staging::StageEffect},
             process_profile::tests::child,
             records::{
-                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
                 Record,
+                transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
             transition_sql::SourceIntentEffect,
         },
         shared::{
             admitted_catalog::{AdmittedFamilyContext, ExportReservationEffect},
             provider_access::ImportRegistrationEffect,
         },
-        ProjectionStore,
     },
     secure_fs::PinnedDirectory,
 };
 use layrs_core::scm::WorktreeId;
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, types::ValueRef, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi, types::ValueRef};
 use std::{
     collections::BTreeMap,
     fs,
@@ -224,9 +223,11 @@ fn database(c: &Connection) -> Database {
     let mut result = BTreeMap::new();
     let mut bytes = 0usize;
     for table in tables {
-        assert!(table
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+        assert!(
+            table
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        );
         let mut q = c
             .prepare(&format!("SELECT * FROM \"{table}\" LIMIT 129"))
             .unwrap();
@@ -370,7 +371,9 @@ fn catalog(path: &Path, staging: &ProviderTransitionIntentRecord, reserved: bool
             "SELECT EXISTS(SELECT 1 FROM roots WHERE owner=?1)",
             "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
             "SELECT EXISTS(SELECT 1 FROM exact_installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
-        ] { assert!(!c.query_row(sql, [owner], |r| r.get::<_, bool>(0)).unwrap()); }
+        ] {
+            assert!(!c.query_row(sql, [owner], |r| r.get::<_, bool>(0)).unwrap());
+        }
         let count: u64 = c
             .query_row(
                 "SELECT count(*) FROM reservations WHERE owner=?1",
@@ -532,16 +535,20 @@ fn managed_ordinary_reservation_same_owner_replays_withheld_family_close_ack() {
             let mut close = Close::default();
             let cancelled = Cancellation::default();
             cancelled.cancel();
-            assert!(owner
-                .reserve_content(&allocated, &staging, &mut close, &cancelled)
-                .is_err());
+            assert!(
+                owner
+                    .reserve_content(&allocated, &staging, &mut close, &cancelled)
+                    .is_err()
+            );
             let mut forged =
                 ProviderTransitionIntentRecord::decode(&staging.encode().unwrap()).unwrap();
             forged.destination.as_mut().unwrap().format_file_identity = "0:0:0".into();
             forged.encode().unwrap();
-            assert!(owner
-                .reserve_content(&allocated, &forged, &mut close, &cancel)
-                .is_err());
+            assert!(
+                owner
+                    .reserve_content(&allocated, &forged, &mut close, &cancel)
+                    .is_err()
+            );
             assert_eq!(close.counts(), (0, 0, 0, 0));
             assert_eq!(trees(&root, &family, &destination_root, locks), before);
 

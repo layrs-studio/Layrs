@@ -99,7 +99,10 @@ fn nonshared_ordinary_hot_private_retains_explicit_recovery() {
     let before = fs::read(&db).unwrap();
     let inspection = ProjectionStore::inspect_recovery(&f.0).unwrap();
     assert!(!inspection.shared);
-    assert_eq!(inspection.recovery, vec![ProjectionRecoveryReason::WorktreeRollback]);
+    assert_eq!(
+        inspection.recovery,
+        vec![ProjectionRecoveryReason::WorktreeRollback]
+    );
     r2::assert_unchanged_database(&fs::read(&db).unwrap(), &before);
     let recovered = ProjectionStore::recover_databases(&f.0, &inspection.binding).unwrap();
     assert!(recovered.recovery.is_empty());

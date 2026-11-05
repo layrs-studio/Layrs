@@ -1,8 +1,8 @@
 //! Full bounded source history metadata, with imported origin resolved before
 //! the existing capture/publication interpreters read each row.
 use super::super::records::{
-    import::{ImportSource, ImportSourceReferences},
     Record,
+    import::{ImportSource, ImportSourceReferences},
 };
 use super::*;
 use crate::projection::{capture, publication};

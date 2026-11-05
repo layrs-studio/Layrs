@@ -13,7 +13,7 @@ use crate::projection::{
     shared::{
         admitted_catalog::AdmittedFamilyContext,
         provider_access::provider_import::{
-            source::OrdinarySourceInputs, ImportRegistrationEffect,
+            ImportRegistrationEffect, source::OrdinarySourceInputs,
         },
     },
 };

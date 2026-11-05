@@ -2,10 +2,12 @@
 //! authenticated observation nor a physical C Ready/publication capability.
 use super::*;
 use crate::projection::{
+    RecoveryBinding,
     provider::{
         database_io::with_reference,
         owned_test as child,
         records::{
+            PreparedBinding, ReceiptRef,
             denied_coverage::DeniedAuthorityData,
             import::{
                 ImportClosure, ImportRowset, ImportVersion, ProviderImportKind,
@@ -15,11 +17,9 @@ use crate::projection::{
                 TransitionBackendKind, TransitionDestinationProof, TransitionObservation,
                 TransitionPlan, TransitionRowset, TransitionState,
             },
-            PreparedBinding, ReceiptRef,
         },
     },
     shared::schema_v2,
-    RecoveryBinding,
 };
 use serde::Deserialize;
 

@@ -5,15 +5,15 @@
 use super::{
     cancellation, denied_coverage_storage,
     records::{
+        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Record,
         denied_coverage::TransitionDeniedCoverageRecord,
         transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-        AllocationRecord, PreparedRecord, ProviderBootstrapBinding, Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     validation,
 };
 use layrs_vfs::Cancellation;
-use rusqlite::{params, Connection, DatabaseName, TransactionState};
+use rusqlite::{Connection, DatabaseName, TransactionState, params};
 
 /// An actual current body read from one retained source connection. This is
 /// neither a normalized-observation constructor nor a destination capability.
@@ -142,7 +142,9 @@ impl SourceCurrentDeniedCoverage<'_> {
             || intent.receipt_id.is_some()
             || intent.destination != self.intent.destination
         {
-            return Err(invalid("current coverage requires unreserved destination Copying with matching destination proof"));
+            return Err(invalid(
+                "current coverage requires unreserved destination Copying with matching destination proof",
+            ));
         }
         self.body.require_intent(intent, cancel)?;
         // A borrowed Connection does not freeze its transaction's application

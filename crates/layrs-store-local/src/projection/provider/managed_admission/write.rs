@@ -3,7 +3,7 @@
 //! requires caller rollback before this connection may be reused.
 use super::super::{
     checkout_journal::{CheckoutJournal, ExpectedCheckout},
-    destination_ready::{read_managed_ready, ManagedReadyClaim, VerifiedManagedReady},
+    destination_ready::{ManagedReadyClaim, VerifiedManagedReady, read_managed_ready},
     import_validation::read_destination_prefix,
     managed_budget,
     published_handoff::PublishedForReady,

@@ -22,8 +22,7 @@ fn detached_mapping_commitment_matches_sql_and_rejects_substitution() {
             let spec = Spec {
                 kind: Kind::ContentMappings,
                 preflight_sql: "SELECT count(*),0 FROM mappings",
-                rows_sql:
-                    "SELECT file_id,manifest_id,bytes FROM mappings ORDER BY file_id COLLATE BINARY",
+                rows_sql: "SELECT file_id,manifest_id,bytes FROM mappings ORDER BY file_id COLLATE BINARY",
                 params: &[],
                 max_rows: MAX_CLOSURE_ROWS,
                 max_bytes: MAX_CLOSURE_BYTES,
@@ -216,17 +215,21 @@ fn denial_rowset_extends_legacy_shapes_and_hashes_full_ordered_document_bytes() 
             assert_eq!(actual.digest, format!("blake3:{}", expected.finalize()));
             let mut aggregate = closure_specs(&bind);
             aggregate[0].preflight_sql = "SELECT 0,1073741824";
-            assert!(preflight(c, &aggregate, None)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("closure metadata exceeds"));
+            assert!(
+                preflight(c, &aggregate, None)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("closure metadata exceeds")
+            );
             aggregate[0].preflight_sql = "SELECT 1000000,0";
-            assert!(preflight(c, &aggregate, None)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("closure row count exceeds"));
+            assert!(
+                preflight(c, &aggregate, None)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("closure row count exceeds")
+            );
             // Bypass only the disposable test DB's CHECK to model a corrupt
             // stored BLOB; preflight must refuse before streaming/owned copy.
             c.execute_batch("PRAGMA ignore_check_constraints=ON")
@@ -239,11 +242,13 @@ fn denial_rowset_extends_legacy_shapes_and_hashes_full_ordered_document_bytes() 
             c.execute_batch("PRAGMA ignore_check_constraints=OFF")
                 .unwrap();
             let before = c.total_changes();
-            assert!(preflight(c, &specs, None)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("stored body type/length"));
+            assert!(
+                preflight(c, &specs, None)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("stored body type/length")
+            );
             assert_eq!(before, c.total_changes());
             bare.finish(Ok(())).unwrap();
         },

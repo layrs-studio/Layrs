@@ -7,7 +7,7 @@ use layrs_core::{
         TreeEntryTarget,
     },
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
@@ -16,6 +16,7 @@ use std::{
 #[cfg(all(windows, test))]
 mod batch_tests;
 
+#[allow(dead_code)]
 pub(super) fn persist(
     c: &mut Connection,
     store: &ProjectionStore,
@@ -219,6 +220,7 @@ pub(in crate::projection) fn load_metadata_for_origin(
 /// every canonical patch, predecessor and change still receives full validation.
 /// This carries DATA only and never dispatches through admission provenance.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(in crate::projection) fn visit_metadata_range_for_origin(
     c: &Connection,
     first: u64,
@@ -243,6 +245,7 @@ pub(in crate::projection) fn visit_metadata_range_for_origin(
 
 /// The walk also lends the already interpreted fixed-generation base, so local
 /// Restore journals are checked against it without a second snapshot load.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::projection) fn visit_metadata_range_for_origin_with_base(
     c: &Connection,
     first: u64,
@@ -830,6 +833,7 @@ pub(in crate::projection) fn stream_file_with_scope(
     verifier.finish().map_err(invalid)?;
     Ok(())
 }
+#[allow(dead_code)]
 pub(in crate::projection) fn read_chunk(
     c: &Connection,
     store: &ProjectionStore,

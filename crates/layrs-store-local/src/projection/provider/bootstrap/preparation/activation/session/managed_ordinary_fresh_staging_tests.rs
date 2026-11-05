@@ -9,22 +9,22 @@ use super::{
     managed_ordinary_installing_tests::{self as witness, Database, Tree},
     managed_ordinary_ready_tests::CURRENT,
     managed_ordinary_source_publication_tests::{
-        ingress, only_source_database_changed, only_source_rows_changed, source,
-        with_source_staging_data, PublicationFixture,
+        PublicationFixture, ingress, only_source_database_changed, only_source_rows_changed,
+        source, with_source_staging_data,
     },
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             database_io::{
+                WriterCloseObserver, WriterOpenPoint,
                 tests::{
-                    fresh_ordinary_support::{with_observer, ReadBoundary},
+                    fresh_ordinary_support::{ReadBoundary, with_observer},
                     writer_support::{self, AdmissionPoint},
                 },
-                WriterCloseObserver, WriterOpenPoint,
             },
             managed_admission::read_admitted_import,
             managed_export::{
@@ -33,14 +33,13 @@ use crate::{
             managed_ready_reopen::{AdmissionStep, OrdinaryReadyPublication},
             process_profile::tests::child,
             records::{
+                Record,
                 import::ProviderTransitionReceiptRecord,
                 transition::{ProviderTransitionIntentRecord, TransitionRole, TransitionState},
-                Record,
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
             transition_sql::SourceIntentEffect,
         },
-        SessionMode,
     },
 };
 use layrs_vfs::Cancellation;
@@ -98,9 +97,11 @@ fn close_at_family_ready(
             "setup must never call SourceReady"
         );
         assert!(actual.receipt_id.is_none());
-        assert!(admitted
-            .outgoing_receipt(&f.receipt.digest().unwrap())
-            .is_err());
+        assert!(
+            admitted
+                .outgoing_receipt(&f.receipt.digest().unwrap())
+                .is_err()
+        );
         (
             ProviderTransitionIntentRecord::decode(&actual.encode().unwrap()).unwrap(),
             ingress(c, f.source_marker),
@@ -386,131 +387,211 @@ fn require_fresh_ready_handoff(f: &Fixture, expected: &Database, cancel: &Cancel
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_staging_refuses_changed_b_image_then_promotes_exact_ready_after_all_holders_release(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_staging_refuses_changed_b_image_then_promotes_exact_ready_after_all_holders_release"), 3600, || {
-        let f = fresh_staging_fixture();
-        eprintln!("STAGING_RECIPE_PHASE=setup-released");
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let cancelled = Cancellation::default();
-        cancelled.cancel();
-        assert!(OrdinaryStagingPromotion::open(&f.source, &f.destination, &f.staging.transaction_id, &cancelled).is_err());
-        assert_eq!(staging_rows(&f), f.source_rows);
-        require_unchanged_destination(&f);
+fn managed_ordinary_fresh_staging_refuses_changed_b_image_then_promotes_exact_ready_after_all_holders_release()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_staging_refuses_changed_b_image_then_promotes_exact_ready_after_all_holders_release"
+        ),
+        3600,
+        || {
+            let f = fresh_staging_fixture();
+            eprintln!("STAGING_RECIPE_PHASE=setup-released");
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let cancelled = Cancellation::default();
+            cancelled.cancel();
+            assert!(
+                OrdinaryStagingPromotion::open(
+                    &f.source,
+                    &f.destination,
+                    &f.staging.transaction_id,
+                    &cancelled
+                )
+                .is_err()
+            );
+            assert_eq!(staging_rows(&f), f.source_rows);
+            require_unchanged_destination(&f);
 
-        fs::write(&f.pins[0], DRIFT).unwrap();
-        eprintln!("STAGING_RECIPE_PHASE=drift-open");
-        let writer_attempts = Rc::new(Cell::new(0usize));
-        let observed_attempts = writer_attempts.clone();
-        let preflights = Rc::new(RefCell::new(Vec::new()));
-        let observed_preflights = preflights.clone();
-        let refused = with_writer_probe(move |path, point| {
-            observed_preflights.borrow_mut().push((path.to_owned(), point));
-            if point == AdmissionPoint::BeforeWritableOpen {
-                observed_attempts.set(observed_attempts.get() + 1);
-                return Err(invalid("changed B image must refuse before any writable open"));
-            }
-            Ok(())
-        }, || OrdinaryStagingPromotion::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel))
-            .err().expect("real changed B bytes must not promote using C's copied image");
-        assert!(refused.to_string().contains("image"), "{refused}");
-        assert_eq!(writer_attempts.get(), 0);
-        assert!(preflights.borrow().iter().any(|(path, point)| path == &f.source_database
-            && *point == AdmissionPoint::ReadonlyClosed), "actual B preflight closed before image refusal");
-        assert_eq!(staging_rows(&f), f.source_rows);
-        require_unchanged_destination(&f);
-        // Restore only exact original bytes at this fresh fixture's real leaf.
-        // No SQL evidence, grants, manifests, plan or identity is repaired.
-        fs::write(&f.pins[0], CURRENT).unwrap();
-        assert_eq!(fs::read(&f.pins[0]).unwrap(), CURRENT);
-        assert_eq!(trees(&f), before_trees);
+            fs::write(&f.pins[0], DRIFT).unwrap();
+            eprintln!("STAGING_RECIPE_PHASE=drift-open");
+            let writer_attempts = Rc::new(Cell::new(0usize));
+            let observed_attempts = writer_attempts.clone();
+            let preflights = Rc::new(RefCell::new(Vec::new()));
+            let observed_preflights = preflights.clone();
+            let refused = with_writer_probe(
+                move |path, point| {
+                    observed_preflights
+                        .borrow_mut()
+                        .push((path.to_owned(), point));
+                    if point == AdmissionPoint::BeforeWritableOpen {
+                        observed_attempts.set(observed_attempts.get() + 1);
+                        return Err(invalid(
+                            "changed B image must refuse before any writable open",
+                        ));
+                    }
+                    Ok(())
+                },
+                || {
+                    OrdinaryStagingPromotion::open(
+                        &f.source,
+                        &f.destination,
+                        &f.staging.transaction_id,
+                        &cancel,
+                    )
+                },
+            )
+            .err()
+            .expect("real changed B bytes must not promote using C's copied image");
+            assert!(refused.to_string().contains("image"), "{refused}");
+            assert_eq!(writer_attempts.get(), 0);
+            assert!(
+                preflights
+                    .borrow()
+                    .iter()
+                    .any(|(path, point)| path == &f.source_database
+                        && *point == AdmissionPoint::ReadonlyClosed),
+                "actual B preflight closed before image refusal"
+            );
+            assert_eq!(staging_rows(&f), f.source_rows);
+            require_unchanged_destination(&f);
+            // Restore only exact original bytes at this fresh fixture's real leaf.
+            // No SQL evidence, grants, manifests, plan or identity is repaired.
+            fs::write(&f.pins[0], CURRENT).unwrap();
+            assert_eq!(fs::read(&f.pins[0]).unwrap(), CURRENT);
+            assert_eq!(trees(&f), before_trees);
 
-        eprintln!("STAGING_RECIPE_PHASE=exact-open");
-        let held = OrdinaryStagingPromotion::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel)
+            eprintln!("STAGING_RECIPE_PHASE=exact-open");
+            let held = OrdinaryStagingPromotion::open(
+                &f.source,
+                &f.destination,
+                &f.staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("unchanged authentic fresh Staging {e}"));
-        let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
-        let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
-        require_owner_contention(&b_lock, SessionMode::Shared);
-        require_owner_contention(&c_lock, SessionMode::Exclusive);
-        let mut close = Close::new(&f, false);
-        close.require_pins();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let after_close = close.after_close.clone();
-        let post_close_reads = Rc::new(RefCell::new(Vec::new()));
-        let observed_post_close = post_close_reads.clone();
-        eprintln!("STAGING_RECIPE_PHASE=promote");
-        let progress = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() && point == ReadBoundary::BeforeSnapshot {
-                observed_post_close.borrow_mut().push(path.to_owned());
-            }
-            Ok(())
-        }, || held.promote_ready(&mut close, &cancel))
+            let b_lock = f.source_database.parent().unwrap().join("layrs.lock");
+            let c_lock = f.destination_database.parent().unwrap().join("layrs.lock");
+            require_owner_contention(&b_lock, SessionMode::Shared);
+            require_owner_contention(&c_lock, SessionMode::Exclusive);
+            let mut close = Close::new(&f, false);
+            close.require_pins();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let after_close = close.after_close.clone();
+            let post_close_reads = Rc::new(RefCell::new(Vec::new()));
+            let observed_post_close = post_close_reads.clone();
+            eprintln!("STAGING_RECIPE_PHASE=promote");
+            let progress = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() && point == ReadBoundary::BeforeSnapshot {
+                        observed_post_close.borrow_mut().push(path.to_owned());
+                    }
+                    Ok(())
+                },
+                || held.promote_ready(&mut close, &cancel),
+            )
             .unwrap_or_else(|e| panic!("fresh Staging promotion {:?}: {}", e.step, e.cause));
-        assert_eq!(progress.effect(), SourceIntentEffect::Updated);
-        assert_eq!(progress.ready(), &f.ready);
-        assert_eq!(progress.receipt(), &f.receipt);
-        assert_eq!(progress.ready_digest(), f.ready.digest().unwrap());
-        assert_eq!(close.counts, (1, 1, 1, 0));
-        require_read_controls(&events.borrow(), &f);
-        for path in [&f.source_database, &f.destination_database, &f.family_database] {
-            assert!(post_close_reads.borrow().contains(path),
-                "fresh actual {path:?} readback must follow positive B writer close");
-        }
-        drop(progress);
-        let ready = require_only_ready(&f);
-        let ready_trees = trees(&f);
-        only_source_database_changed(&before_trees, &ready_trees, &f.source_database);
-        require_released_pins(&f);
-        require_fresh_ready_handoff(&f, &ready, &cancel);
-    });
+            assert_eq!(progress.effect(), SourceIntentEffect::Updated);
+            assert_eq!(progress.ready(), &f.ready);
+            assert_eq!(progress.receipt(), &f.receipt);
+            assert_eq!(progress.ready_digest(), f.ready.digest().unwrap());
+            assert_eq!(close.counts, (1, 1, 1, 0));
+            require_read_controls(&events.borrow(), &f);
+            for path in [
+                &f.source_database,
+                &f.destination_database,
+                &f.family_database,
+            ] {
+                assert!(
+                    post_close_reads.borrow().contains(path),
+                    "fresh actual {path:?} readback must follow positive B writer close"
+                );
+            }
+            drop(progress);
+            let ready = require_only_ready(&f);
+            let ready_trees = trees(&f);
+            only_source_database_changed(&before_trees, &ready_trees, &f.source_database);
+            require_released_pins(&f);
+            require_fresh_ready_handoff(&f, &ready, &cancel);
+        },
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_staging_withheld_b_close_ack_reopens_actual_ready_after_explicit_holder_release(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_staging_withheld_b_close_ack_reopens_actual_ready_after_explicit_holder_release"), 3600, || {
-        let f = fresh_staging_fixture(); // Fresh independent parent/setup from recipe 1.
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let held = OrdinaryStagingPromotion::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel)
+fn managed_ordinary_fresh_staging_withheld_b_close_ack_reopens_actual_ready_after_explicit_holder_release()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_staging_withheld_b_close_ack_reopens_actual_ready_after_explicit_holder_release"
+        ),
+        3600,
+        || {
+            let f = fresh_staging_fixture(); // Fresh independent parent/setup from recipe 1.
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let held = OrdinaryStagingPromotion::open(
+                &f.source,
+                &f.destination,
+                &f.staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("authentic fresh Staging {e}"));
-        let mut close = Close::new(&f, true);
-        close.require_pins();
-        let after_close = close.after_close.clone();
-        let after_close_boundaries = Rc::new(Cell::new(0usize));
-        let observed_after_close = after_close_boundaries.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let result = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() {
-                observed_after_close.set(observed_after_close.get() + 1);
-                return Err(invalid("failed Staging close ACK forbids later SQL/identity/snapshot probes"));
-            }
-            Ok(())
-        }, || held.promote_ready(&mut close, &cancel));
-        let OrdinaryStagingPromotionFailure { step, cause, held } = result.err()
-            .expect("withheld positive B close ACK must retain its genuine image/C authority");
-        assert_eq!(step, AdmissionStep::CommitReturned);
-        let primary = cause.to_string();
-        assert!(primary.contains(WITHHELD_ACK), "{primary}");
-        assert_eq!(close.counts, (1, 1, 1, 1));
-        assert_eq!(after_close_boundaries.get(), 0, "only mandatory close cleanup follows failed ACK");
-        require_read_controls(&events.borrow(), &f);
-        close.require_pins(); // B's true current bytes and C proofs remain held.
-        // Separate deliberate caller observations; no implicit success readback
-        // or rollback acknowledgement is inferred from the original failure.
-        let ready = require_only_ready(&f);
-        let ready_trees = trees(&f);
-        only_source_database_changed(&before_trees, &ready_trees, &f.source_database);
-        drop(held); // No in-holder Staging resolve/replay is exposed by this unit.
-        require_released_pins(&f);
-        require_fresh_ready_handoff(&f, &ready, &cancel);
-        assert_eq!(cause.to_string(), primary, "fresh inspection preserves the original uncertain ACK error");
-        assert_eq!(close.counts, (1, 1, 1, 1), "fresh Ready inspection adds no promotion writer");
-    });
+            let mut close = Close::new(&f, true);
+            close.require_pins();
+            let after_close = close.after_close.clone();
+            let after_close_boundaries = Rc::new(Cell::new(0usize));
+            let observed_after_close = after_close_boundaries.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let result = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() {
+                        observed_after_close.set(observed_after_close.get() + 1);
+                        return Err(invalid(
+                            "failed Staging close ACK forbids later SQL/identity/snapshot probes",
+                        ));
+                    }
+                    Ok(())
+                },
+                || held.promote_ready(&mut close, &cancel),
+            );
+            let OrdinaryStagingPromotionFailure { step, cause, held } = result
+                .err()
+                .expect("withheld positive B close ACK must retain its genuine image/C authority");
+            assert_eq!(step, AdmissionStep::CommitReturned);
+            let primary = cause.to_string();
+            assert!(primary.contains(WITHHELD_ACK), "{primary}");
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(
+                after_close_boundaries.get(),
+                0,
+                "only mandatory close cleanup follows failed ACK"
+            );
+            require_read_controls(&events.borrow(), &f);
+            close.require_pins(); // B's true current bytes and C proofs remain held.
+            // Separate deliberate caller observations; no implicit success readback
+            // or rollback acknowledgement is inferred from the original failure.
+            let ready = require_only_ready(&f);
+            let ready_trees = trees(&f);
+            only_source_database_changed(&before_trees, &ready_trees, &f.source_database);
+            drop(held); // No in-holder Staging resolve/replay is exposed by this unit.
+            require_released_pins(&f);
+            require_fresh_ready_handoff(&f, &ready, &cancel);
+            assert_eq!(
+                cause.to_string(),
+                primary,
+                "fresh inspection preserves the original uncertain ACK error"
+            );
+            assert_eq!(
+                close.counts,
+                (1, 1, 1, 1),
+                "fresh Ready inspection adds no promotion writer"
+            );
+        },
+    );
 }

@@ -10,7 +10,7 @@ use crate::projection::{
         records::{
             codec,
             denied_coverage::DeniedAuthorityData,
-            import::{imported_segments_rowset, ImportVersion, ProviderImportKind},
+            import::{ImportVersion, ProviderImportKind, imported_segments_rowset},
         },
         validation::tests::fixture::Fixture,
     },
@@ -328,11 +328,13 @@ fn inherited_denial_scope_uses_only_incoming_receipts_and_rejects_legacy_omissio
             let mut legacy = ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap();
             legacy.schema_version = "layrs.projection-provider-import-prefix.v2".into();
             legacy.closure.denial_observations = None;
-            assert!(scoped(c, &legacy)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("denial"));
+            assert!(
+                scoped(c, &legacy)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("denial")
+            );
             // v3 also represents an empty incoming denial inventory. Existing
             // foreign documents stay outside its exact selector.
             let mut empty = ProviderImportPrefixRecord::decode(&prefix.encode().unwrap()).unwrap();

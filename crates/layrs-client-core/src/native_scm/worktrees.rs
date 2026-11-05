@@ -555,7 +555,8 @@ impl NativeWorkspace {
                 restore_projection::write_file(reader, batch.canonical_objects(), entry, output)
             })
         };
-        let mut write_file = |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
+        let mut write_file =
+            |path: &str, output: &mut dyn std::io::Write| write_shared(path, output);
         let mut end_staging = || staging_store.end();
         let mut read_chunk = |_: &ChunkId| {
             Err(StoreError::Corruption {

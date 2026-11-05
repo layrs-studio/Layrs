@@ -2,7 +2,7 @@
 pub(super) mod scan;
 pub(super) mod storage;
 use super::*;
-use layrs_core::scm::{canonical_json, FileId, FileManifest, RepoPath};
+use layrs_core::scm::{FileId, FileManifest, RepoPath, canonical_json};
 
 pub const MAX_PATCH_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CAPTURE_FILE_BYTES: u64 = 1024 * 1024 * 1024;

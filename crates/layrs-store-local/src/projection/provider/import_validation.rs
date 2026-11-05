@@ -6,7 +6,7 @@ use super::{
         ImportClosure, ImportRowset, ImportSource, ImportSourceReferences, ImportedSegment,
         ProviderImportPrefixRecord, ProviderTransitionReceiptRecord, TransitionReceiptRowData,
     },
-    recovery::error::{invalid, Result as CauseResult},
+    recovery::error::{Result as CauseResult, invalid},
     validation::{PrivateActiveCaptureValidation, PrivateActivePublicationValidation},
 };
 use crate::projection::{database, format, retention, selection};
@@ -26,7 +26,7 @@ pub(in crate::projection::provider) use destination_prefix::read_admitted_destin
 #[cfg(test)]
 mod destination_prefix_tests;
 pub(in crate::projection::provider) use destination_prefix::{
-    read_destination_prefix, DestinationOriginKind, OrdinaryFrozenBasis, VerifiedDestinationPrefix,
+    DestinationOriginKind, OrdinaryFrozenBasis, VerifiedDestinationPrefix, read_destination_prefix,
 };
 mod provider_proof;
 #[cfg(test)]
@@ -44,7 +44,7 @@ use provider_proof::{ProviderModeBinding, ProviderProof};
 pub(in crate::projection::provider) use scoped::compute_scoped_closure;
 pub(in crate::projection) use scoped::read_scoped_closure;
 pub(in crate::projection::provider) use source::require_live_source_quiescence;
-pub(in crate::projection) use source::{read_source_metadata, SourceMetadata};
+pub(in crate::projection) use source::{SourceMetadata, read_source_metadata};
 
 /// A closed SQL DATA interpretation. Source image/bytes, family and native
 /// registration retain their independent proofs.

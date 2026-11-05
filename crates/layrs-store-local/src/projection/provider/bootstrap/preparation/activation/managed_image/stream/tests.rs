@@ -50,26 +50,30 @@ fn copied_bytes_require_exact_chunk_and_file_identity() {
     assert!(copy_bytes(&forged, &bytes, &mut Vec::new(), &Cancellation::default()).is_err());
     let mut altered = bytes;
     altered[17] ^= 1;
-    assert!(copy_bytes(
-        &authentic,
-        &altered,
-        &mut Vec::new(),
-        &Cancellation::default()
-    )
-    .is_err());
+    assert!(
+        copy_bytes(
+            &authentic,
+            &altered,
+            &mut Vec::new(),
+            &Cancellation::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn missing_bytes_cancellation_and_short_sink_refuse_success() {
     let bytes = vec![b'x'; 70 * 1024];
     let expected = manifest(&bytes);
-    assert!(copy_bytes(
-        &expected,
-        &bytes[..64 * 1024],
-        &mut Vec::new(),
-        &Cancellation::default(),
-    )
-    .is_err());
+    assert!(
+        copy_bytes(
+            &expected,
+            &bytes[..64 * 1024],
+            &mut Vec::new(),
+            &Cancellation::default(),
+        )
+        .is_err()
+    );
     let missing = copy_verified(&expected, &mut Vec::new(), &Cancellation::default(), |_| {
         Err(layrs_vfs::Error::MissingBytes {
             file_id: expected.file_id().clone(),
@@ -90,20 +94,24 @@ fn missing_bytes_cancellation_and_short_sink_refuse_success() {
     let cancelled = Cancellation::default();
     cancelled.cancel();
     let mut reads = 0;
-    assert!(copy_verified(&expected, &mut Vec::new(), &cancelled, |_| {
-        reads += 1;
-        Ok(())
-    })
-    .is_err());
+    assert!(
+        copy_verified(&expected, &mut Vec::new(), &cancelled, |_| {
+            reads += 1;
+            Ok(())
+        })
+        .is_err()
+    );
     assert_eq!(reads, 0);
     let during = Cancellation::default();
     let mut copied = Vec::new();
-    assert!(copy_verified(&expected, &mut copied, &during, |part| {
-        part.fill(b'x');
-        during.cancel();
-        Ok(())
-    })
-    .is_err());
+    assert!(
+        copy_verified(&expected, &mut copied, &during, |part| {
+            part.fill(b'x');
+            during.cancel();
+            Ok(())
+        })
+        .is_err()
+    );
     assert!(copied.is_empty());
 
     struct ShortSink(usize);
@@ -120,13 +128,15 @@ fn missing_bytes_cancellation_and_short_sink_refuse_success() {
             Ok(())
         }
     }
-    assert!(copy_bytes(
-        &expected,
-        &bytes,
-        &mut ShortSink(1024),
-        &Cancellation::default(),
-    )
-    .is_err());
+    assert!(
+        copy_bytes(
+            &expected,
+            &bytes,
+            &mut ShortSink(1024),
+            &Cancellation::default(),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -187,34 +197,40 @@ fn selected_chunk_rejects_absent_ordinal_corruption_cancel_and_sink_failure() {
     let bytes = vec![b'x'; 70 * 1024];
     let expected = manifest(&bytes);
     let mut output = Vec::new();
-    assert!(copy_verified_chunk(
-        &expected,
-        1,
-        &mut output,
-        &Cancellation::default(),
-        |_, _| panic!("absent ordinal must not read"),
-    )
-    .is_err());
+    assert!(
+        copy_verified_chunk(
+            &expected,
+            1,
+            &mut output,
+            &Cancellation::default(),
+            |_, _| panic!("absent ordinal must not read"),
+        )
+        .is_err()
+    );
     assert!(output.is_empty());
-    assert!(copy_verified_chunk(
-        &FileManifest::empty(ChunkingDescriptor::single()).unwrap(),
-        0,
-        &mut output,
-        &Cancellation::default(),
-        |_, _| panic!("empty file has no chunk"),
-    )
-    .is_err());
-    assert!(copy_verified_chunk(
-        &expected,
-        0,
-        &mut output,
-        &Cancellation::default(),
-        |_, part| {
-            part.fill(b'z');
-            Ok(())
-        },
-    )
-    .is_err());
+    assert!(
+        copy_verified_chunk(
+            &FileManifest::empty(ChunkingDescriptor::single()).unwrap(),
+            0,
+            &mut output,
+            &Cancellation::default(),
+            |_, _| panic!("empty file has no chunk"),
+        )
+        .is_err()
+    );
+    assert!(
+        copy_verified_chunk(
+            &expected,
+            0,
+            &mut output,
+            &Cancellation::default(),
+            |_, part| {
+                part.fill(b'z');
+                Ok(())
+            },
+        )
+        .is_err()
+    );
 
     let cancelled = Cancellation::default();
     cancelled.cancel();

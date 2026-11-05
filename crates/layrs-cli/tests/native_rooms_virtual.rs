@@ -72,7 +72,10 @@ fn virtual_room_detects_edits_renames_and_ignores_without_reopening_files() {
 
     // Reading every file hydrates it; nothing changed.
     for file in ["src/a.txt", "src/b.txt", "readme.txt"] {
-        assert_eq!(fs::read(room.join(file)).unwrap(), fs::read(project.join(file)).unwrap());
+        assert_eq!(
+            fs::read(room.join(file)).unwrap(),
+            fs::read(project.join(file)).unwrap()
+        );
     }
     let step = run(&room, &["room", "step"], true);
     assert_eq!(step["step"]["changed"], false, "{step}");
@@ -81,7 +84,10 @@ fn virtual_room_detects_edits_renames_and_ignores_without_reopening_files() {
     fs::write(room.join("src/a.txt"), b"A\n").unwrap();
     assert_eq!(run(&room, &["room", "step"], true)["step"]["changed"], true);
     // Unchanged again: the hashed file is now known to the change index.
-    assert_eq!(run(&room, &["room", "step"], true)["step"]["changed"], false);
+    assert_eq!(
+        run(&room, &["room", "step"], true)["step"]["changed"],
+        false
+    );
 
     // New files: an ignored build output is neither read nor captured.
     fs::create_dir_all(room.join("build")).unwrap();
@@ -95,9 +101,15 @@ fn virtual_room_detects_edits_renames_and_ignores_without_reopening_files() {
     assert_eq!(merged["merged"], true, "{merged}");
     assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"A\n");
     assert_eq!(fs::read(project.join("src/new.txt")).unwrap(), b"new\n");
-    assert_eq!(fs::read(project.join("src/b2.txt")).unwrap(), b"b content\n");
+    assert_eq!(
+        fs::read(project.join("src/b2.txt")).unwrap(),
+        b"b content\n"
+    );
     assert!(!project.join("src/b.txt").exists());
-    assert!(!project.join("build").exists(), "ignored output must not be merged");
+    assert!(
+        !project.join("build").exists(),
+        "ignored output must not be merged"
+    );
 
     // Merged and verified: the drop succeeds and the folder is gone at once.
     let dropped = run(&project, &["room", "drop", "agent-v"], true);

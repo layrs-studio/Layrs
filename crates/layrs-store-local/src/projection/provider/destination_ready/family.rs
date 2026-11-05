@@ -1,7 +1,7 @@
 //! Existing family protection metadata only; no content bytes are proved here.
 use super::*;
 use crate::projection::shared::{
-    self, provider_access::require_provider_catalog_schema, CatalogSchema,
+    self, CatalogSchema, provider_access::require_provider_catalog_schema,
 };
 use serde::{Deserialize, Serialize};
 

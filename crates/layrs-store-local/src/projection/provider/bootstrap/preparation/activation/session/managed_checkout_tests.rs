@@ -6,11 +6,11 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver, WriterOpenPoint},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
 };
-use rusqlite::{ffi, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, ffi};
 use std::fs;
 
 #[derive(Default)]

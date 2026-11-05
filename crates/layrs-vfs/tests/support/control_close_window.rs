@@ -5,7 +5,6 @@
 //! Fault points are synchronous test hooks, not process-crash qualification.
 use super::{disposable_run, native_info};
 use std::{
-    ffi::OsString,
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     mem::{offset_of, size_of, size_of_val},
@@ -17,6 +16,7 @@ use windows_sys::Win32::{
     Storage::{CloudFilters::*, FileSystem::*},
 };
 
+#[allow(clippy::duplicate_mod, dead_code)]
 #[path = "../../src/windows/api.rs"]
 mod api;
 
@@ -139,7 +139,7 @@ fn exact_layout(path: &Path, name: &str) -> io::Result<bool> {
     let Some(first) = entries.next().transpose()? else {
         return Ok(false);
     };
-    Ok(first.file_name() == OsString::from(name) && entries.next().transpose()?.is_none())
+    Ok(first.file_name() == *name && entries.next().transpose()?.is_none())
 }
 
 fn rename_no_replace(file: &File, destination: &Path) -> io::Result<()> {

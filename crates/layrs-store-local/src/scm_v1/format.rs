@@ -415,13 +415,10 @@ pub fn open(root: impl AsRef<Path>) -> Result<NativeStoreOpen, NativeStoreError>
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
             drop(sqlite_span);
-            Ok(NativeStoreOpen::new(
-                layout,
-                marker.store_id().clone(),
-                connection,
-                store_lock,
+            Ok(
+                NativeStoreOpen::new(layout, marker.store_id().clone(), connection, store_lock)
+                    .with_format_version(marker.format_version()),
             )
-            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -435,12 +432,10 @@ pub fn open_audit(root: impl AsRef<Path>) -> Result<NativeStoreAudit, NativeStor
         NativeStoreInspection::NativeReady { layout, marker } => {
             let store_lock = StoreLock::acquire_existing(layout.lock_path(), SessionMode::Shared)?;
             let (layout, marker) = ready_under_lock(&layout, marker.store_id())?;
-            Ok(NativeStoreAudit::new(
-                layout,
-                marker.store_id().clone(),
-                store_lock,
+            Ok(
+                NativeStoreAudit::new(layout, marker.store_id().clone(), store_lock)
+                    .with_format_version(marker.format_version()),
             )
-            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -462,12 +457,10 @@ pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, Na
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
             drop(connection);
-            Ok(NativeStoreExclusive::new(
-                layout,
-                marker.store_id().clone(),
-                store_lock,
+            Ok(
+                NativeStoreExclusive::new(layout, marker.store_id().clone(), store_lock)
+                    .with_format_version(marker.format_version()),
             )
-            .with_format_version(marker.format_version()))
         }
         other => Err(NativeStoreError::UnsupportedFormat {
             inspection: Box::new(other),
@@ -546,11 +539,15 @@ fn validate_ready_boundaries_once(layout: &NativeStoreLayout) -> io::Result<()> 
 /// A Ready marker already parsed and validated by this process, keyed by
 /// the FORMAT file's metadata (it is only ever replaced by a rename, which
 /// changes them): a command opening its Store many times reads it once.
+#[allow(clippy::type_complexity)]
 fn ready_marker_memo() -> &'static std::sync::Mutex<
     std::collections::HashMap<PathBuf, (u64, Option<SystemTime>, FormatMarker)>,
 > {
+    #[allow(clippy::type_complexity)]
     static MEMO: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, Option<SystemTime>, FormatMarker)>>,
+        std::sync::Mutex<
+            std::collections::HashMap<PathBuf, (u64, Option<SystemTime>, FormatMarker)>,
+        >,
     > = std::sync::OnceLock::new();
     MEMO.get_or_init(Default::default)
 }
@@ -581,13 +578,18 @@ fn inspect_marker(layout: NativeStoreLayout) -> Result<NativeStoreInspection, Na
         (&inspected, observed)
     {
         if let Ok(mut memo) = ready_marker_memo().lock() {
-            memo.insert(layout.format_path().to_path_buf(), (length, modified, marker.clone()));
+            memo.insert(
+                layout.format_path().to_path_buf(),
+                (length, modified, marker.clone()),
+            );
         }
     }
     Ok(inspected)
 }
 
-fn inspect_marker_uncached(layout: NativeStoreLayout) -> Result<NativeStoreInspection, NativeStoreError> {
+fn inspect_marker_uncached(
+    layout: NativeStoreLayout,
+) -> Result<NativeStoreInspection, NativeStoreError> {
     let bytes = match read_regular_file_bounded(layout.format_path(), MAX_FORMAT_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {

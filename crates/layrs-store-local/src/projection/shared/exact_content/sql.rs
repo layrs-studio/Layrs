@@ -1,6 +1,6 @@
 use super::*;
 use journal::Piece;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,10 +514,20 @@ fn validate_installations_inner(
         ));
     }
     for (sql, args) in [
-        ("SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)", binding.owner.as_str()),
-        ("SELECT EXISTS(SELECT 1 FROM exact_installations WHERE reservation!=?1)", binding.reservation.as_str()),
+        (
+            "SELECT EXISTS(SELECT 1 FROM installations i JOIN reservations r ON r.id=i.reservation WHERE r.owner=?1)",
+            binding.owner.as_str(),
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM exact_installations WHERE reservation!=?1)",
+            binding.reservation.as_str(),
+        ),
     ] {
-        if c.query_row(sql, [args], |r| r.get::<_, bool>(0))? { return Err(invalid("exact family contains unsupported owner effect or foreign attempt")); }
+        if c.query_row(sql, [args], |r| r.get::<_, bool>(0))? {
+            return Err(invalid(
+                "exact family contains unsupported owner effect or foreign attempt",
+            ));
+        }
     }
     if c.query_row(
         "SELECT EXISTS(SELECT 1 FROM reservations WHERE owner=?1 AND id!=?2)",

@@ -145,14 +145,20 @@ fn second_room_merges_through_a_weave_after_the_first() {
     let b_dir = fixture.room_dir("agent-b");
     let c_dir = fixture.room_dir("agent-c");
     let b = PathBuf::from(
-        run(&project, &["room", "new", "agent-b", "--physical", "--dir", &b_dir], true)["room"]
-            ["path"]
+        run(
+            &project,
+            &["room", "new", "agent-b", "--physical", "--dir", &b_dir],
+            true,
+        )["room"]["path"]
             .as_str()
             .unwrap(),
     );
     let c = PathBuf::from(
-        run(&project, &["room", "new", "agent-c", "--physical", "--dir", &c_dir], true)["room"]
-            ["path"]
+        run(
+            &project,
+            &["room", "new", "agent-c", "--physical", "--dir", &c_dir],
+            true,
+        )["room"]["path"]
             .as_str()
             .unwrap(),
     );
@@ -187,7 +193,10 @@ fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
     let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
     // Let the files written at creation leave the racy window, then prove them.
     std::thread::sleep(std::time::Duration::from_millis(300));
-    assert_eq!(run(&room, &["room", "step"], true)["step"]["changed"], false);
+    assert_eq!(
+        run(&room, &["room", "step"], true)["step"]["changed"],
+        false
+    );
 
     // Same length, same modification time: invisible to a stat comparison.
     let file = room.join("src/a.txt");

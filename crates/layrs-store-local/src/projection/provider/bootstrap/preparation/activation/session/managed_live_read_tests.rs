@@ -4,9 +4,9 @@ use super::*;
 use crate::projection::provider::{
     database_io,
     records::{
+        Record,
         import::ProviderTransitionReceiptRecord,
         transition::{ProviderTransitionIntentRecord, TransitionState},
-        Record,
     },
 };
 

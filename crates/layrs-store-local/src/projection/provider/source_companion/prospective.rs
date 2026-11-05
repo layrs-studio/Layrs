@@ -4,13 +4,13 @@
 //! constructed, decoded or accepted as authority by this module.
 use super::*;
 use crate::projection::{
+    ProjectionIdentity,
     provider::records::{
+        Receipt,
         denied_coverage::DeniedCoverageRef,
         import::{ImportVersion, ProviderImportKind},
         transition::{TransitionPlan, TransitionRowset},
-        Receipt,
     },
-    ProjectionIdentity,
 };
 use layrs_core::scm::{FileId, FileManifest, FileManifestId, WorktreeId};
 use serde::Serialize;

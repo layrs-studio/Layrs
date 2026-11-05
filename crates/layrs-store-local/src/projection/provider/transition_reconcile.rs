@@ -11,13 +11,13 @@ use super::{
     cancellation,
     import_validation::VerifiedImportClosure,
     records::{
+        Record,
         import::{
             CompanionReason, ProviderCompanionDeletionRecord, ProviderCompanionFileRecord,
             ProviderCompanionHeaderRecord,
         },
-        Record,
     },
-    recovery::error::{invalid, Result},
+    recovery::error::{Result, invalid},
     transition_observation::{SourceObservationData, TransitionObservationData},
 };
 use crate::projection::capture::{CapturedChange, CapturedPatch, CapturedTarget};

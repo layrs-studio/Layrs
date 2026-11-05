@@ -6,8 +6,8 @@ use crate::projection::provider::{
     database_io::{self, WriterCloseObserver},
     process_profile::tests::child,
     records::{
-        transition::{ProviderTransitionIntentRecord, TransitionState},
         Record,
+        transition::{ProviderTransitionIntentRecord, TransitionState},
     },
     transition_sql::SourceIntentEffect,
 };

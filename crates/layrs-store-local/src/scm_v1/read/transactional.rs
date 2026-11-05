@@ -97,7 +97,8 @@ impl ScmReader for NativeTransactionalScmReader<'_> {
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool> {
-        self.active_reader()?.object_admitted_metadata(object_id, space_id)
+        self.active_reader()?
+            .object_admitted_metadata(object_id, space_id)
     }
 
     fn chunk_present_metadata(&self, id: &layrs_core::scm::ChunkId) -> Result<bool> {

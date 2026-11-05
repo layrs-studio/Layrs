@@ -1,5 +1,5 @@
 //! Disconnected metadata must not depend on Windows' ambient disguise policy.
-use super::{disposable_run, native_open, placeholder_probe, Fixture};
+use super::{Fixture, disposable_run, native_open, placeholder_probe};
 use layrs_core::scm::RepoPath;
 use layrs_vfs::{CaptureEvidence, Error, Result, Session};
 use std::{
@@ -8,7 +8,7 @@ use std::{
     os::windows::io::AsRawHandle,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 use windows_sys::Win32::{
     Foundation::{FreeLibrary, HMODULE},
@@ -195,42 +195,54 @@ pub(super) fn run() {
     drop(entry);
     {
         let mut checkpoint = session.checkpoint().unwrap();
-        assert!(checkpoint
-            .entries()
-            .iter()
-            .find(|entry| entry.path == cold)
-            .unwrap()
-            .placeholder
-            .is_some());
-        assert!(checkpoint
-            .with_reader::<()>(&cold, |_| panic!("clean read callback"))
-            .is_err());
+        assert!(
+            checkpoint
+                .entries()
+                .iter()
+                .find(|entry| entry.path == cold)
+                .unwrap()
+                .placeholder
+                .is_some()
+        );
+        assert!(
+            checkpoint
+                .with_reader::<()>(&cold, |_| panic!("clean read callback"))
+                .is_err()
+        );
         checkpoint.revalidate_namespace().unwrap();
         disguise.assert_preserved();
     }
     {
         let mut export = session.export_checkpoint().unwrap();
-        assert!(export
-            .entries()
-            .iter()
-            .find(|entry| entry.path == cold)
-            .unwrap()
-            .placeholder
-            .is_some());
-        assert!(export
-            .with_reader::<()>(&cold, |_| panic!("clean export callback"))
-            .is_err());
+        assert!(
+            export
+                .entries()
+                .iter()
+                .find(|entry| entry.path == cold)
+                .unwrap()
+                .placeholder
+                .is_some()
+        );
+        assert!(
+            export
+                .with_reader::<()>(&cold, |_| panic!("clean export callback"))
+                .is_err()
+        );
         export.revalidate_namespace().unwrap();
         disguise.assert_preserved();
     }
     session.registration().verify_root_identity().unwrap();
     assert!(session.is_owned_root_directory(&root).unwrap());
-    assert!(session
-        .is_owned_root_directory(&PathBuf::from(root.to_str().unwrap().to_ascii_uppercase()))
-        .unwrap());
-    assert!(!session
-        .is_owned_root_directory(root.ancestors().last().unwrap())
-        .unwrap());
+    assert!(
+        session
+            .is_owned_root_directory(&PathBuf::from(root.to_str().unwrap().to_ascii_uppercase()))
+            .unwrap()
+    );
+    assert!(
+        !session
+            .is_owned_root_directory(root.ancestors().last().unwrap())
+            .unwrap()
+    );
     assert!(!session.is_owned_root_directory(&ordinary).unwrap());
     for path in [&foreign, &foreign.join("nested")] {
         assert!(matches!(
@@ -241,12 +253,16 @@ pub(super) fn run() {
         ));
         disguise.assert_preserved();
     }
-    assert!(session
-        .is_owned_root_directory(&root.join("nested"))
-        .is_err());
-    assert!(session
-        .is_owned_root_directory(&root.join("ordinary.txt"))
-        .is_err());
+    assert!(
+        session
+            .is_owned_root_directory(&root.join("nested"))
+            .is_err()
+    );
+    assert!(
+        session
+            .is_owned_root_directory(&root.join("ordinary.txt"))
+            .is_err()
+    );
     assert!(
         matches!(session.is_owned_root_directory(&ordinary.join("absent")), Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
     );
@@ -287,5 +303,7 @@ pub(super) fn run() {
         native.native_id
     );
     disguise.restore();
-    eprintln!("VISIBILITY/ROOT PROBE: forced DISGUISE; disconnected inspect/checkpoint/export preserve CF identity; ordinary file remains NeedsHash; own root/case alias true; volume/ordinary false; foreign root/ancestor refused; thread/process mode preserved; metadata source_reads0; retained fixtures");
+    eprintln!(
+        "VISIBILITY/ROOT PROBE: forced DISGUISE; disconnected inspect/checkpoint/export preserve CF identity; ordinary file remains NeedsHash; own root/case alias true; volume/ordinary false; foreign root/ancestor refused; thread/process mode preserved; metadata source_reads0; retained fixtures"
+    );
 }

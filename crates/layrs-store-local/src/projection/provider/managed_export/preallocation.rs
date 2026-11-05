@@ -4,14 +4,13 @@
 use crate::{
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             admitted_catalog_io, admitted_ordinary,
             records::transition::{ProviderTransitionIntentRecord, TransitionState},
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result},
+            recovery::error::{ProviderBootstrapCause as Cause, Result, invalid},
         },
         shared::{admitted_catalog::AdmittedFamilyContext, provider_access::FamilyAccess},
-        SessionMode,
     },
     secure_fs::PinnedDirectory,
 };
@@ -132,7 +131,7 @@ impl Absence {
                 Ok(_) => {
                     return Err(invalid(
                         "ordinary cancellation found allocated destination resources",
-                    ))
+                    ));
                 }
             }
         }

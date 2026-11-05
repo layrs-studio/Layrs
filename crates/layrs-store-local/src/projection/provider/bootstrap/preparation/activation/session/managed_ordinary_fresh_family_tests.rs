@@ -8,21 +8,21 @@ use super::{
     managed_ordinary_installing_tests::{self as witness, Cell as SqlCell, Database, Node, Tree},
     managed_ordinary_ready_tests::CURRENT,
     managed_ordinary_source_publication_tests::{
-        ingress, source, with_private_ready_data, PublicationFixture,
+        PublicationFixture, ingress, source, with_private_ready_data,
     },
 };
 use crate::{
     error::StoreError,
     lock::StoreLock,
     projection::{
-        format,
+        SessionMode, format,
         provider::{
             database_io::{
+                WriterCloseObserver, WriterOpenPoint,
                 tests::{
-                    fresh_ordinary_support::{with_observer, ReadBoundary},
+                    fresh_ordinary_support::{ReadBoundary, with_observer},
                     writer_support::{self, AdmissionPoint},
                 },
-                WriterCloseObserver, WriterOpenPoint,
             },
             managed_admission::read_admitted_import,
             managed_export::{
@@ -32,16 +32,15 @@ use crate::{
             managed_ready_reopen::AdmissionStep,
             process_profile::tests::child,
             records::{
+                Record,
                 import::ProviderTransitionReceiptRecord,
                 transition::{ProviderTransitionIntentRecord, TransitionState},
-                Record,
             },
-            recovery::error::{invalid, ProviderBootstrapCause as Cause, Result as CauseResult},
+            recovery::error::{ProviderBootstrapCause as Cause, Result as CauseResult, invalid},
         },
         shared::admitted_catalog::{
             ExportPublicationEffect, ExportPublicationMember, ExportPublicationState,
         },
-        SessionMode,
     },
 };
 use layrs_core::scm::FileManifest;
@@ -97,9 +96,11 @@ fn close_at_private_ready(
             .unwrap();
         assert_eq!(actual.state, TransitionState::Staging);
         assert!(actual.receipt_id.is_none());
-        assert!(admitted
-            .outgoing_receipt(&f.receipt.digest().unwrap())
-            .is_err());
+        assert!(
+            admitted
+                .outgoing_receipt(&f.receipt.digest().unwrap())
+                .is_err()
+        );
         (
             ProviderTransitionIntentRecord::decode(&actual.encode().unwrap()).unwrap(),
             ingress(c, f.source_marker),
@@ -483,124 +484,211 @@ fn require_fresh_no_writer_replay(
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_family_refuses_changed_b_image_then_updates_only_member_and_replays_without_writer(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_family_refuses_changed_b_image_then_updates_only_member_and_replays_without_writer"), 3600, || {
-        let f = fresh_private_ready_fixture();
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let cancelled = Cancellation::default();
-        cancelled.cancel();
-        assert!(OrdinaryFamilyReadyPublication::open(&f.source, &f.destination, &f.staging.transaction_id, &cancelled).is_err());
-        require_unchanged_private_ready(&f);
-        fs::write(&f.pins[0], DRIFT).unwrap();
-        let writer_attempts = Rc::new(Cell::new(0usize));
-        let observed_attempts = writer_attempts.clone();
-        let preflights = Rc::new(RefCell::new(Vec::new()));
-        let observed_preflights = preflights.clone();
-        let refused = with_writer_probe(move |path, point| {
-            observed_preflights.borrow_mut().push((path.to_owned(), point));
-            if point == AdmissionPoint::BeforeWritableOpen {
-                observed_attempts.set(observed_attempts.get() + 1);
-                return Err(invalid("changed B image must refuse before family writable open"));
-            }
-            Ok(())
-        }, || OrdinaryFamilyReadyPublication::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel))
-            .err().expect("actual changed B image cannot be replaced by C's copied commitment");
-        assert!(refused.to_string().contains("image"), "{refused}");
-        assert_eq!(writer_attempts.get(), 0);
-        assert!(preflights.borrow().iter().any(|(path, point)| path == &f.source_database && *point == AdmissionPoint::ReadonlyClosed));
-        require_unchanged_private_ready(&f);
-        // Restore only this fresh fixture's known original bytes; no durable
-        // identity, plan, commitment, receipt, quota or SQL evidence is repaired.
-        fs::write(&f.pins[0], CURRENT).unwrap();
-        assert_eq!(trees(&f), before_trees);
-        let held = OrdinaryFamilyReadyPublication::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel)
+fn managed_ordinary_fresh_family_refuses_changed_b_image_then_updates_only_member_and_replays_without_writer()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_family_refuses_changed_b_image_then_updates_only_member_and_replays_without_writer"
+        ),
+        3600,
+        || {
+            let f = fresh_private_ready_fixture();
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let cancelled = Cancellation::default();
+            cancelled.cancel();
+            assert!(
+                OrdinaryFamilyReadyPublication::open(
+                    &f.source,
+                    &f.destination,
+                    &f.staging.transaction_id,
+                    &cancelled
+                )
+                .is_err()
+            );
+            require_unchanged_private_ready(&f);
+            fs::write(&f.pins[0], DRIFT).unwrap();
+            let writer_attempts = Rc::new(Cell::new(0usize));
+            let observed_attempts = writer_attempts.clone();
+            let preflights = Rc::new(RefCell::new(Vec::new()));
+            let observed_preflights = preflights.clone();
+            let refused = with_writer_probe(
+                move |path, point| {
+                    observed_preflights
+                        .borrow_mut()
+                        .push((path.to_owned(), point));
+                    if point == AdmissionPoint::BeforeWritableOpen {
+                        observed_attempts.set(observed_attempts.get() + 1);
+                        return Err(invalid(
+                            "changed B image must refuse before family writable open",
+                        ));
+                    }
+                    Ok(())
+                },
+                || {
+                    OrdinaryFamilyReadyPublication::open(
+                        &f.source,
+                        &f.destination,
+                        &f.staging.transaction_id,
+                        &cancel,
+                    )
+                },
+            )
+            .err()
+            .expect("actual changed B image cannot be replaced by C's copied commitment");
+            assert!(refused.to_string().contains("image"), "{refused}");
+            assert_eq!(writer_attempts.get(), 0);
+            assert!(
+                preflights
+                    .borrow()
+                    .iter()
+                    .any(|(path, point)| path == &f.source_database
+                        && *point == AdmissionPoint::ReadonlyClosed)
+            );
+            require_unchanged_private_ready(&f);
+            // Restore only this fresh fixture's known original bytes; no durable
+            // identity, plan, commitment, receipt, quota or SQL evidence is repaired.
+            fs::write(&f.pins[0], CURRENT).unwrap();
+            assert_eq!(trees(&f), before_trees);
+            let held = OrdinaryFamilyReadyPublication::open(
+                &f.source,
+                &f.destination,
+                &f.staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh authentic private Ready {e}"));
-        require_held_owners(&f);
-        let mut close = Close::new(&f, false);
-        close.require_pins();
-        let after_close = close.after_close.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let post_close_reads = Rc::new(RefCell::new(Vec::new()));
-        let observed_post_close = post_close_reads.clone();
-        let progress = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() && point == ReadBoundary::BeforeSnapshot { observed_post_close.borrow_mut().push(path.to_owned()); }
-            Ok(())
-        }, || held.publish_family_ready(&mut close, &cancel))
+            require_held_owners(&f);
+            let mut close = Close::new(&f, false);
+            close.require_pins();
+            let after_close = close.after_close.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let post_close_reads = Rc::new(RefCell::new(Vec::new()));
+            let observed_post_close = post_close_reads.clone();
+            let progress = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() && point == ReadBoundary::BeforeSnapshot {
+                        observed_post_close.borrow_mut().push(path.to_owned());
+                    }
+                    Ok(())
+                },
+                || held.publish_family_ready(&mut close, &cancel),
+            )
             .unwrap_or_else(|e| panic!("fresh family Updated {:?}: {}", e.step, e.cause));
-        assert_eq!(progress.effect(), ExportPublicationEffect::Updated);
-        assert_eq!(progress.ready(), &f.ready);
-        assert_eq!(progress.receipt(), &f.receipt);
-        assert_eq!(progress.family_state().member, ExportPublicationMember::Ready);
-        let family_state = progress.family_state();
-        assert_eq!(close.counts, (1, 1, 1, 0));
-        require_read_controls(&events.borrow(), &f);
-        for path in [&f.source_database, &f.destination_database, &f.family_database] {
-            assert!(post_close_reads.borrow().contains(path), "fresh actual {path:?} readback must follow positive family writer close");
-        }
-        drop(progress);
-        let ready_rows = require_only_member_ready(&f);
-        only_catalog_changed(&before_trees, &trees(&f), &f.family_database);
-        require_released_pins(&f);
-        require_fresh_no_writer_replay(&f, &ready_rows, Some(family_state), &cancel);
-        // Merely inspect the next distinct adapter after all family holders
-        // have gone. No implicit B Ready or admission is part of this recipe.
-        let handoff = OrdinaryStagingPromotion::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel)
+            assert_eq!(progress.effect(), ExportPublicationEffect::Updated);
+            assert_eq!(progress.ready(), &f.ready);
+            assert_eq!(progress.receipt(), &f.receipt);
+            assert_eq!(
+                progress.family_state().member,
+                ExportPublicationMember::Ready
+            );
+            let family_state = progress.family_state();
+            assert_eq!(close.counts, (1, 1, 1, 0));
+            require_read_controls(&events.borrow(), &f);
+            for path in [
+                &f.source_database,
+                &f.destination_database,
+                &f.family_database,
+            ] {
+                assert!(
+                    post_close_reads.borrow().contains(path),
+                    "fresh actual {path:?} readback must follow positive family writer close"
+                );
+            }
+            drop(progress);
+            let ready_rows = require_only_member_ready(&f);
+            only_catalog_changed(&before_trees, &trees(&f), &f.family_database);
+            require_released_pins(&f);
+            require_fresh_no_writer_replay(&f, &ready_rows, Some(family_state), &cancel);
+            // Merely inspect the next distinct adapter after all family holders
+            // have gone. No implicit B Ready or admission is part of this recipe.
+            let handoff = OrdinaryStagingPromotion::open(
+                &f.source,
+                &f.destination,
+                &f.staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh family Ready -> Staging adapter handoff {e}"));
-        drop(handoff);
-        require_unchanged_b_and_c(&f);
-        assert_eq!(snapshot(&f.family_database), ready_rows);
-        require_released_pins(&f);
-    });
+            drop(handoff);
+            require_unchanged_b_and_c(&f);
+            assert_eq!(snapshot(&f.family_database), ready_rows);
+            require_released_pins(&f);
+        },
+    );
 }
 
 #[test]
 #[ignore = "ROOT source release and audited owned native child3600/outer3660 required; proposed unmeasured"]
-fn managed_ordinary_fresh_family_withheld_catalog_close_ack_reopens_ready_after_explicit_holder_release(
-) {
-    child::run(concat!(module_path!(), "::managed_ordinary_fresh_family_withheld_catalog_close_ack_reopens_ready_after_explicit_holder_release"), 3600, || {
-        let f = fresh_private_ready_fixture(); // Separate genuine setup/parent.
-        let cancel = Cancellation::default();
-        let before_trees = trees(&f);
-        let held = OrdinaryFamilyReadyPublication::open(&f.source, &f.destination, &f.staging.transaction_id, &cancel)
+fn managed_ordinary_fresh_family_withheld_catalog_close_ack_reopens_ready_after_explicit_holder_release()
+ {
+    child::run(
+        concat!(
+            module_path!(),
+            "::managed_ordinary_fresh_family_withheld_catalog_close_ack_reopens_ready_after_explicit_holder_release"
+        ),
+        3600,
+        || {
+            let f = fresh_private_ready_fixture(); // Separate genuine setup/parent.
+            let cancel = Cancellation::default();
+            let before_trees = trees(&f);
+            let held = OrdinaryFamilyReadyPublication::open(
+                &f.source,
+                &f.destination,
+                &f.staging.transaction_id,
+                &cancel,
+            )
             .unwrap_or_else(|e| panic!("fresh authentic private Ready {e}"));
-        require_held_owners(&f);
-        let mut close = Close::new(&f, true);
-        close.require_pins();
-        let after_close = close.after_close.clone();
-        let after_close_boundaries = Rc::new(Cell::new(0usize));
-        let observed_after_close = after_close_boundaries.clone();
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let result = with_observer(move |path, point| {
-            observed.borrow_mut().push((path.to_owned(), point));
-            if after_close.get() {
-                observed_after_close.set(observed_after_close.get() + 1);
-                return Err(invalid("failed family close ACK forbids later observed SQL/identity/snapshot probes"));
-            }
-            Ok(())
-        }, || held.publish_family_ready(&mut close, &cancel));
-        let OrdinaryFamilyReadyPublicationFailure { step, cause, held } = result.err()
-            .expect("withheld family close ACK must retain genuine fresh B/C authority");
-        assert_eq!(step, AdmissionStep::CommitReturned);
-        let primary = cause.to_string();
-        assert!(primary.contains(WITHHELD_ACK), "{primary}");
-        assert_eq!(close.counts, (1, 1, 1, 1));
-        assert_eq!(after_close_boundaries.get(), 0, "only mandatory closes follow failed ACK");
-        require_read_controls(&events.borrow(), &f);
-        close.require_pins();
-        require_held_owners(&f);
-        // These explicit caller observations occur outside the failed driver;
-        // they do not manufacture an acknowledgement of its uncertain result.
-        let ready_rows = require_only_member_ready(&f);
-        only_catalog_changed(&before_trees, &trees(&f), &f.family_database);
-        drop(held);
-        require_released_pins(&f);
-        require_fresh_no_writer_replay(&f, &ready_rows, None, &cancel);
-        assert_eq!(cause.to_string(), primary, "fresh replay preserves original ACK error");
-        assert_eq!(close.counts, (1, 1, 1, 1));
-    });
+            require_held_owners(&f);
+            let mut close = Close::new(&f, true);
+            close.require_pins();
+            let after_close = close.after_close.clone();
+            let after_close_boundaries = Rc::new(Cell::new(0usize));
+            let observed_after_close = after_close_boundaries.clone();
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let observed = events.clone();
+            let result = with_observer(
+                move |path, point| {
+                    observed.borrow_mut().push((path.to_owned(), point));
+                    if after_close.get() {
+                        observed_after_close.set(observed_after_close.get() + 1);
+                        return Err(invalid(
+                            "failed family close ACK forbids later observed SQL/identity/snapshot probes",
+                        ));
+                    }
+                    Ok(())
+                },
+                || held.publish_family_ready(&mut close, &cancel),
+            );
+            let OrdinaryFamilyReadyPublicationFailure { step, cause, held } = result
+                .err()
+                .expect("withheld family close ACK must retain genuine fresh B/C authority");
+            assert_eq!(step, AdmissionStep::CommitReturned);
+            let primary = cause.to_string();
+            assert!(primary.contains(WITHHELD_ACK), "{primary}");
+            assert_eq!(close.counts, (1, 1, 1, 1));
+            assert_eq!(
+                after_close_boundaries.get(),
+                0,
+                "only mandatory closes follow failed ACK"
+            );
+            require_read_controls(&events.borrow(), &f);
+            close.require_pins();
+            require_held_owners(&f);
+            // These explicit caller observations occur outside the failed driver;
+            // they do not manufacture an acknowledgement of its uncertain result.
+            let ready_rows = require_only_member_ready(&f);
+            only_catalog_changed(&before_trees, &trees(&f), &f.family_database);
+            drop(held);
+            require_released_pins(&f);
+            require_fresh_no_writer_replay(&f, &ready_rows, None, &cancel);
+            assert_eq!(
+                cause.to_string(),
+                primary,
+                "fresh replay preserves original ACK error"
+            );
+            assert_eq!(close.counts, (1, 1, 1, 1));
+        },
+    );
 }

@@ -52,7 +52,7 @@ pub fn prepare_git_scan_checkpoint(
     );
     let source_git = process::Git::for_import(&source, limits)?;
     let common = source_git.import_common_path()?;
-    if within(&destination, &source) || within(&destination, &common) {
+    if within(&destination, &source) || within(&destination, common) {
         return Err(invalid("scan checkpoint must be outside the Git source"));
     }
     let publication =

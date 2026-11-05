@@ -221,11 +221,7 @@ impl VerifiedVfsSnapshot {
             .collect())
     }
 
-    fn manifest(
-        &self,
-        id: &FileId,
-        cancel: &Cancellation,
-    ) -> Result<std::sync::Arc<FileManifest>> {
+    fn manifest(&self, id: &FileId, cancel: &Cancellation) -> Result<std::sync::Arc<FileManifest>> {
         if let Some(manifest) = self
             .manifests
             .lock()
@@ -454,9 +450,10 @@ impl SnapshotSource for VerifiedVfsSnapshot {
                 if start >= stop {
                     continue;
                 }
-                let cached = self.recent.lock().ok().and_then(|recent| {
-                    recent.iter().find(|c| c.id() == part.chunk_id()).cloned()
-                });
+                let cached =
+                    self.recent.lock().ok().and_then(|recent| {
+                        recent.iter().find(|c| c.id() == part.chunk_id()).cloned()
+                    });
                 let chunk = match cached {
                     Some(chunk) => chunk,
                     None => {
@@ -561,7 +558,9 @@ fn shared_read_lock<'a>(
                 | layrs_store_local::StoreError::ReentrantLock(_),
             ) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
             Err(error) => {
-                return Err(NativeClientError::Filesystem(io::Error::other(error.to_string())))
+                return Err(NativeClientError::Filesystem(io::Error::other(
+                    error.to_string(),
+                )))
             }
         }
     }

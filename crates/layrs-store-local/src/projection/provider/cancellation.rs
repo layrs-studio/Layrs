@@ -3,7 +3,7 @@
 //! explicit before the observable SQLite close.
 use super::recovery::error::{ProviderBootstrapCause as Cause, Result};
 use layrs_vfs::Cancellation;
-use rusqlite::{ffi, Connection};
+use rusqlite::{Connection, ffi};
 use std::{ffi::c_void, os::raw::c_int};
 
 const PROGRESS_OPCODES: c_int = 128;

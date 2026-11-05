@@ -1,4 +1,4 @@
-use super::{api::win32_error, fs, Session};
+use super::{Session, api::win32_error, fs};
 use crate::{Error, Result};
 use std::{
     fs::File,

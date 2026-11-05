@@ -136,11 +136,13 @@ fn published_cas_verifies_exact_union_without_staging_and_refuses_corruption() {
             fs::write(&chunk_path, b"xyz").unwrap();
             let corrupted = child::witness(&chunk_path);
             let result = verify_published_cas(open(&root, &binding), &binding, &required, &cancel);
-            assert!(result
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("Published CAS chunk bytes differ"));
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("Published CAS chunk bytes differ")
+            );
             assert_eq!(
                 child::witness(&chunk_path),
                 corrupted,

@@ -2,6 +2,7 @@
 //! source/destination admission: the SQL tests exercise this journal kernel.
 use super::*;
 use crate::projection::provider::records::{
+    PreparedBinding, ProviderBootstrapBinding, Receipt,
     import::{
         ImportClosure, ImportRowset, ImportSource, ImportVersion, ProviderImportPrefixRecord,
     },
@@ -9,9 +10,8 @@ use crate::projection::provider::records::{
         TransitionDestinationProof, TransitionObservation, TransitionPlan, TransitionRole,
         TransitionRowset,
     },
-    PreparedBinding, ProviderBootstrapBinding, Receipt,
 };
-use crate::projection::{database, retention, selection, RecoveryBinding};
+use crate::projection::{RecoveryBinding, database, retention, selection};
 use layrs_core::scm::{Chunk, ChunkingDescriptor, FileManifest, WorktreeId};
 
 const TOKEN: &str = "blake3:1111111111111111111111111111111111111111111111111111111111111111";

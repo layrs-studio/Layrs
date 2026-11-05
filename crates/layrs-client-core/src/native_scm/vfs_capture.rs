@@ -50,7 +50,10 @@ pub(super) fn assemble_snapshot<'a>(
     let mut entries = Vec::new();
     let mut manifests = Vec::new();
     let mut spool = super::snapshot::SnapshotChunkSpool::new()?;
-    let reference = |entries: &mut Vec<CheckoutProjectionEntry>, path: &RepoPath, file_id: &FileId, size: u64| {
+    let reference = |entries: &mut Vec<CheckoutProjectionEntry>,
+                     path: &RepoPath,
+                     file_id: &FileId,
+                     size: u64| {
         entries.push(CheckoutProjectionEntry {
             path: path.as_str().to_owned(),
             content: CheckoutProjectionContent::File {
@@ -166,7 +169,8 @@ pub(super) fn assemble_snapshot<'a>(
     manifests.dedup_by(|a, b| a.id() == b.id());
     // Reused files are references to content already admitted (the verified
     // source, or an earlier accepted capture); admission rechecks them.
-    let snapshot = PreparedSnapshot::from_streaming_referencing(&entries, manifests, spool, limits)?;
+    let snapshot =
+        PreparedSnapshot::from_streaming_referencing(&entries, manifests, spool, limits)?;
     // The captured Tree's projection, for the next command (derived data).
     layrs_store_local::scm_v1::projection_cache::save(
         &source.binding().store_root,
@@ -218,7 +222,10 @@ impl<'a> ChunkingWriter<'a> {
     fn emit(&mut self) -> io::Result<()> {
         let bytes = std::mem::replace(
             &mut self.buffer,
-            Vec::with_capacity(self.chunk_bytes.min((self.expected - self.written) as usize)),
+            Vec::with_capacity(
+                self.chunk_bytes
+                    .min((self.expected - self.written) as usize),
+            ),
         );
         let chunk = layrs_core::scm::Chunk::new(bytes).map_err(io::Error::other)?;
         self.builder.push_chunk(&chunk).map_err(io::Error::other)?;
@@ -227,10 +234,7 @@ impl<'a> ChunkingWriter<'a> {
         }
         self.spool.insert(&chunk)
     }
-    fn skipping(
-        mut self,
-        known: &'a std::collections::BTreeSet<layrs_core::scm::ChunkId>,
-    ) -> Self {
+    fn skipping(mut self, known: &'a std::collections::BTreeSet<layrs_core::scm::ChunkId>) -> Self {
         self.known = Some(known);
         self
     }
@@ -522,7 +526,10 @@ mod export_tests {
         .err()
         .unwrap();
         assert_eq!(reads, 1);
-        assert!(matches!(error, NativeClientError::InvalidState("reader stopped")));
+        assert!(matches!(
+            error,
+            NativeClientError::InvalidState("reader stopped")
+        ));
         // A logical size overflow still refuses before any read.
         let overflow = entries(vec![u64::MAX, 1]);
         let error = assemble_export_snapshot(

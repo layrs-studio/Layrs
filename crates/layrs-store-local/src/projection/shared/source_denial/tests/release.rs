@@ -185,7 +185,10 @@ fn denial_release_exact_row_replays_and_survives_quota_reduction() {
 #[ignore = "unrun owned SQL recipe; release collision and installation refusals"]
 fn denial_release_refuses_conflicts_installations_changed_owner_or_amount_without_repair() {
     child::run(
-        concat!(module_path!(), "::denial_release_refuses_conflicts_installations_changed_owner_or_amount_without_repair"),
+        concat!(
+            module_path!(),
+            "::denial_release_refuses_conflicts_installations_changed_owner_or_amount_without_repair"
+        ),
         120,
         || {
             child::declare();

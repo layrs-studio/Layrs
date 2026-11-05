@@ -1,6 +1,6 @@
 use super::super::Receipt;
 use super::*;
-use crate::projection::{provider::validation::tests::fixture::Fixture, RecoveryBinding};
+use crate::projection::{RecoveryBinding, provider::validation::tests::fixture::Fixture};
 use layrs_core::scm::FileId;
 
 fn binding(f: &Fixture) -> ProviderBootstrapBinding {
@@ -119,18 +119,22 @@ fn pending_and_prepared_have_exact_canonical_sql_projections() {
             digest: &old_digest,
         })
         .unwrap();
-    assert!(pending
-        .require_row(MountRowData {
-            phase: "provider_prepared",
-            ..row(&pending, &pending_bytes, &pending_digest)
-        })
-        .is_err());
-    assert!(pending
-        .require_predecessor_row(MountRowData {
-            digest: &pending_digest,
-            ..row(&pending, &old_bytes, &old_digest)
-        })
-        .is_err());
+    assert!(
+        pending
+            .require_row(MountRowData {
+                phase: "provider_prepared",
+                ..row(&pending, &pending_bytes, &pending_digest)
+            })
+            .is_err()
+    );
+    assert!(
+        pending
+            .require_predecessor_row(MountRowData {
+                digest: &pending_digest,
+                ..row(&pending, &old_bytes, &old_digest)
+            })
+            .is_err()
+    );
 
     let mut prepared = copy(&pending);
     prepared.state = PreparationState::ProviderPrepared { pending_digest };
@@ -144,21 +148,25 @@ fn pending_and_prepared_have_exact_canonical_sql_projections() {
     prepared
         .require_references(&f.allocation, &f.prepared, &f.source, [0x11; 16])
         .unwrap();
-    assert!(prepared
-        .require_row(MountRowData {
-            phase: "control_published",
-            ..row(&prepared, &ready_bytes, &ready_digest)
-        })
-        .is_err());
-    assert!(prepared
-        .require_predecessor_row(MountRowData {
-            id: &pending.bootstrap.transaction_id,
-            catalog_id: &pending.bootstrap.catalog_id,
-            phase: "control_published",
-            payload: &old_bytes,
-            digest: &old_digest,
-        })
-        .is_err());
+    assert!(
+        prepared
+            .require_row(MountRowData {
+                phase: "control_published",
+                ..row(&prepared, &ready_bytes, &ready_digest)
+            })
+            .is_err()
+    );
+    assert!(
+        prepared
+            .require_predecessor_row(MountRowData {
+                id: &pending.bootstrap.transaction_id,
+                catalog_id: &pending.bootstrap.catalog_id,
+                phase: "control_published",
+                payload: &old_bytes,
+                digest: &old_digest,
+            })
+            .is_err()
+    );
     assert!(pending.require_pending(&prepared).is_err());
 }
 
@@ -188,9 +196,11 @@ fn prepared_link_cannot_claim_another_pending_document() {
 #[test]
 fn ticket_and_external_reference_changes_refuse() {
     let (f, pending) = case();
-    assert!(pending
-        .require_references(&f.allocation, &f.prepared, &f.source, [0x22; 16])
-        .is_err());
+    assert!(
+        pending
+            .require_references(&f.allocation, &f.prepared, &f.source, [0x22; 16])
+            .is_err()
+    );
     let mut wrong = copy(&pending);
     wrong.bootstrap.catalog_id = codec::hash(DOMAIN, b"other catalog");
     assert!(wrong.encode().is_err());
@@ -226,9 +236,11 @@ fn ticket_and_external_reference_changes_refuse() {
     }
     let mut wrong = copy(&pending);
     wrong.source.snapshot_digest = "0".repeat(64);
-    assert!(wrong
-        .require_references(&f.allocation, &f.prepared, &f.source, [0x11; 16])
-        .is_err());
+    assert!(
+        wrong
+            .require_references(&f.allocation, &f.prepared, &f.source, [0x11; 16])
+            .is_err()
+    );
 
     // All v1 A/P references and the v2 binding remain self-consistent, but
     // the allocation's source commitment differs from the actual source.
@@ -244,9 +256,11 @@ fn ticket_and_external_reference_changes_refuse() {
     changed.binding.allocation = changed.bootstrap.allocation.clone();
     changed.binding.prepared.as_mut().unwrap().receipt = changed_p.data_reference().unwrap();
     changed.validate_fields().unwrap();
-    assert!(changed
-        .require_references(&changed_a, &changed_p, &f.source, [0x11; 16])
-        .is_err());
+    assert!(
+        changed
+            .require_references(&changed_a, &changed_p, &f.source, [0x11; 16])
+            .is_err()
+    );
 }
 
 #[test]
@@ -273,11 +287,10 @@ fn malformed_and_oversized_documents_refuse_before_authority() {
         .registration_ticket_hex
         .push_str(&"00".repeat(TICKET_MAX_BYTES));
     assert!(wrong.encode().is_err());
-    assert!(ProviderPreparationRecord::decode(&vec![
-        b' ';
-        ProviderPreparationRecord::MAX_BYTES + 1
-    ])
-    .is_err());
+    assert!(
+        ProviderPreparationRecord::decode(&vec![b' '; ProviderPreparationRecord::MAX_BYTES + 1])
+            .is_err()
+    );
 }
 
 #[test]

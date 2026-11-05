@@ -99,12 +99,16 @@ fn refuse_without_repair(
 ) {
     let before = installing::state(c);
     let changes = c.total_changes();
-    assert!(retained
-        .validate_export_protection(c, family, target, required, protection, None)
-        .is_err());
-    assert!(retained
-        .protect_export(c, family, target, required, protection, None)
-        .is_err());
+    assert!(
+        retained
+            .validate_export_protection(c, family, target, required, protection, None)
+            .is_err()
+    );
+    assert!(
+        retained
+            .protect_export(c, family, target, required, protection, None)
+            .is_err()
+    );
     assert_eq!(
         c.total_changes(),
         changes,
@@ -158,12 +162,16 @@ owned!(
             assert_eq!(installing::state(c), durable);
             // The new interpretation must not widen the earlier gates.
             assert!(retained.validate_catalog(c, family, None).is_err());
-            assert!(retained
-                .validate_export_reserve_only(c, family, target, None)
-                .is_err());
-            assert!(retained
-                .validate_export_installing(c, family, target, required, None)
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_reserve_only(c, family, target, None)
+                    .is_err()
+            );
+            assert!(
+                retained
+                    .validate_export_installing(c, family, target, required, None)
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(installing::state(c), durable);
         });
@@ -337,9 +345,18 @@ owned!(
             refuse_without_repair(c, family, retained, target, &required[..1], &subset);
             let changes = c.total_changes();
             let before = installing::state(c);
-            assert!(retained
-                .validate_export_protection(c, family, target, &required[..1], &protection, None)
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_protection(
+                        c,
+                        family,
+                        target,
+                        &required[..1],
+                        &protection,
+                        None
+                    )
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(installing::state(c), before);
         });
@@ -367,9 +384,11 @@ owned!(
             let (_, installing) = retained
                 .validate_export_installing(c, family, &target, required, None)
                 .unwrap();
-            assert!(protection
-                .require_envelope(installing.remaining, margin - root_cost)
-                .is_err());
+            assert!(
+                protection
+                    .require_envelope(installing.remaining, margin - root_cost)
+                    .is_err()
+            );
             refuse_without_repair(c, family, retained, &target, required, &protection);
             assert_eq!(
                 c.query_row(
@@ -401,17 +420,30 @@ owned!(
             );
             let before = installing::state(c);
             let changes = c.total_changes();
-            assert!(retained
-                .protect_export(c, family, target, required, &protection, None)
-                .is_err());
+            assert!(
+                retained
+                    .protect_export(c, family, target, required, &protection, None)
+                    .is_err()
+            );
             let cancel = Cancellation::default();
             cancel.cancel();
-            assert!(retained
-                .validate_export_protection(c, family, target, required, &protection, Some(&cancel))
-                .is_err());
-            assert!(retained
-                .protect_export(c, family, target, required, &protection, Some(&cancel))
-                .is_err());
+            assert!(
+                retained
+                    .validate_export_protection(
+                        c,
+                        family,
+                        target,
+                        required,
+                        &protection,
+                        Some(&cancel)
+                    )
+                    .is_err()
+            );
+            assert!(
+                retained
+                    .protect_export(c, family, target, required, &protection, Some(&cancel))
+                    .is_err()
+            );
             assert_eq!(c.total_changes(), changes);
             assert_eq!(installing::state(c), before);
             c.execute_batch("ROLLBACK; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE")

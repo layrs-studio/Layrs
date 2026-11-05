@@ -1,8 +1,8 @@
 //! Pure prospective sizing; no destination FORMAT/proof or SQL is fabricated.
 use super::*;
 use crate::projection::provider::{
-    bootstrap::{derive_reconciled_denial_data, ManagedPlanData},
-    transition_reconcile::companions::denial_tests::{with_fixture, TX},
+    bootstrap::{ManagedPlanData, derive_reconciled_denial_data},
+    transition_reconcile::companions::denial_tests::{TX, with_fixture},
 };
 fn planned(data: &ManagedPlanData) -> ProviderTransitionIntentRecord {
     ProviderTransitionIntentRecord {
@@ -148,58 +148,66 @@ fn prospective_denial_floor_rejects_unbound_rows_union_cost_overflow_and_cancell
         .unwrap();
         let intent = planned(&data);
         let cost = DeniedCoverageCost::new(&intent, coverage.record(), None).unwrap();
-        assert!(prospective_denial_metadata_floor(
-            0,
-            &data.observation,
-            &data.placement,
-            &data.capture,
-            &intent,
-            observed.selection(),
-            &[],
-            &cost,
-            None
-        )
-        .is_err());
+        assert!(
+            prospective_denial_metadata_floor(
+                0,
+                &data.observation,
+                &data.placement,
+                &data.capture,
+                &intent,
+                observed.selection(),
+                &[],
+                &cost,
+                None
+            )
+            .is_err()
+        );
         let mut changed = planned(&data);
         changed.plan.denial_coverage.as_mut().unwrap().path_bytes += 1;
-        assert!(prospective_denial_metadata_floor(
-            0,
-            &data.observation,
-            &data.placement,
-            &data.capture,
-            &changed,
-            observed.selection(),
-            owner.manifests(),
-            &cost,
-            None
-        )
-        .is_err());
+        assert!(
+            prospective_denial_metadata_floor(
+                0,
+                &data.observation,
+                &data.placement,
+                &data.capture,
+                &changed,
+                observed.selection(),
+                owner.manifests(),
+                &cost,
+                None
+            )
+            .is_err()
+        );
         let mut wrong = data.observation.clone();
         wrong.observed_authorization_epoch += 1;
-        assert!(prospective_denial_metadata_floor(
-            0,
-            &wrong,
-            &data.placement,
-            &data.capture,
-            &intent,
-            observed.selection(),
-            owner.manifests(),
-            &cost,
-            None
-        )
-        .is_err());
-        assert!(prospective_denial_metadata_floor(
-            MAX_METADATA,
-            &data.observation,
-            &data.placement,
-            &data.capture,
-            &intent,
-            observed.selection(),
-            owner.manifests(),
-            &cost,
-            None
-        )
-        .is_err());
+        assert!(
+            prospective_denial_metadata_floor(
+                0,
+                &wrong,
+                &data.placement,
+                &data.capture,
+                &intent,
+                observed.selection(),
+                owner.manifests(),
+                &cost,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            prospective_denial_metadata_floor(
+                MAX_METADATA,
+                &data.observation,
+                &data.placement,
+                &data.capture,
+                &intent,
+                observed.selection(),
+                owner.manifests(),
+                &cost,
+                None
+            )
+            .is_err()
+        );
         let cancel = Cancellation::default();
         cancel.cancel();
         assert!(matches!(
@@ -295,23 +303,27 @@ fn denial_admission_peak_counts_final_files_shared_parents_and_excludes_reserved
         .unwrap();
         assert_eq!(budget, admission_budget(1234, 3, 3).unwrap());
         assert_eq!(budget.archive_rows(), 8);
-        assert!(budget
-            .require_metadata(budget.minimum_metadata() - 1)
-            .is_err());
+        assert!(
+            budget
+                .require_metadata(budget.minimum_metadata() - 1)
+                .is_err()
+        );
         budget.require_metadata(budget.minimum_metadata()).unwrap();
         let mut alias = template.clone();
         alias.path = RepoPath::parse("DIR/other").unwrap();
         placement.entries.push(alias);
-        assert!(admission::denial_admission_budget(
-            1234,
-            &placement,
-            observed.selection(),
-            &capture,
-            None
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("parent spelling aliases"));
+        assert!(
+            admission::denial_admission_budget(
+                1234,
+                &placement,
+                observed.selection(),
+                &capture,
+                None
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("parent spelling aliases")
+        );
         let cancel = Cancellation::default();
         cancel.cancel();
         assert!(matches!(

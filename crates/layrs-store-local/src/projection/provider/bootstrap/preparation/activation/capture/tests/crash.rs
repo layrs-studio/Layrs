@@ -53,9 +53,13 @@ impl Request {
         let allocation = AllocationRecord::decode(&self.allocation).unwrap();
         let prepared = PreparedRecord::decode(&self.prepared).unwrap();
         let binding = ProviderBootstrapBinding::decode(&self.binding).unwrap();
-        binding
-            .require_references(&allocation, Some(&prepared), None)
-            .unwrap();
+        // No terminal record yet: the binding check says so, nothing more.
+        assert_eq!(
+            binding
+                .require_references(&allocation, Some(&prepared), None)
+                .unwrap(),
+            crate::projection::provider::records::ReceiptBindingCheck::NoTerminal
+        );
         (allocation, prepared, binding)
     }
 }
@@ -89,10 +93,12 @@ fn read_request(path: &Path) -> (Request, PathBuf) {
     let request: Request = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(canonical_json(&request).unwrap(), bytes);
     assert!(!request.nonce.is_empty() && request.nonce.len() <= 128);
-    assert!(request
-        .nonce
-        .bytes()
-        .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'));
+    assert!(
+        request
+            .nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    );
     assert_eq!(
         path.file_name().unwrap(),
         std::ffi::OsStr::new(&format!("capture-request-{}.json", request.nonce))

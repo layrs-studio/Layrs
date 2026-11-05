@@ -5,9 +5,9 @@ use layrs_core::{
         AvailabilityBlocker as Block, AvailabilityRequest, EntryState, OfflineOperation as Op,
         ProjectionAvailability, ProjectionSelection, ProjectionVersion, VersionPathAvailability,
     },
-    scm::{canonical_json, FileId, RepoPath, TreeEntryTarget},
+    scm::{FileId, RepoPath, TreeEntryTarget, canonical_json},
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     collections::BTreeMap,
     io::{Seek, SeekFrom, Write},
@@ -168,6 +168,7 @@ pub(super) fn snapshot_at(
         snapshot,
     })
 }
+#[allow(dead_code)]
 pub(super) fn resolve(
     c: &Connection,
     store: &ProjectionStore,
@@ -383,6 +384,7 @@ fn preparation_dependencies(
     Ok(dependencies)
 }
 
+#[allow(dead_code)]
 pub(super) fn availability(
     c: &Connection,
     store: &ProjectionStore,
@@ -970,7 +972,6 @@ impl ProjectionStore {
                             install::files::FileWriter::new(&mut charged, MAX_CAPTURE_FILE_BYTES);
                         write_file(&version, &path, &mut writer)?;
                         let bytes = writer.finish(&file_id)?;
-                        drop(charged);
                         spool.seek(SeekFrom::Start(0))?;
                         lease.install_file(
                             &mut spool,
@@ -1094,6 +1095,7 @@ impl ProjectionStore {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn restore_targets(
     c: &Connection,
     store: &ProjectionStore,

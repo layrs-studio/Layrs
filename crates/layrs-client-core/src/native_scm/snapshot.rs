@@ -96,7 +96,12 @@ impl PreparedSnapshot {
                         if !references {
                             return Err(NativeClientError::Missing("streamed FileManifest"));
                         }
-                        builder.add_file_reference(path, file_id.clone(), *byte_length, *executable)?;
+                        builder.add_file_reference(
+                            path,
+                            file_id.clone(),
+                            *byte_length,
+                            *executable,
+                        )?;
                         continue;
                     };
                     if manifest.byte_length() != *byte_length {

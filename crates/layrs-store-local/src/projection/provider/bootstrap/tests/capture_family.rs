@@ -4,22 +4,22 @@ use crate::projection::{
     capture::{CapturedChange, CapturedFile, CapturedPatch, CapturedTarget},
     provider::{
         records::{
+            AllocationRecord, PreparedRecord, Record,
             activation::{ProviderActivationRecord, ProviderActiveMountRecord},
             capture::{
                 ProviderCaptureStage, ProviderCaptureState, ProviderCaptureTransactionRecord,
             },
-            AllocationRecord, PreparedRecord, Record,
         },
         validation::{self, CaptureContentProof, PrivateCaptureProof},
     },
-    shared::provider_access::{provider_capture::operation, FamilyAccess},
+    shared::provider_access::{FamilyAccess, provider_capture::operation},
 };
 use crate::secure_fs::PinnedDirectory;
 use layrs_core::{
     projection::{AvailabilityRequest, OfflineOperation},
     scm::{
-        canonical_json, Chunk, ChunkingDescriptor, FileManifest, RepoPath, TreeEntryTarget,
-        WorktreeId,
+        Chunk, ChunkingDescriptor, FileManifest, RepoPath, TreeEntryTarget, WorktreeId,
+        canonical_json,
     },
 };
 use rusqlite::{Connection, OpenFlags};
@@ -549,9 +549,11 @@ owned!(
             )
             .unwrap();
         });
-        assert!(family_error(&f, &allocation, &proof)
-            .unwrap()
-            .contains("chunk index key exceeds bound"));
+        assert!(
+            family_error(&f, &allocation, &proof)
+                .unwrap()
+                .contains("chunk index key exceeds bound")
+        );
         family_write(&f, |c| {
             c.execute(
                 "UPDATE manifest_chunks SET chunk_id=?1 WHERE manifest_id=?2",
@@ -583,9 +585,11 @@ owned!(
             )
             .unwrap();
         });
-        assert!(family_error(&f, &allocation, &proof)
-            .unwrap()
-            .contains("root manifest key exceeds bound"));
+        assert!(
+            family_error(&f, &allocation, &proof)
+                .unwrap()
+                .contains("root manifest key exceeds bound")
+        );
         family_write(&f, |c| {
             c.execute(
                 "UPDATE root_manifests SET manifest_id=?1 WHERE root_id=?2",

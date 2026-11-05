@@ -5,8 +5,8 @@ use rusqlite::OptionalExtension;
 mod admitted;
 mod handle;
 pub(super) use handle::verify_binding;
-pub(in crate::projection) use handle::{access, cancel_access, restore_access};
 pub use handle::{ProjectionRecovery, RecoveryBinding};
+pub(in crate::projection) use handle::{access, cancel_access, restore_access};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -368,20 +368,21 @@ owned!(
     {
         fixture(|c, f, context, _| {
             for sql in [
-            "UPDATE reservations SET remaining=remaining+1",
-            "DELETE FROM root_manifests",
-            "UPDATE exact_installations SET bytes=bytes+1",
-            "UPDATE roots SET database_identity='replacement'",
-            "UPDATE worktrees SET state='initializing'",
-            "INSERT INTO reservations SELECT 'provider-transition:unknown',owner,'provider-transition:unknown',0 FROM reservations LIMIT 1",
-            "UPDATE quota SET bytes=1",
-        ] {
-            c.execute_batch("SAVEPOINT corrupt").unwrap();
-            c.execute_batch(sql).unwrap();
-            unchanged(c,f,context,false);
-            c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt").unwrap();
-            unchanged(c,f,context,true);
-        }
+                "UPDATE reservations SET remaining=remaining+1",
+                "DELETE FROM root_manifests",
+                "UPDATE exact_installations SET bytes=bytes+1",
+                "UPDATE roots SET database_identity='replacement'",
+                "UPDATE worktrees SET state='initializing'",
+                "INSERT INTO reservations SELECT 'provider-transition:unknown',owner,'provider-transition:unknown',0 FROM reservations LIMIT 1",
+                "UPDATE quota SET bytes=1",
+            ] {
+                c.execute_batch("SAVEPOINT corrupt").unwrap();
+                c.execute_batch(sql).unwrap();
+                unchanged(c, f, context, false);
+                c.execute_batch("ROLLBACK TO corrupt; RELEASE corrupt")
+                    .unwrap();
+                unchanged(c, f, context, true);
+            }
             let changes = c.total_changes();
             let cancelled = Cancellation::default();
             cancelled.cancel();

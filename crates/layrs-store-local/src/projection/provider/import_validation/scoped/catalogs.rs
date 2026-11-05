@@ -1,13 +1,13 @@
 //! Reconstruct every referenced immutable catalog against snapshot/selection0.
 use super::super::super::records::{
-    activation::activation_snapshot, source::CatalogRecord, ProviderBootstrapSource,
-    ProviderSourceDescriptor,
+    ProviderBootstrapSource, ProviderSourceDescriptor, activation::activation_snapshot,
+    source::CatalogRecord,
 };
 use super::*;
 use crate::projection::{database, selection};
 use layrs_core::{
     projection::ProjectionSnapshot,
-    scm::{canonical_json, FileManifest},
+    scm::{FileManifest, canonical_json},
 };
 
 const MAX_ALL_DESCRIPTOR_BYTES: u64 = 1024 * 1024 * 1024;

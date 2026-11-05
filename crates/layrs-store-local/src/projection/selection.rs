@@ -2,7 +2,7 @@
 //! reader fail closed, including readers holding an already-open store handle.
 use super::*;
 use layrs_core::projection::ProjectionSelection;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 pub(super) const SQL: &str = "CREATE TABLE projection_selections(generation INTEGER PRIMARY KEY REFERENCES projection_snapshots(generation) ON DELETE RESTRICT,digest TEXT NOT NULL CHECK(length(digest)=64),payload BLOB NOT NULL CHECK(length(payload)<=16777216)) STRICT;";
 

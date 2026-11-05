@@ -2,28 +2,28 @@
 //! fabricated. ROOT alone source-releases and executes these child120 tests.
 use super::*;
 use crate::projection::{
-    conversion, database,
+    ProjectionStore, VersionedProjection, conversion, database,
     provider::{
         checkout_journal::{self, CheckoutFile, ExpectedCheckout, RowKey},
         database_io::BareConnection,
         destination_ready::*,
         destination_sql,
         import_validation::{self, ImportDatabaseKind, VerifiedImportClosure},
-        managed_admission::{admit_ready, AdmissionWriteEffect},
+        managed_admission::{AdmissionWriteEffect, admit_ready},
         managed_budget,
         process_profile::tests::child,
         published_handoff::{self, PublicationSource},
         records::{
+            ProviderBootstrapSource, Receipt,
             activation::ProviderActivationRecord,
             import::ImportSource,
             transition::{TransitionRole, TransitionState},
-            ProviderBootstrapSource, Receipt,
         },
         validation::{
             private_active_capture_with_source, tests::fixture::Fixture as SourceFixture,
         },
     },
-    selection, ProjectionStore, VersionedProjection,
+    selection,
 };
 use layrs_core::{projection::ProjectionSnapshot, scm::FileManifest};
 use rusqlite::params;
@@ -455,13 +455,14 @@ owned!(
                 .unwrap();
             assert!(!c.is_autocommit());
             assert_eq!(c.total_changes(), changes);
-            assert!(c
-                .query_row(
+            assert!(
+                c.query_row(
                     "SELECT EXISTS(SELECT 1 FROM projection_claims WHERE owner='owned-caller')",
                     [],
                     |r| r.get::<_, bool>(0)
                 )
-                .unwrap());
+                .unwrap()
+            );
             c.execute_batch("ROLLBACK").unwrap();
             assert!(c.is_autocommit());
             // Immutable DATA survives closure of the snapshot that constructed it;
@@ -528,19 +529,27 @@ owned!(
             // reader beneath it only uses *_for_origin, so this must terminate.
             crate::projection::capture::storage::load_metadata(c, &store, 1).unwrap();
             crate::projection::capture::storage::load_metadata(c, &store, 2).unwrap();
-            assert!(conversion::provenance(c, &store)
-                .unwrap_err()
-                .to_string()
-                .contains("typed admitted-import reader"));
-            assert!(conversion::imported_publication_record(c, &store, 0)
-                .unwrap()
-                .is_none());
-            assert!(conversion::imported_publication_record(c, &store, 1)
-                .unwrap()
-                .is_none());
-            assert!(conversion::imported_publication_record(c, &store, 2)
-                .unwrap()
-                .is_none());
+            assert!(
+                conversion::provenance(c, &store)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("typed admitted-import reader")
+            );
+            assert!(
+                conversion::imported_publication_record(c, &store, 0)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                conversion::imported_publication_record(c, &store, 1)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                conversion::imported_publication_record(c, &store, 2)
+                    .unwrap()
+                    .is_none()
+            );
             c.execute_batch("BEGIN IMMEDIATE").unwrap();
             let later = append_local(c, f);
             c.execute_batch("COMMIT").unwrap();

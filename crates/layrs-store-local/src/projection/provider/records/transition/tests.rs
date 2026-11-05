@@ -208,18 +208,20 @@ fn source_plan_is_canonical_bounded_and_projects_exact_sql_row() {
             digest: &digest,
         })
         .unwrap();
-    assert!(planned
-        .require_row(TransitionRowData {
-            id: TX,
-            role: "destination",
-            state: "planned",
-            local_generation: 2,
-            reservation: None,
-            receipt_id: None,
-            payload: &bytes,
-            digest: &digest,
-        })
-        .is_err());
+    assert!(
+        planned
+            .require_row(TransitionRowData {
+                id: TX,
+                role: "destination",
+                state: "planned",
+                local_generation: 2,
+                reservation: None,
+                receipt_id: None,
+                payload: &bytes,
+                digest: &digest,
+            })
+            .is_err()
+    );
     let mut noncanonical = bytes;
     noncanonical.push(b'\n');
     assert!(ProviderTransitionIntentRecord::decode(&noncanonical).is_err());
@@ -287,10 +289,10 @@ fn destination_format_file_identity_is_required_and_immutable() {
         .as_object_mut()
         .unwrap()
         .remove("formatFileIdentity");
-    assert!(ProviderTransitionIntentRecord::decode(
-        &layrs_core::scm::canonical_json(&encoded).unwrap()
-    )
-    .is_err());
+    assert!(
+        ProviderTransitionIntentRecord::decode(&layrs_core::scm::canonical_json(&encoded).unwrap())
+            .is_err()
+    );
 }
 
 #[test]

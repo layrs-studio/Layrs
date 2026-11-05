@@ -2,11 +2,11 @@
 //! Runs after the local Capture phases on the same admission: only the
 //! post-Ready suffix may be sourced, every overwritten byte stays recoverable
 //! and the immutable import/Ready provenance never changes.
-use super::capture::{require_bytes, Immutable};
+use super::capture::{Immutable, require_bytes};
 use super::*;
 use crate::projection::{
-    capture::CapturedPatch, ProjectionRecoveryReason, ProjectionStore, RestoreFaults,
-    RestorePoint, RestorePreview, RestoreReceipt, RestoreSource,
+    ProjectionRecoveryReason, ProjectionStore, RestoreFaults, RestorePoint, RestorePreview,
+    RestoreReceipt, RestoreSource, capture::CapturedPatch,
 };
 use layrs_core::projection::ProjectionVersion;
 
@@ -77,8 +77,14 @@ fn require_receipt(
         receipt.capture.previous_patch_digest.as_ref(),
         Some(&previous.digest)
     );
-    assert_eq!(receipt.capture.projection_generation, previous.projection_generation);
-    assert_eq!(receipt.capture.projection_digest, previous.projection_digest);
+    assert_eq!(
+        receipt.capture.projection_generation,
+        previous.projection_generation
+    );
+    assert_eq!(
+        receipt.capture.projection_digest,
+        previous.projection_digest
+    );
     assert_eq!(
         store.latest_captured_patch().unwrap().as_ref(),
         Some(&receipt.capture)
@@ -160,7 +166,9 @@ pub(super) fn run(
             )
             .unwrap_err();
         assert!(
-            error.to_string().contains("selected path is absent from capture"),
+            error
+                .to_string()
+                .contains("selected path is absent from capture"),
             "{error}"
         );
     }
@@ -181,8 +189,16 @@ pub(super) fn run(
             },
         )
         .unwrap();
-    assert_eq!(witness(&completed.destination_database), private, "preview is read-only");
-    assert_eq!(witness(&completed.family_database), family, "preview is read-only");
+    assert_eq!(
+        witness(&completed.destination_database),
+        private,
+        "preview is read-only"
+    );
+    assert_eq!(
+        witness(&completed.family_database),
+        family,
+        "preview is read-only"
+    );
     assert_eq!(to_first.projection_generation, generation);
     assert_eq!(fs::read(&target).unwrap(), DIRTY_BYTES);
     let restored = store.apply_restore(&to_first).unwrap();
@@ -193,7 +209,11 @@ pub(super) fn run(
         restored.capture,
         "the restored image deduplicates to the restore's own capture"
     );
-    assert_eq!(store.apply_restore(&to_first).unwrap(), restored, "exact replay");
+    assert_eq!(
+        store.apply_restore(&to_first).unwrap(),
+        restored,
+        "exact replay"
+    );
     assert!(reasons(completed).is_empty());
     assert_eq!(store.state().unwrap(), state);
     original.require(store, cancel);
@@ -229,15 +249,22 @@ pub(super) fn run(
         .apply_restore_with_faults(&staged, &StopAt(RestorePoint::Staged))
         .unwrap_err();
     assert!(
-        failure.to_string().contains("injected C14 Restore boundary"),
+        failure
+            .to_string()
+            .contains("injected C14 Restore boundary"),
         "{failure}"
     );
     assert_eq!(fs::read(&target).unwrap(), DIRTY_BYTES);
-    assert_eq!(reasons(completed), vec![ProjectionRecoveryReason::Reservation]);
+    assert_eq!(
+        reasons(completed),
+        vec![ProjectionRecoveryReason::Reservation]
+    );
     assert!(ProjectionStore::resume_restore(&completed.root).is_err());
     let failure = store.capture_patch(generation).unwrap_err();
     assert!(
-        failure.to_string().contains("shared quota reservation pending"),
+        failure
+            .to_string()
+            .contains("shared quota reservation pending"),
         "{failure}"
     );
     store.cancel_shared_reservation().unwrap();
@@ -250,7 +277,14 @@ pub(super) fn run(
     assert_eq!(witness(&completed.family_database), family);
     let retried = store.apply_restore(&staged).unwrap();
     assert_eq!(fs::read(&target).unwrap(), first_bytes);
-    require_receipt(store, &staged, &retried, &inverse.capture, path, first_bytes);
+    require_receipt(
+        store,
+        &staged,
+        &retried,
+        &inverse.capture,
+        path,
+        first_bytes,
+    );
     original.require(store, cancel);
 
     // After its journal is durable, a restore can only finish: cancellation
@@ -268,7 +302,9 @@ pub(super) fn run(
         .apply_restore_with_faults(&journaled, &StopAt(RestorePoint::PathQuarantined))
         .unwrap_err();
     assert!(
-        failure.to_string().contains("injected C14 Restore boundary"),
+        failure
+            .to_string()
+            .contains("injected C14 Restore boundary"),
         "{failure}"
     );
     assert_eq!(
@@ -288,7 +324,14 @@ pub(super) fn run(
     assert_eq!(witness(&completed.family_database), family);
     let resumed = ProjectionStore::resume_restore(&completed.root).unwrap();
     assert_eq!(fs::read(&target).unwrap(), DIRTY_BYTES);
-    require_receipt(store, &journaled, &resumed, &retried.capture, path, DIRTY_BYTES);
+    require_receipt(
+        store,
+        &journaled,
+        &resumed,
+        &retried.capture,
+        path,
+        DIRTY_BYTES,
+    );
     // The recovery route leaves only its committed budget; the next local
     // access settles it, and replay returns the recorded receipt.
     assert_eq!(store.apply_restore(&journaled).unwrap(), resumed);
@@ -310,13 +353,25 @@ pub(super) fn run(
         .apply_restore_with_faults(&committed, &StopAt(RestorePoint::AfterCommit))
         .unwrap_err();
     assert!(
-        failure.to_string().contains("injected C14 Restore boundary"),
+        failure
+            .to_string()
+            .contains("injected C14 Restore boundary"),
         "{failure}"
     );
     assert_eq!(fs::read(&target).unwrap(), first_bytes);
-    assert_eq!(reasons(completed), vec![ProjectionRecoveryReason::Reservation]);
+    assert_eq!(
+        reasons(completed),
+        vec![ProjectionRecoveryReason::Reservation]
+    );
     let replayed = store.apply_restore(&committed).unwrap();
-    require_receipt(store, &committed, &replayed, &resumed.capture, path, first_bytes);
+    require_receipt(
+        store,
+        &committed,
+        &replayed,
+        &resumed.capture,
+        path,
+        first_bytes,
+    );
     assert!(reasons(completed).is_empty());
     original.require(store, cancel);
 
@@ -340,7 +395,13 @@ pub(super) fn run(
         discarded.capture.previous_patch_digest.as_ref(),
         Some(&replayed.capture.digest)
     );
-    assert!(discarded.capture.changes.iter().all(|change| &change.path != path));
+    assert!(
+        discarded
+            .capture
+            .changes
+            .iter()
+            .all(|change| &change.path != path)
+    );
     assert!(reasons(completed).is_empty());
     original.require(store, cancel);
     let undo = store
@@ -374,7 +435,14 @@ pub(super) fn run(
         )
         .unwrap();
     let restored_version = store.apply_restore(&by_version).unwrap();
-    require_receipt(store, &by_version, &restored_version, &undone.capture, path, DIRTY_BYTES);
+    require_receipt(
+        store,
+        &by_version,
+        &restored_version,
+        &undone.capture,
+        path,
+        DIRTY_BYTES,
+    );
     original.require(store, cancel);
 
     // Every read the product Status/History/offline screens issue works on C14.
@@ -382,9 +450,11 @@ pub(super) fn run(
     let (current, _) = store.state_with_selection().unwrap();
     assert_eq!(current, state);
     assert!(store.pending_publication().unwrap().is_none());
-    assert!(!store
-        .is_imported_capture(restored_version.capture.sequence)
-        .unwrap());
+    assert!(
+        !store
+            .is_imported_capture(restored_version.capture.sequence)
+            .unwrap()
+    );
     let page = store.capture_history(None, 3).unwrap();
     assert_eq!(page.captures.first(), Some(&restored_version.capture));
     assert_eq!(page.captures.len(), 3);
@@ -397,7 +467,11 @@ pub(super) fn run(
             operation: layrs_core::projection::OfflineOperation::CompareContent,
         })
         .unwrap();
-    assert_eq!(differences.len(), 1, "Ready absence differs from the local capture");
+    assert_eq!(
+        differences.len(),
+        1,
+        "Ready absence differs from the local capture"
+    );
     assert!(reasons(completed).is_empty());
     original.require(store, cancel);
 
@@ -418,7 +492,9 @@ pub(super) fn run(
         digest: inverse.capture.digest.clone(),
     };
     let mut bytes = Vec::new();
-    reopened.read_version_file(&version, path, &mut bytes).unwrap();
+    reopened
+        .read_version_file(&version, path, &mut bytes)
+        .unwrap();
     assert_eq!(bytes, DIRTY_BYTES);
     let terminal_error =
         crate::projection::provider::managed_ready_reopen::DenialTerminalResolution::open(

@@ -5,9 +5,9 @@ use super::super::{
     checkout_journal::{self, CheckoutJournal, ExpectedCheckout},
     import_validation::{DestinationOriginKind, VerifiedDestinationPrefix},
     managed_admission::{
+        RequiredRepresentation,
         record::{ArchiveCommitment, ManagedAdmissionRecord},
         schema::{AdmittedLayout, AdmittedSchemaPermit},
-        RequiredRepresentation,
     },
 };
 use super::*;
