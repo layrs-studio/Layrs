@@ -34,17 +34,49 @@ pub(super) fn stage_files(
     jobs: &[StageJob<'_>],
     sources: &mut CheckoutSources<'_>,
 ) -> io::Result<std::collections::BTreeMap<usize, PinnedFile>> {
+    // No other writer can open the staged file while we hold it: the
+    // postcheck relies on that to vouch for the bytes proven here.
+    let create = |job: &StageJob<'_>| {
+        backup.create_file_denying_writers(format!("new-{}", job.index).as_ref())
+    };
+    write_files(&create, &|_, file| Ok(file), jobs, sources)
+}
+
+/// A freshly created file the staging writer fills.
+pub(super) trait CreatedFile: Send {
+    fn output(&mut self) -> &mut dyn Write;
+}
+impl CreatedFile for PinnedFile {
+    fn output(&mut self) -> &mut dyn Write {
+        self.file_mut()
+    }
+}
+impl CreatedFile for fs::File {
+    fn output(&mut self) -> &mut dyn Write {
+        self
+    }
+}
+
+/// As `stage_files`, each file exclusively created by `create`, and what
+/// `finish` makes of it once its bytes are proven kept (on its writer thread).
+pub(super) fn write_files<H: CreatedFile, T: Send>(
+    create: &(dyn Fn(&StageJob<'_>) -> io::Result<H> + Sync),
+    finish: &(dyn Fn(&StageJob<'_>, H) -> io::Result<T> + Sync),
+    jobs: &[StageJob<'_>],
+    sources: &mut CheckoutSources<'_>,
+) -> io::Result<std::collections::BTreeMap<usize, T>> {
     let _span = crate::perf::span("stage.files");
     let stage_one = |job: &StageJob<'_>,
                      write: &mut dyn FnMut(&str, &mut dyn Write) -> io::Result<()>|
-     -> io::Result<PinnedFile> {
-        // No other writer can open the staged file while we hold it: the
-        // postcheck relies on that to vouch for the bytes proven here.
-        let mut file = backup.create_file_denying_writers(format!("new-{}", job.index).as_ref())?;
-        let mut verified = VerifiedWriter::new(file.file_mut(), job.file_id, job.length);
+     -> io::Result<T> {
+        let created = crate::perf::span("stage.create");
+        let mut file = create(job)?;
+        drop(created);
+        let _write = crate::perf::span("stage.write");
+        let mut verified = VerifiedWriter::new(file.output(), job.file_id, job.length);
         write(job.path, &mut verified)?;
         verified.finish()?;
-        Ok(file)
+        finish(job, file)
     };
     let mut staged = std::collections::BTreeMap::new();
     let Some(shared) = sources.write_file_shared else {

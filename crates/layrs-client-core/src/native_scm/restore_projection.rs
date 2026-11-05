@@ -107,12 +107,14 @@ pub(super) fn captured(snapshot: &PreparedSnapshot) -> Result<Vec<CheckoutProjec
     Ok(entries)
 }
 
-/// One shared Store capability for a whole checkout staging phase, usable
-/// from several staging threads, opened on first use and released by `end`
-/// (materialization calls it before any exclusive journal phase).
+/// Shared Store capabilities for a whole checkout staging phase, usable from
+/// several staging threads and released together by `end` (materialization
+/// calls it before any exclusive journal phase). Each concurrent writer
+/// checks out its own reading, so its own SQLite connection: the per-file
+/// metadata queries run in parallel instead of queueing on one connection.
 pub(super) struct SharedStagingStore<F> {
     open: F,
-    state: std::sync::RwLock<Option<layrs_store_local::scm_v1::NativeStoreReading>>,
+    idle: std::sync::Mutex<Vec<layrs_store_local::scm_v1::NativeStoreReading>>,
     ended: std::sync::atomic::AtomicBool,
 }
 
@@ -123,7 +125,7 @@ where
     pub(super) fn new(open: F) -> Self {
         Self {
             open,
-            state: std::sync::RwLock::new(None),
+            idle: std::sync::Mutex::new(Vec::new()),
             ended: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -133,39 +135,31 @@ where
         read: impl FnOnce(&layrs_store_local::scm_v1::NativeScmReader<'_>) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         let poisoned = || std::io::Error::other("staging Store lock poisoned");
-        {
-            let guard = self.state.read().map_err(|_| poisoned())?;
-            if let Some(reading) = guard.as_ref() {
-                return read(&reading.reader());
-            }
-        }
+        let ended = || std::io::Error::other("checkout staging already ended");
         if self.ended.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(std::io::Error::other("checkout staging already ended"));
+            return Err(ended());
         }
-        {
-            let mut guard = self.state.write().map_err(|_| poisoned())?;
-            if self.ended.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(std::io::Error::other("checkout staging already ended"));
-            }
-            if guard.is_none() {
-                let store = (self.open)().map_err(std::io::Error::other)?;
-                *guard = Some(
-                    layrs_store_local::scm_v1::NativeStoreReading::new(store)
-                        .map_err(std::io::Error::other)?,
-                );
-            }
+        let checked_out = self.idle.lock().map_err(|_| poisoned())?.pop();
+        let reading = match checked_out {
+            Some(reading) => reading,
+            None => layrs_store_local::scm_v1::NativeStoreReading::new(
+                (self.open)().map_err(std::io::Error::other)?,
+            )
+            .map_err(std::io::Error::other)?,
+        };
+        let result = read(&reading.reader());
+        // A reading returned after `end` is dropped at once, never kept.
+        let mut idle = self.idle.lock().map_err(|_| poisoned())?;
+        if !self.ended.load(std::sync::atomic::Ordering::Acquire) {
+            idle.push(reading);
         }
-        let guard = self.state.read().map_err(|_| poisoned())?;
-        let reading = guard
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("checkout staging already ended"))?;
-        read(&reading.reader())
+        result
     }
 
     pub(super) fn end(&self) {
         self.ended.store(true, std::sync::atomic::Ordering::Release);
-        if let Ok(mut guard) = self.state.write() {
-            drop(guard.take());
+        if let Ok(mut idle) = self.idle.lock() {
+            idle.clear();
         }
     }
 }
@@ -213,6 +207,7 @@ fn write_file_from(
             // Manifest from metadata only: every streamed chunk below goes
             // through `manifest.verifier()`, which proves the FileId, so a
             // separate full pre-read and re-hash of the file is redundant.
+            let _span = layrs_store_local::perf::span("restore.manifest");
             let ids = reader.file_manifest_ids_metadata(file_id).map_err(error)?;
             let first = ids.first().ok_or_else(|| error("missing admitted file"))?;
             reader
@@ -240,10 +235,13 @@ fn write_file_from(
                     .map_err(error)?,
             )
             .map_err(error)?,
-            None => reader
-                .get_chunk(part.chunk_id())
-                .map_err(error)?
-                .ok_or_else(|| error("missing file chunk"))?,
+            None => {
+                let _span = layrs_store_local::perf::span("restore.chunk");
+                reader
+                    .get_chunk(part.chunk_id())
+                    .map_err(error)?
+                    .ok_or_else(|| error("missing file chunk"))?
+            }
         };
         verifier.push(chunk.bytes()).map_err(error)?;
         output.write_all(chunk.bytes())?;

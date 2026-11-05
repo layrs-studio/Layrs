@@ -17,6 +17,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
 };
+mod fresh;
 mod lease;
 mod sources;
 use lease::{LEASE_MS, LeaseKeeper};
@@ -261,7 +262,14 @@ pub fn apply_checkout_with_sources_bound_metadata(
     if pinned_checkout.identity_token() != worktree.filesystem_identity() {
         return Err(error("checkout identity changed"));
     }
-    if !touched_paths_match(&pinned_checkout, checkout.root(), &paths, &prior)? {
+    // A first materialization into a folder holding only `.layrs` writes in
+    // place (council r5, D2): emptiness, proven again under the journal,
+    // replaces the per-path precheck, as every path is new.
+    let fresh =
+        prior.is_empty() && !next.is_empty() && fresh::is_fresh(&pinned_checkout, checkout.root())?;
+    if fresh {
+        super::checkout_paths::validate_paths(paths.iter().copied(), cfg!(windows))?;
+    } else if !touched_paths_match(&pinned_checkout, checkout.root(), &paths, &prior)? {
         return Err(error("checkout changed after capture"));
     }
     drop(pinned_checkout);
@@ -295,7 +303,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
             ));
         }
         if [prior.get(path), next.get(path)].into_iter().flatten().any(|content|matches!(content,CheckoutProjectionContent::Symlink{target} if target.is_empty()||target.len()>4095||target.contains('\0'))){return Err(error("symlink target cannot be materialized exactly"));}
-        if let Ok(meta) = fs::symlink_metadata(checkout.root().join(path)) {
+        if fresh {
+            // Nothing can collide in a fresh folder: it is proven empty again
+            // under the journal and every entry is created exclusively.
+        } else if let Ok(meta) = fs::symlink_metadata(checkout.root().join(path)) {
             if !(meta.is_file()
                 || meta.is_dir()
                 || cfg!(target_os = "linux") && meta.file_type().is_symlink())
@@ -393,8 +404,19 @@ pub fn apply_checkout_with_sources_bound_metadata(
             "{}-attempt-{attempt}",
             batch.request_digest().to_string().replace(':', "-")
         ));
-        let payload = serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" });
-        let path_plans = paths
+        let payload = if fresh {
+            serde_json::json!({ "schema":fresh::SCHEMA, "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
+        } else {
+            serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
+        };
+        // A fresh checkout journals the top-level entries it creates: there is
+        // no original to restore, and recovery quarantines the folder's content.
+        let planned = if fresh {
+            fresh::top_level(&paths)
+        } else {
+            paths.clone()
+        };
+        let path_plans = planned
             .iter()
             .map(|p| RecoveryPathPlan::new(*p, RecoveryPathRole::Materialized, None))
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -441,6 +463,30 @@ pub fn apply_checkout_with_sources_bound_metadata(
         )
     };
     faults.check(MaterializationPoint::AfterJournal)?;
+    if fresh {
+        let (old_operation, new_operation) = (active.to_string(), target.to_string());
+        return fresh::write(
+            &fresh::FreshCheckout {
+                store_root,
+                store_identity,
+                metadata_identity,
+                store_directory: &store_directory,
+                metadata_directory: &metadata_directory,
+                worktree_id,
+                checkout_root: &checkout_root,
+                identity: &identity,
+                recovery_id: &recovery_id,
+                owner: &owner,
+                old_operation: &old_operation,
+                new_operation: &new_operation,
+                batch,
+                faults,
+            },
+            &paths,
+            &next,
+            sources,
+        );
+    }
     let checkout = PinnedDirectory::open(Path::new(&checkout_root))?;
     if checkout.identity_token() != identity {
         return Err(error("checkout identity changed"));
@@ -1356,6 +1402,22 @@ pub fn recover_checkout_bound_metadata(
         .map_err(error)?;
     drop(store);
     let mut count = 0;
+    for record in pending
+        .iter()
+        .filter(|r| r.worktree_id == *worktree_id && r.payload["schema"] == fresh::SCHEMA)
+    {
+        fresh::recover(
+            store_root,
+            store_identity,
+            metadata_identity,
+            &store_directory,
+            &metadata_directory,
+            &worktree,
+            record,
+            faults,
+        )?;
+        count += 1;
+    }
     for record in pending.into_iter().filter(|r| {
         r.worktree_id == *worktree_id && r.payload["schema"] == "layrs.checkout-write.v1"
     }) {

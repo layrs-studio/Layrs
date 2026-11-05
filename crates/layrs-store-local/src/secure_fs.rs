@@ -170,6 +170,21 @@ impl PinnedDirectory {
         })
     }
 
+    /// As `create_new_child` without its syncs and path check: the caller
+    /// binds the result later (one enumeration per directory) and syncs every
+    /// created directory before relying on it.
+    pub(crate) fn create_new_child_unsynced(&self, name: &OsStr) -> io::Result<Self> {
+        validate_name(name)?;
+        let file = platform::create_new_directory_at(&self.file, name)?;
+        let display_path = self.display_path.join(name);
+        validate_directory_metadata(&display_path, &file.metadata()?)?;
+        Ok(Self {
+            identity: file_identity(&file)?,
+            file,
+            display_path,
+        })
+    }
+
     /// Create a new directory relative to this pinned parent; never adopt a
     /// colliding entry, even when it is already a regular directory.
     pub(crate) fn create_new_child(&self, name: &OsStr) -> io::Result<Self> {
@@ -207,6 +222,23 @@ impl PinnedDirectory {
         #[cfg(not(windows))]
         {
             self.create_file(name)
+        }
+    }
+
+    /// Exclusive creation of a file that is never moved, returning the bare
+    /// handle (no identity query, no parent handle copy). On Windows the
+    /// handle shares reading only: while it is open no one else can write,
+    /// rename, replace or delete the file. Exclusive creation of a regular
+    /// non-directory file already proves what `wrap_file` would check.
+    pub(crate) fn create_file_held_lean(&self, name: &OsStr) -> io::Result<File> {
+        validate_name(name)?;
+        #[cfg(windows)]
+        {
+            platform::create_file_held_at(&self.file, name)
+        }
+        #[cfg(not(windows))]
+        {
+            platform::create_file_at(&self.file, name)
         }
     }
 
@@ -507,6 +539,13 @@ fn handle_is_at(file: &File, path: &Path) -> bool {
     };
     expected.extend_from_slice(&display[2..]);
     actual == expected
+}
+
+/// Creation and last write times (FILETIME intervals) and attributes of an
+/// open file, in one request.
+#[cfg(windows)]
+pub(crate) fn basic_times(file: &File) -> io::Result<(i64, i64, u32)> {
+    platform::basic_times(file)
 }
 
 fn validate_name(name: &OsStr) -> io::Result<()> {

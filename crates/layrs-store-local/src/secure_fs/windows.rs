@@ -136,7 +136,46 @@ unsafe extern "system" {
 
 /// FILE_NAME_NORMALIZED | VOLUME_NAME_NT.
 const FINAL_PATH_NORMALIZED_NT: u32 = 0x2;
+const FILE_BASIC_INFO_CLASS: i32 = 0;
 const FILE_STANDARD_INFO_CLASS: i32 = 1;
+
+#[repr(C)]
+struct FileBasicInfo {
+    creation_time: i64,
+    last_access_time: i64,
+    last_write_time: i64,
+    change_time: i64,
+    file_attributes: u32,
+}
+
+/// Creation and last write times (FILETIME intervals) and attributes of an
+/// open file, in one request.
+pub(crate) fn basic_times(file: &File) -> io::Result<(i64, i64, u32)> {
+    let mut basic = FileBasicInfo {
+        creation_time: 0,
+        last_access_time: 0,
+        last_write_time: 0,
+        change_time: 0,
+        file_attributes: 0,
+    };
+    // SAFETY: `file` is live and the output structure is writable.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_BASIC_INFO_CLASS,
+            ptr::addr_of_mut!(basic).cast(),
+            size_of::<FileBasicInfo>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        basic.creation_time,
+        basic.last_write_time,
+        basic.file_attributes,
+    ))
+}
 const FILE_ATTRIBUTE_TAG_INFO_CLASS: i32 = 9;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
@@ -471,6 +510,22 @@ pub(super) fn create_file_denying_writers_at(parent: &File, name: &OsStr) -> io:
         FILE_NON_DIRECTORY_FILE,
         ptr::null_mut(),
         FILE_SHARE_READ | FILE_SHARE_DELETE,
+    )
+}
+
+/// Exclusive creation of a file that will never move: the handle shares
+/// reading only and asks no DELETE right, so while it is open no other writer,
+/// rename, replacement or deletion can reach the file under its name.
+pub(super) fn create_file_held_at(parent: &File, name: &OsStr) -> io::Result<File> {
+    const FILE_SHARE_READ: u32 = 0x1;
+    open_at_with_security_and_share(
+        parent,
+        name,
+        FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE,
+        ptr::null_mut(),
+        FILE_SHARE_READ,
     )
 }
 

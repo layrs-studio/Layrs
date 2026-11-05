@@ -435,6 +435,34 @@ fn decode_binary(bytes: &[u8]) -> Option<Document> {
 }
 
 /// Nanoseconds since the Unix epoch (negative before it); `None` on overflow.
+/// The key `StatKey::of` gives a regular file of `length` bytes, from its
+/// creation and last write times (FILETIME intervals since 1601) and its
+/// attributes, as one basic information request returns them.
+#[cfg(windows)]
+pub fn stat_from_basic(
+    length: u64,
+    created: i64,
+    written: i64,
+    attributes: u32,
+) -> Option<StatKey> {
+    // 100 ns intervals from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH_INTERVALS: i64 = 116_444_736_000_000_000;
+    let since_epoch = |intervals: i64| {
+        intervals
+            .checked_sub(UNIX_EPOCH_INTERVALS)?
+            .checked_mul(100)
+    };
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+    Some(StatKey {
+        length,
+        modified: since_epoch(written)?,
+        created: since_epoch(created),
+        inode: None,
+        changed: None,
+        mode: Some(u32::from(attributes & FILE_ATTRIBUTE_READONLY != 0)),
+    })
+}
+
 pub fn nanos(time: SystemTime) -> Option<i64> {
     match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i64::try_from(after.as_nanos()).ok(),

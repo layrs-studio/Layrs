@@ -377,3 +377,103 @@ fn concurrent_full_materializations_return_exact_cas_and_recover_both_roots() {
     assert_eq!(own(&primary), base);
     assert_clean(&primary, &[base.base_step_id().unwrap().clone()]);
 }
+
+struct StopAt(MaterializationPoint);
+impl MaterializationFaults for StopAt {
+    fn check(&self, point: MaterializationPoint) -> io::Result<()> {
+        if point == self.0 {
+            Err(io::Error::other("injected fresh checkout interruption"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn nested_primary(fixture: &Fixture) -> NativeWorkspace {
+    let root = fixture.directory("nested-primary");
+    fs::create_dir_all(root.join("src/deep")).unwrap();
+    fs::write(root.join("top.txt"), b"top").unwrap();
+    fs::write(root.join("src/a.txt"), b"a").unwrap();
+    fs::write(root.join("src/deep/b.txt"), b"b").unwrap();
+    NativeWorkspace::initialize(root, "Fresh checkout").unwrap()
+}
+
+fn quarantines(root: &Path) -> Vec<std::path::PathBuf> {
+    let name = root.file_name().unwrap().to_str().unwrap();
+    let prefix = format!(".{name}.layrs-abandoned-");
+    fs::read_dir(root.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect()
+}
+
+/// D2: a fresh checkout interrupted after writing in place but before its
+/// metadata commit is quarantined beside the folder (never deleted), then the
+/// creation resumes into the emptied folder.
+#[test]
+fn interrupted_fresh_checkout_is_quarantined_then_resumed() {
+    let fixture = Fixture::new();
+    let primary = nested_primary(&fixture);
+    let base = own(&primary);
+    let root = fixture.directory("fresh-interrupted");
+    assert!(primary
+        .create_worktree_with_faults(
+            &root,
+            base.active_layer_id().unwrap(),
+            base.base_step_id().unwrap(),
+            &StopAt(MaterializationPoint::BeforeMetadata),
+        )
+        .is_err());
+    // Written in place before the interruption.
+    assert_eq!(fs::read(root.join("src/deep/b.txt")).unwrap(), b"b");
+    let secondary = NativeWorkspace::open(&root).unwrap();
+    assert_eq!(own(&secondary).status(), WorktreeStatus::Stale);
+    assert!(secondary.needs_repair().unwrap());
+    assert_eq!(secondary.recover().unwrap(), 1);
+    assert!(!secondary.needs_repair().unwrap());
+    let moved = quarantines(&root);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!(fs::read(moved[0].join("src/deep/b.txt")).unwrap(), b"b");
+    assert_eq!(fs::read(moved[0].join("top.txt")).unwrap(), b"top");
+    let left: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, vec![std::ffi::OsString::from(".layrs")]);
+    secondary.resume_worktree_creation().unwrap();
+    assert_eq!(own(&secondary).status(), WorktreeStatus::Ready);
+    assert_eq!(fs::read(root.join("src/a.txt")).unwrap(), b"a");
+    assert_eq!(fs::read(root.join("src/deep/b.txt")).unwrap(), b"b");
+    assert!(secondary.working_diff_with(false).unwrap().is_empty());
+    assert_clean(&primary, &[base.base_step_id().unwrap().clone()]);
+}
+
+/// D2: once the metadata committed, recovery keeps the fresh checkout: its
+/// files are the Worktree's working copy and nothing is quarantined.
+#[test]
+fn fresh_checkout_interrupted_after_commit_is_kept() {
+    let fixture = Fixture::new();
+    let primary = nested_primary(&fixture);
+    let base = own(&primary);
+    let root = fixture.directory("fresh-committed");
+    assert!(primary
+        .create_worktree_with_faults(
+            &root,
+            base.active_layer_id().unwrap(),
+            base.base_step_id().unwrap(),
+            &StopAt(MaterializationPoint::AfterMetadata),
+        )
+        .is_err());
+    let secondary = NativeWorkspace::open(&root).unwrap();
+    assert!(secondary.needs_repair().unwrap());
+    assert_eq!(secondary.recover().unwrap(), 1);
+    assert!(quarantines(&root).is_empty());
+    assert_eq!(own(&secondary).status(), WorktreeStatus::Ready);
+    assert_eq!(fs::read(root.join("top.txt")).unwrap(), b"top");
+    assert!(secondary.working_diff_with(false).unwrap().is_empty());
+}
