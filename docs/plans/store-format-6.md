@@ -200,10 +200,16 @@ Each one keeps every invariant above; the reason is given.
    This is invariant 2 ("corruption, never absence") applied to lookups
    whose answer that pack could change; it also means a Store with such a
    pack refuses new batches until repaired, as a corrupt SQLite does.
-7. **Orphan packs are never reused** (format 5 verified and reused orphan
-   pack members). A failed batch's pack stays an unregistered file; a retry
-   writes a new pack. A loose file left by a failed batch is still verified
-   byte for byte, made durable and registered by the retry, as in format 5.
+7. **Orphan packs are never reused but collected** (format 5 verified and
+   reused orphan pack members). A failed batch's pack stays an unregistered
+   file, never present; every exclusive writer session, when it opens its
+   CAS, removes the `pack-*.lp2` files SQLite does not register (a pack is
+   only registered by the session that published it, so one unregistered at
+   session start never will be). A loose file left by a failed batch is
+   still verified byte for byte, made durable and registered by the retry,
+   as in format 5. Single-object `NativeCasWriter::put/stage/install` are
+   refused in format 6: they would report success for an object that is
+   never registered.
 8. **Registration happens before validation.** The batch's `cas_packs` and
    `loose_objects` rows are inserted in the batch transaction before the
    admission resolver runs (format 5 does the same for the object rows of
@@ -232,6 +238,17 @@ Each one keeps every invariant above; the reason is given.
 12. **`NativeCas::locate` of a packed v2 record** returns the offset of the
     stored bytes of the block that holds it (a record has no bytes of its
     own on disk).
+13. **Audits never trust the process cache, and check every copy.** fsck
+    and scrub load each registered pack's metadata from disk and check it
+    against its registered digest and entry count; ordinary reads keep the
+    per-process metadata cache (the policy of packs v1). fsck verifies every
+    registered physical copy at its own place (each record of each block,
+    each loose object), so a damaged copy is reported even when a sound
+    duplicate serves its reads; logical reads only feed closure and
+    reachability. One audit catalog serves the whole run. With an
+    unreadable registered pack, fsck reports it once and does not judge
+    Tree closure, FileId sections or content admission on a catalog that
+    cannot answer absence.
 
 ## Measurements (6 November 2026)
 
@@ -269,6 +286,19 @@ two ids per File are the floor of the metadata without hashing content; the
 Trees need the binary codec of phase 4; the change index and projection
 cache (1,356 KiB together, unchanged by this work) are now the largest
 part.
+
+## Blockers before format 6 becomes the default (phase 6)
+
+- **One unreadable registered pack refuses the whole Store** (Deviation 6,
+  council r2, P2). Every absence, admission and manifest-list answer then
+  errors, so capture, step and every new batch fail, including the batch
+  that would bring the lost content back, and there is no repair path.
+  Proposed: a per-pack negative filter (a Bloom filter or the sorted 4-byte
+  id prefixes) stored with the pack and covered by its registered digest,
+  so ids it excludes keep exact "absent" answers while the pack is
+  unreadable; and `layrs store repair`, which republishes the lost objects
+  (from the server or the working tree) as a new registered pack and keeps
+  the old bitmaps.
 
 Known limits until phase 5: every batch adds one pack, so lookups and the
 catalog load grow with the number of packs (a long history of small steps
