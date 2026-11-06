@@ -1,5 +1,43 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - taille (ADR 0028), Rooms hybrides, fusions (Claude + conseil r1 taille, 2026-11-06)
+
+Demande : « fais moi tout : taille, rooms hybrides et fusions ».
+
+| Point | Où en est-on | Mesures à 10 000 fichiers |
+| --- | --- | --- |
+| Rooms hybrides | Commité, `ec28317` | Création 1,31 s → 2,7 s (git 2,52 s) ; première lecture 17,8 s → 3,1 s (git 3,2 s) |
+| Fusions | Commité, `34ba0c4` et `5c714e8` | 3 voies 1 040 → 805 ms (740 ms sans fichiers hybrides) ; 2e fusion 571 → 516 ms ; `status` après une fusion 217 → 103 ms |
+| `status` | Commité, `027b13a` | 96–101 ms (git 58 ms) |
+| Taille, phase 1 (caches) | Commité, `691b174` | Index de changements 1 415 → 528 Kio ; cache de projection 988 → 412 Kio |
+| Taille, format 6 (phases 2-3) | Délégué, en cours | Voir ci-dessous |
+
+**Rooms hybrides.** Les petits fichiers sont écrits à la population, puis convertis en placeholders synchronisés après la connexion.
+- Budget : `LAYRS_ROOM_WARM_BYTES`, 256 Mio par défaut.
+- Hydratation proactive par `CfHydratePlaceholder` mesurée et rejetée : 72 s avec un thread, 9,4 s avec 8.
+
+**Fusions.**
+- Cache d'arbres vérifiés par processus.
+- Une capture inchangée ne reconstruit pas ses arbres.
+- La projection du résultat d'une fusion est mise en cache.
+- Mémo de projection sans ouverture du Store.
+
+**`status`.** Il rafraîchit les entrées « racy » de l'index, comme git.
+
+**Taille, format 6.**
+- Le conseil r1 est d'accord sur la direction ; deux désaccords sont tranchés dans l'ADR 0028 (identifiants seulement dans l'index, blocs zstd de 16 Kio).
+- Spécification : `docs/plans/store-format-6.md`.
+- Implémentation déléguée à un sous-agent, dans un worktree, sur la branche `feature/store-format-6` : schéma v3, packs v2, enregistrements « fichier ». À relire, avec un tour de conseil, avant la fusion.
+
+**Reste.**
+- `step` : 293–321 ms (git 162 ms).
+  - Le format 6 doit retirer les 50 ms d'objets séparés.
+  - Les arbres complets sont reconstruits (26 ms) ; à remplacer par un cache-tree.
+  - `validate.prefetch_tree_files` prend 25 ms.
+- Fusions : lot validé deux fois (`materialize.rs:383` et `repository.rs:405`) ; bloc avant le journal sans span (environ 60 ms) ; ouvertures du Store (20 par fusion).
+- Création hybride : écriture de 1,2 s et conversion de 1,0 s. Paralléliser davantage, ou lire la source par lot.
+- La CI ne tourne que sur `main`. La branche est poussée jusqu'à `691b174` ; pas encore fusionnée sur `main`.
+
 ## Point courant - fichiers de toute taille (ADR 0027) puis performances vs git, conseil r4 (Claude + conseil, 2026-11-05)
 
 Demande : « ajoute le support des fichiers de n'importe quelle taille, PUIS ... dépasser git sur toutes les commandes sans faire de tradeoff que git ne fait pas ». Rien de commité.
