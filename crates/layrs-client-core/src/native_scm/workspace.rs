@@ -223,26 +223,6 @@ impl NativeWorkspace {
         Ok(PathBuf::from(self.state()?.worktree.checkout_root()))
     }
 
-    /// The Space of this Worktree as last read from its Store in this
-    /// process. A Worktree's Space never changes.
-    pub(super) fn remembered_space(&self) -> Option<SpaceId> {
-        spaces().lock().ok()?.get(&self.space_key()).cloned()
-    }
-
-    fn remember_space(&self, space: &SpaceId) {
-        if let Ok(mut spaces) = spaces().lock() {
-            spaces.insert(self.space_key(), space.clone());
-        }
-    }
-
-    fn space_key(&self) -> (String, String, WorktreeId) {
-        (
-            self.store_identity().to_owned(),
-            self.metadata_identity().to_owned(),
-            self.worktree_id.clone(),
-        )
-    }
-
     pub fn state(&self) -> Result<WorkspaceState> {
         self.state_with(&self.open_store()?)
     }
@@ -256,7 +236,6 @@ impl NativeWorkspace {
         let space = reader
             .get_space(worktree.space_id())?
             .ok_or(NativeClientError::Missing("Space"))?;
-        self.remember_space(space.id());
         let operation = reader
             .get_operation(worktree.active_operation_id())?
             .ok_or(NativeClientError::Missing("Operation"))?;
@@ -443,13 +422,4 @@ impl NativeWorkspace {
         }
         Ok(result)
     }
-}
-
-type SpaceKey = (String, String, WorktreeId);
-
-fn spaces() -> &'static std::sync::Mutex<std::collections::HashMap<SpaceKey, SpaceId>> {
-    static SPACES: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<SpaceKey, SpaceId>>,
-    > = std::sync::OnceLock::new();
-    SPACES.get_or_init(Default::default)
 }

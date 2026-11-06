@@ -14,14 +14,6 @@ impl NativeWorkspace {
     /// re-read here. Anything that writes or publishes bytes verifies them at
     /// use; `verify_changed_content` front-loads that check for a transition.
     pub fn read_step_projection(&self, step: &StepId) -> Result<Vec<CheckoutProjectionEntry>> {
-        // Answered from this process's memo without opening the Store when
-        // the Worktree's Space is known (see `read_step_projection_with`).
-        if let Some(space) = self.remembered_space() {
-            if let Some(cached) = self.memoized_projection(&space, step) {
-                layrs_store_local::perf::count("projection.memo_hit", 1);
-                return Ok(cached);
-            }
-        }
         let store = self.open_store()?;
         let state = self.state_with(&store)?;
         self.read_step_projection_with(&store, state.space.id(), step)

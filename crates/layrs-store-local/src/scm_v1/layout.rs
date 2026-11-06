@@ -243,6 +243,13 @@ pub struct NativeStoreOpen {
     /// Format 6: the registered CAS catalog of this immutable snapshot,
     /// loaded once by the first CAS view opened on it.
     registered: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
+    /// Trees read and verified through this session (CAS bytes against
+    /// their id, `objects` row, edges). The shared Store lock excludes
+    /// writers for the session's life, so its rows cannot change and a Tree
+    /// verified once in it stays verified; nothing outlives the session.
+    verified_trees: Mutex<
+        std::collections::HashMap<layrs_core::scm::TreeId, std::sync::Arc<layrs_core::scm::Tree>>,
+    >,
 }
 
 /// Implicit per-query rebinding checks are throttled to this interval. SQLite
@@ -272,6 +279,27 @@ impl NativeStoreOpen {
             implicit_verified: Mutex::new(None),
             format_version: super::FORMAT_VERSION,
             registered: std::sync::OnceLock::new(),
+            verified_trees: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// A Tree this session already read and verified.
+    pub(crate) fn verified_tree(
+        &self,
+        id: &layrs_core::scm::TreeId,
+    ) -> Option<std::sync::Arc<layrs_core::scm::Tree>> {
+        self.verified_trees.lock().ok()?.get(id).cloned()
+    }
+
+    /// Records a Tree this session read and verified (bounded by entries).
+    pub(crate) fn remember_verified_tree(&self, tree: &layrs_core::scm::Tree) {
+        const MAX_TREES: usize = 4_096;
+        if let Ok(mut trees) = self.verified_trees.lock() {
+            if trees.len() < MAX_TREES {
+                trees
+                    .entry(tree.id().clone())
+                    .or_insert_with(|| std::sync::Arc::new(tree.clone()));
+            }
         }
     }
 

@@ -336,10 +336,22 @@ impl super::NativeWorkspace {
         // Nothing read and exactly the base projection (paths, FileIds,
         // modes): its Tree is the base projection's own, memoized when the
         // projection was read. Building and hashing the Trees again would
-        // give the same id.
+        // give the same id. Only when that Tree is the base Step's root:
+        // a root holding what a checkout cannot represent (Tombstones, empty
+        // directories) projects to another Tree, which a capture must build
+        // and carry.
         if captured.hashed.is_empty() && captured.manifests.is_empty() && captured.entries == base {
             let root = scm_v1::checkout::projection_tree_id(&base)?;
-            return Ok((PreparedSnapshot::unchanged(root), next));
+            let store = self.open_store()?;
+            let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
+            let step = layrs_store::scm::ScmReader::get_step(
+                &reader,
+                &super::references::base_step(state)?,
+            )?
+            .ok_or(super::NativeClientError::Missing("base Step"))?;
+            if step.root_tree_id() == &root {
+                return Ok((PreparedSnapshot::unchanged(root), next));
+            }
         }
         let snapshot = PreparedSnapshot::from_streaming_referencing(
             &captured.entries,

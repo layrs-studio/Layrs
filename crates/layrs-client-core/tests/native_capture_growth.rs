@@ -18,6 +18,13 @@ fn payload(version: u64) -> Vec<u8> {
         .collect()
 }
 fn tree_bytes(root: &Path) -> u64 {
+    tree_bytes_except(root, &[])
+}
+/// Derived caches (ADR 0025 change index, projection cache): rewritten when
+/// a racy entry gets a new proof time, so their size may change once by a
+/// byte of varint; they are measured apart and must then stay stable.
+const DERIVED_CACHES: [&str; 2] = ["change-index", "projection-cache"];
+fn tree_bytes_except(root: &Path, skipped: &[&str]) -> u64 {
     fs::read_dir(root)
         .unwrap()
         .map(|entry| {
@@ -25,11 +32,23 @@ fn tree_bytes(root: &Path) -> u64 {
             let metadata = entry.metadata().unwrap();
             assert!(!metadata.is_symlink());
             if metadata.is_dir() {
-                tree_bytes(&entry.path())
+                if skipped.iter().any(|name| entry.file_name() == *name) {
+                    0
+                } else {
+                    tree_bytes_except(&entry.path(), skipped)
+                }
             } else {
                 metadata.len()
             }
         })
+        .sum()
+}
+fn cache_bytes(workspace: &NativeWorkspace) -> u64 {
+    DERIVED_CACHES
+        .iter()
+        .map(|name| workspace.store_root().join("metadata").join(name))
+        .filter(|path| path.is_dir())
+        .map(|path| tree_bytes(&path))
         .sum()
 }
 fn measurement(workspace: &NativeWorkspace) -> Value {
@@ -62,7 +81,7 @@ fn measurement(workspace: &NativeWorkspace) -> Value {
         .unwrap();
     json!({"steps":count("steps"), "operations":count("operations"), "observations":count("step_observations"),
         "automaticObservations":automatic,"objectsByKind":objects,
-        "casBytes":tree_bytes(layout.objects_dir()), "storeBytes":tree_bytes(workspace.store_root()),
+        "casBytes":tree_bytes(layout.objects_dir()), "storeBytes":tree_bytes_except(workspace.store_root(), &DERIVED_CACHES),
         "sqliteFileBytes":fs::metadata(layout.sqlite_path()).unwrap().len()})
 }
 fn noop(workspace: &NativeWorkspace) {
@@ -78,6 +97,10 @@ fn noop(workspace: &NativeWorkspace) {
 
 #[test]
 fn automatic_capture_growth_preserves_history_deduplicates_payload_and_skips_idle() {
+    // Counts format 5's per-object SQL rows (`objectsByKind`): a format 5
+    // Store whatever LAYRS_STORE_FORMAT the suite runs with (the only test
+    // of this binary, so no other test sees the variable).
+    std::env::set_var("LAYRS_STORE_FORMAT", "5");
     let started = Instant::now();
     let root = std::env::temp_dir().join(format!("layrs-capture-growth-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
@@ -90,6 +113,10 @@ fn automatic_capture_growth_preserves_history_deduplicates_payload_and_skips_idl
         baseline, idle,
         "idle polling creates no objects, history or byte growth"
     );
+    // Caches settle after the first idle round (racy entries refreshed).
+    let caches = cache_bytes(&workspace);
+    noop(&workspace);
+    assert_eq!(cache_bytes(&workspace), caches, "idle polling grows caches");
     let mut history = vec![];
     let unique_started = Instant::now();
     for version in 1..=32 {

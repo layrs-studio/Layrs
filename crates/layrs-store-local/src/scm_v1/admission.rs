@@ -1006,13 +1006,25 @@ impl CompositeAdmissionResolver<'_> {
                     || self.reader.chunk_present_metadata(chunk)?
                     || self.object(object)?.is_some()
             }
+            // A stored Tree: its verified row, as for chunks (its bytes and
+            // edges are checked wherever it is read). Decoding every durable
+            // Tree of a Weave's closure dominated product validation.
+            StoreObjectId::Tree(tree) if self.overlay_object(object).is_none() => {
+                self.reader.tree_present_metadata(tree)? || self.object(object)?.is_some()
+            }
             _ => self.object(object)?.is_some(),
         };
         if !present {
             return Ok(false);
         }
+        let durable_tree =
+            matches!(object, StoreObjectId::Tree(_)) && self.overlay_object(object).is_none();
         let value = self.admissions.contains(&key)
-            || self.reader.object_admitted_to_space(object, space)?;
+            || if durable_tree {
+                self.reader.object_admitted_metadata(object, space)?
+            } else {
+                self.reader.object_admitted_to_space(object, space)?
+            };
         if let Ok(mut cache) = self.admitted_cache.lock() {
             cache.insert(key, value);
         }
