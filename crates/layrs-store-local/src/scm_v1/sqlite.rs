@@ -1,8 +1,8 @@
 //! SQLite connection and bootstrap boundary for native SCM V1.
 
 use super::schema::{
-    BASELINE_NAME, REQUIRED_TABLES, SCHEMA_CHECKSUM, SCHEMA_FINGERPRINT, SCHEMA_MAGIC, SCHEMA_SQL,
-    SCHEMA_VERSION, schema_checksum,
+    BASELINE_V2, BASELINE_V3, Baseline, REQUIRED_TABLES_V3, SCHEMA_CHECKSUM, SCHEMA_MAGIC,
+    SCHEMA_V3_CHECKSUM, schema_checksum, schema_v3_checksum,
 };
 use layrs_core::scm::{StoreId, canonical_json};
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
@@ -225,7 +225,18 @@ impl From<rusqlite::Error> for ScmSchemaError {
 /// published without clobbering an existing final file. A retry removes and
 /// durably recreates only this exact authenticated staging path. This function
 /// never opens, upgrades, or replaces an existing final database.
+#[cfg(test)]
 pub fn create_fresh(path: &Path, busy_timeout: Duration, store_id: &StoreId) -> Result<Connection> {
+    create_fresh_baseline(path, busy_timeout, store_id, &BASELINE_V2)
+}
+
+/// `create_fresh` with an explicit baseline (format 6 creates v3).
+pub fn create_fresh_baseline(
+    path: &Path,
+    busy_timeout: Duration,
+    store_id: &StoreId,
+    baseline: &Baseline,
+) -> Result<Connection> {
     validate_embedded_checksum()?;
     if path.exists() {
         return Err(ScmSchemaError::AlreadyExists(path.to_path_buf()));
@@ -248,6 +259,10 @@ pub fn create_fresh(path: &Path, busy_timeout: Duration, store_id: &StoreId) -> 
         &staged,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    if let Some(page_size) = baseline.page_size {
+        // Only an empty database takes a page size, before WAL is enabled.
+        connection.pragma_update(None, "page_size", page_size)?;
+    }
     configure_writer(&connection, busy_timeout)?;
     if !table_names(&connection)?.is_empty() {
         return Err(ScmSchemaError::InvalidStagedDatabase {
@@ -263,22 +278,22 @@ pub fn create_fresh(path: &Path, busy_timeout: Duration, store_id: &StoreId) -> 
     )
     .map_err(|error| ScmSchemaError::InvalidMetadata(error.to_string()))?;
     with_immediate_transaction(&mut connection, |transaction| {
-        transaction.execute_batch(SCHEMA_SQL)?;
+        transaction.execute_batch(baseline.sql)?;
         transaction.execute(
             "INSERT INTO meta(singleton, magic, schema_version, schema_checksum, created_at_ms)\
              VALUES (1, ?1, ?2, ?3, ?4)",
-            params![SCHEMA_MAGIC, SCHEMA_VERSION, SCHEMA_CHECKSUM, now_ms],
+            params![SCHEMA_MAGIC, baseline.version, baseline.checksum, now_ms],
         )?;
         transaction.execute(
             "INSERT INTO migrations(version, name, checksum, applied_at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![SCHEMA_VERSION, BASELINE_NAME, SCHEMA_CHECKSUM, now_ms],
+            params![baseline.version, baseline.name, baseline.checksum, now_ms],
         )?;
         transaction.execute(
             "INSERT INTO stores(store_id, payload_json, created_at_ms) VALUES (?1, ?2, ?3)",
             params![store_id.as_str(), store_payload, now_ms],
         )?;
         transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        transaction.pragma_update(None, "user_version", baseline.version)?;
         Ok(())
     })?;
     validate_schema(&connection, &staged)?;
@@ -634,14 +649,42 @@ pub fn with_immediate_transaction<T>(
 fn validate_embedded_checksum() -> Result<()> {
     // A pure function of this binary's embedded SQL: computed once.
     static VALID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *VALID.get_or_init(|| schema_checksum() == SCHEMA_CHECKSUM) {
+    if *VALID.get_or_init(|| {
+        schema_checksum() == SCHEMA_CHECKSUM && schema_v3_checksum() == SCHEMA_V3_CHECKSUM
+    }) {
         return Ok(());
     }
-    let actual = schema_checksum();
-    if actual != SCHEMA_CHECKSUM {
-        return Err(ScmSchemaError::EmbeddedChecksumMismatch {
-            published: SCHEMA_CHECKSUM.into(),
-            actual,
+    for (actual, published) in [
+        (schema_checksum(), SCHEMA_CHECKSUM),
+        (schema_v3_checksum(), SCHEMA_V3_CHECKSUM),
+    ] {
+        if actual != published {
+            return Err(ScmSchemaError::EmbeddedChecksumMismatch {
+                published: published.into(),
+                actual,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The baseline version of a validated database (2, or 3 for format 6).
+pub(crate) fn schema_version(connection: &Connection) -> Result<u32> {
+    Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+/// Refuses a database whose baseline is not the one of the Store format
+/// that names it: a format 6 Store holds v3, formats 2 and 5 hold v2.
+pub(crate) fn require_baseline_for_format(
+    connection: &Connection,
+    format_version: u32,
+) -> Result<()> {
+    let expected = super::schema::baseline_for_format(format_version).version;
+    let found = schema_version(connection)?;
+    if found != expected {
+        return Err(ScmSchemaError::UnsupportedSchema {
+            found,
+            supported: expected,
         });
     }
     Ok(())
@@ -730,11 +773,30 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
             tables,
         });
     }
-    validate_required_tables(&tables)?;
+    // A database is checked against the baseline whose exact table set it
+    // has; anything else is checked (and refused) as v2, as before format 6.
+    let baseline = if tables.len() == REQUIRED_TABLES_V3.len()
+        && REQUIRED_TABLES_V3
+            .iter()
+            .all(|table| tables.iter().any(|actual| actual == table))
+    {
+        &BASELINE_V3
+    } else {
+        &BASELINE_V2
+    };
+    validate_schema_against(connection, &tables, baseline)
+}
+
+fn validate_schema_against(
+    connection: &Connection,
+    tables: &[String],
+    baseline: &Baseline,
+) -> Result<()> {
+    validate_required_tables(tables, baseline.required_tables)?;
     let fingerprint = schema_fingerprint(connection)?;
-    if fingerprint != SCHEMA_FINGERPRINT {
+    if fingerprint != baseline.fingerprint {
         return Err(ScmSchemaError::SchemaFingerprintMismatch {
-            expected: SCHEMA_FINGERPRINT.into(),
+            expected: baseline.fingerprint.into(),
             actual: fingerprint,
         });
     }
@@ -757,15 +819,15 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
             actual: magic,
         });
     }
-    if version != SCHEMA_VERSION {
+    if version != baseline.version {
         return Err(ScmSchemaError::UnsupportedSchema {
             found: version,
-            supported: SCHEMA_VERSION,
+            supported: baseline.version,
         });
     }
-    if checksum != SCHEMA_CHECKSUM {
+    if checksum != baseline.checksum {
         return Err(ScmSchemaError::ChecksumMismatch {
-            expected: SCHEMA_CHECKSUM.into(),
+            expected: baseline.checksum.into(),
             actual: checksum,
         });
     }
@@ -779,10 +841,10 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     )?;
     let user_version: u32 =
         connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if user_version != SCHEMA_VERSION {
+    if user_version != baseline.version {
         return Err(ScmSchemaError::UnsupportedSchema {
             found: user_version,
-            supported: SCHEMA_VERSION,
+            supported: baseline.version,
         });
     }
 
@@ -795,10 +857,10 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     }
     let (name, migration_checksum): (String, String) = connection.query_row(
         "SELECT name, checksum FROM migrations WHERE version = ?1",
-        [SCHEMA_VERSION],
+        [baseline.version],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    if name != BASELINE_NAME || migration_checksum != SCHEMA_CHECKSUM {
+    if name != baseline.name || migration_checksum != baseline.checksum {
         return Err(ScmSchemaError::InvalidMetadata(
             "baseline migration ledger does not match the embedded schema".into(),
         ));
@@ -806,11 +868,9 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_required_tables(actual: &[String]) -> Result<()> {
-    let expected: std::collections::BTreeSet<_> = REQUIRED_TABLES
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
+fn validate_required_tables(actual: &[String], required: &[&str]) -> Result<()> {
+    let expected: std::collections::BTreeSet<_> =
+        required.iter().map(|name| (*name).to_owned()).collect();
     let actual: std::collections::BTreeSet<_> = actual.iter().cloned().collect();
     let missing_tables = expected.difference(&actual).cloned().collect::<Vec<_>>();
     let unexpected_tables = actual.difference(&expected).cloned().collect::<Vec<_>>();

@@ -47,9 +47,9 @@ impl Drop for TestRoot {
 
 fn exclusive_store(root: &TestRoot, format_2: bool) -> NativeStoreExclusive {
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    if format_2 {
-        unsafe { std::env::set_var("LAYRS_STORE_FORMAT", "2") };
-    }
+    // Format 2 or the packed format 5 these tests are about, whatever
+    // LAYRS_STORE_FORMAT the suite runs with (format 6 is `scm_format6.rs`).
+    unsafe { std::env::set_var("LAYRS_STORE_FORMAT", if format_2 { "2" } else { "5" }) };
     let created = init_store(
         &root.0,
         StoreId::parse(format!("store:packs-{sequence}")).unwrap(),

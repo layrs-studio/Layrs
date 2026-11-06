@@ -18,12 +18,27 @@ use layrs_store::scm::{
     TransactionId, WorktreeActiveOperationCas, WriteBatch,
 };
 use layrs_store_local::scm_v1::{
-    CompositeAdmissionResolver, NativeCas, NativeScmReader, NativeTransactionalScmReader, init,
-    open, open_exclusive,
+    CompositeAdmissionResolver, NativeCas, NativeScmReader, NativeTransactionalScmReader, open,
+    open_exclusive,
 };
 use rusqlite::{Connection, params};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
+}
 
 struct Fixture {
     store_id: StoreId,

@@ -26,6 +26,9 @@ impl NativeScmReader<'_> {
     /// Reads only the bounded metadata row needed to account for a Chunk
     /// before its CAS payload can be opened or allocated.
     pub(super) fn preflight_chunk_bytes(&self, id: &ChunkId) -> Result<usize> {
+        if self.compact() {
+            return self.preflight_chunk_bytes_compact(id);
+        }
         let object_id = StoreObjectId::ChunkRaw(id.clone());
         let connection = self.connection()?;
         let row: Option<(String, String, i64, i64)> = connection
@@ -104,6 +107,9 @@ impl NativeScmReader<'_> {
     /// proof that content is intact. `None` when the File is not present.
     pub fn file_length_metadata(&self, id: &FileId) -> Result<Option<u64>> {
         let _span = crate::perf::span("read.file_length_metadata");
+        if self.compact() {
+            return self.file_length_metadata_compact(id);
+        }
         let connection = self.connection()?;
         let state: Option<String> = connection
             .prepare_cached("SELECT availability FROM file_availability WHERE file_id = ?1")
@@ -155,6 +161,9 @@ impl NativeScmReader<'_> {
         files: impl IntoIterator<Item = &'f FileId>,
     ) -> Result<std::collections::BTreeMap<FileId, u64>> {
         let _span = crate::perf::span("read.file_lengths_metadata");
+        if self.compact() {
+            return self.file_lengths_metadata_compact(files);
+        }
         const BATCH: usize = 256;
         let connection = self.connection()?;
         let files: std::collections::BTreeSet<&FileId> = files.into_iter().collect();
@@ -215,6 +224,9 @@ impl NativeScmReader<'_> {
         space: &layrs_core::scm::SpaceId,
     ) -> Result<std::collections::BTreeMap<FileId, FileManifestId>> {
         let _span = crate::perf::span("read.admitted_manifests_metadata");
+        if self.compact() {
+            return self.admitted_manifests_metadata_compact(files, space);
+        }
         const BATCH: usize = 256;
         let connection = self.connection()?;
         let files: std::collections::BTreeSet<&FileId> = files.into_iter().collect();
@@ -271,6 +283,9 @@ impl NativeScmReader<'_> {
         limit: usize,
     ) -> Result<Option<std::collections::BTreeSet<layrs_core::scm::ChunkId>>> {
         let _span = crate::perf::span("read.admitted_chunk_ids_of_files");
+        if self.compact() {
+            return self.admitted_chunk_ids_of_files_compact(space, files, limit);
+        }
         // Batches of FileIds per query (bounded below SQLite's parameter limit).
         const BATCH: usize = 256;
         let connection = self.connection()?;
@@ -316,6 +331,9 @@ impl NativeScmReader<'_> {
     /// Manifest ids of a File recorded `present`, from metadata only (no
     /// manifest object read, no chunk re-hash). Empty when not present.
     pub fn file_manifest_ids_metadata(&self, id: &FileId) -> Result<Vec<FileManifestId>> {
+        if self.compact() {
+            return self.file_manifest_ids_metadata_compact(id);
+        }
         let connection = self.connection()?;
         let state: Option<String> = connection
             .prepare_cached("SELECT availability FROM file_availability WHERE file_id = ?1")
@@ -392,6 +410,28 @@ impl NativeScmReader<'_> {
         let mut consumed = FileAvailabilityConsumption::default();
         consumed.charge_rows(1, limits.rows)?;
 
+        let manifest_rows = if self.compact() {
+            match self.file_availability_rows_compact(id, limits, &mut consumed)? {
+                Some(rows) => rows,
+                None => return Ok(FileAvailability::Absent),
+            }
+        } else {
+            match self.file_availability_rows(id, limits, &mut consumed)? {
+                Some(rows) => rows,
+                None => return Ok(FileAvailability::Absent),
+            }
+        };
+        self.verify_file_availability(id, limits, &mut consumed, manifest_rows)
+    }
+
+    /// The manifest rows of a File recorded `present`, charged; `None` when
+    /// the File is absent.
+    fn file_availability_rows(
+        &self,
+        id: &FileId,
+        limits: FileAvailabilityLimits,
+        consumed: &mut FileAvailabilityConsumption,
+    ) -> Result<Option<Vec<FileManifestId>>> {
         let connection = self.connection()?;
         let state: Option<String> = connection
             .query_row(
@@ -402,7 +442,7 @@ impl NativeScmReader<'_> {
             .optional()
             .map_err(sqlite_backend)?;
         let Some(state) = state else {
-            return Ok(FileAvailability::Absent);
+            return Ok(None);
         };
         if state != "present" {
             return Err(corruption(format!(
@@ -446,7 +486,18 @@ impl NativeScmReader<'_> {
                 "present file {id} has no verified manifest"
             )));
         }
+        Ok(Some(manifest_rows))
+    }
 
+    /// Reads every listed manifest and verifies its chunks, charging the
+    /// budget before each read.
+    fn verify_file_availability(
+        &self,
+        id: &FileId,
+        limits: FileAvailabilityLimits,
+        consumed: &mut FileAvailabilityConsumption,
+        manifest_rows: Vec<FileManifestId>,
+    ) -> Result<FileAvailability> {
         let mut manifests = Vec::with_capacity(manifest_rows.len());
         for manifest_id in manifest_rows {
             let manifest = self.get_file_manifest(&manifest_id)?.ok_or_else(|| {

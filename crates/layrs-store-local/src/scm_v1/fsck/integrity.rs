@@ -123,11 +123,12 @@ impl Context<'_> {
                 ))
             },
         );
+        let baseline = self.baseline;
         match meta {
             Ok((magic, version, checksum))
                 if magic == SCHEMA_MAGIC
-                    && version == SCHEMA_VERSION
-                    && checksum == SCHEMA_CHECKSUM => {}
+                    && version == baseline.version
+                    && checksum == baseline.checksum => {}
             Ok((magic, version, checksum)) => self.error(
                 FsckFindingCode::SchemaMetadataMismatch,
                 None,
@@ -141,10 +142,10 @@ impl Context<'_> {
         }
         let migration = self.connection.query_row(
             "SELECT name, checksum FROM migrations WHERE version = ?1",
-            [SCHEMA_VERSION],
+            [baseline.version],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         );
-        if !matches!(migration, Ok((ref name, ref checksum)) if name == BASELINE_NAME && checksum == SCHEMA_CHECKSUM)
+        if !matches!(migration, Ok((ref name, ref checksum)) if name == baseline.name && checksum == baseline.checksum)
         {
             self.error(
                 FsckFindingCode::SchemaMetadataMismatch,
@@ -153,11 +154,14 @@ impl Context<'_> {
             );
         }
         match sqlite::schema_fingerprint(self.connection) {
-            Ok(actual) if actual == SCHEMA_FINGERPRINT => {}
+            Ok(actual) if actual == baseline.fingerprint => {}
             Ok(actual) => self.error(
                 FsckFindingCode::SchemaFingerprintMismatch,
                 None,
-                format!("schema fingerprint {actual} differs from {SCHEMA_FINGERPRINT}"),
+                format!(
+                    "schema fingerprint {actual} differs from {}",
+                    baseline.fingerprint
+                ),
             ),
             Err(error) => self.error(
                 FsckFindingCode::SchemaFingerprintMismatch,
@@ -178,7 +182,10 @@ impl Context<'_> {
         let Ok(actual) = result else {
             return false;
         };
-        REQUIRED_TABLES.iter().all(|table| actual.contains(*table))
+        self.baseline
+            .required_tables
+            .iter()
+            .all(|table| actual.contains(*table))
     }
 
     pub(super) fn check_sqlite_integrity(&mut self) {
@@ -202,7 +209,9 @@ impl Context<'_> {
     }
 
     pub(super) fn check_foreign_keys(&mut self) {
-        let result = (|| -> rusqlite::Result<Vec<(String, i64, String, i64)>> {
+        // A WITHOUT ROWID table (format 6) reports no rowid.
+        type ForeignKeyRow = (String, Option<i64>, String, i64);
+        let result = (|| -> rusqlite::Result<Vec<ForeignKeyRow>> {
             let mut statement = self.connection.prepare("PRAGMA foreign_key_check")?;
             let rows = statement.query_map([], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -212,6 +221,7 @@ impl Context<'_> {
         match result {
             Ok(rows) => {
                 for (table, rowid, parent, constraint) in rows {
+                    let rowid = rowid.map_or_else(|| "-".to_owned(), |rowid| rowid.to_string());
                     self.error(
                         FsckFindingCode::ForeignKeyViolation,
                         Some(format!("{table}:{rowid}")),

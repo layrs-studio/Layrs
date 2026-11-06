@@ -114,7 +114,18 @@ fn repeated_file_content_keeps_each_path_and_is_revalidated_on_later_reads() {
     assert_eq!(fs::read(checkout.0.join("copy")).unwrap(), b"hello\0world");
     assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"hello\0world");
     // A later read must not trust a process-global cache of previously valid CAS.
-    let mut pending = vec![workspace.store_root().join("objects")];
+    let shared = layrs_store::scm::StoreObjectId::ChunkRaw(
+        layrs_core::scm::Chunk::new(b"hello\0world".to_vec())
+            .unwrap()
+            .id()
+            .clone(),
+    );
+    let compact = damage_compact_object(workspace.store_root(), &shared).is_some();
+    let mut pending = if compact {
+        Vec::new()
+    } else {
+        vec![workspace.store_root().join("objects")]
+    };
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(directory).unwrap() {
             let entry = entry.unwrap();
@@ -132,9 +143,12 @@ fn repeated_file_content_keeps_each_path_and_is_revalidated_on_later_reads() {
     assert!(workspace.read_step_files(marker.target_step_id()).is_err());
     // Projections carry metadata only; every use that writes bytes re-verifies
     // them, so a restore needing the tampered content refuses before writing.
-    workspace
-        .read_step_projection(marker.target_step_id())
-        .unwrap();
+    // Format 6: this Step's Trees share the damaged block (ADR 0028: one
+    // damaged byte fails its whole block), so its projection fails as well.
+    let projection = workspace.read_step_projection(marker.target_step_id());
+    if !compact {
+        projection.unwrap();
+    }
     fs::write(checkout.0.join("copy"), b"edited after tamper").unwrap();
     assert!(workspace
         .restore_step(marker.target_step_id(), None)
@@ -425,4 +439,40 @@ fn native_diff_preserves_newlines_and_distinguishes_empty_from_absence() {
     assert_eq!(empty.after_bytes, Some(0));
     assert!(changes.iter().find(|c| c.path == "binary").unwrap().binary);
     assert_eq!(workspace.operations(100).unwrap().len(), 1);
+}
+
+/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
+/// than one loose file each: this damages `object`'s stored bytes by
+/// flipping one byte of the block that holds it (every record of that block
+/// then fails verification) and returns that pack. `None` for other formats,
+/// whose tests damage the loose file as before.
+fn damage_compact_object(
+    store_root: &std::path::Path,
+    object: &layrs_store::scm::StoreObjectId,
+) -> Option<std::path::PathBuf> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let store = layrs_store_local::scm_v1::open(store_root).unwrap();
+    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+        return None;
+    }
+    let location = layrs_store_local::scm_v1::NativeCas::open(&store)
+        .unwrap()
+        .locate(object)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
+        panic!("format 6 object {object} is not packed");
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pack)
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
+    Some(pack)
 }

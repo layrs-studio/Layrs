@@ -482,9 +482,22 @@ impl VfsRecovery {
         id: &layrs_core::scm::FileId,
     ) -> io::Result<u64> {
         use layrs_store::scm::ScmReader;
-        let manifest_id: Option<String> = store.connection().map_err(io::Error::other)?
-            .query_row("SELECT manifest_id FROM file_manifests WHERE file_id=?1 ORDER BY manifest_id LIMIT 1",
-                [id.as_str()], |row| row.get(0)).optional().map_err(io::Error::other)?;
+        // Format 6 has no file_manifests rows: the smallest manifest id of
+        // the File comes from the registered catalog (FileId sections and
+        // file records), as the query below answers it for format 5.
+        let manifest_id: Option<String> = if store.compact() {
+            super::NativeScmReader::new(store)
+                .map_err(io::Error::other)?
+                .file_manifest_ids_metadata(id)
+                .map_err(io::Error::other)?
+                .into_iter()
+                .next()
+                .map(|manifest| manifest.to_string())
+        } else {
+            store.connection().map_err(io::Error::other)?
+                .query_row("SELECT manifest_id FROM file_manifests WHERE file_id=?1 ORDER BY manifest_id LIMIT 1",
+                    [id.as_str()], |row| row.get(0)).optional().map_err(io::Error::other)?
+        };
         let manifest_id = layrs_core::scm::FileManifestId::parse(
             manifest_id.ok_or_else(|| invalid("VFS file manifest metadata missing"))?,
         )

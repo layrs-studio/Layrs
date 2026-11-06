@@ -51,7 +51,10 @@ impl ScmReader for NativeScmReader<'_> {
         match self.read_object(&StoreObjectId::ChunkRaw(id.clone()))? {
             None => Ok(None),
             Some(CanonicalObject::ChunkRaw(value)) => {
-                self.validate_object_edges(&StoreObjectId::ChunkRaw(id.clone()), vec![])?;
+                // Format 6: content has no objects row, hence no edges.
+                if !self.compact() {
+                    self.validate_object_edges(&StoreObjectId::ChunkRaw(id.clone()), vec![])?;
+                }
                 Ok(Some(value))
             }
             Some(_) => Err(corruption(format!("CAS kind mismatch for Chunk {id}"))),
@@ -62,7 +65,11 @@ impl ScmReader for NativeScmReader<'_> {
         match self.read_object(&StoreObjectId::FileManifest(id.clone()))? {
             None => Ok(None),
             Some(CanonicalObject::FileManifest(value)) => {
-                self.validate_manifest_projection(&value)?;
+                // Format 6 has no manifest projection to cross-check: the
+                // manifest is decoded (or rebuilt) and verified against its id.
+                if !self.compact() {
+                    self.validate_manifest_projection(&value)?;
+                }
                 Ok(Some(value))
             }
             Some(_) => Err(corruption(format!(
@@ -365,11 +372,15 @@ impl ScmReader for NativeScmReader<'_> {
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool> {
-        let admitted = self.exists(
-            "SELECT 1 FROM space_object_admissions WHERE object_id = ?1 AND space_id = ?2",
-            object_id.as_str(),
-            Some(space_id.as_str()),
-        )?;
+        let admitted = if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
+            self.content_admitted_compact(object_id, space_id)?
+        } else {
+            self.exists(
+                "SELECT 1 FROM space_object_admissions WHERE object_id = ?1 AND space_id = ?2",
+                object_id.as_str(),
+                Some(space_id.as_str()),
+            )?
+        };
         if !admitted {
             return Ok(false);
         }
@@ -421,6 +432,9 @@ impl ScmReader for NativeScmReader<'_> {
     /// its `verified` object row (`repository.rs` insert_object_rows), and
     /// every read verifies them again; presence is answered from that row.
     fn chunk_present_metadata(&self, id: &layrs_core::scm::ChunkId) -> Result<bool> {
+        if self.compact() {
+            return self.chunk_present_compact(id);
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare_cached(
@@ -439,6 +453,9 @@ impl ScmReader for NativeScmReader<'_> {
         object_id: &StoreObjectId,
         space_id: &SpaceId,
     ) -> Result<bool> {
+        if self.compact() && crate::scm_v1::cas::is_content(object_id.kind()) {
+            return self.content_admitted_compact(object_id, space_id);
+        }
         let connection = self.connection()?;
         let mut statement = connection
             .prepare_cached(

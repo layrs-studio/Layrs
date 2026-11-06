@@ -1,4 +1,5 @@
 use super::*;
+use crate::scm_v1::schema::{REQUIRED_TABLES, SCHEMA_FINGERPRINT, SCHEMA_VERSION};
 use rusqlite::TransactionBehavior;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -637,10 +637,13 @@ fn secondary_audit_resolves_registered_identity_when_selected_view_is_corrupt() 
     let store = secondary.open_store().unwrap();
     let path = scm_v1::NativeCas::open(&store)
         .unwrap()
-        .object_path(&StoreObjectId::RepositoryView(view))
+        .object_path(&StoreObjectId::RepositoryView(view.clone()))
         .unwrap();
     drop(store);
-    fs::write(path, b"corrupt selected View").unwrap();
+    if damage_compact_object(secondary.store_root(), &StoreObjectId::RepositoryView(view)).is_none()
+    {
+        fs::write(path, b"corrupt selected View").unwrap();
+    }
     assert!(NativeWorkspace::open(&root).is_err());
     assert_eq!(
         NativeWorkspace::resolve_store_for_audit(&root).unwrap(),
@@ -719,4 +722,40 @@ fn different_volume_is_rejected_before_locator_even_for_an_empty_step() {
     assert!(fs::read_dir(&root).unwrap().next().is_none());
     assert_eq!(primary.list_worktrees().unwrap().len(), 1);
     fs::remove_dir(&root).unwrap();
+}
+
+/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
+/// than one loose file each: this damages `object`'s stored bytes by
+/// flipping one byte of the block that holds it (every record of that block
+/// then fails verification) and returns that pack. `None` for other formats,
+/// whose tests damage the loose file as before.
+fn damage_compact_object(
+    store_root: &std::path::Path,
+    object: &layrs_store::scm::StoreObjectId,
+) -> Option<std::path::PathBuf> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let store = layrs_store_local::scm_v1::open(store_root).unwrap();
+    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+        return None;
+    }
+    let location = layrs_store_local::scm_v1::NativeCas::open(&store)
+        .unwrap()
+        .locate(object)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
+        panic!("format 6 object {object} is not packed");
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pack)
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
+    Some(pack)
 }

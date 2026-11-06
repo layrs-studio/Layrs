@@ -240,6 +240,9 @@ pub struct NativeStoreOpen {
     /// Last successful implicit identity check made by `connection()`.
     implicit_verified: Mutex<Option<std::time::Instant>>,
     format_version: u32,
+    /// Format 6: the registered CAS catalog of this immutable snapshot,
+    /// loaded once by the first CAS view opened on it.
+    registered: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
 }
 
 /// Implicit per-query rebinding checks are throttled to this interval. SQLite
@@ -268,7 +271,14 @@ impl NativeStoreOpen {
             bound_metadata: None,
             implicit_verified: Mutex::new(None),
             format_version: super::FORMAT_VERSION,
+            registered: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn registered_catalog(
+        &self,
+    ) -> &std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>> {
+        &self.registered
     }
 
     pub fn layout(&self) -> &NativeStoreLayout {
@@ -279,14 +289,20 @@ impl NativeStoreOpen {
         &self.store_id
     }
 
-    /// The validated format version of this Store (2 or 5).
+    /// The validated format version of this Store (2, 5 or 6).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
 
-    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    /// Whether this Store's CAS may hold packs v1 of small objects (ADR
+    /// 0026): format 5 only. Format 6 has packs v2 registered in SQLite.
     pub fn packs_enabled(&self) -> bool {
-        self.format_version >= super::PACKED_FORMAT_VERSION
+        self.format_version == super::PACKED_FORMAT_VERSION
+    }
+
+    /// Whether this Store has the compact format 6 (ADR 0028).
+    pub fn compact(&self) -> bool {
+        self.format_version == super::COMPACT_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -357,14 +373,20 @@ impl NativeStoreAudit {
         }
     }
 
-    /// The validated format version of this Store (2 or 5).
+    /// The validated format version of this Store (2, 5 or 6).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
 
-    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    /// Whether this Store's CAS may hold packs v1 of small objects (ADR
+    /// 0026): format 5 only. Format 6 has packs v2 registered in SQLite.
     pub fn packs_enabled(&self) -> bool {
-        self.format_version >= super::PACKED_FORMAT_VERSION
+        self.format_version == super::PACKED_FORMAT_VERSION
+    }
+
+    /// Whether this Store has the compact format 6 (ADR 0028).
+    pub fn compact(&self) -> bool {
+        self.format_version == super::COMPACT_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -412,14 +434,20 @@ impl NativeStoreExclusive {
         }
     }
 
-    /// The validated format version of this Store (2 or 5).
+    /// The validated format version of this Store (2, 5 or 6).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
 
-    /// Whether this Store's CAS may hold packs of small objects (ADR 0026).
+    /// Whether this Store's CAS may hold packs v1 of small objects (ADR
+    /// 0026): format 5 only. Format 6 has packs v2 registered in SQLite.
     pub fn packs_enabled(&self) -> bool {
-        self.format_version >= super::PACKED_FORMAT_VERSION
+        self.format_version == super::PACKED_FORMAT_VERSION
+    }
+
+    /// Whether this Store has the compact format 6 (ADR 0028).
+    pub fn compact(&self) -> bool {
+        self.format_version == super::COMPACT_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {

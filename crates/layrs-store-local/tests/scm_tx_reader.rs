@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use layrs_core::scm::{Chunk, ChunkingDescriptor, FileManifest, StepId, StoreId, canonical_json};
 use layrs_store::scm::{CanonicalObject, ScmReader, StoreObjectId};
 use layrs_store_local::scm_v1::{
-    NativeCas, NativeScmReader, NativeTransactionalScmReader, init, open, open_exclusive,
+    NativeCas, NativeScmReader, NativeTransactionalScmReader, open, open_exclusive,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -211,4 +211,19 @@ fn transaction_reader_requires_active_transaction_and_checks_sql_cas_projection(
             .code(),
         "backend_error"
     );
+}
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
 }
