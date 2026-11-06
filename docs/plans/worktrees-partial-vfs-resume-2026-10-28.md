@@ -1,5 +1,58 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - format 6 intégré, conseil r2-r3 (Claude + sous-agent Claude + conseil, 2026-11-06)
+
+Le format 6 (ADR 0028, phases 2-3) a été implémenté par un sous-agent sur `feature/store-format-6`, puis fusionné dans cette branche (`550edce`, `1a1733d`, `dfed343`). Il reste opt-in : `LAYRS_STORE_FORMAT=6`.
+
+**Revue du conseil**
+
+| Tour | Astra | Sol | Opus | Verdict |
+| --- | --- | --- | --- | --- |
+| r2 | 6/10 | 7/10 | 6/10 | `ship after fixes` pour les trois |
+| r3 | 7/10 | 7/10 | 8/10 | `ship after fixes` pour les trois, sans P0 ni P1 |
+
+Tous les points relevés ont été corrigés dans `dc50350`, `0420b92`, `406cba3`, `d911986`, `86cd279`, `e469171` et `4c85174`. Le cache d'arbres est désormais limité à la session sur le Store. Les audits relisent les métadonnées de pack sur le disque et vérifient chaque copie.
+
+Bloquants avant de passer le format 6 par défaut (voir `docs/plans/store-format-6.md`) :
+- **Pack illisible.** Un seul pack illisible bloque tout le Store. Il faut un filtre négatif par pack et une commande `layrs store repair`.
+- **Consolidation (phase 5).** Chaque lot ajoute un pack.
+
+**Mesures à 10 000 fichiers, même dossier, format 6, contre git**
+
+| | Layrs (format 6) | git |
+| --- | --- | --- |
+| `init` | 1,9 s | 43,8 s |
+| `.layrs` après `init` | 2 373 Kio | 1 655 Kio |
+| Store après le scénario complet | 4 257 Kio (format 5 : 46,5 Mo) | 1 822 Kio |
+| `status` | 91–101 ms | 50 ms |
+| commit | 231 ms | 150 ms |
+| espace agent | 2,8 s | 2,2 s |
+| lecture complète | 3,5 s | 2,7–3,4 s |
+| fusion en avance rapide | 480–550 ms | 74–89 ms |
+| 2e fusion | 493–548 ms | 72–75 ms |
+| fusion 3 voies | 922 ms | 316–362 ms |
+| `drop` | 0,5–0,6 s | 1,3 s |
+
+**Tests et validation**
+- Suites complètes passées en format 5 et en format 6 : `store-local`, `client-core` `native_*`, CLI `native_rooms`.
+- Clippy propre sous Windows et sous Linux (croisé, zig).
+- La CI ne tourne que sur `main`.
+
+**Reste à faire pour la taille**
+- Caches du dossier de travail :
+  - ne plus répéter le FileId dans l'index de changements quand il est égal à celui de la base ;
+  - réduire le cache de projection (au plus 4 fichiers d'environ 410 Kio).
+- ChunkId sur un préfixe vérifié : environ 270 Kio.
+- Arbres binaires (phase 4).
+- Consolidation (phase 5) et deltas (phase 7).
+
+**Reste à faire pour les fusions**
+- Lot validé deux fois.
+- Bloc avant le journal sans span.
+- Une vingtaine d'ouvertures du Store par fusion.
+
+**À relever séparément.** Le budget de calcul par défaut de fsck est dépassé vers 100 000 fichiers, dans les deux formats.
+
 ## Point courant - taille (ADR 0028), Rooms hybrides, fusions (Claude + conseil r1 taille, 2026-11-06)
 
 Demande : « fais moi tout : taille, rooms hybrides et fusions ».

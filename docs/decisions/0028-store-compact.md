@@ -1,7 +1,9 @@
 # 0028 — Store compact : taille égale ou inférieure à git
 
 Date : 6 novembre 2026. Statut : décidé, en cours d'implémentation par
-phases. Demandé par l'utilisateur (« évidemment que la taille compte, fais
+phases. Phase 1 faite. Phases 2-3 faites en opt-in (`LAYRS_STORE_FORMAT=6`),
+relues par le conseil (r2, r3) : 2 373 Kio après `init` à 10 000 fichiers,
+contre 43 233 Kio pour le format 5 et 1 655 Kio pour git. Demandé par l'utilisateur (« évidemment que la taille compte, fais
 moi tout »), conçu avec le conseil (tour 1 : Astra, Sol, Opus, accord sur
 la direction ; deux désaccords tranchés ci-dessous).
 
