@@ -109,6 +109,12 @@ pub enum CasError {
         message: String,
     },
     UnsupportedPublication,
+    /// A registered pack v2 (format 6) is damaged: its bytes or metadata do
+    /// not match what SQLite registered. Corruption, never absence.
+    PackCorruption {
+        path: PathBuf,
+        reason: String,
+    },
 }
 
 impl CasError {
@@ -124,6 +130,7 @@ impl CasError {
             Self::InvalidStagingPath(_) => "cas_invalid_staging_path",
             Self::InjectedFault { .. } => "cas_injected_fault",
             Self::UnsupportedPublication => "cas_publication_unsupported",
+            Self::PackCorruption { .. } => "cas_pack_corruption",
         }
     }
 }
@@ -165,6 +172,9 @@ impl fmt::Display for CasError {
             }
             Self::UnsupportedPublication => {
                 formatter.write_str("atomic no-clobber CAS publication is unsupported")
+            }
+            Self::PackCorruption { path, reason } => {
+                write!(formatter, "corrupt CAS pack {}: {reason}", path.display())
             }
         }
     }
@@ -1669,6 +1679,8 @@ impl<'store> NativeCasWriter<'store> {
 }
 
 mod codec;
+#[allow(dead_code)] // wired by the format-6 write and read paths
+mod pack2;
 mod packs;
 mod paths;
 use codec::*;

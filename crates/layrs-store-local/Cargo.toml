@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_json = "1"
 serde_jcs = "0.1"
 time = { version = "=0.3.36", features = ["parsing"] }
+zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 layrs-vfs = { path = "../layrs-vfs" }

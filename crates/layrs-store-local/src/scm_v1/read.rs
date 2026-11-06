@@ -540,6 +540,7 @@ fn cas_read_error(error: CasError) -> StoreError {
         | CasError::IdMismatch { .. }
         | CasError::Corruption { .. }
         | CasError::ExistingObjectMismatch { .. }
+        | CasError::PackCorruption { .. }
         | CasError::InvalidStagingPath(_) => corruption(format!("CAS read failed: {error}")),
     }
 }
