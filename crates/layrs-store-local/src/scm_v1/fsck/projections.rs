@@ -168,6 +168,9 @@ impl Context<'_> {
                         );
                     }
                 }
+                // Format 6 has no manifest_chunk edges: the manifest itself
+                // (or its file record) is the only chunk list.
+                CanonicalObject::FileManifest(_) if self.compact => {}
                 CanonicalObject::FileManifest(value) => {
                     for (ordinal, chunk) in value.chunks().iter().enumerate() {
                         if !self.consume_cpu(1) {
@@ -211,11 +214,15 @@ impl Context<'_> {
                                 target_id,
                             ));
                         } else if let Some(file_id) = target.file_id() {
-                            let present: bool = self.connection.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM file_manifests WHERE file_id=?1)",
-                                [file_id.as_str()],
-                                |row| row.get(0),
-                            )?;
+                            let present: bool = if self.compact {
+                                self.file_present_compact(file_id)?
+                            } else {
+                                self.connection.query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM file_manifests WHERE file_id=?1)",
+                                    [file_id.as_str()],
+                                    |row| row.get(0),
+                                )?
+                            };
                             if !present {
                                 self.finding(
                                     FsckFindingCode::TreeClosureBroken,

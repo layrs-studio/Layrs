@@ -382,6 +382,10 @@ pub struct NativeCasAudit {
 }
 
 impl NativeCasAudit {
+    pub(crate) fn into_inner(self) -> NativeCas {
+        self.cas
+    }
+
     pub fn objects_dir(&self) -> &Path {
         self.cas.objects_dir()
     }

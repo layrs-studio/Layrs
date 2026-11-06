@@ -354,14 +354,8 @@ fn pack_counts(path: &Path) -> (u64, u64) {
 }
 
 fn assert_fsck_clean(root: &Path) {
-    // fsck learns format 6 in the next commit; format 5 is checked now.
-    let format_5 = fs::read_to_string(root.join("FORMAT"))
-        .unwrap()
-        .contains("\"formatVersion\":5");
-    if format_5 {
-        let report = fsck_existing(root, FsckOptions::default()).unwrap();
-        assert!(report.is_clean(), "{:#?}", report.findings);
-    }
+    let report = fsck_existing(root, FsckOptions::default()).unwrap();
+    assert!(report.is_clean(), "{:#?}", report.findings);
 }
 
 fn reader_answers(root: &Path, files: &[File], space: &SpaceId) -> Vec<String> {

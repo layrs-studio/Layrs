@@ -632,6 +632,50 @@ impl RegisteredCatalog {
         Ok(None)
     }
 
+    /// Every registered content object: explicit content records, the chunk
+    /// and the manifest each file record stands for, and loose content.
+    /// Records whose identity cannot be rebuilt are returned as errors.
+    pub(crate) fn content_objects(&self) -> (Vec<StoreObjectId>, Vec<CasError>) {
+        let mut ids = Vec::new();
+        let mut errors = Vec::new();
+        for registered in &self.packs {
+            let loaded = &registered.pack;
+            for kind in [StoreObjectKind::ChunkRaw, StoreObjectKind::FileManifest] {
+                for ordinal in loaded.index.kind_range(pack2::kind_code(kind)) {
+                    if let Some((_, digest, _)) = loaded.index.explicit(ordinal) {
+                        match pack2::object_id_of(kind, digest) {
+                            Ok(id) => ids.push(id),
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                }
+            }
+            for file in 0..loaded.index.files.len() {
+                match loaded.alias_ids(file) {
+                    Ok((_, chunk)) => ids.push(StoreObjectId::ChunkRaw(chunk)),
+                    Err(error) => errors.push(error),
+                }
+                match loaded
+                    .alias_manifest_digest(file)
+                    .and_then(|digest| pack2::object_id_of(StoreObjectKind::FileManifest, &digest))
+                {
+                    Ok(id) => ids.push(id),
+                    Err(error) => errors.push(error),
+                }
+            }
+        }
+        for (digest, entry) in &self.loose {
+            match pack2::kind_of_code(entry.kind)
+                .ok_or_else(|| pack2::pack2_corruption(&self_path(), "loose object kind"))
+                .and_then(|kind| pack2::object_id_of(kind, digest))
+            {
+                Ok(id) => ids.push(id),
+                Err(error) => errors.push(error),
+            }
+        }
+        (ids, errors)
+    }
+
     /// Logical admission ordinals of `id`'s pack copies: (pack_seq, ordinal).
     /// `loose` tells whether a registered loose copy exists.
     pub(crate) fn logical_ordinals(

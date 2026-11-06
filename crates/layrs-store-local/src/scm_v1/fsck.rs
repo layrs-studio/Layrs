@@ -5,10 +5,7 @@ use super::format::{
     MAX_FORMAT_BYTES, NativeStoreError, NativeStoreInspection, inspect, open_audit,
 };
 use super::layout::{NativeStoreAudit, NativeStoreLayout};
-use super::schema::{
-    BASELINE_NAME, REQUIRED_TABLES, SCHEMA_CHECKSUM, SCHEMA_FINGERPRINT, SCHEMA_MAGIC,
-    SCHEMA_VERSION,
-};
+use super::schema::{Baseline, SCHEMA_MAGIC, baseline_for_format};
 use super::sqlite;
 use layrs_core::scm::{
     ChunkId, ConflictId, FileManifestId, Layer, Marker, Operation, Release, ReleasePublication,
@@ -241,11 +238,19 @@ impl NativeFsck {
         }
         context.check_sqlite_integrity();
         context.check_foreign_keys();
-        context.scan_objects()?;
+        if context.compact {
+            context.scan_objects_compact()?;
+        } else {
+            context.scan_objects()?;
+        }
         if context.work_truncated {
             return Ok(context.finish());
         }
-        context.check_manifest_projections()?;
+        if context.compact {
+            context.check_manifest_projections_compact()?;
+        } else {
+            context.check_manifest_projections()?;
+        }
         context.check_object_edges()?;
         if context.work_truncated {
             return Ok(context.finish());
@@ -255,6 +260,9 @@ impl NativeFsck {
             return Ok(context.finish());
         }
         context.check_admissions()?;
+        if context.compact {
+            context.check_content_admissions()?;
+        }
         context.check_views_and_spaces()?;
         if context.work_truncated {
             return Ok(context.finish());
@@ -363,6 +371,9 @@ fn bounded_finding(report: &mut FsckReport, max_findings: usize, finding: FsckFi
 struct Context<'a> {
     audit: &'a NativeStoreAudit,
     connection: &'a Connection,
+    /// Format 6 (ADR 0028): content in registered packs, schema v3.
+    compact: bool,
+    baseline: &'static Baseline,
     max_findings: usize,
     report: FsckReport,
     objects: BTreeMap<String, CanonicalObject>,
@@ -382,6 +393,8 @@ impl<'a> Context<'a> {
         Self {
             audit,
             connection,
+            compact: audit.compact(),
+            baseline: baseline_for_format(audit.format_version()),
             max_findings,
             report: FsckReport::default(),
             objects: BTreeMap::new(),
@@ -524,7 +537,35 @@ impl<'a> Context<'a> {
             UNION ALL SELECT 1 FROM object_pins UNION ALL SELECT 1 FROM gc_roots
             UNION ALL SELECT 1 FROM recovery_operations UNION ALL SELECT 1 FROM recovery_paths
         ";
-        let sql = format!("SELECT 1 FROM ({WORK_ROWS}) LIMIT ?1");
+        // Format 6 has no per-file content rows: its registered packs,
+        // bitmaps and loose objects are counted instead.
+        const COMPACT_WORK_ROWS: &str = "
+            SELECT 1 FROM objects UNION ALL SELECT 1 FROM object_edges
+            UNION ALL SELECT 1 FROM cas_packs UNION ALL SELECT 1 FROM space_pack_admissions
+            UNION ALL SELECT 1 FROM loose_objects UNION ALL SELECT 1 FROM space_loose_admissions
+            UNION ALL SELECT 1 FROM space_object_admissions UNION ALL SELECT 1 FROM steps
+            UNION ALL SELECT 1 FROM step_parents UNION ALL SELECT 1 FROM repository_views
+            UNION ALL SELECT 1 FROM repository_view_layer_heads
+            UNION ALL SELECT 1 FROM repository_view_markers
+            UNION ALL SELECT 1 FROM repository_view_releases
+            UNION ALL SELECT 1 FROM repository_view_worktrees
+            UNION ALL SELECT 1 FROM layers UNION ALL SELECT 1 FROM layer_parents
+            UNION ALL SELECT 1 FROM step_observations UNION ALL SELECT 1 FROM operations
+            UNION ALL SELECT 1 FROM operation_parents UNION ALL SELECT 1 FROM operation_rewrites
+            UNION ALL SELECT 1 FROM operation_rewrite_targets UNION ALL SELECT 1 FROM worktrees
+            UNION ALL SELECT 1 FROM markers UNION ALL SELECT 1 FROM marker_proofs
+            UNION ALL SELECT 1 FROM releases UNION ALL SELECT 1 FROM release_proofs
+            UNION ALL SELECT 1 FROM release_publications
+            UNION ALL SELECT 1 FROM current_repository_views UNION ALL SELECT 1 FROM operation_heads
+            UNION ALL SELECT 1 FROM object_pins UNION ALL SELECT 1 FROM gc_roots
+            UNION ALL SELECT 1 FROM recovery_operations UNION ALL SELECT 1 FROM recovery_paths
+        ";
+        let rows = if self.compact {
+            COMPACT_WORK_ROWS
+        } else {
+            WORK_ROWS
+        };
+        let sql = format!("SELECT 1 FROM ({rows}) LIMIT ?1");
         let mut statement = self.connection.prepare(&sql)?;
         let count = statement
             .query_map([self.row_limit.saturating_add(1) as u64], |_| Ok(()))?
@@ -538,6 +579,7 @@ impl<'a> Context<'a> {
     }
 }
 
+mod compact;
 mod entities;
 mod graphs;
 mod integrity;
