@@ -480,7 +480,8 @@ impl NativeCas {
                     io::Error::other(error.to_string()),
                 )
             })?;
-            cas.compact = Some(Arc::new(compact::RegisteredCatalog::load(
+            // Audits read the metadata on disk now, never the process cache.
+            cas.compact = Some(Arc::new(compact::RegisteredCatalog::load_fresh(
                 &connection,
                 &cas,
             )?));
@@ -1601,10 +1602,9 @@ impl<'store> NativeCasWriter<'store> {
                     io::Error::other(error.to_string()),
                 )
             })?;
-            cas.compact = Some(Arc::new(compact::RegisteredCatalog::load(
-                &connection,
-                &cas,
-            )?));
+            let catalog = Arc::new(compact::RegisteredCatalog::load(&connection, &cas)?);
+            cas.collect_orphan_packs(&catalog);
+            cas.compact = Some(catalog);
         }
         store
             .verify_filesystem_identity()
@@ -1615,16 +1615,31 @@ impl<'store> NativeCasWriter<'store> {
         })
     }
 
+    /// Format 5 only. A format 6 object is present only once SQLite
+    /// registers it, which only `put_ordered` within a batch prepares: a
+    /// lone loose file would be reported installed yet never be present.
     pub fn stage(&self, object: &CanonicalObject) -> CasResult<PreparedObject> {
+        self.refuse_unregistered()?;
         self.cas.stage(object)
     }
 
+    /// Format 5 only (see `stage`).
     pub fn install(&self, prepared: PreparedObject) -> CasResult<InstallOutcome> {
+        self.refuse_unregistered()?;
         self.cas.install(prepared)
     }
 
+    /// Format 5 only (see `stage`).
     pub fn put(&self, object: &CanonicalObject) -> CasResult<InstallOutcome> {
+        self.refuse_unregistered()?;
         self.cas.put(object)
+    }
+
+    fn refuse_unregistered(&self) -> CasResult<()> {
+        if self.cas.compact_format {
+            return Err(CasError::UnsupportedPublication);
+        }
+        Ok(())
     }
 
     /// Installs a sequence of objects, each exactly as `put` (verified reuse,

@@ -141,9 +141,14 @@ impl NativeCas {
     }
 
     /// A registered pack, from the process cache or loaded and validated
-    /// now. Load failures are not cached.
-    fn loaded_pack(&self, name: &OsStr) -> CasResult<Arc<LoadedPack>> {
+    /// now. Load failures are not cached. With `fresh` (audits), the
+    /// metadata on disk now is loaded and checked, and the cache is neither
+    /// read nor filled: damage done since the cache was filled is seen.
+    fn loaded_pack(&self, name: &OsStr, fresh: bool) -> CasResult<Arc<LoadedPack>> {
         let key = (self.compact_key(), name.to_os_string());
+        if fresh {
+            return self.load_pack_from_disk(name).map(Arc::new);
+        }
         if let Some(pack) = pack_cache()
             .lock()
             .ok()
@@ -151,6 +156,14 @@ impl NativeCas {
         {
             return Ok(pack);
         }
+        let pack = Arc::new(self.load_pack_from_disk(name)?);
+        if let Ok(mut cache) = pack_cache().lock() {
+            return Ok(Arc::clone(cache.entry(key).or_insert(pack)));
+        }
+        Ok(pack)
+    }
+
+    fn load_pack_from_disk(&self, name: &OsStr) -> CasResult<LoadedPack> {
         let directory = self.objects_dir.join(PACKS_DIR);
         let path = directory.join(name);
         let packs = self
@@ -164,16 +177,55 @@ impl NativeCas {
         drop(file);
         drop(packs);
         let manifest_digests = (0..index.files.len()).map(|_| OnceLock::new()).collect();
-        let pack = Arc::new(LoadedPack {
+        Ok(LoadedPack {
             name: name.to_os_string(),
             path,
             index,
             manifest_digests,
-        });
-        if let Ok(mut cache) = pack_cache().lock() {
-            return Ok(Arc::clone(cache.entry(key).or_insert(pack)));
+        })
+    }
+
+    /// Format 6, under the exclusive Store lock: removes every pack file
+    /// SQLite does not register. A pack is only registered by the exclusive
+    /// session that published it, so one unregistered when a session starts
+    /// (a batch that failed after publication) can never become registered.
+    /// Best effort: garbage that cannot be removed now is removed later.
+    pub(super) fn collect_orphan_packs(&self, catalog: &RegisteredCatalog) -> usize {
+        let directory = self.objects_dir.join(PACKS_DIR);
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return 0;
+        };
+        let registered: HashSet<&OsStr> = catalog
+            .rows
+            .iter()
+            .map(|row| row.name.as_os_str())
+            .collect();
+        let orphans: Vec<OsString> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .filter(|name| pack2::valid_pack2_name(name) && !registered.contains(name.as_os_str()))
+            .collect();
+        if orphans.is_empty() {
+            return 0;
         }
-        Ok(pack)
+        let Ok(packs) = self.pinned_objects().and_then(|objects| {
+            objects
+                .open_child(OsStr::new(PACKS_DIR))
+                .map_err(|error| io_error("pin CAS packs", &directory, error))
+        }) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for name in orphans {
+            if packs
+                .open_file(&name)
+                .and_then(|file| file.unlink())
+                .is_ok()
+            {
+                removed += 1;
+            }
+        }
+        crate::perf::count("cas.orphan_packs_removed", removed as u64);
+        removed
     }
 }
 
@@ -217,6 +269,24 @@ pub(crate) struct RegisteredPack {
     pack: Arc<LoadedPack>,
 }
 
+/// One `cas_packs` row, as registered (sound or not).
+#[derive(Debug)]
+struct RegisteredRow {
+    name: OsString,
+    digest: Vec<u8>,
+    entries: i64,
+}
+
+/// One physical copy an audit checked: a pack record or a loose object.
+#[derive(Debug)]
+pub(crate) struct AuditedCopy {
+    pub(crate) path: PathBuf,
+    /// The object id (for a file record: its chunk), or the pack itself.
+    pub(crate) object: String,
+    pub(crate) message_prefix: String,
+    pub(crate) result: CasResult<()>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LooseEntry {
     kind: u8,
@@ -247,6 +317,8 @@ pub(crate) struct RegisteredCatalog {
     packs: Vec<RegisteredPack>,
     /// Registered packs that cannot be read: (pack_seq, error).
     damaged: Vec<(i64, CasError)>,
+    /// Every `cas_packs` row of the snapshot, sound or damaged.
+    rows: Vec<RegisteredRow>,
     loose: BTreeMap<[u8; 32], LooseEntry>,
     /// FileId -> loose manifests (manifests over 1 MiB): raw manifest id and
     /// file length.
@@ -288,6 +360,16 @@ impl RegisteredCatalog {
     /// Reads `cas_packs` and `loose_objects` from `connection` (one SQLite
     /// snapshot) and binds every registered pack to its validated index.
     pub(crate) fn load(connection: &Connection, cas: &NativeCas) -> CasResult<Self> {
+        Self::load_with(connection, cas, false)
+    }
+
+    /// `load` from the metadata on disk now, never from the process cache:
+    /// what audits (fsck) use.
+    pub(crate) fn load_fresh(connection: &Connection, cas: &NativeCas) -> CasResult<Self> {
+        Self::load_with(connection, cas, true)
+    }
+
+    fn load_with(connection: &Connection, cas: &NativeCas, fresh: bool) -> CasResult<Self> {
         let _span = crate::perf::span("cas.compact_catalog");
         let mut statement = connection
             .prepare(
@@ -308,28 +390,26 @@ impl RegisteredCatalog {
             .map_err(sql_error)?;
         let mut packs = Vec::with_capacity(rows.len());
         let mut damaged = Vec::new();
+        let mut registered_rows = Vec::with_capacity(rows.len());
         for (seq, name, digest, entries) in rows {
             let name = OsString::from(name);
-            let path = cas.objects_dir.join(PACKS_DIR).join(&name);
-            let checked = (|| {
-                if !pack2::valid_pack2_name(&name) || digest.len() != 32 || entries < 0 {
-                    return Err(pack2::pack2_corruption(&path, "invalid cas_packs row"));
-                }
-                let pack = cas.loaded_pack(&name)?;
-                if pack.index.digest[..] != digest[..] {
-                    return Err(pack2::pack2_corruption(
-                        &path,
-                        "pack metadata digest differs from the registered one",
-                    ));
-                }
-                if pack.index.logical_count() != entries as u64 {
-                    return Err(pack2::pack2_corruption(
-                        &path,
-                        "pack entry count differs from the registered one",
-                    ));
-                }
-                Ok(pack)
-            })();
+            let checked = cas
+                .loaded_pack(&name, fresh)
+                .and_then(|pack| check_registration(&pack, &name, &digest, entries).map(|()| pack))
+                .map_err(|error| {
+                    // An invalid row is reported as such, before any I/O error.
+                    let path = cas.objects_dir.join(PACKS_DIR).join(&name);
+                    if !pack2::valid_pack2_name(&name) || digest.len() != 32 || entries < 0 {
+                        pack2::pack2_corruption(&path, "invalid cas_packs row")
+                    } else {
+                        error
+                    }
+                });
+            registered_rows.push(RegisteredRow {
+                name: name.clone(),
+                digest,
+                entries,
+            });
             match checked {
                 Ok(pack) => packs.push(RegisteredPack {
                     seq,
@@ -383,6 +463,7 @@ impl RegisteredCatalog {
         Ok(Self {
             packs,
             damaged,
+            rows: registered_rows,
             loose,
             loose_by_file,
             admissions: Mutex::new(HashMap::new()),
@@ -397,10 +478,6 @@ impl RegisteredCatalog {
     /// The first unreadable registered pack, if any.
     pub(crate) fn damage(&self) -> Option<&CasError> {
         self.damaged.first().map(|(_, error)| error)
-    }
-
-    pub(crate) fn damaged(&self) -> &[(i64, CasError)] {
-        &self.damaged
     }
 
     /// `Ok(value)` when the catalog is complete; a negative or complete
@@ -1327,64 +1404,169 @@ impl NativeCas {
         Ok((name, sealed.digest, sealed.logical))
     }
 
-    /// Scrub of the registered packs: every block is decompressed and every
-    /// record verified at its own place (never through the lookup by id, so
-    /// a sound copy elsewhere cannot hide a damaged record). A damaged block
-    /// names every record whose index entry points into it; an unreadable
-    /// pack is one issue (its records are then named by reachability, as
-    /// `git fsck` does). Unregistered pack files are not present and are
-    /// not checked.
+    /// Scrub of the registered packs (`audit_registered`; loose files are
+    /// walked by `scrub` itself).
     pub(super) fn scrub_registered(
         &self,
         catalog: &RegisteredCatalog,
         report: &mut CasScrubReport,
     ) -> CasResult<()> {
-        for (_, error) in catalog.damaged() {
+        catalog.audit_registered(self, false, |copy| {
             report.checked_objects += 1;
-            let path = match error {
-                CasError::PackCorruption { path, .. } | CasError::Io { path, .. } => path.clone(),
-                _ => self.objects_dir.join(PACKS_DIR),
-            };
-            report.issues.push(CasScrubIssue {
-                path,
-                code: error.code(),
-                message: error.to_string(),
+            if let Err(error) = copy.result {
+                report.issues.push(CasScrubIssue {
+                    path: copy.path,
+                    code: error.code(),
+                    message: format!("{}{error}", copy.message_prefix),
+                });
+            }
+            true
+        });
+        Ok(())
+    }
+}
+
+impl RegisteredCatalog {
+    /// Verifies every registered physical copy at its own place, never
+    /// through the lookup by id (a sound copy elsewhere cannot hide a
+    /// damaged one), from the metadata on disk now (never the process
+    /// cache): each registered pack's metadata against its registered digest
+    /// and entry count, then every block decompressed and every record
+    /// verified; with `loose`, every registered loose object. A damaged
+    /// block names every record whose index entry points into it; an
+    /// unreadable pack is one copy (its records are then named by
+    /// reachability, as `git fsck` does). Unregistered pack files are not
+    /// present and are not checked. `visit` returns `false` to stop.
+    pub(crate) fn audit_registered(
+        &self,
+        cas: &NativeCas,
+        loose: bool,
+        mut visit: impl FnMut(AuditedCopy) -> bool,
+    ) {
+        for row in &self.rows {
+            let path = cas.objects_dir.join(PACKS_DIR).join(&row.name);
+            let loaded = cas.loaded_pack(&row.name, true).and_then(|pack| {
+                check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
             });
-        }
-        for registered in catalog.packs() {
-            let loaded = &registered.pack;
-            // One handle for the whole pack, closed when its scrub ends.
-            let file = loaded.open(self);
+            let loaded = match loaded {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    let copy = AuditedCopy {
+                        path,
+                        object: row.name.to_string_lossy().into_owned(),
+                        message_prefix: String::new(),
+                        result: Err(error),
+                    };
+                    if !visit(copy) {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            // One handle for the whole pack, closed when its audit ends.
+            let file = loaded.open(cas);
             for (block, records) in loaded.index.records_by_block().into_iter().enumerate() {
                 let raw = file.as_ref().map_err(Clone::clone).and_then(|file| {
                     pack2::read_block(file.file(), &loaded.path, &loaded.index, block as u32)
                 });
                 for record in records {
-                    report.checked_objects += 1;
-                    let (name, checked) = scrub_record(loaded, record, raw.as_ref());
-                    if let Err(error) = checked {
-                        report.issues.push(CasScrubIssue {
-                            path: loaded.path.clone(),
-                            code: error.code(),
-                            message: format!("{name}: {error}"),
-                        });
+                    let (object, name, result) = scrub_record(&loaded, record, raw.as_ref());
+                    let copy = AuditedCopy {
+                        path: loaded.path.clone(),
+                        object,
+                        message_prefix: format!("{name}: "),
+                        result,
+                    };
+                    if !visit(copy) {
+                        return;
                     }
                 }
             }
         }
-        Ok(())
+        if !loose {
+            return;
+        }
+        for (digest, entry) in &self.loose {
+            let audited = pack2::kind_of_code(entry.kind)
+                .ok_or_else(|| pack2::pack2_corruption(&self_path(), "loose object kind"))
+                .and_then(|kind| pack2::object_id_of(kind, digest))
+                .and_then(|id| {
+                    let path = cas.object_path(&id)?;
+                    let result = cas
+                        .read_loose(&id)
+                        .map_err(|error| match error {
+                            CasError::NotFound { .. } => {
+                                corruption(&id, "registered loose object is missing")
+                            }
+                            other => other,
+                        })
+                        .and_then(|object| {
+                            if encode_object(&object)?.len() as u64 == entry.byte_length {
+                                Ok(())
+                            } else {
+                                Err(corruption(&id, "loose object length differs from its row"))
+                            }
+                        });
+                    Ok((id.to_string(), path, result))
+                });
+            let copy = match audited {
+                Ok((object, path, result)) => AuditedCopy {
+                    path,
+                    message_prefix: format!("{object}: "),
+                    object,
+                    result,
+                },
+                Err(error) => AuditedCopy {
+                    path: self_path(),
+                    object: pack2::digest_text(digest),
+                    message_prefix: String::new(),
+                    result: Err(error),
+                },
+            };
+            if !visit(copy) {
+                return;
+            }
+        }
     }
 }
 
+/// A loaded pack must be the one SQLite registered: its metadata digest
+/// and logical entry count.
+fn check_registration(
+    pack: &LoadedPack,
+    name: &OsStr,
+    digest: &[u8],
+    entries: i64,
+) -> CasResult<()> {
+    if !pack2::valid_pack2_name(name) || digest.len() != 32 || entries < 0 {
+        return Err(pack2::pack2_corruption(&pack.path, "invalid cas_packs row"));
+    }
+    if pack.index.digest[..] != digest[..] {
+        return Err(pack2::pack2_corruption(
+            &pack.path,
+            "pack metadata digest differs from the registered one",
+        ));
+    }
+    if pack.index.logical_count() != entries as u64 {
+        return Err(pack2::pack2_corruption(
+            &pack.path,
+            "pack entry count differs from the registered one",
+        ));
+    }
+    Ok(())
+}
+
+/// (object id, display name, verification) of one pack record.
 fn scrub_record(
     loaded: &LoadedPack,
     record: pack2::RecordRef,
     raw: Result<&Vec<u8>, &CasError>,
-) -> (String, CasResult<()>) {
+) -> (String, String, CasResult<()>) {
     match record {
         pack2::RecordRef::Explicit(ordinal) => {
             let Some((kind, digest, location)) = loaded.index.explicit(ordinal) else {
                 return (
+                    "pack entry".into(),
                     "pack entry".into(),
                     Err(pack2::pack2_corruption(&loaded.path, "entry vanished")),
                 );
@@ -1392,22 +1574,28 @@ fn scrub_record(
             let Some(object_kind) = pack2::kind_of_code(kind) else {
                 return (
                     "pack entry".into(),
+                    "pack entry".into(),
                     Err(pack2::pack2_corruption(&loaded.path, "unknown kind")),
                 );
             };
             let id = match pack2::object_id_of(object_kind, digest) {
                 Ok(id) => id,
-                Err(error) => return ("pack entry".into(), Err(error)),
+                Err(error) => return ("pack entry".into(), "pack entry".into(), Err(error)),
             };
             let checked = raw.map_err(Clone::clone).and_then(|block| {
                 let body = pack2::record_body(block, location, kind, &loaded.path)?;
                 validate_stored_bytes(&id, body).map(|_| ())
             });
-            (id.to_string(), checked)
+            (id.to_string(), id.to_string(), checked)
         }
         pack2::RecordRef::File(file) => {
             let file_record = loaded.index.files[file];
             let name = pack2::digest_text(&file_record.file_id);
+            let chunk = StoreObjectId::ChunkRaw(
+                ChunkId::parse(pack2::digest_text(&file_record.chunk_id))
+                    .unwrap_or_else(|_| unreachable!("a 32-byte digest is a ChunkId")),
+            )
+            .to_string();
             let checked = (|| {
                 let block = raw.map_err(Clone::clone)?;
                 let body =
@@ -1422,7 +1610,7 @@ fn scrub_record(
                 }
                 loaded.alias_manifest_digest(file).map(|_| ())
             })();
-            (format!("file {name}"), checked)
+            (chunk, format!("file {name}"), checked)
         }
     }
 }

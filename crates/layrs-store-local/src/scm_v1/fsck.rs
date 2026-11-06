@@ -374,6 +374,14 @@ struct Context<'a> {
     /// Format 6 (ADR 0028): content in registered packs, schema v3.
     compact: bool,
     baseline: &'static Baseline,
+    /// Format 6: the audit CAS view and catalog of this run (fresh
+    /// metadata), loaded once.
+    compact_audit: Option<(NativeCas, std::sync::Arc<super::cas::RegisteredCatalog>)>,
+    compact_audit_failed: bool,
+    /// Format 6: a registered pack is unreadable; answers that depend on
+    /// the whole catalog are not judged (the audit reports the pack once).
+    compact_damaged: bool,
+    compact_lookup_reported: bool,
     max_findings: usize,
     report: FsckReport,
     objects: BTreeMap<String, CanonicalObject>,
@@ -395,6 +403,10 @@ impl<'a> Context<'a> {
             connection,
             compact: audit.compact(),
             baseline: baseline_for_format(audit.format_version()),
+            compact_audit: None,
+            compact_audit_failed: false,
+            compact_damaged: false,
+            compact_lookup_reported: false,
             max_findings,
             report: FsckReport::default(),
             objects: BTreeMap::new(),
