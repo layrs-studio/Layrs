@@ -953,12 +953,27 @@ fn damaged_metadata_or_a_digest_mismatch_is_corruption_never_absence() {
             .iter()
             .any(|finding| finding.code == FsckFindingCode::CasCorruption)
     );
-    // The unreadable pack is reported once; Tree and admission closure are
-    // not judged on a catalog that cannot answer absence.
+    // The unreadable pack is reported once, before anything else about the
+    // objects it holds; Tree, Step and View rows whose only copy it holds are
+    // unknowable, not missing, and neither their edges nor Tree and admission
+    // closure are judged on a catalog that cannot answer absence.
+    let corruption: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == FsckFindingCode::CasCorruption)
+        .collect();
+    assert_eq!(corruption.len(), 1, "{:#?}", report.findings);
+    assert_eq!(
+        corruption[0].path.as_deref(),
+        Some(packs(&root.0)[0].as_path())
+    );
     assert!(
         !report.findings.iter().any(|finding| matches!(
             finding.code,
-            FsckFindingCode::TreeClosureBroken | FsckFindingCode::AdmissionClosureBroken
+            FsckFindingCode::TreeClosureBroken
+                | FsckFindingCode::AdmissionClosureBroken
+                | FsckFindingCode::ObjectEdgeMismatch
+                | FsckFindingCode::MissingCasObject
         )),
         "{:#?}",
         report.findings

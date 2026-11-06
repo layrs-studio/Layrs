@@ -957,6 +957,13 @@ fn plan_file_records(
 /// Format 6: registers the batch's pack and loose content objects. Their
 /// bytes were published and made durable by `put_ordered` before this
 /// transaction began (CAS before reference).
+///
+/// Safety rule of orphan collection (`NativeCas::collect_orphan_packs`):
+/// a pack is registered only here, by the exclusive session that published
+/// it, so a pack unregistered when an exclusive session starts never will
+/// be and is removed. Anything that would register a pack another session
+/// published (consolidation, receiving packs) must keep that rule, or give
+/// orphan collection a grace period first.
 fn register_compact(c: &Connection, publication: &super::cas::CompactPublication) -> Result<()> {
     if let Some((name, digest, entries)) = &publication.pack {
         let name = name
