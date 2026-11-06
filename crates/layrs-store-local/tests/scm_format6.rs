@@ -17,8 +17,9 @@ use layrs_store::scm::{
     TransactionId, WriteBatch,
 };
 use layrs_store_local::scm_v1::{
-    CasFaultInjector, CasFaultPoint, FsckOptions, NativeCas, NativeScmReader, NativeScmRepository,
-    RepositoryFaultInjector, RepositoryFaultPoint, fsck_existing, init, open,
+    CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
+    NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
+    fsck_existing, init, open, open_exclusive,
 };
 use rusqlite::Connection;
 
@@ -825,14 +826,23 @@ fn crash_points_leave_the_old_state_and_orphan_packs_are_never_present() {
             None
         );
         drop(repository);
-        // Retrying applies the batch with a new pack; an orphan stays
-        // unregistered.
+        // A pack published before the failure stays an unregistered orphan;
+        // the next exclusive session removes it, and the retry applies the
+        // batch with a new pack.
         let orphans = packs(&root.0).len();
+        if index >= 1 {
+            assert_eq!(orphans, 1, "fault {index} leaves its published pack");
+        }
         NativeScmRepository::new(&root.0)
             .apply_batch(&batch)
             .unwrap();
-        assert_eq!(registered_packs(&root.0).len(), 1);
-        assert_eq!(packs(&root.0).len(), orphans + 1);
+        let registered = registered_packs(&root.0);
+        assert_eq!(registered.len(), 1);
+        assert_eq!(
+            packs(&root.0),
+            vec![root.0.join("objects/packs").join(&registered[0])],
+            "fault {index}: orphans are collected"
+        );
         let repository = NativeScmRepository::new(&root.0);
         for file in &files {
             assert_eq!(
@@ -936,10 +946,22 @@ fn damaged_metadata_or_a_digest_mismatch_is_corruption_never_absence() {
         let error = result.unwrap_err();
         assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
     }
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
     assert!(
-        !fsck_existing(&root.0, FsckOptions::default())
-            .unwrap()
-            .is_clean()
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == FsckFindingCode::CasCorruption)
+    );
+    // The unreadable pack is reported once; Tree and admission closure are
+    // not judged on a catalog that cannot answer absence.
+    assert!(
+        !report.findings.iter().any(|finding| matches!(
+            finding.code,
+            FsckFindingCode::TreeClosureBroken | FsckFindingCode::AdmissionClosureBroken
+        )),
+        "{:#?}",
+        report.findings
     );
 }
 
@@ -1104,4 +1126,117 @@ fn streamed_chunks_become_file_records_and_stay_atomic() {
     }
     drop(repository);
     assert_fsck_clean(&root.0);
+}
+
+fn flip_located(root: &Path, object: &StoreObjectId) -> PathBuf {
+    let store = open(root).unwrap();
+    let location = NativeCas::open(&store)
+        .unwrap()
+        .locate(object)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let CasLocation::Packed { pack, offset, .. } = location else {
+        panic!("{object} is not packed");
+    };
+    flip(&pack, offset);
+    pack
+}
+
+#[test]
+fn audits_reread_pack_metadata_damaged_after_this_process_cached_it() {
+    let root = TestRoot::new("stale-cache");
+    create(&root.0, "stale-cache", "6");
+    let files = vec![file("a.txt", b"alpha", Recipe::Fixed)];
+    let (_lane, batch) = Lane::begin("stale-cache", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    // This process loads and caches the pack's metadata.
+    let repository = NativeScmRepository::new(&root.0);
+    assert!(
+        repository
+            .get_chunk(files[0].chunks[0].id())
+            .unwrap()
+            .is_some()
+    );
+    drop(repository);
+    // Damage the metadata without changing the pack's length.
+    let pack = packs(&root.0).remove(0);
+    let length = fs::metadata(&pack).unwrap().len();
+    flip(&pack, length - 72 - 3);
+    assert_eq!(fs::metadata(&pack).unwrap().len(), length);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == FsckFindingCode::CasCorruption),
+        "{:#?}",
+        report.findings
+    );
+    let store = open(&root.0).unwrap();
+    let scrub = NativeCas::open(&store).unwrap().scrub().unwrap();
+    assert!(!scrub.is_clean());
+}
+
+#[test]
+fn fsck_reports_a_damaged_copy_that_a_sound_duplicate_hides() {
+    let root = TestRoot::new("duplicate");
+    create(&root.0, "duplicate", "6");
+    let shared = file("shared.txt", b"bytes stored twice", Recipe::Fixed);
+    let (_alpha, batch) = Lane::begin("alpha", std::slice::from_ref(&shared));
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let chunk = shared.chunks[0].clone();
+    let chunk_object = StoreObjectId::ChunkRaw(chunk.id().clone());
+    let damaged_pack = flip_located(&root.0, &chunk_object);
+    // A later batch carrying the chunk finds its registered copy damaged
+    // and writes a sound one into its own pack.
+    let (beta, batch) = Lane::begin("beta", &[]);
+    repository.apply_batch(&batch).unwrap();
+    let alone = WriteBatch::new(
+        TransactionId::new("transaction:beta-chunk").unwrap(),
+        vec![CanonicalObject::ChunkRaw(chunk.clone())],
+        vec![],
+        vec![SpaceObjectAdmission::new(
+            beta.space.id().clone(),
+            chunk_object.clone(),
+        )],
+        vec![],
+    )
+    .unwrap();
+    repository.apply_batch(&alone).unwrap();
+    assert_eq!(
+        repository.get_chunk(chunk.id()).unwrap().as_ref(),
+        Some(&chunk)
+    );
+    drop(repository);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == FsckFindingCode::CasCorruption
+                && finding.object_id.as_deref() == Some(chunk_object.as_str())
+                && finding.path.as_deref() == Some(damaged_pack.as_path())
+        }),
+        "{:#?}",
+        report.findings
+    );
+}
+
+#[test]
+fn format_6_writers_refuse_unregistered_single_object_publication() {
+    let root = TestRoot::new("unregistered");
+    create(&root.0, "unregistered", "6");
+    let exclusive = open_exclusive(&root.0).unwrap();
+    let cas = NativeCas::open_exclusive(&exclusive).unwrap();
+    let chunk = CanonicalObject::ChunkRaw(Chunk::new(b"lone".to_vec()).unwrap());
+    assert_eq!(cas.put(&chunk), Err(CasError::UnsupportedPublication));
+    assert!(matches!(
+        cas.stage(&chunk),
+        Err(CasError::UnsupportedPublication)
+    ));
+    drop(cas);
+    drop(exclusive);
+    assert!(packs(&root.0).is_empty());
 }

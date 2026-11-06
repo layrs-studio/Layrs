@@ -75,7 +75,16 @@ impl Context<'_> {
             return Err("File verification exceeds the audit byte budget".into());
         }
         self.file_byte_budget_remaining -= manifest.byte_length();
-        let cas = NativeCas::open_audit(self.audit).map_err(|error| error.to_string())?;
+        // Format 6 reuses the run's audit view (one catalog per fsck).
+        let cas = if self.compact {
+            self.compact_catalog()
+                .map(|(cas, _)| cas)
+                .ok_or_else(|| String::from("registered CAS catalog cannot be read"))?
+        } else {
+            NativeCas::open_audit(self.audit)
+                .map_err(|error| error.to_string())?
+                .into_inner()
+        };
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"layrs-file-v1\0");
         let mut reconstructed_length = 0_u64;

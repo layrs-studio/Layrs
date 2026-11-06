@@ -221,14 +221,20 @@ impl NativeScmReader<'_> {
                         .map_err(cas_read_error)?
                         .into_iter()
                         .collect(),
-                    _ => match self.get_file_manifest(&entry.id)? {
-                        Some(manifest) => manifest
-                            .chunks()
-                            .iter()
-                            .map(|chunk| chunk.chunk_id().clone())
-                            .collect(),
-                        None => Vec::new(),
-                    },
+                    // A manifest the catalog lists must read: absence here
+                    // is corruption, never an empty chunk list.
+                    _ => self
+                        .get_file_manifest(&entry.id)?
+                        .ok_or_else(|| {
+                            corruption(format!(
+                                "file {file} lists manifest {} that cannot be read",
+                                entry.id
+                            ))
+                        })?
+                        .chunks()
+                        .iter()
+                        .map(|chunk| chunk.chunk_id().clone())
+                        .collect(),
                 };
                 for chunk in chunks {
                     if ids.contains(&chunk) {

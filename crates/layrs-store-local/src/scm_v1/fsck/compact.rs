@@ -5,10 +5,20 @@
 //! (pins, GC roots, recovery paths) are resolved through the catalog.
 use super::*;
 use crate::scm_v1::cas::{RegisteredCatalog, is_content};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 impl Context<'_> {
-    fn compact_catalog(&mut self) -> Option<(NativeCas, Arc<RegisteredCatalog>)> {
+    /// The audit CAS view and its registered catalog, loaded once per fsck
+    /// run from the metadata on disk now (never the process cache) and
+    /// reused by every check.
+    pub(super) fn compact_catalog(&mut self) -> Option<(NativeCas, Arc<RegisteredCatalog>)> {
+        if let Some((cas, catalog)) = &self.compact_audit {
+            return Some((cas.clone(), Arc::clone(catalog)));
+        }
+        if self.compact_audit_failed {
+            return None;
+        }
         let opened = NativeCas::open_audit(self.audit).and_then(|audit| {
             let cas = audit.into_inner();
             let catalog = cas
@@ -18,8 +28,13 @@ impl Context<'_> {
             Ok((cas, catalog))
         });
         match opened {
-            Ok(opened) => Some(opened),
+            Ok((cas, catalog)) => {
+                self.compact_damaged = catalog.damage().is_some();
+                self.compact_audit = Some((cas.clone(), Arc::clone(&catalog)));
+                Some((cas, catalog))
+            }
             Err(error) => {
+                self.compact_audit_failed = true;
                 self.finding(
                     FsckFindingCode::CasCorruption,
                     FsckSeverity::Error,
@@ -31,6 +46,23 @@ impl Context<'_> {
                 None
             }
         }
+    }
+
+    /// One finding for a catalog answer that failed; later ones are the same
+    /// damage and are not repeated.
+    fn compact_lookup_failed(&mut self, error: &crate::scm_v1::CasError) {
+        if self.compact_lookup_reported {
+            return;
+        }
+        self.compact_lookup_reported = true;
+        self.finding(
+            FsckFindingCode::CasCorruption,
+            FsckSeverity::Error,
+            None,
+            None,
+            None,
+            format!("{}: {error}", error.code()),
+        );
     }
 
     /// Non-content `objects` rows (their bytes in a registered pack or a
@@ -58,16 +90,6 @@ impl Context<'_> {
         let Some((cas, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
-        for (_, error) in catalog.damaged() {
-            self.finding(
-                FsckFindingCode::CasCorruption,
-                FsckSeverity::Error,
-                None,
-                None,
-                None,
-                format!("{}: {error}", error.code()),
-            );
-        }
         for (id_text, kind_text, byte_length) in rows {
             self.report.checked_rows = self.report.checked_rows.saturating_add(1);
             self.report.checked_objects = self.report.checked_objects.saturating_add(1);
@@ -141,6 +163,36 @@ impl Context<'_> {
         if self.work_truncated {
             return Ok(());
         }
+        // Every registered physical copy, at its own place: a damaged copy is
+        // reported even when a sound duplicate serves its logical reads. An
+        // unreadable registered pack is reported here, once.
+        let mut damaged_copies = HashSet::new();
+        let mut stopped = false;
+        catalog.audit_registered(&cas, true, |copy| {
+            self.report.checked_objects = self.report.checked_objects.saturating_add(1);
+            if !self.consume_cpu(1) {
+                stopped = true;
+                return false;
+            }
+            if let Err(error) = copy.result {
+                self.finding(
+                    FsckFindingCode::CasCorruption,
+                    FsckSeverity::Error,
+                    Some(copy.path),
+                    Some(copy.object.clone()),
+                    None,
+                    format!("{}{}: {error}", copy.message_prefix, error.code()),
+                );
+                damaged_copies.insert(copy.object);
+            }
+            true
+        });
+        if stopped || self.work_truncated {
+            return Ok(());
+        }
+        // Logical objects for closure and reachability. A chunk whose every
+        // copy the audit verified is present without a second read; one with
+        // a damaged copy is present only if another copy reads.
         let (content, errors) = catalog.content_objects();
         for error in errors {
             self.finding(
@@ -156,11 +208,15 @@ impl Context<'_> {
             if self.object_ids.contains_key(object_id.as_str()) {
                 continue;
             }
-            self.report.checked_objects = self.report.checked_objects.saturating_add(1);
             if !self.consume_cpu(1) {
                 return Ok(());
             }
             let id_text = object_id.to_string();
+            if matches!(object_id, StoreObjectId::ChunkRaw(_)) && !damaged_copies.contains(&id_text)
+            {
+                self.object_ids.insert(id_text, object_id);
+                continue;
+            }
             let length = match catalog.stored_length(&object_id) {
                 Ok(length) => length.unwrap_or_default(),
                 Err(error) => {
@@ -231,6 +287,7 @@ impl Context<'_> {
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
+        let damaged = self.compact_damaged;
         let manifests: Vec<_> = self
             .objects
             .iter()
@@ -250,20 +307,18 @@ impl Context<'_> {
                     error,
                 );
             }
+            // With an unreadable registered pack every FileId listing fails
+            // the same way: reported once by the audit, skipped here.
+            if damaged {
+                continue;
+            }
             let listed = match catalog.file_manifests(manifest.file_id()) {
                 Ok(entries) => entries
                     .into_iter()
                     .find(|entry| &entry.id == manifest.id())
                     .map(|entry| entry.file_length),
                 Err(error) => {
-                    self.finding(
-                        FsckFindingCode::CasCorruption,
-                        FsckSeverity::Error,
-                        None,
-                        Some(id.clone()),
-                        None,
-                        error.to_string(),
-                    );
+                    self.compact_lookup_failed(&error);
                     continue;
                 }
             };
@@ -284,12 +339,20 @@ impl Context<'_> {
         file_id: &layrs_core::scm::FileId,
     ) -> Result<bool, FsckError> {
         let Some((_, catalog)) = self.compact_catalog() else {
-            return Ok(false);
+            return Ok(true);
         };
-        Ok(catalog
-            .file_manifests(file_id)
-            .map(|entries| !entries.is_empty())
-            .unwrap_or(false))
+        // An unreadable registered pack makes presence unknown, not absent:
+        // it is reported once, and Tree closure is not judged on it.
+        if self.compact_damaged {
+            return Ok(true);
+        }
+        match catalog.file_manifests(file_id) {
+            Ok(entries) => Ok(!entries.is_empty()),
+            Err(error) => {
+                self.compact_lookup_failed(&error);
+                Ok(true)
+            }
+        }
     }
 
     /// Content admission: every bitmap and loose admission valid, every
@@ -300,6 +363,11 @@ impl Context<'_> {
         let Some((_, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
+        // Admission answers of a catalog with an unreadable registered pack
+        // are all errors: reported once by the audit, not judged here.
+        if self.compact_damaged {
+            return Ok(());
+        }
         let spaces = query_strings_no_param(
             self.connection,
             "SELECT space_id FROM space_pack_admissions UNION SELECT space_id FROM space_loose_admissions",
@@ -332,15 +400,24 @@ impl Context<'_> {
                     return Ok(());
                 }
                 let object = StoreObjectId::FileManifest(manifest.id().clone());
-                if !catalog.admitted(&admissions, &object).unwrap_or(false) {
-                    continue;
+                match catalog.admitted(&admissions, &object) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        self.compact_lookup_failed(&error);
+                        continue;
+                    }
                 }
                 for chunk in manifest.chunks() {
                     let chunk_object = StoreObjectId::ChunkRaw(chunk.chunk_id().clone());
-                    if !catalog
-                        .admitted(&admissions, &chunk_object)
-                        .unwrap_or(false)
-                    {
+                    let admitted = match catalog.admitted(&admissions, &chunk_object) {
+                        Ok(admitted) => admitted,
+                        Err(error) => {
+                            self.compact_lookup_failed(&error);
+                            continue;
+                        }
+                    };
+                    if !admitted {
                         self.finding(
                             FsckFindingCode::AdmissionClosureBroken,
                             FsckSeverity::Error,
