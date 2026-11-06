@@ -199,7 +199,7 @@ pub fn save(
 /// Projections kept: those of the Trees most recently written (each Worktree
 /// and Room base, recent Steps). Without a bound every new root Tree added
 /// a file of about 40 bytes per path, forever.
-const KEPT: usize = 8;
+const KEPT: usize = 4;
 
 /// Removes the least recently written projections beyond `KEPT`, never
 /// `kept` (just written). Best effort: a removed projection is recomputed
