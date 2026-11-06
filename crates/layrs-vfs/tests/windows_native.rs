@@ -568,6 +568,135 @@ fn export_dirty_partial_qualification() {
     );
 }
 
+/// Catalog of hybrid population cases: small files within the budget, a small
+/// file past it, a file above the size limit, and an empty file.
+struct HybridFixture {
+    catalog: Catalog,
+    bytes: BTreeMap<FileId, Vec<u8>>,
+    reads: AtomicUsize,
+}
+impl HybridFixture {
+    fn new(definitions: &[(&str, Vec<u8>)]) -> Self {
+        Self {
+            catalog: Catalog::new(
+                1,
+                definitions
+                    .iter()
+                    .map(|(path, bytes)| CatalogEntry {
+                        path: RepoPath::parse(*path).unwrap(),
+                        file_id: FileId::from_bytes(bytes),
+                        size: bytes.len() as u64,
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+            bytes: definitions
+                .iter()
+                .map(|(_, bytes)| (FileId::from_bytes(bytes), bytes.clone()))
+                .collect(),
+            reads: AtomicUsize::new(0),
+        }
+    }
+}
+impl SnapshotSource for HybridFixture {
+    fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+    fn read_exact_at(
+        &self,
+        id: &FileId,
+        offset: u64,
+        output: &mut [u8],
+        cancel: &Cancellation,
+    ) -> Result<()> {
+        cancel.check()?;
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let data = &self.bytes[id];
+        let range = layrs_vfs::checked_range(data.len() as u64, offset, output.len() as u64)?;
+        output.copy_from_slice(&data[range.start as usize..range.end as usize]);
+        Ok(())
+    }
+}
+
+#[test]
+#[ignore = "requires explicit disposable LAYRS_VFS_TEST_PARENT; performs real CFAPI registration"]
+fn hybrid_population_writes_small_files_in_sync() {
+    let (run, nonce) = disposable_run("hybrid");
+    let root = run.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let small_a = b"alpha\n".repeat(10);
+    let small_b = b"beta\n".repeat(700);
+    let past_budget = b"gamma\n".to_vec();
+    let large = vec![7_u8; layrs_vfs::MAX_WARM_FILE_BYTES as usize + 1];
+    let definitions = [
+        ("a.txt", small_a.clone()),
+        ("dir/b.txt", small_b.clone()),
+        ("dir/large.bin", large.clone()),
+        ("z/past-budget.txt", past_budget.clone()),
+        ("z/zero.bin", vec![]),
+    ];
+    let source = Arc::new(HybridFixture::new(&definitions));
+    let budget = (small_a.len() + small_b.len()) as u64;
+    let mut session = Session::create_hybrid_with_registration_hook(
+        &root,
+        nonce.to_le_bytes(),
+        source.clone(),
+        budget,
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(session.population_timings().warm_files, 2);
+    let written_reads = source.reads.load(Ordering::SeqCst);
+    for (path, bytes) in [("a.txt", &small_a), ("dir/b.txt", &small_b)] {
+        let inspection = session.inspect(&RepoPath::parse(path).unwrap()).unwrap();
+        let placeholder = inspection
+            .placeholder
+            .clone()
+            .expect("converted placeholder");
+        assert!(placeholder.in_sync, "{path} must be in sync");
+        assert!(!placeholder.partial, "{path} must be fully hydrated");
+        assert_eq!(placeholder.on_disk_bytes, bytes.len() as u64, "{path}");
+        assert_eq!(placeholder.modified_bytes, 0, "{path}");
+        assert!(
+            matches!(&inspection.evidence, CaptureEvidence::Immutable { size, .. } if *size == bytes.len() as u64),
+            "{path}: {:?}",
+            inspection.evidence
+        );
+        drop(inspection);
+        assert_eq!(&std::fs::read(root.join(path)).unwrap(), bytes);
+    }
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        written_reads,
+        "reading a hybrid file must not need hydration"
+    );
+    for path in ["dir/large.bin", "z/past-budget.txt"] {
+        let inspection = session.inspect(&RepoPath::parse(path).unwrap()).unwrap();
+        let placeholder = inspection.placeholder.clone().expect("virtual placeholder");
+        assert!(placeholder.partial, "{path} must stay virtual");
+        assert_eq!(placeholder.on_disk_bytes, 0, "{path}");
+        assert!(matches!(
+            inspection.evidence,
+            CaptureEvidence::Immutable { .. }
+        ));
+    }
+    // An edit after conversion loses the in-sync mark: it is hashed.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("a.txt"))
+        .unwrap()
+        .write_all(b"edited\n")
+        .unwrap();
+    assert!(matches!(
+        session
+            .inspect(&RepoPath::parse("a.txt").unwrap())
+            .unwrap()
+            .evidence,
+        CaptureEvidence::NeedsHash { .. }
+    ));
+    session.disconnect().unwrap();
+}
+
 fn disposable_run(label: &str) -> (PathBuf, u128) {
     let parent = PathBuf::from(
         std::env::var_os("LAYRS_VFS_TEST_PARENT")

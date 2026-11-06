@@ -21,6 +21,8 @@ mod stage2_fixture;
 #[cfg(test)]
 mod stage2_tests;
 mod visibility;
+mod warm;
+pub use warm::{DEFAULT_WARM_BUDGET_BYTES, MAX_WARM_FILE_BYTES};
 
 use crate::{
     Capability, CaptureEvidence, Error, Inspection, PlaceholderEvidence, Registration, Result,
@@ -104,9 +106,22 @@ pub struct Session {
     context: Option<Box<callback::Context>>,
     control: AttachedControl,
     catalog: Arc<crate::Catalog>,
+    timings: PopulationTimings,
+}
+
+/// Wall time of each population stage of `create*`, for diagnostics.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PopulationTimings {
+    pub warm_files: usize,
+    pub warm_write: std::time::Duration,
+    pub placeholders: std::time::Duration,
+    pub warm_convert: std::time::Duration,
 }
 
 impl Session {
+    pub fn population_timings(&self) -> PopulationTimings {
+        self.timings
+    }
     /// Caller explicitly supplies an existing, empty, disposable directory.
     /// Errors after registration retain that directory and every created file.
     /// No rollback deletes files or unregisters a possibly useful partial root.
@@ -114,12 +129,29 @@ impl Session {
         Self::create_with_registration_hook(root, root_id, source, |_| Ok(()))
     }
 
-    /// The hook must durably persist the ticket before returning success. A
-    /// hook error precedes all native registration or population mutations.
+    /// `create_with_registration_hook` with every file virtual.
     pub fn create_with_registration_hook(
         root: &Path,
         root_id: [u8; 16],
         source: Arc<dyn SnapshotSource>,
+        persist: impl FnOnce(&Registration) -> Result<()>,
+    ) -> Result<Self> {
+        Self::create_hybrid_with_registration_hook(root, root_id, source, 0, persist)
+    }
+
+    /// The hook must durably persist the ticket before returning success. A
+    /// hook error precedes all native registration or population mutations.
+    ///
+    /// Hybrid population (`warm_budget` > 0): non-empty files of at most
+    /// `MAX_WARM_FILE_BYTES`, up to `warm_budget` bytes in total, are written
+    /// as ordinary files and converted into hydrated in-sync placeholders once
+    /// the provider is connected (see `warm`); reading them needs no
+    /// hydration. Every other file is a virtual placeholder.
+    pub fn create_hybrid_with_registration_hook(
+        root: &Path,
+        root_id: [u8; 16],
+        source: Arc<dyn SnapshotSource>,
+        warm_budget: u64,
         persist: impl FnOnce(&Registration) -> Result<()>,
     ) -> Result<Self> {
         // Re-validate all catalog invariants before even loading/registering.
@@ -172,14 +204,22 @@ impl Session {
             context: None,
             control: AttachedControl::None,
             catalog,
+            timings: PopulationTimings::default(),
         };
         persist(&session.registration)?;
         session.register(false, false)?;
-        session.populate()?;
+        let warm = warm::select(&session.catalog, warm_budget);
+        session.timings.warm_files = warm.len();
+        let written = session.populate(&warm)?;
         // Only a fully created namespace is reconnectable. A crash before this
         // update leaves an explicitly incomplete root, never inferred deletions.
         session.register(true, true)?;
         session.connect()?;
+        // CFAPI converts only under a connected root. A crash before this
+        // leaves ordinary files that captures hash; never a false in-sync mark.
+        let converting = std::time::Instant::now();
+        warm::convert(&session.api, &session.catalog, written)?;
+        session.timings.warm_convert = converting.elapsed();
         Ok(session)
     }
 
@@ -202,6 +242,7 @@ impl Session {
             context: None,
             control: AttachedControl::None,
             catalog,
+            timings: PopulationTimings::default(),
         };
         session.connect()?;
         Ok(session)
@@ -239,6 +280,7 @@ impl Session {
             context: None,
             control: AttachedControl::Directory(proof),
             catalog,
+            timings: PopulationTimings::default(),
         };
         value.verify_registration()?;
         Ok(value)
@@ -358,7 +400,7 @@ impl Session {
         })
     }
 
-    fn populate(&self) -> Result<()> {
+    fn populate(&mut self, warm: &[usize]) -> Result<warm::Written> {
         // Directories contain metadata only and are native, fully enumerated.
         // Parent-first BTree order and create_dir (not create_dir_all) ensure
         // foreign collisions fail instead of adopting an existing directory.
@@ -372,9 +414,17 @@ impl Session {
         // a failure leaves the same incomplete population as before (the
         // registration is not READY until population and audit complete).
         const BATCH: usize = 256;
+        let writing = std::time::Instant::now();
+        let written = warm::write(&self.root, &self.catalog, self.source.as_ref(), warm)?;
+        self.timings.warm_write = writing.elapsed();
+        let placing = std::time::Instant::now();
+        let warm: BTreeSet<usize> = warm.iter().copied().collect();
         let mut by_parent: std::collections::BTreeMap<&Path, Vec<usize>> =
             std::collections::BTreeMap::new();
         for (index, entry) in self.catalog.entries().iter().enumerate() {
+            if warm.contains(&index) {
+                continue;
+            }
             let parent = Path::new(entry.path.as_str())
                 .parent()
                 .ok_or(Error::IdentityMismatch)?;
@@ -433,7 +483,8 @@ impl Session {
                 }
             }
         }
-        Ok(())
+        self.timings.placeholders = placing.elapsed();
+        Ok(written)
     }
 
     fn verify_registration(&self) -> Result<()> {

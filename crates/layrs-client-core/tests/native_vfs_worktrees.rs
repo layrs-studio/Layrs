@@ -798,6 +798,9 @@ fn case_replaced_directory_preserves_actual_bytes_in_capture_and_export() {
         .unwrap()
         .clone();
     let mut worktree = fixture.virtual_root("case-replacement");
+    // `Dir/x` is small: a hybrid Room wrote it at creation (one source read).
+    let created_reads = worktree.source_read_counts();
+    assert_eq!(created_reads, (1, 18));
     let root = worktree.checkout_root().to_path_buf();
     fs::remove_file(root.join("Dir/x")).unwrap();
     fs::remove_dir(root.join("Dir")).unwrap();
@@ -807,7 +810,7 @@ fn case_replaced_directory_preserves_actual_bytes_in_capture_and_export() {
     let captured = worktree.capture_quiesced().unwrap();
     assert!(captured.changed);
     assert_eq!(captured.counts.hashed_bytes, dirty.len() as u64);
-    assert_eq!(worktree.source_read_counts(), (0, 0));
+    assert_eq!(worktree.source_read_counts(), created_reads);
     let export = worktree.export_quiesced(&fixture.root).unwrap();
     assert_eq!(fs::read(export.tree_root.join("dir/x")).unwrap(), dirty);
     let spellings: Vec<_> = fs::read_dir(&export.tree_root)

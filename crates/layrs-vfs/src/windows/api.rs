@@ -50,6 +50,7 @@ api! {
     placeholder_info: "CfGetPlaceholderInfo" (HANDLE, CF_PLACEHOLDER_INFO_CLASS, *mut c_void, u32, *mut u32) -> HRESULT,
     state: "CfGetPlaceholderStateFromAttributeTag" (u32, u32) -> CF_PLACEHOLDER_STATE,
     hydrate: "CfHydratePlaceholder" (HANDLE, i64, i64, CF_HYDRATE_FLAGS, *mut OVERLAPPED) -> HRESULT,
+    convert: "CfConvertToPlaceholder" (HANDLE, *const c_void, u32, CF_CONVERT_FLAGS, *mut i64, *mut OVERLAPPED) -> HRESULT,
 }
 
 // The DLL and immutable function table live until all callbacks finish. Windows

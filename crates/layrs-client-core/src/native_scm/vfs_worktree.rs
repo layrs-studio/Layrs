@@ -561,10 +561,11 @@ impl VfsWorktree {
         }
         let mut session = if journal.state().phase == VfsPhase::Registered {
             let _span = layrs_store_local::perf::span("vfs.session_create_populate");
-            let session = Session::create_with_registration_hook(
+            let session = Session::create_hybrid_with_registration_hook(
                 locator.checkout_root(),
                 locator.root_id,
                 source.clone(),
+                warm_budget(),
                 |ticket| {
                     validate_ticket(&locator, source.as_ref(), ticket)
                         .map_err(|e| layrs_vfs::Error::Io(io::Error::other(e)))?;
@@ -579,6 +580,15 @@ impl VfsWorktree {
                 },
             )
             .map_err(|error| provider_stage("register and populate provider", error))?;
+            let timings = session.population_timings();
+            layrs_store_local::perf::count("vfs.warm_files", timings.warm_files as u64);
+            for (name, took) in [
+                ("vfs.warm_write_ms", timings.warm_write),
+                ("vfs.placeholders_ms", timings.placeholders),
+                ("vfs.warm_convert_ms", timings.warm_convert),
+            ] {
+                layrs_store_local::perf::count(name, took.as_millis() as u64);
+            }
             journal.append(VfsEvent::ProviderPopulated, &journal_faults)?;
             session
         } else {
@@ -600,10 +610,11 @@ impl VfsWorktree {
                         .map_err(|error| provider_stage("reconnect prepared provider", error))?,
                     Err(original) => {
                         let expected_ticket = ticket.encode();
-                        match Session::create_with_registration_hook(
+                        match Session::create_hybrid_with_registration_hook(
                             locator.checkout_root(),
                             locator.root_id,
                             source.clone(),
+                            warm_budget(),
                             |candidate| {
                                 if candidate.encode() != expected_ticket {
                                     return Err(layrs_vfs::Error::IdentityMismatch);
@@ -1799,6 +1810,16 @@ impl<'session> VfsExportParent<'session> {
         }
         Ok(())
     }
+}
+
+/// Bytes of small files written physically when a virtual Room is created
+/// (hybrid Rooms): `LAYRS_ROOM_WARM_BYTES` when set (0 makes every file
+/// virtual), else `layrs_vfs::DEFAULT_WARM_BUDGET_BYTES`.
+pub fn warm_budget() -> u64 {
+    std::env::var("LAYRS_ROOM_WARM_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(layrs_vfs::DEFAULT_WARM_BUDGET_BYTES)
 }
 
 fn provider_error(error: layrs_vfs::Error) -> NativeClientError {
