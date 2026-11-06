@@ -382,6 +382,9 @@ struct Context<'a> {
     /// the whole catalog are not judged (the audit reports the pack once).
     compact_damaged: bool,
     compact_lookup_reported: bool,
+    /// Format 6: objects rows whose only copy may be in an unreadable
+    /// pack; their edges are not compared (their sources are unknowable).
+    unreadable_sources: BTreeSet<String>,
     max_findings: usize,
     report: FsckReport,
     objects: BTreeMap<String, CanonicalObject>,
@@ -407,6 +410,7 @@ impl<'a> Context<'a> {
             compact_audit_failed: false,
             compact_damaged: false,
             compact_lookup_reported: false,
+            unreadable_sources: BTreeSet::new(),
             max_findings,
             report: FsckReport::default(),
             objects: BTreeMap::new(),

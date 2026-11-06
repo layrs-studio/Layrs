@@ -138,6 +138,16 @@ impl Context<'_> {
             })?;
             rows.collect::<rusqlite::Result<BTreeSet<_>>>()?
         };
+        // Format 6: edges of sources that could not be read (their only copy
+        // in an unreadable pack, reported once) are not compared.
+        let actual: BTreeSet<_> = if self.unreadable_sources.is_empty() {
+            actual
+        } else {
+            actual
+                .into_iter()
+                .filter(|edge| !self.unreadable_sources.contains(&edge.0))
+                .collect()
+        };
         if !self.consume_cpu(actual.len()) {
             return Ok(());
         }

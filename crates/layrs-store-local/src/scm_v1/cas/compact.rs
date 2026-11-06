@@ -272,6 +272,7 @@ pub(crate) struct RegisteredPack {
 /// One `cas_packs` row, as registered (sound or not).
 #[derive(Debug)]
 struct RegisteredRow {
+    seq: i64,
     name: OsString,
     digest: Vec<u8>,
     entries: i64,
@@ -285,6 +286,26 @@ pub(crate) struct AuditedCopy {
     pub(crate) object: String,
     pub(crate) message_prefix: String,
     pub(crate) result: CasResult<()>,
+    /// The whole registered pack is unreadable (its records unnamed).
+    pub(crate) pack_level: bool,
+}
+
+/// An audit's next step: the bytes it is about to read and decode (so the
+/// auditor authorizes them first, against its budgets), or a copy checked.
+#[derive(Debug)]
+pub(crate) enum AuditEvent {
+    /// One pack block: its records' canonical bytes split into envelope
+    /// (decoded) and chunk (hashed) bytes, from the validated index.
+    Block {
+        envelope_bytes: u64,
+        chunk_bytes: u64,
+    },
+    /// One registered loose object of `bytes` canonical bytes.
+    Loose {
+        envelope: bool,
+        bytes: u64,
+    },
+    Copy(AuditedCopy),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -319,6 +340,9 @@ pub(crate) struct RegisteredCatalog {
     damaged: Vec<(i64, CasError)>,
     /// Every `cas_packs` row of the snapshot, sound or damaged.
     rows: Vec<RegisteredRow>,
+    /// Whether every pack was loaded from the metadata on disk now (an
+    /// audit catalog) rather than from the process cache.
+    fresh: bool,
     loose: BTreeMap<[u8; 32], LooseEntry>,
     /// FileId -> loose manifests (manifests over 1 MiB): raw manifest id and
     /// file length.
@@ -406,6 +430,7 @@ impl RegisteredCatalog {
                     }
                 });
             registered_rows.push(RegisteredRow {
+                seq,
                 name: name.clone(),
                 digest,
                 entries,
@@ -463,6 +488,7 @@ impl RegisteredCatalog {
         Ok(Self {
             packs,
             damaged,
+            fresh,
             rows: registered_rows,
             loose,
             loose_by_file,
@@ -1411,7 +1437,10 @@ impl NativeCas {
         catalog: &RegisteredCatalog,
         report: &mut CasScrubReport,
     ) -> CasResult<()> {
-        catalog.audit_registered(self, false, |copy| {
+        catalog.audit_registered(self, false, |event| {
+            let AuditEvent::Copy(copy) = event else {
+                return true;
+            };
             report.checked_objects += 1;
             if let Err(error) = copy.result {
                 report.issues.push(CasScrubIssue {
@@ -1441,23 +1470,42 @@ impl RegisteredCatalog {
         &self,
         cas: &NativeCas,
         loose: bool,
-        mut visit: impl FnMut(AuditedCopy) -> bool,
+        mut event: impl FnMut(AuditEvent) -> bool,
     ) {
+        let unreadable = |path: PathBuf, name: &OsStr, error: CasError| {
+            AuditEvent::Copy(AuditedCopy {
+                path,
+                object: name.to_string_lossy().into_owned(),
+                message_prefix: String::new(),
+                result: Err(error),
+                pack_level: true,
+            })
+        };
         for row in &self.rows {
             let path = cas.objects_dir.join(PACKS_DIR).join(&row.name);
-            let loaded = cas.loaded_pack(&row.name, true).and_then(|pack| {
-                check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
-            });
+            // An audit catalog already holds this pack's fresh metadata (or
+            // why it is unreadable); any other catalog is reread now.
+            let loaded = if self.fresh {
+                match self.packs.iter().find(|pack| pack.seq == row.seq) {
+                    Some(pack) => Ok(Arc::clone(&pack.pack)),
+                    None => Err(self
+                        .damaged
+                        .iter()
+                        .find(|(seq, _)| *seq == row.seq)
+                        .map(|(_, error)| error.clone())
+                        .unwrap_or_else(|| {
+                            pack2::pack2_corruption(&path, "registered pack is unreadable")
+                        })),
+                }
+            } else {
+                cas.loaded_pack(&row.name, true).and_then(|pack| {
+                    check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
+                })
+            };
             let loaded = match loaded {
                 Ok(loaded) => loaded,
                 Err(error) => {
-                    let copy = AuditedCopy {
-                        path,
-                        object: row.name.to_string_lossy().into_owned(),
-                        message_prefix: String::new(),
-                        result: Err(error),
-                    };
-                    if !visit(copy) {
+                    if !event(unreadable(path, &row.name, error)) {
                         return;
                     }
                     continue;
@@ -1466,6 +1514,30 @@ impl RegisteredCatalog {
             // One handle for the whole pack, closed when its audit ends.
             let file = loaded.open(cas);
             for (block, records) in loaded.index.records_by_block().into_iter().enumerate() {
+                let (mut envelope_bytes, mut chunk_bytes) = (0_u64, 0_u64);
+                for record in &records {
+                    match record {
+                        pack2::RecordRef::Explicit(ordinal) => {
+                            if let Some((kind, _, location)) = loaded.index.explicit(*ordinal) {
+                                let length = u64::from(location.length);
+                                if kind == pack2::kind_code(StoreObjectKind::ChunkRaw) {
+                                    chunk_bytes += length;
+                                } else {
+                                    envelope_bytes += length;
+                                }
+                            }
+                        }
+                        pack2::RecordRef::File(file) => {
+                            chunk_bytes += u64::from(loaded.index.files[*file].location.length);
+                        }
+                    }
+                }
+                if !event(AuditEvent::Block {
+                    envelope_bytes,
+                    chunk_bytes,
+                }) {
+                    return;
+                }
                 let raw = file.as_ref().map_err(Clone::clone).and_then(|file| {
                     pack2::read_block(file.file(), &loaded.path, &loaded.index, block as u32)
                 });
@@ -1476,8 +1548,9 @@ impl RegisteredCatalog {
                         object,
                         message_prefix: format!("{name}: "),
                         result,
+                        pack_level: false,
                     };
-                    if !visit(copy) {
+                    if !event(AuditEvent::Copy(copy)) {
                         return;
                     }
                 }
@@ -1487,26 +1560,41 @@ impl RegisteredCatalog {
             return;
         }
         for (digest, entry) in &self.loose {
+            let chunk = entry.kind == pack2::kind_code(StoreObjectKind::ChunkRaw);
+            if !event(AuditEvent::Loose {
+                envelope: !chunk,
+                bytes: entry.byte_length,
+            }) {
+                return;
+            }
             let audited = pack2::kind_of_code(entry.kind)
                 .ok_or_else(|| pack2::pack2_corruption(&self_path(), "loose object kind"))
                 .and_then(|kind| pack2::object_id_of(kind, digest))
                 .and_then(|id| {
                     let path = cas.object_path(&id)?;
-                    let result = cas
-                        .read_loose(&id)
-                        .map_err(|error| match error {
-                            CasError::NotFound { .. } => {
-                                corruption(&id, "registered loose object is missing")
-                            }
-                            other => other,
-                        })
-                        .and_then(|object| {
-                            if encode_object(&object)?.len() as u64 == entry.byte_length {
-                                Ok(())
-                            } else {
-                                Err(corruption(&id, "loose object length differs from its row"))
-                            }
-                        });
+                    let missing = |error| match error {
+                        CasError::NotFound { .. } => {
+                            corruption(&id, "registered loose object is missing")
+                        }
+                        other => other,
+                    };
+                    // A chunk is streamed and hashed, never held whole.
+                    let length = match &id {
+                        StoreObjectId::ChunkRaw(chunk_id) => cas
+                            .stream_loose_chunk(chunk_id, &id, &mut |_| {})
+                            .map_err(missing),
+                        _ => cas
+                            .read_loose(&id)
+                            .map_err(missing)
+                            .and_then(|object| Ok(encode_object(&object)?.len() as u64)),
+                    };
+                    let result = length.and_then(|length| {
+                        if length == entry.byte_length {
+                            Ok(())
+                        } else {
+                            Err(corruption(&id, "loose object length differs from its row"))
+                        }
+                    });
                     Ok((id.to_string(), path, result))
                 });
             let copy = match audited {
@@ -1515,18 +1603,36 @@ impl RegisteredCatalog {
                     message_prefix: format!("{object}: "),
                     object,
                     result,
+                    pack_level: false,
                 },
                 Err(error) => AuditedCopy {
                     path: self_path(),
                     object: pack2::digest_text(digest),
                     message_prefix: String::new(),
                     result: Err(error),
+                    pack_level: false,
                 },
             };
-            if !visit(copy) {
+            if !event(AuditEvent::Copy(copy)) {
                 return;
             }
         }
+    }
+
+    /// The registered packs that cannot be read, with their paths.
+    pub(crate) fn unreadable_packs(&self, cas: &NativeCas) -> Vec<(PathBuf, CasError)> {
+        self.damaged
+            .iter()
+            .map(|(seq, error)| {
+                let name = self
+                    .rows
+                    .iter()
+                    .find(|row| row.seq == *seq)
+                    .map(|row| row.name.clone())
+                    .unwrap_or_default();
+                (cas.objects_dir.join(PACKS_DIR).join(name), error.clone())
+            })
+            .collect()
     }
 }
 

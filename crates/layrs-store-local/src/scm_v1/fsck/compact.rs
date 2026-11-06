@@ -4,7 +4,7 @@
 //! checked against the decoded content; references that may name content
 //! (pins, GC roots, recovery paths) are resolved through the catalog.
 use super::*;
-use crate::scm_v1::cas::{RegisteredCatalog, is_content};
+use crate::scm_v1::cas::{AuditEvent, RegisteredCatalog, is_content};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -46,6 +46,22 @@ impl Context<'_> {
                 None
             }
         }
+    }
+
+    /// Authorizes one physical read of the audit before it happens: one CPU
+    /// unit, `envelope_bytes` (decoded) against the object byte budget,
+    /// `chunk_bytes` (hashed) against the streamed chunk budget.
+    fn authorize_audit_read(&mut self, envelope_bytes: u64, chunk_bytes: u64) -> bool {
+        if !self.consume_cpu(1) {
+            return false;
+        }
+        if chunk_bytes > self.chunk_byte_budget_remaining {
+            self.exhaust_bytes("streamed pack chunks");
+            return false;
+        }
+        self.chunk_byte_budget_remaining -= chunk_bytes;
+        let budget = self.byte_budget_remaining;
+        envelope_bytes == 0 || self.reserve_bytes(envelope_bytes, budget, "pack envelopes")
     }
 
     /// One finding for a catalog answer that failed; later ones are the same
@@ -90,6 +106,18 @@ impl Context<'_> {
         let Some((cas, catalog)) = self.compact_catalog() else {
             return Ok(());
         };
+        // Unreadable registered packs first, once each, so the findings cap
+        // keeps room for them; what they make unknowable is not reported again.
+        for (path, error) in catalog.unreadable_packs(&cas) {
+            self.finding(
+                FsckFindingCode::CasCorruption,
+                FsckSeverity::Error,
+                Some(path),
+                None,
+                None,
+                format!("{}: {error}", error.code()),
+            );
+        }
         for (id_text, kind_text, byte_length) in rows {
             self.report.checked_rows = self.report.checked_rows.saturating_add(1);
             self.report.checked_objects = self.report.checked_objects.saturating_add(1);
@@ -115,6 +143,19 @@ impl Context<'_> {
                 );
                 continue;
             };
+            // An object whose only copy may be in an unreadable pack is
+            // unknowable, not missing: it is left out of every check that
+            // would read it (and of edge comparisons), the pack being
+            // reported above.
+            if self.compact_damaged
+                && catalog
+                    .placements(&object_id)
+                    .is_ok_and(|placements| placements.is_empty())
+                && cas.loose_length(&object_id).ok().flatten().is_none()
+            {
+                self.unreadable_sources.insert(id_text);
+                continue;
+            }
             let location = match cas.locate(&object_id) {
                 Ok(Some(location)) => location,
                 Ok(None) => {
@@ -164,15 +205,38 @@ impl Context<'_> {
             return Ok(());
         }
         // Every registered physical copy, at its own place: a damaged copy is
-        // reported even when a sound duplicate serves its logical reads. An
-        // unreadable registered pack is reported here, once.
+        // reported even when a sound duplicate serves its logical reads. Each
+        // block (or loose object) is authorized against the budgets before it
+        // is read: one CPU unit, its envelope bytes against the object byte
+        // budget and its chunk bytes against the streamed chunk budget, as
+        // the format 5 scan charges objects.
         let mut damaged_copies = HashSet::new();
         let mut stopped = false;
-        catalog.audit_registered(&cas, true, |copy| {
+        catalog.audit_registered(&cas, true, |event| {
+            let copy = match event {
+                AuditEvent::Block {
+                    envelope_bytes,
+                    chunk_bytes,
+                } => {
+                    let allowed = self.authorize_audit_read(envelope_bytes, chunk_bytes);
+                    stopped = !allowed;
+                    return allowed;
+                }
+                AuditEvent::Loose { envelope, bytes } => {
+                    let allowed = if envelope {
+                        self.authorize_audit_read(bytes, 0)
+                    } else {
+                        self.authorize_audit_read(0, bytes)
+                    };
+                    stopped = !allowed;
+                    return allowed;
+                }
+                AuditEvent::Copy(copy) => copy,
+            };
             self.report.checked_objects = self.report.checked_objects.saturating_add(1);
-            if !self.consume_cpu(1) {
-                stopped = true;
-                return false;
+            // Reported before the envelope scan.
+            if copy.pack_level {
+                return true;
             }
             if let Err(error) = copy.result {
                 self.finding(
@@ -208,9 +272,8 @@ impl Context<'_> {
             if self.object_ids.contains_key(object_id.as_str()) {
                 continue;
             }
-            if !self.consume_cpu(1) {
-                return Ok(());
-            }
+            // No CPU charge here: the audit already charged every block, and
+            // a chunk it verified is only recorded present.
             let id_text = object_id.to_string();
             if matches!(object_id, StoreObjectId::ChunkRaw(_)) && !damaged_copies.contains(&id_text)
             {
@@ -395,10 +458,10 @@ impl Context<'_> {
                     continue;
                 }
             };
+            // Index and bitmap lookups only, bounded by the manifests already
+            // budgeted by the scan: like format 5's SQL closure check, this
+            // check charges no CPU units of its own.
             for manifest in &manifests {
-                if !self.consume_cpu(1 + manifest.chunks().len()) {
-                    return Ok(());
-                }
                 let object = StoreObjectId::FileManifest(manifest.id().clone());
                 match catalog.admitted(&admissions, &object) {
                     Ok(true) => {}
