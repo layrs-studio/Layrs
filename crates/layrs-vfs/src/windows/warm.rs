@@ -60,8 +60,13 @@ pub(super) fn select(catalog: &Catalog, budget: u64) -> Vec<usize> {
     selected
 }
 
-/// Ordinary files written and still held for conversion, by catalog index.
-pub(super) struct Written(Vec<(usize, File)>);
+/// Ordinary files written and still held for conversion, by catalog index,
+/// and the summed worker time spent reading the source and writing files.
+pub(super) struct Written(
+    Vec<(usize, File)>,
+    pub std::time::Duration,
+    pub std::time::Duration,
+);
 
 fn create_new(path: &Path) -> Result<File> {
     let name = fs::native_path(path)?;
@@ -115,6 +120,8 @@ pub(super) fn write(
     let written = Mutex::new(Vec::with_capacity(selected.len()));
     let failure: Mutex<Option<Error>> = Mutex::new(None);
     let cancel = Cancellation::default();
+    let reading = std::sync::atomic::AtomicU64::new(0);
+    let creating = std::sync::atomic::AtomicU64::new(0);
     std::thread::scope(|scope| {
         for _ in 0..workers().min(items.len()) {
             scope.spawn(|| {
@@ -134,9 +141,16 @@ pub(super) fn write(
                         for &index in *item {
                             let entry = &catalog.entries()[index];
                             buffer.resize(entry.size as usize, 0);
+                            let started = std::time::Instant::now();
                             read_checked(source, entry, 0, &mut buffer, &cancel)?;
+                            let read = started.elapsed();
                             let mut file = create_new(&root.root.join(entry.path.as_str()))?;
                             file.write_all(&buffer)?;
+                            reading.fetch_add(read.as_nanos() as u64, Ordering::Relaxed);
+                            creating.fetch_add(
+                                (started.elapsed() - read).as_nanos() as u64,
+                                Ordering::Relaxed,
+                            );
                             files.push((index, file));
                         }
                         Ok(files)
@@ -156,7 +170,11 @@ pub(super) fn write(
     if let Some(error) = failure.into_inner().expect("warm failure") {
         return Err(error);
     }
-    Ok(Written(written.into_inner().expect("warm writes")))
+    Ok(Written(
+        written.into_inner().expect("warm writes"),
+        std::time::Duration::from_nanos(reading.into_inner()),
+        std::time::Duration::from_nanos(creating.into_inner()),
+    ))
 }
 
 /// Converts every written file into a hydrated in-sync placeholder carrying

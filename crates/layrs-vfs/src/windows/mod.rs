@@ -114,6 +114,9 @@ pub struct Session {
 pub struct PopulationTimings {
     pub warm_files: usize,
     pub warm_write: std::time::Duration,
+    /// Summed over workers: source reads, then file creation and writes.
+    pub warm_read_total: std::time::Duration,
+    pub warm_create_total: std::time::Duration,
     pub placeholders: std::time::Duration,
     pub warm_convert: std::time::Duration,
 }
@@ -417,6 +420,8 @@ impl Session {
         let writing = std::time::Instant::now();
         let written = warm::write(&self.root, &self.catalog, self.source.as_ref(), warm)?;
         self.timings.warm_write = writing.elapsed();
+        self.timings.warm_read_total = written.1;
+        self.timings.warm_create_total = written.2;
         let placing = std::time::Instant::now();
         let warm: BTreeSet<usize> = warm.iter().copied().collect();
         let mut by_parent: std::collections::BTreeMap<&Path, Vec<usize>> =

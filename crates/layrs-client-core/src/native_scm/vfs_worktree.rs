@@ -584,6 +584,8 @@ impl VfsWorktree {
             layrs_store_local::perf::count("vfs.warm_files", timings.warm_files as u64);
             for (name, took) in [
                 ("vfs.warm_write_ms", timings.warm_write),
+                ("vfs.warm_read_total_ms", timings.warm_read_total),
+                ("vfs.warm_create_total_ms", timings.warm_create_total),
                 ("vfs.placeholders_ms", timings.placeholders),
                 ("vfs.warm_convert_ms", timings.warm_convert),
             ] {
