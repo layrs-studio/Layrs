@@ -20,11 +20,10 @@ impl NativeScmReader<'_> {
     /// (after the batch registered its pack).
     pub(super) fn catalog(&self) -> Result<Arc<RegisteredCatalog>> {
         match self.source {
-            SqlReadSource::Ready(_) => self
-                .cas
-                .compact_catalog()
-                .cloned()
-                .ok_or_else(|| backend("format 6 CAS view has no registered catalog")),
+            SqlReadSource::Ready(store) => match self.cas.compact_catalog() {
+                Some(catalog) => Ok(Arc::clone(catalog)),
+                None => self.cas.store_catalog(store).map_err(cas_read_error),
+            },
             SqlReadSource::Transaction(_) => {
                 if let Some(catalog) = self.transaction_catalog.get() {
                     // Still refuse reads after the transaction ended.

@@ -121,7 +121,7 @@ pub struct NativeStoreReading {
 
 impl NativeStoreReading {
     pub fn new(store: NativeStoreOpen) -> Result<Self> {
-        let cas = NativeCas::open(&store).map_err(cas_open_backend)?;
+        let cas = NativeCas::open_lazy(&store).map_err(cas_open_backend)?;
         let identities = super::identity::read_registry(store.layout().root(), store.store_id())?;
         Ok(Self {
             store,
@@ -142,7 +142,7 @@ impl NativeStoreReading {
 
 impl<'store> NativeScmReader<'store> {
     pub fn new(store: &'store NativeStoreOpen) -> Result<Self> {
-        let cas = NativeCas::open(store).map_err(cas_open_backend)?;
+        let cas = NativeCas::open_lazy(store).map_err(cas_open_backend)?;
         Ok(Self {
             source: SqlReadSource::Ready(store),
             identities: super::identity::read_registry(store.layout().root(), store.store_id())?,

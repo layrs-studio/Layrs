@@ -508,34 +508,70 @@ impl NativeCas {
         store: &NativeStoreOpen,
         faults: Arc<dyn CasFaultInjector>,
     ) -> CasResult<Self> {
+        let mut cas = Self::open_store(store, faults)?;
+        if store.compact() {
+            cas.compact = Some(cas.store_catalog(store)?);
+        }
+        Ok(cas)
+    }
+
+    /// A view of a Ready Store without its format 6 catalog: the SCM reader
+    /// loads that catalog only when it first needs content (`store_catalog`),
+    /// so a command that reads none (a clean `status`) never pays for it.
+    /// Such a view refuses every content operation of its own.
+    pub(crate) fn open_lazy(store: &NativeStoreOpen) -> CasResult<Self> {
+        Self::open_store(store, Arc::new(NoFaults))
+    }
+
+    fn open_store(store: &NativeStoreOpen, faults: Arc<dyn CasFaultInjector>) -> CasResult<Self> {
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         let packs = store.packs_enabled().then(|| store.store_id());
         let mut cas = Self::open_layout(store.layout(), faults, packs)?;
-        if store.compact() {
-            cas.compact_format = true;
-            let catalog = match store.registered_catalog().get() {
-                Some(catalog) => Arc::clone(catalog),
-                None => {
-                    let connection = store.connection().map_err(|error| {
-                        io_error(
-                            "open SQLite for the CAS catalog",
-                            store.layout().sqlite_path(),
-                            io::Error::other(error.to_string()),
-                        )
-                    })?;
-                    let loaded = Arc::new(compact::RegisteredCatalog::load(&connection, &cas)?);
-                    drop(connection);
-                    Arc::clone(store.registered_catalog().get_or_init(|| loaded))
-                }
-            };
-            cas.compact = Some(catalog);
-        }
+        cas.compact_format = store.compact();
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         Ok(cas)
+    }
+
+    /// The registered catalog of `store`'s immutable snapshot, loaded once
+    /// per open Store.
+    pub(crate) fn store_catalog(
+        &self,
+        store: &NativeStoreOpen,
+    ) -> CasResult<Arc<compact::RegisteredCatalog>> {
+        if let Some(catalog) = store.registered_catalog().get() {
+            return Ok(Arc::clone(catalog));
+        }
+        let connection = store.connection().map_err(|error| {
+            io_error(
+                "open SQLite for the CAS catalog",
+                store.layout().sqlite_path(),
+                io::Error::other(error.to_string()),
+            )
+        })?;
+        let loaded = Arc::new(compact::RegisteredCatalog::load(&connection, self)?);
+        drop(connection);
+        Ok(Arc::clone(
+            store.registered_catalog().get_or_init(|| loaded),
+        ))
+    }
+
+    /// This view's own catalog: `None` outside format 6; an error for a
+    /// format 6 view opened without one, which must never fall back to the
+    /// format 5 paths.
+    fn compact_view(&self) -> CasResult<Option<&Arc<compact::RegisteredCatalog>>> {
+        match (&self.compact, self.compact_format) {
+            (Some(catalog), _) => Ok(Some(catalog)),
+            (None, false) => Ok(None),
+            (None, true) => Err(io_error(
+                "read format 6 CAS",
+                &self.root,
+                io::Error::other("this CAS view has no registered catalog"),
+            )),
+        }
     }
 
     /// `packs`: the Store id when its format holds packs (ADR 0026).
@@ -758,7 +794,7 @@ impl NativeCas {
     /// to the packer (published by `Packer::finish`); a large one is
     /// installed as by `put`.
     fn put_in_batch(&self, object: &CanonicalObject) -> CasResult<Slot> {
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             return self.put_compact(catalog, object);
         }
         let packing = self
@@ -884,7 +920,7 @@ impl NativeCas {
     /// Whether some copy exists (a pack member or a separate file). Presence
     /// is not content proof.
     pub fn contains(&self, object_id: &StoreObjectId) -> CasResult<bool> {
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             // Content is present only when registered; another kind's loose
             // file is authorized by its `objects` row, checked by the reader.
             return Ok(catalog.contains(object_id)?
@@ -909,7 +945,7 @@ impl NativeCas {
 
     /// The first copy of `object_id` that verifies (see `with_copy`).
     pub fn read(&self, object_id: &StoreObjectId) -> CasResult<CanonicalObject> {
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             return self.read_registered(catalog, object_id);
         }
         match self.with_copy(object_id, false, || self.read_loose(object_id))? {
@@ -939,7 +975,7 @@ impl NativeCas {
     /// reread and decoded through Core constructors, which recompute claimed
     /// identities and reject non-canonical bytes.
     pub fn verify(&self, object_id: &StoreObjectId) -> CasResult<()> {
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             if catalog.placements(object_id)?.is_empty() && !is_content(object_id.kind()) {
                 return self.verify_loose(object_id);
             }
@@ -997,7 +1033,7 @@ impl NativeCas {
         chunk_id: &ChunkId,
         mut consume: impl FnMut(&[u8]),
     ) -> CasResult<u64> {
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             return catalog.stream_chunk(self, chunk_id, &mut consume);
         }
         let object_id = StoreObjectId::ChunkRaw(chunk_id.clone());
@@ -1094,7 +1130,7 @@ impl NativeCas {
         if self.packs.is_some() {
             self.scrub_packs(&mut report)?;
         }
-        if let Some(catalog) = &self.compact {
+        if let Some(catalog) = self.compact_view()? {
             self.scrub_registered(catalog, &mut report)?;
         }
         report
