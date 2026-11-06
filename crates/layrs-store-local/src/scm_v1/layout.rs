@@ -247,9 +247,11 @@ pub struct NativeStoreOpen {
     /// their id, `objects` row, edges). The shared Store lock excludes
     /// writers for the session's life, so its rows cannot change and a Tree
     /// verified once in it stays verified; nothing outlives the session.
-    verified_trees: Mutex<
+    /// With the total number of their entries (bounded).
+    verified_trees: Mutex<(
         std::collections::HashMap<layrs_core::scm::TreeId, std::sync::Arc<layrs_core::scm::Tree>>,
-    >,
+        usize,
+    )>,
 }
 
 /// Implicit per-query rebinding checks are throttled to this interval. SQLite
@@ -279,7 +281,7 @@ impl NativeStoreOpen {
             implicit_verified: Mutex::new(None),
             format_version: super::FORMAT_VERSION,
             registered: std::sync::OnceLock::new(),
-            verified_trees: Mutex::new(std::collections::HashMap::new()),
+            verified_trees: Mutex::new((std::collections::HashMap::new(), 0)),
         }
     }
 
@@ -288,17 +290,20 @@ impl NativeStoreOpen {
         &self,
         id: &layrs_core::scm::TreeId,
     ) -> Option<std::sync::Arc<layrs_core::scm::Tree>> {
-        self.verified_trees.lock().ok()?.get(id).cloned()
+        self.verified_trees.lock().ok()?.0.get(id).cloned()
     }
 
-    /// Records a Tree this session read and verified (bounded by entries).
+    /// Records a Tree this session read and verified, while all recorded
+    /// Trees hold at most 400,000 entries (about 60 MB); the memory goes
+    /// with the session.
     pub(crate) fn remember_verified_tree(&self, tree: &layrs_core::scm::Tree) {
-        const MAX_TREES: usize = 4_096;
-        if let Ok(mut trees) = self.verified_trees.lock() {
-            if trees.len() < MAX_TREES {
-                trees
-                    .entry(tree.id().clone())
-                    .or_insert_with(|| std::sync::Arc::new(tree.clone()));
+        const MAX_ENTRIES: usize = 400_000;
+        if let Ok(mut guard) = self.verified_trees.lock() {
+            let (trees, entries) = &mut *guard;
+            let size = tree.entries().len().max(1);
+            if *entries + size <= MAX_ENTRIES && !trees.contains_key(tree.id()) {
+                *entries += size;
+                trees.insert(tree.id().clone(), std::sync::Arc::new(tree.clone()));
             }
         }
     }

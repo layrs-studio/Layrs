@@ -104,21 +104,6 @@ impl CompositeAdmissionResolver<'_> {
             if !self.object_admitted_result(&id, space)? {
                 return Err(rejected("Weave closure outside Space"));
             }
-            // A durably admitted Tree had its whole closure validated when it
-            // was admitted (admissions are never withdrawn): only Conflicts
-            // below it still need visiting, and its non-File children are
-            // its recorded edges. Decoding every such Tree cost about 85 ms
-            // per validation at 10,000 files.
-            if let StoreObjectId::Tree(tree_id) = &id {
-                if self.overlay_object(&id).is_none()
-                    && self.reader.object_admitted_metadata(&id, space)?
-                {
-                    if let Some(children) = self.reader.tree_children_metadata(tree_id)? {
-                        pending.extend(children);
-                        continue;
-                    }
-                }
-            }
             let object = self
                 .object(&id)?
                 .ok_or_else(|| rejected("Weave closure object missing"))?;

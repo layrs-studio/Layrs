@@ -92,13 +92,6 @@ impl ScmReader for NativeTransactionalScmReader<'_> {
         self.active_reader()?.file_manifest_ids_metadata(id)
     }
 
-    fn tree_children_metadata(
-        &self,
-        tree_id: &layrs_core::scm::TreeId,
-    ) -> Result<Option<Vec<StoreObjectId>>> {
-        self.active_reader()?.tree_children_metadata(tree_id)
-    }
-
     fn object_admitted_metadata(
         &self,
         object_id: &StoreObjectId,

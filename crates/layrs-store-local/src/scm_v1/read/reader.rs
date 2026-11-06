@@ -86,6 +86,8 @@ impl ScmReader for NativeScmReader<'_> {
             super::SqlReadSource::Transaction(_) => None,
         };
         if let Some(tree) = session.and_then(|store| store.verified_tree(id)) {
+            // The session's own identity guard still runs (`connection`).
+            drop(self.connection()?);
             return Ok(Some((*tree).clone()));
         }
         match self.read_object(&StoreObjectId::Tree(id.clone()))? {
@@ -449,53 +451,6 @@ impl ScmReader for NativeScmReader<'_> {
                 row.get(0)
             })
             .map_err(sqlite_backend)
-    }
-
-    /// From the Tree's `tree_entry` edges, written with it in the same
-    /// transaction and compared with its canonical bytes at every `get_tree`.
-    fn tree_children_metadata(
-        &self,
-        tree_id: &layrs_core::scm::TreeId,
-    ) -> Result<Option<Vec<StoreObjectId>>> {
-        let source = StoreObjectId::Tree(tree_id.clone());
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare_cached(
-                "SELECT e.target_object_id, o.object_kind FROM object_edges AS e \
-                 JOIN objects AS o ON o.object_id = e.target_object_id \
-                 WHERE e.source_object_id = ?1 AND e.edge_kind = 'tree_entry' \
-                 ORDER BY e.ordinal",
-            )
-            .map_err(sqlite_backend)?;
-        let rows = statement
-            .query_map([source.as_str()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(sqlite_backend)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(sqlite_backend)?;
-        let mut children = Vec::with_capacity(rows.len());
-        for (id, kind) in rows {
-            let parse = |error: layrs_core::scm::ScmError| corruption(error.to_string());
-            children.push(match kind.as_str() {
-                "tree" => StoreObjectId::Tree(layrs_core::scm::TreeId::parse(id).map_err(parse)?),
-                "conflict" => {
-                    StoreObjectId::Conflict(layrs_core::scm::ConflictId::parse(id).map_err(parse)?)
-                }
-                "symlink" => {
-                    StoreObjectId::Symlink(layrs_core::scm::SymlinkId::parse(id).map_err(parse)?)
-                }
-                "tombstone" => StoreObjectId::Tombstone(
-                    layrs_core::scm::TombstoneId::parse(id).map_err(parse)?,
-                ),
-                other => {
-                    return Err(corruption(format!(
-                        "tree_entry edge of {tree_id} targets a {other}"
-                    )));
-                }
-            });
-        }
-        Ok(Some(children))
     }
 
     fn object_admitted_metadata(

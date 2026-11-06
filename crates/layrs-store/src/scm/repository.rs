@@ -172,16 +172,6 @@ pub trait ScmReader: Send + Sync {
     ) -> Result<bool> {
         self.object_admitted_to_space(object_id, space_id)
     }
-    /// The non-File children (Trees, Conflicts, Symlinks, Tombstones) of a
-    /// stored Tree, in entry order, from metadata recorded when it was
-    /// stored (and checked against its bytes at every read), without
-    /// decoding it. `None` when the reader keeps no such metadata.
-    fn tree_children_metadata(
-        &self,
-        _tree_id: &layrs_core::scm::TreeId,
-    ) -> Result<Option<Vec<StoreObjectId>>> {
-        Ok(None)
-    }
     fn is_step_ancestor(&self, ancestor: &StepId, descendant: &StepId) -> Result<bool>;
     fn operation_reaches_step(&self, operation_id: &OperationId, step_id: &StepId) -> Result<bool>;
 
