@@ -469,7 +469,9 @@ impl NativeWorkspace {
         // with its journal closed.
         self.verify_displaced_content(&before, &after)?;
         let stamp = MutationStamp::fresh()?;
-        let snapshot = restore_projection::snapshot(&after)?;
+        // Only the projection's Tree id is needed (the materializer checks it
+        // against `after`); it is memoized, unlike a full snapshot build.
+        let materialized_tree = layrs_store_local::scm_v1::checkout::projection_tree_id(&after)?;
         let reference_view = restored_view.as_ref().unwrap_or(&source.view);
         let states = source
             .view
@@ -488,7 +490,7 @@ impl NativeWorkspace {
                         w.worktree_id().clone(),
                         active_layer.clone(),
                         Some(target_step.clone()),
-                        Some(snapshot.root_tree_id().clone()),
+                        Some(materialized_tree.clone()),
                         WorktreeStatus::Ready,
                     )
                 } else {

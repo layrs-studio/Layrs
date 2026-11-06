@@ -72,10 +72,19 @@ impl ScmReader for NativeScmReader<'_> {
     }
 
     fn get_tree(&self, id: &TreeId) -> Result<Option<Tree>> {
+        // A Tree decoded and verified once in this process (and its edges
+        // checked against this Store) is reused; its verified row must still
+        // be present here (`tree_cache`).
+        if let Some(tree) = super::tree_cache::get(self.root(), id) {
+            if <Self as ScmReader>::tree_present_metadata(self, id)? {
+                return Ok(Some((*tree).clone()));
+            }
+        }
         match self.read_object(&StoreObjectId::Tree(id.clone()))? {
             None => Ok(None),
             Some(CanonicalObject::Tree(value)) => {
                 self.validate_tree_projection(&value)?;
+                super::tree_cache::insert(self.root(), &value);
                 Ok(Some(value))
             }
             Some(_) => Err(corruption(format!("CAS kind mismatch for Tree {id}"))),

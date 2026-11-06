@@ -370,6 +370,7 @@ mod availability;
 mod projections;
 mod reader;
 mod transactional;
+mod tree_cache;
 
 fn decode_payload<T>(payload: &str, kind: &'static str, id: &str) -> Result<T>
 where
