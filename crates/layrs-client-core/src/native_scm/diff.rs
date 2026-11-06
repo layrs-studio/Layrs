@@ -130,17 +130,20 @@ impl NativeWorkspace {
                             }
                         })
                     };
+                // Taken before the listing: no hashed content is credited
+                // later than the metadata observed for it.
+                let verified_at = layrs_store_local::scm_v1::change_index::now();
                 // Read-only: one stable pass, as git status (council r5, D4).
-                checkout
-                    .capture_streaming_trusting_single_pass(
-                        limits,
-                        &tracked,
-                        Some(&before),
-                        &mut trust,
-                        &mut |_| Ok(()),
-                        &mut || Ok(()),
-                    )?
-                    .entries
+                let captured = checkout.capture_streaming_trusting_single_pass(
+                    limits,
+                    &tracked,
+                    Some(&before),
+                    &mut trust,
+                    &mut |_| Ok(()),
+                    &mut || Ok(()),
+                )?;
+                refresh_racy_entries(self.store_root(), index, &captured, verified_at);
+                captured.entries
             }
             None => {
                 checkout
@@ -394,4 +397,48 @@ pub(super) fn diff_entries(
             .collect()
     }
     layrs_core::scm::diff_entries(&entries(before), &entries(after))
+}
+
+/// Like git's index refresh during `status`: an entry read again only because
+/// its listing was too close to its proof ("racy") and whose bytes still hash
+/// to the recorded FileId under the same listing metadata gets a new proof
+/// time, so later commands trust it without reading it. Only existing
+/// entries for already admitted content are refreshed; nothing new is
+/// recorded. Best effort (a cache).
+fn refresh_racy_entries(
+    store_root: &std::path::Path,
+    index: &layrs_store_local::scm_v1::change_index::ChangeIndex,
+    captured: &layrs_store_local::scm_v1::checkout::TrustedCapture,
+    verified_at: i64,
+) {
+    use layrs_store_local::scm_v1::change_index::StatKey;
+    if captured.hashed.is_empty() {
+        return;
+    }
+    let contents: std::collections::BTreeMap<&str, &CheckoutProjectionContent> = captured
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), &entry.content))
+        .collect();
+    let mut refreshed = index.clone();
+    let mut changed = false;
+    for (path, listed) in &captured.hashed {
+        let (Some(old), Some(stat)) = (index.entry(path), StatKey::of(listed)) else {
+            continue;
+        };
+        let same = matches!(
+            contents.get(path.as_str()),
+            Some(CheckoutProjectionContent::File { file_id, byte_length, executable })
+                if *file_id == old.file_id && *byte_length == old.length && *executable == old.executable
+        );
+        if same && stat == old.stat && old.verified_at < verified_at {
+            let mut entry = old.clone();
+            entry.verified_at = verified_at;
+            refreshed.insert(path.clone(), entry);
+            changed = true;
+        }
+    }
+    if changed && refreshed.save(store_root).is_err() {
+        layrs_store_local::perf::count("status.index_refresh_unsaved", 1);
+    }
 }
