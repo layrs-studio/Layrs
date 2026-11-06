@@ -190,8 +190,39 @@ pub fn save(
         }
         fs::rename(&staged, &path).inspect_err(|_| {
             let _ = fs::remove_file(&staged);
-        })
+        })?;
+        prune(directory, &path);
+        Ok(())
     })();
+}
+
+/// Projections kept: those of the Trees most recently written (each Worktree
+/// and Room base, recent Steps). Without a bound every new root Tree added
+/// a file of about 40 bytes per path, forever.
+const KEPT: usize = 8;
+
+/// Removes the least recently written projections beyond `KEPT`, never
+/// `kept` (just written). Best effort: a removed projection is recomputed
+/// from the Store when needed.
+fn prune(directory: &Path, kept: &Path) {
+    let Ok(listing) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = listing
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            (path.extension()? == "bin" && path != kept).then_some(())?;
+            Some((entry.metadata().ok()?.modified().ok()?, path))
+        })
+        .collect();
+    if files.len() < KEPT {
+        return;
+    }
+    files.sort();
+    for (_, path) in &files[..files.len() + 1 - KEPT] {
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// Forgets a cached projection found to differ from its recomputation.
@@ -328,6 +359,25 @@ mod tests {
         assert_eq!(load(&root, &tree), None);
         remove(&root, &tree);
         assert!(!path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_the_most_recent_projections_are_kept() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-prune-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let trees: Vec<TreeId> = (0..KEPT + 4)
+            .map(|n| TreeId::parse(format!("blake3:{}", blake3::hash(&[n as u8]))).unwrap())
+            .collect();
+        for tree in &trees {
+            save(&root, tree, tree, &entries());
+        }
+        let directory = file(&root, &trees[0]).parent().unwrap().to_path_buf();
+        assert!(fs::read_dir(&directory).unwrap().count() <= KEPT);
+        assert_eq!(load(&root, trees.last().unwrap()), Some(entries()));
         let _ = fs::remove_dir_all(&root);
     }
 
