@@ -5,7 +5,7 @@ use layrs_store_local::scm_v1::{
     MutationOutcome, NativeCas, NativeRecovery, PathEvidence, RecoveryDecision, RecoveryError,
     RecoveryFaultInjector, RecoveryFaultPoint, RecoveryFindingCode, RecoveryHandler, RecoveryId,
     RecoveryPathPlan, RecoveryPathResult, RecoveryPathRole, RecoveryPathState, RecoveryPlan,
-    RecoveryPreparation, RecoveryRecord, RecoveryState, RecoveryType, init, open_exclusive,
+    RecoveryPreparation, RecoveryRecord, RecoveryState, RecoveryType, open_exclusive,
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -265,3 +265,18 @@ mod journal;
 mod leases;
 #[path = "scm_recovery/lifecycle.rs"]
 mod lifecycle;
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
+}

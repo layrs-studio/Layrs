@@ -52,16 +52,30 @@ pub const FORMAT_VERSION: u32 = 2;
 /// The complete-Store format whose CAS may hold packs of small objects (ADR
 /// 0026). 3 and 4 belong to projection Stores of the same magic.
 pub const PACKED_FORMAT_VERSION: u32 = 5;
+/// The compact complete-Store format (ADR 0028): content in packs v2
+/// registered in SQLite (schema v3), per-Space admission bitmaps. Opt-in
+/// with `LAYRS_STORE_FORMAT=6` until it becomes the default.
+pub const COMPACT_FORMAT_VERSION: u32 = 6;
 /// The newest complete-Store format this reader understands.
-pub const NEWEST_FORMAT_VERSION: u32 = PACKED_FORMAT_VERSION;
+pub const NEWEST_FORMAT_VERSION: u32 = COMPACT_FORMAT_VERSION;
 pub const MAX_FORMAT_BYTES: u64 = 64 * 1024;
 
-/// The format `init` creates: packed, unless `LAYRS_STORE_FORMAT=2`.
+/// The format `init` creates: packed (5), unless `LAYRS_STORE_FORMAT` asks
+/// for 2 or for the compact format 6.
 fn creation_format_version() -> u32 {
     match std::env::var("LAYRS_STORE_FORMAT").as_deref() {
         Ok("2") => FORMAT_VERSION,
+        Ok("6") => COMPACT_FORMAT_VERSION,
         _ => PACKED_FORMAT_VERSION,
     }
+}
+
+/// Whether this reader reads complete Stores of `version` (3 and 4 belong
+/// to projection Stores of the same magic).
+fn supported_format(version: u64) -> bool {
+    version == u64::from(FORMAT_VERSION)
+        || version == u64::from(PACKED_FORMAT_VERSION)
+        || version == u64::from(COMPACT_FORMAT_VERSION)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +103,7 @@ impl FormatMarker {
         Self::with_version(store_id, state, creation_format_version())
     }
 
-    /// A marker of an explicit supported version (2 or 5); readers of an
+    /// A marker of an explicit supported version (2, 5 or 6); readers of an
     /// older version refuse it.
     pub fn with_version(store_id: StoreId, state: FormatState, format_version: u32) -> Self {
         Self {
@@ -134,7 +148,7 @@ impl FormatMarker {
                 "native Store magic does not match".into(),
             ));
         }
-        if self.format_version != FORMAT_VERSION && self.format_version != PACKED_FORMAT_VERSION {
+        if !supported_format(u64::from(self.format_version)) {
             return Err(NativeStoreError::InvalidMarker(format!(
                 "native Store format {} is not supported by reader {}",
                 self.format_version, NEWEST_FORMAT_VERSION
@@ -327,6 +341,22 @@ pub fn init(
     root: impl AsRef<Path>,
     store_id: StoreId,
 ) -> Result<NativeStoreOpen, NativeStoreError> {
+    init_with_format(root, store_id, creation_format_version())
+}
+
+/// `init` creating a Store of an explicit supported format (2, 5 or 6)
+/// instead of the one `LAYRS_STORE_FORMAT` selects. Resuming an interrupted
+/// initialization still keeps the version of its marker.
+pub fn init_with_format(
+    root: impl AsRef<Path>,
+    store_id: StoreId,
+    format_version: u32,
+) -> Result<NativeStoreOpen, NativeStoreError> {
+    if !supported_format(u64::from(format_version)) {
+        return Err(NativeStoreError::InvalidMarker(format!(
+            "native Store format {format_version} cannot be created"
+        )));
+    }
     let inspection = inspect(root)?;
     let layout = inspection.layout().clone();
     match inspection {
@@ -334,7 +364,11 @@ pub fn init(
             create_dir_all_durable(layout.root())?;
             publish_marker(
                 &layout,
-                &FormatMarker::new(store_id.clone(), FormatState::Initializing),
+                &FormatMarker::with_version(
+                    store_id.clone(),
+                    FormatState::Initializing,
+                    format_version,
+                ),
             )?;
         }
         NativeStoreInspection::NativeInitializing { marker, .. } => {
@@ -378,9 +412,15 @@ pub fn init(
     let connection = if layout.sqlite_path().exists() {
         sqlite::open_existing(layout.sqlite_path(), Duration::from_secs(5))?
     } else {
-        sqlite::create_fresh(layout.sqlite_path(), Duration::from_secs(5), &store_id)?
+        sqlite::create_fresh_baseline(
+            layout.sqlite_path(),
+            Duration::from_secs(5),
+            &store_id,
+            super::schema::baseline_for_format(format_version),
+        )?
     };
     sqlite::validate_store_identity(&connection, &store_id)?;
+    sqlite::require_baseline_for_format(&connection, format_version)?;
     drop(connection);
     sync_directory(layout.metadata_dir())?;
     publish_marker(
@@ -414,6 +454,7 @@ pub fn open(root: impl AsRef<Path>) -> Result<NativeStoreOpen, NativeStoreError>
             let sqlite_span = crate::perf::span("open.sqlite");
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
+            sqlite::require_baseline_for_format(&connection, marker.format_version())?;
             drop(sqlite_span);
             Ok(
                 NativeStoreOpen::new(layout, marker.store_id().clone(), connection, store_lock)
@@ -456,6 +497,7 @@ pub fn open_exclusive(root: impl AsRef<Path>) -> Result<NativeStoreExclusive, Na
             }
             let connection = sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5))?;
             sqlite::validate_store_identity(&connection, marker.store_id())?;
+            sqlite::require_baseline_for_format(&connection, marker.format_version())?;
             drop(connection);
             Ok(
                 NativeStoreExclusive::new(layout, marker.store_id().clone(), store_lock)
@@ -614,11 +656,10 @@ fn inspect_marker_uncached(
         .get("formatVersion")
         .and_then(serde_json::Value::as_u64);
     // Any version this complete-Store reader does not read is "future" to
-    // it: 3 and 4 (projection Stores, routed elsewhere) as well as 6+.
+    // it: 3 and 4 (projection Stores, routed elsewhere) as well as 7+.
     if magic == Some(FORMAT_MAGIC)
-        && version.is_some_and(|value| {
-            value > u64::from(FORMAT_VERSION) && value != u64::from(PACKED_FORMAT_VERSION)
-        })
+        && version
+            .is_some_and(|value| value > u64::from(FORMAT_VERSION) && !supported_format(value))
     {
         return Ok(NativeStoreInspection::FutureFormat {
             layout,

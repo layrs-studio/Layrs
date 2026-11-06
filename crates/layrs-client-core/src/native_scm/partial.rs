@@ -109,8 +109,9 @@ pub fn checkout_kind(root: impl AsRef<Path>) -> Result<&'static str, String> {
         return Err("invalid_store_format: wrong magic".into());
     }
     match marker["formatVersion"].as_u64() {
-        // 5: complete Store whose CAS may hold packs (ADR 0026).
-        Some(2 | 5) => Ok("complete"),
+        // 5: complete Store whose CAS may hold packs (ADR 0026); 6: the
+        // compact complete Store (ADR 0028).
+        Some(2 | 5 | 6) => Ok("complete"),
         Some(3) => Ok("projection"),
         Some(4) => {
             // A family marker alone is not a checkout. Validate the locator,

@@ -7,8 +7,7 @@ use layrs_core::scm::{
 use layrs_store::scm::{CanonicalObject, ScmReader, StoreObjectId};
 use layrs_store_local::scm_v1::fsck::{NativeFsck, fsck_existing};
 use layrs_store_local::scm_v1::{
-    FsckFindingCode, FsckOptions, NativeCas, NativeScmReader, init, open, open_audit,
-    open_exclusive,
+    FsckFindingCode, FsckOptions, NativeCas, NativeScmReader, open, open_audit, open_exclusive,
 };
 use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
@@ -136,4 +135,19 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut result = BTreeMap::new();
     walk(root, root, &mut result);
     result
+}
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
 }

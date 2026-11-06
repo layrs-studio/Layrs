@@ -6,7 +6,7 @@ use layrs_core::scm::{
 use layrs_store::scm::{CanonicalConflict, CanonicalObject, StoreObjectId};
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, NativeCas, NativeStoreExclusive, NativeStoreOpen,
-    init as init_store, open as open_store, open_audit, open_exclusive,
+    open as open_store, open_audit, open_exclusive,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -650,4 +650,19 @@ fn remove_directory_link(link: &Path) {
 #[cfg(windows)]
 fn remove_directory_link(link: &Path) {
     fs::remove_dir(link).unwrap();
+}
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init_store(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
 }

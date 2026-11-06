@@ -18,11 +18,26 @@ use layrs_store::scm::{
 };
 use layrs_store_local::scm_v1::{
     CasFaultInjector, CasFaultPoint, FsckOptions, NativeCas, NativeScmRepository,
-    RepositoryFaultInjector, RepositoryFaultPoint, fsck_existing, init, open, open_exclusive,
+    RepositoryFaultInjector, RepositoryFaultPoint, fsck_existing, open, open_exclusive,
 };
 use rusqlite::Connection;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// These tests exercise format 5 internals (v2 SQL rows, the loose and
+/// packed v1 CAS layout): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` selects. Format 6 is covered by `scm_format6.rs`.
+fn init(
+    root: impl AsRef<std::path::Path>,
+    store_id: layrs_core::scm::StoreId,
+) -> Result<layrs_store_local::scm_v1::NativeStoreOpen, layrs_store_local::scm_v1::NativeStoreError>
+{
+    layrs_store_local::scm_v1::init_with_format(
+        root,
+        store_id,
+        layrs_store_local::scm_v1::PACKED_FORMAT_VERSION,
+    )
+}
 
 #[path = "scm_write_batch/atomic.rs"]
 mod atomic;
