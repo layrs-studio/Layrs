@@ -19,9 +19,11 @@
 //! 2. The binding: the root Tree id, then the projection's own Tree id (as
 //!    `projection_tree_id` computes it; it differs from the root only when
 //!    the root holds what a checkout cannot represent, such as Tombstones).
-//! 3. The entries, sorted by path. Each holds its path, a kind byte, and then
-//!    either the executable flag, FileId and length (file) or the target
-//!    (symlink).
+//! 3. The entries, sorted by path (ADR 0028, compact). Each holds its path as
+//!    the byte count it shares with the previous path plus its own suffix
+//!    (varints), a kind byte (file, executable file or symlink), and then
+//!    either the 32-byte FileId digest and the length (varint), or the
+//!    target (symlink).
 //! 4. The blake3 checksum of everything before it.
 use super::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
 use layrs_core::scm::{FileId, TreeId};
@@ -32,13 +34,14 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"LYRSPRJ1";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const DIRECTORY: &str = "projection-cache";
 /// Bound on what a corrupt file can make a reader allocate.
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1_000_000;
 const KIND_FILE: u8 = 1;
 const KIND_SYMLINK: u8 = 2;
+const KIND_EXECUTABLE: u8 = 3;
 
 fn file(store_root: &Path, tree: &TreeId) -> PathBuf {
     let name = blake3::hash(tree.as_str().as_bytes()).to_hex();
@@ -75,20 +78,28 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         return None;
     }
     let mut entries = Vec::with_capacity(count);
+    let mut previous: Vec<u8> = Vec::new();
     for _ in 0..count {
-        let path = reader.string()?.to_owned();
+        let shared = usize::try_from(reader.varint()?).ok()?;
+        let suffix = usize::try_from(reader.varint()?).ok()?;
+        if shared > previous.len() {
+            return None;
+        }
+        previous.truncate(shared);
+        previous.extend_from_slice(reader.take(suffix)?);
+        let path = String::from_utf8(previous.clone()).ok()?;
         let content = match reader.u8()? {
-            KIND_FILE => {
-                let executable = match reader.u8()? {
-                    0 => false,
-                    1 => true,
-                    _ => return None,
-                };
-                let file_id = FileId::parse(reader.string()?).ok()?;
+            kind @ (KIND_FILE | KIND_EXECUTABLE) => {
+                let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
+                let file_id = FileId::parse(format!(
+                    "blake3:{}",
+                    blake3::Hash::from_bytes(digest).to_hex()
+                ))
+                .ok()?;
                 CheckoutProjectionContent::File {
                     file_id,
-                    byte_length: reader.u64()?,
-                    executable,
+                    byte_length: reader.varint()?,
+                    executable: kind == KIND_EXECUTABLE,
                 }
             }
             KIND_SYMLINK => CheckoutProjectionContent::Symlink {
@@ -117,24 +128,44 @@ pub fn save(
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
         return;
     }
-    let mut body = Vec::with_capacity(64 + entries.len() * 112);
+    let mut body = Vec::with_capacity(64 + entries.len() * 48);
     body.extend_from_slice(MAGIC);
     body.extend_from_slice(&VERSION.to_le_bytes());
     put_string(&mut body, root_tree.as_str());
     put_string(&mut body, projection_tree.as_str());
     body.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    let mut previous: &[u8] = &[];
     for entry in entries {
-        put_string(&mut body, &entry.path);
+        let path = entry.path.as_bytes();
+        let shared = path
+            .iter()
+            .zip(previous)
+            .take_while(|(a, b)| a == b)
+            .count();
+        put_varint(&mut body, shared as u64);
+        put_varint(&mut body, (path.len() - shared) as u64);
+        body.extend_from_slice(&path[shared..]);
+        previous = path;
         match &entry.content {
             CheckoutProjectionContent::File {
                 file_id,
                 byte_length,
                 executable,
             } => {
-                body.push(KIND_FILE);
-                body.push(u8::from(*executable));
-                put_string(&mut body, file_id.as_str());
-                body.extend_from_slice(&byte_length.to_le_bytes());
+                let Some(digest) = file_id
+                    .as_str()
+                    .strip_prefix("blake3:")
+                    .and_then(|hex| blake3::Hash::from_hex(hex).ok())
+                else {
+                    return;
+                };
+                body.push(if *executable {
+                    KIND_EXECUTABLE
+                } else {
+                    KIND_FILE
+                });
+                body.extend_from_slice(digest.as_bytes());
+                put_varint(&mut body, *byte_length);
             }
             CheckoutProjectionContent::Symlink { target } => {
                 body.push(KIND_SYMLINK);
@@ -194,6 +225,14 @@ fn well_formed(entries: &[CheckoutProjectionEntry]) -> bool {
     true
 }
 
+fn put_varint(body: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        body.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    body.push(value as u8);
+}
+
 fn put_string(body: &mut Vec<u8>, value: &str) {
     body.extend_from_slice(&(value.len() as u32).to_le_bytes());
     body.extend_from_slice(value.as_bytes());
@@ -216,8 +255,17 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    /// Minimal varints only: one input, one projection.
+    fn varint(&mut self) -> Option<u64> {
+        let mut value = 0_u64;
+        for shift in (0..64).step_by(7) {
+            let byte = self.u8()?;
+            value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+            if byte & 0x80 == 0 {
+                return (shift == 0 || byte != 0).then_some(value);
+            }
+        }
+        None
     }
     fn string(&mut self) -> Option<&'a str> {
         let length = usize::try_from(self.u32()?).ok()?;
@@ -248,6 +296,14 @@ mod tests {
                 },
             },
             file("d/sub/c.txt", b"ccc"),
+            CheckoutProjectionEntry {
+                path: "d/sub/run.sh".into(),
+                content: CheckoutProjectionContent::File {
+                    file_id: FileId::from_bytes(&[7; 300]),
+                    byte_length: 300,
+                    executable: true,
+                },
+            },
         ]
     }
 

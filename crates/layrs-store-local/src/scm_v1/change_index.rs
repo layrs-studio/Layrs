@@ -195,7 +195,9 @@ impl ChangeIndex {
         let parsed = fs::read(&path)
             .ok()
             .and_then(|bytes| {
-                if bytes.starts_with(BINARY_MAGIC) {
+                if bytes.starts_with(COMPACT_MAGIC) {
+                    decode_compact(&bytes)
+                } else if bytes.starts_with(BINARY_MAGIC) {
                     decode_binary(&bytes)
                 } else {
                     // An index written before the binary format (a cache).
@@ -229,7 +231,7 @@ impl ChangeIndex {
             margin_nanos: self.margin_nanos,
             entries: self.entries.clone(),
         };
-        let bytes = encode_binary(&document);
+        let bytes = encode_compact(&document);
         let staged = directory.join(format!(
             ".{}.{}.tmp",
             path.file_name().unwrap().to_string_lossy(),
@@ -298,9 +300,219 @@ impl ChangeIndex {
     }
 }
 
-/// Binary encoding of the index (a cache, read on every `status`): the same
-/// document as the former JSON, length-prefixed, with a blake3 trailer. A
-/// damaged file decodes to nothing, which the loader treats as empty.
+/// Compact encoding (ADR 0028, about 3 times smaller than `LYRSIDX1`): the
+/// same document with 32-byte FileIds, each path stored as the length it
+/// shares with the previous path plus its own suffix, unsigned and zigzag
+/// varints, and times as differences (modification from the previous
+/// entry's, the others from the entry's own). Every field is kept. A blake3
+/// trailer covers it; a damaged file decodes to nothing (treated as empty).
+const COMPACT_MAGIC: &[u8; 8] = b"LYRSIDX2";
+
+fn put_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn put_signed(out: &mut Vec<u8>, value: i64) {
+    put_varint(out, ((value << 1) ^ (value >> 63)) as u64);
+}
+
+fn file_digest(id: &FileId) -> Option<[u8; 32]> {
+    let hex = id.as_str().strip_prefix("blake3:")?;
+    Some(*blake3::Hash::from_hex(hex).ok()?.as_bytes())
+}
+
+fn encode_compact(document: &Document) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64 + document.entries.len() * 64);
+    out.extend_from_slice(COMPACT_MAGIC);
+    for text in [document.schema.as_str(), document.worktree_id.as_str()] {
+        put_varint(&mut out, text.len() as u64);
+        out.extend_from_slice(text.as_bytes());
+    }
+    out.extend_from_slice(&document.margin_nanos.to_le_bytes());
+    put_varint(&mut out, document.entries.len() as u64);
+    let mut previous_path: &[u8] = &[];
+    let mut previous_modified = 0_i64;
+    for (path, entry) in &document.entries {
+        let Some(digest) = file_digest(&entry.file_id) else {
+            // Not representable compactly: write the former encoding.
+            return encode_binary(document);
+        };
+        let path = path.as_bytes();
+        let shared = path
+            .iter()
+            .zip(previous_path)
+            .take_while(|(a, b)| a == b)
+            .count();
+        put_varint(&mut out, shared as u64);
+        put_varint(&mut out, (path.len() - shared) as u64);
+        out.extend_from_slice(&path[shared..]);
+        previous_path = path;
+        out.extend_from_slice(&digest);
+        put_varint(&mut out, entry.length);
+        let stat = &entry.stat;
+        let flags = u8::from(entry.executable)
+            | (u8::from(stat.created.is_some()) << 1)
+            | (u8::from(stat.inode.is_some()) << 2)
+            | (u8::from(stat.changed.is_some()) << 3)
+            | (u8::from(stat.mode.is_some()) << 4)
+            | (u8::from(entry.native.is_some()) << 5)
+            | (u8::from(stat.length != entry.length) << 6);
+        out.push(flags);
+        if stat.length != entry.length {
+            put_varint(&mut out, stat.length);
+        }
+        put_signed(&mut out, stat.modified.wrapping_sub(previous_modified));
+        previous_modified = stat.modified;
+        if let Some(created) = stat.created {
+            put_signed(&mut out, created.wrapping_sub(stat.modified));
+        }
+        if let Some(inode) = stat.inode {
+            put_varint(&mut out, inode);
+        }
+        if let Some(changed) = stat.changed {
+            put_signed(&mut out, changed.wrapping_sub(stat.modified));
+        }
+        if let Some(mode) = stat.mode {
+            put_varint(&mut out, u64::from(mode));
+        }
+        put_signed(&mut out, entry.verified_at.wrapping_sub(stat.modified));
+        if let Some(native) = entry.native {
+            put_varint(&mut out, native);
+        }
+    }
+    let checksum = blake3::hash(&out);
+    out.extend_from_slice(checksum.as_bytes());
+    out
+}
+
+struct CompactReader<'a>(&'a [u8]);
+
+impl<'a> CompactReader<'a> {
+    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
+        if self.0.len() < count {
+            return None;
+        }
+        let (head, tail) = self.0.split_at(count);
+        self.0 = tail;
+        Some(head)
+    }
+    fn varint(&mut self) -> Option<u64> {
+        let mut value = 0_u64;
+        for shift in (0..64).step_by(7) {
+            let byte = self.take(1)?[0];
+            value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+            if byte & 0x80 == 0 {
+                // Minimal encodings only: one input, one document.
+                return (shift == 0 || byte != 0).then_some(value);
+            }
+        }
+        None
+    }
+    fn signed(&mut self) -> Option<i64> {
+        let value = self.varint()?;
+        Some(((value >> 1) as i64) ^ -((value & 1) as i64))
+    }
+    fn text(&mut self) -> Option<&'a str> {
+        let length = usize::try_from(self.varint()?).ok()?;
+        std::str::from_utf8(self.take(length)?).ok()
+    }
+    fn when(&mut self, present: bool) -> Option<Option<u64>> {
+        if present {
+            self.varint().map(Some)
+        } else {
+            Some(None)
+        }
+    }
+}
+
+fn decode_compact(bytes: &[u8]) -> Option<Document> {
+    if bytes.len() < COMPACT_MAGIC.len() + 32 {
+        return None;
+    }
+    let (body, trailer) = bytes.split_at(bytes.len() - 32);
+    if blake3::hash(body).as_bytes() != trailer {
+        return None;
+    }
+    let mut reader = CompactReader(&body[COMPACT_MAGIC.len()..]);
+    let schema = reader.text()?.to_owned();
+    let worktree_id = WorktreeId::parse(reader.text()?).ok()?;
+    let margin_nanos = i64::from_le_bytes(reader.take(8)?.try_into().ok()?);
+    let count = usize::try_from(reader.varint()?).ok()?;
+    let mut entries = BTreeMap::new();
+    let mut previous_path: Vec<u8> = Vec::new();
+    let mut previous_modified = 0_i64;
+    for _ in 0..count {
+        let shared = usize::try_from(reader.varint()?).ok()?;
+        let suffix = usize::try_from(reader.varint()?).ok()?;
+        if shared > previous_path.len() {
+            return None;
+        }
+        previous_path.truncate(shared);
+        previous_path.extend_from_slice(reader.take(suffix)?);
+        let path = String::from_utf8(previous_path.clone()).ok()?;
+        let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
+        let file_id = FileId::parse(format!(
+            "blake3:{}",
+            blake3::Hash::from_bytes(digest).to_hex()
+        ))
+        .ok()?;
+        let length = reader.varint()?;
+        let flags = reader.take(1)?[0];
+        if flags & 0x80 != 0 {
+            return None;
+        }
+        let stat_length = reader.when(flags & 0x40 != 0)?.unwrap_or(length);
+        let modified = previous_modified.wrapping_add(reader.signed()?);
+        previous_modified = modified;
+        let created = if flags & 0x02 != 0 {
+            Some(modified.wrapping_add(reader.signed()?))
+        } else {
+            None
+        };
+        let inode = reader.when(flags & 0x04 != 0)?;
+        let changed = if flags & 0x08 != 0 {
+            Some(modified.wrapping_add(reader.signed()?))
+        } else {
+            None
+        };
+        let mode = match reader.when(flags & 0x10 != 0)? {
+            Some(mode) => Some(u32::try_from(mode).ok()?),
+            None => None,
+        };
+        let verified_at = modified.wrapping_add(reader.signed()?);
+        let native = reader.when(flags & 0x20 != 0)?;
+        let entry = IndexEntry {
+            file_id,
+            length,
+            executable: flags & 0x01 != 0,
+            stat: StatKey {
+                length: stat_length,
+                modified,
+                created,
+                inode,
+                changed,
+                mode,
+            },
+            verified_at,
+            native,
+        };
+        if entries.insert(path, entry).is_some() {
+            return None;
+        }
+    }
+    reader.0.is_empty().then_some(Document {
+        schema,
+        worktree_id,
+        margin_nanos,
+        entries,
+    })
+}
+
+/// Former binary encoding (`LYRSIDX1`): still read, no longer written.
 const BINARY_MAGIC: &[u8; 8] = b"LYRSIDX1";
 
 fn encode_binary(document: &Document) -> Vec<u8> {
@@ -586,11 +798,34 @@ mod tests {
         rich.native = Some(42);
         index.insert("d/rich".into(), rich.clone());
         index.insert("plain".into(), entry(stat(10), 20));
+        index.insert("plain2".into(), entry(stat(i64::MAX), i64::MIN));
+        let mut mismatched = entry(stat(1), 2);
+        mismatched.length = 8;
+        index.insert("d/rich2".into(), mismatched);
         index.save(&store).unwrap();
         let path = ChangeIndex::file(&store, &id);
-        assert!(fs::read(&path).unwrap().starts_with(BINARY_MAGIC));
+        let compact = fs::read(&path).unwrap();
+        assert!(compact.starts_with(COMPACT_MAGIC));
         let reloaded = ChangeIndex::load(&store, &id).unwrap();
         assert!(reloaded.same_entries(&index));
+        let document = Document {
+            schema: SCHEMA.into(),
+            worktree_id: id.clone(),
+            margin_nanos: index.margin_nanos,
+            entries: index.entries.clone(),
+        };
+        // The former binary encoding is still read, and is larger.
+        let former = encode_binary(&document);
+        assert!(compact.len() < former.len());
+        fs::write(&path, &former).unwrap();
+        assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
+        // Truncated or extended compact documents are refused.
+        let body = &compact[..compact.len() - 32];
+        for damaged in [&body[..body.len() - 1], &[body, &[0][..]].concat()[..]] {
+            let mut bytes = damaged.to_vec();
+            bytes.extend_from_slice(blake3::hash(damaged).as_bytes());
+            assert!(decode_compact(&bytes).is_none());
+        }
         // A legacy JSON document is still read.
         let document = Document {
             schema: SCHEMA.into(),
