@@ -538,7 +538,13 @@ fn corruption_after_preparation_is_not_served_as_verified_content() {
             .unwrap()
     };
     // Same length corruption must fail canonical verification, not merely a size check.
-    fs::write(&path, vec![b'!'; content.len()]).unwrap();
+    let compact_pack = damage_compact_object(
+        workspace.store_root(),
+        &layrs_store::scm::StoreObjectId::ChunkRaw(chunk.id().clone()),
+    );
+    if compact_pack.is_none() {
+        fs::write(&path, vec![b'!'; content.len()]).unwrap();
+    }
     assert!(source
         .read_exact_at(
             &FileId::from_bytes(content),
@@ -547,8 +553,12 @@ fn corruption_after_preparation_is_not_served_as_verified_content() {
             &Cancellation::default()
         )
         .is_err());
-    // Preserve the corrupt object as evidence while making its canonical path missing.
-    fs::rename(&path, path.with_extension("missing-test")).unwrap();
+    // Preserve the corrupt object as evidence while making its canonical path missing
+    // (format 6: the registered pack holding it).
+    match &compact_pack {
+        Some(pack) => fs::rename(pack, pack.with_extension("missing-test")).unwrap(),
+        None => fs::rename(&path, path.with_extension("missing-test")).unwrap(),
+    }
     assert!(source
         .read_exact_at(
             &FileId::from_bytes(content),
@@ -649,4 +659,40 @@ fn prepared_source_and_serialized_binding_reject_store_replacement() {
             &Cancellation::default()
         )
         .is_err());
+}
+
+/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
+/// than one loose file each: this damages `object`'s stored bytes by
+/// flipping one byte of the block that holds it (every record of that block
+/// then fails verification) and returns that pack. `None` for other formats,
+/// whose tests damage the loose file as before.
+fn damage_compact_object(
+    store_root: &std::path::Path,
+    object: &layrs_store::scm::StoreObjectId,
+) -> Option<std::path::PathBuf> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let store = layrs_store_local::scm_v1::open(store_root).unwrap();
+    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+        return None;
+    }
+    let location = layrs_store_local::scm_v1::NativeCas::open(&store)
+        .unwrap()
+        .locate(object)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
+        panic!("format 6 object {object} is not packed");
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pack)
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
+    Some(pack)
 }

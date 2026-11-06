@@ -293,6 +293,27 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
         workspace.capture().unwrap();
         fs::write(fixture.0.join("tracked"), b"dirty work must survive").unwrap();
         let before = workspace.state().unwrap().operation.id().clone();
+        // Format 6: the historical chunk is a pack v2 record; damaging (or
+        // removing) it means damaging (or removing) its block's pack.
+        let historical_chunk = layrs_store::scm::StoreObjectId::ChunkRaw(
+            layrs_core::scm::Chunk::new(b"original\0".to_vec())
+                .unwrap()
+                .id()
+                .clone(),
+        );
+        if let Some(pack) = damage_compact_object(workspace.store_root(), &historical_chunk) {
+            if missing {
+                fs::remove_file(&pack).unwrap();
+            }
+            assert!(workspace.preview_restore_step(&target, None).is_err());
+            assert_eq!(workspace.state().unwrap().operation.id(), &before);
+            assert_eq!(
+                fs::read(fixture.0.join("tracked")).unwrap(),
+                b"dirty work must survive"
+            );
+            assert!(!workspace.needs_repair().unwrap());
+            continue;
+        }
         let mut directories = vec![workspace.store_root().join("objects")];
         let mut historical = None;
         while let Some(directory) = directories.pop() {
@@ -325,4 +346,40 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
         );
         assert!(!workspace.needs_repair().unwrap());
     }
+}
+
+/// Format 6 (ADR 0028) stores objects in compressed pack v2 blocks rather
+/// than one loose file each: this damages `object`'s stored bytes by
+/// flipping one byte of the block that holds it (every record of that block
+/// then fails verification) and returns that pack. `None` for other formats,
+/// whose tests damage the loose file as before.
+fn damage_compact_object(
+    store_root: &std::path::Path,
+    object: &layrs_store::scm::StoreObjectId,
+) -> Option<std::path::PathBuf> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let store = layrs_store_local::scm_v1::open(store_root).unwrap();
+    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+        return None;
+    }
+    let location = layrs_store_local::scm_v1::NativeCas::open(&store)
+        .unwrap()
+        .locate(object)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
+        panic!("format 6 object {object} is not packed");
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&pack)
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut byte).unwrap();
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
+    Some(pack)
 }
