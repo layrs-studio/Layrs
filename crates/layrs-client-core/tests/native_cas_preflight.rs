@@ -261,8 +261,10 @@ fn stale_independent_capture_installs_nothing_then_fresh_capture_preserves_both_
 /// These tests read format 5 internals (each object's loose file and
 /// `objects.storage_path`): their Stores are format 5 whatever
 /// `LAYRS_STORE_FORMAT` the suite runs with (format 6 is covered by
-/// layrs-store-local `scm_format6.rs`). Every test of this binary sets the
-/// same value before creating a Store.
+/// layrs-store-local `scm_format6.rs`). Every test of this binary calls this
+/// before touching a Store; the variable is set once, the other tests
+/// waiting for it, so no test reads the environment while it changes.
 fn format_5_stores() {
-    std::env::set_var("LAYRS_STORE_FORMAT", "5");
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("LAYRS_STORE_FORMAT", "5"));
 }

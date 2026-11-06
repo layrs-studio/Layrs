@@ -132,6 +132,7 @@ fn clean(workspace: &NativeWorkspace) {
 #[test]
 #[ignore = "requires the disposable 64 MiB tmpfs Docker recipe"]
 fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
+    format_5_stores();
     let started = std::time::Instant::now();
     // Direct CAS failure cannot publish a truncated immutable object.
     {
@@ -242,4 +243,13 @@ fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
         clean(&workspace);
     }
     eprintln!("Actual Linux ENOSPC: CAS install, native capture admission and journaled checkout failure/recovery passed in {} ms",started.elapsed().as_millis());
+}
+
+/// The direct `NativeCasWriter::put` checks below are format 5 publication
+/// (format 6 refuses single-object writes): this test's Stores are format 5
+/// whatever `LAYRS_STORE_FORMAT` the suite runs with, set once before any
+/// test touches a Store.
+fn format_5_stores() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("LAYRS_STORE_FORMAT", "5"));
 }
