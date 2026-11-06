@@ -133,6 +133,16 @@ impl PreparedSnapshot {
         snapshot.chunks = Some(std::sync::Arc::new(chunks));
         Ok(snapshot)
     }
+    /// A capture that found exactly its base projection: no new object, and
+    /// the root is that projection's Tree (what building it would give).
+    pub(super) fn unchanged(root_tree_id: TreeId) -> Self {
+        Self {
+            root_tree_id,
+            objects: Vec::new(),
+            chunks: None,
+        }
+    }
+
     pub fn root_tree_id(&self) -> &TreeId {
         &self.root_tree_id
     }

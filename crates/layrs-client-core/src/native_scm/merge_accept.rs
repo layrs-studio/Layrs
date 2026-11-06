@@ -154,6 +154,17 @@ impl NativeWorkspace {
                 "clean merge Tree cannot be represented by checkout",
             ));
         }
+        if active && clean {
+            // The result's projection, for the next command (derived data,
+            // keyed by the result Tree; its own Tree id was just checked).
+            let root = preview.plan.step().root_tree_id();
+            layrs_store_local::scm_v1::projection_cache::save(
+                self.store_root(),
+                root,
+                root,
+                &after,
+            );
+        }
         let states = source
             .view
             .worktrees()

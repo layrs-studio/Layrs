@@ -333,6 +333,14 @@ impl super::NativeWorkspace {
                 }
             }
         }
+        // Nothing read and exactly the base projection (paths, FileIds,
+        // modes): its Tree is the base projection's own, memoized when the
+        // projection was read. Building and hashing the Trees again would
+        // give the same id.
+        if captured.hashed.is_empty() && captured.manifests.is_empty() && captured.entries == base {
+            let root = scm_v1::checkout::projection_tree_id(&base)?;
+            return Ok((PreparedSnapshot::unchanged(root), next));
+        }
         let snapshot = PreparedSnapshot::from_streaming_referencing(
             &captured.entries,
             captured.manifests,

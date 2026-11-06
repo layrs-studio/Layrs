@@ -14,9 +14,36 @@ impl NativeWorkspace {
     /// re-read here. Anything that writes or publishes bytes verifies them at
     /// use; `verify_changed_content` front-loads that check for a transition.
     pub fn read_step_projection(&self, step: &StepId) -> Result<Vec<CheckoutProjectionEntry>> {
+        // Answered from this process's memo without opening the Store when
+        // the Worktree's Space is known (see `read_step_projection_with`).
+        if let Some(space) = self.remembered_space() {
+            if let Some(cached) = self.memoized_projection(&space, step) {
+                layrs_store_local::perf::count("projection.memo_hit", 1);
+                return Ok(cached);
+            }
+        }
         let store = self.open_store()?;
         let state = self.state_with(&store)?;
         self.read_step_projection_with(&store, state.space.id(), step)
+    }
+
+    fn memoized_projection(
+        &self,
+        space: &SpaceId,
+        step: &StepId,
+    ) -> Option<Vec<CheckoutProjectionEntry>> {
+        let key = (
+            self.store_identity().to_owned(),
+            self.metadata_identity().to_owned(),
+            space.clone(),
+            step.clone(),
+        );
+        projection_cache().lock().ok().and_then(|cache| {
+            cache
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_ref().clone())
+        })
     }
 
     /// `read_step_projection` on an already open Store, in `space`.
@@ -37,13 +64,8 @@ impl NativeWorkspace {
             space.clone(),
             step.clone(),
         );
-        if let Some(cached) = projection_cache().lock().ok().and_then(|cache| {
-            cache
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| v.clone())
-        }) {
-            return Ok(cached.as_ref().clone());
+        if let Some(cached) = self.memoized_projection(space, step) {
+            return Ok(cached);
         }
         let reader = NativeScmReader::new(store)?;
         let projection =

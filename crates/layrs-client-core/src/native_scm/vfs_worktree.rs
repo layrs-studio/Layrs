@@ -853,10 +853,10 @@ impl VfsWorktree {
                 Err(NativeClientError::StaleCapture) => continue,
                 other => other?,
             };
-            checkpoint
-                .revalidate_namespace()
-                .map_err(|error| provider_stage("revalidate prepared capture", error))?;
             match plan {
+                // Nothing is committed for an unchanged capture: the listing
+                // checked after assembly is enough (the change index it saves
+                // is re-checked against fresh metadata at every use).
                 CapturePlan::Unchanged { step_id } => {
                     save_index(self.locator.source.store_root.as_path());
                     return Ok(VfsCaptureReport {
@@ -867,6 +867,9 @@ impl VfsWorktree {
                     });
                 }
                 CapturePlan::Change(change) => {
+                    checkpoint
+                        .revalidate_namespace()
+                        .map_err(|error| provider_stage("revalidate prepared capture", error))?;
                     let intent = self.journal.prepare_capture(
                         change.batch(),
                         change.step_id(),
