@@ -18,21 +18,25 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
 
-/// Decompressed blocks a loaded pack keeps for the next reads (a checkout
-/// reads many small records of the same block in a row). Every record is
-/// still verified against its id at each read.
+/// Decompressed blocks a catalog keeps for its next reads (a checkout reads
+/// many small records of the same block in a row). Every record is still
+/// verified against its id at each read, and the cache lives only as long
+/// as the catalog (one SQLite snapshot): a later operation rereads the disk,
+/// as format 5 rereads every object, and sees any damage done since.
 const RECENT_BLOCKS: usize = 8;
 const RECENT_BLOCK_MAX: usize = 64 * 1024;
 
-/// One pack v2 loaded by this process: validated metadata and the file,
-/// opened once through the pinned CAS directories. A published pack is
-/// immutable; the cache is keyed by Store root identity and pack name, and
-/// every catalog compares the loaded digest with the one SQLite registered.
+/// One pack v2 loaded by this process: its validated metadata. A published
+/// pack is immutable; the cache is keyed by
+/// Store root identity and pack name, and every catalog compares the loaded
+/// digest with the one SQLite registered. No handle stays open between
+/// reads (ADR 0026): a block read opens the pack through the pinned CAS
+/// directories, as a loose read does, so a Store directory is never held
+/// by a process that merely read from it.
 pub(crate) struct LoadedPack {
+    name: OsString,
     path: PathBuf,
     index: Pack2Index,
-    file: PinnedFile,
-    recent: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
     /// Raw id of each file record's recipe manifest, computed on first use
     /// from the record's metadata (never from its bytes).
     manifest_digests: Vec<OnceLock<[u8; 32]>>,
@@ -62,30 +66,34 @@ fn alias_corruption(path: &Path, error: impl fmt::Display) -> CasError {
 }
 
 impl LoadedPack {
-    fn block(&self, block: u32) -> CasResult<Arc<Vec<u8>>> {
-        if let Ok(recent) = self.recent.lock() {
-            if let Some((_, bytes)) = recent.iter().find(|(number, _)| *number == block) {
-                return Ok(Arc::clone(bytes));
-            }
+    /// The pack file, opened through `cas`'s pinned directories; it must
+    /// still have the length its metadata was validated against (blocks are
+    /// then checked against their checksums and records against their ids).
+    fn open(&self, cas: &NativeCas) -> CasResult<PinnedFile> {
+        let directory = cas.objects_dir.join(PACKS_DIR);
+        let file = cas
+            .pinned_objects_for_read()?
+            .open_child(OsStr::new(PACKS_DIR))
+            .map_err(|error| missing_or_io("pin CAS packs", &directory, error))?
+            .open_file(&self.name)
+            .map_err(|error| missing_or_io("open CAS pack", &self.path, error))?;
+        let length = file
+            .file()
+            .metadata()
+            .map_err(|error| io_error("stat CAS pack", &self.path, error))?
+            .len();
+        if length != self.index.file_len {
+            return Err(pack2::pack2_corruption(
+                &self.path,
+                "pack length changed since its metadata was read",
+            ));
         }
-        let raw = Arc::new(pack2::read_block(
-            self.file.file(),
-            &self.path,
-            &self.index,
-            block,
-        )?);
-        if raw.len() <= RECENT_BLOCK_MAX {
-            if let Ok(mut recent) = self.recent.lock() {
-                recent.push_front((block, Arc::clone(&raw)));
-                recent.truncate(RECENT_BLOCKS);
-            }
-        }
-        Ok(raw)
+        Ok(file)
     }
 
-    fn body(&self, kind: u8, location: Location) -> CasResult<Vec<u8>> {
-        let block = self.block(location.block)?;
-        Ok(pack2::record_body(&block, location, kind, &self.path)?.to_vec())
+    fn read_block(&self, cas: &NativeCas, block: u32) -> CasResult<Vec<u8>> {
+        let file = self.open(cas)?;
+        pack2::read_block(file.file(), &self.path, &self.index, block)
     }
 
     fn alias_ids(&self, file: usize) -> CasResult<(FileId, ChunkId)> {
@@ -153,12 +161,13 @@ impl NativeCas {
             .open_file(name)
             .map_err(|error| missing_or_io("open CAS pack", &path, error))?;
         let index = pack2::load(file.file(), &path)?;
+        drop(file);
+        drop(packs);
         let manifest_digests = (0..index.files.len()).map(|_| OnceLock::new()).collect();
         let pack = Arc::new(LoadedPack {
+            name: name.to_os_string(),
             path,
             index,
-            file,
-            recent: Mutex::new(VecDeque::with_capacity(RECENT_BLOCKS)),
             manifest_digests,
         });
         if let Ok(mut cache) = pack_cache().lock() {
@@ -184,6 +193,9 @@ fn sql_error(error: rusqlite::Error) -> CasError {
         message: error.to_string(),
     }
 }
+
+/// A decompressed block a catalog keeps: ((pack, block), raw bytes).
+type RecentBlock = ((usize, u32), Arc<Vec<u8>>);
 
 /// One copy of an object in a registered catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,9 +252,39 @@ pub(crate) struct RegisteredCatalog {
     /// file length.
     loose_by_file: BTreeMap<[u8; 32], Vec<([u8; 32], u64)>>,
     admissions: Mutex<HashMap<String, Arc<SpaceAdmissions>>>,
+    /// Last decompressed blocks: ((pack, block), raw bytes).
+    recent: Mutex<VecDeque<RecentBlock>>,
 }
 
 impl RegisteredCatalog {
+    fn block(&self, cas: &NativeCas, pack: usize, block: u32) -> CasResult<Arc<Vec<u8>>> {
+        if let Ok(recent) = self.recent.lock() {
+            if let Some((_, bytes)) = recent.iter().find(|(key, _)| *key == (pack, block)) {
+                return Ok(Arc::clone(bytes));
+            }
+        }
+        let raw = Arc::new(self.packs[pack].pack.read_block(cas, block)?);
+        if raw.len() <= RECENT_BLOCK_MAX {
+            if let Ok(mut recent) = self.recent.lock() {
+                recent.push_front(((pack, block), Arc::clone(&raw)));
+                recent.truncate(RECENT_BLOCKS);
+            }
+        }
+        Ok(raw)
+    }
+
+    fn body(
+        &self,
+        cas: &NativeCas,
+        pack: usize,
+        kind: u8,
+        location: Location,
+    ) -> CasResult<Vec<u8>> {
+        let block = self.block(cas, pack, location.block)?;
+        let path = &self.packs[pack].pack.path;
+        Ok(pack2::record_body(&block, location, kind, path)?.to_vec())
+    }
+
     /// Reads `cas_packs` and `loose_objects` from `connection` (one SQLite
     /// snapshot) and binds every registered pack to its validated index.
     pub(crate) fn load(connection: &Connection, cas: &NativeCas) -> CasResult<Self> {
@@ -344,6 +386,7 @@ impl RegisteredCatalog {
             loose,
             loose_by_file,
             admissions: Mutex::new(HashMap::new()),
+            recent: Mutex::new(VecDeque::with_capacity(RECENT_BLOCKS)),
         })
     }
 
@@ -460,12 +503,12 @@ impl RegisteredCatalog {
                     .index
                     .explicit(ordinal)
                     .ok_or_else(|| corruption(id, "pack record vanished"))?;
-                validate_stored_bytes(id, &loaded.body(kind, location)?)
+                validate_stored_bytes(id, &self.body(cas, pack, kind, location)?)
             }
             Placement::Chunk { pack, file } => {
                 let loaded = &self.packs[pack].pack;
                 let location = loaded.index.files[file].location;
-                validate_stored_bytes(id, &loaded.body(FILE_KIND, location)?)
+                validate_stored_bytes(id, &self.body(cas, pack, FILE_KIND, location)?)
             }
             Placement::Manifest { pack, file } => {
                 let manifest = self.packs[pack].pack.alias_manifest(file)?;
@@ -807,20 +850,33 @@ impl RegisteredCatalog {
             return self.complete(None);
         };
         let length = self.placement_length(id, placement)?;
-        Ok(Some(match placement {
-            Placement::Record { pack, .. }
-            | Placement::Chunk { pack, .. }
-            | Placement::Manifest { pack, .. } => CasLocation::Packed {
-                pack: self.packs[pack].pack.path.clone(),
-                offset: match placement {
-                    Placement::Record { ordinal, .. } => ordinal as u64,
-                    Placement::Chunk { file, .. } | Placement::Manifest { file, .. } => {
-                        self.packs[pack].pack.index.explicit_count() as u64 + file as u64
-                    }
-                    Placement::Loose => 0,
-                },
+        let packed = |pack: usize, location: Location| {
+            let loaded = &self.packs[pack].pack;
+            // A pack v2 record has no bytes of its own on disk: its location
+            // is the stored (compressed) bytes of the block that holds it.
+            let offset = loaded
+                .index
+                .blocks
+                .get(location.block as usize)
+                .map_or(0, |block| block.offset + 5);
+            CasLocation::Packed {
+                pack: loaded.path.clone(),
+                offset,
                 length,
-            },
+            }
+        };
+        Ok(Some(match placement {
+            Placement::Record { pack, ordinal } => {
+                let (_, _, location) = self.packs[pack]
+                    .pack
+                    .index
+                    .explicit(ordinal)
+                    .ok_or_else(|| corruption(id, "pack record vanished"))?;
+                packed(pack, location)
+            }
+            Placement::Chunk { pack, file } | Placement::Manifest { pack, file } => {
+                packed(pack, self.packs[pack].pack.index.files[file].location)
+            }
             Placement::Loose => CasLocation::Loose {
                 path: cas.object_path(id)?,
                 length,
@@ -1297,13 +1353,12 @@ impl NativeCas {
         }
         for registered in catalog.packs() {
             let loaded = &registered.pack;
+            // One handle for the whole pack, closed when its scrub ends.
+            let file = loaded.open(self);
             for (block, records) in loaded.index.records_by_block().into_iter().enumerate() {
-                let raw = pack2::read_block(
-                    loaded.file.file(),
-                    &loaded.path,
-                    &loaded.index,
-                    block as u32,
-                );
+                let raw = file.as_ref().map_err(Clone::clone).and_then(|file| {
+                    pack2::read_block(file.file(), &loaded.path, &loaded.index, block as u32)
+                });
                 for record in records {
                     report.checked_objects += 1;
                     let (name, checked) = scrub_record(loaded, record, raw.as_ref());

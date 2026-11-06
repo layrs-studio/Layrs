@@ -756,7 +756,9 @@ impl PackIndex {
 }
 
 /// Where a copy of an object is. Presence is not content proof: every read
-/// still verifies the bytes against the content address.
+/// still verifies the bytes against the content address. In a pack v1
+/// `offset` is the record's; in a pack v2 (format 6) it is the offset of the
+/// stored bytes of the compressed block holding the record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasLocation {
     Loose {
