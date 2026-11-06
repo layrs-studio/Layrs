@@ -295,6 +295,14 @@ pub struct NativeCas {
     packs: Option<Arc<std::sync::RwLock<PackCatalog>>>,
     /// During a packing batch: its new small objects.
     packer: Arc<std::sync::Mutex<Option<Packer>>>,
+    /// Format 6 (ADR 0028): this view reads only what SQLite registered.
+    compact_format: bool,
+    /// Format 6: the registered packs and loose objects of this view's
+    /// SQLite snapshot (the Store's read connection, or the snapshot a
+    /// writer took under its exclusive lock).
+    compact: Option<Arc<compact::RegisteredCatalog>>,
+    /// Format 6: the pack and loose objects of the running batch.
+    compact_batch: Arc<std::sync::Mutex<Option<compact::CompactBatch>>>,
 }
 
 /// How a `put_ordered` batch becomes durable before it returns (and so
@@ -458,8 +466,32 @@ impl NativeCas {
     /// Opens a read-only CAS view under an authenticated audit capability.
     pub fn open_audit(store: &NativeStoreAudit) -> CasResult<NativeCasAudit> {
         let packs = store.packs_enabled().then(|| store.store_id());
-        Self::open_layout(store.layout(), Arc::new(NoFaults), packs)
-            .map(|cas| NativeCasAudit { cas })
+        let mut cas = Self::open_layout(store.layout(), Arc::new(NoFaults), packs)?;
+        if store.compact() {
+            cas.compact_format = true;
+            let connection = store.try_connection().map_err(|error| {
+                io_error(
+                    "open SQLite for the CAS catalog",
+                    store.layout().sqlite_path(),
+                    io::Error::other(error.to_string()),
+                )
+            })?;
+            cas.compact = Some(Arc::new(compact::RegisteredCatalog::load(
+                &connection,
+                &cas,
+            )?));
+        }
+        Ok(NativeCasAudit { cas })
+    }
+
+    /// Format 6: the registered catalog of this view's snapshot.
+    pub(crate) fn compact_catalog(&self) -> Option<&Arc<compact::RegisteredCatalog>> {
+        self.compact.as_ref()
+    }
+
+    /// Whether this view belongs to a format 6 Store.
+    pub(crate) fn is_compact(&self) -> bool {
+        self.compact_format
     }
 
     /// Opens CAS maintenance under an already-acquired exclusive Store
@@ -476,7 +508,26 @@ impl NativeCas {
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         let packs = store.packs_enabled().then(|| store.store_id());
-        let cas = Self::open_layout(store.layout(), faults, packs)?;
+        let mut cas = Self::open_layout(store.layout(), faults, packs)?;
+        if store.compact() {
+            cas.compact_format = true;
+            let catalog = match store.registered_catalog().get() {
+                Some(catalog) => Arc::clone(catalog),
+                None => {
+                    let connection = store.connection().map_err(|error| {
+                        io_error(
+                            "open SQLite for the CAS catalog",
+                            store.layout().sqlite_path(),
+                            io::Error::other(error.to_string()),
+                        )
+                    })?;
+                    let loaded = Arc::new(compact::RegisteredCatalog::load(&connection, &cas)?);
+                    drop(connection);
+                    Arc::clone(store.registered_catalog().get_or_init(|| loaded))
+                }
+            };
+            cas.compact = Some(catalog);
+        }
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
@@ -531,6 +582,9 @@ impl NativeCas {
             batch: Arc::default(),
             packs,
             packer: Arc::default(),
+            compact_format: false,
+            compact: None,
+            compact_batch: Arc::default(),
         })
     }
 
@@ -700,6 +754,9 @@ impl NativeCas {
     /// to the packer (published by `Packer::finish`); a large one is
     /// installed as by `put`.
     fn put_in_batch(&self, object: &CanonicalObject) -> CasResult<Slot> {
+        if let Some(catalog) = &self.compact {
+            return self.put_compact(catalog, object);
+        }
         let packing = self
             .packer
             .lock()
@@ -823,6 +880,12 @@ impl NativeCas {
     /// Whether some copy exists (a pack member or a separate file). Presence
     /// is not content proof.
     pub fn contains(&self, object_id: &StoreObjectId) -> CasResult<bool> {
+        if let Some(catalog) = &self.compact {
+            // Content is present only when registered; another kind's loose
+            // file is authorized by its `objects` row, checked by the reader.
+            return Ok(catalog.contains(object_id)?
+                || (!is_content(object_id.kind()) && self.contains_loose(object_id)?));
+        }
         self.contains_any(object_id, || self.contains_loose(object_id))
     }
 
@@ -842,6 +905,9 @@ impl NativeCas {
 
     /// The first copy of `object_id` that verifies (see `with_copy`).
     pub fn read(&self, object_id: &StoreObjectId) -> CasResult<CanonicalObject> {
+        if let Some(catalog) = &self.compact {
+            return self.read_registered(catalog, object_id);
+        }
         match self.with_copy(object_id, false, || self.read_loose(object_id))? {
             Found::Packed(_, object) | Found::Loose(object) => Ok(object),
         }
@@ -869,8 +935,32 @@ impl NativeCas {
     /// reread and decoded through Core constructors, which recompute claimed
     /// identities and reject non-canonical bytes.
     pub fn verify(&self, object_id: &StoreObjectId) -> CasResult<()> {
+        if let Some(catalog) = &self.compact {
+            if catalog.placements(object_id)?.is_empty() && !is_content(object_id.kind()) {
+                return self.verify_loose(object_id);
+            }
+            return self.read_registered(catalog, object_id).map(|_| ());
+        }
         self.with_copy(object_id, false, || self.verify_loose(object_id))
             .map(|_| ())
+    }
+
+    /// Format 6 read through `catalog` (a view's own, or a transaction's):
+    /// a registered copy, or for kinds other than content the loose file an
+    /// `objects` row authorizes.
+    pub(crate) fn read_registered(
+        &self,
+        catalog: &compact::RegisteredCatalog,
+        object_id: &StoreObjectId,
+    ) -> CasResult<CanonicalObject> {
+        match catalog.read(self, object_id)? {
+            Some(object) => Ok(object),
+            None if is_content(object_id.kind()) => Err(CasError::NotFound {
+                kind: object_id.kind(),
+                id: object_id.to_string(),
+            }),
+            None => self.read_loose(object_id),
+        }
     }
 
     fn verify_loose(&self, object_id: &StoreObjectId) -> CasResult<()> {
@@ -903,6 +993,9 @@ impl NativeCas {
         chunk_id: &ChunkId,
         mut consume: impl FnMut(&[u8]),
     ) -> CasResult<u64> {
+        if let Some(catalog) = &self.compact {
+            return catalog.stream_chunk(self, chunk_id, &mut consume);
+        }
         let object_id = StoreObjectId::ChunkRaw(chunk_id.clone());
         let found = self.with_copy(&object_id, true, || {
             self.stream_loose_chunk(chunk_id, &object_id, &mut consume)
@@ -956,7 +1049,9 @@ impl NativeCas {
                     .map_err(|error| io_error("inspect CAS entry", &path, error))?;
                 if file_type.is_dir() {
                     // Packs are verified member by member below.
-                    if self.packs.is_some() && path == self.objects_dir.join(PACKS_DIR) {
+                    if (self.packs.is_some() || self.compact_format)
+                        && path == self.objects_dir.join(PACKS_DIR)
+                    {
                         continue;
                     }
                     pending.push(path);
@@ -994,6 +1089,9 @@ impl NativeCas {
         }
         if self.packs.is_some() {
             self.scrub_packs(&mut report)?;
+        }
+        if let Some(catalog) = &self.compact {
+            self.scrub_registered(catalog, &mut report)?;
         }
         report
             .issues
@@ -1151,6 +1249,9 @@ impl NativeCas {
     fn end_batch(&self, durable: bool) -> CasResult<()> {
         // A packer still here was abandoned: its staging packs are removed.
         drop(self.packer.lock().ok().and_then(|mut packer| packer.take()));
+        if !durable {
+            self.abandon_compact_batch();
+        }
         let Some(state) = self
             .batch
             .lock()
@@ -1443,7 +1544,28 @@ impl<'store> NativeCasWriter<'store> {
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         let packs = store.packs_enabled().then(|| store.store_id());
-        let cas = NativeCas::open_layout(store.layout(), faults, packs)?;
+        let mut cas = NativeCas::open_layout(store.layout(), faults, packs)?;
+        if store.compact() {
+            // The writer's snapshot of what is registered, taken under the
+            // exclusive lock: no other writer can register anything until
+            // this capability ends.
+            cas.compact_format = true;
+            let connection = super::sqlite::open_read_only(
+                store.layout().sqlite_path(),
+                std::time::Duration::from_secs(5),
+            )
+            .map_err(|error| {
+                io_error(
+                    "open SQLite for the CAS catalog",
+                    store.layout().sqlite_path(),
+                    io::Error::other(error.to_string()),
+                )
+            })?;
+            cas.compact = Some(Arc::new(compact::RegisteredCatalog::load(
+                &connection,
+                &cas,
+            )?));
+        }
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
@@ -1625,6 +1747,16 @@ impl<'store> NativeCasWriter<'store> {
                     }
                 }
             }
+            if cas.compact.is_some() {
+                if complete {
+                    if let Err(error) = cas.finish_compact_batch() {
+                        finish_error = Some(error);
+                        complete = false;
+                    }
+                } else {
+                    cas.abandon_compact_batch();
+                }
+            }
             let mut ordered: Vec<CasResult<InstallOutcome>> = results
                 .into_iter()
                 .map(|(_, slot)| match slot {
@@ -1679,11 +1811,58 @@ impl<'store> NativeCasWriter<'store> {
 }
 
 mod codec;
-#[allow(dead_code)] // wired by the format-6 write and read paths
+mod compact;
 mod pack2;
 mod packs;
 mod paths;
 use codec::*;
+pub(crate) use compact::{
+    CompactPublication, FileManifestEntry, FileRecordPlan, Placement, RegisteredCatalog,
+    SpaceAdmissions, check_bitmap, set_bit,
+};
+
+/// Content kinds: in format 6 they have no `objects` row.
+pub(crate) fn is_content(kind: StoreObjectKind) -> bool {
+    matches!(
+        kind,
+        StoreObjectKind::ChunkRaw | StoreObjectKind::FileManifest
+    )
+}
+
+/// The raw 32-byte digest of an object id (format 6 SQLite keys).
+pub(crate) fn raw_object_digest(object_id: &StoreObjectId) -> CasResult<[u8; 32]> {
+    pack2::raw_digest(object_id)
+}
+
+/// The raw 32-byte digest of a FileId.
+pub(crate) fn raw_file_digest(file_id: &layrs_core::scm::FileId) -> Option<[u8; 32]> {
+    pack2::hex_digest(file_id.as_str().strip_prefix("blake3:")?)
+}
+
+/// The pack kind code of `kind` (`loose_objects.object_kind`).
+pub(crate) fn content_kind_code(kind: StoreObjectKind) -> u8 {
+    pack2::kind_code(kind)
+}
+
+impl NativeCas {
+    /// Length of the loose file at `object_id`'s derived path, if any.
+    pub(crate) fn loose_length(&self, object_id: &StoreObjectId) -> CasResult<Option<u64>> {
+        let relative = object_relative_path(object_id)?;
+        let path = self.objects_dir.join(&relative);
+        match self
+            .pinned_objects_for_read()?
+            .open_relative_file(&relative)
+        {
+            Ok(file) => file
+                .file()
+                .metadata()
+                .map(|metadata| Some(metadata.len()))
+                .map_err(|error| io_error("inspect CAS object", &path, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_error("inspect CAS object", &path, error)),
+        }
+    }
+}
 pub use packs::CasLocation;
 use packs::*;
 use paths::*;

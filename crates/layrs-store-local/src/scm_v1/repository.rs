@@ -297,6 +297,10 @@ impl NativeScmRepository {
         store.verify_filesystem_identity().map_err(native_backend)?;
         let cas = NativeCasWriter::with_fault_injector(&store, Arc::clone(&self.cas_faults))
             .map_err(cas_backend)?;
+        let compact = store.compact();
+        if compact {
+            plan_file_records(&cas, batch, chunks)?;
+        }
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
         // External chunks are read and checked here in order, then every
         // object is installed as by `put`, concurrently; outcomes and fault
@@ -330,6 +334,13 @@ impl NativeScmRepository {
             installed.push(outcome.map_err(cas_backend)?);
             self.hit(RepositoryFaultPoint::AfterEachCas)?;
         }
+        // Format 6: the pack and loose objects just published and made
+        // durable; SQLite registers them in the batch transaction below.
+        let publication = if compact {
+            Some(cas.take_compact_publication().map_err(cas_backend)?)
+        } else {
+            None
+        };
         self.hit(RepositoryFaultPoint::AfterAllCas)?;
 
         let connection = store.begin_write_connection().map_err(schema_backend)?;
@@ -348,6 +359,7 @@ impl NativeScmRepository {
                 batch,
                 &installed,
                 chunks.len(),
+                publication.as_ref(),
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
@@ -374,6 +386,7 @@ impl NativeScmRepository {
 }
 
 impl NativeScmRepository {
+    #[allow(clippy::too_many_arguments)]
     fn apply_inside_transaction(
         &self,
         connection: &Mutex<Connection>,
@@ -382,6 +395,7 @@ impl NativeScmRepository {
         batch: &WriteBatch,
         installed: &[super::InstallOutcome],
         external_chunks: usize,
+        publication: Option<&super::cas::CompactPublication>,
     ) -> Result<ApplyBatchOutcome> {
         // CAS publication intentionally precedes replay inspection. Therefore a
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
@@ -398,13 +412,31 @@ impl NativeScmRepository {
         // These rows are visible only inside this transaction. The admission
         // resolver can read and rehash streamed chunks without retaining their
         // bytes in WriteBatch; any later failure rolls back all these rows.
-        if external_chunks != 0 {
+        if let Some(publication) = publication {
+            // Format 6: the batch's pack and loose objects are registered
+            // (present) before validation, as format 5 inserts the object
+            // rows of streamed chunks; admission bits come after it.
+            let guard = connection.lock().map_err(|_| poisoned())?;
+            register_compact(&guard, publication)?;
+        } else if external_chunks != 0 {
             let guard = connection.lock().map_err(|_| poisoned())?;
             insert_object_rows(&guard, store_root, &installed[..external_chunks])?;
         }
         let validation = crate::perf::span("batch.validate");
         let reader = NativeTransactionalScmReader::new(connection, cas)?;
-        ensure_immutables(&reader, batch)?;
+        if publication.is_some() {
+            // Objects this batch just wrote (`existed == false`) had no
+            // registered copy to disagree with; rereading them from the new
+            // pack would only reread the batch.
+            let new: std::collections::HashSet<&StoreObjectId> = installed
+                .iter()
+                .filter(|outcome| !outcome.existed)
+                .map(|outcome| &outcome.object_id)
+                .collect();
+            ensure_immutables_except(&reader, batch, &new)?;
+        } else {
+            ensure_immutables(&reader, batch)?;
+        }
         let resolver = CompositeAdmissionResolver::new(&reader, batch)?;
         resolver.validate_batch()?;
         drop(resolver);
@@ -414,13 +446,23 @@ impl NativeScmRepository {
 
         let rows = crate::perf::span("batch.insert_rows");
         let guard = connection.lock().map_err(|_| poisoned())?;
-        insert_object_rows(&guard, store_root, installed)?;
-        insert_object_projections_first(&guard, batch)?;
+        if publication.is_some() {
+            insert_object_rows_compact(&guard, installed)?;
+        } else {
+            insert_object_rows(&guard, store_root, installed)?;
+        }
+        insert_object_projections_first(&guard, batch, publication.is_some())?;
         self.hit(RepositoryFaultPoint::AfterObjects)?;
         insert_entities(&guard, batch)?;
         insert_object_projections_views(&guard, batch)?;
         self.hit(RepositoryFaultPoint::AfterEntitiesAndProjections)?;
-        insert_admissions(&guard, batch)?;
+        if publication.is_some() {
+            let catalog =
+                super::cas::RegisteredCatalog::load(&guard, cas.reader()).map_err(cas_backend)?;
+            insert_admissions_compact(&guard, batch, &catalog)?;
+        } else {
+            insert_admissions(&guard, batch)?;
+        }
         self.hit(RepositoryFaultPoint::AfterAdmissions)?;
         apply_mutations(&guard, batch, self)?;
         drop(rows);
@@ -584,7 +626,18 @@ fn replay(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<Option<A
 }
 
 fn ensure_immutables(reader: &dyn ScmReader, batch: &WriteBatch) -> Result<()> {
+    ensure_immutables_except(reader, batch, &std::collections::HashSet::new())
+}
+
+fn ensure_immutables_except(
+    reader: &dyn ScmReader,
+    batch: &WriteBatch,
+    new: &std::collections::HashSet<&StoreObjectId>,
+) -> Result<()> {
     for object in batch.canonical_objects() {
+        if !new.is_empty() && new.contains(&object.object_id()) {
+            continue;
+        }
         let differs = match object {
             CanonicalObject::ChunkRaw(v) => reader.get_chunk(v.id())?.is_some_and(|x| x != *v),
             CanonicalObject::FileManifest(v) => {
@@ -685,9 +738,16 @@ fn insert_object_rows(
     Ok(())
 }
 
-fn insert_object_projections_first(connection: &Connection, batch: &WriteBatch) -> Result<()> {
+fn insert_object_projections_first(
+    connection: &Connection,
+    batch: &WriteBatch,
+    compact: bool,
+) -> Result<()> {
     for object in batch.canonical_objects() {
         match object {
+            // Format 6: no file_* projections and no manifest_chunk edges;
+            // the FileId section and the manifest itself answer them.
+            CanonicalObject::FileManifest(_) if compact => {}
             CanonicalObject::Product(value) => {
                 connection.execute("INSERT OR IGNORE INTO products(product_object_id,product_id) VALUES(?1,?2)",params![value.id().as_str(),value.envelope().logical_id()]).map_err(sql_backend)?;
                 for (index, dependency) in value.direct_dependencies().iter().enumerate() {
@@ -862,6 +922,203 @@ fn insert_object_projections_views(c: &Connection, b: &WriteBatch) -> Result<()>
                 c.execute("INSERT OR IGNORE INTO repository_view_worktrees(repository_view_id,worktree_id,active_layer_id,base_step_id,materialized_tree_id,status,ordinal) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![v.id().as_str(),w.worktree_id().as_str(),w.active_layer_id().map(|x|x.as_str()),w.base_step_id().map(|x|x.as_str()),w.materialized_tree_id().map(|x|x.as_str()),enum_name(w.status())?,i]).map_err(sql_backend)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Format 6 (ADR 0028): what a CAS item needs to be planned as a file
+/// record, from the writer's registered snapshot.
+fn plan_file_records(
+    cas: &NativeCasWriter<'_>,
+    batch: &WriteBatch,
+    chunks: &[(ChunkId, u64)],
+) -> Result<()> {
+    let catalog = cas
+        .compact_catalog()
+        .cloned()
+        .ok_or_else(|| native_backend("format 6 CAS writer has no registered catalog"))?;
+    let mut supplied: std::collections::HashSet<ChunkId> =
+        chunks.iter().map(|(id, _)| id.clone()).collect();
+    let mut manifests = Vec::new();
+    for object in batch.canonical_objects() {
+        match object {
+            CanonicalObject::ChunkRaw(chunk) => {
+                supplied.insert(chunk.id().clone());
+            }
+            CanonicalObject::FileManifest(manifest) => manifests.push(manifest),
+            _ => {}
+        }
+    }
+    let plan =
+        super::cas::FileRecordPlan::new(&catalog, manifests, &supplied).map_err(cas_backend)?;
+    cas.plan_file_records(plan).map_err(cas_backend)
+}
+
+/// Format 6: registers the batch's pack and loose content objects. Their
+/// bytes were published and made durable by `put_ordered` before this
+/// transaction began (CAS before reference).
+fn register_compact(c: &Connection, publication: &super::cas::CompactPublication) -> Result<()> {
+    if let Some((name, digest, entries)) = &publication.pack {
+        let name = name
+            .to_str()
+            .ok_or_else(|| native_backend("pack name is not UTF-8"))?;
+        c.execute(
+            "INSERT INTO cas_packs(name,index_digest,entries,created_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            params![name, &digest[..], i64::try_from(*entries).map_err(native_backend)?],
+        )
+        .map_err(sql_backend)?;
+    }
+    for loose in &publication.loose {
+        let id = super::cas::raw_object_digest(&loose.object_id).map_err(cas_backend)?;
+        let kind = super::cas::content_kind_code(loose.object_id.kind());
+        let length = i64::try_from(loose.byte_length).map_err(native_backend)?;
+        let file = match &loose.file {
+            Some((file_id, file_length)) => Some((
+                super::cas::raw_file_digest(file_id)
+                    .ok_or_else(|| native_backend("invalid FileId"))?
+                    .to_vec(),
+                i64::try_from(*file_length).map_err(native_backend)?,
+            )),
+            None => None,
+        };
+        let (file_id, file_length) = file.unzip();
+        let inserted = c
+            .execute(
+                "INSERT OR IGNORE INTO loose_objects(object_id,object_kind,byte_length,file_id,file_byte_length) VALUES(?1,?2,?3,?4,?5)",
+                params![&id[..], kind, length, file_id, file_length],
+            )
+            .map_err(sql_backend)?;
+        if inserted == 0 {
+            let same: bool = c
+                .query_row(
+                    "SELECT object_kind=?2 AND byte_length=?3 AND file_id IS ?4 AND file_byte_length IS ?5 FROM loose_objects WHERE object_id=?1",
+                    params![&id[..], kind, length, file_id, file_length],
+                    |row| row.get(0),
+                )
+                .map_err(sql_backend)?;
+            if !same {
+                return Err(StoreError::Corruption {
+                    message: format!(
+                        "loose_objects row for {} differs from the installed object",
+                        loose.object_id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Format 6: `objects` rows of the kinds that keep one (never content).
+fn insert_object_rows_compact(
+    connection: &Connection,
+    installed: &[super::InstallOutcome],
+) -> Result<()> {
+    for outcome in installed {
+        let kind = outcome.object_id.kind();
+        if super::cas::is_content(kind) {
+            continue;
+        }
+        let inserted = connection.execute(
+            "INSERT OR IGNORE INTO objects(object_id,object_kind,byte_length,verified,created_at_ms) VALUES(?1,?2,?3,1,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            params![outcome.object_id.as_str(), kind_name(kind), outcome.bytes_len],
+        ).map_err(sql_backend)?;
+        if inserted == 0 {
+            let (existing_kind, length, verified): (String, i64, i64) = connection
+                .query_row(
+                    "SELECT object_kind,byte_length,verified FROM objects WHERE object_id=?1",
+                    params![outcome.object_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(sql_backend)?;
+            if existing_kind != kind_name(kind)
+                || u64::try_from(length).ok() != Some(outcome.bytes_len)
+                || verified != 1
+            {
+                return Err(StoreError::Corruption {
+                    message: format!(
+                        "objects row for {} differs from the installed object",
+                        outcome.object_id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Format 6: admissions of content set the bit of each registered copy in
+/// its (Space, pack) bitmap (or a loose admission row); bitmaps only grow.
+/// Other kinds keep their `space_object_admissions` rows.
+fn insert_admissions_compact(
+    c: &Connection,
+    b: &WriteBatch,
+    catalog: &super::cas::RegisteredCatalog,
+) -> Result<()> {
+    let entries: std::collections::HashMap<i64, u64> = catalog
+        .packs()
+        .iter()
+        .map(|pack| (pack.seq, pack.entries))
+        .collect();
+    let mut bitmaps: std::collections::BTreeMap<(String, i64), Vec<u8>> = Default::default();
+    for a in b.admissions() {
+        let object = a.object_id();
+        if !super::cas::is_content(object.kind()) {
+            c.execute("INSERT OR IGNORE INTO space_object_admissions(space_id,object_id,admitted_by_operation_id,admitted_at_ms) VALUES(?1,?2,NULL,CAST(unixepoch('subsec')*1000 AS INTEGER))",params![a.space_id().as_str(),object.as_str()]).map_err(sql_backend)?;
+            continue;
+        }
+        let (ordinals, loose) = catalog.logical_ordinals(object).map_err(cas_backend)?;
+        if ordinals.is_empty() && !loose {
+            return Err(StoreError::Corruption {
+                message: format!("admitted content {object} has no registered copy"),
+            });
+        }
+        for (seq, ordinal) in ordinals {
+            let key = (a.space_id().as_str().to_owned(), seq);
+            if !bitmaps.contains_key(&key) {
+                let pack_entries = *entries
+                    .get(&seq)
+                    .ok_or_else(|| native_backend("admitted copy in an unknown pack"))?;
+                let existing: Option<Vec<u8>> = c
+                    .query_row(
+                        "SELECT bitmap FROM space_pack_admissions WHERE space_id=?1 AND pack_seq=?2",
+                        params![key.0, seq],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(sql_backend)?;
+                let bitmap = match existing {
+                    Some(bitmap) => {
+                        super::cas::check_bitmap(&bitmap, pack_entries).map_err(|reason| {
+                            StoreError::Corruption {
+                                message: format!("space_pack_admissions: {reason}"),
+                            }
+                        })?;
+                        bitmap
+                    }
+                    None => vec![0; pack_entries.div_ceil(8) as usize],
+                };
+                bitmaps.insert(key.clone(), bitmap);
+            }
+            if let Some(bitmap) = bitmaps.get_mut(&key) {
+                super::cas::set_bit(bitmap, ordinal);
+            }
+        }
+        if loose {
+            let id = super::cas::raw_object_digest(object).map_err(cas_backend)?;
+            c.execute(
+                "INSERT OR IGNORE INTO space_loose_admissions(space_id,object_id) VALUES(?1,?2)",
+                params![a.space_id().as_str(), &id[..]],
+            )
+            .map_err(sql_backend)?;
+        }
+    }
+    for ((space, seq), bitmap) in bitmaps {
+        c.execute(
+            "INSERT INTO space_pack_admissions(space_id,pack_seq,bitmap) VALUES(?1,?2,?3) ON CONFLICT(space_id,pack_seq) DO UPDATE SET bitmap=excluded.bitmap",
+            params![space, seq, bitmap],
+        )
+        .map_err(sql_backend)?;
     }
     Ok(())
 }

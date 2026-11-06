@@ -1007,6 +1007,14 @@ impl NativeCas {
 
     /// Where a copy of `object_id` is (see `CasLocation`), or `None`.
     pub fn locate(&self, object_id: &StoreObjectId) -> CasResult<Option<CasLocation>> {
+        if let Some(catalog) = &self.compact {
+            if let Some(location) = catalog.locate(self, object_id)? {
+                return Ok(Some(location));
+            }
+            if is_content(object_id.kind()) {
+                return Ok(None);
+            }
+        }
         let packed = |candidates: Vec<(Arc<PackIndex>, PackEntry)>| {
             candidates
                 .first()

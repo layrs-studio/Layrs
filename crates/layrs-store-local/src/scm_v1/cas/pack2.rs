@@ -953,10 +953,6 @@ impl Pack2Builder {
         })
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.explicit.is_empty() && self.files.is_empty()
-    }
-
     fn append_block(&mut self, out: &mut impl Write, block: EncodedBlock) -> io::Result<u32> {
         let index = u32::try_from(self.blocks.len()).map_err(io::Error::other)?;
         let stored_len = u32::try_from(block.stored.len()).map_err(io::Error::other)?;

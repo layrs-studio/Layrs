@@ -40,6 +40,9 @@ pub struct NativeScmReader<'store> {
     identities: super::identity::IdentityRegistry,
     source: SqlReadSource<'store>,
     cas: CasReadSource<'store>,
+    /// Format 6, transactional reader: the transaction's registered catalog,
+    /// loaded on first use (`compact.rs`).
+    transaction_catalog: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
 }
 
 enum SqlReadSource<'source> {
@@ -132,6 +135,7 @@ impl NativeStoreReading {
             source: SqlReadSource::Ready(&self.store),
             identities: self.identities.clone(),
             cas: CasReadSource::Transaction(&self.cas),
+            transaction_catalog: std::sync::OnceLock::new(),
         }
     }
 }
@@ -143,6 +147,7 @@ impl<'store> NativeScmReader<'store> {
             source: SqlReadSource::Ready(store),
             identities: super::identity::read_registry(store.layout().root(), store.store_id())?,
             cas: CasReadSource::Owned(cas),
+            transaction_catalog: std::sync::OnceLock::new(),
         })
     }
 
@@ -181,6 +186,7 @@ impl<'store> NativeScmReader<'store> {
             source: SqlReadSource::Transaction(connection),
             identities: super::identity::read_registry(cas.root(), cas.store_id())?,
             cas: CasReadSource::Transaction(cas.reader()),
+            transaction_catalog: std::sync::OnceLock::new(),
         })
     }
 
@@ -209,6 +215,9 @@ impl<'store> NativeScmReader<'store> {
     }
 
     fn read_object(&self, id: &StoreObjectId) -> Result<Option<CanonicalObject>> {
+        if self.compact() {
+            return self.read_object_compact(id);
+        }
         let connection = self.connection()?;
         let row: Option<(String, String, i64, i64)> = connection
             .query_row(
@@ -367,6 +376,7 @@ impl<'store> NativeScmReader<'store> {
 }
 
 mod availability;
+mod compact;
 mod projections;
 mod reader;
 mod transactional;

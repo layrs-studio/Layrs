@@ -240,6 +240,9 @@ pub struct NativeStoreOpen {
     /// Last successful implicit identity check made by `connection()`.
     implicit_verified: Mutex<Option<std::time::Instant>>,
     format_version: u32,
+    /// Format 6: the registered CAS catalog of this immutable snapshot,
+    /// loaded once by the first CAS view opened on it.
+    registered: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
 }
 
 /// Implicit per-query rebinding checks are throttled to this interval. SQLite
@@ -268,7 +271,14 @@ impl NativeStoreOpen {
             bound_metadata: None,
             implicit_verified: Mutex::new(None),
             format_version: super::FORMAT_VERSION,
+            registered: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn registered_catalog(
+        &self,
+    ) -> &std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>> {
+        &self.registered
     }
 
     pub fn layout(&self) -> &NativeStoreLayout {
