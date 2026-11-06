@@ -84,6 +84,7 @@ fn history(workspace: &NativeWorkspace) -> Vec<OperationId> {
 
 #[test]
 fn stale_independent_capture_installs_nothing_then_fresh_capture_preserves_both_histories() {
+    format_5_stores();
     let fixture = Fixture::new();
     let a = fixture.primary();
     let b = fixture.secondary(&a);
@@ -255,4 +256,13 @@ fn stale_independent_capture_installs_nothing_then_fresh_capture_preserves_both_
     assert_eq!(physical, indexed);
     drop(connection);
     drop(store);
+}
+
+/// These tests read format 5 internals (each object's loose file and
+/// `objects.storage_path`): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` the suite runs with (format 6 is covered by
+/// layrs-store-local `scm_format6.rs`). Every test of this binary sets the
+/// same value before creating a Store.
+fn format_5_stores() {
+    std::env::set_var("LAYRS_STORE_FORMAT", "5");
 }

@@ -131,6 +131,7 @@ struct HistoryFixture {
 }
 
 fn historical_states() -> HistoryFixture {
+    format_5_stores();
     let fixture = Fixture::new();
     let primary = fixture.primary();
     let secondary = fixture.secondary(&primary);
@@ -397,4 +398,13 @@ fn missing_historical_worktree_base_step_reports_an_explicit_dependency_error() 
         && finding.object_id.as_deref() == Some(fixture.historical_view.as_str())
         && finding.message.contains(fixture.base.as_str())));
     assert!(report.gc_reachability.reachable_objects <= report.checked_objects);
+}
+
+/// These tests read format 5 internals (each object's loose file and
+/// `objects.storage_path`): their Stores are format 5 whatever
+/// `LAYRS_STORE_FORMAT` the suite runs with (format 6 is covered by
+/// layrs-store-local `scm_format6.rs`). Every test of this binary sets the
+/// same value before creating a Store.
+fn format_5_stores() {
+    std::env::set_var("LAYRS_STORE_FORMAT", "5");
 }
