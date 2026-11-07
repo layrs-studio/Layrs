@@ -160,9 +160,13 @@ fn a_finished_writer_session_leaves_no_frame_and_no_shared_memory_file() {
     let path = temporary.database("layrs.sqlite3");
     drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
     for round in 0..2 {
-        let writer =
-            open_writer_existing_no_mutation(&path, Duration::from_millis(100), &test_store_id())
-                .unwrap();
+        let writer = open_writer_existing_no_mutation(
+            &path,
+            Duration::from_millis(100),
+            &test_store_id(),
+            WriterDurability::CheckedFinish,
+        )
+        .unwrap();
         let synchronous: u32 = writer
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .unwrap();
@@ -201,9 +205,17 @@ fn a_writer_dropped_without_finishing_still_checkpoints_at_close() {
     let temporary = TempDirectory::new("drop-writer");
     let path = temporary.database("layrs.sqlite3");
     drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
-    let writer =
-        open_writer_existing_no_mutation(&path, Duration::from_millis(100), &test_store_id())
-            .unwrap();
+    let writer = open_writer_existing_no_mutation(
+        &path,
+        Duration::from_millis(100),
+        &test_store_id(),
+        WriterDurability::EachCommit,
+    )
+    .unwrap();
+    let synchronous: u32 = writer
+        .pragma_query_value(None, "synchronous", |row| row.get(0))
+        .unwrap();
+    assert_eq!(synchronous, 2, "FULL unless the session finishes checked");
     writer
         .execute(
             "INSERT INTO applied_transactions VALUES ('transaction:dropped', ?1, '{}', 0)",

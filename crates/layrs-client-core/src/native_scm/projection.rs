@@ -54,10 +54,11 @@ impl NativeWorkspace {
 
     /// Supplies a change index's bound projection (council s3, D1): the
     /// caller's `base` projection when it is the bound one, else the bound
-    /// Tree's from the projection cache, else rebuilt from the Store's Trees
-    /// (a cache file that does not match is deleted first). Never re-hashes
-    /// a file; entries it cannot resolve stay untrusted, so their files are
-    /// read. Returns whether the index is bound to `base`.
+    /// Tree's from the projection cache, else rebuilt from the Store's Trees.
+    /// A cache file is replaced only when the rebuilt projection differs from
+    /// it: a digest mismatch alone may be the index's (council s5 r1). Never
+    /// re-hashes a file; entries it cannot resolve stay untrusted, so their
+    /// files are read. Returns whether the index is bound to `base`.
     pub(super) fn resolve_change_index(
         &self,
         store: Option<&layrs_store_local::scm_v1::NativeStoreOpen>,
@@ -75,11 +76,9 @@ impl NativeWorkspace {
         let Some(tree) = index.bound_tree().cloned() else {
             return false;
         };
-        if let Some(cached) = projection_cache::load(self.store_root(), &tree) {
-            if index.resolve(&cached) {
-                return false;
-            }
-            projection_cache::remove(self.store_root(), &tree);
+        let cached = projection_cache::load(self.store_root(), &tree);
+        if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
+            return false;
         }
         let _span = layrs_store_local::perf::span("change_index.rebuild_projection");
         let opened;
@@ -99,7 +98,11 @@ impl NativeWorkspace {
         let Ok(projection) = project_tree(&reader, &tree) else {
             return false;
         };
-        if index.resolve(&projection) {
+        index.resolve(&projection);
+        if cached.as_ref() != Some(&projection) {
+            if cached.is_some() {
+                projection_cache::remove(self.store_root(), &tree);
+            }
             if let Ok(projection_tree) = projection_tree_id(&projection) {
                 projection_cache::save(self.store_root(), &tree, &projection_tree, &projection);
             }

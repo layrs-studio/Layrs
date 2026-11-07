@@ -258,60 +258,6 @@ impl NativeStoreLayout {
 }
 
 /// Successfully opened native format identity and paths.
-/// One observed state of a Store's metadata database: its length,
-/// modification and creation times, and when it was observed.
-///
-/// A write session ends by checkpointing its commits into the database
-/// (`sqlite::finish_writer`), which writes it; one interrupted after a commit
-/// leaves frames in the WAL. So the database still has the same length and
-/// times, with an empty WAL, only if no write session committed since, as
-/// long as its last write was older than the observation by more than the
-/// clock's tick: a later write could otherwise carry the same time, as
-/// git's racy index entries.
-#[derive(Clone, Debug)]
-pub struct MetadataVersion {
-    path: PathBuf,
-    length: u64,
-    modified: std::time::SystemTime,
-    created: Option<std::time::SystemTime>,
-    observed_at: std::time::SystemTime,
-}
-
-/// Larger than any file-system clock tick of a local volume (NTFS and ReFS
-/// stamp times from the system clock, one tick <= 16 ms).
-const METADATA_VERSION_MARGIN: Duration = Duration::from_millis(100);
-
-impl MetadataVersion {
-    fn observe(path: &Path) -> Option<Self> {
-        let observed_at = std::time::SystemTime::now();
-        let metadata = fs::symlink_metadata(path).ok().filter(|m| m.is_file())?;
-        Some(Self {
-            path: path.to_path_buf(),
-            length: metadata.len(),
-            modified: metadata.modified().ok()?,
-            created: metadata.created().ok(),
-            observed_at,
-        })
-    }
-
-    /// Whether no write session committed since the observation (see the
-    /// type). `false` when that cannot be told: the caller then checks again
-    /// the way it would without this.
-    pub fn unchanged(&self) -> bool {
-        let settled = self
-            .modified
-            .checked_add(METADATA_VERSION_MARGIN)
-            .is_some_and(|limit| limit < self.observed_at);
-        settled
-            && !sqlite::has_uncheckpointed_wal(&self.path).unwrap_or(true)
-            && Self::observe(&self.path).is_some_and(|now| {
-                now.length == self.length
-                    && now.modified == self.modified
-                    && now.created == self.created
-            })
-    }
-}
-
 #[derive(Debug)]
 pub struct NativeStoreOpen {
     connection: Mutex<Connection>,
@@ -421,13 +367,6 @@ impl NativeStoreOpen {
         &self,
     ) -> &std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>> {
         &self.registered
-    }
-
-    /// The metadata database as this session sees it. The shared lock
-    /// excludes writers for the session's life, so it cannot change while
-    /// the session lasts.
-    pub fn metadata_version(&self) -> Option<MetadataVersion> {
-        MetadataVersion::observe(self.layout.sqlite_path())
     }
 
     pub fn layout(&self) -> &NativeStoreLayout {
@@ -635,13 +574,29 @@ impl NativeStoreExclusive {
         &self.store_id
     }
 
-    /// Opens the writer connection at the explicit mutation boundary.
+    /// Opens the writer connection at the explicit mutation boundary. Each
+    /// COMMIT is durable when it returns.
     pub(crate) fn begin_write_connection(&self) -> Result<Connection, ScmSchemaError> {
+        self.open_writer(sqlite::WriterDurability::EachCommit)
+    }
+
+    /// A writer whose every successful path ends with `sqlite::finish_writer`
+    /// (or `NativeRecovery::finish`): its commits are durable at that checked
+    /// checkpoint, not at each COMMIT.
+    pub(crate) fn begin_session_writer(&self) -> Result<Connection, ScmSchemaError> {
+        self.open_writer(sqlite::WriterDurability::CheckedFinish)
+    }
+
+    fn open_writer(
+        &self,
+        durability: sqlite::WriterDurability,
+    ) -> Result<Connection, ScmSchemaError> {
         self.verify_filesystem_identity()?;
         sqlite::open_writer_existing_no_mutation(
             self.layout.sqlite_path(),
             Duration::from_secs(5),
             &self.store_id,
+            durability,
         )
     }
 

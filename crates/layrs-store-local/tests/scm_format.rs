@@ -437,35 +437,6 @@ fn checkpoint(connection: &Connection) {
     assert_eq!(result.1, result.2);
 }
 
-#[test]
-fn a_metadata_version_tells_whether_a_write_session_committed_since() {
-    let root = unique_root("metadata-version");
-    drop(init(&root, store_id("metadata-version")).unwrap());
-    // Observed right after the last write: within the clock margin, it
-    // cannot vouch for anything.
-    let fresh = open(&root).unwrap().metadata_version().unwrap();
-    assert!(!fresh.unchanged());
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    let store = open(&root).unwrap();
-    let version = store.metadata_version().unwrap();
-    drop(store);
-    assert!(version.unchanged());
-    // A commit, then its checkpoint: the database changed.
-    let layout = NativeStoreLayout::new(&root).unwrap();
-    let writer = Connection::open(layout.sqlite_path()).unwrap();
-    writer
-        .execute(
-            "INSERT INTO spaces(space_id, payload_json, created_at_ms) VALUES ('space:v', '{}', 0)",
-            [],
-        )
-        .unwrap();
-    // Before the checkpoint, the frames in the WAL already count.
-    assert!(!version.unchanged());
-    drop(writer);
-    assert!(!version.unchanged());
-    cleanup(&root);
-}
-
 fn store_id(label: &str) -> StoreId {
     StoreId::parse(format!("store:{label}")).unwrap()
 }

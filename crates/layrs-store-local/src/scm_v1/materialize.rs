@@ -445,6 +445,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
     if !fresh {
         faults.check(MaterializationPoint::AfterStaging)?;
     }
+    let (staged_root, staged_identity) = (
+        worktree.checkout_root().to_owned(),
+        worktree.filesystem_identity().to_owned(),
+    );
     let journal_committed = std::cell::Cell::new(false);
     let journaled = (|| -> io::Result<_> {
         let _session = crate::perf::span("materialize.session_journal");
@@ -452,7 +456,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
-        let connection = store.begin_write_connection().map_err(error)?;
+        // The journal is created on this writer, which ends with a checked
+        // checkpoint (`journal.finish()`) before any checkout path moves.
+        let connection = store.begin_session_writer().map_err(error)?;
         connection.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
         let connection = std::sync::Mutex::new(connection);
         let cas = NativeCas::open_exclusive(&store).map_err(error)?;
@@ -507,7 +513,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         let payload = if fresh {
             serde_json::json!({ "schema":fresh::SCHEMA, "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
         } else {
-            serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "worktreePrefixed":true, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
+            serde_json::json!({ "schema":CHECKOUT_WRITE_STAGED_FIRST, "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
         };
         // A fresh checkout journals the top-level entries it creates: there is
         // no original to restore, and recovery quarantines the folder's content.
@@ -534,6 +540,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
         .map_err(error)?;
         let root = worktree.checkout_root().to_owned();
         let identity = worktree.filesystem_identity().to_owned();
+        if !fresh && (root != staged_root || identity != staged_identity) {
+            return Err(error("checkout changed between staging and journal"));
+        }
         drop(reader);
         let connection = connection.into_inner().map_err(error)?;
         connection.execute_batch("ROLLBACK").map_err(error)?;
@@ -613,8 +622,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
     let (backups, backup, staged, written) =
         prestaged.ok_or_else(|| error("existing checkout was not staged"))?;
     let leases = leases.ok_or_else(|| error("staged journal holds no lease"))?;
-    debug_assert_eq!(checkout_root, worktree.checkout_root());
-    debug_assert_eq!(identity, worktree.filesystem_identity());
+    debug_assert_eq!(
+        (&checkout_root, &identity),
+        (&staged_root, &staged_identity)
+    );
     let mut lease = LeaseKeeper::new(
         store_root,
         &store_directory,
@@ -916,6 +927,15 @@ pub fn apply_checkout_with_sources_bound_metadata(
     Ok(outcome)
 }
 
+/// Journal of an existing checkout's write, staged after its journal
+/// (older attempts; still recovered).
+const CHECKOUT_WRITE: &str = "layrs.checkout-write.v1";
+/// Journal of an existing checkout's write staged before it (council s4,
+/// Q1), its attempt folder named after the Worktree. A binary that knows
+/// only v1 leaves it pending (captures refuse) instead of looking for the
+/// folder under the other name.
+const CHECKOUT_WRITE_STAGED_FIRST: &str = "layrs.checkout-write.v2";
+
 /// Journals of `batch` already recorded for `worktree` (its attempts).
 fn attempts_of(
     connection: &rusqlite::Connection,
@@ -963,6 +983,32 @@ fn journaled_attempt_folders(
         }
     }
     Ok(names)
+}
+
+/// Best effort, during a recovery (under the checkout lock): this
+/// Worktree's attempt folders that no journal names, as a materialization
+/// does before staging. A Worktree never materialized again is still
+/// cleaned when it is recovered.
+fn sweep_after_recovery(
+    store_directory: &PinnedDirectory,
+    metadata_directory: &PinnedDirectory,
+    store_root: &Path,
+    worktree: &WorktreeId,
+) {
+    let journaled = open(store_root)
+        .ok()
+        .and_then(|store| journaled_attempt_folders(&*store.connection().ok()?, worktree).ok());
+    let Some(journaled) = journaled else {
+        return;
+    };
+    if store_directory.verify_path_identity().is_err()
+        || metadata_directory.verify_path_identity().is_err()
+    {
+        return;
+    }
+    if let Ok(backups) = metadata_directory.open_child("repair-backups".as_ref()) {
+        sweep_unjournaled_attempts(&backups, worktree, &journaled);
+    }
 }
 
 /// Best effort, under the checkout lock: removes this Worktree's attempt
@@ -1588,8 +1634,16 @@ pub fn recover_checkout_bound_metadata(
         )?;
         count += 1;
     }
+    sweep_after_recovery(
+        &store_directory,
+        &metadata_directory,
+        store_root,
+        worktree_id,
+    );
     for record in pending.into_iter().filter(|r| {
-        r.worktree_id == *worktree_id && r.payload["schema"] == "layrs.checkout-write.v1"
+        r.worktree_id == *worktree_id
+            && (r.payload["schema"] == CHECKOUT_WRITE
+                || r.payload["schema"] == CHECKOUT_WRITE_STAGED_FIRST)
     }) {
         if record.payload["checkoutRoot"].as_str() != Some(worktree.checkout_root())
             || record.payload["filesystemIdentity"].as_str() != Some(worktree.filesystem_identity())
@@ -1688,9 +1742,7 @@ pub fn recover_checkout_bound_metadata(
                     let name = format!("{}-attempt-{attempt}", digest.replace(':', "-"));
                     // Staged before their journal, attempts are named after
                     // their Worktree (swept under its checkout lock).
-                    if record.payload.get("worktreePrefixed")
-                        == Some(&serde_json::Value::Bool(true))
-                    {
+                    if record.payload["schema"] == CHECKOUT_WRITE_STAGED_FIRST {
                         format!("{}-{name}", attempt_prefix(&record.worktree_id))
                     } else {
                         name

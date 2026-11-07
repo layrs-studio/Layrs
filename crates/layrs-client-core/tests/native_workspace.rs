@@ -405,24 +405,30 @@ fn a_stop_after_staging_leaves_no_journal_and_its_folder_is_swept() {
     assert!(workspace
         .restore_step_with_faults(marker.target_step_id(), None, &Stop)
         .is_err());
-    // No journal, nothing to repair, the checkout as it was.
+    // No journal, nothing to repair, the checkout as it was; the stopped
+    // attempt's folder stays until the Worktree is recovered...
     let reopened = NativeWorkspace::open(&checkout.0).unwrap();
     assert!(!reopened.needs_repair().unwrap());
-    assert_eq!(reopened.recover().unwrap(), 0);
     assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"saved work");
     assert!(!reopened.is_dirty().unwrap());
     let left = attempts(&reopened);
-    assert_eq!(
-        left.len(),
-        1,
-        "the stopped attempt's folder stays: {left:?}"
-    );
-    // The next materialization of this Worktree sweeps it.
+    assert_eq!(left.len(), 1, "the stopped attempt's folder: {left:?}");
+    assert_eq!(reopened.recover().unwrap(), 0);
+    assert!(attempts(&reopened).is_empty(), "swept by the recovery");
+    // ...or materialized again.
+    assert!(reopened
+        .restore_step_with_faults(marker.target_step_id(), None, &Stop)
+        .is_err());
+    let left = attempts(&reopened);
+    assert_eq!(left.len(), 1, "the stopped attempt's folder: {left:?}");
     reopened
         .restore_step(marker.target_step_id(), None)
         .unwrap();
-    assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"hello world");
-    assert!(!attempts(&reopened).contains(&left[0]));
+    assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"hello\0world");
+    assert!(
+        !attempts(&reopened).contains(&left[0]),
+        "swept before staging"
+    );
 }
 
 #[test]

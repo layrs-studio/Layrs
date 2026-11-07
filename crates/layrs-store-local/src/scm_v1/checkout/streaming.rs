@@ -12,9 +12,46 @@ pub type Trust<'t> = dyn Fn(&str, &fs::Metadata) -> Option<TrustedFile> + Sync +
 /// (antivirus scan on first open) keep scaling. Four balances both.
 const HASH_THREADS: usize = 4;
 
-/// A root subdirectory walked on its own: its pinned handle, its path on
-/// disk and in the checkout.
-type Subtree = (PinnedDirectory, std::path::PathBuf, String);
+/// At most `HASH_THREADS` files hashed at once across the parallel subtrees
+/// of one walk (council s5 r1).
+struct HashSlots {
+    free: std::sync::Mutex<usize>,
+    released: std::sync::Condvar,
+}
+
+impl HashSlots {
+    fn new(count: usize) -> Self {
+        Self {
+            free: std::sync::Mutex::new(count.max(1)),
+            released: std::sync::Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> HashSlot<'_> {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        while *free == 0 {
+            free = self.released.wait(free).unwrap_or_else(|e| e.into_inner());
+        }
+        *free -= 1;
+        HashSlot(self)
+    }
+}
+
+/// One file being hashed; frees its slot when dropped.
+struct HashSlot<'a>(&'a HashSlots);
+
+impl Drop for HashSlot<'_> {
+    fn drop(&mut self) {
+        *self.0.free.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        self.0.released.notify_one();
+    }
+}
+
+/// A root subdirectory walked on its own: its name, its path on disk and in
+/// the checkout, and its listing metadata. It is opened (relative to the
+/// pinned root) only when its walk starts, so open handles stay bounded by
+/// the walks in progress, not by the width of the root (council s5 r1).
+type Subtree = (String, std::path::PathBuf, String, fs::Metadata);
 
 impl CheckoutReader {
     /// Optimistic two-pass capture, bounded to one chunk at a time per worker
@@ -290,6 +327,7 @@ impl CheckoutReader {
             deferred: Some(Vec::new()),
             forward: None,
             hash_threads: HASH_THREADS,
+            hash_slots: None,
         };
         // The root is walked first, its subdirectories then, in parallel when
         // there are several; the root is checked again after all of them.
@@ -371,6 +409,8 @@ struct StreamScan<'a> {
     /// A subtree's chunks go to the walk's observer through this channel.
     forward: Option<std::sync::mpsc::SyncSender<Chunk>>,
     hash_threads: usize,
+    /// Shared by the parallel subtrees of one walk.
+    hash_slots: Option<&'a HashSlots>,
 }
 
 struct ScannedDirectory {
@@ -496,16 +536,17 @@ impl StreamScan<'_> {
                 });
             } else if metadata.is_dir() {
                 let full = disk.join(&name);
+                if let Some(deferred) = self.deferred.as_mut().filter(|_| depth == 0) {
+                    deferred.push((name, full, path, metadata));
+                    continue;
+                }
                 let child = self.directories[index]
                     .as_ref()
                     .ok_or_else(|| io::Error::other("walked directory closed early"))?
                     .handle
                     .open_child_for_traversal(name.as_ref())
                     .map_err(|e| retype_error(e, &full, &metadata))?;
-                match self.deferred.as_mut() {
-                    Some(deferred) if depth == 0 => deferred.push((child, full, path)),
-                    _ => self.walk(child, full, &path, depth + 1)?,
-                }
+                self.walk(child, full, &path, depth + 1)?;
             } else if metadata.is_file() {
                 if let Some(trusted) = self
                     .trust
@@ -564,8 +605,16 @@ impl StreamScan<'_> {
     /// failing subtree, in name order, decides the error.
     fn walk_subtrees(&mut self, subtrees: Vec<Subtree>) -> io::Result<()> {
         if subtrees.len() < 2 {
-            for (handle, disk, path) in subtrees {
-                self.walk(handle, disk, &path, 1)?;
+            for (name, disk, path, listed) in subtrees {
+                let child = self
+                    .directories
+                    .first()
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| io::Error::other("walked root closed early"))?
+                    .handle
+                    .open_child_for_traversal(name.as_ref())
+                    .map_err(|e| retype_error(e, &disk, &listed))?;
+                self.walk(child, disk, &path, 1)?;
             }
             return Ok(());
         }
@@ -574,7 +623,8 @@ impl StreamScan<'_> {
             .map_or(4, |n| n.get())
             .clamp(1, 8)
             .min(subtrees.len());
-        let hash_threads = (HASH_THREADS / threads).max(1);
+        let slots = HashSlots::new(HASH_THREADS);
+        let slots = &slots;
         let jobs: Vec<std::sync::Mutex<Option<Subtree>>> = subtrees
             .into_iter()
             .map(|subtree| std::sync::Mutex::new(Some(subtree)))
@@ -585,6 +635,12 @@ impl StreamScan<'_> {
             (self.limits, self.tracked, self.trust, self.ignored);
         let (visited, bytes, observer_failed, relist) =
             (self.visited, self.bytes, self.observer_failed, self.relist);
+        let root = &self
+            .directories
+            .first()
+            .and_then(Option::as_ref)
+            .ok_or_else(|| io::Error::other("walked root closed early"))?
+            .handle;
         let observe = &mut self.observe;
         let progress = &mut self.progress;
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(threads * 2);
@@ -604,7 +660,7 @@ impl StreamScan<'_> {
                         while !stop.load(Ordering::Relaxed) {
                             let index = next.fetch_add(1, Ordering::Relaxed);
                             let Some(job) = jobs.get(index) else { break };
-                            let Some((handle, disk, path)) =
+                            let Some((name, disk, path, listed)) =
                                 job.lock().ok().and_then(|mut job| job.take())
                             else {
                                 break;
@@ -633,10 +689,13 @@ impl StreamScan<'_> {
                                 relist,
                                 deferred: None,
                                 forward: Some(sender.clone()),
-                                hash_threads,
+                                hash_threads: HASH_THREADS,
+                                hash_slots: Some(slots),
                             };
-                            let result = scan
-                                .walk(handle, disk, &path, 1)
+                            let result = root
+                                .open_child_for_traversal(name.as_ref())
+                                .map_err(|e| retype_error(e, &disk, &listed))
+                                .and_then(|handle| scan.walk(handle, disk, &path, 1))
                                 .and_then(|()| scan.flush())
                                 .map(|()| {
                                     (
@@ -750,6 +809,7 @@ impl StreamScan<'_> {
         // Running total charged by each worker before it reads a file.
         let total = self.bytes;
         let directories = &self.directories;
+        let slots = self.hash_slots;
         let observe = &mut self.observe;
         let progress = &mut self.progress;
         // A subtree's chunks go straight to the walk's observer.
@@ -770,6 +830,7 @@ impl StreamScan<'_> {
                         while !stop.load(Ordering::Relaxed) {
                             let index = next.fetch_add(1, Ordering::Relaxed);
                             let Some(task) = tasks.get(index) else { break };
+                            let _slot = slots.map(HashSlots::acquire);
                             let result = match &directories[task.directory] {
                                 Some(directory) => hash_file(
                                     &directory.handle,

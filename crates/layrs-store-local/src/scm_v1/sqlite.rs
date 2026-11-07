@@ -475,6 +475,7 @@ pub(crate) fn open_writer_existing_no_mutation(
     path: &Path,
     busy_timeout: Duration,
     store_id: &StoreId,
+    durability: WriterDurability,
 ) -> Result<Connection> {
     // Validate through the immutable reader before constructing the writer.
     // A normal WAL-mode read would create `-wal`/`-shm` sidecars merely by
@@ -490,7 +491,7 @@ pub(crate) fn open_writer_existing_no_mutation(
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     connection.busy_timeout(busy_timeout)?;
-    configure_session_writer(&connection)?;
+    configure_session_writer(&connection, durability)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     Ok(connection)
 }
@@ -498,14 +499,16 @@ pub(crate) fn open_writer_existing_no_mutation(
 /// The session settings of a writer on an exclusively locked Store (council
 /// s3, D2). All are connection-local; none changes the database file.
 ///
-/// - `synchronous=NORMAL`: a COMMIT appends to the WAL without flushing it.
-///   The session's durability point is `finish_writer`, a checked
-///   checkpoint that flushes the WAL, copies it into the database and
-///   flushes the database, before the session reports success. Nothing that
-///   depends on a commit happens between it and that checkpoint, so a power
-///   loss there equals one just before the commit, which recovery covers. A
-///   writer dropped without `finish_writer` is still checkpointed, with the
-///   same flushes, when SQLite closes it.
+/// - Durability (`WriterDurability`): `synchronous=FULL` (each COMMIT
+///   flushes the WAL) for every writer, except a session that ends with
+///   `finish_writer` on every successful path: `synchronous=NORMAL`, a
+///   COMMIT appends to the WAL without flushing it, and the session's
+///   durability point is that checked checkpoint, which flushes the WAL,
+///   copies it into the database and flushes the database before the
+///   session reports success. Nothing that depends on a commit happens
+///   between it and that checkpoint, so a power loss there equals one just
+///   before the commit, which recovery covers (council s5 r1: only such
+///   sessions may use NORMAL).
 /// - `locking_mode=EXCLUSIVE`, set before the first read: the WAL index
 ///   lives in this connection's memory, so no `-shm` file is created and
 ///   deleted per session. Readers open the database `immutable=1` and take
@@ -516,11 +519,18 @@ pub(crate) fn open_writer_existing_no_mutation(
 ///
 /// Measured on a fast-forward Room merge (three sessions): a commit costs
 /// 1.5–2.5 ms instead of 3.5–6 ms; the checkpoint is unchanged.
-fn configure_session_writer(connection: &Connection) -> Result<()> {
+fn configure_session_writer(connection: &Connection, durability: WriterDurability) -> Result<()> {
     let mode: String =
         connection.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |row| row.get(0))?;
     require_pragma("locking_mode", "exclusive", mode.to_ascii_lowercase())?;
-    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    connection.pragma_update(
+        None,
+        "synchronous",
+        match durability {
+            WriterDurability::EachCommit => "FULL",
+            WriterDurability::CheckedFinish => "NORMAL",
+        },
+    )?;
     connection.pragma_update(None, "journal_size_limit", 0)?;
     let mut persist: std::os::raw::c_int = 1;
     // SAFETY: the handle belongs to this open connection, "main" names its
@@ -540,6 +550,16 @@ fn configure_session_writer(connection: &Connection) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// When a writer's commits become durable (`configure_session_writer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriterDurability {
+    /// At each COMMIT (`synchronous=FULL`).
+    EachCommit,
+    /// At `finish_writer`, which every successful path of the session must
+    /// call before acting on its commits (`synchronous=NORMAL`).
+    CheckedFinish,
 }
 
 /// Ends a writer session: the checked durability point of every commit it

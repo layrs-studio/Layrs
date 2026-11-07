@@ -52,8 +52,19 @@ Après r3 (non relu par le conseil, selon la recommandation d'Opus r3) : un lot 
 **Fait depuis s3** :
 - `86baba5` : D2. Les sessions d'écriture se terminent par un point de contrôle vérifié, avec `NORMAL`, verrou SQLite exclusif (pas de `-shm`) et WAL persistant vidé. Un COMMIT coûte 1,5–2,5 ms au lieu de 3,5–6 ms ; le gain total est faible (le point de contrôle reste à ~3,5 ms).
 - `1f2b25c` : D1. Index de changements LYRSIDX3 lié au condensé de la projection : Store 2 924 → 2 592 Kio, index 524 → 204 Kio.
-- `97912d0` : parcours des sous-dossiers de la racine en parallèle (parcours 7,3 → 3,4 ms). `status` vérifie que sa base n'a pas bougé par la version du fichier SQLite (longueur, dates, WAL vide, dernière écriture plus vieille que 100 ms), sinon il relit la base comme avant.
-- `status` dans le processus : 42 → 23,5 ms (git : 9,7 ms ; démarrer un processus coûte ~40 ms pour les deux).
+- `97912d0` : parcours des sous-dossiers de la racine en parallèle (parcours 7,3 → 3,4 ms). La vérification de la base de `status` par la version du fichier SQLite a été retirée après la revue s5 r1 (voir plus bas).
+- `status` dans le processus : 42 → ~26 ms (git : 9,7 ms ; démarrer un processus coûte ~40 ms pour les deux).
+- `acb4008` : Q1 et Q2 du conseil s4. Les fichiers sont stagés avant le journal, qui est créé directement `applying` (`create_and_claim`) : deux sessions exclusives par matérialisation au lieu de trois. Une session de lecture tenue pour les lectures d'un fast-forward : 7 ouvertures partagées au lieu de 11.
+
+**Revue du conseil s5 r1** (Astra 7/10, Sol 6/10, Opus 7/10 ; tous `ship after fixes`). Corrections :
+- `NORMAL` ne sert plus qu'aux sessions qui finissent par un point de contrôle vérifié (le lot et la session du journal de matérialisation) ; tous les autres écrivains, dont la reprise et les baux, restent en `FULL` (Sol P0, Astra et Opus P2).
+- `status` relit de nouveau sa base après le parcours : la version du fichier ne prouve rien sur un volume à dates grossières ou si l'horloge recule (Astra et Sol ; Opus la jugeait saine avec une condition sur le volume).
+- Le parcours n'ouvre un sous-dossier de la racine qu'au démarrage de sa branche (toutes ensemble dépasseraient la limite de descripteurs sous Linux) ; au plus quatre fichiers hachés à la fois toutes branches confondues.
+- La matérialisation refuse si le dossier relu sous le verrou exclusif diffère de celui où elle a stagé (c'était une simple assertion de débogage).
+- Journal `layrs.checkout-write.v2` pour les tentatives stagées d'abord : un binaire plus ancien le laisse en attente au lieu de chercher le dossier sous l'autre nom.
+- Une reprise balaie aussi les dossiers de tentative du Worktree qu'aucun journal ne nomme.
+- Un fichier du cache de projection n'est remplacé que si la projection reconstruite en diffère.
+- Reporté : lier l'index à l'arbre racine de l'étape plutôt qu'à l'arbre de projection (performance seulement, en cas de pierres tombales).
 
 **Conseil s4 (conception, brief `council-s4-design.md`)** :
 - Q2, ouvertures du Store (unanime) : faire passer une session de lecture explicite à travers chaque phase sans interruption (découverte, capture avant le parcours, de l'état jusqu'au staging). Jamais tenue pendant une requête à l'hôte VFS, un parcours de dossier ou une ouverture exclusive du même processus ; un registre par processus refuse une ouverture exclusive pendant qu'une session partagée est vivante. Refusé : réutiliser une connexion ou un état entre deux sessions (la longueur et la date d'un fichier ne prouvent pas qu'il n'a pas changé).

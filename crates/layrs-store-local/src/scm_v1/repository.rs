@@ -395,7 +395,9 @@ impl NativeScmRepository {
         };
         self.hit(RepositoryFaultPoint::AfterAllCas)?;
 
-        let connection = store.begin_write_connection().map_err(schema_backend)?;
+        // Ends with a checked checkpoint below (durable before the caller
+        // acts on the commit).
+        let connection = store.begin_session_writer().map_err(schema_backend)?;
         self.hit(RepositoryFaultPoint::AfterWriterOpen)?;
         connection
             .execute_batch("BEGIN IMMEDIATE")
