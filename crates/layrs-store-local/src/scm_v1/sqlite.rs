@@ -490,8 +490,77 @@ pub(crate) fn open_writer_existing_no_mutation(
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     connection.busy_timeout(busy_timeout)?;
+    configure_session_writer(&connection)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     Ok(connection)
+}
+
+/// The session settings of a writer on an exclusively locked Store (council
+/// s3, D2). All are connection-local; none changes the database file.
+///
+/// - `synchronous=NORMAL`: a COMMIT appends to the WAL without flushing it.
+///   The session's durability point is `finish_writer`, a checked
+///   checkpoint that flushes the WAL, copies it into the database and
+///   flushes the database, before the session reports success. Nothing that
+///   depends on a commit happens between it and that checkpoint, so a power
+///   loss there equals one just before the commit, which recovery covers. A
+///   writer dropped without `finish_writer` is still checkpointed, with the
+///   same flushes, when SQLite closes it.
+/// - `locking_mode=EXCLUSIVE`, set before the first read: the WAL index
+///   lives in this connection's memory, so no `-shm` file is created and
+///   deleted per session. Readers open the database `immutable=1` and take
+///   no SQLite lock; the Store lock already excludes them.
+/// - A persistent WAL truncated to zero bytes (`journal_size_limit=0`) at
+///   every checkpoint and close: no `-wal` file is created and deleted per
+///   session. Readers already accept an empty WAL.
+///
+/// Measured on a fast-forward Room merge (three sessions): a commit costs
+/// 1.5–2.5 ms instead of 3.5–6 ms; the checkpoint is unchanged.
+fn configure_session_writer(connection: &Connection) -> Result<()> {
+    let mode: String =
+        connection.query_row("PRAGMA locking_mode = EXCLUSIVE", [], |row| row.get(0))?;
+    require_pragma("locking_mode", "exclusive", mode.to_ascii_lowercase())?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    connection.pragma_update(None, "journal_size_limit", 0)?;
+    let mut persist: std::os::raw::c_int = 1;
+    // SAFETY: the handle belongs to this open connection, "main" names its
+    // database, and SQLITE_FCNTL_PERSIST_WAL reads and writes one int
+    // through the pointer, which outlives the call.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            rusqlite::ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&raw mut persist).cast(),
+        )
+    };
+    if code != rusqlite::ffi::SQLITE_OK {
+        return Err(ScmSchemaError::InvalidMetadata(format!(
+            "SQLite refused a persistent WAL (code {code})"
+        )));
+    }
+    Ok(())
+}
+
+/// Ends a writer session: the checked durability point of every commit it
+/// made (`configure_session_writer`). A `TRUNCATE` checkpoint flushes the
+/// WAL, copies every frame into the database, flushes it and empties the
+/// WAL; it must report no busy reader and every frame copied, the close
+/// must succeed, and no frame may remain. Only then may the caller act on
+/// the commits (touch a checkout, acknowledge).
+pub(crate) fn finish_writer(connection: Connection, path: &Path) -> Result<()> {
+    let _span = crate::perf::span("sqlite.finish_writer");
+    let (busy, log, checkpointed): (i64, i64, i64) =
+        connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    connection.close().map_err(|(_, error)| error)?;
+    if busy != 0 || log != checkpointed || has_uncheckpointed_wal(path)? {
+        return Err(ScmSchemaError::UncheckpointedWal(sidecar_path(
+            path, "-wal",
+        )));
+    }
+    Ok(())
 }
 
 /// Opens an existing database read-only. Missing files and foreign/legacy

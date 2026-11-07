@@ -227,7 +227,9 @@ fn stale_independent_capture_installs_nothing_then_fresh_capture_preserves_both_
     // a cleanup pass or treating unindexed files as acceptable audit results.
     let store = a.open_store().unwrap();
     let database = a.store_root().join("metadata/layrs.sqlite3");
-    assert!(!database.with_extension("sqlite3-wal").exists());
+    // Writers keep an empty WAL file between sessions: no frame remains.
+    let wal = database.with_extension("sqlite3-wal");
+    assert!(!wal.exists() || std::fs::metadata(&wal).unwrap().len() == 0);
     let mut uri = url::Url::from_file_path(database).unwrap();
     uri.set_query(Some("mode=ro&immutable=1"));
     let connection = rusqlite::Connection::open_with_flags(

@@ -155,6 +155,66 @@ fn reopen_validates_identity_and_read_only_open_does_not_mutate() {
 }
 
 #[test]
+fn a_finished_writer_session_leaves_no_frame_and_no_shared_memory_file() {
+    let temporary = TempDirectory::new("finish-writer");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    for round in 0..2 {
+        let writer =
+            open_writer_existing_no_mutation(&path, Duration::from_millis(100), &test_store_id())
+                .unwrap();
+        let synchronous: u32 = writer
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1, "NORMAL: the checkpoint is the durability point");
+        writer
+            .execute(
+                "INSERT INTO applied_transactions VALUES (?1, ?2, '{}', 0)",
+                [format!("transaction:{round}"), format!("blake3:{}", "0".repeat(64))],
+            )
+            .unwrap();
+        // During the session the WAL holds the commit, and no -shm exists.
+        assert!(has_uncheckpointed_wal(&path).unwrap());
+        assert!(!sidecar_path(&path, "-shm").exists());
+        finish_writer(writer, &path).unwrap();
+        assert!(!has_uncheckpointed_wal(&path).unwrap());
+        assert!(!sidecar_path(&path, "-shm").exists());
+        // An immutable reader sees the commit without any WAL.
+        let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
+        let count: u32 = reader
+            .query_row("SELECT count(*) FROM applied_transactions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, round + 1);
+    }
+}
+
+#[test]
+fn a_writer_dropped_without_finishing_still_checkpoints_at_close() {
+    let temporary = TempDirectory::new("drop-writer");
+    let path = temporary.database("layrs.sqlite3");
+    drop(create_fresh(&path, Duration::from_millis(100), &test_store_id()).unwrap());
+    let writer =
+        open_writer_existing_no_mutation(&path, Duration::from_millis(100), &test_store_id())
+            .unwrap();
+    writer
+        .execute(
+            "INSERT INTO applied_transactions VALUES ('transaction:dropped', ?1, '{}', 0)",
+            [format!("blake3:{}", "0".repeat(64))],
+        )
+        .unwrap();
+    drop(writer);
+    assert!(!has_uncheckpointed_wal(&path).unwrap());
+    assert!(!sidecar_path(&path, "-shm").exists());
+    let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
+    let count: u32 = reader
+        .query_row("SELECT count(*) FROM applied_transactions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
 fn audit_open_is_immutable_and_does_not_require_a_valid_schema() {
     let temporary = TempDirectory::new("audit-open");
     let path = temporary.database("foreign.sqlite3");

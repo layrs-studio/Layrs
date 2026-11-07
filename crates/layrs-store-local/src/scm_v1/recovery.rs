@@ -698,6 +698,8 @@ pub struct NativeRecovery<'store> {
     connection: Connection,
     cas: NativeCasWriter<'store>,
     faults: Arc<dyn RecoveryFaultInjector>,
+    /// The metadata database, for `finish`'s check that no frame remains.
+    sqlite_path: std::path::PathBuf,
 }
 
 mod records;

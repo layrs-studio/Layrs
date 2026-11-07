@@ -332,7 +332,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
         }
     }
     let (checkout_root, identity, active, target, recovery_id, owner, backup_root) = {
-        let mut store = open_exclusive(store_root)
+        let _session = crate::perf::span("materialize.session_journal");
+        let store = open_exclusive(store_root)
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
@@ -435,13 +436,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
         let root = worktree.checkout_root().to_owned();
         let identity = worktree.filesystem_identity().to_owned();
         drop(reader);
-        drop(cas);
-        connection
-            .into_inner()
-            .map_err(error)?
-            .execute_batch("ROLLBACK")
-            .map_err(error)?;
-        let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
+        let connection = connection.into_inner().map_err(error)?;
+        connection.execute_batch("ROLLBACK").map_err(error)?;
+        // The journal is created on the same writer (council s3, D2).
+        let mut journal = NativeRecovery::with_writer(&store, connection, cas);
         // Another failed or pending checkout write must be recovered first.
         if journal
             .list_pending()
@@ -452,6 +450,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
             return Err(error("worktree_needs_repair: pending checkout journal"));
         }
         journal.create(&plan).map_err(error)?;
+        journal.finish().map_err(error)?;
         (
             root,
             identity,
@@ -566,13 +565,14 @@ pub fn apply_checkout_with_sources_bound_metadata(
     };
     drop(stage);
     let leases = {
+        let _session = crate::perf::span("materialize.session_claim");
         let mut store = open_exclusive(store_root)
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
         let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
         // The staged evidence and the claim commit together.
-        journal
+        let claim = journal
             .prepare_and_claim(
                 &recovery_id,
                 &RecoveryPreparation::new(serde_json::json!({"staged":true}), evidence)
@@ -581,8 +581,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 faults.lease_time_ms()?,
                 LEASE_MS,
             )
-            .map_err(error)?
-            .leases
+            .map_err(error)?;
+        // Durable before any checkout path moves.
+        journal.finish().map_err(error)?;
+        claim.leases
     };
     let mut lease = LeaseKeeper::new(
         store_root,

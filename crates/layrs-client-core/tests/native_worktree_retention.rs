@@ -222,7 +222,9 @@ fn historical_worktree_states_retain_empty_and_nonempty_closures_without_retaini
     let workspace = &fixture.workspace;
     let store = workspace.open_store().unwrap();
     let database = workspace.store_root().join("metadata/layrs.sqlite3");
-    assert!(!database.with_extension("sqlite3-wal").exists());
+    // Writers keep an empty WAL file between sessions: no frame remains.
+    let wal = database.with_extension("sqlite3-wal");
+    assert!(!wal.exists() || std::fs::metadata(&wal).unwrap().len() == 0);
     let mut uri = url::Url::from_file_path(database).unwrap();
     uri.set_query(Some("mode=ro&immutable=1"));
     let connection = rusqlite::Connection::open_with_flags(

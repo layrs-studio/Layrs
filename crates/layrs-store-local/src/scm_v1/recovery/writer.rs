@@ -15,7 +15,31 @@ impl<'store> NativeRecovery<'store> {
             connection,
             cas,
             faults,
+            sqlite_path: store.layout().sqlite_path().to_path_buf(),
         })
+    }
+
+    /// The journal on a writer the caller already opened on `store` (with
+    /// its CAS writer), outside any transaction: one connection per session.
+    pub(crate) fn with_writer(
+        store: &'store NativeStoreExclusive,
+        connection: Connection,
+        cas: NativeCasWriter<'store>,
+    ) -> Self {
+        Self {
+            connection,
+            cas,
+            faults: Arc::new(NoFaults),
+            sqlite_path: store.layout().sqlite_path().to_path_buf(),
+        }
+    }
+
+    /// Ends the session at its checked durability point
+    /// (`sqlite::finish_writer`): every transition it committed is durable
+    /// when this returns, before the caller acts on it.
+    pub fn finish(self) -> RecoveryResult<()> {
+        super::super::sqlite::finish_writer(self.connection, &self.sqlite_path)?;
+        Ok(())
     }
 
     pub fn create(&mut self, plan: &RecoveryPlan) -> RecoveryResult<MutationOutcome> {

@@ -427,6 +427,13 @@ impl NativeScmRepository {
                 guard.execute_batch("COMMIT").map_err(sql_backend)?;
                 drop(guard);
                 self.hit(RepositoryFaultPoint::AfterCommit)?;
+                // The commit is durable once this checked checkpoint
+                // returns, before the caller acts on it.
+                super::sqlite::finish_writer(
+                    connection.into_inner().map_err(|_| poisoned())?,
+                    store.layout().sqlite_path(),
+                )
+                .map_err(schema_backend)?;
                 Ok(outcome)
             }
             Err(error) => {
