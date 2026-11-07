@@ -252,8 +252,11 @@ impl NativeCas {
     }
 }
 
-/// One logical object of a pack by what it is, its form and identity: what
-/// a consolidated pack's ordinal is found by for every old ordinal.
+/// A logical object's identity: kind code and raw id.
+pub(crate) type Identity = (u8, [u8; 32]);
+
+/// One logical object of a pack by its form and identity: what a
+/// consolidated pack's ordinal is found by for every old ordinal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum LogicalKey {
     /// An explicit record: kind code and raw id.
@@ -264,17 +267,37 @@ enum LogicalKey {
     ManifestAlias([u8; 32]),
 }
 
+/// One registered pack written into a consolidated one.
+#[derive(Debug)]
+pub(crate) struct ConsolidatedPack {
+    pub(crate) seq: i64,
+    pub(crate) name: OsString,
+    /// Its registered metadata digest.
+    pub(crate) digest: [u8; 32],
+    /// The new ordinal of each of its logical ordinals.
+    pub(crate) ordinals: Vec<u64>,
+    /// The identity of each of its logical ordinals, from its own index.
+    pub(crate) identities: Vec<Identity>,
+}
+
 /// Registered packs written into one new pack, published durably but not
 /// registered yet (ADR 0028, section 6).
 #[derive(Debug)]
 pub(crate) struct Consolidation {
     /// The new pack: name, metadata digest, logical entries.
     pub(crate) pack: (OsString, [u8; 32], u64),
-    /// Each consolidated pack (its `pack_seq`) and the new ordinal of each
-    /// of its logical ordinals.
-    pub(crate) remap: Vec<(i64, Vec<u64>)>,
-    /// The consolidated packs' file names (retired once unregistered).
-    pub(crate) retired: Vec<OsString>,
+    pub(crate) packs: Vec<ConsolidatedPack>,
+    /// The identity of each logical ordinal of the new pack, from its own
+    /// index (independent of the remap).
+    pub(crate) identities: Vec<Identity>,
+}
+
+/// Why a consolidation stopped: the candidate (position in the catalog)
+/// whose record could not be copied, when one did.
+#[derive(Debug)]
+pub(crate) struct ConsolidationFailure {
+    pub(crate) pack: Option<usize>,
+    pub(crate) error: CasError,
 }
 
 /// Registered packs that trigger a consolidation (ADR 0028, section 6):
@@ -282,97 +305,249 @@ pub(crate) struct Consolidation {
 const CONSOLIDATE_AT_PACKS: usize = 6;
 
 impl RegisteredCatalog {
-    /// The packs to consolidate now, in registration order; empty when none
-    /// is due. Geometric, as git's: the smallest packs while each next one is
-    /// at most twice their total, so a large pack is rewritten only once the
-    /// small ones have grown to its size. Never with a damaged pack (its
-    /// records could not all be copied, and a lost pack is kept as it is).
-    pub(crate) fn consolidation_candidates(&self) -> Vec<usize> {
-        if self.packs.len() < CONSOLIDATE_AT_PACKS || !self.damaged.is_empty() {
+    /// Whether a consolidation is due once `added` more packs are
+    /// registered (decided without reopening anything).
+    pub(crate) fn consolidation_due(&self, added: usize) -> bool {
+        self.packs.len() + added >= CONSOLIDATE_AT_PACKS
+    }
+
+    /// The packs to consolidate now, in registration order, leaving out
+    /// `excluded` positions; empty when none is due. Geometric, as git's:
+    /// the smallest packs while each next one is at most twice their total,
+    /// so a large pack is rewritten only once the small ones have grown to
+    /// its size. Only sound packs: a damaged one keeps its row and bitmaps
+    /// as they are, and does not stop the others (council s6 r1).
+    pub(crate) fn consolidation_candidates(&self, excluded: &[usize]) -> Vec<usize> {
+        if self.packs.len() < CONSOLIDATE_AT_PACKS {
             return Vec::new();
         }
-        let mut by_size: Vec<(u64, usize)> = self
+        // (size, records, blocks, position), smallest first.
+        let mut by_size: Vec<(u64, u64, u64, usize)> = self
             .packs
             .iter()
             .enumerate()
-            .map(|(position, registered)| (registered.pack.index.file_len, position))
+            .filter(|(position, _)| !excluded.contains(position))
+            .map(|(position, registered)| {
+                let index = &registered.pack.index;
+                (
+                    index.file_len,
+                    (index.explicit_count() + index.files.len()) as u64,
+                    index.blocks.len() as u64,
+                    position,
+                )
+            })
             .collect();
         by_size.sort_unstable();
-        let mut total = 0_u64;
+        consolidation_group(&by_size)
+    }
+}
+
+/// The packs to consolidate among `by_size` (size, records, blocks,
+/// position; smallest first): from each size tier in turn (a lone small
+/// pack must not block the tiers above it, council s6 r1), the first group
+/// of at least two, each next pack at most twice the group's total, within
+/// half the reader's limits for one pack. Positions in increasing order.
+fn consolidation_group(by_size: &[(u64, u64, u64, usize)]) -> Vec<usize> {
+    for start in 0..by_size.len() {
         let mut chosen = Vec::new();
-        for (size, position) in by_size {
+        let (mut total, mut records, mut blocks) = (0_u64, 0_u64, 0_u64);
+        for &(size, pack_records, pack_blocks, position) in &by_size[start..] {
             if !chosen.is_empty() && size > total.saturating_mul(2) {
                 break;
             }
+            // Within half the reader's limits for one pack, so the new pack
+            // always loads.
+            if records + pack_records > pack2::MAX_PACK_ENTRIES / 2
+                || blocks + pack_blocks > pack2::MAX_PACK_BLOCKS / 2
+            {
+                break;
+            }
             total = total.saturating_add(size);
+            records += pack_records;
+            blocks += pack_blocks;
             chosen.push(position);
         }
-        if chosen.len() < 2 {
-            return Vec::new();
+        if chosen.len() >= 2 {
+            chosen.sort_unstable();
+            return chosen;
         }
-        chosen.sort_unstable();
-        chosen
+    }
+    Vec::new()
+}
+
+impl LoadedPack {
+    /// The identity and form of each logical ordinal of this pack.
+    fn logical_keys(&self) -> CasResult<Vec<(LogicalKey, Identity)>> {
+        let index = &self.index;
+        let chunk = pack2::kind_code(StoreObjectKind::ChunkRaw);
+        let manifest = pack2::kind_code(StoreObjectKind::FileManifest);
+        let mut keys = Vec::with_capacity(usize::try_from(index.logical_count()).unwrap_or(0));
+        for ordinal in 0..index.explicit_count() {
+            let (code, id, _) = index
+                .explicit(ordinal)
+                .ok_or_else(|| pack2::pack2_corruption(&self.path, "pack record vanished"))?;
+            keys.push((LogicalKey::Explicit(code, *id), (code, *id)));
+        }
+        for file in 0..index.files.len() {
+            let record = index.files[file];
+            keys.push((
+                LogicalKey::ChunkAlias(record.file_id),
+                (chunk, record.chunk_id),
+            ));
+            keys.push((
+                LogicalKey::ManifestAlias(record.file_id),
+                (manifest, self.alias_manifest_digest(file)?),
+            ));
+        }
+        Ok(keys)
     }
 }
 
 impl NativeCas {
     /// Format 6, under the exclusive Store lock: writes the registered packs
     /// at `candidates` (positions in `catalog`) into one new pack and
-    /// publishes it durably. Every record is read and verified against its
-    /// id on the way, so a damaged one fails the consolidation and nothing
-    /// changes; a record held by several of them is written once. The
+    /// publishes it durably. Each block of each candidate is read once (its
+    /// checksum checked), and every record copied is first verified against
+    /// its id; a record held by several candidates is written once. The
     /// caller registers the new pack, remaps every admission bitmap and
-    /// unregisters the old packs in one transaction.
+    /// unregisters the old packs in one transaction. A failure names the
+    /// candidate it came from, when one did, so it can be left out.
     pub(crate) fn consolidate_packs(
         &self,
         catalog: &RegisteredCatalog,
         candidates: &[usize],
-    ) -> CasResult<Consolidation> {
+    ) -> Result<Consolidation, ConsolidationFailure> {
         let _span = crate::perf::span("cas.consolidate");
-        let lease = StagingLease::shared(&self.staging_lease_path)?;
-        let staging = self.pinned_staging()?;
-        let mut open = open_pack(&staging, &self.staging_dir, lease)?;
-        let path = open.path.clone();
-        let write = |error| io_error("write CAS pack", &path, error);
+        let general = |error| ConsolidationFailure { pack: None, error };
+        let lease = StagingLease::shared(&self.staging_lease_path).map_err(general)?;
+        let staging = self.pinned_staging().map_err(general)?;
+        let mut open = open_pack(&staging, &self.staging_dir, lease).map_err(general)?;
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
-        let mut keys: Vec<(i64, Vec<LogicalKey>)> = Vec::with_capacity(candidates.len());
-        let mut retired = Vec::with_capacity(candidates.len());
+        let mut packs = Vec::with_capacity(candidates.len());
+        let mut keys_of = Vec::with_capacity(candidates.len());
         for &position in candidates {
+            let failed = |error| ConsolidationFailure {
+                pack: Some(position),
+                error,
+            };
             let registered = catalog.packs.get(position).ok_or_else(|| {
-                io_error(
+                failed(io_error(
                     "consolidate CAS packs",
                     &self.objects_dir,
                     io::Error::other("candidate pack is not registered"),
-                )
+                ))
             })?;
             let loaded = &registered.pack;
             let index = &loaded.index;
-            let mut pack_keys =
-                Vec::with_capacity(usize::try_from(index.logical_count()).unwrap_or(0));
-            for ordinal in 0..index.explicit_count() {
-                let (code, id, _) = index
+            let keys = loaded.logical_keys().map_err(failed)?;
+            for (block, records) in index.records_by_block().into_iter().enumerate() {
+                if records.is_empty() {
+                    continue;
+                }
+                let raw = catalog
+                    .block(self, position, block as u32)
+                    .map_err(failed)?;
+                for record in records {
+                    self.copy_record(
+                        &mut open,
+                        loaded,
+                        &raw,
+                        record,
+                        &mut explicit_written,
+                        &mut files_written,
+                    )
+                    .map_err(failed)?;
+                }
+            }
+            keys_of.push(keys);
+            packs.push((registered.seq, loaded.name.clone(), index.digest));
+        }
+        let pack = self.publish_pack2(open).map_err(general)?;
+        let new = self
+            .load_pack_from_disk(&std::cell::OnceCell::new(), &pack.0)
+            .map_err(general)?;
+        let index = &new.index;
+        let missing = || {
+            general(pack2::pack2_corruption(
+                &new.path,
+                "consolidated pack lacks a record",
+            ))
+        };
+        let identities = new
+            .logical_keys()
+            .map_err(general)?
+            .into_iter()
+            .map(|(_, identity)| identity)
+            .collect();
+        let packs = packs
+            .into_iter()
+            .zip(keys_of)
+            .map(|((seq, name, digest), keys)| {
+                let mut ordinals = Vec::with_capacity(keys.len());
+                let mut old_identities = Vec::with_capacity(keys.len());
+                for (key, identity) in keys {
+                    let ordinal = match key {
+                        LogicalKey::Explicit(code, id) => {
+                            index.find(code, &id).map(|ordinal| ordinal as u64)
+                        }
+                        LogicalKey::ChunkAlias(file_id) => index
+                            .find_file(&file_id)
+                            .map(|file| index.chunk_alias_ordinal(file)),
+                        LogicalKey::ManifestAlias(file_id) => index
+                            .find_file(&file_id)
+                            .map(|file| index.manifest_alias_ordinal(file)),
+                    }
+                    .ok_or_else(missing)?;
+                    ordinals.push(ordinal);
+                    old_identities.push(identity);
+                }
+                Ok(ConsolidatedPack {
+                    seq,
+                    name,
+                    digest,
+                    ordinals,
+                    identities: old_identities,
+                })
+            })
+            .collect::<Result<Vec<_>, ConsolidationFailure>>()?;
+        Ok(Consolidation {
+            pack,
+            packs,
+            identities,
+        })
+    }
+
+    /// Copies one record of `loaded` from its decompressed block `raw` into
+    /// `open`, verified against its id, unless an equal one was copied.
+    fn copy_record(
+        &self,
+        open: &mut OpenPack,
+        loaded: &LoadedPack,
+        raw: &[u8],
+        record: pack2::RecordRef,
+        explicit_written: &mut HashSet<(u8, [u8; 32])>,
+        files_written: &mut HashMap<[u8; 32], FileIdentity>,
+    ) -> CasResult<()> {
+        let index = &loaded.index;
+        let path = open.path.clone();
+        let write = |error| io_error("write CAS pack", &path, error);
+        match record {
+            pack2::RecordRef::Explicit(ordinal) => {
+                let (code, id, location) = index
                     .explicit(ordinal)
                     .ok_or_else(|| pack2::pack2_corruption(&loaded.path, "pack record vanished"))?;
                 let id = *id;
-                pack_keys.push(LogicalKey::Explicit(code, id));
-                if !explicit_written.insert((code, id)) {
-                    continue;
+                if explicit_written.contains(&(code, id)) {
+                    return Ok(());
                 }
                 let kind = pack2::kind_of_code(code)
                     .ok_or_else(|| pack2::pack2_corruption(&loaded.path, "unknown record kind"))?;
                 let object_id = pack2::object_id_of(kind, &id)?;
-                let object = catalog.read_placement(
-                    self,
-                    &object_id,
-                    Placement::Record {
-                        pack: position,
-                        ordinal,
-                    },
-                )?;
-                let bytes = encode_object(&object)?;
+                let body = pack2::record_body(raw, location, code, &loaded.path)?;
+                let object = validate_stored_bytes(&object_id, body)?;
                 open.builder
-                    .add_record(open.file.file_mut(), kind, id, &bytes, None)
+                    .add_record(open.file.file_mut(), kind, id, body, None)
                     .map_err(write)?;
                 if let CanonicalObject::FileManifest(manifest) = &object {
                     let file_raw = pack2::hex_digest(
@@ -386,11 +561,10 @@ impl NativeCas {
                     open.builder
                         .add_manifest_file(file_raw, id, manifest.byte_length());
                 }
+                explicit_written.insert((code, id));
             }
-            for file in 0..index.files.len() {
+            pack2::RecordRef::File(file) => {
                 let record = index.files[file];
-                pack_keys.push(LogicalKey::ChunkAlias(record.file_id));
-                pack_keys.push(LogicalKey::ManifestAlias(record.file_id));
                 let identity = FileIdentity {
                     file_id: record.file_id,
                     chunk_id: record.chunk_id,
@@ -398,7 +572,7 @@ impl NativeCas {
                     manifest_id: loaded.alias_manifest_digest(file)?,
                 };
                 match files_written.get(&record.file_id) {
-                    Some(written) if *written == identity => continue,
+                    Some(written) if *written == identity => return Ok(()),
                     Some(_) => {
                         return Err(pack2::pack2_corruption(
                             &loaded.path,
@@ -408,56 +582,15 @@ impl NativeCas {
                     None => {}
                 }
                 let (_, chunk_id) = loaded.alias_ids(file)?;
-                let chunk = StoreObjectId::ChunkRaw(chunk_id);
-                let object = catalog.read_placement(
-                    self,
-                    &chunk,
-                    Placement::Chunk {
-                        pack: position,
-                        file,
-                    },
-                )?;
-                let bytes = encode_object(&object)?;
+                let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
+                validate_stored_bytes(&StoreObjectId::ChunkRaw(chunk_id), body)?;
                 open.builder
-                    .add_file(open.file.file_mut(), identity, &bytes, None)
+                    .add_file(open.file.file_mut(), identity, body, None)
                     .map_err(write)?;
                 files_written.insert(record.file_id, identity);
             }
-            keys.push((registered.seq, pack_keys));
-            retired.push(loaded.name.clone());
         }
-        let pack = self.publish_pack2(open)?;
-        let new = self.load_pack_from_disk(&std::cell::OnceCell::new(), &pack.0)?;
-        let index = &new.index;
-        let missing = || pack2::pack2_corruption(&new.path, "consolidated pack lacks a record");
-        let remap = keys
-            .into_iter()
-            .map(|(seq, pack_keys)| {
-                let ordinals = pack_keys
-                    .into_iter()
-                    .map(|key| {
-                        match key {
-                            LogicalKey::Explicit(code, id) => {
-                                index.find(code, &id).map(|ordinal| ordinal as u64)
-                            }
-                            LogicalKey::ChunkAlias(file_id) => index
-                                .find_file(&file_id)
-                                .map(|file| index.chunk_alias_ordinal(file)),
-                            LogicalKey::ManifestAlias(file_id) => index
-                                .find_file(&file_id)
-                                .map(|file| index.manifest_alias_ordinal(file)),
-                        }
-                        .ok_or_else(missing)
-                    })
-                    .collect::<CasResult<Vec<u64>>>()?;
-                Ok((seq, ordinals))
-            })
-            .collect::<CasResult<Vec<_>>>()?;
-        Ok(Consolidation {
-            pack,
-            remap,
-            retired,
-        })
+        Ok(())
     }
 
     /// Forgets the process cache of packs that are no longer registered.
@@ -657,6 +790,15 @@ impl RegisteredCatalog {
         let mut damaged = Vec::new();
         let mut registered_rows = Vec::with_capacity(rows.len());
         let packs_directory = std::cell::OnceCell::new();
+        // The process cache keeps only this Store's registered packs: one a
+        // consolidation retired (here or in another process) is forgotten.
+        if let Ok(mut cache) = pack_cache().lock() {
+            let key = cas.compact_key();
+            let registered: HashSet<&str> = rows.iter().map(|row| row.1.as_str()).collect();
+            cache.retain(|(store, name), _| {
+                store != &key || name.to_str().is_some_and(|name| registered.contains(name))
+            });
+        }
         for (seq, name, digest, entries) in rows {
             let name = OsString::from(name);
             let checked = cas
@@ -2065,4 +2207,44 @@ fn open_pack(
         staging_dir,
         last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "collision")),
     ))
+}
+
+#[cfg(test)]
+mod consolidation_tests {
+    use super::consolidation_group;
+
+    fn packs(sizes: &[u64]) -> Vec<(u64, u64, u64, usize)> {
+        let mut packs: Vec<_> = sizes
+            .iter()
+            .enumerate()
+            .map(|(position, size)| (*size, 1, 1, position))
+            .collect();
+        packs.sort_unstable();
+        packs
+    }
+
+    #[test]
+    fn small_packs_merge_geometrically_and_a_lone_tiny_one_blocks_nothing() {
+        // The tiny ones; 44 is more than twice their 12: it waits.
+        assert_eq!(
+            consolidation_group(&packs(&[1220, 88, 44, 4, 4, 4, 44])),
+            vec![3, 4, 5]
+        );
+        // A lone 1 KiB pack below five of 100 KiB: those five merge.
+        assert_eq!(
+            consolidation_group(&packs(&[1, 100, 100, 100, 100, 100])),
+            vec![1, 2, 3, 4, 5]
+        );
+        // Sizes too far apart: nothing.
+        assert!(consolidation_group(&packs(&[1, 10, 100, 1000])).is_empty());
+    }
+
+    #[test]
+    fn a_group_stays_within_half_the_reader_limits() {
+        let half = crate::scm_v1::cas::pack2::MAX_PACK_ENTRIES / 2;
+        let packs = vec![(10, half - 1, 1, 0), (10, 2, 1, 1), (11, 1, 1, 2)];
+        // The first two would exceed the entries limit: the second and
+        // third form the group.
+        assert_eq!(consolidation_group(&packs), vec![1, 2]);
+    }
 }

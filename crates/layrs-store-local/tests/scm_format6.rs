@@ -1347,3 +1347,196 @@ fn small_packs_are_consolidated_and_every_admission_is_kept() {
     }
     assert_eq!(answers[0], answers[1]);
 }
+
+/// A malformed admission bitmap of another Space is corruption: a
+/// consolidation never rewrites it into a narrower answer (council s6 r1).
+#[test]
+fn a_malformed_bitmap_of_another_space_is_never_consolidated_away() {
+    let root = TestRoot::new("consolidation-malformed");
+    create(&root.0, "consolidation-malformed", "6");
+    let shared = file("shared.txt", b"the same bytes", Recipe::Fixed);
+    let mut files = vec![shared.clone()];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let (lane_b, batch) = Lane::begin("beta", &[]);
+    repository.apply_batch(&batch).unwrap();
+    let chunk = shared.chunks[0].clone();
+    repository
+        .apply_batch(
+            &WriteBatch::new(
+                TransactionId::new("transaction:beta-chunk").unwrap(),
+                vec![CanonicalObject::ChunkRaw(chunk.clone())],
+                vec![],
+                vec![SpaceObjectAdmission::new(
+                    lane_b.space.id().clone(),
+                    StoreObjectId::ChunkRaw(chunk.id().clone()),
+                )],
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(repository);
+    // B's bitmap loses its last byte (written directly, as damage would).
+    let (seq, bitmap): (i64, Vec<u8>) = sql(&root.0)
+        .query_row(
+            "SELECT pack_seq, bitmap FROM space_pack_admissions WHERE space_id=?1",
+            [lane_b.space.id().as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let damaged = if bitmap.len() > 1 {
+        bitmap[..bitmap.len() - 1].to_vec()
+    } else {
+        vec![bitmap[0], 0, 0]
+    };
+    sql(&root.0)
+        .execute(
+            "UPDATE space_pack_admissions SET bitmap=?1 WHERE space_id=?2 AND pack_seq=?3",
+            rusqlite::params![damaged, lane_b.space.id().as_str(), seq],
+        )
+        .unwrap();
+    let mut repository = NativeScmRepository::new(&root.0);
+    for step in 0..10 {
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        let batch = lane.capture(&files, carried);
+        repository.apply_batch(&batch).unwrap();
+    }
+    // B's damaged row is still there, unchanged, and still answers as
+    // corruption; A's files all read.
+    let still: Vec<u8> = sql(&root.0)
+        .query_row(
+            "SELECT bitmap FROM space_pack_admissions WHERE space_id=?1 AND pack_seq=?2",
+            rusqlite::params![lane_b.space.id().as_str(), seq],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, damaged);
+    assert!(
+        repository
+            .object_admitted_metadata(
+                &StoreObjectId::ChunkRaw(chunk.id().clone()),
+                lane_b.space.id()
+            )
+            .is_err()
+    );
+    drop(repository);
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false"))
+    );
+}
+
+/// Fails the `at`-th pack publication.
+struct NthPublication {
+    at: usize,
+    seen: AtomicU64,
+}
+impl CasFaultInjector for NthPublication {
+    fn check(&self, point: CasFaultPoint) -> Result<(), String> {
+        if point == CasFaultPoint::AfterPackPublication
+            && self.seen.fetch_add(1, Ordering::SeqCst) + 1 == self.at as u64
+        {
+            Err("consolidation test".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A consolidation stopped after publishing its pack, or after its
+/// registration commit, leaves a consistent Store: everything reads, and
+/// the next exclusive session removes the files nothing registers.
+#[test]
+fn a_stopped_consolidation_leaves_a_consistent_store() {
+    for stop in ["after publication", "after commit"] {
+        let root = TestRoot::new("consolidation-stop");
+        create(&root.0, "consolidation-stop", "6");
+        let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+        let (mut lane, batch) = Lane::begin("alpha", &files);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+        let next = |files: &mut Vec<File>, lane: &mut Lane| {
+            let step = files.len();
+            let added = file(
+                &format!("f{step}.txt"),
+                format!("content {step}").as_bytes(),
+                Recipe::Fixed,
+            );
+            let carried = file_objects(std::slice::from_ref(&added));
+            files.push(added);
+            lane.capture(files, carried)
+        };
+        for _ in 0..4 {
+            let batch = next(&mut files, &mut lane);
+            NativeScmRepository::new(&root.0)
+                .apply_batch(&batch)
+                .unwrap();
+        }
+        assert_eq!(registered_packs(&root.0).len(), 5);
+        // The sixth batch registers its pack, then consolidates and stops.
+        let batch = next(&mut files, &mut lane);
+        let mut faulty = match stop {
+            "after publication" => NativeScmRepository::with_cas_fault_injector(
+                &root.0,
+                Arc::new(NthPublication {
+                    at: 2,
+                    seen: AtomicU64::new(0),
+                }),
+            ),
+            _ => NativeScmRepository::with_fault_injector(
+                &root.0,
+                Arc::new(RepositoryFault(
+                    RepositoryFaultPoint::AfterConsolidationCommit,
+                )),
+            ),
+        };
+        // Best effort: the batch itself succeeded.
+        faulty.apply_batch(&batch).unwrap();
+        drop(faulty);
+        let registered = registered_packs(&root.0).len();
+        let on_disk = packs(&root.0).len();
+        match stop {
+            // The consolidated pack is published but never registered.
+            "after publication" => assert_eq!((registered, on_disk), (6, 7), "{stop}"),
+            // Registered, the retired files not yet removed.
+            _ => assert!(registered < 6 && on_disk > registered, "{stop}"),
+        }
+        let answers = reader_answers(&root.0, &files, lane.space.id());
+        assert!(
+            answers
+                .iter()
+                .all(|answer| !answer.contains("admitted=false")),
+            "{stop}: {answers:?}"
+        );
+        // The next session removes the unregistered files (and consolidates
+        // if still due).
+        let batch = next(&mut files, &mut lane);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+        assert!(registered_packs(&root.0).len() < 6, "{stop}");
+        assert_eq!(
+            packs(&root.0).len(),
+            registered_packs(&root.0).len(),
+            "{stop}"
+        );
+        let answers = reader_answers(&root.0, &files, lane.space.id());
+        assert!(
+            answers
+                .iter()
+                .all(|answer| !answer.contains("admitted=false"))
+        );
+        assert_fsck_clean(&root.0);
+    }
+}

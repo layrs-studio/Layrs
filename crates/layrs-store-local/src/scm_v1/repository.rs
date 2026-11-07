@@ -437,10 +437,27 @@ impl NativeScmRepository {
                 )
                 .map_err(schema_backend)?;
                 // Best effort, still under the exclusive lock: a failed
-                // consolidation changes nothing (ADR 0028, section 6).
+                // consolidation changes nothing (ADR 0028, section 6). Due
+                // is decided from this batch's catalog (no reopening).
+                let due = compact
+                    && cas
+                        .compact_catalog()
+                        .is_some_and(|catalog| catalog.consolidation_due(1));
                 drop(cas);
-                if compact && super::consolidation::consolidate_if_due(&store).is_err() {
-                    crate::perf::count("store.consolidation_failed", 1);
+                if due {
+                    let after_commit = || {
+                        self.hit(RepositoryFaultPoint::AfterConsolidationCommit)
+                            .map_err(|error| error.to_string())
+                    };
+                    if super::consolidation::consolidate_if_due(
+                        &store,
+                        Arc::clone(&self.cas_faults),
+                        &after_commit,
+                    )
+                    .is_err()
+                    {
+                        crate::perf::count("store.consolidation_failed", 1);
+                    }
                 }
                 Ok(outcome)
             }

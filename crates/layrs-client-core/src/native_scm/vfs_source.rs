@@ -235,9 +235,10 @@ impl VerifiedVfsSnapshot {
             .manifest_ids
             .get(id)
             .ok_or(NativeClientError::Missing("VFS manifest"))?;
+        // Read under the Store's shared lock, as every range is.
+        let _lock = shared_read_lock(&self.read_lock, cancel)?;
         let manifest = match self
-            .chunk_source(cancel)?
-            .read(&StoreObjectId::FileManifest(manifest_id.clone()))
+            .read_object(&StoreObjectId::FileManifest(manifest_id.clone()), cancel)
             .map_err(|error| NativeClientError::InvalidSnapshot(format!("VFS manifest: {error}")))?
         {
             layrs_store::scm::CanonicalObject::FileManifest(manifest) => manifest,
@@ -254,6 +255,34 @@ impl VerifiedVfsSnapshot {
             .map_err(|_| NativeClientError::InvalidState("VFS manifest cache poisoned"))?
             .insert(id.clone(), manifest.clone());
         Ok(manifest)
+    }
+
+    /// `id` through the cached CAS view; if that fails, through a view
+    /// reloaded now (once). A consolidation in another process may have
+    /// retired a pack the cached view's catalog still names; a reloaded
+    /// catalog no longer does, while real damage fails again (council s6 r1,
+    /// as git rescans its packs).
+    fn read_object(
+        &self,
+        id: &StoreObjectId,
+        cancel: &Cancellation,
+    ) -> Result<layrs_store::scm::CanonicalObject> {
+        match self.chunk_source(cancel)?.read(id) {
+            Ok(object) => Ok(object),
+            Err(_) => {
+                self.forget_chunk_source();
+                self.chunk_source(cancel)?
+                    .read(id)
+                    .map_err(|error| NativeClientError::InvalidSnapshot(error.to_string()))
+            }
+        }
+    }
+
+    /// Drops the cached CAS view: the next read reloads the catalog.
+    fn forget_chunk_source(&self) {
+        if let Ok(mut cached) = self.cas.lock() {
+            *cached = None;
+        }
     }
 
     /// The CAS view for hydration. Opening the Store (lock, SQLite, identity
@@ -426,10 +455,10 @@ impl SnapshotSource for VerifiedVfsSnapshot {
             let lock_span = layrs_store_local::perf::span("vfs.read_lock");
             let _lock = shared_read_lock(&self.read_lock, cancel)?;
             drop(lock_span);
-            let cas = {
+            {
                 let _span = layrs_store_local::perf::span("vfs.read_cas_bind");
-                self.chunk_source(cancel)?
-            };
+                self.chunk_source(cancel)?;
+            }
             let _chunks = layrs_store_local::perf::span("vfs.read_chunks");
             let mut copied = 0usize;
             // Chunks are ordered and contiguous: start at the one holding
@@ -458,8 +487,8 @@ impl SnapshotSource for VerifiedVfsSnapshot {
                 let chunk = match cached {
                     Some(chunk) => chunk,
                     None => {
-                        let chunk = match cas
-                            .read(&StoreObjectId::ChunkRaw(part.chunk_id().clone()))
+                        let chunk = match self
+                            .read_object(&StoreObjectId::ChunkRaw(part.chunk_id().clone()), cancel)
                             .map_err(|error| {
                                 NativeClientError::InvalidSnapshot(format!("VFS chunk: {error}"))
                             })? {

@@ -44,8 +44,8 @@ const BLOCK_HEADER_LEN: u64 = 1 + 4;
 const BLOCK_CHECKSUM_LEN: usize = 8;
 /// Explicit records plus file records of one pack (a batch holds at most
 /// 262,144 objects; this leaves room without trusting a footer blindly).
-const MAX_PACK_ENTRIES: u64 = 4_000_000;
-const MAX_PACK_BLOCKS: u64 = 4_000_000;
+pub(super) const MAX_PACK_ENTRIES: u64 = 4_000_000;
+pub(super) const MAX_PACK_BLOCKS: u64 = 4_000_000;
 const MAX_METADATA_BYTES: u64 = 512 * 1024 * 1024;
 /// Kind code of a file record (codes 1..=9 are `StoreObjectKind`s).
 pub(super) const FILE_KIND: u8 = 10;

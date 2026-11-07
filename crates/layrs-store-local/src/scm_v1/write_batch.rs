@@ -22,6 +22,9 @@ pub enum RepositoryFaultPoint {
     BeforeReceipt,
     AfterReceiptBeforeCommit,
     AfterCommit,
+    /// A pack consolidation after the batch registered its pack, before its
+    /// retired files are removed (ADR 0028, section 6).
+    AfterConsolidationCommit,
 }
 
 pub trait RepositoryFaultInjector: Send + Sync {
