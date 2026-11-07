@@ -157,8 +157,7 @@ impl NativeScmReader<'_> {
         let catalog = self.catalog()?;
         let mut lengths = std::collections::BTreeMap::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {
-            let entries = catalog.file_manifests(file).map_err(cas_read_error)?;
-            if let Some(length) = entries.iter().map(|entry| entry.file_length).min() {
+            if let Some(length) = catalog.file_length(file).map_err(cas_read_error)? {
                 lengths.insert(file.clone(), length);
             }
         }

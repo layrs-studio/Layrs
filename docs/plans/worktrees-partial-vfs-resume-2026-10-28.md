@@ -1,5 +1,33 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - performances et taille, « je veux tout » (Claude + conseil s2, 2026-11-07)
+
+Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides, toutes les commandes contre git).
+
+**Mesures à 10 000 fichiers, format 6, même machine**
+
+| | début de séance | maintenant | git |
+| --- | --- | --- | --- |
+| `status` | 84 ms | 60–62 ms | 50 ms |
+| `step` (1 fichier) | 207 ms | 162–167 ms | ~150 ms |
+| fusion en avance rapide | 580 ms | 255 ms | 74–89 ms |
+| 2e fusion | 576 ms | 247 ms | 72–75 ms |
+| fusion 3 voies | 990 ms | 431 ms | 316–362 ms |
+| Store après le scénario | 4 249 Kio | 3 027 Kio | 1 822 Kio |
+| création de Room | 3,1 s | 3,1 s | 2,2 s |
+
+**Commits**
+- `6dd82a5` : `status` dans une seule session du Store ; vue CAS et registre d'identités mis en cache par session ; identifiants de contenu stockés en ligne (71 octets, copie sans allocation) ; décodeurs de caches plus rapides ; `status` sans seconde lecture des dossiers (comme git).
+- `c8d01c9` : encodeur canonique direct des arbres ; validation des chemins sans allocation ; ouverture du Store 2,5 → 1,2 ms.
+- `cc12eda` : sentinelle de changements dans l'hôte VFS (`ReadDirectoryChangesW`, comme le fsmonitor de git) : une capture de Room inchangée 90 → 9 ms ; moins de sessions par fusion et par capture.
+- `c63a92f` : cache de projection v4 en deltas (1 650 → ~420 Kio après le scénario).
+- Non commité au moment de la revue : réemploi d'un objet stocké par comparaison d'octets ; taille d'un fichier sans construire ses manifestes ; enveloppe canonique directe des arbres (lecture d'arbres 95 → 34 ms sans cache, fusion 3 voies 591 → 431 ms).
+
+**Reste à faire**
+- Fusions : matérialisation d'une petite transition (~130 ms : 5 transactions, ~15 synchronisations de dossiers) ; double vérification du dossier dans `accept_merge`.
+- Taille : passage du format 6 par défaut (pack illisible, consolidation) ; alias ChunkId en préfixe ; FileId omis dans l'index de changements ; journaux VFS des Rooms supprimées ; arbres binaires.
+- Création de Room : écriture et conversion des petits fichiers (~2,4 s).
+
 ## Point courant - format 6 intégré, conseil r2-r3 (Claude + sous-agent Claude + conseil, 2026-11-06)
 
 Le format 6 (ADR 0028, phases 2-3) a été implémenté par un sous-agent sur `feature/store-format-6`, puis fusionné dans cette branche (`550edce`, `1a1733d`, `dfed343`). Il reste opt-in : `LAYRS_STORE_FORMAT=6`.

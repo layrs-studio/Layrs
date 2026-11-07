@@ -593,6 +593,25 @@ impl RegisteredCatalog {
         })
     }
 
+    /// The stored bytes of a pack placement (an explicit record or the chunk
+    /// a file record stands for), unverified; `None` for other placements.
+    fn stored_bytes(&self, cas: &NativeCas, placement: Placement) -> CasResult<Option<Vec<u8>>> {
+        match placement {
+            Placement::Record { pack, ordinal } => {
+                let Some((kind, _, location)) = self.packs[pack].pack.index.explicit(ordinal)
+                else {
+                    return Ok(None);
+                };
+                self.body(cas, pack, kind, location).map(Some)
+            }
+            Placement::Chunk { pack, file } => {
+                let location = self.packs[pack].pack.index.files[file].location;
+                self.body(cas, pack, FILE_KIND, location).map(Some)
+            }
+            Placement::Manifest { .. } | Placement::Loose => Ok(None),
+        }
+    }
+
     fn read_placement(
         &self,
         cas: &NativeCas,
@@ -709,12 +728,37 @@ impl RegisteredCatalog {
     /// Every registered manifest of `file_id`, sorted by id, with its file
     /// length: FileId sections, file records and loose manifests. Index
     /// answers only; no content is read.
+    /// The smallest length recorded for `file_id` among its manifests (what
+    /// `file_manifests` lists), without building each manifest's id.
+    pub(crate) fn file_length(&self, file_id: &FileId) -> CasResult<Option<u64>> {
+        let raw = file_id.digest_bytes();
+        let mut length: Option<u64> = None;
+        let mut keep = |value: u64| {
+            length = Some(length.map_or(value, |current: u64| current.min(value)));
+        };
+        for registered in &self.packs {
+            let loaded = &registered.pack;
+            for entry in loaded.index.fileid_manifests(&raw) {
+                loaded
+                    .index
+                    .manifest_ordinal(entry.manifest)
+                    .ok_or_else(|| {
+                        pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
+                    })?;
+                keep(entry.byte_length);
+            }
+            if let Some(file) = loaded.index.find_file(&raw) {
+                keep(u64::from(loaded.index.files[file].location.length));
+            }
+        }
+        for (_, file_length) in self.loose_by_file.get(&raw).into_iter().flatten() {
+            keep(*file_length);
+        }
+        self.complete(length)
+    }
+
     pub(crate) fn file_manifests(&self, file_id: &FileId) -> CasResult<Vec<FileManifestEntry>> {
-        let raw = pack2::hex_digest(file_id.as_str().strip_prefix("blake3:").unwrap_or_default())
-            .ok_or_else(|| CasError::InvalidObjectId {
-            kind: StoreObjectKind::FileManifest,
-            id: file_id.to_string(),
-        })?;
+        let raw = file_id.digest_bytes();
         let mut found: BTreeMap<FileManifestId, FileManifestEntry> = BTreeMap::new();
         let parse = |path: &Path, digest: &[u8; 32]| {
             FileManifestId::parse(pack2::digest_text(digest))
@@ -1180,6 +1224,19 @@ impl NativeCas {
         let bytes_len = bytes.len() as u64;
         let mut first_error = None;
         for placement in catalog.placements(&object_id)? {
+            // A copy stored byte for byte as this object's canonical encoding
+            // (which hashes to its id) is that object: no decoding needed.
+            if let Ok(Some(stored)) = catalog.stored_bytes(self, placement) {
+                if stored == bytes {
+                    crate::perf::count("cas.compact_reuse", 1);
+                    return Ok(Slot::Done(InstallOutcome {
+                        path: self.object_path(&object_id)?,
+                        object_id,
+                        existed: true,
+                        bytes_len,
+                    }));
+                }
+            }
             match catalog.read_placement(self, &object_id, placement) {
                 Ok(existing) if encode_object(&existing)? == bytes => {
                     crate::perf::count("cas.compact_reuse", 1);

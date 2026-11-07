@@ -543,27 +543,46 @@ pub(crate) fn open_audit_read_only(path: &Path, busy_timeout: Duration) -> Resul
     Ok(connection)
 }
 
-fn verify_persistent_wal(path: &Path) -> Result<()> {
-    // The header's journal-mode bytes only change with the file: checked
-    // once per file version (path, length, modification time) per process.
-    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
-    static VERIFIED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<Key>>> =
-        std::sync::OnceLock::new();
-    let key = fs::metadata(path)
+/// The version (length, modification time) of each database file a check
+/// last passed for, one entry per path: a new version replaces the old one,
+/// so a long-lived process keeps one entry per Store, not one per commit.
+type FileVersions = std::sync::Mutex<
+    std::collections::HashMap<std::path::PathBuf, (u64, Option<std::time::SystemTime>)>,
+>;
+
+fn current_version(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    fs::metadata(path)
         .ok()
-        .map(|metadata| (path.to_path_buf(), metadata.len(), metadata.modified().ok()));
-    let verified = VERIFIED.get_or_init(Default::default);
-    if key
-        .as_ref()
-        .is_some_and(|key| verified.lock().is_ok_and(|set| set.contains(key)))
+        .map(|metadata| (metadata.len(), metadata.modified().ok()))
+}
+
+/// Runs `check` unless it last passed for this very version of `path`.
+fn once_per_version(
+    versions: &FileVersions,
+    path: &Path,
+    check: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let version = current_version(path);
+    if version.is_some()
+        && versions
+            .lock()
+            .is_ok_and(|map| map.get(path) == version.as_ref())
     {
         return Ok(());
     }
-    verify_persistent_wal_header(path)?;
-    if let (Some(key), Ok(mut set)) = (key, verified.lock()) {
-        set.insert(key);
+    check()?;
+    if let (Some(version), Ok(mut map)) = (version, versions.lock()) {
+        map.insert(path.to_path_buf(), version);
     }
     Ok(())
+}
+
+fn verify_persistent_wal(path: &Path) -> Result<()> {
+    // The header's journal-mode bytes only change with the file.
+    static VERIFIED: std::sync::OnceLock<FileVersions> = std::sync::OnceLock::new();
+    once_per_version(VERIFIED.get_or_init(Default::default), path, || {
+        verify_persistent_wal_header(path)
+    })
 }
 
 fn verify_persistent_wal_header(path: &Path) -> Result<()> {
@@ -784,26 +803,10 @@ fn validate_writer_pragmas(connection: &Connection, busy_timeout: Duration) -> R
 /// write): the schema only changes through a write, which moves both. A
 /// read-only opening of an unchanged file needs no new fingerprint.
 fn validate_schema_once(connection: &Connection, path: &Path) -> Result<()> {
-    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
-    static VALIDATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<Key>>> =
-        std::sync::OnceLock::new();
-    let key = fs::metadata(path)
-        .ok()
-        .map(|metadata| (path.to_path_buf(), metadata.len(), metadata.modified().ok()));
-    let validated = VALIDATED.get_or_init(Default::default);
-    if key
-        .as_ref()
-        .is_some_and(|key| validated.lock().is_ok_and(|set| set.contains(key)))
-    {
-        return Ok(());
-    }
-    validate_schema(connection, path)?;
-    if let Some(key) = key {
-        if let Ok(mut set) = validated.lock() {
-            set.insert(key);
-        }
-    }
-    Ok(())
+    static VALIDATED: std::sync::OnceLock<FileVersions> = std::sync::OnceLock::new();
+    once_per_version(VALIDATED.get_or_init(Default::default), path, || {
+        validate_schema(connection, path)
+    })
 }
 
 fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {

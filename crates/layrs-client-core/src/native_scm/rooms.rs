@@ -288,6 +288,20 @@ impl NativeWorkspace {
         Ok(())
     }
 
+    /// Removes the VFS journal of a retired virtual Room's Worktree (its
+    /// records, lease and control staging), once its host stopped. Best
+    /// effort: a leftover journal only takes space.
+    pub fn forget_vfs_journal(&self, id: &str) -> Result<()> {
+        let id = layrs_core::scm::WorktreeId::parse(id.to_owned())?;
+        let directory = self
+            .store_root()
+            .join("metadata")
+            .join("vfs-v1")
+            .join(blake3::hash(id.as_str().as_bytes()).to_hex().as_str());
+        let _ = std::fs::remove_dir_all(directory);
+        Ok(())
+    }
+
     pub fn forget_room(&self, name: &str) -> Result<()> {
         validate_room_name(name)?;
         match std::fs::remove_file(self.rooms_registry().join(format!("{name}.json"))) {

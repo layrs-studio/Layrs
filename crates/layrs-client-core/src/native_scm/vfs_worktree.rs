@@ -791,25 +791,36 @@ impl VfsWorktree {
         }
         let original_operation = original.active_operation_id;
         let original_step = original.accepted_step_id;
-        if !verify_all {
-            if let Some(quiet) = self.quiet.as_ref().filter(|quiet| {
-                quiet.operation == original_operation
-                    && quiet.step == original_step
-                    && quiet.sentinel.quiet()
-            }) {
+        // Armed first: before the previous sentinel is settled (so the two
+        // leave no gap) and before the folder is listed. Without one (it
+        // could not be armed), every capture lists.
+        let mut sentinel = self.session.arm_change_sentinel().ok();
+        if let Some(previous) = self.quiet.take() {
+            let same = !verify_all
+                && sentinel.is_some()
+                && previous.operation == original_operation
+                && previous.step == original_step;
+            // Settled in every case (it ends there); quiet only counts when
+            // the rest matches.
+            if previous.sentinel.settle() && same {
+                // The listing is skipped, never the provider checks.
+                self.session
+                    .verify_root()
+                    .map_err(|error| provider_stage("verify quiet capture root", error))?;
                 layrs_store_local::perf::count("vfs.capture_quiet", 1);
-                return Ok(VfsCaptureReport {
-                    step_id: quiet.step.clone(),
-                    active_operation_id: quiet.operation.clone(),
+                let report = VfsCaptureReport {
+                    step_id: previous.step.clone(),
+                    active_operation_id: previous.operation.clone(),
                     changed: false,
-                    counts: quiet.counts,
+                    counts: previous.counts,
+                };
+                self.quiet = sentinel.take().map(|sentinel| QuietCapture {
+                    sentinel,
+                    ..previous
                 });
+                return Ok(report);
             }
         }
-        // Armed before the folder is listed: any change reported from here on
-        // wakes it. Without one (it could not be armed), every capture lists.
-        self.quiet = None;
-        let mut sentinel = self.session.arm_change_sentinel().ok();
         // ADR 0025: the change index lets the checkpoint admit, from the
         // directory listing alone, each in-sync placeholder created for its
         // path and each file whose proven content kept the same stat key.

@@ -416,11 +416,19 @@ fn host_request(
         .ticket
         .clone()
         .and_then(|ticket| serde_json::from_value(ticket).ok());
-    // The recorded host answers directly. Only when that fails is it probed:
-    // a live, connected host's error is the answer; otherwise it is
-    // replaced below (a request it may have executed is safe to repeat:
-    // captures are idempotent, a stop of a gone host is moot).
-    if let Some(recorded) = &ticket {
+    // The recorded host answers an idempotent request directly. Only when
+    // that fails is it probed: a live, connected host's error is the answer;
+    // otherwise it is replaced below (a request it may have executed is safe
+    // to repeat: a status or capture of the same folder, a stop of a gone
+    // host). Any other request is sent only after the probe.
+    let idempotent = matches!(
+        command,
+        VfsHostCommand::Status {}
+            | VfsHostCommand::Capture { .. }
+            | VfsHostCommand::CaptureVerifying {}
+            | VfsHostCommand::Stop {}
+    );
+    if let Some(recorded) = ticket.as_ref().filter(|_| idempotent) {
         match execute_vfs_control(VfsControlRequest {
             ticket: recorded.clone(),
             command: command.clone(),
@@ -724,6 +732,9 @@ fn drop_room(
     if let Some(worktree) = &room.worktree_id {
         project.retire_worktree(worktree).map_err(error)?;
         project.forget_change_index(worktree).map_err(error)?;
+        if matches!(room.kind, RoomKind::Virtual) {
+            project.forget_vfs_journal(worktree).map_err(error)?;
+        }
     }
     project.forget_room(&room.name).map_err(error)?;
     Ok(Rendered {

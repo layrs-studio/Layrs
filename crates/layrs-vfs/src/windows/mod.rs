@@ -494,6 +494,12 @@ impl Session {
         Ok(written)
     }
 
+    /// The provider registration checks every checkpoint starts with (root
+    /// identity, registration and catalog), without listing anything.
+    pub fn verify_root(&self) -> Result<()> {
+        self.verify_registration()
+    }
+
     fn verify_registration(&self) -> Result<()> {
         if let Some(proof) = self.control.proof() {
             if proof.registration().encode() != self.registration.encode()

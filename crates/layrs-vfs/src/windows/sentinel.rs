@@ -5,19 +5,33 @@
 //! While it is still pending, no such change was reported since it was armed:
 //! what git's fsmonitor relies on. Any completion, for any reason, only means
 //! "look again".
+//!
+//! The answer is read by `settle`, never by peeking at the pending request:
+//! it cancels the request and takes its completion packet from the
+//! sentinel's own completion port. NTFS completes a pending request while it
+//! reports the change, so a change reported before `settle` leaves it
+//! completed with data (or an overflow); only a request that saw nothing ends
+//! cancelled. Bound to a completion port, the request belongs to no thread (a
+//! thread exiting does not cancel it), so that cancellation can only be
+//! `settle`'s own.
+//!
+//! Limit, as for git's fsmonitor: NTFS reports a file's new size and write
+//! time when the writer's handle is closed (or the change flushed), so a
+//! writer still holding a modified file open is seen at its close; the
+//! directory listing a full capture reads has the same lag.
 
 use super::Session;
 use crate::{Error, Result};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::{
-    Foundation::{ERROR_IO_INCOMPLETE, GetLastError, INVALID_HANDLE_VALUE},
+    Foundation::{ERROR_OPERATION_ABORTED, GetLastError, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY,
         FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
         FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
     },
-    System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+    System::IO::{CancelIoEx, CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED},
 };
 
 const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
@@ -29,14 +43,20 @@ const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
 
 pub struct ChangeSentinel {
     directory: OwnedHandle,
+    /// This sentinel's own completion port: it receives exactly the one
+    /// request's completion.
+    port: OwnedHandle,
     // Boxed: the kernel writes both while the request is pending; they are
     // freed only after it completed or was cancelled (`Drop`).
     overlapped: Box<OVERLAPPED>,
     buffer: Box<[u32; 1024]>,
+    /// The request already finished (`settle`).
+    settled: bool,
 }
 
-// The request is only observed through `quiet` and cancelled in `Drop`; the
-// kernel's completion is not tied to the thread that issued it.
+// The request is only read by `settle` and cancelled in `Drop`, both of which
+// take its completion before the buffers can be freed; it is bound to no
+// thread.
 unsafe impl Send for ChangeSentinel {}
 unsafe impl Sync for ChangeSentinel {}
 
@@ -70,8 +90,17 @@ impl ChangeSentinel {
         }
         // SAFETY: `handle` is the one successful CreateFileW result above.
         let directory = unsafe { OwnedHandle::from_raw_handle(handle) };
-        // SAFETY: an all-zero OVERLAPPED (no event: completion signals the
-        // handle, which serves no other request) is valid.
+        // SAFETY: binds the new handle to a new port of its own.
+        let port = unsafe {
+            CreateIoCompletionPort(directory.as_raw_handle(), std::ptr::null_mut(), 0, 1)
+        };
+        if port.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: `port` is the one successful CreateIoCompletionPort result.
+        let port = unsafe { OwnedHandle::from_raw_handle(port) };
+        // SAFETY: an all-zero OVERLAPPED (completion goes to the port) is
+        // valid.
         let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { std::mem::zeroed() });
         let mut buffer = Box::new([0_u32; 1024]);
         // SAFETY: the buffer (DWORD-aligned) and the OVERLAPPED are boxed and
@@ -93,37 +122,51 @@ impl ChangeSentinel {
         }
         Ok(Self {
             directory,
+            port,
             overlapped,
             buffer,
+            settled: false,
         })
     }
 
-    /// No change has been reported below the root since this was armed.
-    pub fn quiet(&self) -> bool {
+    /// Cancels the request (if still pending) and takes its completion:
+    /// whether it ended cancelled, having seen nothing.
+    fn finish(&mut self) -> bool {
         let mut bytes = 0;
-        // SAFETY: non-blocking query of this handle's one pending request.
-        let done = unsafe {
-            GetOverlappedResult(
-                self.directory.as_raw_handle(),
-                &*self.overlapped,
+        let mut key = 0;
+        let mut completed: *mut OVERLAPPED = std::ptr::null_mut();
+        // SAFETY: cancels this handle's one request, then blocks until the
+        // port hands over its completion (exactly one, this request's).
+        let (done, error) = unsafe {
+            CancelIoEx(self.directory.as_raw_handle(), &*self.overlapped);
+            let done = GetQueuedCompletionStatus(
+                self.port.as_raw_handle(),
                 &mut bytes,
-                0,
-            )
+                &mut key,
+                &mut completed,
+                u32::MAX,
+            );
+            (done, GetLastError())
         };
-        // SAFETY: reads the calling thread's last error.
-        done == 0 && unsafe { GetLastError() } == ERROR_IO_INCOMPLETE
+        self.settled = true;
+        let ours = std::ptr::eq(completed, &*self.overlapped);
+        ours && done == 0 && error == ERROR_OPERATION_ABORTED
+    }
+
+    /// Ends the sentinel: whether no change was reported below the root
+    /// between its arming and this call. Arm the next sentinel first, so that
+    /// together they leave no gap.
+    pub fn settle(mut self) -> bool {
+        self.finish()
     }
 }
 
 impl Drop for ChangeSentinel {
     fn drop(&mut self) {
-        let handle = self.directory.as_raw_handle();
-        let mut bytes = 0;
-        // SAFETY: cancels then waits for this handle's request, so the kernel
-        // no longer writes the buffer or the OVERLAPPED when they are freed.
-        unsafe {
-            CancelIoEx(handle, &*self.overlapped);
-            GetOverlappedResult(handle, &*self.overlapped, &mut bytes, 1);
+        if !self.settled {
+            // The kernel no longer writes the buffer or the OVERLAPPED once
+            // the completion was taken.
+            self.finish();
         }
         let _ = &self.buffer;
     }
@@ -134,7 +177,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_sentinel_stays_quiet_until_something_below_changes() {
+    fn a_sentinel_settles_quiet_only_when_nothing_below_changed() {
         let root = std::env::temp_dir().join(format!(
             "layrs-sentinel-{}-{}",
             std::process::id(),
@@ -145,24 +188,37 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join("a/b")).unwrap();
         std::fs::write(root.join("a/b/f.txt"), b"one").unwrap();
+        // Nothing, then a read only: quiet.
+        assert!(ChangeSentinel::arm(&root).unwrap().settle());
         let sentinel = ChangeSentinel::arm(&root).unwrap();
-        assert!(sentinel.quiet());
-        // Reading changes nothing that is watched.
         assert_eq!(std::fs::read(root.join("a/b/f.txt")).unwrap(), b"one");
-        assert!(sentinel.quiet());
-        std::fs::write(root.join("a/b/f.txt"), b"two").unwrap();
-        assert!(!sentinel.quiet());
-        drop(sentinel);
+        assert!(sentinel.settle());
         for change in [
+            |root: &std::path::Path| std::fs::write(root.join("a/b/f.txt"), b"two").unwrap(),
             |root: &std::path::Path| std::fs::write(root.join("a/new.txt"), b"x").unwrap(),
             |root: &std::path::Path| std::fs::remove_file(root.join("a/b/f.txt")).unwrap(),
             |root: &std::path::Path| std::fs::create_dir(root.join("a/c")).unwrap(),
         ] {
             let sentinel = ChangeSentinel::arm(&root).unwrap();
-            assert!(sentinel.quiet());
             change(&root);
-            assert!(!sentinel.quiet());
+            assert!(!sentinel.settle());
         }
+        // A sentinel armed by a thread that exited still watches.
+        let armed = std::thread::spawn({
+            let root = root.clone();
+            move || ChangeSentinel::arm(&root).unwrap()
+        })
+        .join()
+        .unwrap();
+        std::fs::write(root.join("a/late.txt"), b"x").unwrap();
+        assert!(!armed.settle());
+        let armed = std::thread::spawn({
+            let root = root.clone();
+            move || ChangeSentinel::arm(&root).unwrap()
+        })
+        .join()
+        .unwrap();
+        assert!(armed.settle());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

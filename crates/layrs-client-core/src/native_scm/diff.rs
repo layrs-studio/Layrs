@@ -47,8 +47,9 @@ impl NativeWorkspace {
     }
 
     /// `status_report` continuing a shared session in which `state` was
-    /// read (`open_session`). The session is held until the folder is
-    /// compared: no writer can move the base meanwhile.
+    /// read (`open_session`). The session is released before the folder is
+    /// read (hashing a changed file can take long, and writers would wait);
+    /// the base is checked again afterwards in a new one.
     pub fn status_report_in(
         &self,
         store: layrs_store_local::scm_v1::NativeStoreOpen,
@@ -68,10 +69,9 @@ impl NativeWorkspace {
             .capture_base_with(&store, self.worktree_id())?;
         let before =
             self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
-        drop(span);
-        let changes =
-            self.working_changes_from(trust_index, false, base, &state, before, Some(&store))?;
         drop(store);
+        drop(span);
+        let changes = self.working_changes_from(trust_index, false, base, &state, before)?;
         Ok(StatusReport {
             needs_repair: false,
             dirty: Some(changes.is_none_or(|changes| !changes.is_empty())),
@@ -97,7 +97,7 @@ impl NativeWorkspace {
             (base, state, before)
         };
         drop(span);
-        self.working_changes_from(trust_index, details, base, &state, before, None)
+        self.working_changes_from(trust_index, details, base, &state, before)
     }
 
     fn working_changes_from(
@@ -107,7 +107,6 @@ impl NativeWorkspace {
         base: super::CaptureBase,
         state: &super::WorkspaceState,
         before: Vec<CheckoutProjectionEntry>,
-        session: Option<&layrs_store_local::scm_v1::NativeStoreOpen>,
     ) -> Result<Option<Vec<NativeFileChange>>> {
         let checkout = CheckoutReader::open(
             state.worktree.checkout_root(),
@@ -169,11 +168,7 @@ impl NativeWorkspace {
             }
         };
         let span = layrs_store_local::perf::span("status.recheck_compare");
-        let current = match session {
-            Some(store) => self.client().capture_base_with(store, self.worktree_id())?,
-            None => self.client().capture_base(self.worktree_id())?,
-        };
-        if current != base {
+        if self.client().capture_base(self.worktree_id())? != base {
             return Err(NativeClientError::StaleCapture);
         }
         if before == after {

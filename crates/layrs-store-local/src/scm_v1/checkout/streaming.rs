@@ -96,8 +96,10 @@ impl CheckoutReader {
     /// A read-only observation of the folder for `status`, as git status
     /// makes it: one pass, each hashed file still one stable read, but the
     /// directories are not listed a second time to prove the pass atomic.
-    /// Its result is only reported, never recorded: never use it for a
-    /// capture, or before deleting or replacing anything.
+    /// Only per-file facts may be recorded from it (a file's own stable read
+    /// against its own listing, as `status` refreshes racy index entries);
+    /// never a result about the whole folder: never use it for a capture, or
+    /// before deleting or replacing anything.
     pub fn observe_streaming_trusting(
         &self,
         limits: CheckoutLimits,

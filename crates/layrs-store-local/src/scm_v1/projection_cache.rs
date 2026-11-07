@@ -459,8 +459,9 @@ fn listed(directory: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
 /// Projections kept: those of the Trees most recently written (each Worktree
 /// and Room base, recent Steps), most of them small deltas.
 const KEPT: usize = 8;
-/// Complete projections kept, each about 40 bytes per path.
-const KEPT_COMPLETE: usize = 2;
+/// Complete projections kept, each about 40 bytes per path: the bases of a
+/// project and two Rooms on other Steps keep theirs.
+const KEPT_COMPLETE: usize = 3;
 
 /// Keeps the `KEPT` most recently written projections (`kept`, just
 /// written, always) and the complete projections they apply to, with at most
@@ -739,6 +740,50 @@ mod tests {
         assert_eq!(load(&root, &tree(1)), None);
         assert!(!file(&root, &tree(1)).exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn applying_the_changes_between_two_projections_gives_the_second() {
+        // A small deterministic generator: many random pairs, no sampling.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let pick = |seed: u64, count: u64| -> Vec<CheckoutProjectionEntry> {
+            let mut map = std::collections::BTreeMap::new();
+            let mut value = seed;
+            for _ in 0..count {
+                value = value
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let path = format!("d{}/f{}", value % 5, (value >> 8) % 40);
+                let content = match (value >> 20) % 3 {
+                    0 => CheckoutProjectionContent::Symlink {
+                        target: format!("t{}", (value >> 24) % 3),
+                    },
+                    kind => CheckoutProjectionContent::File {
+                        file_id: FileId::from_bytes(&((value >> 26) % 4).to_le_bytes()),
+                        byte_length: (value >> 30) % 4,
+                        executable: kind == 2,
+                    },
+                };
+                map.insert(path, content);
+            }
+            map.into_iter()
+                .map(|(path, content)| CheckoutProjectionEntry { path, content })
+                .collect()
+        };
+        for _ in 0..500 {
+            let (a, b) = (next(), next());
+            let base = pick(a, a % 60);
+            let target = pick(b, b % 60);
+            let changes = changes_owned(&changes_between(&base, &target));
+            assert_eq!(apply(base.clone(), changes), Some(target.clone()));
+            assert!(changes_between(&target, &target).is_empty());
+        }
     }
 
     #[test]
