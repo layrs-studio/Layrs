@@ -1259,3 +1259,91 @@ fn format_6_writers_refuse_unregistered_single_object_publication() {
     drop(exclusive);
     assert!(packs(&root.0).is_empty());
 }
+
+/// ADR 0028, section 6: past six registered packs, the smallest are written
+/// into one; every object stays readable and every Space admits exactly
+/// what it admitted (compared with format 5 on the same batches, and for a
+/// Space admitting only a shared chunk); retired files are removed.
+#[test]
+fn small_packs_are_consolidated_and_every_admission_is_kept() {
+    let shared = file("shared.txt", b"the same bytes", Recipe::Fixed);
+    let mut answers = Vec::new();
+    for format in ["5", "6"] {
+        let root = TestRoot::new(&format!("consolidation-{format}"));
+        create(&root.0, "consolidation", format);
+        let mut files = vec![shared.clone(), file("alt", b"x", Recipe::Single)];
+        let (mut lane, batch) = Lane::begin("alpha", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        // Space B admits only the shared chunk (in A's first pack).
+        let (lane_b, batch) = Lane::begin("beta", &[]);
+        repository.apply_batch(&batch).unwrap();
+        let chunk = shared.chunks[0].clone();
+        repository
+            .apply_batch(
+                &WriteBatch::new(
+                    TransactionId::new("transaction:beta-chunk").unwrap(),
+                    vec![CanonicalObject::ChunkRaw(chunk.clone())],
+                    vec![],
+                    vec![SpaceObjectAdmission::new(
+                        lane_b.space.id().clone(),
+                        StoreObjectId::ChunkRaw(chunk.id().clone()),
+                    )],
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut most = 0;
+        for step in 0..12 {
+            let added = file(
+                &format!("f{step}.txt"),
+                format!("content {step}").as_bytes(),
+                Recipe::Fixed,
+            );
+            let carried = file_objects(std::slice::from_ref(&added));
+            files.push(added);
+            let batch = lane.capture(&files, carried);
+            repository.apply_batch(&batch).unwrap();
+            if format == "6" {
+                most = most.max(registered_packs(&root.0).len());
+            }
+        }
+        let chunk_object = StoreObjectId::ChunkRaw(chunk.id().clone());
+        let manifest_object = StoreObjectId::FileManifest(shared.manifest.id().clone());
+        assert!(
+            repository
+                .object_admitted_metadata(&chunk_object, lane_b.space.id())
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .object_admitted_metadata(&manifest_object, lane_b.space.id())
+                .unwrap()
+        );
+        drop(repository);
+        if format == "6" {
+            assert!(most <= 6, "consolidated along the way: {most} packs");
+            assert!(registered_packs(&root.0).len() < 6);
+            // Retired files are removed: on disk exactly what is registered.
+            assert_eq!(packs(&root.0).len(), registered_packs(&root.0).len());
+            assert_eq!(
+                count(
+                    &root.0,
+                    "SELECT count(*) FROM space_pack_admissions \
+                     WHERE pack_seq NOT IN (SELECT pack_seq FROM cas_packs)"
+                ),
+                0
+            );
+        }
+        let mut answer = reader_answers(&root.0, &files, lane.space.id());
+        answer.extend(reader_answers(
+            &root.0,
+            std::slice::from_ref(&shared),
+            lane_b.space.id(),
+        ));
+        answers.push(answer);
+        assert_fsck_clean(&root.0);
+    }
+    assert_eq!(answers[0], answers[1]);
+}

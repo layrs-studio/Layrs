@@ -436,6 +436,12 @@ impl NativeScmRepository {
                     store.layout().sqlite_path(),
                 )
                 .map_err(schema_backend)?;
+                // Best effort, still under the exclusive lock: a failed
+                // consolidation changes nothing (ADR 0028, section 6).
+                drop(cas);
+                if compact && super::consolidation::consolidate_if_due(&store).is_err() {
+                    crate::perf::count("store.consolidation_failed", 1);
+                }
                 Ok(outcome)
             }
             Err(error) => {

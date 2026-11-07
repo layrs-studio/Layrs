@@ -1908,7 +1908,7 @@ impl<'store> NativeCasWriter<'store> {
 }
 
 mod codec;
-mod compact;
+pub(crate) mod compact;
 mod pack2;
 mod packs;
 mod paths;
