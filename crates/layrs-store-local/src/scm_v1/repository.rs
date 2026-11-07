@@ -439,10 +439,13 @@ impl NativeScmRepository {
                 // Best effort, still under the exclusive lock: a failed
                 // consolidation changes nothing (ADR 0028, section 6). Due
                 // is decided from this batch's catalog (no reopening).
+                let added = publication
+                    .as_ref()
+                    .is_some_and(|publication| publication.pack.is_some());
                 let due = compact
                     && cas
                         .compact_catalog()
-                        .is_some_and(|catalog| catalog.consolidation_due(1));
+                        .is_some_and(|catalog| catalog.consolidation_due(usize::from(added)));
                 drop(cas);
                 if due {
                     let after_commit = || {

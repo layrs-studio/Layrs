@@ -292,6 +292,19 @@ pub(crate) struct Consolidation {
     pub(crate) identities: Vec<Identity>,
 }
 
+/// Which side of a record copy failed: reading or verifying the candidate's
+/// record (the candidate is at fault), or writing the new pack (it is not).
+enum CopyFailure {
+    Source(CasError),
+    Target(CasError),
+}
+
+impl From<CasError> for CopyFailure {
+    fn from(error: CasError) -> Self {
+        Self::Source(error)
+    }
+}
+
 /// Why a consolidation stopped: the candidate (position in the catalog)
 /// whose record could not be copied, when one did.
 #[derive(Debug)]
@@ -303,6 +316,12 @@ pub(crate) struct ConsolidationFailure {
 /// Registered packs that trigger a consolidation (ADR 0028, section 6):
 /// above this count, every lookup and every catalog load pays for each.
 const CONSOLIDATE_AT_PACKS: usize = 6;
+/// The most bytes of packs one consolidation rewrites inline, under the
+/// exclusive lock of the write that triggered it (council s6 r2): readers
+/// and writers wait seconds at most. Larger tiers are left as they are (an
+/// explicit maintenance pass is future work); git's automatic gc runs
+/// detached for the same reason.
+const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 
 impl RegisteredCatalog {
     /// Whether a consolidation is due once `added` more packs are
@@ -346,13 +365,17 @@ impl RegisteredCatalog {
 /// position; smallest first): from each size tier in turn (a lone small
 /// pack must not block the tiers above it, council s6 r1), the first group
 /// of at least two, each next pack at most twice the group's total, within
-/// half the reader's limits for one pack. Positions in increasing order.
+/// half the reader's limits for one pack and the inline byte budget.
+/// Positions in increasing order.
 fn consolidation_group(by_size: &[(u64, u64, u64, usize)]) -> Vec<usize> {
     for start in 0..by_size.len() {
         let mut chosen = Vec::new();
         let (mut total, mut records, mut blocks) = (0_u64, 0_u64, 0_u64);
         for &(size, pack_records, pack_blocks, position) in &by_size[start..] {
             if !chosen.is_empty() && size > total.saturating_mul(2) {
+                break;
+            }
+            if total.saturating_add(size) > INLINE_BUDGET_BYTES {
                 break;
             }
             // Within half the reader's limits for one pack, so the new pack
@@ -457,7 +480,11 @@ impl NativeCas {
                         &mut explicit_written,
                         &mut files_written,
                     )
-                    .map_err(failed)?;
+                    .map_err(|failure| match failure {
+                        CopyFailure::Source(error) => failed(error),
+                        // A write error (disk full) blames no candidate.
+                        CopyFailure::Target(error) => general(error),
+                    })?;
                 }
             }
             keys_of.push(keys);
@@ -528,10 +555,10 @@ impl NativeCas {
         record: pack2::RecordRef,
         explicit_written: &mut HashSet<(u8, [u8; 32])>,
         files_written: &mut HashMap<[u8; 32], FileIdentity>,
-    ) -> CasResult<()> {
+    ) -> Result<(), CopyFailure> {
         let index = &loaded.index;
         let path = open.path.clone();
-        let write = |error| io_error("write CAS pack", &path, error);
+        let write = |error| CopyFailure::Target(io_error("write CAS pack", &path, error));
         match record {
             pack2::RecordRef::Explicit(ordinal) => {
                 let (code, id, location) = index
@@ -574,10 +601,10 @@ impl NativeCas {
                 match files_written.get(&record.file_id) {
                     Some(written) if *written == identity => return Ok(()),
                     Some(_) => {
-                        return Err(pack2::pack2_corruption(
+                        return Err(CopyFailure::Source(pack2::pack2_corruption(
                             &loaded.path,
                             "one FileId has two different file records",
-                        ));
+                        )));
                     }
                     None => {}
                 }
@@ -641,6 +668,13 @@ pub(crate) struct RegisteredPack {
     pub(crate) seq: i64,
     pub(crate) entries: u64,
     pack: Arc<LoadedPack>,
+}
+
+impl RegisteredPack {
+    /// Its file name in the packs directory.
+    pub(crate) fn name(&self) -> &OsStr {
+        &self.pack.name
+    }
 }
 
 /// One `cas_packs` row, as registered (sound or not).
@@ -2246,5 +2280,22 @@ mod consolidation_tests {
         // The first two would exceed the entries limit: the second and
         // third form the group.
         assert_eq!(consolidation_group(&packs), vec![1, 2]);
+    }
+
+    #[test]
+    fn an_inline_group_stays_within_the_byte_budget() {
+        let mib = 1024 * 1024;
+        // 40 + 40 MiB exceeds 64 MiB: the large tier waits, the small one
+        // above it still merges.
+        assert!(consolidation_group(&packs(&[40 * mib, 40 * mib])).is_empty());
+        assert_eq!(
+            consolidation_group(&packs(&[40 * mib, 40 * mib, mib, mib, mib])),
+            vec![2, 3, 4]
+        );
+        // The group stops at the budget: 30 + 30 fits, the third does not.
+        assert_eq!(
+            consolidation_group(&packs(&[30 * mib, 30 * mib, 30 * mib])),
+            vec![0, 1]
+        );
     }
 }

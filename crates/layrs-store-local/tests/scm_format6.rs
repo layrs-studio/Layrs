@@ -1294,6 +1294,22 @@ fn small_packs_are_consolidated_and_every_admission_is_kept() {
                 .unwrap(),
             )
             .unwrap();
+        let b_rows = |root: &Path| -> Vec<i64> {
+            let connection = sql(root);
+            let mut statement = connection
+                .prepare("SELECT pack_seq FROM space_pack_admissions WHERE space_id=?1")
+                .unwrap();
+            statement
+                .query_map([lane_b.space.id().as_str()], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let b_before = if format == "6" {
+            b_rows(&root.0)
+        } else {
+            Vec::new()
+        };
         let mut most = 0;
         for step in 0..12 {
             let added = file(
@@ -1332,6 +1348,22 @@ fn small_packs_are_consolidated_and_every_admission_is_kept() {
                     &root.0,
                     "SELECT count(*) FROM space_pack_admissions \
                      WHERE pack_seq NOT IN (SELECT pack_seq FROM cas_packs)"
+                ),
+                0
+            );
+            // B's row moved to the new pack: its original pack_seq is gone,
+            // from its admissions and from the catalog.
+            assert_eq!(b_before.len(), 1);
+            let b_after = b_rows(&root.0);
+            assert_eq!(b_after.len(), 1);
+            assert_ne!(b_after, b_before);
+            assert_eq!(
+                count(
+                    &root.0,
+                    &format!(
+                        "SELECT count(*) FROM cas_packs WHERE pack_seq={}",
+                        b_before[0]
+                    )
                 ),
                 0
             );
@@ -1419,6 +1451,22 @@ fn a_malformed_bitmap_of_another_space_is_never_consolidated_away() {
         )
         .unwrap();
     assert_eq!(still, damaged);
+    // The other packs still consolidated around it (council s6 r2), and
+    // later sessions leave it out without trying it again.
+    assert!(registered_packs(&root.0).len() < 6);
+    let skipped = fs::read_to_string(root.0.join("metadata/consolidation-skipped")).unwrap();
+    let damaged_pack: String = sql(&root.0)
+        .query_row(
+            "SELECT name FROM cas_packs WHERE pack_seq=?1",
+            [seq],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        skipped.lines().collect::<Vec<_>>(),
+        vec![damaged_pack.as_str()]
+    );
+    assert_eq!(packs(&root.0).len(), registered_packs(&root.0).len());
     assert!(
         repository
             .object_admitted_metadata(
@@ -1434,6 +1482,100 @@ fn a_malformed_bitmap_of_another_space_is_never_consolidated_away() {
             .iter()
             .all(|answer| !answer.contains("admitted=false"))
     );
+}
+
+/// A candidate whose block is damaged is left out (named in the skip file,
+/// still registered, its rows untouched); the sound packs consolidate
+/// around it (council s6 r2).
+#[test]
+fn a_damaged_candidate_is_left_out_and_the_others_consolidate() {
+    let root = TestRoot::new("consolidation-damaged");
+    create(&root.0, "consolidation-damaged", "6");
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let next = |files: &mut Vec<File>, lane: &mut Lane| {
+        let step = files.len();
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        lane.capture(files, carried)
+    };
+    for _ in 0..4 {
+        let batch = next(&mut files, &mut lane);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+    }
+    assert_eq!(registered_packs(&root.0).len(), 5);
+    let damaged = files[2].clone();
+    let damaged_pack = flip_located(
+        &root.0,
+        &StoreObjectId::ChunkRaw(damaged.chunks[0].id().clone()),
+    );
+    let damaged_name = damaged_pack
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let damaged_seq: i64 = sql(&root.0)
+        .query_row(
+            "SELECT pack_seq FROM cas_packs WHERE name=?1",
+            [&damaged_name],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let rows_before = count(
+        &root.0,
+        &format!("SELECT count(*) FROM space_pack_admissions WHERE pack_seq={damaged_seq}"),
+    );
+    for _ in 0..3 {
+        let batch = next(&mut files, &mut lane);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+    }
+    let registered = registered_packs(&root.0);
+    assert!(registered.len() < 6, "{registered:?}");
+    assert!(registered.contains(&damaged_name));
+    assert_eq!(packs(&root.0).len(), registered.len());
+    assert!(packs(&root.0).contains(&damaged_pack));
+    assert_eq!(
+        count(
+            &root.0,
+            &format!("SELECT count(*) FROM space_pack_admissions WHERE pack_seq={damaged_seq}"),
+        ),
+        rows_before
+    );
+    let skipped = fs::read_to_string(root.0.join("metadata/consolidation-skipped")).unwrap();
+    assert_eq!(
+        skipped.lines().collect::<Vec<_>>(),
+        vec![damaged_name.as_str()]
+    );
+    // Every other file reads and stays admitted; the damaged chunk is
+    // corruption, never absence.
+    let sound: Vec<File> = files
+        .iter()
+        .filter(|file| file.name != damaged.name)
+        .cloned()
+        .collect();
+    let answers = reader_answers(&root.0, &sound, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false") && !answer.contains("read=false")),
+        "{answers:?}"
+    );
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(reader.get_chunk(damaged.chunks[0].id()).is_err());
 }
 
 /// Fails the `at`-th pack publication.

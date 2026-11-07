@@ -332,14 +332,26 @@ part.
     speed requirement (every lookup probes every pack; git consolidates by
     default): geometric policy; replacement packs durable first, then one
     transaction registers them, remaps every bitmap exactly old to new
-    (per Space popcount unchanged, checked in the same transaction) and
+    (per Space: every admitted old ordinal maps by form and identity to a
+    new ordinal naming the same identity, the new bitmap is read back by
+    its key and compared byte for byte, all in the same transaction) and
     retires the old ones; retired files deleted later under the write
     lock; a `lost` pack is never consolidated.
+  - Implemented (council s6): triggered at the end of a format 6 write
+    batch, under the same exclusive lock, at 6 registered packs; groups by
+    size tier, each next pack at most twice the group's total, within half
+    the reader's limits and a 64 MiB inline budget (larger tiers wait for
+    an explicit maintenance pass, future work). A candidate whose records
+    cannot be read and verified, or whose bitmap is malformed, is left out
+    and named in `metadata/consolidation-skipped`, so later sessions do
+    not try it again; the sound packs still consolidate. Retired files are
+    removed when the CAS is opened exclusively again; a reader holding an
+    older catalog reloads it when a pack it names is gone.
 
-Known limits until phase 5: every batch adds one pack, so lookups and the
-catalog load grow with the number of packs (a long history of small steps
-needs consolidation), and the process cache keeps the metadata of every
-pack it has read.
+Known limits before phase 5 (now lifted for inline tiers): every batch
+added one pack, so lookups and the catalog load grew with the number of
+packs, and the process cache kept the metadata of every pack it had read
+(the cache now drops the names its Store no longer registers).
 
 Test suites run with and without `LAYRS_STORE_FORMAT=6`: store-local (all,
 including `scm_format6.rs`), client-core `native_*`, CLI `native_rooms`.
