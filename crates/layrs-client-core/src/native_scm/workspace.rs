@@ -322,8 +322,9 @@ impl NativeWorkspace {
         Ok(PathBuf::from(self.state()?.worktree.checkout_root()))
     }
 
+    /// In the held session if one is (`hold_session`).
     pub fn state(&self) -> Result<WorkspaceState> {
-        self.state_with(&self.open_store()?)
+        self.state_with(&*self.session_store()?)
     }
 
     /// `state` on an already open Store (one session for several reads).

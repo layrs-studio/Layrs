@@ -2,8 +2,9 @@
 //! counts per named span, reported once by the host process. Disabled by
 //! default: one relaxed bool check per span, no allocation, no I/O.
 //!
-//! Leaf filesystem spans (`fs.*`) are also attributed to the innermost
-//! enclosing non-`fs.` span as `fs.name@parent`, to locate hot callers.
+//! Leaf filesystem spans (`fs.*`) and Store openings (`store.open*`) are
+//! also attributed to the innermost enclosing non-`fs.` span as
+//! `name@parent`, to locate hot callers.
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -62,8 +63,15 @@ pub fn span(name: &'static str) -> Span {
     let parent = if name.starts_with("fs.") {
         STACK.with(|stack| stack.borrow().last().copied())
     } else {
-        STACK.with(|stack| stack.borrow_mut().push(name));
-        None
+        STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            let parent = name
+                .starts_with("store.open")
+                .then(|| stack.last().copied())
+                .flatten();
+            stack.push(name);
+            parent
+        })
     };
     Span(Some((name, Instant::now(), parent)))
 }

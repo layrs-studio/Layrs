@@ -50,29 +50,38 @@ pub fn validate_streaming_projection(entries: &[CheckoutProjectionEntry]) -> io:
 /// Content fingerprint of a projection (every path, kind, id, flag and
 /// length, unambiguously framed): the key of `projection_tree_id`'s memo.
 fn projection_fingerprint(entries: &[CheckoutProjectionEntry]) -> [u8; 32] {
+    // The same byte stream, hashed in large blocks: one `update` per tiny
+    // field costs more than hashing the whole stream.
+    const BLOCK: usize = 64 * 1024;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(&(entries.len() as u64).to_le_bytes());
+    let mut stream = Vec::with_capacity(BLOCK + 512);
+    stream.extend_from_slice(&(entries.len() as u64).to_le_bytes());
     for entry in entries {
-        hasher.update(&(entry.path.len() as u64).to_le_bytes());
-        hasher.update(entry.path.as_bytes());
+        stream.extend_from_slice(&(entry.path.len() as u64).to_le_bytes());
+        stream.extend_from_slice(entry.path.as_bytes());
         match &entry.content {
             CheckoutProjectionContent::File {
                 file_id,
                 byte_length,
                 executable,
             } => {
-                hasher.update(&[1, u8::from(*executable)]);
-                hasher.update(&(file_id.as_str().len() as u64).to_le_bytes());
-                hasher.update(file_id.as_str().as_bytes());
-                hasher.update(&byte_length.to_le_bytes());
+                stream.extend_from_slice(&[1, u8::from(*executable)]);
+                stream.extend_from_slice(&(file_id.as_str().len() as u64).to_le_bytes());
+                stream.extend_from_slice(file_id.as_str().as_bytes());
+                stream.extend_from_slice(&byte_length.to_le_bytes());
             }
             CheckoutProjectionContent::Symlink { target } => {
-                hasher.update(&[2]);
-                hasher.update(&(target.len() as u64).to_le_bytes());
-                hasher.update(target.as_bytes());
+                stream.push(2);
+                stream.extend_from_slice(&(target.len() as u64).to_le_bytes());
+                stream.extend_from_slice(target.as_bytes());
             }
         }
+        if stream.len() >= BLOCK {
+            hasher.update(&stream);
+            stream.clear();
+        }
     }
+    hasher.update(&stream);
     *hasher.finalize().as_bytes()
 }
 

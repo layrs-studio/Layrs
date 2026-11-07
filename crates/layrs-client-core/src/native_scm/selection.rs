@@ -32,8 +32,9 @@ impl NativeWorkspace {
         } else {
             StepSelector::Step(StepId::parse(input)?)
         };
+        let store = self.session_store()?;
         self.client()
-            .resolve_step(self.worktree_id(), &selector, 100_000)
+            .resolve_step_with(&store, self.worktree_id(), &selector, 100_000)
     }
 }
 
@@ -47,8 +48,18 @@ impl NativeClient {
         selector: &StepSelector,
         max_steps: usize,
     ) -> Result<ResolvedStep> {
-        let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        self.resolve_step_with(&self.open_store()?, worktree_id, selector, max_steps)
+    }
+
+    /// `resolve_step` on an already open Store.
+    pub(super) fn resolve_step_with(
+        &self,
+        store: &layrs_store_local::scm_v1::NativeStoreOpen,
+        worktree_id: &WorktreeId,
+        selector: &StepSelector,
+        max_steps: usize,
+    ) -> Result<ResolvedStep> {
+        let reader = NativeScmReader::new(store)?;
         let worktree = reader
             .get_worktree(worktree_id)?
             .ok_or(NativeClientError::Missing("Worktree"))?;

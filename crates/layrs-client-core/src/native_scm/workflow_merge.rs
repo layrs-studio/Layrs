@@ -245,6 +245,14 @@ impl NativeWorkspace {
             }
             _ => {}
         }
+        // The structural preview only reads the Store: one held session
+        // (council s4, Q2). A Lens host may run for long: it reads in
+        // sessions of its own, as before, so writers never wait on it.
+        let _session = if host.is_none() {
+            Some(super::restore::HeldSessionGuard::hold(self)?)
+        } else {
+            None
+        };
         let target = self.layer_named(target)?;
         let source_heads = if source.starts_with("blake3:")
             || source.starts_with("@marker:")
