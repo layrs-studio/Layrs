@@ -1542,6 +1542,11 @@ fn a_damaged_candidate_is_left_out_and_the_others_consolidate() {
         &root.0,
         &format!("SELECT count(*) FROM space_pack_admissions WHERE pack_seq={damaged_seq}"),
     );
+    // A link planted at the skip file is replaced, never written through
+    // (council s6 r3).
+    let victim = root.0.join("victim.txt");
+    fs::write(&victim, b"victim bytes").unwrap();
+    fs::hard_link(&victim, root.0.join("metadata/consolidation-skipped")).unwrap();
     for _ in 0..3 {
         let batch = next(&mut files, &mut lane);
         NativeScmRepository::new(&root.0)
@@ -1565,6 +1570,7 @@ fn a_damaged_candidate_is_left_out_and_the_others_consolidate() {
         skipped.lines().collect::<Vec<_>>(),
         vec![damaged_name.as_str()]
     );
+    assert_eq!(fs::read(&victim).unwrap(), b"victim bytes");
     // Every other file reads and stays admitted; the damaged chunk is
     // corruption, never absence.
     let sound: Vec<File> = files
@@ -1681,6 +1687,95 @@ fn a_record_in_two_candidates_and_explicit_manifests_survive_consolidation() {
     }
     drop(reader);
     drop(store);
+    assert_fsck_clean(&root.0);
+}
+
+/// Fails every pack publication after the first `allowed`.
+struct PublicationsAfter {
+    allowed: usize,
+    seen: AtomicU64,
+}
+impl CasFaultInjector for PublicationsAfter {
+    fn check(&self, point: CasFaultPoint) -> Result<(), String> {
+        if point == CasFaultPoint::AfterPackPublication
+            && self.seen.fetch_add(1, Ordering::SeqCst) >= self.allowed as u64
+        {
+            Err("consolidation test".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// A general failure is retried by the next batch; after two in a row,
+/// consolidation pauses (as git pauses its automatic gc after a failure),
+/// and the batches themselves keep succeeding (council s6 r3).
+#[test]
+fn repeated_general_failures_pause_consolidation() {
+    let root = TestRoot::new("consolidation-pause");
+    create(&root.0, "consolidation-pause", "6");
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let next = |files: &mut Vec<File>, lane: &mut Lane| {
+        let step = files.len();
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        lane.capture(files, carried)
+    };
+    for _ in 0..4 {
+        let batch = next(&mut files, &mut lane);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+    }
+    let note = root.0.join("metadata/consolidation-failed");
+    // Each batch publishes its own pack, then its consolidation fails.
+    let failing = || {
+        NativeScmRepository::with_cas_fault_injector(
+            &root.0,
+            Arc::new(PublicationsAfter {
+                allowed: 1,
+                seen: AtomicU64::new(0),
+            }),
+        )
+    };
+    for failures in 1..=2 {
+        let batch = next(&mut files, &mut lane);
+        failing().apply_batch(&batch).unwrap();
+        let text = fs::read_to_string(&note).unwrap();
+        assert!(text.starts_with(&format!("{failures} ")), "{text}");
+    }
+    let registered = registered_packs(&root.0).len();
+    assert!(registered >= 6);
+    // Paused: a sound batch does not consolidate.
+    let batch = next(&mut files, &mut lane);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    assert_eq!(registered_packs(&root.0).len(), registered + 1);
+    // Once the pause is over (the note removed here), it consolidates and
+    // forgets the failures.
+    fs::remove_file(&note).unwrap();
+    let batch = next(&mut files, &mut lane);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    assert!(registered_packs(&root.0).len() < 6);
+    assert!(!note.exists());
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false"))
+    );
     assert_fsck_clean(&root.0);
 }
 

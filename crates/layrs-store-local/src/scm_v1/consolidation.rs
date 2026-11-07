@@ -13,6 +13,7 @@ use super::cas::{CasFaultInjector, NativeCas, NativeCasWriter};
 use super::{NativeStoreExclusive, sqlite};
 use rusqlite::params;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::sync::Arc;
 
 /// Candidates left out after a failure before giving up for this session.
@@ -22,6 +23,16 @@ const MAX_ATTEMPTS: usize = 3;
 /// session until they are no longer registered, so damaged packs never
 /// starve the sound ones (council s6 r2). Only ever excludes candidates.
 const SKIPPED_FILE: &str = "consolidation-skipped";
+/// The last general consolidation failures, under `metadata/`: their count,
+/// the time of the last (Unix ms) and its message. After repeated failures
+/// consolidation pauses for `FAILURE_PAUSE_MS`, as git pauses its automatic
+/// gc after a failure (`gc.log`); a success removes the note.
+const FAILED_FILE: &str = "consolidation-failed";
+/// General failures in a row before pausing: one may be transient.
+const FAILURES_BEFORE_PAUSE: u64 = 2;
+const FAILURE_PAUSE_MS: u64 = 60 * 60 * 1000;
+/// The most bytes a consolidation note may hold.
+const NOTE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Consolidates the Store's packs if due. Returns the number of packs
 /// consolidated (0 when none was due). `after_commit` runs right after the
@@ -34,6 +45,85 @@ pub(crate) fn consolidate_if_due(
     if !store.compact() {
         return Ok(0);
     }
+    let failures = recent_failures(store);
+    if failures.is_some_and(|(count, at)| {
+        count >= FAILURES_BEFORE_PAUSE && now_ms().saturating_sub(at) < FAILURE_PAUSE_MS
+    }) {
+        crate::perf::count("store.consolidation_paused", 1);
+        return Ok(0);
+    }
+    let result = consolidate(store, faults, after_commit);
+    match &result {
+        Ok(count) if *count > 0 => {
+            if failures.is_some() {
+                let _ = std::fs::remove_file(store.layout().metadata_dir().join(FAILED_FILE));
+            }
+        }
+        Ok(_) => {}
+        Err(message) => {
+            let count = failures.map_or(0, |(count, _)| count) + 1;
+            write_note(
+                store,
+                FAILED_FILE,
+                &format!("{count} {}\n{message}\n", now_ms()),
+            );
+        }
+    }
+    result
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// (count, time of the last) of the general failures in a row, if any.
+fn recent_failures(store: &NativeStoreExclusive) -> Option<(u64, u64)> {
+    let note = read_note(store, FAILED_FILE)?;
+    let mut fields = note.lines().next()?.split(' ');
+    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+}
+
+/// A note under `metadata/`, read without following links: a regular file
+/// of at most `NOTE_MAX_BYTES`, else absent (council s6 r3).
+fn read_note(store: &NativeStoreExclusive, name: &str) -> Option<String> {
+    let path = store.layout().metadata_dir().join(name);
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > NOTE_MAX_BYTES {
+        return None;
+    }
+    let file = crate::layout::open_read_no_follow(&path).ok()?;
+    let mut text = String::new();
+    file.take(NOTE_MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() as u64 <= NOTE_MAX_BYTES).then_some(text)
+}
+
+/// Replaces a note with a new file renamed over it: whatever the entry was
+/// (a link included), it is replaced, never written through. Best effort.
+fn write_note(store: &NativeStoreExclusive, name: &str, text: &str) {
+    let directory = store.layout().metadata_dir();
+    let staged = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = crate::layout::create_new_file_no_follow(&staged)?;
+        file.write_all(text.as_bytes())?;
+        drop(file);
+        super::format::atomic_replace(&staged, &directory.join(name))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+}
+
+fn consolidate(
+    store: &NativeStoreExclusive,
+    faults: Arc<dyn CasFaultInjector>,
+    after_commit: &dyn Fn() -> Result<(), String>,
+) -> Result<usize, String> {
     let cas =
         NativeCasWriter::with_fault_injector(store, faults).map_err(|error| error.to_string())?;
     let Some(catalog) = cas.compact_catalog().cloned() else {
@@ -108,7 +198,7 @@ pub(crate) fn consolidate_if_due(
 
 /// The packs a consolidation left out before (`SKIPPED_FILE`).
 fn skipped_packs(store: &NativeStoreExclusive) -> BTreeSet<String> {
-    std::fs::read_to_string(store.layout().metadata_dir().join(SKIPPED_FILE))
+    read_note(store, SKIPPED_FILE)
         .map(|text| text.lines().map(str::to_owned).collect())
         .unwrap_or_default()
 }
@@ -133,7 +223,7 @@ fn remember_skipped(
         text.push_str(name);
         text.push('\n');
     }
-    let _ = std::fs::write(store.layout().metadata_dir().join(SKIPPED_FILE), text);
+    write_note(store, SKIPPED_FILE, &text);
 }
 
 /// The first candidate (position) one of whose admission bitmaps does not
@@ -204,37 +294,51 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         .iter()
         .map(|pack| (pack.seq, pack))
         .collect();
-    // The old rows of the consolidated packs, in one scan (no index starts
-    // with `pack_seq`), kept as bitmaps (one bit per object), by Space.
-    let mut old_rows: BTreeMap<String, Vec<(i64, Vec<u8>)>> = BTreeMap::new();
-    {
+    let seqs: Vec<String> = by_seq.keys().map(i64::to_string).collect();
+    let in_seqs = seqs.join(",");
+    // The Spaces with rows on the consolidated packs, in one scan (no index
+    // starts with `pack_seq`); their bitmaps are not kept.
+    let spaces: Vec<String> = {
         let mut statement = transaction
-            .prepare("SELECT space_id, pack_seq, bitmap FROM space_pack_admissions")
+            .prepare(&format!(
+                "SELECT DISTINCT space_id FROM space_pack_admissions \
+                 WHERE pack_seq IN ({in_seqs}) ORDER BY space_id"
+            ))
             .map_err(sql)?;
         let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(sql)?;
-        for row in rows {
-            let (space, seq, bitmap) = row.map_err(sql)?;
-            if by_seq.contains_key(&seq) {
-                old_rows.entry(space).or_default().push((seq, bitmap));
-            }
-        }
-    }
-    // One Space at a time (memory: its bitmaps only): each admitted old
-    // ordinal maps to a new one naming the same identity (the old index
-    // against the new), the new bitmap is written, then read back by its
-    // key and compared byte for byte.
+        rows.collect::<Result<_, _>>().map_err(sql)?
+    };
+    // One Space at a time, read by its key (memory: that Space's bitmaps
+    // only, council s6 r3): each admitted old ordinal maps to a new one
+    // naming the same identity (the old index against the new), the new
+    // bitmap is written, then read back by its key and compared byte for
+    // byte.
     let length = usize::try_from(entries.div_ceil(8)).map_err(|error| error.to_string())?;
-    for (space, rows) in &old_rows {
+    let mut old_count = 0_usize;
+    for space in &spaces {
+        let rows: Vec<(i64, Vec<u8>)> = {
+            let mut statement = transaction
+                .prepare_cached(
+                    "SELECT pack_seq, bitmap FROM space_pack_admissions WHERE space_id=?1",
+                )
+                .map_err(sql)?;
+            let rows = statement
+                .query_map([space], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(sql)?;
+            rows.filter(|row| {
+                row.as_ref()
+                    .map_or(true, |(seq, _)| by_seq.contains_key(seq))
+            })
+            .collect::<Result<_, _>>()
+            .map_err(sql)?
+        };
+        old_count += rows.len();
         let mut expected = vec![0_u8; length.max(1)];
-        for (seq, bitmap) in rows {
+        for (seq, bitmap) in &rows {
             let pack = by_seq[seq];
             // A malformed bitmap is corruption: never remapped into a
             // narrower answer (council s6 r1).
@@ -271,18 +375,18 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
             return Err(format!("consolidation changed what {space} admits"));
         }
     }
-    // Every old admission row in one statement (one scan), then each old
-    // pack's row, which must be exactly the one consolidated.
-    let seqs: Vec<String> = by_seq.keys().map(i64::to_string).collect();
-    transaction
+    // Every old admission row in one statement (one scan): exactly the rows
+    // remapped above, then each old pack's row, which must be exactly the
+    // one consolidated.
+    let deleted = transaction
         .execute(
-            &format!(
-                "DELETE FROM space_pack_admissions WHERE pack_seq IN ({})",
-                seqs.join(",")
-            ),
+            &format!("DELETE FROM space_pack_admissions WHERE pack_seq IN ({in_seqs})"),
             [],
         )
         .map_err(sql)?;
+    if deleted != old_count {
+        return Err("consolidation would drop admissions it did not remap".into());
+    }
     for pack in &consolidation.packs {
         let name = pack.name.to_str().ok_or("pack name is not UTF-8")?;
         let removed = transaction
@@ -294,16 +398,6 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         if removed != 1 {
             return Err(format!("pack {} is not the one consolidated", pack.seq));
         }
-    }
-    let rows: i64 = transaction
-        .query_row(
-            "SELECT count(*) FROM space_pack_admissions WHERE pack_seq=?1",
-            [new_seq],
-            |row| row.get(0),
-        )
-        .map_err(sql)?;
-    if rows != old_rows.len() as i64 {
-        return Err("consolidation lost a Space's admissions".into());
     }
     transaction.commit().map_err(sql)?;
     sqlite::finish_writer(connection, store.layout().sqlite_path())

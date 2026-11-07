@@ -322,6 +322,10 @@ const CONSOLIDATE_AT_PACKS: usize = 6;
 /// explicit maintenance pass is future work); git's automatic gc runs
 /// detached for the same reason.
 const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+/// The most decompressed bytes one inline consolidation reads, verifies and
+/// recompresses (council s6 r3): compressible content is bounded by the work
+/// it costs, not by its size on disk.
+const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 impl RegisteredCatalog {
     /// Whether a consolidation is due once `added` more packs are
@@ -340,8 +344,9 @@ impl RegisteredCatalog {
         if self.packs.len() < CONSOLIDATE_AT_PACKS {
             return Vec::new();
         }
-        // (size, records, blocks, position), smallest first.
-        let mut by_size: Vec<(u64, u64, u64, usize)> = self
+        // (size, records, blocks, decompressed bytes, position), smallest
+        // first.
+        let mut by_size: Vec<(u64, u64, u64, u64, usize)> = self
             .packs
             .iter()
             .enumerate()
@@ -352,6 +357,11 @@ impl RegisteredCatalog {
                     index.file_len,
                     (index.explicit_count() + index.files.len()) as u64,
                     index.blocks.len() as u64,
+                    index
+                        .blocks
+                        .iter()
+                        .map(|block| u64::from(block.raw_len))
+                        .sum(),
                     position,
                 )
             })
@@ -362,20 +372,22 @@ impl RegisteredCatalog {
 }
 
 /// The packs to consolidate among `by_size` (size, records, blocks,
-/// position; smallest first): from each size tier in turn (a lone small
-/// pack must not block the tiers above it, council s6 r1), the first group
-/// of at least two, each next pack at most twice the group's total, within
-/// half the reader's limits for one pack and the inline byte budget.
-/// Positions in increasing order.
-fn consolidation_group(by_size: &[(u64, u64, u64, usize)]) -> Vec<usize> {
+/// decompressed bytes, position; smallest first): from each size tier in
+/// turn (a lone small pack must not block the tiers above it, council s6
+/// r1), the first group of at least two, each next pack at most twice the
+/// group's total, within half the reader's limits for one pack and the
+/// inline budgets (on disk and decompressed). Positions in increasing order.
+fn consolidation_group(by_size: &[(u64, u64, u64, u64, usize)]) -> Vec<usize> {
     for start in 0..by_size.len() {
         let mut chosen = Vec::new();
-        let (mut total, mut records, mut blocks) = (0_u64, 0_u64, 0_u64);
-        for &(size, pack_records, pack_blocks, position) in &by_size[start..] {
+        let (mut total, mut records, mut blocks, mut raw) = (0_u64, 0_u64, 0_u64, 0_u64);
+        for &(size, pack_records, pack_blocks, pack_raw, position) in &by_size[start..] {
             if !chosen.is_empty() && size > total.saturating_mul(2) {
                 break;
             }
-            if total.saturating_add(size) > INLINE_BUDGET_BYTES {
+            if total.saturating_add(size) > INLINE_BUDGET_BYTES
+                || raw.saturating_add(pack_raw) > INLINE_RAW_BUDGET_BYTES
+            {
                 break;
             }
             // Within half the reader's limits for one pack, so the new pack
@@ -386,6 +398,7 @@ fn consolidation_group(by_size: &[(u64, u64, u64, usize)]) -> Vec<usize> {
                 break;
             }
             total = total.saturating_add(size);
+            raw = raw.saturating_add(pack_raw);
             records += pack_records;
             blocks += pack_blocks;
             chosen.push(position);
@@ -450,9 +463,16 @@ impl NativeCas {
         let mut packs = Vec::with_capacity(candidates.len());
         let mut keys_of = Vec::with_capacity(candidates.len());
         for &position in candidates {
-            let failed = |error| ConsolidationFailure {
-                pack: Some(position),
-                error,
+            // Only what the candidate's own bytes prove (corruption, a wrong
+            // id, a registered file missing) names it; a plain I/O failure
+            // (a scanner holding the file, a flaky volume) is general and
+            // retried later (council s6 r3).
+            let failed = |error: CasError| match error {
+                error @ CasError::Io { .. } => ConsolidationFailure { pack: None, error },
+                error => ConsolidationFailure {
+                    pack: Some(position),
+                    error,
+                },
             };
             let registered = catalog.packs.get(position).ok_or_else(|| {
                 failed(io_error(
@@ -2247,11 +2267,11 @@ fn open_pack(
 mod consolidation_tests {
     use super::consolidation_group;
 
-    fn packs(sizes: &[u64]) -> Vec<(u64, u64, u64, usize)> {
+    fn packs(sizes: &[u64]) -> Vec<(u64, u64, u64, u64, usize)> {
         let mut packs: Vec<_> = sizes
             .iter()
             .enumerate()
-            .map(|(position, size)| (*size, 1, 1, position))
+            .map(|(position, size)| (*size, 1, 1, *size, position))
             .collect();
         packs.sort_unstable();
         packs
@@ -2276,7 +2296,11 @@ mod consolidation_tests {
     #[test]
     fn a_group_stays_within_half_the_reader_limits() {
         let half = crate::scm_v1::cas::pack2::MAX_PACK_ENTRIES / 2;
-        let packs = vec![(10, half - 1, 1, 0), (10, 2, 1, 1), (11, 1, 1, 2)];
+        let packs = vec![
+            (10, half - 1, 1, 10, 0),
+            (10, 2, 1, 10, 1),
+            (11, 1, 1, 11, 2),
+        ];
         // The first two would exceed the entries limit: the second and
         // third form the group.
         assert_eq!(consolidation_group(&packs), vec![1, 2]);
@@ -2297,5 +2321,9 @@ mod consolidation_tests {
             consolidation_group(&packs(&[30 * mib, 30 * mib, 30 * mib])),
             vec![0, 1]
         );
+        // Compressible content is bounded by what it decompresses to:
+        // three 1 MiB packs of 100 MiB each exceed 256 MiB at the third.
+        let compressible: Vec<_> = (0..3).map(|p| (mib, 1, 1, 100 * mib, p)).collect();
+        assert_eq!(consolidation_group(&compressible), vec![0, 1]);
     }
 }

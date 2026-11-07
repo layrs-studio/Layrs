@@ -340,13 +340,25 @@ part.
   - Implemented (council s6): triggered at the end of a format 6 write
     batch, under the same exclusive lock, at 6 registered packs; groups by
     size tier, each next pack at most twice the group's total, within half
-    the reader's limits and a 64 MiB inline budget (larger tiers wait for
-    an explicit maintenance pass, future work). A candidate whose records
-    cannot be read and verified, or whose bitmap is malformed, is left out
-    and named in `metadata/consolidation-skipped`, so later sessions do
-    not try it again; the sound packs still consolidate. Retired files are
-    removed when the CAS is opened exclusively again; a reader holding an
-    older catalog reloads it when a pack it names is gone.
+    the reader's limits and inline budgets of 64 MiB on disk and 256 MiB
+    decompressed. A candidate whose own bytes fail (a damaged record, a
+    registered file missing) or whose bitmap is malformed is left out and
+    named in `metadata/consolidation-skipped`, so later sessions do not
+    try it again; the sound packs still consolidate. A plain I/O failure
+    blames no candidate. After two general failures in a row
+    (`metadata/consolidation-failed`), consolidation pauses for an hour,
+    as git pauses its automatic gc. Both notes are read without following
+    links, bounded, and replaced by a new file renamed over them. The
+    registration transaction remaps one Space at a time and checks that
+    the admission rows it deletes are exactly those it remapped. Retired
+    files are removed when the CAS is opened exclusively again; a reader
+    holding an older catalog reloads it when a pack it names is gone.
+  - Known limit, a blocker before phase 6 (council s6 r3): tiers above the
+    inline budgets are never consolidated. A Store past about 64 MiB of
+    packs keeps one pack per 32-64 MiB written, and a batch at 6 or more
+    packs opens a consolidation that finds no group. An explicit
+    maintenance pass (`layrs store gc` or a detached pass taking the lock
+    itself, with a grace period for orphan collection) is required.
 
 Known limits before phase 5 (now lifted for inline tiers): every batch
 added one pack, so lookups and the catalog load grew with the number of
