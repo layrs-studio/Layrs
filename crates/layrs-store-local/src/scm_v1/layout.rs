@@ -38,6 +38,27 @@ pub struct NativeStoreLayout {
     repair_backups_dir: PathBuf,
 }
 
+fn ready_validated_roots() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static VALIDATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    VALIDATED.get_or_init(Default::default)
+}
+
+/// Whether this process validated every boundary of the Ready Store at
+/// `root` (`validate_ready_boundaries`, once per process and root).
+pub(crate) fn ready_boundaries_validated(root: &Path) -> bool {
+    ready_validated_roots()
+        .lock()
+        .is_ok_and(|roots| roots.contains(root))
+}
+
+/// Records a full `validate_ready_boundaries` of the Store at `root`.
+pub(crate) fn remember_ready_boundaries_validated(root: &Path) {
+    if let Ok(mut roots) = ready_validated_roots().lock() {
+        roots.insert(root.to_path_buf());
+    }
+}
+
 impl NativeStoreLayout {
     pub fn new(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = absolute_lexical(root.as_ref())?;
@@ -47,7 +68,13 @@ impl NativeStoreLayout {
                 "native store root must not be a filesystem root",
             ));
         }
-        reject_reparse_components(&root)?;
+        // A Ready Store this process already validated in full (every
+        // boundary and every ancestor, `ready_boundaries_validated`) skips the
+        // repeated walk; its opens still re-read the marker and pin the root.
+        let validated = ready_boundaries_validated(&root);
+        if !validated {
+            reject_reparse_components(&root)?;
+        }
         if let Ok(metadata) = fs::symlink_metadata(&root) {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(io::Error::new(
@@ -74,7 +101,9 @@ impl NativeStoreLayout {
             root,
         };
         layout.validate_containment()?;
-        layout.validate_existing_boundaries()?;
+        if !validated {
+            layout.validate_existing_boundaries()?;
+        }
         Ok(layout)
     }
 
@@ -400,6 +429,29 @@ impl NativeStoreOpen {
         self.bound_metadata = Some(bind_directory(self.layout.metadata_dir(), expected)?);
         self.verify_filesystem_identity()?;
         Ok(self)
+    }
+
+    /// `with_filesystem_identity` then `with_metadata_identity` in one pass:
+    /// the root is pinned from the volume root, then `metadata` is opened
+    /// through that pinned handle (no second walk of the path), and each must
+    /// have its expected identity.
+    pub fn with_identities(mut self, store: &str, metadata: &str) -> io::Result<Self> {
+        let root = bind_directory(self.layout.root(), store)?;
+        let pinned = root.open_child_for_traversal(std::ffi::OsStr::new(METADATA_DIR_NAME))?;
+        if pinned.identity_token() != metadata {
+            return Err(io::Error::other("Store filesystem identity changed"));
+        }
+        self.bound_directory = Some(root);
+        self.bound_metadata = Some(pinned);
+        self.verify_filesystem_identity()?;
+        Ok(self)
+    }
+
+    /// The identity of the Store root this session is bound to, if bound.
+    pub(crate) fn bound_root_identity(&self) -> Option<String> {
+        self.bound_directory
+            .as_ref()
+            .map(crate::secure_fs::PinnedDirectory::identity_token)
     }
 
     pub fn verify_filesystem_identity(&self) -> io::Result<()> {

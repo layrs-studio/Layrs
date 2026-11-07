@@ -13,7 +13,15 @@ fn validate_component(value: &str) -> Result<()> {
             "empty, dot and dot-dot components are forbidden".into(),
         ));
     }
-    if value.chars().count() > 255 {
+    // ASCII text is its own NFC form, one scalar per byte: the same checks
+    // without running the normalizer.
+    let ascii = value.is_ascii();
+    if (if ascii {
+        value.len()
+    } else {
+        value.chars().count()
+    }) > 255
+    {
         return Err(ScmError::InvalidPath(
             "component exceeds 255 Unicode scalars".into(),
         ));
@@ -23,7 +31,7 @@ fn validate_component(value: &str) -> Result<()> {
             "component contains a forbidden separator or NUL".into(),
         ));
     }
-    if !is_nfc(value) {
+    if !ascii && !is_nfc(value) {
         return Err(ScmError::NonNfc(value.to_owned()));
     }
     Ok(())
@@ -64,7 +72,20 @@ pub struct RepoPath(String);
 impl RepoPath {
     pub fn parse(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
-        if value.is_empty() || value.chars().count() > 32_768 || value.starts_with('/') {
+        Self::check(&value)?;
+        Ok(Self(value))
+    }
+
+    /// Whether `value` is a valid path (`parse` without keeping it).
+    pub fn check(value: &str) -> Result<()> {
+        if value.is_empty()
+            || (if value.is_ascii() {
+                value.len()
+            } else {
+                value.chars().count()
+            }) > 32_768
+            || value.starts_with('/')
+        {
             return Err(ScmError::InvalidPath(
                 "path must be a non-empty relative path".into(),
             ));
@@ -78,7 +99,7 @@ impl RepoPath {
         for component in value.split('/') {
             validate_component(component)?;
         }
-        Ok(Self(value))
+        Ok(())
     }
 
     pub fn as_str(&self) -> &str {

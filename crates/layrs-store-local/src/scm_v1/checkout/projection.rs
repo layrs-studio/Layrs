@@ -1,5 +1,5 @@
 use super::*;
-use layrs_core::scm::{FileId, RepoPath, Symlink, TreeEntryTarget, TreeId};
+use layrs_core::scm::{FileId, Symlink, TreeEntryTarget, TreeId};
 
 /// Physical checkout identity without retaining file content in memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,9 +124,9 @@ fn projection_tree_id_uncached(entries: &[CheckoutProjectionEntry]) -> io::Resul
     let mut root = std::collections::BTreeMap::new();
     let mut total = 0u64;
     for entry in entries {
-        let canonical = RepoPath::parse(&entry.path).map_err(|e| invalid(&e.to_string()))?;
-        let parts: Vec<_> = canonical.as_str().split('/').collect();
-        if canonical.as_str() != entry.path || parts.len() > 128 {
+        // Validated above; a valid path is its own canonical form.
+        let parts: Vec<&str> = entry.path.split('/').collect();
+        if parts.len() > 128 {
             return Err(invalid("invalid checkout projection path"));
         }
         let (target, executable, length) = match &entry.content {
@@ -157,4 +157,49 @@ fn projection_tree_id_uncached(entries: &[CheckoutProjectionEntry]) -> io::Resul
         insert_projection(&mut root, &parts, Projection::Leaf(target, executable))?;
     }
     hash_projection(root)
+}
+
+#[cfg(test)]
+mod bench_tree_id {
+    use super::*;
+
+    fn sample(count: usize) -> Vec<CheckoutProjectionEntry> {
+        let mut entries: Vec<_> = (0..count)
+            .map(|i| CheckoutProjectionEntry {
+                path: format!("d{}/f{i}.txt", i % 10),
+                content: CheckoutProjectionContent::File {
+                    file_id: FileId::from_bytes(format!("line {i}").as_bytes()),
+                    byte_length: 10,
+                    executable: false,
+                },
+            })
+            .collect();
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        entries
+    }
+
+    #[test]
+    #[ignore = "timing probe, run with --ignored --nocapture"]
+    fn timing_projection_tree_id() {
+        let entries = sample(10_000);
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            validate_streaming_projection(&entries).unwrap();
+            let validate = start.elapsed();
+            let start = std::time::Instant::now();
+            for entry in &entries {
+                layrs_core::scm::RepoPath::parse(&entry.path).unwrap();
+            }
+            let parse = start.elapsed();
+            let start = std::time::Instant::now();
+            projection_tree_id_uncached(&entries).unwrap();
+            let total = start.elapsed();
+            let start = std::time::Instant::now();
+            projection_fingerprint(&entries);
+            let fingerprint = start.elapsed();
+            eprintln!(
+                "validate {validate:?} parse {parse:?} uncached total {total:?} fingerprint {fingerprint:?}"
+            );
+        }
+    }
 }

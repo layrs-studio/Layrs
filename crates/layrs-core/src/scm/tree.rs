@@ -4,7 +4,6 @@ use super::ids::{ConflictId, FileId, ObjectId, SymlinkId, TombstoneId, TreeId};
 use super::path::RepoPathComponent;
 use super::serde_support::deserialize_present_nullable;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashSet;
 
 const TREE_DOMAIN: &str = "layrs-tree-v1";
 const SYMLINK_DOMAIN: &str = "layrs-symlink-v1";
@@ -142,6 +141,8 @@ pub struct Tree {
     entries: Vec<TreeEntry>,
 }
 
+/// The general encoding `tree_payload` must reproduce (tests only).
+#[cfg(test)]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TreePayload<'a> {
@@ -165,27 +166,79 @@ struct TreeWire {
     entries: Vec<TreeEntry>,
 }
 
+/// The canonical (JCS) payload of a Tree's sorted entries, written
+/// directly: byte for byte what `canonical_json(&TreePayload)` produces (keys
+/// in UTF-16 order, names escaped by serde_json, ids ASCII), without building
+/// a JSON value per entry. `tree_payload_matches_the_general_encoder` pins it.
+fn tree_payload(entries: &[TreeEntry]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(48 + entries.len() * 140);
+    out.extend_from_slice(b"{\"entries\":[");
+    for (index, entry) in entries.iter().enumerate() {
+        if index != 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(if entry.executable {
+            b"{\"executable\":true,\"name\":"
+        } else {
+            b"{\"executable\":false,\"name\":"
+        });
+        serde_json::to_writer(&mut out, entry.name.as_str())?;
+        out.extend_from_slice(b",\"target\":");
+        let (before, id, after): (&[u8], &str, &[u8]) = match &entry.target {
+            TreeEntryTarget::File { file_id } => (
+                b"{\"fileId\":\"",
+                file_id.as_str(),
+                b"\",\"kind\":\"file\"}",
+            ),
+            TreeEntryTarget::Tree { tree_id } => (
+                b"{\"kind\":\"tree\",\"treeId\":\"",
+                tree_id.as_str(),
+                b"\"}",
+            ),
+            TreeEntryTarget::Conflict { conflict_id } => (
+                b"{\"conflictId\":\"",
+                conflict_id.as_str(),
+                b"\",\"kind\":\"conflict\"}",
+            ),
+            TreeEntryTarget::Symlink { symlink_id } => (
+                b"{\"kind\":\"symlink\",\"symlinkId\":\"",
+                symlink_id.as_str(),
+                b"\"}",
+            ),
+            TreeEntryTarget::Tombstone { tombstone_id } => (
+                b"{\"kind\":\"tombstone\",\"tombstoneId\":\"",
+                tombstone_id.as_str(),
+                b"\"}",
+            ),
+        };
+        out.extend_from_slice(before);
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(after);
+        out.push(b'}');
+    }
+    out.extend_from_slice(b"],\"schemaVersion\":\"layrs.tree.v1\"}");
+    Ok(out)
+}
+
 impl Tree {
     pub fn new(mut entries: Vec<TreeEntry>) -> Result<Self> {
-        let mut names = HashSet::with_capacity(entries.len());
-        for entry in &entries {
-            if !names.insert(entry.name.as_str().to_owned()) {
-                return Err(ScmError::Duplicate {
-                    kind: "TreeEntry name",
-                    value: entry.name.to_string(),
-                });
-            }
-        }
         entries.sort_by(|left, right| {
             left.name
                 .as_str()
                 .as_bytes()
                 .cmp(right.name.as_str().as_bytes())
         });
-        let payload = canonical_json(&TreePayload {
-            schema_version: "layrs.tree.v1",
-            entries: &entries,
-        })?;
+        // Sorted: equal names are neighbours.
+        if let Some(pair) = entries
+            .windows(2)
+            .find(|pair| pair[0].name.as_str() == pair[1].name.as_str())
+        {
+            return Err(ScmError::Duplicate {
+                kind: "TreeEntry name",
+                value: pair[1].name.to_string(),
+            });
+        }
+        let payload = tree_payload(&entries)?;
         let id = TreeId::from_digest(domain_hash(TREE_DOMAIN, &payload));
         Ok(Self { id, entries })
     }
@@ -199,10 +252,7 @@ impl Tree {
     }
 
     pub fn canonical_payload(&self) -> Result<Vec<u8>> {
-        canonical_json(&TreePayload {
-            schema_version: "layrs.tree.v1",
-            entries: &self.entries,
-        })
+        tree_payload(&self.entries)
     }
 
     pub fn identity_bytes(&self) -> Result<Vec<u8>> {
@@ -424,5 +474,79 @@ impl<'de> Deserialize<'de> for Tombstone {
             }));
         }
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn id(seed: &str) -> String {
+        format!("blake3:{}", blake3::hash(seed.as_bytes()).to_hex())
+    }
+
+    #[test]
+    fn tree_payload_matches_the_general_encoder() {
+        let names = [
+            "a",
+            "B",
+            "f1.txt",
+            "caf\u{e9}",
+            "\u{1f600}x",
+            "quo\"te",
+            "back\\slash",
+            "tab\tname",
+            "z\u{7f}",
+            "\u{2028}sep",
+            "\u{fffd}",
+            "\u{10ffff}end",
+            "space name",
+            "\u{e9}t\u{e9}",
+        ];
+        let mut entries = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let Ok(component) = RepoPathComponent::parse(*name) else {
+                continue;
+            };
+            let target = match index % 5 {
+                0 => TreeEntryTarget::file(FileId::parse(id(name)).unwrap()),
+                1 => TreeEntryTarget::tree(TreeId::parse(id(name)).unwrap()),
+                2 => TreeEntryTarget::conflict(ConflictId::parse(id(name)).unwrap()),
+                3 => TreeEntryTarget::symlink(SymlinkId::parse(id(name)).unwrap()),
+                _ => TreeEntryTarget::tombstone(TombstoneId::parse(id(name)).unwrap()),
+            };
+            entries.push(TreeEntry::new(component, target, index % 2 == 0));
+        }
+        assert!(entries.len() >= 8, "most sample names are valid components");
+        for count in [0, 1, entries.len()] {
+            let mut slice = entries[..count].to_vec();
+            slice.sort_by(|a, b| a.name.as_str().as_bytes().cmp(b.name.as_str().as_bytes()));
+            let general = canonical_json(&TreePayload {
+                schema_version: "layrs.tree.v1",
+                entries: &slice,
+            })
+            .unwrap();
+            assert_eq!(tree_payload(&slice).unwrap(), general);
+            let tree = Tree::new(slice.clone()).unwrap();
+            assert_eq!(
+                tree.id(),
+                &TreeId::from_digest(blake3::hash(&domain_separated_bytes(TREE_DOMAIN, &general)))
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_names_are_refused() {
+        let entry = || {
+            TreeEntry::new(
+                RepoPathComponent::parse("same").unwrap(),
+                TreeEntryTarget::file(FileId::parse(id("x")).unwrap()),
+                false,
+            )
+        };
+        assert!(matches!(
+            Tree::new(vec![entry(), entry()]),
+            Err(ScmError::Duplicate { .. })
+        ));
     }
 }

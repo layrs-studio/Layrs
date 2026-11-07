@@ -562,19 +562,11 @@ fn ready_under_lock(
 /// its identity; a command opening its Store many times no longer walks every
 /// ancestor of every boundary each time (git makes no such check at all).
 fn validate_ready_boundaries_once(layout: &NativeStoreLayout) -> io::Result<()> {
-    static VALIDATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
-        std::sync::OnceLock::new();
-    let validated = VALIDATED.get_or_init(Default::default);
-    if validated
-        .lock()
-        .is_ok_and(|roots| roots.contains(layout.root()))
-    {
+    if super::layout::ready_boundaries_validated(layout.root()) {
         return Ok(());
     }
     layout.validate_ready_boundaries()?;
-    if let Ok(mut roots) = validated.lock() {
-        roots.insert(layout.root().to_path_buf());
-    }
+    super::layout::remember_ready_boundaries_validated(layout.root());
     Ok(())
 }
 
@@ -846,4 +838,80 @@ fn has_legacy_json(root: &Path) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod open_timing {
+    use super::*;
+
+    #[test]
+    #[ignore = "timing probe, run with --ignored --nocapture"]
+    fn timing_store_open_phases() {
+        let root = std::env::temp_dir().join(format!("layrs-open-timing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store_id = StoreId::parse("store:timing").unwrap();
+        drop(init(&root, store_id.clone()).unwrap());
+        let rounds = 200u32;
+        let mut phases = [std::time::Duration::ZERO; 8];
+        let total = std::time::Instant::now();
+        for _ in 0..rounds {
+            let mut at = std::time::Instant::now();
+            let mut lap = |slot: usize, phases: &mut [std::time::Duration; 8]| {
+                phases[slot] += at.elapsed();
+                at = std::time::Instant::now();
+            };
+            let NativeStoreInspection::NativeReady { layout, marker } = inspect(&root).unwrap()
+            else {
+                panic!("not ready");
+            };
+            lap(0, &mut phases);
+            recover_orphaned_wal(&layout, marker.store_id()).unwrap();
+            lap(1, &mut phases);
+            let lock =
+                StoreLock::acquire_existing(layout.lock_path(), SessionMode::Shared).unwrap();
+            lap(2, &mut phases);
+            let (layout, marker) = ready_under_lock(&layout, marker.store_id()).unwrap();
+            lap(3, &mut phases);
+            let connection =
+                sqlite::open_read_only(layout.sqlite_path(), Duration::from_secs(5)).unwrap();
+            lap(4, &mut phases);
+            sqlite::validate_store_identity(&connection, marker.store_id()).unwrap();
+            lap(5, &mut phases);
+            sqlite::require_baseline_for_format(&connection, marker.format_version()).unwrap();
+            lap(6, &mut phases);
+            drop(connection);
+            drop(lock);
+            lap(7, &mut phases);
+        }
+        let total = total.elapsed();
+        let names = [
+            "inspect",
+            "wal",
+            "lock",
+            "ready_under_lock",
+            "sqlite_open",
+            "identity",
+            "baseline",
+            "drop",
+        ];
+        for (name, phase) in names.iter().zip(phases) {
+            eprintln!(
+                "{name:18} {:8.1} us",
+                phase.as_secs_f64() * 1e6 / f64::from(rounds)
+            );
+        }
+        eprintln!(
+            "total/open         {:8.1} us",
+            total.as_secs_f64() * 1e6 / f64::from(rounds)
+        );
+        let total = std::time::Instant::now();
+        for _ in 0..rounds {
+            drop(open(&root).unwrap());
+        }
+        eprintln!(
+            "open()             {:8.1} us",
+            total.elapsed().as_secs_f64() * 1e6 / f64::from(rounds)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -82,7 +82,13 @@ pub fn domain_separated_bytes(domain: &'static str, payload: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn domain_hash(domain: &'static str, payload: &[u8]) -> blake3::Hash {
-    blake3::hash(&domain_separated_bytes(domain, payload))
+    // The hash of `domain_separated_bytes(domain, payload)`, without copying
+    // the payload.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(payload);
+    hasher.finalize()
 }
 
 #[cfg(test)]

@@ -549,7 +549,8 @@ impl NativeCas {
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         let packs = store.packs_enabled().then(|| store.store_id());
-        let mut cas = Self::open_layout(store.layout(), faults, packs)?;
+        let mut cas =
+            Self::open_layout_bound(store.layout(), faults, packs, store.bound_root_identity())?;
         cas.compact_format = store.compact();
         store
             .verify_filesystem_identity()
@@ -601,14 +602,34 @@ impl NativeCas {
         faults: Arc<dyn CasFaultInjector>,
         packs: Option<&layrs_core::scm::StoreId>,
     ) -> CasResult<Self> {
+        Self::open_layout_bound(layout, faults, packs, None)
+    }
+
+    /// `open_layout` for a session whose root is already pinned (`bound`,
+    /// its identity, rechecked by the caller): the root is not pinned again,
+    /// and a Ready Store whose boundaries this process validated in full is
+    /// not walked for reparse points again.
+    fn open_layout_bound(
+        layout: &NativeStoreLayout,
+        faults: Arc<dyn CasFaultInjector>,
+        packs: Option<&layrs_core::scm::StoreId>,
+        bound: Option<String>,
+    ) -> CasResult<Self> {
         let root = layout.root().to_path_buf();
-        let root_identity = PinnedDirectory::open(&root)
-            .map_err(|error| io_error("pin CAS root", &root, error))?
-            .identity_token();
+        let root_identity = match bound {
+            Some(identity) => identity,
+            None => PinnedDirectory::open(&root)
+                .map_err(|error| io_error("pin CAS root", &root, error))?
+                .identity_token(),
+        };
         let objects_dir = layout.objects_dir().to_path_buf();
         let staging_dir = layout.staging_dir().to_path_buf();
         let staging_lease_path = layout.staging_lease_path().to_path_buf();
+        let validated = super::layout::ready_boundaries_validated(&root);
         for directory in [&root, &objects_dir, &staging_dir] {
+            if validated {
+                continue;
+            }
             reject_reparse_components(directory)
                 .map_err(|error| io_error("validate CAS directory", directory, error))?;
             let metadata = fs::symlink_metadata(directory)

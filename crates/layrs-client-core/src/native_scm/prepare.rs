@@ -219,9 +219,7 @@ impl NativeClient {
         &self,
         store: layrs_store_local::scm_v1::NativeStoreOpen,
     ) -> Result<layrs_store_local::scm_v1::NativeStoreOpen> {
-        let store = store
-            .with_filesystem_identity(&self.store_identity)?
-            .with_metadata_identity(&self.metadata_identity)?;
+        let store = store.with_identities(&self.store_identity, &self.metadata_identity)?;
         if store.store_id() != &self.store_id {
             return Err(NativeClientError::InvalidState("Store identity changed"));
         }

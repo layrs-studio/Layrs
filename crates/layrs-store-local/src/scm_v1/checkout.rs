@@ -466,10 +466,10 @@ pub fn entries_tree_id(entries: &[CheckoutEntry]) -> io::Result<layrs_core::scm:
         return Err(invalid("checkout entry limit exceeded"));
     }
     for entry in entries {
-        let canonical = RepoPath::parse(&entry.path).map_err(|e| invalid(&e.to_string()))?;
-        let parts: Vec<_> = canonical.as_str().split('/').collect();
-        if canonical.as_str() != entry.path
-            || parts.len() > 128
+        // A valid path is its own canonical form (`parse` keeps it as is).
+        RepoPath::check(&entry.path).map_err(|e| invalid(&e.to_string()))?;
+        let parts: Vec<&str> = entry.path.split('/').collect();
+        if parts.len() > 128
             || parts
                 .iter()
                 .any(|p| p.eq_ignore_ascii_case(".layrs") || p.eq_ignore_ascii_case(".git"))
@@ -504,23 +504,24 @@ pub fn entries_tree_id(entries: &[CheckoutEntry]) -> io::Result<layrs_core::scm:
     hash_projection(root)
 }
 
-enum Projection {
-    Directory(std::collections::BTreeMap<String, Projection>),
+/// Names borrow the projection's paths.
+enum Projection<'a> {
+    Directory(std::collections::BTreeMap<&'a str, Projection<'a>>),
     Leaf(layrs_core::scm::TreeEntryTarget, bool),
 }
-fn insert_projection(
-    directory: &mut std::collections::BTreeMap<String, Projection>,
-    parts: &[&str],
-    value: Projection,
+fn insert_projection<'a>(
+    directory: &mut std::collections::BTreeMap<&'a str, Projection<'a>>,
+    parts: &[&'a str],
+    value: Projection<'a>,
 ) -> io::Result<()> {
     if parts.len() == 1 {
-        if directory.insert(parts[0].into(), value).is_some() {
+        if directory.insert(parts[0], value).is_some() {
             return Err(invalid("duplicate checkout projection path"));
         }
         return Ok(());
     }
     match directory
-        .entry(parts[0].into())
+        .entry(parts[0])
         .or_insert_with(|| Projection::Directory(Default::default()))
     {
         Projection::Directory(children) => insert_projection(children, &parts[1..], value),
@@ -528,7 +529,7 @@ fn insert_projection(
     }
 }
 fn hash_projection(
-    directory: std::collections::BTreeMap<String, Projection>,
+    directory: std::collections::BTreeMap<&str, Projection<'_>>,
 ) -> io::Result<layrs_core::scm::TreeId> {
     use layrs_core::scm::{RepoPathComponent, Tree, TreeEntry, TreeEntryTarget};
     let mut entries = Vec::new();

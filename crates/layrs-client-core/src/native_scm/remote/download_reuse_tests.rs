@@ -847,6 +847,11 @@ fn local_corruption_and_changed_final_byte_fail_without_admission() {
     assert!(fixture.graph(true).is_err());
     fixture.state.lock().unwrap().corrupt_download = false;
     let chunk = Chunk::new(vec![1; 32 * 1024]).unwrap();
+    // The rest corrupts the chunk's own file: format 6 keeps no file per
+    // object (its pack corruption is covered by the Store's format 6 tests).
+    if fixture.workspace.open_store().unwrap().format_version() != 5 {
+        return;
+    }
     let path = {
         let store = fixture.workspace.open_store().unwrap();
         scm_v1::cas::NativeCas::open(&store)

@@ -544,6 +544,29 @@ pub(crate) fn open_audit_read_only(path: &Path, busy_timeout: Duration) -> Resul
 }
 
 fn verify_persistent_wal(path: &Path) -> Result<()> {
+    // The header's journal-mode bytes only change with the file: checked
+    // once per file version (path, length, modification time) per process.
+    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+    static VERIFIED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<Key>>> =
+        std::sync::OnceLock::new();
+    let key = fs::metadata(path)
+        .ok()
+        .map(|metadata| (path.to_path_buf(), metadata.len(), metadata.modified().ok()));
+    let verified = VERIFIED.get_or_init(Default::default);
+    if key
+        .as_ref()
+        .is_some_and(|key| verified.lock().is_ok_and(|set| set.contains(key)))
+    {
+        return Ok(());
+    }
+    verify_persistent_wal_header(path)?;
+    if let (Some(key), Ok(mut set)) = (key, verified.lock()) {
+        set.insert(key);
+    }
+    Ok(())
+}
+
+fn verify_persistent_wal_header(path: &Path) -> Result<()> {
     let mut header = [0_u8; 20];
     fs::File::open(path)?.read_exact(&mut header)?;
     let actual = if header.starts_with(b"SQLite format 3\0") && header[18..20] == [2, 2] {
@@ -602,6 +625,24 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn immutable_file_uri(path: &Path) -> Result<String> {
+    // The canonical form of a Store's database path, resolved once per
+    // process (its Store root is pinned and its identity checked by every
+    // session that uses the connection).
+    static URIS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>>,
+    > = std::sync::OnceLock::new();
+    let uris = URIS.get_or_init(Default::default);
+    if let Some(uri) = uris.lock().ok().and_then(|map| map.get(path).cloned()) {
+        return Ok(uri);
+    }
+    let uri = immutable_file_uri_uncached(path)?;
+    if let Ok(mut map) = uris.lock() {
+        map.insert(path.to_path_buf(), uri.clone());
+    }
+    Ok(uri)
+}
+
+fn immutable_file_uri_uncached(path: &Path) -> Result<String> {
     let canonical = fs::canonicalize(path)?;
     let normalized = canonical
         .to_str()
