@@ -28,5 +28,6 @@ uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
 
 [dev-dependencies]
+layrs-store-local = { path = "../layrs-store-local", features = ["test-support"] }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

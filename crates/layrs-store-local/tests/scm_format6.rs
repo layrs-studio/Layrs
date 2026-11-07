@@ -1847,6 +1847,173 @@ fn inline_packs_consolidate_inline() {
     assert_fsck_clean(&root.0);
 }
 
+/// One inline pack, its sequence number and its label, after one batch.
+fn one_inline_pack(label: &str) -> (TestRoot, Vec<File>, Lane, i64, PathBuf) {
+    let root = TestRoot::new(label);
+    create(&root.0, label, "6");
+    set_inline_pack_limit(&root.0, None);
+    let files = vec![file("a.txt", b"alpha bytes", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let (seq, name): (i64, String) = sql(&root.0)
+        .query_row(
+            "SELECT pack_seq, name FROM cas_packs WHERE stored_inline=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let label = root
+        .0
+        .join("metadata")
+        .join(format!("layrs.sqlite3#{name}"));
+    (root, files, lane, seq, label)
+}
+
+/// Pack-level damage of an inline pack (its metadata, a missing image) is
+/// corruption named at its database row, never a file (council s8 r1).
+#[test]
+fn a_damaged_or_missing_inline_image_is_named_at_its_row() {
+    for missing in [false, true] {
+        let (root, files, lane, seq, label) = one_inline_pack(&format!("inline-row-{missing}"));
+        let connection = sql(&root.0);
+        if missing {
+            connection
+                .execute("DELETE FROM cas_pack_inline WHERE pack_seq=?1", [seq])
+                .unwrap();
+        } else {
+            let mut image: Vec<u8> = connection
+                .query_row(
+                    "SELECT image FROM cas_pack_inline WHERE pack_seq=?1",
+                    [seq],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            // A byte of its metadata, before the footer.
+            let at = image.len() - 72 - 3;
+            image[at] ^= 0x5a;
+            connection
+                .execute(
+                    "UPDATE cas_pack_inline SET image=?1 WHERE pack_seq=?2",
+                    rusqlite::params![image, seq],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let repository = NativeScmRepository::new(&root.0);
+        let chunk = StoreObjectId::ChunkRaw(files[0].chunks[0].id().clone());
+        assert!(repository.get_chunk(files[0].chunks[0].id()).is_err());
+        assert!(
+            repository
+                .object_admitted_metadata(&chunk, lane.space.id())
+                .is_err()
+        );
+        drop(repository);
+        let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.code == FsckFindingCode::CasCorruption
+                    && finding.path.as_deref() == Some(label.as_path())
+            }),
+            "{missing}: {:#?}",
+            report.findings
+        );
+        assert!(
+            report.findings.iter().all(|finding| finding
+                .path
+                .as_deref()
+                .is_none_or(|path| !path.starts_with(root.0.join("objects")))),
+            "{missing}: {:#?}",
+            report.findings
+        );
+    }
+}
+
+/// A scrub reads inline images from the database now: damage done after a
+/// CAS view loaded its catalog is reported (council s8 r1).
+#[test]
+fn scrub_rereads_inline_images_damaged_after_the_view_loaded() {
+    let (root, files, _lane, _seq, label) = one_inline_pack("inline-scrub");
+    let store = open(&root.0).unwrap();
+    let cas = NativeCas::open(&store).unwrap();
+    assert!(cas.scrub().unwrap().is_clean());
+    let location = cas
+        .locate(&StoreObjectId::ChunkRaw(files[0].chunks[0].id().clone()))
+        .unwrap()
+        .unwrap();
+    location.flip_stored_byte().unwrap();
+    let report = cas.scrub().unwrap();
+    assert!(!report.is_clean());
+    assert!(report.issues.iter().any(|issue| issue.path == label));
+}
+
+/// Inline packs merge at eight; a merge whose image outgrows the inline
+/// limit becomes a pack file.
+#[test]
+fn inline_packs_that_outgrow_the_limit_merge_into_a_file() {
+    let root = TestRoot::new("inline-spill");
+    create(&root.0, "inline-spill", "6");
+    // Each batch's pack fits, eight of them together do not.
+    set_inline_pack_limit(&root.0, Some(2048));
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    for step in 0..9 {
+        let added = file(&format!("f{step}.txt"), &noise(300, step), Recipe::Fixed);
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+    }
+    drop(repository);
+    assert_eq!(packs(&root.0).len(), 1);
+    assert!(inline_rows(&root.0) < 8);
+    assert_eq!(
+        count(
+            &root.0,
+            "SELECT count(*) FROM cas_packs WHERE stored_inline=0"
+        ),
+        1
+    );
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false"))
+    );
+    assert_fsck_clean(&root.0);
+}
+
+/// A batch stopped after its commit, before its checked checkpoint: the
+/// commit (inline image included) is recovered by the next open.
+#[test]
+fn an_inline_pack_committed_before_a_stop_is_recovered() {
+    let root = TestRoot::new("inline-stop");
+    create(&root.0, "inline-stop", "6");
+    set_inline_pack_limit(&root.0, None);
+    let files = vec![file("a.txt", b"alpha bytes", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("alpha", &files);
+    let mut faulty = NativeScmRepository::with_fault_injector(
+        &root.0,
+        Arc::new(RepositoryFault(RepositoryFaultPoint::AfterCommit)),
+    );
+    assert!(faulty.apply_batch(&batch).is_err());
+    drop(faulty);
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false")),
+        "{answers:?}"
+    );
+    assert_eq!(inline_rows(&root.0), 1);
+    assert!(packs(&root.0).is_empty());
+    assert_fsck_clean(&root.0);
+}
+
 /// Fails every pack publication after the first `allowed`.
 struct PublicationsAfter {
     allowed: usize,

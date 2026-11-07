@@ -442,11 +442,17 @@ impl NativeScmRepository {
                 // is decided from this batch's catalog (no reopening).
                 let added = publication
                     .as_ref()
-                    .is_some_and(|publication| publication.pack.is_some());
+                    .filter(|publication| publication.pack.is_some())
+                    .map(|publication| publication.inline.is_some());
+                let (files, inline) = match added {
+                    Some(true) => (0, 1),
+                    Some(false) => (1, 0),
+                    None => (0, 0),
+                };
                 let due = compact
                     && cas
                         .compact_catalog()
-                        .is_some_and(|catalog| catalog.consolidation_due(usize::from(added)));
+                        .is_some_and(|catalog| catalog.consolidation_due(files, inline));
                 drop(cas);
                 if due {
                     let after_commit = || {
@@ -1098,8 +1104,13 @@ fn register_compact(c: &Connection, publication: &super::cas::CompactPublication
             .to_str()
             .ok_or_else(|| native_backend("pack name is not UTF-8"))?;
         c.execute(
-            "INSERT INTO cas_packs(name,index_digest,entries,created_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
-            params![name, &digest[..], i64::try_from(*entries).map_err(native_backend)?],
+            "INSERT INTO cas_packs(name,index_digest,entries,stored_inline,created_at_ms) VALUES(?1,?2,?3,?4,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            params![
+                name,
+                &digest[..],
+                i64::try_from(*entries).map_err(native_backend)?,
+                i64::from(publication.inline.is_some())
+            ],
         )
         .map_err(sql_backend)?;
         // A small pack's image commits with its registration (council s7

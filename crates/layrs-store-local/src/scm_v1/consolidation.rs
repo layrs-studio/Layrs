@@ -283,9 +283,14 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
     }
     transaction
         .execute(
-            "INSERT INTO cas_packs(name,index_digest,entries,created_at_ms) \
-             VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
-            params![name, &digest[..], entries_sql],
+            "INSERT INTO cas_packs(name,index_digest,entries,stored_inline,created_at_ms) \
+             VALUES(?1,?2,?3,?4,CAST(unixepoch('subsec')*1000 AS INTEGER))",
+            params![
+                name,
+                &digest[..],
+                entries_sql,
+                i64::from(consolidation.inline.is_some())
+            ],
         )
         .map_err(sql)?;
     let new_seq = transaction.last_insert_rowid();
@@ -395,13 +400,23 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
     if deleted != old_count {
         return Err("consolidation would drop admissions it did not remap".into());
     }
-    // The images of the inline packs retired, before their rows.
-    transaction
+    // The images of the inline packs retired, before their rows: exactly
+    // those of the inline candidates.
+    let inline_retired = transaction
         .execute(
             &format!("DELETE FROM cas_pack_inline WHERE pack_seq IN ({in_seqs})"),
             [],
         )
         .map_err(sql)?;
+    if inline_retired
+        != consolidation
+            .packs
+            .iter()
+            .filter(|pack| pack.inline)
+            .count()
+    {
+        return Err("consolidated inline packs differ from their images".into());
+    }
     for pack in &consolidation.packs {
         let name = pack.name.to_str().ok_or("pack name is not UTF-8")?;
         let removed = transaction

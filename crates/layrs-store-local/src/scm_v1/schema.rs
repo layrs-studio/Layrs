@@ -78,9 +78,9 @@ pub const REQUIRED_TABLES: &[&str] = &[
 pub const SCHEMA_V3_VERSION: u32 = 3;
 pub const BASELINE_V3_NAME: &str = "native_scm_v3_compact_baseline";
 pub const SCHEMA_V3_CHECKSUM: &str =
-    "d545c952d60e1afb9747dac0ceaf9c8a716d88ee70ae4eea709f144c2d948c09";
+    "11339f5a4f8616a8320139041f533238292c2faf7d84ad718d38cf7d2c48e91e";
 pub const SCHEMA_V3_FINGERPRINT: &str =
-    "74dc86f53b6247f3e9dc8ecc1d2961118b30cbfb1f97f13e0b079f84bf3a825c";
+    "96eafcebe6ad17da351b0f7e3b81c7d15a7508912242286e4bfde22730a9e596";
 pub const SCHEMA_V3_SQL: &str = include_str!("../../tests/fixtures/scm-v3.sql");
 
 pub fn schema_v3_checksum() -> String {

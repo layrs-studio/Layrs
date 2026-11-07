@@ -333,8 +333,9 @@ struct BatchState {
     /// with `objects/packs` before the batch is declared durable.
     reused_packs: BTreeSet<std::ffi::OsString>,
     /// Whether the batch published or reused a file (`defer_directory`):
-    /// without one, nothing outside SQLite needs ordering before its commit
-    /// (a format 6 batch whose pack is inline, council s7 Q1).
+    /// without one, nothing outside SQLite needs ordering before the commit
+    /// of a format 6 batch (its pack is inline, council s7 Q1). Format 6
+    /// reuses only registered copies, durable before their registration.
     files: bool,
 }
 
@@ -1177,8 +1178,25 @@ impl NativeCas {
         if self.packs.is_some() {
             self.scrub_packs(&mut report)?;
         }
-        if let Some(catalog) = self.compact_view()? {
-            self.scrub_registered(catalog, &mut report)?;
+        if self.compact_view()?.is_some() {
+            // From the database now (council s8 r1): an inline pack's image
+            // is reread, as a pack file is, never the one this view loaded.
+            let path = self
+                .root
+                .join(super::layout::METADATA_DIR_NAME)
+                .join(super::layout::SQLITE_FILE_NAME);
+            let connection =
+                super::sqlite::open_read_only(&path, std::time::Duration::from_secs(5)).map_err(
+                    |error| {
+                        io_error(
+                            "open Store database",
+                            &path,
+                            io::Error::other(error.to_string()),
+                        )
+                    },
+                )?;
+            let catalog = compact::RegisteredCatalog::load_fresh(&connection, self)?;
+            self.scrub_registered(&catalog, &mut report)?;
         }
         report
             .issues
@@ -1352,7 +1370,11 @@ impl NativeCas {
         if !durable {
             return Ok(());
         }
-        if !state.files && state.reused_packs.is_empty() {
+        // Format 6 only (council s8 r1, P1): a format 5 batch may reuse
+        // members of a pack published by an earlier batch that never reached
+        // its barrier, which JournalOrdered does not record; its barrier
+        // always runs, as before.
+        if self.compact_format && !state.files && state.reused_packs.is_empty() {
             crate::perf::count("cas.batch_durability_skipped", 1);
             return Ok(());
         }
@@ -1970,6 +1992,7 @@ impl NativeCas {
         }
     }
 }
+#[cfg(any(test, feature = "test-support"))]
 pub use compact::set_inline_pack_limit;
 pub use packs::CasLocation;
 use packs::*;

@@ -82,6 +82,39 @@ Après r3 (non relu par le conseil, selon la recommandation d'Opus r3) : un lot 
 | GPT-6.1 Sol (max) | 6/10 | 8/10 |
 | Claude Opus 5.5 (xhigh) | 7/10 | 8/10, `ship` |
 
+**Consolidation des packs du format 6 (ADR 0028, section 6)** — `9cd1f0b`, corrections `de9731c` (s6 r1), `533c089` (s6 r2), test `e918531` :
+- Déclenchée à la fin d'un lot d'écriture du format 6, sous le même verrou exclusif, quand le Store compte 6 packs inscrits (le pack du lot compté seulement s'il en a publié un).
+- Choix géométrique par palier de taille : le palier suivant est essayé si le plus petit pack est isolé. Chaque pack ajouté fait au plus deux fois le total du groupe. Le groupe reste sous la moitié des limites du lecteur et sous un budget de 64 Mio par consolidation (les paliers plus gros attendent un passage de maintenance explicite, à faire).
+- Copie dans l'ordre des blocs : chaque bloc est décompressé une fois, chaque record est vérifié contre son identifiant puis copié tel quel. Un record que deux candidats contiennent est écrit une fois.
+- Une transaction inscrit le nouveau pack et remappe les bitmaps, une Space à la fois. Chaque bit admis doit désigner la même identité dans l'ancien et le nouvel index ; le bitmap écrit est relu par sa clé et comparé octet par octet. Elle retire ensuite les anciens packs (chacun par séquence, nom et condensé). Les fichiers retirés sont supprimés à la réouverture exclusive suivante, dans la même session. Le VFS relit le catalogue quand un pack qu'il nomme a disparu, comme git.
+- Un candidat illisible ou au bitmap mal formé est écarté, sans bloquer les autres. Il est noté dans `metadata/consolidation-skipped` pour que les sessions suivantes ne le retentent pas. Une erreur d'écriture du nouveau pack (disque plein) n'accuse aucun candidat.
+- Mesuré : le scénario à 10 000 fichiers finit avec 7 packs au lieu de 20 ; Store 2 600 → 2 536 Kio ; chargement du catalogue de `status` 3,4 → 2,1 ms.
+
+| Membre | s6 r1 | s6 r2 | s6 r3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 | 6/10 |
+| GPT-6.1 Sol (max) | 7/10 | 7/10 | 6/10 |
+| Claude Opus 5.5 (xhigh) | 6/10 | 7/10 | 8/10 |
+
+Corrections s6 r3 (`6c22006`) : notes de `metadata/` lues sans suivre de lien et remplacées par un fichier neuf (P0 d'Astra et Sol : un lien posé là faisait tronquer sa cible) ; budget décompressé de 256 Mio ; inscription Space par Space ; une erreur d'E/S en lecture ne met plus un candidat en cause ; pause d'une heure après deux échecs généraux. Rejeté : un index sur `pack_seq` (Sol P2 ; Opus l'accepte sans). Dernier tour : toutes les suites Windows vertes, poussé sur main (`47b7b36`), CI verte.
+
+**Conseil s7 (conception)** :
+- Q1, petits lots : les trois pour. Retenu le design d'Opus (image du pack dans une ligne SQLite, inscrite dans `cas_packs`) ; Astra et Sol le jugent crédible.
+- Q2, capture incrémentale des Rooms : oui, mais seulement avec un observateur continu dont la complétude est prouvée (et un mémo d'arbres par dossier). À faire.
+- Q3, relecture de `status` : (b) pour le seul `status` informatif (Astra, Sol ; Opus en repli) — fait (`47b7b36`) : ~57,5 → ~50,8 ms (git ~49 ms, machine chargée).
+
+**Packs en ligne (s7 Q1)** — `c096e7b` puis corrections s8 r1 : voir `docs/plans/store-format-6.md`. Capture de Room : `cas.put_ordered` 18 → 4 ms, barrière sautée.
+
+| Membre | s8 r1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 |
+
+Corrections s8 r1 : barrière sautée en format 6 seulement (P1 d'Opus : un lot du format 5 peut réutiliser un pack dont la barrière n'a jamais tourné) ; scrub depuis un catalogue frais ; plafond borné à 1 Mio ; forme déclarée (`stored_inline`) et diagnostics à la ligne de la base ; les packs en ligne fusionnent entre eux à 8 au lieu de compter dans le seuil de 6 ; orphelins, déversement, comptage des images retirées ; aides de test derrière la feature `test-support`.
+
+**Découverte de `status`** — `82cbe12` : chaque dossier épinglé une seule fois. Avant, un `status` parcourait 13 fois un chemin depuis la racine du volume (119 ouvertures) plus 15 `lstat` d'ancêtres. Le parcours d'épinglage refuse déjà un lien ou un point de reparse à chaque composant ; la découverte garde le dossier de travail épinglé et le Store est lié à sa racine épinglée. `status` dans le processus : 29,8 → 24,5 ms ; au mur, ~48,5 ms contre ~40 ms pour git (machine calme, 10 000 fichiers). Mesuré : une requête par chemin coûte ~0,35–0,45 ms sur ce poste (filtres antivirus et ProjFS), une ouverture relative presque rien ; démarrer layrs coûte ~24 ms, git ~33 ms.
+
 **Conseil s4 (conception, brief `council-s4-design.md`)** :
 - Q2, ouvertures du Store (unanime) : faire passer une session de lecture explicite à travers chaque phase sans interruption (découverte, capture avant le parcours, de l'état jusqu'au staging). Jamais tenue pendant une requête à l'hôte VFS, un parcours de dossier ou une ouverture exclusive du même processus ; un registre par processus refuse une ouverture exclusive pendant qu'une session partagée est vivante. Refusé : réutiliser une connexion ou un état entre deux sessions (la longueur et la date d'un fichier ne prouvent pas qu'il n'a pas changé).
 - Q3, double validation (unanime sur le fond) : valider une seule fois, en gardant la capacité exclusive de la validation jusqu'au point de contrôle final, pour les petites matérialisations. Ailleurs, les deux validations restent.
@@ -92,7 +125,7 @@ Après r3 (non relu par le conseil, selon la recommandation d'Opus r3) : un lot 
 
 **Reste à faire**
 - Fusions : matérialisation restante (~100 ms : trois sessions d'écriture, chacune avec son point de contrôle WAL) ; double vérification du dossier dans `accept_merge`.
-- Taille : passage du format 6 par défaut (pack illisible, consolidation) ; alias ChunkId en préfixe ; FileId omis dans l'index de changements ; journaux VFS des Rooms supprimées ; arbres binaires.
+- Taille : passage du format 6 par défaut (pack illisible ; consolidation faite, maintenance explicite des gros paliers à faire) ; identité de contenu (FileId et ChunkId de 32 octets, décision utilisateur) ; arbres binaires.
 - Création de Room : écriture et conversion des petits fichiers (~2,4 s).
 
 ## Point courant - format 6 intégré, conseil r2-r3 (Claude + sous-agent Claude + conseil, 2026-11-06)

@@ -156,14 +156,6 @@ impl NativeCas {
         format!("{}|{}", self.root_identity, self.root.display())
     }
 
-    /// A registered pack, from the process cache or loaded and validated
-    /// now. Load failures are not cached. With `fresh` (audits), the
-    /// metadata on disk now is loaded and checked, and the cache is neither
-    /// read nor filled: damage done since the cache was filled is seen.
-    fn loaded_pack(&self, name: &OsStr, fresh: bool) -> CasResult<Arc<LoadedPack>> {
-        self.loaded_pack_in(&std::cell::OnceCell::new(), name, fresh)
-    }
-
     /// Where an inline pack's bytes are, for messages: the database row.
     fn inline_label(&self, name: &OsStr) -> PathBuf {
         self.root
@@ -210,8 +202,12 @@ impl NativeCas {
         Ok(pack)
     }
 
-    /// `loaded_pack`, opening the packs directory at most once for all the
-    /// packs of one catalog (`packs`).
+    /// A registered pack file, from the process cache or loaded and
+    /// validated now, opening the packs directory at most once for all the
+    /// packs of one catalog (`packs`). Load failures are not cached. With
+    /// `fresh` (audits), the metadata on disk now is loaded and checked, and
+    /// the cache is neither read nor filled: damage done since the cache was
+    /// filled is seen.
     fn loaded_pack_in(
         &self,
         packs: &std::cell::OnceCell<PinnedDirectory>,
@@ -284,9 +280,12 @@ impl NativeCas {
         let Ok(entries) = fs::read_dir(&directory) else {
             return 0;
         };
+        // Only packs registered as files: a file carrying an inline pack's
+        // name is never that pack.
         let registered: HashSet<&OsStr> = catalog
             .rows
             .iter()
+            .filter(|row| !row.inline)
             .map(|row| row.name.as_os_str())
             .collect();
         let orphans: Vec<OsString> = entries
@@ -338,6 +337,8 @@ enum LogicalKey {
 pub(crate) struct ConsolidatedPack {
     pub(crate) seq: i64,
     pub(crate) name: OsString,
+    /// Whether it is registered inline (its image row goes with it).
+    pub(crate) inline: bool,
     /// Its registered metadata digest.
     pub(crate) digest: [u8; 32],
     /// The new ordinal of each of its logical ordinals.
@@ -384,6 +385,8 @@ pub(crate) struct ConsolidationFailure {
 /// Registered packs that trigger a consolidation (ADR 0028, section 6):
 /// above this count, every lookup and every catalog load pays for each.
 const CONSOLIDATE_AT_PACKS: usize = 6;
+/// Inline packs that are merged together (council s8 r1).
+const CONSOLIDATE_INLINE_AT: usize = 8;
 /// The most bytes of packs one consolidation rewrites inline, under the
 /// exclusive lock of the write that triggered it (council s6 r2): readers
 /// and writers wait seconds at most. Larger tiers are left as they are (an
@@ -396,10 +399,19 @@ const INLINE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 impl RegisteredCatalog {
-    /// Whether a consolidation is due once `added` more packs are
-    /// registered (decided without reopening anything).
-    pub(crate) fn consolidation_due(&self, added: usize) -> bool {
-        self.packs.len() + added >= CONSOLIDATE_AT_PACKS
+    /// Whether a consolidation is due once `added_files` more pack files
+    /// and `added_inline` more inline packs are registered (decided without
+    /// reopening anything). Inline packs do not count toward the file
+    /// trigger: they are merged among themselves at `CONSOLIDATE_INLINE_AT`
+    /// (council s8 r1), so small batches do not consolidate every few.
+    pub(crate) fn consolidation_due(&self, added_files: usize, added_inline: usize) -> bool {
+        let inline = self
+            .packs
+            .iter()
+            .filter(|pack| pack.pack.is_inline())
+            .count();
+        self.packs.len() - inline + added_files >= CONSOLIDATE_AT_PACKS
+            || inline + added_inline >= CONSOLIDATE_INLINE_AT
     }
 
     /// The packs to consolidate now, in registration order, leaving out
@@ -409,7 +421,25 @@ impl RegisteredCatalog {
     /// its size. Only sound packs: a damaged one keeps its row and bitmaps
     /// as they are, and does not stop the others (council s6 r1).
     pub(crate) fn consolidation_candidates(&self, excluded: &[usize]) -> Vec<usize> {
-        if self.packs.len() < CONSOLIDATE_AT_PACKS {
+        // Inline packs merge among themselves first: the result stays inline
+        // while it fits, else it becomes a pack file.
+        let inline: Vec<usize> = self
+            .packs
+            .iter()
+            .enumerate()
+            .filter(|(position, pack)| pack.pack.is_inline() && !excluded.contains(position))
+            .map(|(position, _)| position)
+            .collect();
+        if inline.len() >= CONSOLIDATE_INLINE_AT {
+            return inline;
+        }
+        let files = self.packs.len()
+            - self
+                .packs
+                .iter()
+                .filter(|pack| pack.pack.is_inline())
+                .count();
+        if files < CONSOLIDATE_AT_PACKS {
             return Vec::new();
         }
         // (size, records, blocks, decompressed bytes, position), smallest
@@ -575,7 +605,12 @@ impl NativeCas {
                 }
             }
             keys_of.push(keys);
-            packs.push((registered.seq, loaded.name.clone(), index.digest));
+            packs.push((
+                registered.seq,
+                loaded.name.clone(),
+                index.digest,
+                loaded.is_inline(),
+            ));
         }
         let (pack, inline) = self.publish_pack2(open).map_err(general)?;
         let new = match &inline {
@@ -603,7 +638,7 @@ impl NativeCas {
         let packs = packs
             .into_iter()
             .zip(keys_of)
-            .map(|((seq, name, digest), keys)| {
+            .map(|((seq, name, digest, inline), keys)| {
                 let mut ordinals = Vec::with_capacity(keys.len());
                 let mut old_identities = Vec::with_capacity(keys.len());
                 for (key, identity) in keys {
@@ -625,6 +660,7 @@ impl NativeCas {
                 Ok(ConsolidatedPack {
                     seq,
                     name,
+                    inline,
                     digest,
                     ordinals,
                     identities: old_identities,
@@ -779,7 +815,44 @@ struct RegisteredRow {
     name: OsString,
     digest: Vec<u8>,
     entries: i64,
+    /// Its declared form (`stored_inline`) and, inline, its image.
+    inline: bool,
     image: Option<Arc<[u8]>>,
+}
+
+impl RegisteredRow {
+    /// Where the pack's bytes are, for findings: its database row or its
+    /// file, as its registration declares.
+    fn location(&self, cas: &NativeCas) -> PathBuf {
+        if self.inline {
+            cas.inline_label(&self.name)
+        } else {
+            cas.objects_dir.join(PACKS_DIR).join(&self.name)
+        }
+    }
+
+    /// The pack in its declared form: an inline pack is read from its
+    /// image (missing is corruption, never a file), a file pack from disk
+    /// (an image beside it is corruption).
+    fn load(
+        &self,
+        cas: &NativeCas,
+        packs: &std::cell::OnceCell<PinnedDirectory>,
+        fresh: bool,
+    ) -> CasResult<Arc<LoadedPack>> {
+        match (self.inline, &self.image) {
+            (true, Some(image)) => cas.inline_pack(&self.name, Arc::clone(image), fresh),
+            (true, None) => Err(pack2::pack2_corruption(
+                &self.location(cas),
+                "inline pack image is missing",
+            )),
+            (false, Some(_)) => Err(pack2::pack2_corruption(
+                &self.location(cas),
+                "pack file has an inline image",
+            )),
+            (false, None) => cas.loaded_pack_in(packs, &self.name, fresh),
+        }
+    }
 }
 
 /// One physical copy an audit checked: a pack record or a loose object.
@@ -901,8 +974,8 @@ impl RegisteredCatalog {
         let _span = crate::perf::span("cas.compact_catalog");
         let mut statement = connection
             .prepare(
-                "SELECT pack_seq, name, index_digest, entries, image FROM cas_packs \
-                 LEFT JOIN cas_pack_inline USING (pack_seq) ORDER BY pack_seq",
+                "SELECT pack_seq, name, index_digest, entries, stored_inline, image \
+                 FROM cas_packs LEFT JOIN cas_pack_inline USING (pack_seq) ORDER BY pack_seq",
             )
             .map_err(sql_error)?;
         let rows = statement
@@ -912,7 +985,8 @@ impl RegisteredCatalog {
                     row.get::<_, String>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
                 ))
             })
             .map_err(sql_error)?
@@ -931,31 +1005,34 @@ impl RegisteredCatalog {
                 store != &key || name.to_str().is_some_and(|name| registered.contains(name))
             });
         }
-        for (seq, name, digest, entries, image) in rows {
-            let name = OsString::from(name);
-            let image: Option<Arc<[u8]>> = image.map(Arc::from);
-            let loaded = match &image {
-                Some(image) => cas.inline_pack(&name, Arc::clone(image), fresh),
-                None => cas.loaded_pack_in(&packs_directory, &name, fresh),
+        for (seq, name, digest, entries, inline, image) in rows {
+            let row = RegisteredRow {
+                seq,
+                name: OsString::from(name),
+                digest,
+                entries,
+                inline: inline == 1,
+                image: image.map(Arc::from),
             };
-            let checked = loaded
-                .and_then(|pack| check_registration(&pack, &name, &digest, entries).map(|()| pack))
+            let checked = row
+                .load(cas, &packs_directory, fresh)
+                .and_then(|pack| {
+                    check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
+                })
                 .map_err(|error| {
                     // An invalid row is reported as such, before any I/O error.
-                    let path = cas.objects_dir.join(PACKS_DIR).join(&name);
-                    if !pack2::valid_pack2_name(&name) || digest.len() != 32 || entries < 0 {
-                        pack2::pack2_corruption(&path, "invalid cas_packs row")
+                    if !pack2::valid_pack2_name(&row.name)
+                        || row.digest.len() != 32
+                        || row.entries < 0
+                        || !(0..=1).contains(&inline)
+                    {
+                        pack2::pack2_corruption(&row.location(cas), "invalid cas_packs row")
                     } else {
                         error
                     }
                 });
-            registered_rows.push(RegisteredRow {
-                seq,
-                name: name.clone(),
-                digest,
-                entries,
-                image,
-            });
+            let entries = row.entries;
+            registered_rows.push(row);
             match checked {
                 Ok(pack) => packs.push(RegisteredPack {
                     seq,
@@ -1741,15 +1818,20 @@ impl Drop for OpenPack {
     }
 }
 
+/// The largest image `cas_pack_inline` accepts (its CHECK).
+const MAX_INLINE_IMAGE_BYTES: usize = 1024 * 1024;
+
 /// Bytes up to which a pack is kept in memory and registered inline, by
-/// default: `LAYRS_CAS_INLINE_MAX` (bytes; 0 never inlines), else 64 KiB.
+/// default: `LAYRS_CAS_INLINE_MAX` (bytes; 0 never inlines; at most
+/// `MAX_INLINE_IMAGE_BYTES`), else 64 KiB.
 fn default_inline_pack_limit() -> usize {
     static FROM_ENV: OnceLock<usize> = OnceLock::new();
     *FROM_ENV.get_or_init(|| {
         std::env::var("LAYRS_CAS_INLINE_MAX")
             .ok()
-            .and_then(|value| value.parse().ok())
+            .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(64 * 1024)
+            .min(MAX_INLINE_IMAGE_BYTES)
     })
 }
 
@@ -1765,7 +1847,7 @@ static INLINE_LIMIT_FORCED: std::sync::atomic::AtomicBool =
 
 /// Test support: forces the inline pack limit of the Store at `root` in
 /// this process (`None` restores the default).
-#[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_inline_pack_limit(root: &Path, limit: Option<usize>) {
     let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
     if let Ok(mut overrides) = inline_limit_overrides().lock() {
@@ -2066,7 +2148,7 @@ impl NativeCas {
                 .ok()
                 .and_then(|overrides| overrides.get(&self.root).copied())
             {
-                return limit;
+                return limit.min(MAX_INLINE_IMAGE_BYTES);
             }
         }
         default_inline_pack_limit()
@@ -2095,12 +2177,17 @@ impl NativeCas {
     /// Moves a pack kept in memory to a staging file once it outgrows the
     /// inline limit.
     fn spill_if_over(&self, open: &mut OpenPack) -> CasResult<()> {
+        match &open.sink {
+            PackSink::Memory(image) if image.len() > self.inline_pack_limit() => self.spill(open),
+            _ => Ok(()),
+        }
+    }
+
+    /// Moves a pack kept in memory to a staging file.
+    fn spill(&self, open: &mut OpenPack) -> CasResult<()> {
         let PackSink::Memory(image) = &open.sink else {
             return Ok(());
         };
-        if image.len() <= self.inline_pack_limit() {
-            return Ok(());
-        }
         let _span = crate::perf::span("cas.pack_spill");
         let lease = StagingLease::shared(&self.staging_lease_path)?;
         let staging = self.pinned_staging()?;
@@ -2142,7 +2229,8 @@ impl NativeCas {
                 return Ok(((name, sealed.digest, sealed.logical), Some(image)));
             }
         }
-        self.spill_if_over(&mut open)?;
+        // Not inline (decided once): the pack is a file.
+        self.spill(&mut open)?;
         self.publish_pack_file(open, &sealed)
             .map(|registration| (registration, None))
     }
@@ -2261,7 +2349,7 @@ impl RegisteredCatalog {
             })
         };
         for row in &self.rows {
-            let path = cas.objects_dir.join(PACKS_DIR).join(&row.name);
+            let path = row.location(cas);
             // An audit catalog already holds this pack's fresh metadata (or
             // why it is unreadable); any other catalog is reread now.
             let loaded = if self.fresh {
@@ -2277,13 +2365,11 @@ impl RegisteredCatalog {
                         })),
                 }
             } else {
-                match &row.image {
-                    Some(image) => cas.inline_pack(&row.name, Arc::clone(image), true),
-                    None => cas.loaded_pack(&row.name, true),
-                }
-                .and_then(|pack| {
-                    check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
-                })
+                row.load(cas, &std::cell::OnceCell::new(), true)
+                    .and_then(|pack| {
+                        check_registration(&pack, &row.name, &row.digest, row.entries)
+                            .map(|()| pack)
+                    })
             };
             let loaded = match loaded {
                 Ok(loaded) => loaded,
@@ -2420,13 +2506,12 @@ impl RegisteredCatalog {
         self.damaged
             .iter()
             .map(|(seq, error)| {
-                let name = self
+                let path = self
                     .rows
                     .iter()
                     .find(|row| row.seq == *seq)
-                    .map(|row| row.name.clone())
-                    .unwrap_or_default();
-                (cas.objects_dir.join(PACKS_DIR).join(name), error.clone())
+                    .map_or_else(|| cas.objects_dir.join(PACKS_DIR), |row| row.location(cas));
+                (path, error.clone())
             })
             .collect()
     }

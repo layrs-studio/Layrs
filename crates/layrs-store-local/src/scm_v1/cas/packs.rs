@@ -801,7 +801,7 @@ impl CasLocation {
     /// Test support: makes the copy at this location missing while it stays
     /// registered, as losing its file would: a loose or pack file is renamed
     /// aside (kept as evidence), an inline pack loses its image row.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn remove_stored_copy(&self) -> std::io::Result<()> {
         match self {
             Self::Loose { path, .. } | Self::Packed { pack: path, .. } => {
@@ -822,7 +822,7 @@ impl CasLocation {
 
     /// Test support: inverts bits of the stored byte at this location (in a
     /// loose or pack file, or in an inline pack image), as damage would.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn flip_stored_byte(&self) -> std::io::Result<()> {
         use std::io::{Read, Seek, SeekFrom, Write};
         let (path, at) = match self {

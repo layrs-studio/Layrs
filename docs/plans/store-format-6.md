@@ -364,10 +364,17 @@ part.
     validated as untrusted input before registration (as a reread file),
     and read from SQLite with the catalog: bitmaps, the exact remap, audits
     and damage rules are those of every pack (a damaged block fails its
-    records; fsck names `metadata/layrs.sqlite3#pack-...`). Consolidation
-    writes through the same sink: inline packs merge into an inline pack
-    while it fits. `cas_packs.pack_seq` is AUTOINCREMENT: a sequence number
-    is never reused. Schema v3 checksum and fingerprint changed: format 6
+    records; fsck names `metadata/layrs.sqlite3#pack-...`). A pack's form
+    is declared (`cas_packs.stored_inline`): a missing image is corruption
+    of that row, never read as a file, and a file carrying an inline pack's
+    name is never that pack. A scrub reads the images from the database
+    now. Inline packs do not count toward the 6-pack trigger: at 8 they
+    merge together, inline while the result fits, else into a pack file.
+    The limit is clamped to the column's 1 MiB. Only format 6 batches skip
+    the barrier (a format 5 batch may reuse a pack whose own barrier never
+    ran). `cas_packs.pack_seq` is AUTOINCREMENT: a sequence number is never
+    reused. The test helpers that damage copies or force the limit exist
+    only with the `test-support` feature (council s8 r1). Schema v3 checksum and fingerprint changed: format 6
     Stores created before this are refused (format 6 is not the default).
     Measured: a Room capture's `cas.put_ordered` 18 -> 4 ms, no barrier.
   - Known limit, a blocker before phase 6 (council s6 r3): tiers above the

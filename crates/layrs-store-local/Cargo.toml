@@ -34,6 +34,14 @@ zstd = "0.13"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[features]
+# Test support: helpers that damage stored copies and force the inline pack
+# limit (council s8 r1). Enabled only by test builds.
+test-support = []
+
+[dev-dependencies]
+layrs-store-local = { path = ".", features = ["test-support"] }
+
 [target.'cfg(windows)'.dependencies]
 layrs-vfs = { path = "../layrs-vfs" }
 windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }

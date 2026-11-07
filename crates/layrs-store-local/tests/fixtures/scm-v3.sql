@@ -117,11 +117,14 @@ CREATE INDEX admissions_object_idx ON space_object_admissions(object_id, space_i
 -- registered pack whose metadata blake3 differs from index_digest is
 -- corruption. entries: logical objects of the pack (bitmap length in bits).
 -- A sequence number is never reused (bitmaps and caches key by it).
+-- stored_inline: the pack's bytes are its cas_pack_inline row (1), or its
+-- file under objects/packs (0); a missing image is never read as a file.
 CREATE TABLE cas_packs (
     pack_seq INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE CHECK (length(name) = 41 AND name GLOB 'pack-*.lp2'),
     index_digest BLOB NOT NULL CHECK (length(index_digest) = 32),
     entries INTEGER NOT NULL CHECK (entries >= 0),
+    stored_inline INTEGER NOT NULL CHECK (stored_inline IN (0, 1)),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0)
 ) STRICT;
 
