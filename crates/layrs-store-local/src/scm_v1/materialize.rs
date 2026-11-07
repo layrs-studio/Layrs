@@ -498,9 +498,12 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // by the NTFS journal: none needs its own flush; one barrier before the
     // metadata commit makes every earlier one durable (as the CAS batches,
     // and git's batch mode, do). Elsewhere each directory is synced as before.
+    #[cfg(windows)]
     let ordered = checkout.same_volume(store_dir)
         && super::change_index::volume_file_system(Path::new(&checkout_root)).as_deref()
             == Some("NTFS");
+    #[cfg(not(windows))]
+    let ordered = false;
     let ensure = |parent: &PinnedDirectory, name: &std::ffi::OsStr| {
         if ordered {
             parent.ensure_child_unsynced(name)
@@ -515,8 +518,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
         &ensure(store_dir, "metadata".as_ref())?,
         "repair-backups".as_ref(),
     )?;
-    let backup = ensure(
-        &backups,
+    // The attempt's own folder is always created durably (a synced
+    // creation), before `prepare_and_claim` makes the journal Applying:
+    // recovery of an Applying journal needs it (council s2 r2).
+    let backup = backups.ensure_child(
         backup_root
             .file_name()
             .ok_or_else(|| error("missing backup name"))?,
@@ -528,7 +533,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // file of ours whose bytes did not reach the disk is recognised: before
     // the commit it is quarantined like any installed leaf, after the commit
     // it is kept and shows as a working change. Originals moved in phase one
-    // keep their per-move syncs. A staging failure (missing or corrupt source,
+    // keep their per-move syncs, except on one NTFS volume where the journal
+    // orders them and one barrier precedes the metadata commit (`ordered`).
+    // A staging failure (missing or corrupt source,
     // disk full) touched no checkout path: the journal is closed as untouched
     // instead of leaving the Worktree needing repair.
     let stage = crate::perf::span("materialize.stage");
@@ -642,8 +649,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // metadata commit. Recovery decides each path independently (staged leaf
     // still in the backup, or installed leaf at its path, both fingerprinted),
     // so it never relies on one install being durable before the next; the
-    // commit is what needs every install durable. Staged bytes were synced
-    // before any install, and phase one keeps its per-move syncs.
+    // commit is what needs every install durable: each directory is synced
+    // below, or (`ordered`, one NTFS volume) the one barrier after the last
+    // install makes every earlier rename durable. Staged bytes are not
+    // flushed (git-like contract above).
     let mut installed_into: BTreeMap<&str, PinnedDirectory> = BTreeMap::new();
     let mut installed_any = false;
     for path in &paths {
@@ -807,6 +816,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 evidence: completion_evidence.clone(),
                 path_results: results.clone(),
                 now_ms: faults.lease_time_ms()?,
+                taken_at: std::time::Instant::now(),
             })
             .with_store_identity(store_identity)
             .with_metadata_identity(metadata_identity)

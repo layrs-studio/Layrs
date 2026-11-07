@@ -27,6 +27,10 @@ use std::{collections::BTreeMap, io::Read};
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+// Content ids are inline (71 bytes, no allocation per copy): a version
+// naming several of them outweighs the other variants of this short-lived
+// value.
+#[allow(clippy::large_enum_variant)]
 pub enum RestoreSource {
     Version {
         version: layrs_core::projection::ProjectionVersion,

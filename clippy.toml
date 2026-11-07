@@ -1,0 +1,6 @@
+# Content ids (FileId, TreeId, StepId, ...) are stored inline as their 71
+# ASCII bytes so that copying one never allocates (hot paths copy them by the
+# thousand). An error naming two or three of them (a claimed and a computed
+# id, an operation and its parent) then exceeds clippy's default 128 bytes;
+# such errors are cold paths, so the bound is raised instead of boxing ids.
+large-error-threshold = 512

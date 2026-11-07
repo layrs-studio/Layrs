@@ -703,7 +703,8 @@ pub struct NativeRecovery<'store> {
 mod records;
 mod writer;
 use records::*;
-pub(crate) use writer::complete_in_transaction;
+#[doc(hidden)]
+pub use writer::complete_in_transaction;
 
 #[cfg(test)]
 mod tests {

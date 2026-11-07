@@ -528,3 +528,126 @@ fn terminal_path_results_are_exact_and_persisted() {
     assert_eq!(state, "quarantined");
     assert_eq!(evidence, r#"{"quarantineEntry":"q-1"}"#);
 }
+
+#[test]
+fn prepare_and_claim_records_evidence_and_leases_together_from_pending_only() {
+    let root = initialize("prepare-claim", &["worktree:one"]);
+    let mut store = open_exclusive(&root.0).unwrap();
+    let mut recovery = NativeRecovery::new(&mut store).unwrap();
+    let candidate = plan(
+        "recovery:prepare-claim",
+        "idem:prepare-claim",
+        "worktree:one",
+        "pc.txt",
+        RecoveryType::Restore,
+    );
+    recovery.create(&candidate).unwrap();
+    let claim = recovery
+        .prepare_and_claim(
+            candidate.id(),
+            &preparation(Some("pc.txt"), false),
+            "owner:pc",
+            100,
+            50,
+        )
+        .unwrap();
+    assert_eq!(claim.outcome, MutationOutcome::Applied);
+    assert!(claim.leases.iter().all(|lease| lease.expires_at_ms == 150));
+    // Applying with its evidence: one transaction made both durable.
+    let pending = recovery.list_pending().unwrap();
+    let record = pending.iter().find(|r| &r.id == candidate.id()).unwrap();
+    assert_eq!(record.state, RecoveryState::Applying);
+    assert_eq!(record.owner_token.as_deref(), Some("owner:pc"));
+    assert!(record.paths.iter().all(|path| !path.evidence.is_null()));
+    // Only a Pending record can be prepared and claimed at once.
+    assert!(matches!(
+        recovery.prepare_and_claim(
+            candidate.id(),
+            &preparation(Some("pc.txt"), false),
+            "owner:other",
+            120,
+            50,
+        ),
+        Err(RecoveryError::InvalidTransition { .. })
+    ));
+    // Its leases fence like a claim's: an expired one cannot complete.
+    assert!(matches!(
+        recovery.complete(
+            candidate.id(),
+            "owner:pc",
+            &claim.leases,
+            json!({"done":true}),
+            &[applied("pc.txt")],
+            150
+        ),
+        Err(RecoveryError::LeaseFenced { .. })
+    ));
+}
+
+#[test]
+fn a_completion_inside_a_batch_transaction_refuses_expired_leases_and_rolls_back() {
+    use layrs_store_local::scm_v1::recovery::complete_in_transaction;
+    let root = initialize("complete-in-batch", &["worktree:one"]);
+    let candidate = plan(
+        "recovery:complete-in-batch",
+        "idem:complete-in-batch",
+        "worktree:one",
+        "cb.txt",
+        RecoveryType::Restore,
+    );
+    let claim = {
+        let mut store = open_exclusive(&root.0).unwrap();
+        let mut recovery = NativeRecovery::new(&mut store).unwrap();
+        recovery.create(&candidate).unwrap();
+        recovery
+            .prepare_and_claim(
+                candidate.id(),
+                &preparation(Some("cb.txt"), false),
+                "owner:cb",
+                100,
+                50,
+            )
+            .unwrap()
+    };
+    let state = |connection: &Connection| -> String {
+        connection
+            .query_row(
+                "SELECT state FROM recovery_operations WHERE recovery_operation_id=?1",
+                [candidate.id().as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let connection = Connection::open(root.0.join("metadata/layrs.sqlite3")).unwrap();
+    // At its expiry the lease no longer completes: the caller's transaction
+    // (the metadata batch) rolls back, the journal stays Applying.
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(matches!(
+        complete_in_transaction(
+            &connection,
+            candidate.id(),
+            "owner:cb",
+            &claim.leases,
+            json!({"done":true}),
+            &[applied("cb.txt")],
+            150,
+        ),
+        Err(RecoveryError::LeaseFenced { .. })
+    ));
+    connection.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(state(&connection), "applying");
+    // Within it, the completion commits with the caller's transaction.
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    complete_in_transaction(
+        &connection,
+        candidate.id(),
+        "owner:cb",
+        &claim.leases,
+        json!({"done":true}),
+        &[applied("cb.txt")],
+        120,
+    )
+    .unwrap();
+    connection.execute_batch("COMMIT").unwrap();
+    assert_eq!(state(&connection), "completed");
+}

@@ -710,9 +710,11 @@ async fn two_native_clients_publish_clone_receive_divergence_and_local_operation
                 .receive_with_faults(&b, &FailAt(MaterializationPoint::AfterMetadata))
                 .is_err()
         );
-        assert!(b.needs_repair().unwrap());
+        // The metadata and the completed journal commit together (council
+        // s2 r1, B2): stopping after that commit leaves nothing to repair.
+        assert!(!b.needs_repair().unwrap());
         let committed = b.state().unwrap().operation.id().clone();
-        assert_eq!(b.recover().unwrap(), 1);
+        assert_eq!(b.recover().unwrap(), 0);
         assert_eq!(
             std::fs::read(broot.join("docs/readme.txt")).unwrap(),
             b"alice committed receive"

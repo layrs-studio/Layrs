@@ -53,7 +53,18 @@ pub(crate) struct MaterializationCompletion {
     pub(crate) leases: Vec<super::recovery::ResourceLease>,
     pub(crate) evidence: serde_json::Value,
     pub(crate) path_results: Vec<super::recovery::RecoveryPathResult>,
+    /// The lease clock's time when this was built, and when it was read:
+    /// the completion uses that time plus what elapsed since, so a lease
+    /// that expired while the batch was validated is refused.
     pub(crate) now_ms: i64,
+    pub(crate) taken_at: std::time::Instant,
+}
+
+impl MaterializationCompletion {
+    fn now_ms(&self) -> i64 {
+        let elapsed = i64::try_from(self.taken_at.elapsed().as_millis()).unwrap_or(i64::MAX);
+        self.now_ms.saturating_add(elapsed)
+    }
 }
 
 struct NoCasFaults;
@@ -511,7 +522,7 @@ impl NativeScmRepository {
                 &completion.leases,
                 completion.evidence.clone(),
                 &completion.path_results,
-                completion.now_ms,
+                completion.now_ms(),
             )
             .map_err(|error| native_backend(error.to_string()))?;
         }
@@ -1414,5 +1425,26 @@ impl ScmReader for NativeScmRepository {
     }
     fn proof_in_space(&self, p: &ProofId, s: &SpaceId) -> Result<bool> {
         self.with_reader(|r| r.proof_in_space(p, s))
+    }
+}
+
+#[cfg(test)]
+mod completion_time_tests {
+    use super::*;
+
+    #[test]
+    fn a_completion_checks_leases_at_its_own_time_not_when_it_was_built() {
+        let completion = MaterializationCompletion {
+            leases: Vec::new(),
+            evidence: serde_json::json!({"verified": true}),
+            path_results: Vec::new(),
+            now_ms: 1_000,
+            taken_at: std::time::Instant::now(),
+        };
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        // A lease expiring at 1,010 ms was live when this was built and is
+        // expired when the batch completes it (`release_leases` requires
+        // `expires_at_ms > now`).
+        assert!(completion.now_ms() >= 1_030);
     }
 }

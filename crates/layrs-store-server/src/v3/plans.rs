@@ -295,7 +295,10 @@ pub struct FileManifestSelection {
     pub chunk_descriptors: Vec<ObjectDescriptor>,
 }
 
+// Content ids are inline (71 bytes, no allocation per copy): an available
+// claim naming several of them outweighs the denial of this short-lived value.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClaimResolution {
     Available {
         descriptors: Vec<ObjectDescriptor>,

@@ -10,10 +10,10 @@ Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides
 | --- | --- | --- | --- |
 | `status` | 84 ms | 60–62 ms | 50 ms |
 | `step` (1 fichier) | 207 ms | 162–167 ms | ~150 ms |
-| fusion en avance rapide | 580 ms | 255 ms | 74–89 ms |
-| 2e fusion | 576 ms | 247 ms | 72–75 ms |
-| fusion 3 voies | 990 ms | 431 ms | 316–362 ms |
-| Store après le scénario | 4 249 Kio | 3 027 Kio | 1 822 Kio |
+| fusion en avance rapide | 580 ms | 232–237 ms | 74–89 ms |
+| 2e fusion | 576 ms | 214–232 ms | 72–75 ms |
+| fusion 3 voies | 990 ms | 407–420 ms | 316–362 ms |
+| Store après le scénario | 4 249 Kio | 2 912 Kio | 1 822 Kio |
 | création de Room | 3,1 s | 3,1 s | 2,2 s |
 
 **Commits**
@@ -21,10 +21,18 @@ Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides
 - `c8d01c9` : encodeur canonique direct des arbres ; validation des chemins sans allocation ; ouverture du Store 2,5 → 1,2 ms.
 - `cc12eda` : sentinelle de changements dans l'hôte VFS (`ReadDirectoryChangesW`, comme le fsmonitor de git) : une capture de Room inchangée 90 → 9 ms ; moins de sessions par fusion et par capture.
 - `c63a92f` : cache de projection v4 en deltas (1 650 → ~420 Kio après le scénario).
-- Non commité au moment de la revue : réemploi d'un objet stocké par comparaison d'octets ; taille d'un fichier sans construire ses manifestes ; enveloppe canonique directe des arbres (lecture d'arbres 95 → 34 ms sans cache, fusion 3 voies 591 → 431 ms).
+- `4b1f48f` : corrections du conseil s2 r1 ; réemploi d'un objet stocké par comparaison d'octets ; taille d'un fichier sans construire ses manifestes ; enveloppe canonique directe des arbres (lecture d'arbres 95 → 34 ms sans cache, fusion 3 voies 591 → 431 ms) ; journal VFS supprimé avec sa Room.
+- `1dddf9e` puis corrections s2 r2 : matérialisation (voir les deux décisions ci-dessous).
+
+**Conseil s2 r1** (Astra 7, Sol 8, Opus 8, `ship after fixes`) : corrections dans `4b1f48f` (sentinelle conclue par annulation et port de complétion ; contrôles du fournisseur sur le raccourci ; `status` relâche sa session avant de lire le dossier ; mémoires bornées à une entrée par chemin). Décisions :
+- Mémoires de processus (validation des frontières du Store, en-tête WAL, chemin canonique de la base) : gardées. git ne fait aucun de ces contrôles ; chaque session cliente revérifie l'identité épinglée de la racine.
+- B1 (format 6 par défaut) : voir `docs/plans/store-format-6.md`, section des bloquants.
+- B2, décision 1 (transactions) : preuves et bail en une transaction (`prepare_and_claim`) ; métadonnées et clôture du journal en une transaction (`complete_in_transaction`, heure du bail avancée du temps écoulé). Un arrêt après cette validation ne laisse rien à réparer.
+- B2, décision 2 (durabilité NTFS) : sur un seul volume NTFS (dossier et Store), les synchronisations de dossiers des phases sont remplacées par une barrière (fichier témoin vidé) avant la validation des métadonnées, comme le mode `batch` de git et les lots CAS. Le dossier de la tentative reste créé avec synchronisation, avant que le journal passe `applying`. Ailleurs, rien ne change.
+- Fusion en avance rapide 255 → ~235 ms.
 
 **Reste à faire**
-- Fusions : matérialisation d'une petite transition (~130 ms : 5 transactions, ~15 synchronisations de dossiers) ; double vérification du dossier dans `accept_merge`.
+- Fusions : matérialisation restante (~100 ms : trois sessions d'écriture, chacune avec son point de contrôle WAL) ; double vérification du dossier dans `accept_merge`.
 - Taille : passage du format 6 par défaut (pack illisible, consolidation) ; alias ChunkId en préfixe ; FileId omis dans l'index de changements ; journaux VFS des Rooms supprimées ; arbres binaires.
 - Création de Room : écriture et conversion des petits fichiers (~2,4 s).
 

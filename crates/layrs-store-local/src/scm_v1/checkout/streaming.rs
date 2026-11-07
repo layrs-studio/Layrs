@@ -236,7 +236,7 @@ impl CheckoutReader {
         Ok((scanned.entries, scanned.manifests))
     }
 
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     fn scan_streaming_listed(
         &self,
         limits: CheckoutLimits,

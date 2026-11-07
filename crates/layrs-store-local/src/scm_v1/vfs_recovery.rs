@@ -83,6 +83,56 @@ impl<T> JournalIoContext<T> for io::Result<T> {
     }
 }
 
+/// Removes the VFS journal of a retired Worktree (its records, lease and
+/// control staging), once its host stopped, through the pinned Store and
+/// metadata directories (each checked against its identity): nothing outside
+/// the Store's own `metadata/vfs-v1` is ever reached. Every file and link is
+/// unlinked through its pinned parent, never followed.
+pub fn remove_journal(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree_id: &WorktreeId,
+) -> io::Result<()> {
+    let store = PinnedDirectory::open(store_root)?;
+    if store.identity_token() != store_identity {
+        return Err(io::Error::other("VFS journal Store directory replaced"));
+    }
+    let metadata = store.open_child_for_traversal("metadata".as_ref())?;
+    if metadata.identity_token() != metadata_identity {
+        return Err(io::Error::other("VFS metadata directory changed"));
+    }
+    let private = match metadata.open_child("vfs-v1".as_ref()) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let key = blake3::hash(worktree_id.as_str().as_bytes())
+        .to_hex()
+        .to_string();
+    remove_pinned_tree(&private, std::ffi::OsStr::new(&key))
+}
+
+fn remove_pinned_tree(parent: &PinnedDirectory, name: &std::ffi::OsStr) -> io::Result<()> {
+    let directory = match parent.open_child(name) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    directory.verify_path_identity()?;
+    for entry in std::fs::read_dir(directory.display_path())? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() && !kind.is_symlink() {
+            remove_pinned_tree(&directory, &entry.file_name())?;
+        } else {
+            directory.unlink_file(&entry.file_name())?;
+        }
+    }
+    drop(directory);
+    parent.remove_empty_child(name)
+}
+
 /// Retry only typed transient contention. Identity checks are performed on the
 /// acquired capability before it can expose metadata; no lock survives a retry.
 fn open_bound_store(

@@ -278,6 +278,12 @@ impl PinnedDirectory {
         self.wrap_file(name, file)
     }
 
+    /// The path this directory was pinned at (for listings; every change
+    /// goes through the pinned handle).
+    pub(crate) fn display_path(&self) -> &Path {
+        &self.display_path
+    }
+
     pub(crate) fn unlink_file(&self, name: &OsStr) -> io::Result<()> {
         validate_name(name)?;
         platform::unlink_name_at(&self.file, name)

@@ -28,6 +28,9 @@ pub struct NativeRemoteRequest {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+// Content ids are inline (71 bytes, no allocation per copy): actions naming
+// several of them outweigh the bare ones of this short-lived request.
+#[allow(clippy::large_enum_variant)]
 pub enum NativeRemoteAction {
     StartLogin,
     PollLogin,

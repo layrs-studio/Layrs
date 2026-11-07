@@ -725,9 +725,6 @@ impl RegisteredCatalog {
         Err(first_error.unwrap_or_else(|| corruption(&id, "no readable copy")))
     }
 
-    /// Every registered manifest of `file_id`, sorted by id, with its file
-    /// length: FileId sections, file records and loose manifests. Index
-    /// answers only; no content is read.
     /// The smallest length recorded for `file_id` among its manifests (what
     /// `file_manifests` lists), without building each manifest's id.
     pub(crate) fn file_length(&self, file_id: &FileId) -> CasResult<Option<u64>> {
@@ -739,12 +736,16 @@ impl RegisteredCatalog {
         for registered in &self.packs {
             let loaded = &registered.pack;
             for entry in loaded.index.fileid_manifests(&raw) {
-                loaded
+                // The same metadata checks as `file_manifests`.
+                let ordinal = loaded
                     .index
                     .manifest_ordinal(entry.manifest)
                     .ok_or_else(|| {
                         pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
                     })?;
+                loaded.index.explicit(ordinal).ok_or_else(|| {
+                    pack2::pack2_corruption(&loaded.path, "FileId entry names no manifest")
+                })?;
                 keep(entry.byte_length);
             }
             if let Some(file) = loaded.index.find_file(&raw) {
@@ -757,6 +758,9 @@ impl RegisteredCatalog {
         self.complete(length)
     }
 
+    /// Every registered manifest of `file_id`, sorted by id, with its file
+    /// length: FileId sections, file records and loose manifests. Index
+    /// answers only; no content is read.
     pub(crate) fn file_manifests(&self, file_id: &FileId) -> CasResult<Vec<FileManifestEntry>> {
         let raw = file_id.digest_bytes();
         let mut found: BTreeMap<FileManifestId, FileManifestEntry> = BTreeMap::new();
