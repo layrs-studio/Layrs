@@ -4,17 +4,21 @@
 
 Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides, toutes les commandes contre git).
 
-**Mesures à 10 000 fichiers, format 6, même machine**
+**Mesures à 10 000 fichiers, format 6, même machine** (`bench_vs_git_samezone.sh`, deux répétitions, `c5c7f38` ; démarrer un processus coûte ~40 ms pour les deux outils)
 
-| | début de séance | maintenant | git |
+| | début de séance | `c5c7f38` | git |
 | --- | --- | --- | --- |
-| `status` | 84 ms | 60–62 ms | 50 ms |
-| `step` (1 fichier) | 207 ms | 162–167 ms | ~150 ms |
-| fusion en avance rapide | 580 ms | 232–237 ms | 74–89 ms |
-| 2e fusion | 576 ms | 214–232 ms | 72–75 ms |
-| fusion 3 voies | 990 ms | 407–420 ms | 316–362 ms |
-| Store après le scénario | 4 249 Kio | 2 912 Kio | 1 822 Kio |
-| création de Room | 3,1 s | 3,1 s | 2,2 s |
+| `init` | 2,4 s | 1,2–1,5 s | 47–48 s |
+| `status` propre / 2 changements | 84 ms | 68–70 / 76–77 ms | 52–53 / 58–61 ms |
+| `step` (2 fichiers) | 207 ms | 146–158 ms | 153–157 ms |
+| création de Room (agent) | 3,1 s | 2,56–2,57 s | 2,16–2,18 s |
+| première lecture de tous les fichiers | 3,3 s | 3,29–3,45 s | 2,78–2,82 s |
+| `room step` de l'agent | 248 ms | 254–309 ms (bruit, cinq essais) | 199 ms |
+| fusion en avance rapide | 580 ms | 184–190 ms | 73–75 ms |
+| 2e fusion | 576 ms | 179–184 ms | 79–88 ms |
+| fusion 3 voies | 990 ms | 369–379 ms | 326–337 ms |
+| suppression de la Room | 1,18 s | 0,43–0,48 s | 1,35–1,39 s |
+| Store après `init` / après le scénario | 2 369 / 4 249 Kio | 2 049 / 2 600 Kio | 1 655 / 1 822 Kio |
 
 **Commits**
 - `6dd82a5` : `status` dans une seule session du Store ; vue CAS et registre d'identités mis en cache par session ; identifiants de contenu stockés en ligne (71 octets, copie sans allocation) ; décodeurs de caches plus rapides ; `status` sans seconde lecture des dossiers (comme git).
