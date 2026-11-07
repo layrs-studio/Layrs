@@ -66,6 +66,18 @@ Après r3 (non relu par le conseil, selon la recommandation d'Opus r3) : un lot 
 - Un fichier du cache de projection n'est remplacé que si la projection reconstruite en diffère.
 - Reporté : lier l'index à l'arbre racine de l'étape plutôt qu'à l'arbre de projection (performance seulement, en cas de pierres tombales).
 
+**Revue du conseil s5 r2** (Astra 8/10, Sol 8/10, Opus 8/10 `ship`). Corrections (`b57f50b`) :
+- Le nombre de branches parcourues en même temps est borné par la limite de fichiers ouverts du processus (hors Windows) : chaque branche garde au plus sa chaîne de dossiers, un lot de dossiers terminés et quelques fichiers (Astra et Sol P2).
+- `room drop` balaie les dossiers de tentative du Worktree retiré qu'aucun journal ne nomme (Opus P3 : un arrêt pendant le staging d'un gros fichier laissait sinon des Go).
+- Une entrée disparue entre le listing et son ouverture rend la passe instable (relancée) au lieu d'une erreur.
+- Chaque branche crée au plus sa part des quatre hacheurs ; la reprise retrouve aussi le dossier préfixé d'un journal v1 marqué `worktreePrefixed` (écrit par `acb4008`, jamais publié) ; un test fige quels écrivains sont en `NORMAL`.
+
+| Membre | s5 r1 | s5 r2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 |
+| GPT-6.1 Sol (max) | 6/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10, `ship` |
+
 **Conseil s4 (conception, brief `council-s4-design.md`)** :
 - Q2, ouvertures du Store (unanime) : faire passer une session de lecture explicite à travers chaque phase sans interruption (découverte, capture avant le parcours, de l'état jusqu'au staging). Jamais tenue pendant une requête à l'hôte VFS, un parcours de dossier ou une ouverture exclusive du même processus ; un registre par processus refuse une ouverture exclusive pendant qu'une session partagée est vivante. Refusé : réutiliser une connexion ou un état entre deux sessions (la longueur et la date d'un fichier ne prouvent pas qu'il n'a pas changé).
 - Q3, double validation (unanime sur le fond) : valider une seule fois, en gardant la capacité exclusive de la validation jusqu'au point de contrôle final, pour les petites matérialisations. Ailleurs, les deux validations restent.
