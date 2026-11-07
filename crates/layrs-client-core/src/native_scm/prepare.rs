@@ -182,18 +182,14 @@ impl NativeClient {
     ) -> Result<(Self, layrs_store_local::scm_v1::NativeStoreOpen)> {
         let directory =
             layrs_store_local::scm_v1::checkout::CheckoutReader::open(root.as_ref(), None)?;
-        let metadata = layrs_store_local::scm_v1::checkout::CheckoutReader::open(
-            root.as_ref().join("metadata"),
-            None,
-        )?;
-        let store = open_store_for_read(root.as_ref())?;
-        let store = store
-            .with_filesystem_identity(&directory.identity())?
-            .with_metadata_identity(&metadata.identity())?;
+        // Bound to the root just pinned and to `metadata` opened through it
+        // (no second walk of either path).
+        let (store, store_identity, metadata_identity) =
+            open_store_for_read(root.as_ref())?.bound_to_pinned_root(&directory)?;
         let client = Self {
             root: store.layout().root().to_path_buf(),
-            store_identity: directory.identity(),
-            metadata_identity: metadata.identity(),
+            store_identity,
+            metadata_identity,
             store_id: store.store_id().clone(),
         };
         Ok((client, store))

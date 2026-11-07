@@ -447,6 +447,29 @@ impl NativeStoreOpen {
         Ok(self)
     }
 
+    /// Binds this shared capability to its Store root as `root` pinned it
+    /// (`CheckoutReader::open` on this Store's root, which refused links and
+    /// reparse points at every component) and to `metadata` opened through
+    /// that handle: no further walk of either path. Returns the root and
+    /// metadata identities.
+    pub fn bound_to_pinned_root(
+        mut self,
+        root: &super::checkout::CheckoutReader,
+    ) -> io::Result<(Self, String, String)> {
+        let directory = if root.root() == self.layout.root() {
+            root.pinned().try_clone()?
+        } else {
+            bind_directory(self.layout.root(), &root.identity())?
+        };
+        let metadata =
+            directory.open_child_for_traversal(std::ffi::OsStr::new(METADATA_DIR_NAME))?;
+        let identities = (directory.identity_token(), metadata.identity_token());
+        self.bound_directory = Some(directory);
+        self.bound_metadata = Some(metadata);
+        self.verify_filesystem_identity()?;
+        Ok((self, identities.0, identities.1))
+    }
+
     /// The identity of the Store root this session is bound to, if bound.
     pub(crate) fn bound_root_identity(&self) -> Option<String> {
         self.bound_directory

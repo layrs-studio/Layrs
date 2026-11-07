@@ -156,8 +156,20 @@ impl NativeWorkspace {
     pub fn open_session(
         root: impl AsRef<Path>,
     ) -> Result<(Self, scm_v1::NativeStoreOpen, WorkspaceState)> {
+        Self::open_session_pinned(root, None)
+    }
+
+    /// `open_session`, reusing `pinned` when it is the checkout at `root`.
+    fn open_session_pinned(
+        root: impl AsRef<Path>,
+        pinned: Option<scm_v1::checkout::CheckoutReader>,
+    ) -> Result<(Self, scm_v1::NativeStoreOpen, WorkspaceState)> {
         let span = layrs_store_local::perf::span("discover.checkout");
-        let checkout = scm_v1::checkout::CheckoutReader::open(root, None)?;
+        let absolute = std::path::absolute(root.as_ref())?;
+        let checkout = match pinned {
+            Some(pinned) if pinned.root() == absolute => pinned,
+            _ => scm_v1::checkout::CheckoutReader::open(&absolute, None)?,
+        };
         let root = checkout.root();
         let marker = std::fs::symlink_metadata(root.join(".layrs"))?;
         let locator = if marker.is_dir() && !marker.file_type().is_symlink() {
@@ -191,7 +203,7 @@ impl NativeWorkspace {
                 "checkout does not identify exactly one registered Worktree",
             ));
         };
-        scm_v1::checkout::CheckoutReader::open(
+        checkout.confirm(
             worktree.checkout_root(),
             Some(worktree.filesystem_identity()),
         )?;
@@ -220,10 +232,7 @@ impl NativeWorkspace {
         drop(span);
         let _span = layrs_store_local::perf::span("discover.reopen");
         // Opening the workspace is read-only and checks persisted directory identity.
-        layrs_store_local::scm_v1::checkout::CheckoutReader::open(
-            root,
-            Some(state.worktree.filesystem_identity()),
-        )?;
+        checkout.confirm(root, Some(state.worktree.filesystem_identity()))?;
         Ok((result, store, state))
     }
 
@@ -243,10 +252,10 @@ impl NativeWorkspace {
         } else {
             &start
         };
-        scm_v1::checkout::CheckoutReader::open(directory, None)?;
+        let pinned = scm_v1::checkout::CheckoutReader::open(directory, None)?;
         for root in start.ancestors() {
             if root.join(".layrs").try_exists()? {
-                return Self::open_session(root);
+                return Self::open_session_pinned(root, Some(pinned));
             }
         }
         Err(NativeClientError::Missing("checkout .layrs directory"))

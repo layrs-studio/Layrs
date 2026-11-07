@@ -52,33 +52,28 @@ impl CheckoutReader {
         if root.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(invalid("checkout path contains parent traversal"));
         }
-        // Reject reparse/symlink ancestors as well as the checkout itself. A
-        // strict ancestor found plain once is not re-inspected by this
-        // process (a command opens the same checkout and Store many times);
-        // the checkout directory itself is always inspected, then pinned.
-        static PLAIN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
-            std::sync::OnceLock::new();
-        let plain = PLAIN.get_or_init(Default::default);
-        let mut ancestor = PathBuf::new();
-        for part in root.components() {
-            ancestor.push(part);
-            if matches!(part, Component::Normal(_)) {
-                let strict = ancestor != root;
-                if strict && plain.lock().is_ok_and(|known| known.contains(&ancestor)) {
-                    continue;
-                }
-                let metadata = fs::symlink_metadata(&ancestor)?;
-                if metadata.file_type().is_symlink() || reparse(&metadata) {
-                    return Err(invalid("checkout ancestor is a symlink or reparse point"));
-                }
-                if strict {
-                    if let Ok(mut known) = plain.lock() {
-                        known.insert(ancestor.clone());
+        // Pinning walks every component without following links and refuses
+        // a symlink or reparse point at any of them, the checkout included.
+        // Only when it fails are the components inspected again, to report a
+        // link or reparse ancestor as such.
+        let directory = match PinnedDirectory::open(&root) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let mut ancestor = PathBuf::new();
+                for part in root.components() {
+                    ancestor.push(part);
+                    if matches!(part, Component::Normal(_)) {
+                        let Ok(metadata) = fs::symlink_metadata(&ancestor) else {
+                            break;
+                        };
+                        if metadata.file_type().is_symlink() || reparse(&metadata) {
+                            return Err(invalid("checkout ancestor is a symlink or reparse point"));
+                        }
                     }
                 }
+                return Err(error);
             }
-        }
-        let directory = PinnedDirectory::open(&root)?;
+        };
         if expected_identity.is_some_and(|expected| expected != directory.identity_token()) {
             return Err(invalid("checkout filesystem identity changed"));
         }
@@ -90,6 +85,24 @@ impl CheckoutReader {
     }
     pub fn identity(&self) -> String {
         self.directory.identity_token()
+    }
+    pub(crate) fn pinned(&self) -> &PinnedDirectory {
+        &self.directory
+    }
+
+    /// Checks that `path` still names this pinned checkout with `expected`
+    /// identity, as `open(path, expected)` would, without opening it again
+    /// when `path` is this checkout's own root (the handle is checked at
+    /// its path instead). Another path is opened.
+    pub fn confirm(&self, path: impl AsRef<Path>, expected: Option<&str>) -> io::Result<()> {
+        let path = std::path::absolute(path)?;
+        if path != self.root {
+            return Self::open(path, expected).map(drop);
+        }
+        if expected.is_some_and(|expected| expected != self.directory.identity_token()) {
+            return Err(invalid("checkout filesystem identity changed"));
+        }
+        self.directory.verify_path_identity()
     }
 
     /// Metadata-only probe for directory-to-leaf writes. Ignored descendants
