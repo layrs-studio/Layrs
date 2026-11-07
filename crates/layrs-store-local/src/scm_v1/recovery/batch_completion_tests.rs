@@ -21,7 +21,9 @@ fn store() -> Root {
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )));
     let store_id = StoreId::parse("store:batch-completion").unwrap();
-    drop(super::super::init(&root.0, store_id.clone()).unwrap());
+    // The rows below are those of the format 5 schema, whatever
+    // LAYRS_STORE_FORMAT selects.
+    drop(super::super::init_with_format(&root.0, store_id.clone(), 5).unwrap());
     let connection = rusqlite::Connection::open(root.0.join("metadata/layrs.sqlite3")).unwrap();
     let view = format!("blake3:{}", "1".repeat(64));
     connection
