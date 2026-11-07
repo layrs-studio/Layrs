@@ -181,21 +181,29 @@ pub(super) fn write(
 /// its catalog identity, through the handle that wrote it. Requires the
 /// provider to be connected (CFAPI otherwise reports success without effect).
 pub(super) fn convert(api: &Api, catalog: &Catalog, written: Written) -> Result<()> {
-    let files = written.0;
-    let next = AtomicUsize::new(0);
+    // Each worker owns the handles it converts and closes each one right
+    // after its conversion: closing a new file is where the antivirus scans
+    // it, so the closes run in parallel with the conversions instead of all
+    // after them (council s3, D4). Every handle is still held until its own
+    // file is converted.
+    let files: Mutex<Vec<(usize, File)>> = Mutex::new(written.0);
+    let count = files.lock().expect("warm files").len();
+    let stop = std::sync::atomic::AtomicBool::new(false);
     let failure: Mutex<Option<Error>> = Mutex::new(None);
     std::thread::scope(|scope| {
-        for _ in 0..workers().min(files.len()) {
+        for _ in 0..workers().min(count) {
             scope.spawn(|| {
                 loop {
-                    let position = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((index, file)) = files.get(position) else {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let Some((index, file)) = files.lock().expect("warm files").pop() else {
                         return;
                     };
-                    let identity = catalog.file_identity(*index);
+                    let identity = catalog.file_identity(index);
                     let result = check("CfConvertToPlaceholder", unsafe {
                         (api.convert)(
-                            fs::handle(file),
+                            fs::handle(&file),
                             identity.as_ptr().cast::<c_void>(),
                             identity.len() as u32,
                             CF_CONVERT_FLAG_MARK_IN_SYNC,
@@ -203,9 +211,10 @@ pub(super) fn convert(api: &Api, catalog: &Catalog, written: Written) -> Result<
                             std::ptr::null_mut(),
                         )
                     });
+                    drop(file);
                     if let Err(error) = result {
                         failure.lock().expect("warm failure").get_or_insert(error);
-                        next.store(files.len(), Ordering::Relaxed);
+                        stop.store(true, Ordering::Relaxed);
                         return;
                     }
                 }
