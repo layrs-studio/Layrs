@@ -78,10 +78,17 @@ impl NativeWorkspace {
         let step = base_step(&state)?;
         let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
         let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
+        let version = store.metadata_version();
         drop(store);
         drop(span);
-        let changes =
-            self.working_changes_from(trust_index, false, base, &state, before, indexed)?;
+        let changes = self.working_changes_from(
+            trust_index,
+            false,
+            (base, version),
+            &state,
+            before,
+            indexed,
+        )?;
         Ok(StatusReport {
             needs_repair: false,
             dirty: Some(changes.is_none_or(|changes| !changes.is_empty())),
@@ -105,7 +112,8 @@ impl NativeWorkspace {
             let step = base_step(&state)?;
             let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
             let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
-            (base, state, before, indexed)
+            let version = store.metadata_version();
+            ((base, version), state, before, indexed)
         };
         drop(span);
         self.working_changes_from(trust_index, details, base, &state, before, indexed)
@@ -146,7 +154,10 @@ impl NativeWorkspace {
         &self,
         trust_index: bool,
         details: bool,
-        base: super::CaptureBase,
+        (base, version): (
+            super::CaptureBase,
+            Option<layrs_store_local::scm_v1::MetadataVersion>,
+        ),
         state: &super::WorkspaceState,
         before: Vec<CheckoutProjectionEntry>,
         indexed: Option<IndexedBase>,
@@ -171,7 +182,7 @@ impl NativeWorkspace {
         debug_assert!(trust_index || indexed.is_none());
         let after = match &indexed {
             Some((index, root, bound)) => {
-                let mut trust = |path: &str, listed: &std::fs::Metadata| {
+                let trust = |path: &str, listed: &std::fs::Metadata| {
                     let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
                     index.trusted(path, &stat).map(|entry| {
                         layrs_store_local::scm_v1::checkout::TrustedFile {
@@ -189,7 +200,7 @@ impl NativeWorkspace {
                     limits,
                     &tracked,
                     Some(&before),
-                    &mut trust,
+                    &trust,
                 )?;
                 refresh_racy_entries(
                     self.store_root(),
@@ -213,7 +224,11 @@ impl NativeWorkspace {
             }
         };
         let span = layrs_store_local::perf::span("status.recheck_compare");
-        if self.client().capture_base(self.worktree_id())? != base {
+        // The base did not move if no write session committed since it was
+        // read; otherwise it is read again.
+        if !version.as_ref().is_some_and(|version| version.unchanged())
+            && self.client().capture_base(self.worktree_id())? != base
+        {
             return Err(NativeClientError::StaleCapture);
         }
         if before == after {

@@ -80,7 +80,7 @@ pub(super) fn capture_checkout_streaming_indexed(
         },
         &std::collections::BTreeSet::new(),
         None,
-        &mut |_, _| None,
+        &|_, _| None,
         &mut |chunk| chunks.insert(chunk),
         &mut || Ok(()),
     )?;
@@ -266,7 +266,7 @@ impl super::NativeWorkspace {
         // Taken before the listing: no hashed content is credited later than
         // the metadata observed for it.
         let verified_at = scm_v1::change_index::now();
-        let mut trust =
+        let trust =
             |path: &str, listed: &std::fs::Metadata| -> Option<scm_v1::checkout::TrustedFile> {
                 let stat = StatKey::of(listed)?;
                 index
@@ -292,7 +292,7 @@ impl super::NativeWorkspace {
             },
             &tracked,
             Some(&base),
-            &mut trust,
+            &trust,
             &mut |chunk| {
                 if known
                     .as_ref()

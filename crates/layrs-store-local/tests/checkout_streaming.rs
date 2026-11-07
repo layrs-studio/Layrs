@@ -97,3 +97,78 @@ fn streaming_projection_matches_legacy_and_keeps_tracked_ignored_paths() {
     );
     assert!(manifests.iter().any(|m| m.byte_length() == 0));
 }
+/// Several root subdirectories are walked as parallel subtrees: the result
+/// equals the sequential walk's, every subtree's chunks reach the observer,
+/// and the entry limit holds across all of them.
+#[test]
+fn parallel_subtrees_capture_like_a_sequential_walk_and_share_the_limits() {
+    let root = Fixture::new();
+    fs::write(root.0.join("top.txt"), b"top").unwrap();
+    for directory in 0..6 {
+        let path = root.0.join(format!("d{directory}/nested"));
+        fs::create_dir_all(&path).unwrap();
+        for file in 0..5 {
+            fs::write(
+                root.0.join(format!("d{directory}/f{file}.txt")),
+                format!("{directory}:{file}"),
+            )
+            .unwrap();
+        }
+        fs::write(path.join("deep.txt"), format!("deep {directory}")).unwrap();
+    }
+    let reader = CheckoutReader::open(&root.0, None).unwrap();
+    let legacy = reader.capture_tracked(limits(), &BTreeSet::new()).unwrap();
+    let mut chunks = 0;
+    let (projection, manifests) = reader
+        .capture_streaming(
+            limits(),
+            &BTreeSet::new(),
+            &mut |_| {
+                chunks += 1;
+                Ok(())
+            },
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(
+        projection,
+        legacy
+            .iter()
+            .map(CheckoutProjectionEntry::from)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(projection.len(), 1 + 6 * 6);
+    assert!(projection.windows(2).all(|pair| pair[0].path < pair[1].path));
+    assert_eq!(manifests.len(), 37);
+    assert!(chunks >= 37);
+    // 1 file + 6 directories + 6 * (5 files + 1 directory + 1 file) entries.
+    let mut bounds = limits();
+    bounds.max_entries = 1 + 6 + 6 * 7 - 1;
+    let error = reader
+        .capture_streaming(bounds, &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    bounds.max_entries += 1;
+    assert!(reader
+        .capture_streaming(bounds, &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
+        .is_ok());
+    // A file the trust hook vouches for is not opened; the others are.
+    let vouched = |path: &str, listed: &fs::Metadata| {
+        path.ends_with("f0.txt").then(|| TrustedFile {
+            file_id: layrs_core::scm::FileId::from_bytes(b"vouched"),
+            length: listed.len(),
+            executable: false,
+        })
+    };
+    let observed = reader
+        .observe_streaming_trusting(limits(), &BTreeSet::new(), None, &vouched)
+        .unwrap();
+    assert_eq!(observed.trusted, 6);
+    assert_eq!(observed.hashed.len(), 37 - 6);
+    assert_eq!(observed.entries.len(), 37);
+    // A subtree that cannot be represented fails the whole walk.
+    fs::write(root.0.join("d3/cafe\u{301}.txt"), b"x").unwrap();
+    assert!(reader
+        .capture_streaming(limits(), &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
+        .is_err());
+}

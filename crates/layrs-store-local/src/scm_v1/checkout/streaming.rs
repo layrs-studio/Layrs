@@ -1,6 +1,20 @@
 use super::*;
 use layrs_core::scm::{Chunk, FileManifest, FileManifestBuilder};
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+/// Vouches for a regular file from its listing metadata alone (a change
+/// index, ADR 0025). Shared by the threads that walk subtrees in parallel.
+pub type Trust<'t> = dyn Fn(&str, &fs::Metadata) -> Option<TrustedFile> + Sync + 't;
+
+/// Threads hashing one walk's files. Measured on NTFS (2026-11-04): warm
+/// files scale to ~2 threads and contend beyond; freshly written files
+/// (antivirus scan on first open) keep scaling. Four balances both.
+const HASH_THREADS: usize = 4;
+
+/// A root subdirectory walked on its own: its pinned handle, its path on
+/// disk and in the checkout.
+type Subtree = (PinnedDirectory, std::path::PathBuf, String);
 
 impl CheckoutReader {
     /// Optimistic two-pass capture, bounded to one chunk at a time per worker
@@ -64,7 +78,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
@@ -84,7 +98,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
@@ -105,7 +119,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &Trust<'_>,
     ) -> io::Result<TrustedCapture> {
         self.capture_trusting_passes(
             limits,
@@ -125,7 +139,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &Trust<'_>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
         single_pass: bool,
@@ -144,7 +158,7 @@ impl CheckoutReader {
                 limits,
                 tracked,
                 observe,
-                Some(&mut *trust),
+                Some(trust),
                 validated,
                 progress,
                 relist,
@@ -197,7 +211,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: &[CheckoutProjectionEntry],
-        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&Trust<'_>>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         let _span = crate::perf::span("checkout.matches_projection");
@@ -227,7 +241,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
-        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&Trust<'_>>,
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Vec<CheckoutProjectionEntry>, Vec<FileManifest>)> {
@@ -242,36 +256,44 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
-        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&Trust<'_>>,
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
         relist: bool,
     ) -> io::Result<TrustedCapture> {
         let _span = crate::perf::span("checkout.scan_pass");
         self.directory.verify_path_identity()?;
+        let ignored = super::super::checkout_ignore::IgnoreRules::load(&self.directory)?;
+        let (visited, bytes, observer_failed) =
+            (AtomicUsize::new(0), AtomicU64::new(0), AtomicBool::new(false));
         let mut scan = StreamScan {
             limits,
             tracked,
             observe,
-            // Re-coerce so the trait object lives as long as the scan.
-            trust: match trust {
-                Some(trust) => Some(trust),
-                None => None,
-            },
+            trust,
             progress,
-            ignored: super::super::checkout_ignore::IgnoreRules::load(&self.directory)?,
+            ignored: &ignored,
             entries: Vec::new(),
             manifests: Vec::new(),
-            visited: 0,
-            bytes: 0,
+            visited: &visited,
+            bytes: &bytes,
+            observer_failed: &observer_failed,
             directories: Vec::new(),
             completed: 0,
             files: Vec::new(),
             hashed: Vec::new(),
             trusted: 0,
             relist,
+            deferred: Some(Vec::new()),
+            forward: None,
+            hash_threads: HASH_THREADS,
         };
+        // The root is walked first, its subdirectories then, in parallel when
+        // there are several; the root is checked again after all of them.
         scan.walk(self.directory.try_clone()?, self.root.clone(), "", 0)?;
+        let subtrees = scan.deferred.take().unwrap_or_default();
+        scan.walk_subtrees(subtrees)?;
+        scan.complete_root();
         scan.flush()?;
         scan.entries.sort_by(|a, b| a.path.cmp(&b.path));
         scan.manifests.sort_by(|a, b| a.id().cmp(b.id()));
@@ -309,18 +331,26 @@ pub struct TrustedCapture {
 /// directory's listing is thus compared over a window covering all reads
 /// below it, as in a sequential walk, and only the current directory chain
 /// plus a bounded batch of directories stay open.
+///
+/// The root's subdirectories are walked as separate subtrees, in parallel
+/// when there are several (`walk_subtrees`), each exactly as above; their
+/// chunks reach the observer on the calling thread. The entry and byte
+/// limits are shared by all of them.
 #[allow(clippy::type_complexity)]
 struct StreamScan<'a> {
     limits: CheckoutLimits,
     tracked: &'a BTreeSet<String>,
     observe: &'a mut dyn FnMut(&Chunk) -> io::Result<()>,
-    trust: Option<&'a mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
+    trust: Option<&'a Trust<'a>>,
     progress: &'a mut dyn FnMut() -> io::Result<()>,
-    ignored: super::super::checkout_ignore::IgnoreRules,
+    ignored: &'a super::super::checkout_ignore::IgnoreRules,
     entries: Vec<CheckoutProjectionEntry>,
     manifests: Vec<FileManifest>,
-    visited: usize,
-    bytes: u64,
+    /// Entries visited and bytes charged by the whole walk.
+    visited: &'a AtomicUsize,
+    bytes: &'a AtomicU64,
+    /// Set when the observer failed: every hashing worker stops.
+    observer_failed: &'a AtomicBool,
     /// Walked directories in walk order; `None` once rechecked and closed.
     directories: Vec<Option<ScannedDirectory>>,
     /// Directories whose subtree is walked but not yet rechecked.
@@ -332,6 +362,12 @@ struct StreamScan<'a> {
     trusted: usize,
     /// Whether each completed directory is listed again (captures).
     relist: bool,
+    /// At the root: its subdirectories, walked after it (`walk_subtrees`)
+    /// instead of recursively.
+    deferred: Option<Vec<Subtree>>,
+    /// A subtree's chunks go to the walk's observer through this channel.
+    forward: Option<std::sync::mpsc::SyncSender<Chunk>>,
+    hash_threads: usize,
 }
 
 struct ScannedDirectory {
@@ -399,8 +435,8 @@ impl StreamScan<'_> {
             if name.eq_ignore_ascii_case(".layrs") || name.eq_ignore_ascii_case(".git") {
                 continue;
             }
-            self.visited += 1;
-            if self.visited > self.limits.max_entries.min(100_000) {
+            let visited = self.visited.fetch_add(1, Ordering::Relaxed) + 1;
+            if visited > self.limits.max_entries.min(100_000) {
                 return Err(invalid("checkout entry limit exceeded"));
             }
             let path = if relative.is_empty() {
@@ -463,7 +499,10 @@ impl StreamScan<'_> {
                     .handle
                     .open_child_for_traversal(name.as_ref())
                     .map_err(|e| retype_error(e, &full, &metadata))?;
-                self.walk(child, full, &path, depth + 1)?;
+                match self.deferred.as_mut() {
+                    Some(deferred) if depth == 0 => deferred.push((child, full, path)),
+                    _ => self.walk(child, full, &path, depth + 1)?,
+                }
             } else if metadata.is_file() {
                 if let Some(trusted) = self
                     .trust
@@ -493,12 +532,172 @@ impl StreamScan<'_> {
                 return Err(invalid("unsupported checkout filesystem entry"));
             }
         }
+        if depth == 0 && self.deferred.is_some() {
+            // Complete once its subtrees are (`complete_root`).
+            return Ok(());
+        }
         if let Some(directory) = self.directories[index].as_mut() {
             directory.complete = true;
         }
         self.completed += 1;
         if self.files.len() >= FLUSH_FILES || self.completed >= FLUSH_DIRECTORIES {
             self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// The root, walked with its subdirectories deferred, is complete.
+    fn complete_root(&mut self) {
+        if let Some(Some(root)) = self.directories.first_mut() {
+            root.complete = true;
+        }
+        self.completed += 1;
+    }
+
+    /// Walks each deferred root subdirectory as its own subtree, on up to
+    /// eight threads when there are several. Each subtree is walked, hashed
+    /// and checked again exactly as a recursive walk would; this thread
+    /// forwards their chunks to the observer and reports progress. The first
+    /// failing subtree, in name order, decides the error.
+    fn walk_subtrees(&mut self, subtrees: Vec<Subtree>) -> io::Result<()> {
+        if subtrees.len() < 2 {
+            for (handle, disk, path) in subtrees {
+                self.walk(handle, disk, &path, 1)?;
+            }
+            return Ok(());
+        }
+        let _span = crate::perf::span("scan.subtrees");
+        let threads = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .clamp(1, 8)
+            .min(subtrees.len());
+        let hash_threads = (HASH_THREADS / threads).max(1);
+        let jobs: Vec<std::sync::Mutex<Option<Subtree>>> = subtrees
+            .into_iter()
+            .map(|subtree| std::sync::Mutex::new(Some(subtree)))
+            .collect();
+        let next = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let (limits, tracked, trust, ignored) = (self.limits, self.tracked, self.trust, self.ignored);
+        let (visited, bytes, observer_failed, relist) =
+            (self.visited, self.bytes, self.observer_failed, self.relist);
+        let observe = &mut self.observe;
+        let progress = &mut self.progress;
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(threads * 2);
+        type Walked = (
+            Vec<CheckoutProjectionEntry>,
+            Vec<FileManifest>,
+            Vec<(String, fs::Metadata)>,
+            usize,
+        );
+        let (mut results, failure) = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    let sender = sender.clone();
+                    let (jobs, next, stop) = (&jobs, &next, &stop);
+                    scope.spawn(move || {
+                        let mut done: Vec<(usize, io::Result<Walked>)> = Vec::new();
+                        while !stop.load(Ordering::Relaxed) {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(job) = jobs.get(index) else { break };
+                            let Some((handle, disk, path)) =
+                                job.lock().ok().and_then(|mut job| job.take())
+                            else {
+                                break;
+                            };
+                            // Chunks are forwarded (`forward`); progress is
+                            // reported by the calling thread.
+                            let mut unused = |_: &Chunk| Ok(());
+                            let mut quiet = || Ok(());
+                            let mut scan = StreamScan {
+                                limits,
+                                tracked,
+                                observe: &mut unused,
+                                trust,
+                                progress: &mut quiet,
+                                ignored,
+                                entries: Vec::new(),
+                                manifests: Vec::new(),
+                                visited,
+                                bytes,
+                                observer_failed,
+                                directories: Vec::new(),
+                                completed: 0,
+                                files: Vec::new(),
+                                hashed: Vec::new(),
+                                trusted: 0,
+                                relist,
+                                deferred: None,
+                                forward: Some(sender.clone()),
+                                hash_threads,
+                            };
+                            let result = scan
+                                .walk(handle, disk, &path, 1)
+                                .and_then(|()| scan.flush())
+                                .map(|()| {
+                                    (
+                                        std::mem::take(&mut scan.entries),
+                                        std::mem::take(&mut scan.manifests),
+                                        std::mem::take(&mut scan.hashed),
+                                        scan.trusted,
+                                    )
+                                });
+                            if result.is_err() {
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                            done.push((index, result));
+                        }
+                        done
+                    })
+                })
+                .collect();
+            drop(sender);
+            let mut failure = None;
+            loop {
+                match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(chunk) => {
+                        if failure.is_none() {
+                            if let Err(e) = observe(&chunk) {
+                                failure = Some(e);
+                            }
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                if failure.is_none() {
+                    if let Err(e) = progress() {
+                        failure = Some(e);
+                    }
+                }
+                if failure.is_some() {
+                    stop.store(true, Ordering::Relaxed);
+                    observer_failed.store(true, Ordering::Relaxed);
+                }
+            }
+            let mut results = Vec::with_capacity(jobs.len());
+            for worker in workers {
+                match worker.join() {
+                    Ok(done) => results.extend(done),
+                    Err(_) => {
+                        failure.get_or_insert_with(|| {
+                            io::Error::other("checkout walk worker panicked")
+                        });
+                    }
+                }
+            }
+            (results, failure)
+        });
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        results.sort_by_key(|(index, _)| *index);
+        for (_, result) in results {
+            let (entries, manifests, hashed, trusted) = result?;
+            self.entries.extend(entries);
+            self.manifests.extend(manifests);
+            self.hashed.extend(hashed);
+            self.trusted += trusted;
         }
         Ok(())
     }
@@ -531,36 +730,37 @@ impl StreamScan<'_> {
     /// first failing file in walk order is reported, as a sequential pass
     /// would (files are claimed in order and every claimed file completes).
     fn hash_files(&mut self) -> io::Result<()> {
-        use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
         let _span = crate::perf::span("checkout.hash_files");
         let tasks = std::mem::take(&mut self.files);
         if tasks.is_empty() {
             return Ok(());
         }
-        // Measured on NTFS (2026-11-04): warm files scale to ~2 threads and
-        // contend beyond; freshly written files (antivirus scan on first
-        // open) keep scaling. Four balances both.
         let threads = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
-            .clamp(1, 4)
+            .clamp(1, self.hash_threads.max(1))
             .min(tasks.len());
         let next = AtomicUsize::new(0);
         let stop = AtomicBool::new(false);
-        let observer_failed = AtomicBool::new(false);
+        let observer_failed = self.observer_failed;
         let limits = self.limits;
         // Running total charged by each worker before it reads a file.
-        let total = AtomicU64::new(self.bytes);
-        let total = &total;
+        let total = self.bytes;
         let directories = &self.directories;
         let observe = &mut self.observe;
         let progress = &mut self.progress;
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(threads * 2);
+        // A subtree's chunks go straight to the walk's observer.
+        let (sender, receiver) = match &self.forward {
+            Some(forward) => (forward.clone(), None),
+            None => {
+                let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(threads * 2);
+                (sender, Some(receiver))
+            }
+        };
         let (mut results, failure) = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..threads)
                 .map(|_| {
                     let sender = sender.clone();
-                    let (tasks, next, stop, observer_failed) =
-                        (&tasks, &next, &stop, &observer_failed);
+                    let (tasks, next, stop) = (&tasks, &next, &stop);
                     scope.spawn(move || {
                         let mut done = Vec::new();
                         while !stop.load(Ordering::Relaxed) {
@@ -588,7 +788,7 @@ impl StreamScan<'_> {
                 .collect();
             drop(sender);
             let mut failure = None;
-            loop {
+            while let Some(receiver) = &receiver {
                 match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(chunk) => {
                         if failure.is_none() {
@@ -626,7 +826,6 @@ impl StreamScan<'_> {
         if let Some(failure) = failure {
             return Err(failure);
         }
-        self.bytes = total.load(Ordering::Relaxed);
         results.sort_by_key(|(index, _)| *index);
         for (index, result) in results {
             let hashed = result?;
@@ -646,12 +845,12 @@ impl StreamScan<'_> {
     }
 
     fn add_bytes(&mut self, count: u64) -> io::Result<()> {
-        self.bytes = self
+        let total = self
             .bytes
+            .fetch_add(count, Ordering::Relaxed)
             .checked_add(count)
             .ok_or_else(|| invalid("checkout size overflow"))?;
-        if count > self.limits.max_file_bytes as u64
-            || self.bytes > self.limits.max_total_bytes as u64
+        if count > self.limits.max_file_bytes as u64 || total > self.limits.max_total_bytes as u64
         {
             return Err(invalid("streaming checkout byte limit exceeded"));
         }
@@ -665,9 +864,9 @@ fn hash_file(
     directory: &PinnedDirectory,
     task: &FileTask,
     limits: CheckoutLimits,
-    total: &std::sync::atomic::AtomicU64,
+    total: &AtomicU64,
     sink: &std::sync::mpsc::SyncSender<Chunk>,
-    observer_failed: &std::sync::atomic::AtomicBool,
+    observer_failed: &AtomicBool,
 ) -> io::Result<HashedFile> {
     let mut file = directory
         .open_file(task.name.as_ref())
