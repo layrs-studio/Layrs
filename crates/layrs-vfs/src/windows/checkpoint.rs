@@ -1,4 +1,4 @@
-use super::{InspectionPurpose, Session, fs};
+use super::{ChangeSentinel, InspectionPurpose, Session, fs};
 use crate::{CaptureEvidence, Error, Inspection, ListedFile, ListedPlaceholder, Result, Vouch};
 use layrs_core::scm::RepoPath;
 use std::{
@@ -409,6 +409,31 @@ impl Checkpoint<'_> {
     /// The listing facts observed for `path` when this checkpoint was taken.
     pub fn listed(&self, path: &RepoPath) -> Option<&ListedFile> {
         self.listing.get(path.as_str())
+    }
+
+    /// `revalidate_namespace`, without listing the folder again when
+    /// `sentinel` (armed before this checkpoint listed it) proves that
+    /// nothing below the root changed since: a new sentinel is armed first,
+    /// so that the two leave no gap, then the old one settles. The provider
+    /// checks (root proof, registration) run either way. Any reported change,
+    /// an overflow or no sentinel lists the folder as `revalidate_namespace`.
+    /// Returns whether the listing was skipped.
+    pub fn revalidate_namespace_watched(
+        &self,
+        sentinel: &mut Option<ChangeSentinel>,
+    ) -> Result<bool> {
+        let next = self.session.arm_change_sentinel().ok();
+        let quiet = next.is_some() && sentinel.take().is_some_and(ChangeSentinel::settle);
+        *sentinel = next;
+        if !quiet {
+            self.revalidate_namespace()?;
+            return Ok(false);
+        }
+        if let Some(proof) = &self.root_proof {
+            proof.revalidate()?;
+        }
+        self.session.verify_registration()?;
+        Ok(true)
     }
 
     pub fn revalidate_namespace(&self) -> Result<()> {

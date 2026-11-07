@@ -883,11 +883,27 @@ impl VfsWorktree {
             },
         )?;
         drop(assemble);
-        let span = layrs_store_local::perf::span("vfs.capture.revalidate");
-        checkpoint
-            .revalidate_namespace()
-            .map_err(|error| provider_stage("revalidate captured namespace", error))?;
-        drop(span);
+        // Each revalidation skips the folder listing while the sentinel
+        // armed before the checkpoint's listing saw nothing (it is chained,
+        // never left with a gap). After any reported change the folder is
+        // listed, and the last sentinel no longer stands for this capture:
+        // the next capture lists (as when the first sentinel saw the change).
+        let mut quiet_chain = true;
+        let mut revalidate = |checkpoint: &layrs_vfs::Checkpoint<'_>,
+                              sentinel: &mut Option<layrs_vfs::ChangeSentinel>,
+                              stage: &'static str|
+         -> Result<()> {
+            let _span = layrs_store_local::perf::span("vfs.capture.revalidate");
+            let quiet = checkpoint
+                .revalidate_namespace_watched(sentinel)
+                .map_err(|error| provider_stage(stage, error))?;
+            if quiet {
+                layrs_store_local::perf::count("vfs.capture.revalidate_quiet", 1);
+            }
+            quiet_chain &= quiet;
+            Ok(())
+        };
+        revalidate(&checkpoint, &mut sentinel, "revalidate captured namespace")?;
         let span = layrs_store_local::perf::span("vfs.capture.next_index");
         let next_index = next_change_index(&index, &checkpoint, &captured, verified_at);
         let index_unchanged = next_index.same_entries(&index);
@@ -934,7 +950,8 @@ impl VfsWorktree {
                 // is re-checked against fresh metadata at every use).
                 CapturePlan::Unchanged { step_id } => {
                     save_index(self.locator.source.store_root.as_path());
-                    self.quiet = sentinel.take().map(|sentinel| QuietCapture {
+                    let sentinel = sentinel.take().filter(|_| quiet_chain);
+                    self.quiet = sentinel.map(|sentinel| QuietCapture {
                         sentinel,
                         operation: original_operation.clone(),
                         step: step_id.clone(),
@@ -948,28 +965,27 @@ impl VfsWorktree {
                     });
                 }
                 CapturePlan::Change(change) => {
-                    checkpoint
-                        .revalidate_namespace()
-                        .map_err(|error| provider_stage("revalidate prepared capture", error))?;
+                    revalidate(&checkpoint, &mut sentinel, "revalidate prepared capture")?;
                     let intent = self.journal.prepare_capture(
                         change.batch(),
                         change.step_id(),
                         &journal_faults,
                     )?;
-                    checkpoint
-                        .revalidate_namespace()
-                        .map_err(|error| provider_stage("revalidate before acceptance", error))?;
+                    revalidate(&checkpoint, &mut sentinel, "revalidate before acceptance")?;
                     let accepted = self.client.accept(&change);
                     if accepted.is_ok() {
                         faults.after_capture_accept()?;
                     }
                     let committed = self.journal.resolve_capture(&journal_faults)? == Some(true);
                     if committed {
-                        checkpoint.revalidate_namespace().map_err(|error| {
-                            provider_stage("revalidate acknowledged capture", error)
-                        })?;
+                        revalidate(
+                            &checkpoint,
+                            &mut sentinel,
+                            "revalidate acknowledged capture",
+                        )?;
                         save_index(self.locator.source.store_root.as_path());
-                        self.quiet = sentinel.take().map(|sentinel| QuietCapture {
+                        let sentinel = sentinel.take().filter(|_| quiet_chain);
+                        self.quiet = sentinel.map(|sentinel| QuietCapture {
                             sentinel,
                             operation: intent.operation_id.clone(),
                             step: intent.step_id.clone(),
