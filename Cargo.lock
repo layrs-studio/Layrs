@@ -1308,6 +1308,7 @@ dependencies = [
  "layrs-sync",
  "layrs-vfs",
  "layrs-weave",
+ "libc",
  "rusqlite",
  "serde",
  "serde_jcs",

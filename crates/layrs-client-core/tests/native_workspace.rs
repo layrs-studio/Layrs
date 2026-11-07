@@ -420,6 +420,22 @@ fn a_stop_after_staging_leaves_no_journal_and_its_folder_is_swept() {
         .restore_step_with_faults(marker.target_step_id(), None, &Stop)
         .is_err());
     assert_eq!(attempts(&reopened).len(), 1);
+    // Not while another process writes this Worktree's checkout.
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(reopened.store_root().join("metadata").join(format!(
+            "checkout-{}.lock",
+            blake3::hash(reopened.worktree_id().as_str().as_bytes()).to_hex()
+        )))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    reopened
+        .forget_staged_attempts(reopened.worktree_id().as_str())
+        .unwrap();
+    assert_eq!(attempts(&reopened).len(), 1, "kept while the lock is held");
+    fs2::FileExt::unlock(&lock).unwrap();
+    drop(lock);
     reopened
         .forget_staged_attempts(reopened.worktree_id().as_str())
         .unwrap();

@@ -53,32 +53,75 @@ impl Drop for HashSlot<'_> {
 /// and a few files open; all walks together stay within half the limit
 /// (council s5 r2). Windows handles have no such low limit.
 fn subtree_threads(subtrees: usize, max_depth: usize) -> usize {
-    let wanted = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .clamp(1, 8)
-        .min(subtrees);
-    if cfg!(windows) {
-        return wanted;
-    }
-    let per_walk = max_depth.min(128) + 1 + FLUSH_DIRECTORIES + HASH_THREADS + 4;
-    let budget = open_file_limit().unwrap_or(256) / 2;
-    wanted.min((budget / per_walk).max(1))
+    walkers_within(
+        std::thread::available_parallelism().map_or(4, |n| n.get()),
+        subtrees,
+        max_depth,
+        open_file_limit(),
+    )
 }
 
-/// The soft limit on open files of this process, where it can be read.
+/// `subtree_threads` for `available` threads and an open-file `limit`
+/// (`None`: no such low limit).
+fn walkers_within(
+    available: usize,
+    subtrees: usize,
+    max_depth: usize,
+    limit: Option<usize>,
+) -> usize {
+    let wanted = available.clamp(1, 8).min(subtrees);
+    let Some(limit) = limit else {
+        return wanted;
+    };
+    let per_walk = max_depth.min(128) + 1 + FLUSH_DIRECTORIES + HASH_THREADS + 4;
+    wanted.min((limit / 2 / per_walk).max(1))
+}
+
+/// The soft limit on open files of this process (`getrlimit`); `None` on
+/// Windows, whose handles have no such low limit, or when unlimited.
 fn open_file_limit() -> Option<usize> {
-    if !cfg!(target_os = "linux") {
-        return None;
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes one rlimit through a valid pointer.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            return Some(256);
+        }
+        if limit.rlim_cur == libc::RLIM_INFINITY {
+            return None;
+        }
+        Some(usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX))
     }
-    let limits = fs::read_to_string("/proc/self/limits").ok()?;
-    let line = limits
-        .lines()
-        .find(|line| line.starts_with("Max open files"))?;
-    line["Max open files".len()..]
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The error of a walk stopped because another part of it failed (or its
+/// observer did): never the error the walk reports when another exists.
+#[derive(Debug)]
+struct WalkStopped;
+
+impl std::fmt::Display for WalkStopped {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("checkout walk stopped")
+    }
+}
+
+impl std::error::Error for WalkStopped {}
+
+fn stopped() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, WalkStopped)
+}
+
+fn is_stopped(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<WalkStopped>())
 }
 
 /// A root subdirectory walked on its own: its name, its path on disk and in
@@ -508,6 +551,9 @@ impl StreamScan<'_> {
             complete: false,
         }));
         for (name, metadata) in listed {
+            if self.observer_failed.load(Ordering::Relaxed) {
+                return Err(stopped());
+            }
             (self.progress)()?;
             if name.eq_ignore_ascii_case(".layrs") || name.eq_ignore_ascii_case(".git") {
                 continue;
@@ -674,7 +720,8 @@ impl StreamScan<'_> {
             .handle;
         let observe = &mut self.observe;
         let progress = &mut self.progress;
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(threads * 2);
+        // Only hashers send, four at once.
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Chunk>(HASH_THREADS * 2);
         type Walked = (
             Vec<CheckoutProjectionEntry>,
             Vec<FileManifest>,
@@ -720,8 +767,10 @@ impl StreamScan<'_> {
                                 relist,
                                 deferred: None,
                                 forward: Some(sender.clone()),
-                                // Spawned per flush; four hash at once in all.
-                                hash_threads: HASH_THREADS.div_ceil(threads),
+                                // Four hash at once across the walk
+                                // (`slots`); a large subtree left alone
+                                // still uses all four.
+                                hash_threads: HASH_THREADS,
                                 hash_slots: Some(slots),
                             };
                             let result = root
@@ -738,7 +787,9 @@ impl StreamScan<'_> {
                                     )
                                 });
                             if result.is_err() {
+                                // The other walkers stop too.
                                 stop.store(true, Ordering::Relaxed);
+                                observer_failed.store(true, Ordering::Relaxed);
                             }
                             done.push((index, result));
                         }
@@ -787,14 +838,23 @@ impl StreamScan<'_> {
             return Err(failure);
         }
         results.sort_by_key(|(index, _)| *index);
+        // The first real failure in name order; walks it stopped report it.
+        let mut first_stop = None;
         for (_, result) in results {
-            let (entries, manifests, hashed, trusted) = result?;
-            self.entries.extend(entries);
-            self.manifests.extend(manifests);
-            self.hashed.extend(hashed);
-            self.trusted += trusted;
+            match result {
+                Ok((entries, manifests, hashed, trusted)) => {
+                    self.entries.extend(entries);
+                    self.manifests.extend(manifests);
+                    self.hashed.extend(hashed);
+                    self.trusted += trusted;
+                }
+                Err(error) if is_stopped(&error) => {
+                    first_stop.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
         }
-        Ok(())
+        first_stop.map_or(Ok(()), Err)
     }
 
     /// Hashes every pending file, then rechecks and closes every directory
@@ -987,7 +1047,7 @@ fn hash_file(
     let mut remaining = first.len();
     while remaining != 0 {
         if observer_failed.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(io::Error::other("checkout scan stopped"));
+            return Err(stopped());
         }
         let count = remaining.min(chunk_bytes) as usize;
         let mut bytes = vec![0; count];
@@ -1036,5 +1096,33 @@ fn retype_error(error: io::Error, full: &Path, listed: &fs::Metadata) -> io::Err
         Ok(fresh) if fresh.file_type() != listed.file_type() => unstable(),
         Err(gone) if gone.kind() == io::ErrorKind::NotFound => unstable(),
         _ => error,
+    }
+}
+
+#[cfg(test)]
+mod walker_tests {
+    use super::*;
+
+    #[test]
+    fn walkers_stay_within_half_the_open_file_limit() {
+        // No low limit: up to eight, never more than the subtrees.
+        assert_eq!(walkers_within(16, 10, 128, None), 8);
+        assert_eq!(walkers_within(16, 3, 128, None), 3);
+        // 1,024 files, depth 128: three walks of at most 169 handles each.
+        assert_eq!(walkers_within(8, 10, 128, Some(1024)), 3);
+        // A shallow limit allows all eight.
+        assert_eq!(walkers_within(8, 10, 8, Some(1024)), 8);
+        // A tiny limit still walks, one subtree at a time.
+        assert_eq!(walkers_within(8, 10, 128, Some(256)), 1);
+    }
+
+    #[test]
+    fn a_stopped_walk_is_recognised() {
+        assert!(is_stopped(&stopped()));
+        assert!(!is_stopped(&unstable()));
+        assert!(!is_stopped(&io::Error::new(
+            io::ErrorKind::Interrupted,
+            "other"
+        )));
     }
 }

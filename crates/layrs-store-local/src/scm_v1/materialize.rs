@@ -952,6 +952,14 @@ fn attempts_of(
         .map_err(error)
 }
 
+/// The file whose exclusive lock serializes a Worktree's checkout writes.
+fn checkout_lock_name(worktree: &WorktreeId) -> String {
+    format!(
+        "checkout-{}.lock",
+        blake3::hash(worktree.as_str().as_bytes()).to_hex()
+    )
+}
+
 /// The name prefix of this Worktree's attempt folders: only a holder of
 /// its checkout lock creates or sweeps them.
 fn attempt_prefix(worktree: &WorktreeId) -> String {
@@ -995,6 +1003,15 @@ pub fn sweep_retired_attempts(
     metadata_identity: &str,
     worktree_id: &WorktreeId,
 ) -> io::Result<()> {
+    // Staging only ever runs under this lock: a Worktree that never took it
+    // has no attempt folder, and its lock file is not created now.
+    if !store_root
+        .join("metadata")
+        .join(checkout_lock_name(worktree_id))
+        .is_file()
+    {
+        return Ok(());
+    }
     let store_directory = pin_store(store_root, store_identity)?;
     let metadata_directory = pin_store(&store_root.join("metadata"), metadata_identity)?;
     let _checkout_lock = lock_checkout(store_root, store_identity, metadata_identity, worktree_id)?;
@@ -1563,10 +1580,7 @@ fn lock_checkout_in(
     worktree: &WorktreeId,
 ) -> io::Result<PinnedFile> {
     let metadata = PinnedDirectory::open(store.layout().metadata_dir())?;
-    let name = format!(
-        "checkout-{}.lock",
-        blake3::hash(worktree.as_str().as_bytes()).to_hex()
-    );
+    let name = checkout_lock_name(worktree);
     let file = match metadata.create_file(name.as_ref()) {
         Ok(file) => {
             file.file().sync_all()?;
