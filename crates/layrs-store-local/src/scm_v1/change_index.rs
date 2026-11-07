@@ -321,8 +321,7 @@ fn put_signed(out: &mut Vec<u8>, value: i64) {
 }
 
 fn file_digest(id: &FileId) -> Option<[u8; 32]> {
-    let hex = id.as_str().strip_prefix("blake3:")?;
-    Some(*blake3::Hash::from_hex(hex).ok()?.as_bytes())
+    Some(id.digest_bytes())
 }
 
 fn encode_compact(document: &Document) -> Vec<u8> {
@@ -442,24 +441,31 @@ fn decode_compact(bytes: &[u8]) -> Option<Document> {
     let worktree_id = WorktreeId::parse(reader.text()?).ok()?;
     let margin_nanos = i64::from_le_bytes(reader.take(8)?.try_into().ok()?);
     let count = usize::try_from(reader.varint()?).ok()?;
-    let mut entries = BTreeMap::new();
+    // Written in strictly increasing path order (from a map): checked while
+    // decoding, then the map is built in one pass.
+    let mut entries: Vec<(String, IndexEntry)> = Vec::with_capacity(count.min(1 << 20));
     let mut previous_path: Vec<u8> = Vec::new();
     let mut previous_modified = 0_i64;
-    for _ in 0..count {
+    for index in 0..count {
         let shared = usize::try_from(reader.varint()?).ok()?;
         let suffix = usize::try_from(reader.varint()?).ok()?;
         if shared > previous_path.len() {
             return None;
         }
+        let tail = reader.take(suffix)?;
+        // Strictly greater than the previous path: at the first differing
+        // byte (or, with the previous path as a prefix, by being longer).
+        if index > 0 {
+            let previous_tail = &previous_path[shared..];
+            if tail <= previous_tail {
+                return None;
+            }
+        }
         previous_path.truncate(shared);
-        previous_path.extend_from_slice(reader.take(suffix)?);
-        let path = String::from_utf8(previous_path.clone()).ok()?;
+        previous_path.extend_from_slice(tail);
+        let path = std::str::from_utf8(&previous_path).ok()?.to_owned();
         let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
-        let file_id = FileId::parse(format!(
-            "blake3:{}",
-            blake3::Hash::from_bytes(digest).to_hex()
-        ))
-        .ok()?;
+        let file_id = FileId::from_digest_bytes(&digest);
         let length = reader.varint()?;
         let flags = reader.take(1)?[0];
         if flags & 0x80 != 0 {
@@ -500,15 +506,13 @@ fn decode_compact(bytes: &[u8]) -> Option<Document> {
             verified_at,
             native,
         };
-        if entries.insert(path, entry).is_some() {
-            return None;
-        }
+        entries.push((path, entry));
     }
-    reader.0.is_empty().then_some(Document {
+    reader.0.is_empty().then(|| Document {
         schema,
         worktree_id,
         margin_nanos,
-        entries,
+        entries: entries.into_iter().collect(),
     })
 }
 

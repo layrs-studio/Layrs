@@ -142,10 +142,13 @@ impl NativeStoreReading {
 
 impl<'store> NativeScmReader<'store> {
     pub fn new(store: &'store NativeStoreOpen) -> Result<Self> {
+        let span = crate::perf::span("reader.cas");
         let cas = NativeCas::open_lazy(store).map_err(cas_open_backend)?;
+        drop(span);
+        let _span = crate::perf::span("reader.identities");
         Ok(Self {
             source: SqlReadSource::Ready(store),
-            identities: super::identity::read_registry(store.layout().root(), store.store_id())?,
+            identities: store.identities()?,
             cas: CasReadSource::Owned(cas),
             transaction_catalog: std::sync::OnceLock::new(),
         })

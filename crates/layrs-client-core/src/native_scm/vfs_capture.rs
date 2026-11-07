@@ -169,8 +169,10 @@ pub(super) fn assemble_snapshot<'a>(
     manifests.dedup_by(|a, b| a.id() == b.id());
     // Reused files are references to content already admitted (the verified
     // source, or an earlier accepted capture); admission rechecks them.
+    let span = layrs_store_local::perf::span("vfs.capture.snapshot");
     let snapshot =
         PreparedSnapshot::from_streaming_referencing(&entries, manifests, spool, limits)?;
+    drop(span);
     // The captured Tree's projection, for the next command (derived data).
     layrs_store_local::scm_v1::projection_cache::save(
         &source.binding().store_root,

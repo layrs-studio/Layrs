@@ -87,15 +87,11 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         }
         previous.truncate(shared);
         previous.extend_from_slice(reader.take(suffix)?);
-        let path = String::from_utf8(previous.clone()).ok()?;
+        let path = std::str::from_utf8(&previous).ok()?.to_owned();
         let content = match reader.u8()? {
             kind @ (KIND_FILE | KIND_EXECUTABLE) => {
                 let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
-                let file_id = FileId::parse(format!(
-                    "blake3:{}",
-                    blake3::Hash::from_bytes(digest).to_hex()
-                ))
-                .ok()?;
+                let file_id = FileId::from_digest_bytes(&digest);
                 CheckoutProjectionContent::File {
                     file_id,
                     byte_length: reader.varint()?,
@@ -152,19 +148,13 @@ pub fn save(
                 byte_length,
                 executable,
             } => {
-                let Some(digest) = file_id
-                    .as_str()
-                    .strip_prefix("blake3:")
-                    .and_then(|hex| blake3::Hash::from_hex(hex).ok())
-                else {
-                    return;
-                };
+                let digest = file_id.digest_bytes();
                 body.push(if *executable {
                     KIND_EXECUTABLE
                 } else {
                     KIND_FILE
                 });
-                body.extend_from_slice(digest.as_bytes());
+                body.extend_from_slice(&digest);
                 put_varint(&mut body, *byte_length);
             }
             CheckoutProjectionContent::Symlink { target } => {
@@ -235,8 +225,15 @@ pub fn remove(store_root: &Path, root_tree: &TreeId) {
 /// directory prefix of another leaf.
 fn well_formed(entries: &[CheckoutProjectionEntry]) -> bool {
     let mut previous: Option<&str> = None;
-    let leaves: std::collections::HashSet<&str> =
-        entries.iter().map(|entry| entry.path.as_str()).collect();
+    // Strictly sorted (checked below), so a leaf is found by bisection.
+    let is_leaf = |candidate: &str| {
+        entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(candidate))
+            .is_ok()
+    };
+    // The directory of the previous entry, already proven to hold no leaf
+    // among its ancestors: most entries share it.
+    let mut checked_directory: Option<&str> = None;
     for entry in entries {
         let path = entry.path.as_str();
         if path.is_empty()
@@ -245,11 +242,15 @@ fn well_formed(entries: &[CheckoutProjectionEntry]) -> bool {
             || path.contains("//")
             || path.contains('\\')
             || previous.is_some_and(|previous| previous >= path)
-            || path
-                .match_indices('/')
-                .any(|(at, _)| leaves.contains(&path[..at]))
         {
             return false;
+        }
+        let directory = path.rsplit_once('/').map(|(directory, _)| directory);
+        if directory.is_some() && directory != checked_directory {
+            if path.match_indices('/').any(|(at, _)| is_leaf(&path[..at])) {
+                return false;
+            }
+            checked_directory = directory;
         }
         previous = Some(path);
     }

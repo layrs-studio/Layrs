@@ -25,7 +25,7 @@ pub struct LocalIdentity {
     pub display_name: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct IdentityRegistry {
     schema_version: String,

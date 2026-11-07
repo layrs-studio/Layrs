@@ -214,8 +214,12 @@ impl NativeWorkspace {
         step: &StepId,
     ) -> Result<bool> {
         let _total = layrs_store_local::perf::span("room.fast_forward");
+        let span = layrs_store_local::perf::span("ff.capture");
         self.capture_with_reason(CaptureReason::BeforeOperation)?;
+        drop(span);
+        let span = layrs_store_local::perf::span("ff.state");
         let source = self.state()?;
+        drop(span);
         let current = source
             .view
             .layer_heads()
@@ -226,6 +230,7 @@ impl NativeWorkspace {
             return Err(NativeClientError::NeedsIntegration);
         }
         {
+            let _span = layrs_store_local::perf::span("ff.admitted");
             let store = self.open_store()?;
             let reader = NativeScmReader::new(&store)?;
             if !reader
@@ -268,7 +273,9 @@ impl NativeWorkspace {
                     .cloned()
                     .collect(),
             )?;
+            let span = layrs_store_local::perf::span("ff.read_after");
             let after = self.read_step_projection(step)?;
+            drop(span);
             self.apply_transition(
                 &source,
                 step.clone(),
@@ -467,11 +474,16 @@ impl NativeWorkspace {
         // base file is verified before the journal; target bytes are proven
         // while staged, and a staging failure leaves the checkout untouched
         // with its journal closed.
+        let span = layrs_store_local::perf::span("transition.verify_displaced");
         self.verify_displaced_content(&before, &after)?;
+        drop(span);
         let stamp = MutationStamp::fresh()?;
         // Only the projection's Tree id is needed (the materializer checks it
         // against `after`); it is memoized, unlike a full snapshot build.
+        let span = layrs_store_local::perf::span("transition.tree_id");
         let materialized_tree = layrs_store_local::scm_v1::checkout::projection_tree_id(&after)?;
+        drop(span);
+        let prepare_span = layrs_store_local::perf::span("transition.prepare_batch");
         let reference_view = restored_view.as_ref().unwrap_or(&source.view);
         let states = source
             .view
@@ -579,6 +591,8 @@ impl NativeWorkspace {
         )?;
         drop(reader);
         drop(store);
+        drop(prepare_span);
+        let _span = layrs_store_local::perf::span("transition.materialize");
         self.materialize_projection(&before, &after, &batch, faults)
     }
 

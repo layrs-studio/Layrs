@@ -210,10 +210,17 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     // Shared discovery validates both a primary Store and a secondary file
     // locator, including its registered root and filesystem identity.
     let discover_span = layrs_store_local::perf::span("cli.discover");
-    let discovered = NativeWorkspace::discover(&root);
+    // `status` is read-only: it continues in the session discovery opened.
+    // Any other command releases it at once (it may write).
+    let discovered = if matches!(cli.command, CliCommand::Status { .. }) {
+        NativeWorkspace::discover_session(&root)
+            .map(|(workspace, store, state)| (workspace, Some((store, state))))
+    } else {
+        NativeWorkspace::discover(&root).map(|workspace| (workspace, None))
+    };
     drop(discover_span);
-    let workspace = match discovered {
-        Ok(workspace) => workspace,
+    let (workspace, mut opening) = match discovered {
+        Ok(discovered) => discovered,
         Err(layrs_client_core::native_scm::NativeClientError::Missing(
             "checkout .layrs directory",
         )) => return None,
@@ -620,7 +627,11 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
             }
             CliCommand::Status { full } => {
                 let _span = layrs_store_local::perf::span("cli.status");
-                let report = workspace.status_report(!*full).map_err(error)?;
+                let report = match opening.take() {
+                    Some((store, state)) => workspace.status_report_in(store, state, !*full),
+                    None => workspace.status_report(!*full),
+                }
+                .map_err(error)?;
                 json!({"dirty":report.dirty,"needsRepair":report.needs_repair,"state":report.state})
             }
             CliCommand::Step { full } => match (if *full {

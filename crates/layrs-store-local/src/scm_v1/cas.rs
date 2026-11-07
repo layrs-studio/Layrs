@@ -521,7 +521,27 @@ impl NativeCas {
     /// so a command that reads none (a clean `status`) never pays for it.
     /// Such a view refuses every content operation of its own.
     pub(crate) fn open_lazy(store: &NativeStoreOpen) -> CasResult<Self> {
-        Self::open_store(store, Arc::new(NoFaults))
+        if let Some(view) = store.cas_view().get() {
+            store
+                .verify_filesystem_identity()
+                .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
+            return Ok(view.session_copy());
+        }
+        let view = Self::open_store(store, Arc::new(NoFaults))?;
+        Ok(store.cas_view().get_or_init(|| view).session_copy())
+    }
+
+    /// Another view of the same validated session: shared read pins, packs
+    /// and catalog; its own (empty) write and sync state.
+    fn session_copy(&self) -> Self {
+        Self {
+            synced_shards: Arc::default(),
+            ensured_shards: Arc::default(),
+            batch: Arc::default(),
+            packer: Arc::default(),
+            compact_batch: Arc::default(),
+            ..self.clone()
+        }
     }
 
     fn open_store(store: &NativeStoreOpen, faults: Arc<dyn CasFaultInjector>) -> CasResult<Self> {

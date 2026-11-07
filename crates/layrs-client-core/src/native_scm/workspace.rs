@@ -121,6 +121,17 @@ impl NativeWorkspace {
     }
 
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::open_session(root)?.0)
+    }
+
+    /// `open`, keeping the shared Store session it validated the Workspace
+    /// state in, with that state: a read-only command continues in it.
+    /// Holding it excludes writers, this process's own included: never keep
+    /// it across a write.
+    pub fn open_session(
+        root: impl AsRef<Path>,
+    ) -> Result<(Self, scm_v1::NativeStoreOpen, WorkspaceState)> {
+        let span = layrs_store_local::perf::span("discover.checkout");
         let checkout = scm_v1::checkout::CheckoutReader::open(root, None)?;
         let root = checkout.root();
         let marker = std::fs::symlink_metadata(root.join(".layrs"))?;
@@ -133,7 +144,11 @@ impl NativeWorkspace {
             .as_ref()
             .map(|l| l.store_root.clone())
             .unwrap_or_else(|| root.join(".layrs"));
+        drop(span);
+        let span = layrs_store_local::perf::span("discover.client");
         let (client, store) = NativeClient::open_with_store(&store_root)?;
+        drop(span);
+        let span = layrs_store_local::perf::span("discover.registered");
         if locator.as_ref().is_some_and(|locator| {
             locator.store_filesystem_identity != client.store_identity
                 || locator.store_metadata_identity != client.metadata_identity
@@ -171,19 +186,29 @@ impl NativeWorkspace {
             client,
             worktree_id,
         };
+        drop(span);
+        let span = layrs_store_local::perf::span("discover.state");
         // Opening validates the Workspace state (a corrupt selected View
         // refuses here), on the Store capability already held.
         let state = result.state_with(&store)?;
-        drop(store);
+        drop(span);
+        let _span = layrs_store_local::perf::span("discover.reopen");
         // Opening the workspace is read-only and checks persisted directory identity.
         layrs_store_local::scm_v1::checkout::CheckoutReader::open(
             root,
             Some(state.worktree.filesystem_identity()),
         )?;
-        Ok(result)
+        Ok((result, store, state))
     }
 
     pub fn discover(start: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::discover_session(start)?.0)
+    }
+
+    /// `discover`, keeping the opening session (see `open_session`).
+    pub fn discover_session(
+        start: impl AsRef<Path>,
+    ) -> Result<(Self, scm_v1::NativeStoreOpen, WorkspaceState)> {
         let start = std::path::absolute(start)?;
         let directory = if std::fs::symlink_metadata(&start)?.is_file() {
             start
@@ -195,7 +220,7 @@ impl NativeWorkspace {
         scm_v1::checkout::CheckoutReader::open(directory, None)?;
         for root in start.ancestors() {
             if root.join(".layrs").try_exists()? {
-                return Self::open(root);
+                return Self::open_session(root);
             }
         }
         Err(NativeClientError::Missing("checkout .layrs directory"))
@@ -229,19 +254,30 @@ impl NativeWorkspace {
 
     /// `state` on an already open Store (one session for several reads).
     pub fn state_with(&self, store: &scm_v1::NativeStoreOpen) -> Result<WorkspaceState> {
+        let span = layrs_store_local::perf::span("state.reader");
         let reader = NativeScmReader::new(store)?;
+        drop(span);
+        let span = layrs_store_local::perf::span("state.worktree");
         let worktree = reader
             .get_worktree(&self.worktree_id)?
             .ok_or(NativeClientError::Missing("Worktree"))?;
+        drop(span);
+        let span = layrs_store_local::perf::span("state.space");
         let space = reader
             .get_space(worktree.space_id())?
             .ok_or(NativeClientError::Missing("Space"))?;
+        drop(span);
+        let span = layrs_store_local::perf::span("state.operation");
         let operation = reader
             .get_operation(worktree.active_operation_id())?
             .ok_or(NativeClientError::Missing("Operation"))?;
+        drop(span);
+        let span = layrs_store_local::perf::span("state.view");
         let view = reader
             .get_repository_view(operation.resulting_view_id())?
             .ok_or(NativeClientError::Missing("RepositoryView"))?;
+        drop(span);
+        let _span = layrs_store_local::perf::span("state.layers");
         let mut layers = Vec::new();
         for heads in view.layer_heads() {
             layers.push(

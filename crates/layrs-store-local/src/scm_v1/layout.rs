@@ -252,6 +252,14 @@ pub struct NativeStoreOpen {
         std::collections::HashMap<layrs_core::scm::TreeId, std::sync::Arc<layrs_core::scm::Tree>>,
         usize,
     )>,
+    /// The CAS view validated by this session's first reader (its root,
+    /// objects and staging directories checked). Later readers of the same
+    /// session reuse it: the session's shared lock excludes writers, and every
+    /// CAS read is still checked against its content address.
+    cas_view: std::sync::OnceLock<super::cas::NativeCas>,
+    /// The local identity registry, read and validated once per session
+    /// (changed only under the exclusive lock).
+    identities: std::sync::OnceLock<super::identity::IdentityRegistry>,
 }
 
 /// Implicit per-query rebinding checks are throttled to this interval. SQLite
@@ -282,7 +290,25 @@ impl NativeStoreOpen {
             format_version: super::FORMAT_VERSION,
             registered: std::sync::OnceLock::new(),
             verified_trees: Mutex::new((std::collections::HashMap::new(), 0)),
+            cas_view: std::sync::OnceLock::new(),
+            identities: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The CAS view validated by this session's first reader.
+    pub(crate) fn cas_view(&self) -> &std::sync::OnceLock<super::cas::NativeCas> {
+        &self.cas_view
+    }
+
+    /// The identity registry as this session first read it.
+    pub(crate) fn identities(
+        &self,
+    ) -> Result<super::identity::IdentityRegistry, layrs_store::scm::StoreError> {
+        if let Some(registry) = self.identities.get() {
+            return Ok(registry.clone());
+        }
+        let registry = super::identity::read_registry(self.layout.root(), &self.store_id)?;
+        Ok(self.identities.get_or_init(|| registry).clone())
     }
 
     /// A Tree this session already read and verified.

@@ -161,7 +161,9 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             return location(None, action, true);
         }
     }
+    let span = layrs_store_local::perf::span("room.context");
     let context = context(cli)?;
+    drop(span);
     match command {
         RoomCommand::Location { action, global } => {
             location(Some(&context.project), action, *global)
@@ -215,7 +217,9 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             into,
             preview,
         } => {
+            let span = layrs_store_local::perf::span("room.selected");
             let mut room = selected(&context, name.as_ref())?;
+            drop(span);
             merge(cli, &context.project, &mut room, into.as_deref(), *preview)
         }
         RoomCommand::Drop { name, force } => {
@@ -514,6 +518,7 @@ fn merge(
     into: Option<&str>,
     preview: bool,
 ) -> Result<Rendered, CliError> {
+    let span = layrs_store_local::perf::span("room.merge.target");
     let target = match into {
         Some(layer) => layer.to_owned(),
         None => layer_name_of(
@@ -523,6 +528,7 @@ fn merge(
             })?,
         )?,
     };
+    drop(span);
     let span = layrs_store_local::perf::span("room.merge.capture_room");
     let captured = step(cli, project, room)?;
     drop(span);
@@ -539,7 +545,9 @@ fn merge(
     // Fast path: the target has not moved since the Room forked (or since its
     // last merge), so the target simply advances to the Room's Step and only
     // the changed files are written. Otherwise a full Weave reconciles both.
+    let span = layrs_store_local::perf::span("room.merge.layer_named");
     let target_id = project.layer_named(&target).map_err(error)?;
+    drop(span);
     let expected = room
         .merged_step_id
         .clone()
@@ -555,6 +563,7 @@ fn merge(
         match attempt {
             Ok(materialized) => {
                 room.merged_step_id = Some(head.clone());
+                let _span = layrs_store_local::perf::span("room.merge.update_room");
                 project.update_room(room).map_err(error)?;
                 return Ok(Rendered {
                     human: format!(

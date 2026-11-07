@@ -64,11 +64,13 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
-        self.capture_trusting_passes(limits, tracked, expected, trust, observe, progress, false)
+        self.capture_trusting_passes(
+            limits, tracked, expected, trust, observe, progress, false, true,
+        )
     }
 
     /// As `capture_streaming_trusting`, accepting the first complete pass
@@ -82,11 +84,37 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<TrustedCapture> {
-        self.capture_trusting_passes(limits, tracked, expected, trust, observe, progress, true)
+        self.capture_trusting_passes(
+            limits, tracked, expected, trust, observe, progress, true, true,
+        )
+    }
+
+    /// A read-only observation of the folder for `status`, as git status
+    /// makes it: one pass, each hashed file still one stable read, but the
+    /// directories are not listed a second time to prove the pass atomic.
+    /// Its result is only reported, never recorded: never use it for a
+    /// capture, or before deleting or replacing anything.
+    pub fn observe_streaming_trusting(
+        &self,
+        limits: CheckoutLimits,
+        tracked: &BTreeSet<String>,
+        expected: Option<&[CheckoutProjectionEntry]>,
+        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
+    ) -> io::Result<TrustedCapture> {
+        self.capture_trusting_passes(
+            limits,
+            tracked,
+            expected,
+            trust,
+            &mut |_| Ok(()),
+            &mut || Ok(()),
+            true,
+            false,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -95,10 +123,11 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: Option<&[CheckoutProjectionEntry]>,
-        trust: &mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>,
+        trust: &mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
         progress: &mut dyn FnMut() -> io::Result<()>,
         single_pass: bool,
+        relist: bool,
     ) -> io::Result<TrustedCapture> {
         let _span = crate::perf::span("checkout.capture_trusting");
         let mut previous: Option<TrustedCapture> = None;
@@ -116,6 +145,7 @@ impl CheckoutReader {
                 Some(&mut *trust),
                 validated,
                 progress,
+                relist,
             ) {
                 Ok(current) => {
                     let same = previous.as_ref().is_some_and(|previous| {
@@ -165,7 +195,7 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         expected: &[CheckoutProjectionEntry],
-        trust: Option<&mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         let _span = crate::perf::span("checkout.matches_projection");
@@ -195,12 +225,12 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
-        trust: Option<&mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Vec<CheckoutProjectionEntry>, Vec<FileManifest>)> {
         let scanned =
-            self.scan_streaming_listed(limits, tracked, observe, trust, expected, progress)?;
+            self.scan_streaming_listed(limits, tracked, observe, trust, expected, progress, true)?;
         Ok((scanned.entries, scanned.manifests))
     }
 
@@ -210,9 +240,10 @@ impl CheckoutReader {
         limits: CheckoutLimits,
         tracked: &BTreeSet<String>,
         observe: &mut dyn FnMut(&Chunk) -> io::Result<()>,
-        trust: Option<&mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>>,
+        trust: Option<&mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
         expected: Option<&[CheckoutProjectionEntry]>,
         progress: &mut dyn FnMut() -> io::Result<()>,
+        relist: bool,
     ) -> io::Result<TrustedCapture> {
         let _span = crate::perf::span("checkout.scan_pass");
         self.directory.verify_path_identity()?;
@@ -236,6 +267,7 @@ impl CheckoutReader {
             files: Vec::new(),
             hashed: Vec::new(),
             trusted: 0,
+            relist,
         };
         scan.walk(self.directory.try_clone()?, self.root.clone(), "", 0)?;
         scan.flush()?;
@@ -280,7 +312,7 @@ struct StreamScan<'a> {
     limits: CheckoutLimits,
     tracked: &'a BTreeSet<String>,
     observe: &'a mut dyn FnMut(&Chunk) -> io::Result<()>,
-    trust: Option<&'a mut dyn FnMut(&str, &Path, &fs::Metadata) -> Option<TrustedFile>>,
+    trust: Option<&'a mut dyn FnMut(&str, &fs::Metadata) -> Option<TrustedFile>>,
     progress: &'a mut dyn FnMut() -> io::Result<()>,
     ignored: super::super::checkout_ignore::IgnoreRules,
     entries: Vec<CheckoutProjectionEntry>,
@@ -296,6 +328,8 @@ struct StreamScan<'a> {
     /// Listing metadata of hashed files, in walk order.
     hashed: Vec<(String, fs::Metadata)>,
     trusted: usize,
+    /// Whether each completed directory is listed again (captures).
+    relist: bool,
 }
 
 struct ScannedDirectory {
@@ -350,7 +384,12 @@ impl StreamScan<'_> {
         self.directories.push(Some(ScannedDirectory {
             handle: directory,
             disk: disk.clone(),
-            before: listed.iter().map(|(name, _)| name.clone()).collect(),
+            // Kept only to list the directory again (captures).
+            before: if self.relist {
+                listed.iter().map(|(name, _)| name.clone()).collect()
+            } else {
+                Vec::new()
+            },
             complete: false,
         }));
         for (name, metadata) in listed {
@@ -377,7 +416,6 @@ impl StreamScan<'_> {
                     return Err(invalid("checkout path is not canonical NFC"));
                 }
             }
-            let full = disk.join(&name);
             // Only a directory can hold tracked descendants.
             let tracked = exact
                 || (metadata.is_dir() && {
@@ -394,6 +432,7 @@ impl StreamScan<'_> {
                 continue;
             }
             if metadata.file_type().is_symlink() {
+                let full = disk.join(&name);
                 // Entry metadata only classifies; a link is re-read freshly.
                 let metadata = &fs::symlink_metadata(&full)?;
                 if !metadata.file_type().is_symlink() {
@@ -415,6 +454,7 @@ impl StreamScan<'_> {
                     content: CheckoutProjectionContent::Symlink { target },
                 });
             } else if metadata.is_dir() {
+                let full = disk.join(&name);
                 let child = self.directories[index]
                     .as_ref()
                     .ok_or_else(|| io::Error::other("walked directory closed early"))?
@@ -426,7 +466,7 @@ impl StreamScan<'_> {
                 if let Some(trusted) = self
                     .trust
                     .as_mut()
-                    .and_then(|trust| trust(&path, &full, &metadata))
+                    .and_then(|trust| trust(&path, &metadata))
                 {
                     self.trusted += 1;
                     self.add_bytes(trusted.length)?;
@@ -442,8 +482,8 @@ impl StreamScan<'_> {
                 }
                 self.files.push(FileTask {
                     directory: index,
+                    full: disk.join(&name),
                     name,
-                    full,
                     path,
                     listed: metadata,
                 });
@@ -472,9 +512,11 @@ impl StreamScan<'_> {
             };
             (self.progress)()?;
             directory.handle.verify_path_identity()?;
-            let _relist = crate::perf::span("scan.relist");
-            if list(&directory.disk, limit)? != directory.before {
-                return Err(unstable());
+            if self.relist {
+                let _relist = crate::perf::span("scan.relist");
+                if list(&directory.disk, limit)? != directory.before {
+                    return Err(unstable());
+                }
             }
             *slot = None;
         }

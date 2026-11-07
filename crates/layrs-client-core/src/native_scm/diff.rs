@@ -41,9 +41,21 @@ impl NativeWorkspace {
     /// whether a repair is pending, else whether the folder changed, and the
     /// Workspace state.
     pub fn status_report(&self, trust_index: bool) -> Result<StatusReport> {
-        let span = layrs_store_local::perf::span("status.session");
         let store = self.open_store()?;
         let state = self.state_with(&store)?;
+        self.status_report_in(store, state, trust_index)
+    }
+
+    /// `status_report` continuing a shared session in which `state` was
+    /// read (`open_session`). The session is held until the folder is
+    /// compared: no writer can move the base meanwhile.
+    pub fn status_report_in(
+        &self,
+        store: layrs_store_local::scm_v1::NativeStoreOpen,
+        state: super::WorkspaceState,
+        trust_index: bool,
+    ) -> Result<StatusReport> {
+        let span = layrs_store_local::perf::span("status.session");
         if layrs_store_local::scm_v1::materialize::recovery_pending(&store, self.worktree_id())? {
             return Ok(StatusReport {
                 needs_repair: true,
@@ -56,9 +68,10 @@ impl NativeWorkspace {
             .capture_base_with(&store, self.worktree_id())?;
         let before =
             self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
-        drop(store);
         drop(span);
-        let changes = self.working_changes_from(trust_index, false, base, &state, before)?;
+        let changes =
+            self.working_changes_from(trust_index, false, base, &state, before, Some(&store))?;
+        drop(store);
         Ok(StatusReport {
             needs_repair: false,
             dirty: Some(changes.is_none_or(|changes| !changes.is_empty())),
@@ -84,7 +97,7 @@ impl NativeWorkspace {
             (base, state, before)
         };
         drop(span);
-        self.working_changes_from(trust_index, details, base, &state, before)
+        self.working_changes_from(trust_index, details, base, &state, before, None)
     }
 
     fn working_changes_from(
@@ -94,6 +107,7 @@ impl NativeWorkspace {
         base: super::CaptureBase,
         state: &super::WorkspaceState,
         before: Vec<CheckoutProjectionEntry>,
+        session: Option<&layrs_store_local::scm_v1::NativeStoreOpen>,
     ) -> Result<Option<Vec<NativeFileChange>>> {
         let checkout = CheckoutReader::open(
             state.worktree.checkout_root(),
@@ -119,28 +133,25 @@ impl NativeWorkspace {
         drop(span);
         let after = match &index {
             Some(index) => {
-                let mut trust =
-                    |path: &str, _full: &std::path::Path, listed: &std::fs::Metadata| {
-                        let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
-                        index.trusted(path, &stat).map(|entry| {
-                            layrs_store_local::scm_v1::checkout::TrustedFile {
-                                file_id: entry.file_id.clone(),
-                                length: entry.length,
-                                executable: entry.executable,
-                            }
-                        })
-                    };
+                let mut trust = |path: &str, listed: &std::fs::Metadata| {
+                    let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
+                    index.trusted(path, &stat).map(|entry| {
+                        layrs_store_local::scm_v1::checkout::TrustedFile {
+                            file_id: entry.file_id.clone(),
+                            length: entry.length,
+                            executable: entry.executable,
+                        }
+                    })
+                };
                 // Taken before the listing: no hashed content is credited
                 // later than the metadata observed for it.
                 let verified_at = layrs_store_local::scm_v1::change_index::now();
-                // Read-only: one stable pass, as git status (council r5, D4).
-                let captured = checkout.capture_streaming_trusting_single_pass(
+                // Read-only: one pass, as git status (council r5, D4).
+                let captured = checkout.observe_streaming_trusting(
                     limits,
                     &tracked,
                     Some(&before),
                     &mut trust,
-                    &mut |_| Ok(()),
-                    &mut || Ok(()),
                 )?;
                 refresh_racy_entries(self.store_root(), index, &captured, verified_at);
                 captured.entries
@@ -158,7 +169,11 @@ impl NativeWorkspace {
             }
         };
         let span = layrs_store_local::perf::span("status.recheck_compare");
-        if self.client().capture_base(self.worktree_id())? != base {
+        let current = match session {
+            Some(store) => self.client().capture_base_with(store, self.worktree_id())?,
+            None => self.client().capture_base(self.worktree_id())?,
+        };
+        if current != base {
             return Err(NativeClientError::StaleCapture);
         }
         if before == after {

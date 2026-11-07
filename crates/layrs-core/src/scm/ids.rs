@@ -11,37 +11,85 @@ fn validate_object_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
+/// Length of every content id: `blake3:` and 64 lowercase hex digits.
+const CONTENT_ID_LEN: usize = 71;
+
+/// Writes `blake3:<hex digest>` into a content id's bytes.
+fn content_id_bytes(digest: &[u8; 32]) -> [u8; CONTENT_ID_LEN] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; CONTENT_ID_LEN];
+    bytes[..7].copy_from_slice(b"blake3:");
+    for (index, byte) in digest.iter().enumerate() {
+        bytes[7 + 2 * index] = HEX[usize::from(byte >> 4)];
+        bytes[8 + 2 * index] = HEX[usize::from(byte & 0x0f)];
+    }
+    bytes
+}
+
 macro_rules! content_id {
     ($name:ident, $label:literal) => {
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-        #[serde(transparent)]
-        pub struct $name(String);
+        /// Stored inline (no allocation): cloning is a copy of its 71 bytes.
+        /// Ordering, equality and text are those of its `blake3:<hex>` form.
+        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name([u8; CONTENT_ID_LEN]);
 
         impl $name {
-            pub fn parse(value: impl Into<String>) -> Result<Self> {
-                let value = value.into();
-                if !validate_object_id(&value) {
+            pub fn parse(value: impl Into<String> + AsRef<str>) -> Result<Self> {
+                let text = value.as_ref();
+                if !validate_object_id(text) {
                     return Err(ScmError::InvalidId {
                         kind: $label,
-                        value,
+                        value: value.into(),
                     });
                 }
-                Ok(Self(value))
+                let mut bytes = [0_u8; CONTENT_ID_LEN];
+                bytes.copy_from_slice(text.as_bytes());
+                Ok(Self(bytes))
             }
 
             #[allow(dead_code)]
             pub(crate) fn from_digest(digest: blake3::Hash) -> Self {
-                Self(format!("blake3:{digest}"))
+                Self(content_id_bytes(digest.as_bytes()))
+            }
+
+            /// The id of a 32-byte blake3 digest (`blake3:<hex>`), without
+            /// the text round trip of `parse`.
+            pub fn from_digest_bytes(digest: &[u8; 32]) -> Self {
+                Self(content_id_bytes(digest))
+            }
+
+            /// The 32-byte digest this id names.
+            pub fn digest_bytes(&self) -> [u8; 32] {
+                let nibble = |byte: u8| match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    _ => byte - b'a' + 10,
+                };
+                let mut digest = [0_u8; 32];
+                for (index, slot) in digest.iter_mut().enumerate() {
+                    *slot = (nibble(self.0[7 + 2 * index]) << 4) | nibble(self.0[8 + 2 * index]);
+                }
+                digest
             }
 
             pub fn as_str(&self) -> &str {
-                &self.0
+                // Only validated ASCII (`parse`) or hex text written by
+                // `content_id_bytes` is ever stored.
+                std::str::from_utf8(&self.0).unwrap_or_default()
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter
+                    .debug_tuple(stringify!($name))
+                    .field(&self.as_str())
+                    .finish()
             }
         }
 
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(&self.0)
+                formatter.write_str(self.as_str())
             }
         }
 
@@ -53,11 +101,20 @@ macro_rules! content_id {
             }
         }
 
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(
                 deserializer: D,
             ) -> std::result::Result<Self, D::Error> {
-                let value = String::deserialize(deserializer)?;
+                let value = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
                 Self::parse(value).map_err(serde::de::Error::custom)
             }
         }

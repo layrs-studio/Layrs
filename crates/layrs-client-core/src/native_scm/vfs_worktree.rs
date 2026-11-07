@@ -753,9 +753,11 @@ impl VfsWorktree {
         use scm_v1::change_index::{ChangeIndex, StatKey};
         let _total = layrs_store_local::perf::span("vfs.capture");
         let journal_faults = JournalFaults(faults);
+        let span = layrs_store_local::perf::span("vfs.capture.journal_status");
         self.journal.resolve_capture(&journal_faults)?;
         self.journal.ensure_capture_capacity()?;
         let original = self.status()?;
+        drop(span);
         if let Some(reason) = original.capture_blocked_reason {
             return Err(reason.error());
         }
@@ -791,7 +793,10 @@ impl VfsWorktree {
                 }
             }
         };
-        let filter = capture_filter(self.checkout_root(), self.source.as_ref(), &index)?;
+        let filter = {
+            let _span = layrs_store_local::perf::span("vfs.capture.filter");
+            capture_filter(self.checkout_root(), self.source.as_ref(), &index)?
+        };
         let mut checkpoint = {
             let _span = layrs_store_local::perf::span("vfs.capture_checkpoint");
             if verify_all {
@@ -806,6 +811,7 @@ impl VfsWorktree {
             .iter()
             .map(|entry| (entry.path.clone(), entry.evidence.clone()))
             .collect();
+        let assemble = layrs_store_local::perf::span("vfs.capture.assemble");
         let captured = super::vfs_capture::assemble_snapshot(
             &self.source,
             entries.iter().map(|(path, evidence)| (path, evidence)),
@@ -818,17 +824,23 @@ impl VfsWorktree {
                     .map_err(|error| provider_stage("read capture checkpoint file", error))
             },
         )?;
+        drop(assemble);
+        let span = layrs_store_local::perf::span("vfs.capture.revalidate");
         checkpoint
             .revalidate_namespace()
             .map_err(|error| provider_stage("revalidate captured namespace", error))?;
+        drop(span);
+        let span = layrs_store_local::perf::span("vfs.capture.next_index");
         let next_index = next_change_index(&index, &checkpoint, &captured, verified_at);
         let index_unchanged = next_index.same_entries(&index);
+        drop(span);
         let save_index = |store_root: &Path| {
             if !index_unchanged && next_index.save(store_root).is_err() {
                 layrs_store_local::perf::count("vfs.change_index_unsaved", 1);
             }
         };
         for _ in 0..8 {
+            let span = layrs_store_local::perf::span("vfs.capture.base");
             let store = self.client.open_store()?;
             let reader = NativeScmReader::new(&store)?;
             let (current, _, current_state) = self.locator.current(&reader)?;
@@ -847,6 +859,8 @@ impl VfsWorktree {
             if expected.operation_id() != &original_operation {
                 return Err(NativeClientError::StaleCapture);
             }
+            drop(span);
+            let span = layrs_store_local::perf::span("vfs.capture.prepare");
             let plan = match self.client.prepare_capture(
                 &expected,
                 captured.snapshot.clone(),
@@ -855,6 +869,7 @@ impl VfsWorktree {
                 Err(NativeClientError::StaleCapture) => continue,
                 other => other?,
             };
+            drop(span);
             match plan {
                 // Nothing is committed for an unchanged capture: the listing
                 // checked after assembly is enough (the change index it saves
