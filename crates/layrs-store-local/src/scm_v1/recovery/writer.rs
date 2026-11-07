@@ -766,8 +766,7 @@ fn acquire_leases(
 /// inside a write transaction its caller already opened and commits (the
 /// metadata batch of a materialization): the batch and the completion then
 /// commit together. Same checks as `NativeRecovery::complete`.
-#[doc(hidden)]
-pub fn complete_in_transaction(
+pub(crate) fn complete_in_transaction(
     connection: &rusqlite::Connection,
     id: &RecoveryId,
     owner_token: &str,

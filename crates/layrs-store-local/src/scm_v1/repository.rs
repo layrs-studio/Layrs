@@ -39,9 +39,6 @@ pub struct NativeScmRepository {
     faults: Arc<dyn RepositoryFaultInjector>,
     cas_faults: Arc<dyn CasFaultInjector>,
     materialization_permit: Option<(String, String)>,
-    /// With the permit: the journal completion that commits in the same
-    /// transaction as the batch.
-    materialization_completion: Option<MaterializationCompletion>,
     expected_identity: Option<String>,
     expected_metadata_identity: Option<String>,
     expected_store_id: Option<StoreId>,
@@ -53,19 +50,11 @@ pub(crate) struct MaterializationCompletion {
     pub(crate) leases: Vec<super::recovery::ResourceLease>,
     pub(crate) evidence: serde_json::Value,
     pub(crate) path_results: Vec<super::recovery::RecoveryPathResult>,
-    /// The lease clock's time when this was built, and when it was read:
-    /// the completion uses that time plus what elapsed since, so a lease
-    /// that expired while the batch was validated is refused.
-    pub(crate) now_ms: i64,
-    pub(crate) taken_at: std::time::Instant,
 }
 
-impl MaterializationCompletion {
-    fn now_ms(&self) -> i64 {
-        let elapsed = i64::try_from(self.taken_at.elapsed().as_millis()).unwrap_or(i64::MAX);
-        self.now_ms.saturating_add(elapsed)
-    }
-}
+/// A completion and the lease clock it reads when it runs, inside the
+/// batch's transaction (council s2 r3).
+type Completing<'c> = Option<(&'c MaterializationCompletion, &'c dyn Fn() -> Result<i64>)>;
 
 struct NoCasFaults;
 impl CasFaultInjector for NoCasFaults {
@@ -89,6 +78,7 @@ impl NativeScmRepository {
             |_| unreachable!("no external chunks"),
             guard,
             SHORT_WAIT,
+            None,
         )
     }
 
@@ -98,7 +88,6 @@ impl NativeScmRepository {
             faults: no_faults(),
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
-            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -115,7 +104,6 @@ impl NativeScmRepository {
             faults,
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
-            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -133,7 +121,6 @@ impl NativeScmRepository {
             faults,
             cas_faults,
             materialization_permit: None,
-            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -150,7 +137,6 @@ impl NativeScmRepository {
             faults: no_faults(),
             cas_faults,
             materialization_permit: None,
-            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -193,11 +179,26 @@ impl NativeScmRepository {
         repository
     }
 
-    /// Completes the permit's journal in the batch's own transaction: the
-    /// new metadata and the completed journal commit together, or neither.
-    pub(crate) fn completing(mut self, completion: MaterializationCompletion) -> Self {
-        self.materialization_completion = Some(completion);
-        self
+    /// `apply_batch_with_chunks` that also completes the permit's journal in
+    /// the batch's own transaction: the new metadata and the completed
+    /// journal commit together, or neither. `clock` is the lease clock, read
+    /// when the completion runs.
+    pub(crate) fn apply_batch_completing(
+        &mut self,
+        batch: &WriteBatch,
+        chunks: &[(ChunkId, u64)],
+        read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        completion: &MaterializationCompletion,
+        clock: &dyn Fn() -> Result<i64>,
+    ) -> Result<ApplyBatchOutcome> {
+        self.apply_batch_with_chunks_guarded(
+            batch,
+            chunks,
+            read_chunk,
+            || Ok(()),
+            self.acquisition_budget,
+            Some((completion, clock)),
+        )
     }
 
     pub(crate) fn with_short_acquisition(mut self) -> Self {
@@ -259,6 +260,7 @@ impl NativeScmRepository {
             read_chunk,
             || Ok(()),
             self.acquisition_budget,
+            None,
         )
     }
 
@@ -269,6 +271,7 @@ impl NativeScmRepository {
         mut read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
         mut guard: impl FnMut() -> Result<()>,
         acquisition_budget: Duration,
+        completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
         super::admission::preflight_batch_budgets(batch)?;
         streaming::preflight(batch, chunks)?;
@@ -393,6 +396,7 @@ impl NativeScmRepository {
                 &installed,
                 chunks.len(),
                 publication.as_ref(),
+                completing,
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
@@ -429,6 +433,7 @@ impl NativeScmRepository {
         installed: &[super::InstallOutcome],
         external_chunks: usize,
         publication: Option<&super::cas::CompactPublication>,
+        completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
         // CAS publication intentionally precedes replay inspection. Therefore a
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
@@ -509,12 +514,16 @@ impl NativeScmRepository {
             "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
             params![batch.transaction_id().as_str(), batch.request_digest().to_string(), receipt_json],
         ).map_err(sql_backend)?;
-        if let (Some(completion), Some((id, owner))) = (
-            self.materialization_completion.as_ref(),
-            self.materialization_permit.as_ref(),
-        ) {
+        if let Some((completion, clock)) = completing {
+            let (id, owner) = self
+                .materialization_permit
+                .as_ref()
+                .ok_or_else(|| native_backend("a journal completion needs a permit"))?;
             let id = super::recovery::RecoveryId::parse(id.clone())
                 .map_err(|error| native_backend(error.to_string()))?;
+            // The lease clock read now, inside the transaction: a lease that
+            // expired while the batch was validated is refused.
+            let now_ms = clock()?;
             super::recovery::complete_in_transaction(
                 &guard,
                 &id,
@@ -522,7 +531,7 @@ impl NativeScmRepository {
                 &completion.leases,
                 completion.evidence.clone(),
                 &completion.path_results,
-                completion.now_ms(),
+                now_ms,
             )
             .map_err(|error| native_backend(error.to_string()))?;
         }
@@ -1425,26 +1434,5 @@ impl ScmReader for NativeScmRepository {
     }
     fn proof_in_space(&self, p: &ProofId, s: &SpaceId) -> Result<bool> {
         self.with_reader(|r| r.proof_in_space(p, s))
-    }
-}
-
-#[cfg(test)]
-mod completion_time_tests {
-    use super::*;
-
-    #[test]
-    fn a_completion_checks_leases_at_its_own_time_not_when_it_was_built() {
-        let completion = MaterializationCompletion {
-            leases: Vec::new(),
-            evidence: serde_json::json!({"verified": true}),
-            path_results: Vec::new(),
-            now_ms: 1_000,
-            taken_at: std::time::Instant::now(),
-        };
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        // A lease expiring at 1,010 ms was live when this was built and is
-        // expired when the batch completes it (`release_leases` requires
-        // `expires_at_ms > now`).
-        assert!(completion.now_ms() >= 1_030);
     }
 }

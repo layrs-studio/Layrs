@@ -2083,7 +2083,7 @@ fn publish_no_clobber(
 fn batch_durability_for(root: &Path) -> BatchDurability {
     #[cfg(windows)]
     {
-        if super::change_index::volume_file_system(root).as_deref() == Some("NTFS") {
+        if super::change_index::local_ntfs(root) {
             return BatchDurability::JournalOrdered;
         }
     }

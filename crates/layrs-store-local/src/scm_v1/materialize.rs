@@ -500,8 +500,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // and git's batch mode, do). Elsewhere each directory is synced as before.
     #[cfg(windows)]
     let ordered = checkout.same_volume(store_dir)
-        && super::change_index::volume_file_system(Path::new(&checkout_root)).as_deref()
-            == Some("NTFS");
+        && super::change_index::local_ntfs(Path::new(&checkout_root));
     #[cfg(not(windows))]
     let ordered = false;
     let ensure = |parent: &PinnedDirectory, name: &std::ffi::OsStr| {
@@ -705,13 +704,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .file_mut()
             .write_all(b"layrs materialization barrier\n")
             .and_then(|()| marker.file().sync_all());
-        let removed = marker.unlink();
+        // A marker that cannot be removed (held open by a scanner) stays in
+        // the attempt folder like any unpurged backup: only the flush counts.
+        let _ = marker.unlink();
         flushed?;
-        if let Err(failure) = removed {
-            if failure.kind() != io::ErrorKind::NotFound {
-                return Err(failure);
-            }
-        }
     }
     drop(installed_into);
     drop(phases);
@@ -809,18 +805,29 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // The metadata and the completed journal commit in one transaction (council
     // s2 r1, B2): a crash leaves either the old state with an Applying
     // journal, or the new state with a completed one.
+    let completion = super::repository::MaterializationCompletion {
+        leases: lease.leases.clone(),
+        evidence: completion_evidence.clone(),
+        path_results: results.clone(),
+    };
+    let clock = || {
+        faults
+            .lease_time_ms()
+            .map_err(|failure| layrs_store::scm::StoreError::Backend {
+                message: format!("lease clock: {failure}"),
+            })
+    };
     let outcome =
         NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
-            .completing(super::repository::MaterializationCompletion {
-                leases: lease.leases.clone(),
-                evidence: completion_evidence.clone(),
-                path_results: results.clone(),
-                now_ms: faults.lease_time_ms()?,
-                taken_at: std::time::Instant::now(),
-            })
             .with_store_identity(store_identity)
             .with_metadata_identity(metadata_identity)
-            .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
+            .apply_batch_completing(
+                batch,
+                sources.chunks,
+                &mut sources.read_chunk,
+                &completion,
+                &clock,
+            )
             .map_err(io::Error::other)?;
     faults.check(MaterializationPoint::AfterMetadata)?;
     if matches!(outcome, ApplyBatchOutcome::AlreadyApplied { .. }) {

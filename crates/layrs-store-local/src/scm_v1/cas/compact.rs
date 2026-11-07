@@ -736,7 +736,11 @@ impl RegisteredCatalog {
         for registered in &self.packs {
             let loaded = &registered.pack;
             for entry in loaded.index.fileid_manifests(&raw) {
-                // The same metadata checks as `file_manifests`.
+                // The FileId-section checks of `file_manifests`. A file
+                // record's length is its record's: its alias manifest is not
+                // rebuilt here (that is what this lookup saves), so a record
+                // whose recipe is damaged answers a length, and its manifest
+                // lookup the corruption.
                 let ordinal = loaded
                     .index
                     .manifest_ordinal(entry.manifest)

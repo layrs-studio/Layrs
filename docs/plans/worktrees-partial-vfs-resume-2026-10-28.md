@@ -31,6 +31,18 @@ Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides
 - B2, décision 2 (durabilité NTFS) : sur un seul volume NTFS (dossier et Store), les synchronisations de dossiers des phases sont remplacées par une barrière (fichier témoin vidé) avant la validation des métadonnées, comme le mode `batch` de git et les lots CAS. Le dossier de la tentative reste créé avec synchronisation, avant que le journal passe `applying`. Ailleurs, rien ne change.
 - Fusion en avance rapide 255 → ~235 ms.
 
+**Revue du conseil (session 2)**
+
+| Membre | r1 | r2 | r3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 7/10 | 8/10 | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 | 9/10, `ship` |
+| Claude Opus 5.5 (xhigh) | 8/10 | 7/10 | 8/10, `ship` |
+
+Corrections r3 : la clôture lit l'horloge des baux dans la transaction (horloge injectable, test d'un saut au-delà de l'expiration) ; le mode NTFS ordonné exige un volume local (un partage SMB qui annonce NTFS garde ses synchronisations, CAS compris) ; un fichier témoin impossible à supprimer ne fait plus échouer la matérialisation ; `complete_in_transaction` redevient interne, son test est dans la crate.
+
+À traiter ensuite (relevé par Opus r3, antérieur à cette séance) : le bail de matérialisation n'est pas renouvelé pendant l'import d'une réception ; une réception dont l'import dépasse le bail (de l'ordre de 40 à 100 Go selon le disque) échoue à chaque essai. Lié à « fichiers de toute taille ».
+
 **Reste à faire**
 - Fusions : matérialisation restante (~100 ms : trois sessions d'écriture, chacune avec son point de contrôle WAL) ; double vérification du dossier dans `accept_merge`.
 - Taille : passage du format 6 par défaut (pack illisible, consolidation) ; alias ChunkId en préfixe ; FileId omis dans l'index de changements ; journaux VFS des Rooms supprimées ; arbres binaires.

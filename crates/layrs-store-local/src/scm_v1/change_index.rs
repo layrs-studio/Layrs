@@ -739,9 +739,54 @@ pub(crate) fn volume_file_system(root: &Path) -> Option<String> {
     Some(String::from_utf16_lossy(&name[..end]))
 }
 
+/// Whether `root` is on a local NTFS volume: the condition under which
+/// directory updates are ordered by the NTFS journal and one flush makes
+/// every earlier one durable. A share that merely reports NTFS (SMB, Samba)
+/// is remote: it answers `FileRemoteProtocolInfo`, which a local volume does
+/// not (council s2 r3).
+#[cfg(windows)]
+pub(crate) fn local_ntfs(root: &Path) -> bool {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_REMOTE_PROTOCOL_INFO, FileRemoteProtocolInfo,
+        GetFileInformationByHandleEx,
+    };
+    if volume_file_system(root).as_deref() != Some("NTFS") {
+        return false;
+    }
+    let Ok(directory) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(root)
+    else {
+        return false;
+    };
+    // SAFETY: an all-zero FILE_REMOTE_PROTOCOL_INFO is a valid output buffer.
+    let mut info: FILE_REMOTE_PROTOCOL_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: `directory` is live; the buffer is writable and sized.
+    let remote = unsafe {
+        GetFileInformationByHandleEx(
+            directory.as_raw_handle() as _,
+            FileRemoteProtocolInfo,
+            (&raw mut info).cast(),
+            std::mem::size_of::<FILE_REMOTE_PROTOCOL_INFO>() as u32,
+        )
+    };
+    remote == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_temporary_folder_is_on_a_local_ntfs_volume_here() {
+        // The machines that run this suite keep TEMP on a local NTFS disk.
+        if volume_file_system(&std::env::temp_dir()).as_deref() == Some("NTFS") {
+            assert!(local_ntfs(&std::env::temp_dir()));
+        }
+    }
 
     fn temp() -> PathBuf {
         let path = std::env::temp_dir().join(format!("layrs-change-index-{}", uuid_like()));

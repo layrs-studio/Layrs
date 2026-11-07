@@ -215,3 +215,58 @@ fn expired_or_reclaimed_lease_stops_before_next_filesystem_mutation() {
         assert_renewed(&w);
     }
 }
+
+/// The lease clock jumps past expiry exactly when the completion reads it,
+/// inside the metadata transaction (after the last renewal).
+struct JumpAtCompletion {
+    clock: Clock,
+    reads_after_metadata: std::sync::atomic::AtomicI64,
+}
+impl MaterializationFaults for JumpAtCompletion {
+    fn lease_time_ms(&self) -> io::Result<i64> {
+        let reads = self.reads_after_metadata.load(Ordering::SeqCst);
+        if reads >= 0 {
+            // First read after `BeforeMetadata`: the renewal; second: the
+            // completion, six minutes later.
+            self.reads_after_metadata.store(reads + 1, Ordering::SeqCst);
+            if reads == 1 {
+                let jumped = self.clock.now.load(Ordering::SeqCst) + 600_000;
+                self.clock.now.store(jumped, Ordering::SeqCst);
+            }
+        }
+        self.clock.lease_time_ms()
+    }
+    fn check(&self, point: MaterializationPoint) -> io::Result<()> {
+        if point == MaterializationPoint::BeforeMetadata {
+            self.reads_after_metadata.store(0, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_lease_expiring_during_the_metadata_transaction_cannot_complete() {
+    let f = Fixture::new();
+    let (w, target) = f.prepare();
+    let old = w.state().unwrap().operation.id().clone();
+    let faults = JumpAtCompletion {
+        clock: Clock::new(None),
+        reads_after_metadata: AtomicI64::new(-1),
+    };
+    assert!(w.restore_step_with_faults(&target, None, &faults).is_err());
+    // The batch rolled back with its completion: old metadata, journal
+    // still Applying, and recovery restores the old files.
+    assert_eq!(w.state().unwrap().operation.id(), &old);
+    assert!(w.needs_repair().unwrap());
+    assert_eq!(
+        scm_v1::materialize::recover_checkout_with_faults(
+            w.store_root(),
+            w.worktree_id(),
+            &Clock::new(None)
+        )
+        .unwrap(),
+        1
+    );
+    f.assert_files(false);
+    assert!(!w.needs_repair().unwrap());
+}
