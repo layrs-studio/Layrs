@@ -28,7 +28,10 @@ fn resolved_index(workspace: &NativeWorkspace) -> ChangeIndex {
         .cloned()
         .unwrap();
     let projection = workspace.read_step_projection(&step).unwrap();
-    assert!(index.resolve(&projection), "index bound to the base projection");
+    assert!(
+        index.resolve(&projection),
+        "index bound to the base projection"
+    );
     assert!(!index.has_unresolved());
     index
 }

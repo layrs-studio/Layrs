@@ -469,8 +469,8 @@ impl ChangeIndex {
         let mut cursor = ProjectionCursor::new(projection);
         for (path, slot) in &mut self.entries {
             if let Slot::Known { entry, bound } = slot {
-                *bound = cursor.file(path)
-                    == Some((&entry.file_id, entry.length, entry.executable));
+                *bound =
+                    cursor.file(path) == Some((&entry.file_id, entry.length, entry.executable));
             }
         }
         self.binding = Some(Binding {
@@ -1420,7 +1420,10 @@ mod tests {
         }
         // Truncated or extended documents are refused.
         for (encoded, decode) in [
-            (&compact, (|b: &[u8]| decode_compact(b).is_some()) as fn(&[u8]) -> bool),
+            (
+                &compact,
+                (|b: &[u8]| decode_compact(b).is_some()) as fn(&[u8]) -> bool,
+            ),
             (&bound, |b: &[u8]| decode_bound(b).is_some()),
         ] {
             let body = &encoded[..encoded.len() - 32];
@@ -1649,7 +1652,9 @@ mod tests {
         let a = vec![file("a", b"a", 1), file("b", b"b", 1)];
         let digest = projection_digest(&a);
         let mut executable = a.clone();
-        if let CheckoutProjectionContent::File { executable: bit, .. } = &mut executable[1].content
+        if let CheckoutProjectionContent::File {
+            executable: bit, ..
+        } = &mut executable[1].content
         {
             *bit = true;
         }

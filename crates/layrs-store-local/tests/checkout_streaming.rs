@@ -138,7 +138,11 @@ fn parallel_subtrees_capture_like_a_sequential_walk_and_share_the_limits() {
             .collect::<Vec<_>>()
     );
     assert_eq!(projection.len(), 1 + 6 * 6);
-    assert!(projection.windows(2).all(|pair| pair[0].path < pair[1].path));
+    assert!(
+        projection
+            .windows(2)
+            .all(|pair| pair[0].path < pair[1].path)
+    );
     assert_eq!(manifests.len(), 37);
     assert!(chunks >= 37);
     // 1 file + 6 directories + 6 * (5 files + 1 directory + 1 file) entries.
@@ -149,9 +153,11 @@ fn parallel_subtrees_capture_like_a_sequential_walk_and_share_the_limits() {
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     bounds.max_entries += 1;
-    assert!(reader
-        .capture_streaming(bounds, &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
-        .is_ok());
+    assert!(
+        reader
+            .capture_streaming(bounds, &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
+            .is_ok()
+    );
     // A file the trust hook vouches for is not opened; the others are.
     let vouched = |path: &str, listed: &fs::Metadata| {
         path.ends_with("f0.txt").then(|| TrustedFile {
@@ -168,7 +174,9 @@ fn parallel_subtrees_capture_like_a_sequential_walk_and_share_the_limits() {
     assert_eq!(observed.entries.len(), 37);
     // A subtree that cannot be represented fails the whole walk.
     fs::write(root.0.join("d3/cafe\u{301}.txt"), b"x").unwrap();
-    assert!(reader
-        .capture_streaming(limits(), &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
-        .is_err());
+    assert!(
+        reader
+            .capture_streaming(limits(), &BTreeSet::new(), &mut |_| Ok(()), &mut || Ok(()))
+            .is_err()
+    );
 }

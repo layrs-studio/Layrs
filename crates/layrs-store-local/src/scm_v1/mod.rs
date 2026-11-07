@@ -49,9 +49,8 @@ pub use format::{
 };
 pub use layout::{
     FORMAT_FILE_NAME, LOCK_FILE_NAME, METADATA_DIR_NAME, MetadataVersion, NativeStoreAudit,
-    NativeStoreExclusive,
-    NativeStoreLayout, NativeStoreOpen, OBJECTS_DIR_NAME, REPAIR_BACKUPS_DIR_NAME,
-    SQLITE_FILE_NAME, STAGING_DIR_NAME, STAGING_LEASE_FILE_NAME,
+    NativeStoreExclusive, NativeStoreLayout, NativeStoreOpen, OBJECTS_DIR_NAME,
+    REPAIR_BACKUPS_DIR_NAME, SQLITE_FILE_NAME, STAGING_DIR_NAME, STAGING_LEASE_FILE_NAME,
 };
 pub use read::{
     NativeScmReader, NativeStoreReading, NativeTransactionalScmReader, ObservationProjection,

@@ -196,12 +196,8 @@ impl NativeWorkspace {
                 // later than the metadata observed for it.
                 let verified_at = layrs_store_local::scm_v1::change_index::now();
                 // Read-only: one pass, as git status (council r5, D4).
-                let captured = checkout.observe_streaming_trusting(
-                    limits,
-                    &tracked,
-                    Some(&before),
-                    &trust,
-                )?;
+                let captured =
+                    checkout.observe_streaming_trusting(limits, &tracked, Some(&before), &trust)?;
                 refresh_racy_entries(
                     self.store_root(),
                     index,

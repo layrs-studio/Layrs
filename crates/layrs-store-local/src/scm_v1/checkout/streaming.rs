@@ -264,8 +264,11 @@ impl CheckoutReader {
         let _span = crate::perf::span("checkout.scan_pass");
         self.directory.verify_path_identity()?;
         let ignored = super::super::checkout_ignore::IgnoreRules::load(&self.directory)?;
-        let (visited, bytes, observer_failed) =
-            (AtomicUsize::new(0), AtomicU64::new(0), AtomicBool::new(false));
+        let (visited, bytes, observer_failed) = (
+            AtomicUsize::new(0),
+            AtomicU64::new(0),
+            AtomicBool::new(false),
+        );
         let mut scan = StreamScan {
             limits,
             tracked,
@@ -578,7 +581,8 @@ impl StreamScan<'_> {
             .collect();
         let next = AtomicUsize::new(0);
         let stop = AtomicBool::new(false);
-        let (limits, tracked, trust, ignored) = (self.limits, self.tracked, self.trust, self.ignored);
+        let (limits, tracked, trust, ignored) =
+            (self.limits, self.tracked, self.trust, self.ignored);
         let (visited, bytes, observer_failed, relist) =
             (self.visited, self.bytes, self.observer_failed, self.relist);
         let observe = &mut self.observe;
@@ -850,8 +854,7 @@ impl StreamScan<'_> {
             .fetch_add(count, Ordering::Relaxed)
             .checked_add(count)
             .ok_or_else(|| invalid("checkout size overflow"))?;
-        if count > self.limits.max_file_bytes as u64 || total > self.limits.max_total_bytes as u64
-        {
+        if count > self.limits.max_file_bytes as u64 || total > self.limits.max_total_bytes as u64 {
             return Err(invalid("streaming checkout byte limit exceeded"));
         }
         Ok(())
