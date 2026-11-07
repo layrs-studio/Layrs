@@ -19,12 +19,19 @@
 //! 2. The binding: the root Tree id, then the projection's own Tree id (as
 //!    `projection_tree_id` computes it; it differs from the root only when
 //!    the root holds what a checkout cannot represent, such as Tombstones).
-//! 3. The entries, sorted by path (ADR 0028, compact). Each holds its path as
-//!    the byte count it shares with the previous path plus its own suffix
-//!    (varints), a kind byte (file, executable file or symlink), and then
-//!    either the 32-byte FileId digest and the length (varint), or the
-//!    target (symlink).
-//! 4. The blake3 checksum of everything before it.
+//! 3. The form: complete (0) or delta (1).
+//! 4. A complete projection: its entries, sorted by path (ADR 0028, compact).
+//!    Each holds its path as the byte count it shares with the previous path
+//!    plus its own suffix (varints), a kind byte (file, executable file or
+//!    symlink), and then either the 32-byte FileId digest and the length
+//!    (varint), or the target (symlink).
+//!
+//!    A delta: the root Tree of the complete projection it applies to and that
+//!    file's own checksum (so it applies to those exact bytes only), then the
+//!    paths it removes or sets, sorted, encoded as entries where a removed
+//!    path has kind 0. Successive projections differ by a few paths: each is
+//!    a few bytes, not another copy of every FileId.
+//! 5. The blake3 checksum of everything before it.
 use super::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
 use layrs_core::scm::{FileId, TreeId};
 use std::{
@@ -34,7 +41,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"LYRSPRJ1";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const DIRECTORY: &str = "projection-cache";
 /// Bound on what a corrupt file can make a reader allocate.
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -42,6 +49,12 @@ const MAX_ENTRIES: usize = 1_000_000;
 const KIND_FILE: u8 = 1;
 const KIND_SYMLINK: u8 = 2;
 const KIND_EXECUTABLE: u8 = 3;
+/// In a delta: the path is absent from the result.
+const KIND_REMOVED: u8 = 0;
+const FORM_COMPLETE: u8 = 0;
+const FORM_DELTA: u8 = 1;
+/// A delta is written while it changes at most this share of the paths.
+const DELTA_MAX_PERCENT: usize = 25;
 
 fn file(store_root: &Path, tree: &TreeId) -> PathBuf {
     let name = blake3::hash(tree.as_str().as_bytes()).to_hex();
@@ -52,17 +65,67 @@ fn file(store_root: &Path, tree: &TreeId) -> PathBuf {
 }
 
 /// The cached projection of `root_tree`, if a file exists whose binding,
-/// structure and checksum are all intact.
+/// structure and checksum are all intact (and, for a delta, those of the
+/// exact complete projection it applies to). A file that fails is removed,
+/// so the next `save` writes it again.
 pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProjectionEntry>> {
     let _span = crate::perf::span("projection_cache.load");
     let path = file(store_root, root_tree);
-    let metadata = fs::symlink_metadata(&path).ok()?;
+    let loaded = read(&path, root_tree).and_then(|parsed| match parsed.form {
+        Form::Complete(entries) => Some((parsed.projection_tree, entries)),
+        Form::Delta {
+            base_root,
+            base_checksum,
+            changes,
+        } => {
+            let base_path = file(store_root, &base_root);
+            let base = read(&base_path, &base_root)?;
+            let Form::Complete(base_entries) = base.form else {
+                return None;
+            };
+            (base.checksum == base_checksum)
+                .then(|| apply(base_entries, changes))
+                .flatten()
+                .map(|entries| (parsed.projection_tree, entries))
+        }
+    });
+    let Some((projection_tree, entries)) = loaded.filter(|(_, entries)| well_formed(entries))
+    else {
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        return None;
+    };
+    super::checkout::remember_projection_tree_id(&entries, &projection_tree);
+    Some(entries)
+}
+
+enum Form {
+    Complete(Vec<CheckoutProjectionEntry>),
+    Delta {
+        base_root: TreeId,
+        base_checksum: [u8; 32],
+        /// Sorted paths, `None` removed.
+        changes: Vec<(String, Option<CheckoutProjectionContent>)>,
+    },
+}
+
+struct Parsed {
+    projection_tree: TreeId,
+    form: Form,
+    checksum: [u8; 32],
+}
+
+/// One cache file bound to `root_tree`, its checksum checked.
+fn read(path: &Path, root_tree: &TreeId) -> Option<Parsed> {
+    let metadata = fs::symlink_metadata(path).ok()?;
     if !metadata.is_file() || metadata.len() > MAX_BYTES || metadata.len() < 40 {
         return None;
     }
-    let bytes = fs::read(&path).ok()?;
+    let bytes = fs::read(path).ok()?;
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
-    if blake3::hash(body).as_bytes() != trailer {
+    let checksum = *blake3::hash(body).as_bytes();
+    if checksum != trailer {
         return None;
     }
     let mut reader = Reader { bytes: body, at: 0 };
@@ -73,47 +136,140 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         return None;
     }
     let projection_tree = TreeId::parse(reader.string()?).ok()?;
+    let form = match reader.u8()? {
+        FORM_COMPLETE => Form::Complete(
+            read_entries(&mut reader, false)?
+                .into_iter()
+                .map(|(path, content)| {
+                    content.map(|content| CheckoutProjectionEntry { path, content })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        FORM_DELTA => {
+            let base_root = TreeId::parse(reader.string()?).ok()?;
+            let base_checksum: [u8; 32] = reader.take(32)?.try_into().ok()?;
+            Form::Delta {
+                base_root,
+                base_checksum,
+                changes: read_entries(&mut reader, true)?,
+            }
+        }
+        _ => return None,
+    };
+    (reader.at == body.len()).then_some(Parsed {
+        projection_tree,
+        form,
+        checksum,
+    })
+}
+
+/// Sorted, prefix-shared entries; `removals` admits kind 0 (`None`).
+fn read_entries(
+    reader: &mut Reader<'_>,
+    removals: bool,
+) -> Option<Vec<(String, Option<CheckoutProjectionContent>)>> {
     let count = usize::try_from(reader.u32()?).ok()?;
     if count > MAX_ENTRIES {
         return None;
     }
     let mut entries = Vec::with_capacity(count);
     let mut previous: Vec<u8> = Vec::new();
-    for _ in 0..count {
+    for index in 0..count {
         let shared = usize::try_from(reader.varint()?).ok()?;
         let suffix = usize::try_from(reader.varint()?).ok()?;
         if shared > previous.len() {
             return None;
         }
+        let tail = reader.take(suffix)?;
+        // Strictly increasing paths, checked as they are read.
+        if index > 0 && tail <= &previous[shared..] {
+            return None;
+        }
         previous.truncate(shared);
-        previous.extend_from_slice(reader.take(suffix)?);
+        previous.extend_from_slice(tail);
         let path = std::str::from_utf8(&previous).ok()?.to_owned();
         let content = match reader.u8()? {
             kind @ (KIND_FILE | KIND_EXECUTABLE) => {
                 let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
-                let file_id = FileId::from_digest_bytes(&digest);
-                CheckoutProjectionContent::File {
-                    file_id,
+                Some(CheckoutProjectionContent::File {
+                    file_id: FileId::from_digest_bytes(&digest),
                     byte_length: reader.varint()?,
                     executable: kind == KIND_EXECUTABLE,
-                }
+                })
             }
-            KIND_SYMLINK => CheckoutProjectionContent::Symlink {
+            KIND_SYMLINK => Some(CheckoutProjectionContent::Symlink {
                 target: reader.string()?.to_owned(),
-            },
+            }),
+            KIND_REMOVED if removals => None,
             _ => return None,
         };
-        entries.push(CheckoutProjectionEntry { path, content });
+        entries.push((path, content));
     }
-    if reader.at != body.len() || !well_formed(&entries) {
-        return None;
-    }
-    super::checkout::remember_projection_tree_id(&entries, &projection_tree);
     Some(entries)
 }
 
+/// `base` with every change applied (both sorted by path); a removal of an
+/// absent path is malformed.
+fn apply(
+    base: Vec<CheckoutProjectionEntry>,
+    changes: Vec<(String, Option<CheckoutProjectionContent>)>,
+) -> Option<Vec<CheckoutProjectionEntry>> {
+    let mut result = Vec::with_capacity(base.len() + changes.len());
+    let mut base = base.into_iter().peekable();
+    for (path, content) in changes {
+        while base.peek().is_some_and(|entry| entry.path < path) {
+            result.extend(base.next());
+        }
+        let replaced = base.next_if(|entry| entry.path == path).is_some();
+        match content {
+            Some(content) => result.push(CheckoutProjectionEntry { path, content }),
+            None if replaced => {}
+            None => return None,
+        }
+    }
+    result.extend(base);
+    Some(result)
+}
+
+/// The changes turning `base` into `next` (both sorted by path).
+fn changes_between<'a>(
+    base: &'a [CheckoutProjectionEntry],
+    next: &'a [CheckoutProjectionEntry],
+) -> Vec<(&'a str, Option<&'a CheckoutProjectionContent>)> {
+    let mut changes = Vec::new();
+    let (mut b, mut n) = (0, 0);
+    while b < base.len() || n < next.len() {
+        match (base.get(b), next.get(n)) {
+            (Some(old), Some(new)) if old.path == new.path => {
+                if old.content != new.content {
+                    changes.push((new.path.as_str(), Some(&new.content)));
+                }
+                b += 1;
+                n += 1;
+            }
+            (Some(old), Some(new)) if old.path < new.path => {
+                changes.push((old.path.as_str(), None));
+                b += 1;
+            }
+            (_, Some(new)) => {
+                changes.push((new.path.as_str(), Some(&new.content)));
+                n += 1;
+            }
+            (Some(old), None) => {
+                changes.push((old.path.as_str(), None));
+                b += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    changes
+}
+
 /// Records the projection of `root_tree`. Best effort: a cache that cannot
-/// be written only makes the next command read the Store.
+/// be written only makes the next command read the Store. A projection
+/// already recorded is kept (a Tree's projection never changes; a damaged
+/// file is removed by `load`). One close to the most recent complete
+/// projection is recorded as a delta to it.
 pub fn save(
     store_root: &Path,
     root_tree: &TreeId,
@@ -124,51 +280,59 @@ pub fn save(
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
         return;
     }
+    let path = file(store_root, root_tree);
+    if path.is_file() {
+        // Recorded already: only marked recent, so pruning keeps it.
+        if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
+            let _ = file.set_modified(std::time::SystemTime::now());
+        }
+        return;
+    }
+    let Some(directory) = path.parent().map(Path::to_path_buf) else {
+        return;
+    };
     let mut body = Vec::with_capacity(64 + entries.len() * 48);
     body.extend_from_slice(MAGIC);
     body.extend_from_slice(&VERSION.to_le_bytes());
     put_string(&mut body, root_tree.as_str());
     put_string(&mut body, projection_tree.as_str());
-    body.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-    let mut previous: &[u8] = &[];
-    for entry in entries {
-        let path = entry.path.as_bytes();
-        let shared = path
-            .iter()
-            .zip(previous)
-            .take_while(|(a, b)| a == b)
-            .count();
-        put_varint(&mut body, shared as u64);
-        put_varint(&mut body, (path.len() - shared) as u64);
-        body.extend_from_slice(&path[shared..]);
-        previous = path;
-        match &entry.content {
-            CheckoutProjectionContent::File {
-                file_id,
-                byte_length,
-                executable,
-            } => {
-                let digest = file_id.digest_bytes();
-                body.push(if *executable {
-                    KIND_EXECUTABLE
-                } else {
-                    KIND_FILE
-                });
-                body.extend_from_slice(&digest);
-                put_varint(&mut body, *byte_length);
-            }
-            CheckoutProjectionContent::Symlink { target } => {
-                body.push(KIND_SYMLINK);
-                put_string(&mut body, target);
-            }
+    let delta = newest_complete(&directory).and_then(|(base_root, base_path)| {
+        let base = read(&base_path, &base_root)?;
+        let Form::Complete(base_entries) = &base.form else {
+            return None;
+        };
+        let changes = changes_between(base_entries, entries);
+        (changes.len() * 100 <= entries.len() * DELTA_MAX_PERCENT)
+            .then(|| (base_root, base.checksum, changes_owned(&changes)))
+    });
+    match delta {
+        Some((base_root, base_checksum, changes)) => {
+            body.push(FORM_DELTA);
+            put_string(&mut body, base_root.as_str());
+            body.extend_from_slice(&base_checksum);
+            put_entries(
+                &mut body,
+                changes
+                    .iter()
+                    .map(|(path, content)| (path.as_str(), content.as_ref())),
+                changes.len(),
+            );
+        }
+        None => {
+            body.push(FORM_COMPLETE);
+            put_entries(
+                &mut body,
+                entries
+                    .iter()
+                    .map(|entry| (entry.path.as_str(), Some(&entry.content))),
+                entries.len(),
+            );
         }
     }
     let checksum = blake3::hash(&body);
     body.extend_from_slice(checksum.as_bytes());
-    let path = file(store_root, root_tree);
     let _ = (|| -> io::Result<()> {
-        let directory = path.parent().ok_or_else(|| io::Error::other("no parent"))?;
-        fs::create_dir_all(directory)?;
+        fs::create_dir_all(&directory)?;
         let staged = directory.join(format!(
             ".{}.{}.tmp",
             path.file_name().unwrap_or_default().to_string_lossy(),
@@ -181,37 +345,169 @@ pub fn save(
         fs::rename(&staged, &path).inspect_err(|_| {
             let _ = fs::remove_file(&staged);
         })?;
-        prune(directory, &path);
+        prune(&directory, &path);
         Ok(())
     })();
 }
 
-/// Projections kept: those of the Trees most recently written (each Worktree
-/// and Room base, recent Steps). Without a bound every new root Tree added
-/// a file of about 40 bytes per path, forever.
-const KEPT: usize = 4;
+fn changes_owned(
+    changes: &[(&str, Option<&CheckoutProjectionContent>)],
+) -> Vec<(String, Option<CheckoutProjectionContent>)> {
+    changes
+        .iter()
+        .map(|(path, content)| ((*path).to_owned(), content.cloned()))
+        .collect()
+}
 
-/// Removes the least recently written projections beyond `KEPT`, never
-/// `kept` (just written). Best effort: a removed projection is recomputed
-/// from the Store when needed.
-fn prune(directory: &Path, kept: &Path) {
-    let Ok(listing) = fs::read_dir(directory) else {
-        return;
+fn put_entries<'a>(
+    body: &mut Vec<u8>,
+    entries: impl Iterator<Item = (&'a str, Option<&'a CheckoutProjectionContent>)>,
+    count: usize,
+) {
+    body.extend_from_slice(&(count as u32).to_le_bytes());
+    let mut previous: &[u8] = &[];
+    for (path, content) in entries {
+        let path = path.as_bytes();
+        let shared = path
+            .iter()
+            .zip(previous)
+            .take_while(|(a, b)| a == b)
+            .count();
+        put_varint(body, shared as u64);
+        put_varint(body, (path.len() - shared) as u64);
+        body.extend_from_slice(&path[shared..]);
+        previous = path;
+        match content {
+            Some(CheckoutProjectionContent::File {
+                file_id,
+                byte_length,
+                executable,
+            }) => {
+                body.push(if *executable {
+                    KIND_EXECUTABLE
+                } else {
+                    KIND_FILE
+                });
+                body.extend_from_slice(&file_id.digest_bytes());
+                put_varint(body, *byte_length);
+            }
+            Some(CheckoutProjectionContent::Symlink { target }) => {
+                body.push(KIND_SYMLINK);
+                put_string(body, target);
+            }
+            None => body.push(KIND_REMOVED),
+        }
+    }
+}
+
+/// What a cache file is, from its header alone: its root Tree, and for a
+/// delta the root of the complete projection it needs.
+struct Header {
+    root: TreeId,
+    base: Option<TreeId>,
+}
+
+fn header(path: &Path) -> Option<Header> {
+    use std::io::Read;
+    let mut prefix = Vec::with_capacity(320);
+    fs::File::open(path)
+        .ok()?
+        .take(320)
+        .read_to_end(&mut prefix)
+        .ok()?;
+    let mut reader = Reader {
+        bytes: &prefix,
+        at: 0,
     };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = listing
+    if reader.take(8)? != MAGIC || reader.u32()? != VERSION {
+        return None;
+    }
+    let root = TreeId::parse(reader.string()?).ok()?;
+    reader.string()?;
+    let base = match reader.u8()? {
+        FORM_COMPLETE => None,
+        FORM_DELTA => Some(TreeId::parse(reader.string()?).ok()?),
+        _ => return None,
+    };
+    Some(Header { root, base })
+}
+
+/// The most recently written complete projection: its root and file.
+fn newest_complete(directory: &Path) -> Option<(TreeId, PathBuf)> {
+    let mut files = listed(directory);
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.into_iter().find_map(|(_, path)| {
+        let header = header(&path)?;
+        header.base.is_none().then_some((header.root, path))
+    })
+}
+
+fn listed(directory: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let Ok(listing) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    listing
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            (path.extension()? == "bin" && path != kept).then_some(())?;
+            (path.extension()? == "bin").then_some(())?;
             Some((entry.metadata().ok()?.modified().ok()?, path))
         })
-        .collect();
-    if files.len() < KEPT {
-        return;
+        .collect()
+}
+
+/// Projections kept: those of the Trees most recently written (each Worktree
+/// and Room base, recent Steps), most of them small deltas.
+const KEPT: usize = 8;
+/// Complete projections kept, each about 40 bytes per path.
+const KEPT_COMPLETE: usize = 2;
+
+/// Keeps the `KEPT` most recently written projections (`kept`, just
+/// written, always) and the complete projections they apply to, with at most
+/// `KEPT_COMPLETE` complete ones; a delta whose complete projection goes goes
+/// too. Best effort: a removed projection is read from the Store when needed.
+fn prune(directory: &Path, kept: &Path) {
+    let mut files = listed(directory);
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some(at) = files.iter().position(|(_, path)| path == kept) {
+        let just = files.remove(at);
+        files.insert(0, just);
     }
-    files.sort();
-    for (_, path) in &files[..files.len() + 1 - KEPT] {
-        let _ = fs::remove_file(path);
+    let headers: Vec<(PathBuf, Option<Header>)> = files
+        .into_iter()
+        .map(|(_, path)| {
+            let header = header(&path);
+            (path, header)
+        })
+        .collect();
+    // The newest complete projections, by root.
+    let complete: Vec<&TreeId> = headers
+        .iter()
+        .filter_map(|(_, header)| {
+            header
+                .as_ref()
+                .filter(|h| h.base.is_none())
+                .map(|h| &h.root)
+        })
+        .take(KEPT_COMPLETE)
+        .collect();
+    // Deltas fill what the complete projections leave of `KEPT`.
+    let mut retained = complete.len();
+    for (path, header) in &headers {
+        let keep = match header {
+            Some(Header {
+                base: Some(base), ..
+            }) => {
+                let keep = complete.contains(&base) && retained < KEPT;
+                retained += usize::from(keep);
+                keep
+            }
+            Some(Header { root, base: None }) => complete.contains(&root),
+            None => false,
+        };
+        if !keep && path != kept {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -379,6 +675,69 @@ mod tests {
         let directory = file(&root, &trees[0]).parent().unwrap().to_path_buf();
         assert!(fs::read_dir(&directory).unwrap().count() <= KEPT);
         assert_eq!(load(&root, trees.last().unwrap()), Some(entries()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn many(count: usize, seed: u8) -> Vec<CheckoutProjectionEntry> {
+        (0..count)
+            .map(|n| {
+                (
+                    format!("d{}/f{n:05}.txt", n % 7),
+                    CheckoutProjectionContent::File {
+                        file_id: FileId::from_bytes(&[seed, n as u8, (n >> 8) as u8]),
+                        byte_length: n as u64,
+                        executable: false,
+                    },
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .map(|(path, content)| CheckoutProjectionEntry { path, content })
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn close_projections_are_deltas_bound_to_their_exact_base() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-delta-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 99]))).unwrap();
+        let base = many(400, 1);
+        save(&root, &tree(0), &tree(0), &base);
+        // A few paths changed, one removed, one added: a delta, much smaller.
+        let mut next = base.clone();
+        next.remove(3);
+        next[10].content = CheckoutProjectionContent::Symlink {
+            target: "elsewhere".into(),
+        };
+        next.push(CheckoutProjectionEntry {
+            path: "zz/new.txt".into(),
+            content: CheckoutProjectionContent::File {
+                file_id: FileId::from_bytes(b"new"),
+                byte_length: 3,
+                executable: true,
+            },
+        });
+        save(&root, &tree(1), &tree(1), &next);
+        let size = |n: u8| fs::metadata(file(&root, &tree(n))).unwrap().len();
+        assert!(size(1) * 20 < size(0), "{} vs {}", size(1), size(0));
+        assert_eq!(load(&root, &tree(1)), Some(next.clone()));
+        assert_eq!(load(&root, &tree(0)), Some(base.clone()));
+        // Most paths changed: a complete projection.
+        let far = many(400, 2);
+        save(&root, &tree(2), &tree(2), &far);
+        assert!(header(&file(&root, &tree(2))).unwrap().base.is_none());
+        assert_eq!(load(&root, &tree(2)), Some(far));
+        // A delta never applies to other bytes than its base's: a base
+        // rewritten (same Tree, other bytes) leaves it unreadable and removed.
+        let mut altered = base.clone();
+        altered.truncate(399);
+        fs::remove_file(file(&root, &tree(0))).unwrap();
+        save(&root, &tree(0), &tree(0), &altered);
+        assert_eq!(load(&root, &tree(1)), None);
+        assert!(!file(&root, &tree(1)).exists());
         let _ = fs::remove_dir_all(&root);
     }
 
