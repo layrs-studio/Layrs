@@ -1147,7 +1147,8 @@ fn streamed_chunks_become_file_records_and_stay_atomic() {
     assert_fsck_clean(&root.0);
 }
 
-fn flip_located(root: &Path, object: &StoreObjectId) -> PathBuf {
+/// The pack and offset of `object`'s first registered copy.
+fn located(root: &Path, object: &StoreObjectId) -> (PathBuf, u64) {
     let store = open(root).unwrap();
     let location = NativeCas::open(&store)
         .unwrap()
@@ -1158,6 +1159,11 @@ fn flip_located(root: &Path, object: &StoreObjectId) -> PathBuf {
     let CasLocation::Packed { pack, offset, .. } = location else {
         panic!("{object} is not packed");
     };
+    (pack, offset)
+}
+
+fn flip_located(root: &Path, object: &StoreObjectId) -> PathBuf {
+    let (pack, offset) = located(root, object);
     flip(&pack, offset);
     pack
 }
@@ -1576,6 +1582,106 @@ fn a_damaged_candidate_is_left_out_and_the_others_consolidate() {
     let store = open(&root.0).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
     assert!(reader.get_chunk(damaged.chunks[0].id()).is_err());
+}
+
+/// A record two candidates hold is written once, and explicit manifests (a
+/// multi-chunk File) keep their FileId entry through consolidation (council
+/// s6 r2): every answer of both Spaces is unchanged.
+#[test]
+fn a_record_in_two_candidates_and_explicit_manifests_survive_consolidation() {
+    let root = TestRoot::new("consolidation-dedup");
+    create(&root.0, "consolidation-dedup", "6");
+    let big: Vec<u8> = (0..MIB + MIB / 4).map(|i| (i % 251) as u8).collect();
+    let shared = vec![
+        file("big.bin", &big, Recipe::Half),
+        file("shared.txt", b"the same bytes", Recipe::Fixed),
+    ];
+    assert!(shared[0].chunks.len() > 1);
+    let (mut alpha, batch) = Lane::begin("alpha", &shared);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    // The block holding the Tree is damaged; Space B's batch, carrying the
+    // same Tree, writes a sound copy into its own pack; then the damage is
+    // undone: two sound copies in two registered packs.
+    let tree = StoreObjectId::Tree(tree_of(&shared).id().clone());
+    let (pack, offset) = located(&root.0, &tree);
+    flip(&pack, offset);
+    let (beta, batch) = Lane::begin("beta", &shared);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    // The Tree reads while the first copy is damaged: the second exists.
+    let tree_id = tree_of(&shared).id().clone();
+    let store = open(&root.0).unwrap();
+    assert!(
+        NativeScmReader::new(&store)
+            .unwrap()
+            .get_tree(&tree_id)
+            .unwrap()
+            .is_some()
+    );
+    drop(store);
+    flip(&pack, offset);
+    let first: Vec<i64> = {
+        let connection = sql(&root.0);
+        let mut statement = connection
+            .prepare("SELECT pack_seq FROM cas_packs ORDER BY pack_seq")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(first.len(), 2);
+    assert_fsck_clean(&root.0);
+    let before = (
+        reader_answers(&root.0, &shared, alpha.space.id()),
+        reader_answers(&root.0, &shared, beta.space.id()),
+    );
+    let mut files = shared.clone();
+    for step in 0..5 {
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        let batch = alpha.capture(&files, carried);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+    }
+    let registered = registered_packs(&root.0);
+    assert!(registered.len() < 6, "{registered:?}");
+    assert_eq!(packs(&root.0).len(), registered.len());
+    for seq in &first {
+        assert_eq!(
+            count(
+                &root.0,
+                &format!("SELECT count(*) FROM cas_packs WHERE pack_seq={seq}")
+            ),
+            0,
+            "pack {seq} was not consolidated"
+        );
+    }
+    assert_eq!(
+        (
+            reader_answers(&root.0, &shared, alpha.space.id()),
+            reader_answers(&root.0, &shared, beta.space.id()),
+        ),
+        before
+    );
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    for space in [alpha.space.id(), beta.space.id()] {
+        assert!(reader.object_admitted_metadata(&tree, space).unwrap());
+    }
+    drop(reader);
+    drop(store);
+    assert_fsck_clean(&root.0);
 }
 
 /// Fails the `at`-th pack publication.
