@@ -880,9 +880,13 @@ fn a_damaged_block_fails_only_its_records_and_scrub_names_them() {
     NativeScmRepository::new(&root.0)
         .apply_batch(&batch)
         .unwrap();
-    let pack = packs(&root.0).remove(0);
-    // Block 0 starts right after the 16-byte header: damage its stored bytes.
-    flip(&pack, 16 + 5 + 2);
+    // Damage the stored bytes of the small record's block, wherever the
+    // batch placed it (objects are written concurrently: the large one may
+    // come first).
+    flip_located(
+        &root.0,
+        &StoreObjectId::ChunkRaw(small.chunks[0].id().clone()),
+    );
     let store = open(&root.0).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
     let damaged = reader.get_chunk(small.chunks[0].id()).unwrap_err();
