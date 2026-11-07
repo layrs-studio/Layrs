@@ -415,6 +415,18 @@ fn a_stop_after_staging_leaves_no_journal_and_its_folder_is_swept() {
     assert_eq!(left.len(), 1, "the stopped attempt's folder: {left:?}");
     assert_eq!(reopened.recover().unwrap(), 0);
     assert!(attempts(&reopened).is_empty(), "swept by the recovery");
+    // ...or when its Room is dropped (`room drop` retires the Worktree)...
+    assert!(reopened
+        .restore_step_with_faults(marker.target_step_id(), None, &Stop)
+        .is_err());
+    assert_eq!(attempts(&reopened).len(), 1);
+    reopened
+        .forget_staged_attempts(reopened.worktree_id().as_str())
+        .unwrap();
+    assert!(
+        attempts(&reopened).is_empty(),
+        "swept for a retired Worktree"
+    );
     // ...or materialized again.
     assert!(reopened
         .restore_step_with_faults(marker.target_step_id(), None, &Stop)

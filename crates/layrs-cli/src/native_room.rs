@@ -732,6 +732,7 @@ fn drop_room(
     if let Some(worktree) = &room.worktree_id {
         project.retire_worktree(worktree).map_err(error)?;
         project.forget_change_index(worktree).map_err(error)?;
+        project.forget_staged_attempts(worktree).map_err(error)?;
         if matches!(room.kind, RoomKind::Virtual) {
             project.forget_vfs_journal(worktree).map_err(error)?;
         }

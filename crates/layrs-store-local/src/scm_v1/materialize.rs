@@ -985,6 +985,28 @@ fn journaled_attempt_folders(
     Ok(names)
 }
 
+/// Best effort, for a retired Worktree (`room drop`): its attempt folders
+/// that no journal names, staged by a process stopped before writing its
+/// journal (council s5 r2). Skipped while another process holds the
+/// Worktree's checkout lock.
+pub fn sweep_retired_attempts(
+    store_root: &Path,
+    store_identity: &str,
+    metadata_identity: &str,
+    worktree_id: &WorktreeId,
+) -> io::Result<()> {
+    let store_directory = pin_store(store_root, store_identity)?;
+    let metadata_directory = pin_store(&store_root.join("metadata"), metadata_identity)?;
+    let _checkout_lock = lock_checkout(store_root, store_identity, metadata_identity, worktree_id)?;
+    sweep_after_recovery(
+        &store_directory,
+        &metadata_directory,
+        store_root,
+        worktree_id,
+    );
+    Ok(())
+}
+
 /// Best effort, during a recovery (under the checkout lock): this
 /// Worktree's attempt folders that no journal names, as a materialization
 /// does before staging. A Worktree never materialized again is still
@@ -1742,7 +1764,12 @@ pub fn recover_checkout_bound_metadata(
                     let name = format!("{}-attempt-{attempt}", digest.replace(':', "-"));
                     // Staged before their journal, attempts are named after
                     // their Worktree (swept under its checkout lock).
-                    if record.payload["schema"] == CHECKOUT_WRITE_STAGED_FIRST {
+                    // (`worktreePrefixed`: unreleased v1 journals of the
+                    // same order, council s5 r2.)
+                    if record.payload["schema"] == CHECKOUT_WRITE_STAGED_FIRST
+                        || record.payload.get("worktreePrefixed")
+                            == Some(&serde_json::Value::Bool(true))
+                    {
                         format!("{}-{name}", attempt_prefix(&record.worktree_id))
                     } else {
                         name

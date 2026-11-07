@@ -288,6 +288,19 @@ impl NativeWorkspace {
         Ok(())
     }
 
+    /// Removes a retired Room Worktree's staged attempt folders that no
+    /// journal names (a materialization stopped while staging). Best effort.
+    pub fn forget_staged_attempts(&self, id: &str) -> Result<()> {
+        let id = layrs_core::scm::WorktreeId::parse(id.to_owned())?;
+        let _ = layrs_store_local::scm_v1::materialize::sweep_retired_attempts(
+            self.store_root(),
+            self.store_identity(),
+            self.metadata_identity(),
+            &id,
+        );
+        Ok(())
+    }
+
     /// Removes the VFS journal of a retired virtual Room's Worktree (its
     /// records, lease and control staging), once its host stopped, through
     /// the pinned Store directories. Best effort: a leftover journal only

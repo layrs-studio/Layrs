@@ -84,6 +84,23 @@ fn store() -> Root {
     root
 }
 
+/// Council s5 r1/r2: only a session that ends with a checked checkpoint
+/// uses NORMAL; every other writer, the recovery journal's included, is FULL.
+#[test]
+fn only_checked_sessions_write_with_normal_synchronous() {
+    let root = store();
+    let synchronous = |connection: &rusqlite::Connection| -> u32 {
+        connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap()
+    };
+    let mut store = super::super::open_exclusive(&root.0).unwrap();
+    assert_eq!(synchronous(&store.begin_write_connection().unwrap()), 2);
+    assert_eq!(synchronous(&store.begin_session_writer().unwrap()), 1);
+    let recovery = NativeRecovery::new(&mut store).unwrap();
+    assert_eq!(synchronous(&recovery.connection), 2);
+}
+
 #[test]
 fn a_completion_inside_a_batch_transaction_refuses_expired_leases_and_rolls_back() {
     let root = store();

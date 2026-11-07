@@ -47,6 +47,40 @@ impl Drop for HashSlot<'_> {
     }
 }
 
+/// Subtrees walked at once: up to eight, and never more than the process's
+/// open-file limit allows. A walk keeps at most its chain of directories
+/// (one per level, `max_depth` at most), a batch of completed directories
+/// and a few files open; all walks together stay within half the limit
+/// (council s5 r2). Windows handles have no such low limit.
+fn subtree_threads(subtrees: usize, max_depth: usize) -> usize {
+    let wanted = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8)
+        .min(subtrees);
+    if cfg!(windows) {
+        return wanted;
+    }
+    let per_walk = max_depth.min(128) + 1 + FLUSH_DIRECTORIES + HASH_THREADS + 4;
+    let budget = open_file_limit().unwrap_or(256) / 2;
+    wanted.min((budget / per_walk).max(1))
+}
+
+/// The soft limit on open files of this process, where it can be read.
+fn open_file_limit() -> Option<usize> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let limits = fs::read_to_string("/proc/self/limits").ok()?;
+    let line = limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))?;
+    line["Max open files".len()..]
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// A root subdirectory walked on its own: its name, its path on disk and in
 /// the checkout, and its listing metadata. It is opened (relative to the
 /// pinned root) only when its walk starts, so open handles stay bounded by
@@ -619,10 +653,7 @@ impl StreamScan<'_> {
             return Ok(());
         }
         let _span = crate::perf::span("scan.subtrees");
-        let threads = std::thread::available_parallelism()
-            .map_or(4, |n| n.get())
-            .clamp(1, 8)
-            .min(subtrees.len());
+        let threads = subtree_threads(subtrees.len(), self.limits.max_depth);
         let slots = HashSlots::new(HASH_THREADS);
         let slots = &slots;
         let jobs: Vec<std::sync::Mutex<Option<Subtree>>> = subtrees
@@ -689,7 +720,8 @@ impl StreamScan<'_> {
                                 relist,
                                 deferred: None,
                                 forward: Some(sender.clone()),
-                                hash_threads: HASH_THREADS,
+                                // Spawned per flush; four hash at once in all.
+                                hash_threads: HASH_THREADS.div_ceil(threads),
                                 hash_slots: Some(slots),
                             };
                             let result = root
@@ -996,9 +1028,13 @@ fn hash_file(
 /// stat. If opening by that class fails because the entry changed kind since
 /// the listing, the pass is unstable (retried), as a fresh stat would have
 /// classified it differently; any other failure is reported unchanged.
+///
+/// An entry gone since the listing (a folder deleted while the walk ran)
+/// is the same kind of change: the pass is retried (council s5 r2).
 fn retype_error(error: io::Error, full: &Path, listed: &fs::Metadata) -> io::Error {
     match fs::symlink_metadata(full) {
         Ok(fresh) if fresh.file_type() != listed.file_type() => unstable(),
+        Err(gone) if gone.kind() == io::ErrorKind::NotFound => unstable(),
         _ => error,
     }
 }
