@@ -352,9 +352,32 @@ impl NativeWorkspace {
                     let _span = layrs_store_local::perf::span("capture.prepare");
                     match &index {
                         Some(index) => {
-                            let base = self.client.capture_base(&self.worktree_id)?;
-                            let (snapshot, next) = self.capture_projection_indexed(
-                                &self.state()?,
+                            // Everything read before the scan comes from one
+                            // shared session, released before the folder is
+                            // read (no Store lock is held while hashing).
+                            let (base, state, base_projection, base_root) = {
+                                let store = self.open_store()?;
+                                let base =
+                                    self.client.capture_base_with(&store, &self.worktree_id)?;
+                                let state = self.state_with(&store)?;
+                                let step = super::references::base_step(&state)?;
+                                let projection = self.read_step_projection_with(
+                                    &store,
+                                    state.space.id(),
+                                    &step,
+                                )?;
+                                let reader = NativeScmReader::new(&store)?;
+                                let root = reader
+                                    .get_step(&step)?
+                                    .ok_or(NativeClientError::Missing("base Step"))?
+                                    .root_tree_id()
+                                    .clone();
+                                (base, state, projection, root)
+                            };
+                            let (snapshot, next) = self.capture_projection_indexed_from(
+                                &state,
+                                base_projection,
+                                Some(&base_root),
                                 SnapshotLimits::streaming(),
                                 index,
                                 single_pass,

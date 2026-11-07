@@ -30,13 +30,13 @@ pub use range::{HydrationRange, READ_BUFFER_SIZE, checked_range};
 pub use registration::Registration;
 #[cfg(windows)]
 pub use windows::{
-    CallbackFailure, CaptureFilter, Checkpoint, ControlDirectoryGuard, ControlRootPreflight,
-    DEFAULT_WARM_BUDGET_BYTES, ExportCheckpoint, ExportParentGuard, HydrationRequest,
-    MAX_WARM_FILE_BYTES, ObservedAllocatedControlStage, ObservedAllocatedControlStageIdentity,
-    ObservedRootNamespace, OrdinaryRootGuard, PopulationTimings, ProviderRootGuard, Session,
-    TrustHook, capability, discover_control_directory, observe_allocated_control_stage,
-    observe_control_directory_stage, publish_control_directory_recoverable, read_control_file,
-    unregister_root,
+    CallbackFailure, CaptureFilter, ChangeSentinel, Checkpoint, ControlDirectoryGuard,
+    ControlRootPreflight, DEFAULT_WARM_BUDGET_BYTES, ExportCheckpoint, ExportParentGuard,
+    HydrationRequest, MAX_WARM_FILE_BYTES, ObservedAllocatedControlStage,
+    ObservedAllocatedControlStageIdentity, ObservedRootNamespace, OrdinaryRootGuard,
+    PopulationTimings, ProviderRootGuard, Session, TrustHook, capability,
+    discover_control_directory, observe_allocated_control_stage, observe_control_directory_stage,
+    publish_control_directory_recoverable, read_control_file, unregister_root,
 };
 
 use std::fmt;

@@ -217,8 +217,16 @@ impl NativeWorkspace {
         let span = layrs_store_local::perf::span("ff.capture");
         self.capture_with_reason(CaptureReason::BeforeOperation)?;
         drop(span);
+        // The state and the Step's admission, in one session.
         let span = layrs_store_local::perf::span("ff.state");
-        let source = self.state()?;
+        let (source, admitted) = {
+            let store = self.open_store()?;
+            let source = self.state_with(&store)?;
+            let reader = NativeScmReader::new(&store)?;
+            let admitted = reader
+                .object_admitted_to_space(&StoreObjectId::Step(step.clone()), source.space.id())?;
+            (source, admitted)
+        };
         drop(span);
         let current = source
             .view
@@ -229,15 +237,8 @@ impl NativeWorkspace {
         if current.step_ids() != [expected_head.clone()] {
             return Err(NativeClientError::NeedsIntegration);
         }
-        {
-            let _span = layrs_store_local::perf::span("ff.admitted");
-            let store = self.open_store()?;
-            let reader = NativeScmReader::new(&store)?;
-            if !reader
-                .object_admitted_to_space(&StoreObjectId::Step(step.clone()), source.space.id())?
-            {
-                return Err(NativeClientError::Missing("Step admitted to this Space"));
-            }
+        if !admitted {
+            return Err(NativeClientError::Missing("Step admitted to this Space"));
         }
         let heads = source
             .view
@@ -274,7 +275,7 @@ impl NativeWorkspace {
                     .collect(),
             )?;
             let span = layrs_store_local::perf::span("ff.read_after");
-            let after = self.read_step_projection(step)?;
+            let after = self.read_step_projection_in(source.space.id(), step)?;
             drop(span);
             self.apply_transition(
                 &source,
@@ -468,7 +469,7 @@ impl NativeWorkspace {
     ) -> Result<()> {
         let before = {
             let _span = layrs_store_local::perf::span("transition.read_before_projection");
-            self.read_step_projection(&base_step(source)?)?
+            self.read_step_projection_in(source.space.id(), &base_step(source)?)?
         };
         // Projections are metadata only. The Store copy of every displaced
         // base file is verified before the journal; target bytes are proven

@@ -16,12 +16,14 @@ mod provider_root;
 mod publication;
 mod raw;
 mod root_probe;
+mod sentinel;
 #[cfg(test)]
 mod stage2_fixture;
 #[cfg(test)]
 mod stage2_tests;
 mod visibility;
 mod warm;
+pub use sentinel::ChangeSentinel;
 pub use warm::{DEFAULT_WARM_BUDGET_BYTES, MAX_WARM_FILE_BYTES};
 
 use crate::{

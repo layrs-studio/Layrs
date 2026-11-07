@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 struct Context {
     project: NativeWorkspace,
     current_room: Option<String>,
+    /// The project's state as discovery read it (Layer names and ids, the
+    /// project folder): read once per command.
+    project_state: layrs_client_core::native_scm::WorkspaceState,
 }
 
 fn context(cli: &Cli) -> Result<Context, CliError> {
@@ -28,15 +31,23 @@ fn context(cli: &Cli) -> Result<Context, CliError> {
         .unwrap_or_else(std::env::current_dir)
         .map_err(error)?;
     let start = std::path::absolute(&start).map_err(error)?;
+    // Each discovery's opening session is released at once (a Room
+    // command may write); only the state it read is kept.
+    let discover = |root: &Path| {
+        NativeWorkspace::discover_session(root)
+            .map(|(workspace, _, state)| (workspace, state))
+            .map_err(error)
+    };
     if let Some((room_root, project_root)) = virtual_room_origin(&start).map_err(error)? {
-        let project = NativeWorkspace::discover(&project_root).map_err(error)?;
+        let (project, project_state) = discover(&project_root)?;
         let current_room = room_at(&project, &room_root)?;
         return Ok(Context {
             project,
             current_room,
+            project_state,
         });
     }
-    let here = NativeWorkspace::discover(&start).map_err(error)?;
+    let (here, here_state) = discover(&start)?;
     // A physical Room is a Worktree of the same Store: always act from the
     // project folder that owns the Store, so merges reach its files.
     let project_root = here
@@ -44,15 +55,17 @@ fn context(cli: &Cli) -> Result<Context, CliError> {
         .parent()
         .ok_or_else(|| CliError::runtime("Store has no project folder"))?
         .to_path_buf();
-    let current_room = room_at(&here, &here.checkout_root().map_err(error)?)?;
-    let project = if same_path(&project_root, &here.checkout_root().map_err(error)?) {
-        here
+    let here_root = PathBuf::from(here_state.worktree.checkout_root());
+    let current_room = room_at(&here, &here_root)?;
+    let (project, project_state) = if same_path(&project_root, &here_root) {
+        (here, here_state)
     } else {
-        NativeWorkspace::discover(&project_root).map_err(error)?
+        discover(&project_root)?
     };
     Ok(Context {
         project,
         current_room,
+        project_state,
     })
 }
 
@@ -220,7 +233,14 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
             let span = layrs_store_local::perf::span("room.selected");
             let mut room = selected(&context, name.as_ref())?;
             drop(span);
-            merge(cli, &context.project, &mut room, into.as_deref(), *preview)
+            merge(
+                cli,
+                &context.project,
+                &context.project_state,
+                &mut room,
+                into.as_deref(),
+                *preview,
+            )
         }
         RoomCommand::Drop { name, force } => {
             let room = selected(&context, name.as_ref())?;
@@ -396,6 +416,21 @@ fn host_request(
         .ticket
         .clone()
         .and_then(|ticket| serde_json::from_value(ticket).ok());
+    // The recorded host answers directly. Only when that fails is it probed:
+    // a live, connected host's error is the answer; otherwise it is
+    // replaced below (a request it may have executed is safe to repeat:
+    // captures are idempotent, a stop of a gone host is moot).
+    if let Some(recorded) = &ticket {
+        match execute_vfs_control(VfsControlRequest {
+            ticket: recorded.clone(),
+            command: command.clone(),
+        }) {
+            Ok(value) => return Ok(value),
+            Err(message) if message.starts_with("invalid_vfs_control_request") => {}
+            Err(message) if connected(recorded) => return Err(error(message)),
+            Err(_) => {}
+        }
+    }
     if !ticket.as_ref().is_some_and(connected) {
         let data = crate::native_vfs::start_room_host(cli, Path::new(&room.path))?;
         room.ticket = Some(data["ticket"].clone());
@@ -500,10 +535,11 @@ fn step(cli: &Cli, project: &NativeWorkspace, room: &mut RoomRecord) -> Result<V
     }
 }
 
-fn layer_name_of(project: &NativeWorkspace, id: &str) -> Result<String, CliError> {
-    project
-        .state()
-        .map_err(error)?
+fn layer_name_of(
+    state: &layrs_client_core::native_scm::WorkspaceState,
+    id: &str,
+) -> Result<String, CliError> {
+    state
         .layers
         .iter()
         .find(|layer| layer.id().as_str() == id)
@@ -514,6 +550,7 @@ fn layer_name_of(project: &NativeWorkspace, id: &str) -> Result<String, CliError
 fn merge(
     cli: &Cli,
     project: &NativeWorkspace,
+    project_state: &layrs_client_core::native_scm::WorkspaceState,
     room: &mut RoomRecord,
     into: Option<&str>,
     preview: bool,
@@ -522,7 +559,7 @@ fn merge(
     let target = match into {
         Some(layer) => layer.to_owned(),
         None => layer_name_of(
-            project,
+            project_state,
             room.source_layer_id.as_deref().ok_or_else(|| {
                 CliError::usage("this Room has no source Layer: pass --into LAYER")
             })?,
@@ -545,9 +582,9 @@ fn merge(
     // Fast path: the target has not moved since the Room forked (or since its
     // last merge), so the target simply advances to the Room's Step and only
     // the changed files are written. Otherwise a full Weave reconciles both.
-    let span = layrs_store_local::perf::span("room.merge.layer_named");
-    let target_id = project.layer_named(&target).map_err(error)?;
-    drop(span);
+    // Layer names and ids are those discovery read: the Room's capture
+    // changes only its own Layer's head.
+    let target_id = NativeWorkspace::layer_named_in(project_state, &target).map_err(error)?;
     let expected = room
         .merged_step_id
         .clone()

@@ -327,6 +327,33 @@ pub struct VfsWorktree {
     locator: VfsWorktreeLocator,
     client: NativeClient,
     journal: VfsRecovery,
+    /// The last capture's outcome, with the change sentinel armed before it
+    /// listed the folder.
+    quiet: Option<QuietCapture>,
+}
+
+/// While its sentinel stays quiet, no change was reported below the root
+/// since before that capture listed it: the folder is still what it
+/// captured, as git's fsmonitor reasons. Valid only while the Worktree's
+/// Operation and accepted Step are still the ones it produced.
+struct QuietCapture {
+    sentinel: layrs_vfs::ChangeSentinel,
+    operation: OperationId,
+    step: StepId,
+    counts: VfsCaptureCounts,
+}
+
+impl QuietCapture {
+    /// What capturing the same folder again reports: the files it hashed are
+    /// now proven, so reused.
+    fn repeat(counts: VfsCaptureCounts) -> VfsCaptureCounts {
+        VfsCaptureCounts {
+            reused_files: counts.reused_files + counts.hashed_files,
+            hashed_files: 0,
+            hashed_bytes: 0,
+            deleted_files: counts.deleted_files,
+        }
+    }
 }
 
 impl VfsWorktree {
@@ -712,6 +739,7 @@ impl VfsWorktree {
             locator,
             client,
             journal,
+            quiet: None,
         };
         let store = result.client.open_store()?;
         let reader = NativeScmReader::new(&store)?;
@@ -763,6 +791,25 @@ impl VfsWorktree {
         }
         let original_operation = original.active_operation_id;
         let original_step = original.accepted_step_id;
+        if !verify_all {
+            if let Some(quiet) = self.quiet.as_ref().filter(|quiet| {
+                quiet.operation == original_operation
+                    && quiet.step == original_step
+                    && quiet.sentinel.quiet()
+            }) {
+                layrs_store_local::perf::count("vfs.capture_quiet", 1);
+                return Ok(VfsCaptureReport {
+                    step_id: quiet.step.clone(),
+                    active_operation_id: quiet.operation.clone(),
+                    changed: false,
+                    counts: quiet.counts,
+                });
+            }
+        }
+        // Armed before the folder is listed: any change reported from here on
+        // wakes it. Without one (it could not be armed), every capture lists.
+        self.quiet = None;
+        let mut sentinel = self.session.arm_change_sentinel().ok();
         // ADR 0025: the change index lets the checkpoint admit, from the
         // directory listing alone, each in-sync placeholder created for its
         // path and each file whose proven content kept the same stat key.
@@ -876,6 +923,12 @@ impl VfsWorktree {
                 // is re-checked against fresh metadata at every use).
                 CapturePlan::Unchanged { step_id } => {
                     save_index(self.locator.source.store_root.as_path());
+                    self.quiet = sentinel.take().map(|sentinel| QuietCapture {
+                        sentinel,
+                        operation: original_operation.clone(),
+                        step: step_id.clone(),
+                        counts: QuietCapture::repeat(captured.counts),
+                    });
                     return Ok(VfsCaptureReport {
                         step_id,
                         active_operation_id: original_operation,
@@ -905,6 +958,12 @@ impl VfsWorktree {
                             provider_stage("revalidate acknowledged capture", error)
                         })?;
                         save_index(self.locator.source.store_root.as_path());
+                        self.quiet = sentinel.take().map(|sentinel| QuietCapture {
+                            sentinel,
+                            operation: intent.operation_id.clone(),
+                            step: intent.step_id.clone(),
+                            counts: QuietCapture::repeat(captured.counts),
+                        });
                         return Ok(VfsCaptureReport {
                             step_id: intent.step_id,
                             active_operation_id: intent.operation_id,

@@ -118,7 +118,11 @@ impl NativeWorkspace {
         )
     }
     pub fn layer_named(&self, name: &str) -> Result<LayerId> {
-        let state = self.state()?;
+        Self::layer_named_in(&self.state()?, name)
+    }
+
+    /// `layer_named` among the Layers of an already read `state`.
+    pub fn layer_named_in(state: &super::WorkspaceState, name: &str) -> Result<LayerId> {
         let name = name.strip_prefix("@layer:").unwrap_or(name);
         let candidates: Vec<_> = state
             .layers

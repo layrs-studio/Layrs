@@ -627,11 +627,12 @@ impl NativeCas {
         let staging_lease_path = layout.staging_lease_path().to_path_buf();
         let validated = super::layout::ready_boundaries_validated(&root);
         for directory in [&root, &objects_dir, &staging_dir] {
-            if validated {
-                continue;
+            // Each must still be a regular directory; only the walk of every
+            // ancestor is skipped once validated.
+            if !validated {
+                reject_reparse_components(directory)
+                    .map_err(|error| io_error("validate CAS directory", directory, error))?;
             }
-            reject_reparse_components(directory)
-                .map_err(|error| io_error("validate CAS directory", directory, error))?;
             let metadata = fs::symlink_metadata(directory)
                 .map_err(|error| io_error("inspect CAS directory", directory, error))?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {

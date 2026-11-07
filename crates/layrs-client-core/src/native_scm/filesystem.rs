@@ -206,9 +206,23 @@ impl super::NativeWorkspace {
         index: &scm_v1::change_index::ChangeIndex,
         single_pass: bool,
     ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
+        let base = self.read_step_projection(&super::references::base_step(state)?)?;
+        self.capture_projection_indexed_from(state, base, None, limits, index, single_pass)
+    }
+
+    /// `capture_projection_indexed` from the base Step's projection (and, if
+    /// known, its root Tree), read by the caller before the scan.
+    pub(super) fn capture_projection_indexed_from(
+        &self,
+        state: &super::WorkspaceState,
+        base: Vec<CheckoutProjectionEntry>,
+        base_root: Option<&layrs_core::scm::TreeId>,
+        limits: SnapshotLimits,
+        index: &scm_v1::change_index::ChangeIndex,
+        single_pass: bool,
+    ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
         use scm_v1::change_index::{IndexEntry, StatKey};
         let _span = layrs_store_local::perf::span("capture.indexed");
-        let base = self.read_step_projection(&super::references::base_step(state)?)?;
         // The base's admitted chunks only avoid spooling bytes the Store has.
         // With an index covering most of the base, few files are read: their
         // chunks are spooled and the batch keeps only what is new, so loading
@@ -340,14 +354,21 @@ impl super::NativeWorkspace {
         // and carry.
         if captured.hashed.is_empty() && captured.manifests.is_empty() && captured.entries == base {
             let root = scm_v1::checkout::projection_tree_id(&base)?;
-            let store = self.open_store()?;
-            let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
-            let step = layrs_store::scm::ScmReader::get_step(
-                &reader,
-                &super::references::base_step(state)?,
-            )?
-            .ok_or(super::NativeClientError::Missing("base Step"))?;
-            if step.root_tree_id() == &root {
+            let step_root = match base_root {
+                Some(step_root) => step_root.clone(),
+                None => {
+                    let store = self.open_store()?;
+                    let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
+                    layrs_store::scm::ScmReader::get_step(
+                        &reader,
+                        &super::references::base_step(state)?,
+                    )?
+                    .ok_or(super::NativeClientError::Missing("base Step"))?
+                    .root_tree_id()
+                    .clone()
+                }
+            };
+            if step_root == root {
                 return Ok((PreparedSnapshot::unchanged(root), next));
             }
         }

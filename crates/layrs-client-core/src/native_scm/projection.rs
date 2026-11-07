@@ -19,6 +19,20 @@ impl NativeWorkspace {
         self.read_step_projection_with(&store, state.space.id(), step)
     }
 
+    /// `read_step_projection` in a known `space`: a projection this process
+    /// already read needs no Store session.
+    pub(super) fn read_step_projection_in(
+        &self,
+        space: &SpaceId,
+        step: &StepId,
+    ) -> Result<Vec<CheckoutProjectionEntry>> {
+        if let Some(cached) = self.memoized_projection(space, step) {
+            return Ok(cached);
+        }
+        let store = self.open_store()?;
+        self.read_step_projection_with(&store, space, step)
+    }
+
     fn memoized_projection(
         &self,
         space: &SpaceId,
