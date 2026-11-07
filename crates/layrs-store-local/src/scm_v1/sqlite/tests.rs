@@ -166,11 +166,17 @@ fn a_finished_writer_session_leaves_no_frame_and_no_shared_memory_file() {
         let synchronous: u32 = writer
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .unwrap();
-        assert_eq!(synchronous, 1, "NORMAL: the checkpoint is the durability point");
+        assert_eq!(
+            synchronous, 1,
+            "NORMAL: the checkpoint is the durability point"
+        );
         writer
             .execute(
                 "INSERT INTO applied_transactions VALUES (?1, ?2, '{}', 0)",
-                [format!("transaction:{round}"), format!("blake3:{}", "0".repeat(64))],
+                [
+                    format!("transaction:{round}"),
+                    format!("blake3:{}", "0".repeat(64)),
+                ],
             )
             .unwrap();
         // During the session the WAL holds the commit, and no -shm exists.
@@ -209,7 +215,9 @@ fn a_writer_dropped_without_finishing_still_checkpoints_at_close() {
     assert!(!sidecar_path(&path, "-shm").exists());
     let reader = open_read_only(&path, Duration::from_millis(100)).unwrap();
     let count: u32 = reader
-        .query_row("SELECT count(*) FROM applied_transactions", [], |row| row.get(0))
+        .query_row("SELECT count(*) FROM applied_transactions", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 1);
 }
