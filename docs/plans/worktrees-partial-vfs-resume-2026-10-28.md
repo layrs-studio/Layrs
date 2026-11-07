@@ -41,7 +41,7 @@ Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides
 
 Corrections r3 : la clôture lit l'horloge des baux dans la transaction (horloge injectable, test d'un saut au-delà de l'expiration) ; le mode NTFS ordonné exige un volume local (un partage SMB qui annonce NTFS garde ses synchronisations, CAS compris) ; un fichier témoin impossible à supprimer ne fait plus échouer la matérialisation ; `complete_in_transaction` redevient interne, son test est dans la crate.
 
-À traiter ensuite (relevé par Opus r3, antérieur à cette séance) : le bail de matérialisation n'est pas renouvelé pendant l'import d'une réception ; une réception dont l'import dépasse le bail (de l'ordre de 40 à 100 Go selon le disque) échoue à chaque essai. Lié à « fichiers de toute taille ».
+Après r3 (non relu par le conseil, selon la recommandation d'Opus r3) : un lot de matérialisation juge ses baux à l'heure où il a pris le Store en exclusif (personne ne peut les reprendre jusqu'à la validation), puis les prolonge à partir de maintenant ; la clôture les vérifie à son heure. Une réception dont l'import dépasse le bail (de l'ordre de 40 à 100 Go selon le disque) ne bloque plus. Pas de test qui fasse vraiment durer un import au-delà de 5 minutes.
 
 **Reste à faire**
 - Fusions : matérialisation restante (~100 ms : trois sessions d'écriture, chacune avec son point de contrôle WAL) ; double vérification du dossier dans `accept_merge`.

@@ -45,6 +45,18 @@ pub struct NativeScmRepository {
     acquisition_budget: Duration,
 }
 
+/// The materializer's lease (`materialize::lease::LEASE_MS`): what a lease
+/// still live when a batch took the Store is extended to, from now.
+const MATERIALIZATION_LEASE_MS: i64 = 300_000;
+
+fn wall_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 /// What completes a materialization journal (`completing`).
 pub(crate) struct MaterializationCompletion {
     pub(crate) leases: Vec<super::recovery::ResourceLease>,
@@ -294,6 +306,10 @@ impl NativeScmRepository {
             open_exclusive(&self.root)
         })
         .map_err(native_backend)?;
+        // From here until COMMIT no other process can take this Store, so
+        // none can claim a materialization lease: one valid now stays ours
+        // however long the import below takes (a receive of any size).
+        let locked_at_ms = wall_time_ms();
         let store = match &self.expected_identity {
             Some(identity) => store
                 .with_filesystem_identity(identity)
@@ -397,6 +413,7 @@ impl NativeScmRepository {
                 chunks.len(),
                 publication.as_ref(),
                 completing,
+                locked_at_ms,
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
@@ -434,6 +451,7 @@ impl NativeScmRepository {
         external_chunks: usize,
         publication: Option<&super::cas::CompactPublication>,
         completing: Completing<'_>,
+        locked_at_ms: i64,
     ) -> Result<ApplyBatchOutcome> {
         // CAS publication intentionally precedes replay inspection. Therefore a
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
@@ -444,7 +462,7 @@ impl NativeScmRepository {
         }
         self.hit(RepositoryFaultPoint::AfterReplayCheck)?;
 
-        self.check_materializations(connection, batch)?;
+        self.check_materializations(connection, batch, locked_at_ms)?;
 
         precheck_mutations(connection, batch)?;
         // These rows are visible only inside this transaction. The admission
@@ -543,10 +561,16 @@ impl NativeScmRepository {
 }
 
 impl NativeScmRepository {
+    /// A pending materialization of a Worktree this batch moves must be ours
+    /// (permit, owner, `applying`, digest) with every lease live when this
+    /// batch took the exclusive Store (`locked_at_ms`). Those leases are then
+    /// extended from now: nothing could claim them since, and the journal
+    /// completion later in this transaction checks them at its own time.
     fn check_materializations(
         &self,
         connection: &Mutex<Connection>,
         batch: &WriteBatch,
+        locked_at_ms: i64,
     ) -> Result<()> {
         let guard = connection.lock().map_err(|_| poisoned())?;
         for mutation in batch.mutations() {
@@ -574,12 +598,19 @@ impl NativeScmRepository {
                         })
                         && state == "applying"
                         && digest.as_deref() == Some(batch.request_digest().to_string().as_str());
-                let (total, expired): (i64,i64) = guard.query_row("SELECT count(*),COALESCE(sum(CASE WHEN released_at_ms IS NOT NULL OR expires_at_ms <= CAST(unixepoch('subsec')*1000 AS INTEGER) THEN 1 ELSE 0 END),0) FROM materialization_leases WHERE recovery_operation_id=?1", [&id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(sql_backend)?;
+                let (total, expired): (i64,i64) = guard.query_row("SELECT count(*),COALESCE(sum(CASE WHEN released_at_ms IS NOT NULL OR expires_at_ms <= ?2 THEN 1 ELSE 0 END),0) FROM materialization_leases WHERE recovery_operation_id=?1", params![&id, locked_at_ms], |r| Ok((r.get(0)?,r.get(1)?))).map_err(sql_backend)?;
                 if !permitted || total == 0 || expired != 0 {
                     return Err(StoreError::Backend {
                         message: format!("worktree_needs_repair: pending materialization {id}"),
                     });
                 }
+                guard
+                    .execute(
+                        "UPDATE materialization_leases SET expires_at_ms = MAX(expires_at_ms, ?2) \
+                         WHERE recovery_operation_id = ?1 AND released_at_ms IS NULL",
+                        params![&id, wall_time_ms().saturating_add(MATERIALIZATION_LEASE_MS)],
+                    )
+                    .map_err(sql_backend)?;
             }
         }
         Ok(())
