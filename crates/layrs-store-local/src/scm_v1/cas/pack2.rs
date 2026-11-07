@@ -772,13 +772,50 @@ pub(super) fn read_at(
     Ok(())
 }
 
+/// Where a pack's bytes are: its file, or its whole image in memory (a
+/// small pack registered inline in SQLite, council s7 Q1). The same
+/// validation applies to both.
+#[derive(Clone, Copy)]
+pub(super) enum PackSource<'a> {
+    File(&'a fs::File),
+    Image(&'a [u8]),
+}
+
+impl PackSource<'_> {
+    fn len(&self, path: &Path) -> CasResult<u64> {
+        match self {
+            Self::File(file) => Ok(file
+                .metadata()
+                .map_err(|error| io_error("stat CAS pack", path, error))?
+                .len()),
+            Self::Image(image) => Ok(image.len() as u64),
+        }
+    }
+
+    fn read_at(&self, path: &Path, offset: u64, buffer: &mut [u8]) -> CasResult<()> {
+        match self {
+            Self::File(file) => read_at(file, path, offset, buffer),
+            Self::Image(image) => {
+                let bytes = usize::try_from(offset)
+                    .ok()
+                    .and_then(|start| image.get(start..start.checked_add(buffer.len())?))
+                    .ok_or_else(|| pack2_corruption(path, "pack is truncated"))?;
+                buffer.copy_from_slice(bytes);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Reads and validates the metadata of the pack open in `file`. The caller
 /// compares `digest` with the digest SQLite registered.
 pub(super) fn load(file: &fs::File, path: &Path) -> CasResult<Pack2Index> {
-    let file_len = file
-        .metadata()
-        .map_err(|error| io_error("stat CAS pack", path, error))?
-        .len();
+    load_from(PackSource::File(file), path)
+}
+
+/// `load` from either source.
+pub(super) fn load_from(source: PackSource<'_>, path: &Path) -> CasResult<Pack2Index> {
+    let file_len = source.len(path)?;
     if file_len < HEADER_LEN + FOOTER_LEN {
         return Err(pack2_corruption(
             path,
@@ -786,9 +823,9 @@ pub(super) fn load(file: &fs::File, path: &Path) -> CasResult<Pack2Index> {
         ));
     }
     let mut header = [0_u8; HEADER_LEN as usize];
-    read_at(file, path, 0, &mut header)?;
+    source.read_at(path, 0, &mut header)?;
     let mut footer = [0_u8; FOOTER_LEN as usize];
-    read_at(file, path, file_len - FOOTER_LEN, &mut footer)?;
+    source.read_at(path, file_len - FOOTER_LEN, &mut footer)?;
     let index_offset = le_u64(&footer[0..8]);
     let index_len = le_u64(&footer[8..16]);
     if index_len > MAX_METADATA_BYTES
@@ -798,7 +835,7 @@ pub(super) fn load(file: &fs::File, path: &Path) -> CasResult<Pack2Index> {
         return Err(pack2_corruption(path, "pack footer is out of bounds"));
     }
     let mut metadata = vec![0_u8; index_len as usize];
-    read_at(file, path, index_offset, &mut metadata)?;
+    source.read_at(path, index_offset, &mut metadata)?;
     decode(path, file_len, &header, &footer, &metadata)
 }
 
@@ -810,13 +847,23 @@ pub(super) fn read_block(
     index: &Pack2Index,
     block: u32,
 ) -> CasResult<Vec<u8>> {
+    read_block_from(PackSource::File(file), path, index, block)
+}
+
+/// `read_block` from either source.
+pub(super) fn read_block_from(
+    source: PackSource<'_>,
+    path: &Path,
+    index: &Pack2Index,
+    block: u32,
+) -> CasResult<Vec<u8>> {
     let info = index
         .blocks
         .get(block as usize)
         .ok_or_else(|| pack2_corruption(path, "pack block does not exist"))?;
     let stored_len = info.stored_len as usize;
     let mut bytes = vec![0_u8; BLOCK_HEADER_LEN as usize + stored_len + BLOCK_CHECKSUM_LEN];
-    read_at(file, path, info.offset, &mut bytes)?;
+    source.read_at(path, info.offset, &mut bytes)?;
     if bytes[0] != info.flags || bytes[1..5] != info.stored_len.to_le_bytes() {
         return Err(pack2_corruption(
             path,
@@ -1205,7 +1252,17 @@ pub(super) fn verify_written(
     path: &Path,
     sealed: &SealedPack2,
 ) -> CasResult<Pack2Index> {
-    let index = load(file, path)?;
+    verify_written_from(PackSource::File(file), path, sealed)
+}
+
+/// `verify_written` from either source: an inline image is validated as
+/// untrusted input exactly as a reread file (council s7 Q1).
+pub(super) fn verify_written_from(
+    source: PackSource<'_>,
+    path: &Path,
+    sealed: &SealedPack2,
+) -> CasResult<Pack2Index> {
+    let index = load_from(source, path)?;
     if index.digest != sealed.digest
         || index.explicit_count() as u64 != sealed.explicit
         || index.files.len() as u64 != sealed.files
@@ -1217,7 +1274,7 @@ pub(super) fn verify_written(
         ));
     }
     for (block, hash) in sealed.block_hashes.iter().enumerate() {
-        if blake3::hash(&read_block(file, path, &index, block as u32)?) != *hash {
+        if blake3::hash(&read_block_from(source, path, &index, block as u32)?) != *hash {
             return Err(pack2_corruption(
                 path,
                 "pack block reread differs from the written one",

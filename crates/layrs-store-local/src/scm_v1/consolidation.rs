@@ -289,6 +289,14 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         )
         .map_err(sql)?;
     let new_seq = transaction.last_insert_rowid();
+    if let Some(image) = &consolidation.inline {
+        transaction
+            .execute(
+                "INSERT INTO cas_pack_inline(pack_seq,image) VALUES(?1,?2)",
+                params![new_seq, image],
+            )
+            .map_err(sql)?;
+    }
     let by_seq: BTreeMap<i64, &super::cas::compact::ConsolidatedPack> = consolidation
         .packs
         .iter()
@@ -387,6 +395,13 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
     if deleted != old_count {
         return Err("consolidation would drop admissions it did not remap".into());
     }
+    // The images of the inline packs retired, before their rows.
+    transaction
+        .execute(
+            &format!("DELETE FROM cas_pack_inline WHERE pack_seq IN ({in_seqs})"),
+            [],
+        )
+        .map_err(sql)?;
     for pack in &consolidation.packs {
         let name = pack.name.to_str().ok_or("pack name is not UTF-8")?;
         let removed = transaction

@@ -353,6 +353,23 @@ part.
     the admission rows it deletes are exactly those it remapped. Retired
     files are removed when the CAS is opened exclusively again; a reader
     holding an older catalog reloads it when a pack it names is gone.
+  - Inline packs (council s7 Q1, decided with Opus's design: Astra and Sol
+    judged it credible): a pack whose whole image is at most 64 KiB
+    (`LAYRS_CAS_INLINE_MAX`, 0 disables) is not a file. Its exact pack v2
+    image is a row of `cas_pack_inline` (pack_seq, image), inserted with
+    its `cas_packs` row in the batch transaction: durable with the
+    registration at the checked checkpoint, so the batch publishes no file
+    and skips its durability barrier. A pack is written in memory and
+    spills to a staging file once it outgrows the limit. The image is
+    validated as untrusted input before registration (as a reread file),
+    and read from SQLite with the catalog: bitmaps, the exact remap, audits
+    and damage rules are those of every pack (a damaged block fails its
+    records; fsck names `metadata/layrs.sqlite3#pack-...`). Consolidation
+    writes through the same sink: inline packs merge into an inline pack
+    while it fits. `cas_packs.pack_seq` is AUTOINCREMENT: a sequence number
+    is never reused. Schema v3 checksum and fingerprint changed: format 6
+    Stores created before this are refused (format 6 is not the default).
+    Measured: a Room capture's `cas.put_ordered` 18 -> 4 ms, no barrier.
   - Known limit, a blocker before phase 6 (council s6 r3): tiers above the
     inline budgets are never consolidated. A Store past about 64 MiB of
     packs keeps one pack per 32-64 MiB written, and a batch at 6 or more

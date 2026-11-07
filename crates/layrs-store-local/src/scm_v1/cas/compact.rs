@@ -37,6 +37,9 @@ pub(crate) struct LoadedPack {
     name: OsString,
     path: PathBuf,
     index: Pack2Index,
+    /// The whole pack when it is registered inline in SQLite (council s7
+    /// Q1); `None` for a pack file.
+    image: Option<Arc<[u8]>>,
     /// Raw id of each file record's recipe manifest, computed on first use
     /// from the record's metadata (never from its bytes).
     manifest_digests: Vec<OnceLock<[u8; 32]>>,
@@ -92,8 +95,21 @@ impl LoadedPack {
     }
 
     fn read_block(&self, cas: &NativeCas, block: u32) -> CasResult<Vec<u8>> {
+        if let Some(image) = &self.image {
+            return pack2::read_block_from(
+                pack2::PackSource::Image(image),
+                &self.path,
+                &self.index,
+                block,
+            );
+        }
         let file = self.open(cas)?;
         pack2::read_block(file.file(), &self.path, &self.index, block)
+    }
+
+    /// Whether this pack is registered inline (it has no file).
+    pub(crate) fn is_inline(&self) -> bool {
+        self.image.is_some()
     }
 
     fn alias_ids(&self, file: usize) -> CasResult<(FileId, ChunkId)> {
@@ -148,6 +164,52 @@ impl NativeCas {
         self.loaded_pack_in(&std::cell::OnceCell::new(), name, fresh)
     }
 
+    /// Where an inline pack's bytes are, for messages: the database row.
+    fn inline_label(&self, name: &OsStr) -> PathBuf {
+        self.root
+            .join("metadata")
+            .join(format!("layrs.sqlite3#{}", name.to_string_lossy()))
+    }
+
+    /// A pack registered inline, from the process cache or validated now
+    /// from its image (as a pack file's metadata is). `fresh` as for
+    /// `loaded_pack`.
+    fn inline_pack(
+        &self,
+        name: &OsStr,
+        image: Arc<[u8]>,
+        fresh: bool,
+    ) -> CasResult<Arc<LoadedPack>> {
+        let key = (self.compact_key(), name.to_os_string());
+        if !fresh {
+            if let Some(pack) = pack_cache()
+                .lock()
+                .ok()
+                .and_then(|cache| cache.get(&key).cloned())
+                .filter(|pack| pack.image.as_deref() == Some(&*image))
+            {
+                return Ok(pack);
+            }
+        }
+        let path = self.inline_label(name);
+        let index = pack2::load_from(pack2::PackSource::Image(&image), &path)?;
+        let manifest_digests = (0..index.files.len()).map(|_| OnceLock::new()).collect();
+        let pack = Arc::new(LoadedPack {
+            name: name.to_os_string(),
+            path,
+            index,
+            image: Some(image),
+            manifest_digests,
+        });
+        if fresh {
+            return Ok(pack);
+        }
+        if let Ok(mut cache) = pack_cache().lock() {
+            cache.insert(key, Arc::clone(&pack));
+        }
+        Ok(pack)
+    }
+
     /// `loaded_pack`, opening the packs directory at most once for all the
     /// packs of one catalog (`packs`).
     fn loaded_pack_in(
@@ -160,16 +222,19 @@ impl NativeCas {
         if fresh {
             return self.load_pack_from_disk(packs, name).map(Arc::new);
         }
+        // Only a cached pack file: a pack is served only in the form its
+        // registration declares (an inline pack is never its file).
         if let Some(pack) = pack_cache()
             .lock()
             .ok()
             .and_then(|cache| cache.get(&key).cloned())
+            .filter(|pack| pack.image.is_none())
         {
             return Ok(pack);
         }
         let pack = Arc::new(self.load_pack_from_disk(packs, name)?);
         if let Ok(mut cache) = pack_cache().lock() {
-            return Ok(Arc::clone(cache.entry(key).or_insert(pack)));
+            cache.insert(key, Arc::clone(&pack));
         }
         Ok(pack)
     }
@@ -204,6 +269,7 @@ impl NativeCas {
             name: name.to_os_string(),
             path,
             index,
+            image: None,
             manifest_digests,
         })
     }
@@ -286,6 +352,8 @@ pub(crate) struct ConsolidatedPack {
 pub(crate) struct Consolidation {
     /// The new pack: name, metadata digest, logical entries.
     pub(crate) pack: (OsString, [u8; 32], u64),
+    /// Its image when it is registered inline.
+    pub(crate) inline: Option<Vec<u8>>,
     pub(crate) packs: Vec<ConsolidatedPack>,
     /// The identity of each logical ordinal of the new pack, from its own
     /// index (independent of the remap).
@@ -455,9 +523,7 @@ impl NativeCas {
     ) -> Result<Consolidation, ConsolidationFailure> {
         let _span = crate::perf::span("cas.consolidate");
         let general = |error| ConsolidationFailure { pack: None, error };
-        let lease = StagingLease::shared(&self.staging_lease_path).map_err(general)?;
-        let staging = self.pinned_staging().map_err(general)?;
-        let mut open = open_pack(&staging, &self.staging_dir, lease).map_err(general)?;
+        let mut open = self.open_new_pack().map_err(general)?;
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
         let mut packs = Vec::with_capacity(candidates.len());
@@ -505,15 +571,22 @@ impl NativeCas {
                         // A write error (disk full) blames no candidate.
                         CopyFailure::Target(error) => general(error),
                     })?;
+                    self.spill_if_over(&mut open).map_err(general)?;
                 }
             }
             keys_of.push(keys);
             packs.push((registered.seq, loaded.name.clone(), index.digest));
         }
-        let pack = self.publish_pack2(open).map_err(general)?;
-        let new = self
-            .load_pack_from_disk(&std::cell::OnceCell::new(), &pack.0)
-            .map_err(general)?;
+        let (pack, inline) = self.publish_pack2(open).map_err(general)?;
+        let new = match &inline {
+            Some(image) => self
+                .inline_pack(&pack.0, Arc::from(image.as_slice()), true)
+                .map_err(general)?,
+            None => Arc::new(
+                self.load_pack_from_disk(&std::cell::OnceCell::new(), &pack.0)
+                    .map_err(general)?,
+            ),
+        };
         let index = &new.index;
         let missing = || {
             general(pack2::pack2_corruption(
@@ -560,6 +633,7 @@ impl NativeCas {
             .collect::<Result<Vec<_>, ConsolidationFailure>>()?;
         Ok(Consolidation {
             pack,
+            inline,
             packs,
             identities,
         })
@@ -579,6 +653,7 @@ impl NativeCas {
         let index = &loaded.index;
         let path = open.path.clone();
         let write = |error| CopyFailure::Target(io_error("write CAS pack", &path, error));
+        let sink = &mut open.sink;
         match record {
             pack2::RecordRef::Explicit(ordinal) => {
                 let (code, id, location) = index
@@ -594,7 +669,7 @@ impl NativeCas {
                 let body = pack2::record_body(raw, location, code, &loaded.path)?;
                 let object = validate_stored_bytes(&object_id, body)?;
                 open.builder
-                    .add_record(open.file.file_mut(), kind, id, body, None)
+                    .add_record(sink, kind, id, body, None)
                     .map_err(write)?;
                 if let CanonicalObject::FileManifest(manifest) = &object {
                     let file_raw = pack2::hex_digest(
@@ -632,7 +707,7 @@ impl NativeCas {
                 let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
                 validate_stored_bytes(&StoreObjectId::ChunkRaw(chunk_id), body)?;
                 open.builder
-                    .add_file(open.file.file_mut(), identity, body, None)
+                    .add_file(sink, identity, body, None)
                     .map_err(write)?;
                 files_written.insert(record.file_id, identity);
             }
@@ -704,6 +779,7 @@ struct RegisteredRow {
     name: OsString,
     digest: Vec<u8>,
     entries: i64,
+    image: Option<Arc<[u8]>>,
 }
 
 /// One physical copy an audit checked: a pack record or a loose object.
@@ -825,7 +901,8 @@ impl RegisteredCatalog {
         let _span = crate::perf::span("cas.compact_catalog");
         let mut statement = connection
             .prepare(
-                "SELECT pack_seq, name, index_digest, entries FROM cas_packs ORDER BY pack_seq",
+                "SELECT pack_seq, name, index_digest, entries, image FROM cas_packs \
+                 LEFT JOIN cas_pack_inline USING (pack_seq) ORDER BY pack_seq",
             )
             .map_err(sql_error)?;
         let rows = statement
@@ -835,6 +912,7 @@ impl RegisteredCatalog {
                     row.get::<_, String>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
                 ))
             })
             .map_err(sql_error)?
@@ -853,10 +931,14 @@ impl RegisteredCatalog {
                 store != &key || name.to_str().is_some_and(|name| registered.contains(name))
             });
         }
-        for (seq, name, digest, entries) in rows {
+        for (seq, name, digest, entries, image) in rows {
             let name = OsString::from(name);
-            let checked = cas
-                .loaded_pack_in(&packs_directory, &name, fresh)
+            let image: Option<Arc<[u8]>> = image.map(Arc::from);
+            let loaded = match &image {
+                Some(image) => cas.inline_pack(&name, Arc::clone(image), fresh),
+                None => cas.loaded_pack_in(&packs_directory, &name, fresh),
+            };
+            let checked = loaded
                 .and_then(|pack| check_registration(&pack, &name, &digest, entries).map(|()| pack))
                 .map_err(|error| {
                     // An invalid row is reported as such, before any I/O error.
@@ -872,6 +954,7 @@ impl RegisteredCatalog {
                 name: name.clone(),
                 digest,
                 entries,
+                image,
             });
             match checked {
                 Ok(pack) => packs.push(RegisteredPack {
@@ -1444,7 +1527,8 @@ impl RegisteredCatalog {
         };
         let length = self.placement_length(id, placement)?;
         let packed = |pack: usize, location: Location| {
-            let loaded = &self.packs[pack].pack;
+            let registered = &self.packs[pack];
+            let loaded = &registered.pack;
             // A pack v2 record has no bytes of its own on disk: its location
             // is the stored (compressed) bytes of the block that holds it.
             let offset = loaded
@@ -1452,6 +1536,15 @@ impl RegisteredCatalog {
                 .blocks
                 .get(location.block as usize)
                 .map_or(0, |block| block.offset + 5);
+            if loaded.is_inline() {
+                return CasLocation::Inline {
+                    pack: loaded.path.clone(),
+                    database: cas.root.join("metadata").join("layrs.sqlite3"),
+                    pack_seq: registered.seq,
+                    offset,
+                    length,
+                };
+            }
             CasLocation::Packed {
                 pack: loaded.path.clone(),
                 offset,
@@ -1582,13 +1675,56 @@ impl FileRecordPlan {
     }
 }
 
-/// The pack v2 being written by one `put_ordered` batch.
+/// A pack's registration: name, metadata digest, logical entries.
+type PackRegistration = (OsString, [u8; 32], u64);
+
+/// Where a pack being written goes: memory while it may still be registered
+/// inline (council s7 Q1), else its staging file.
+enum PackSink {
+    Memory(Vec<u8>),
+    File {
+        file: PinnedFile,
+        _lease: StagingLease,
+    },
+}
+
+impl io::Write for PackSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Memory(image) => {
+                image.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            Self::File { file, .. } => file.file_mut().write(bytes),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Memory(_) => Ok(()),
+            Self::File { file, .. } => file.file_mut().flush(),
+        }
+    }
+}
+
+/// The pack v2 being written by one `put_ordered` batch or consolidation.
 struct OpenPack {
-    file: PinnedFile,
+    sink: PackSink,
     path: PathBuf,
     builder: Pack2Builder,
     published: bool,
-    _lease: StagingLease,
+}
+
+impl OpenPack {
+    fn file(&self) -> CasResult<&PinnedFile> {
+        match &self.sink {
+            PackSink::File { file, .. } => Ok(file),
+            PackSink::Memory(_) => Err(io_error(
+                "write CAS pack",
+                &self.path,
+                io::Error::other("pack is in memory"),
+            )),
+        }
+    }
 }
 
 impl Drop for OpenPack {
@@ -1599,7 +1735,49 @@ impl Drop for OpenPack {
         if self.published {
             return;
         }
-        let _ = self.file.unlink();
+        if let PackSink::File { file, .. } = &self.sink {
+            let _ = file.unlink();
+        }
+    }
+}
+
+/// Bytes up to which a pack is kept in memory and registered inline, by
+/// default: `LAYRS_CAS_INLINE_MAX` (bytes; 0 never inlines), else 64 KiB.
+fn default_inline_pack_limit() -> usize {
+    static FROM_ENV: OnceLock<usize> = OnceLock::new();
+    *FROM_ENV.get_or_init(|| {
+        std::env::var("LAYRS_CAS_INLINE_MAX")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(64 * 1024)
+    })
+}
+
+/// Test support: per Store root, the inline limits tests force. Consulted
+/// only once one was set.
+fn inline_limit_overrides() -> &'static Mutex<HashMap<PathBuf, usize>> {
+    static OVERRIDES: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+    OVERRIDES.get_or_init(Default::default)
+}
+
+static INLINE_LIMIT_FORCED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Test support: forces the inline pack limit of the Store at `root` in
+/// this process (`None` restores the default).
+#[doc(hidden)]
+pub fn set_inline_pack_limit(root: &Path, limit: Option<usize>) {
+    let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(mut overrides) = inline_limit_overrides().lock() {
+        match limit {
+            Some(limit) => {
+                overrides.insert(root, limit);
+            }
+            None => {
+                overrides.remove(&root);
+            }
+        }
+        INLINE_LIMIT_FORCED.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1617,6 +1795,8 @@ pub(crate) struct LooseInstall {
 pub(crate) struct CompactPublication {
     /// The batch's pack: name, metadata digest, logical entries.
     pub(crate) pack: Option<(OsString, [u8; 32], u64)>,
+    /// Its image when it is registered inline (council s7 Q1).
+    pub(crate) inline: Option<Vec<u8>>,
     pub(crate) loose: Vec<LooseInstall>,
 }
 
@@ -1780,9 +1960,7 @@ impl NativeCas {
                 return Ok(false);
             }
             if batch.pack.is_none() {
-                let lease = StagingLease::shared(&self.staging_lease_path)?;
-                let staging = self.pinned_staging()?;
-                batch.pack = Some(open_pack(&staging, &self.staging_dir, lease)?);
+                batch.pack = Some(self.open_new_pack()?);
             }
             let Some(open) = batch.pack.as_mut() else {
                 return Err(io_error(
@@ -1793,6 +1971,7 @@ impl NativeCas {
             };
             let path = open.path.clone();
             let write = |error| io_error("write CAS pack", &path, error);
+            let sink = &mut open.sink;
             match (planned, object) {
                 (Some(planned), CanonicalObject::ChunkRaw(_)) => {
                     if planned.byte_length != bytes_len
@@ -1804,12 +1983,12 @@ impl NativeCas {
                         ));
                     }
                     open.builder
-                        .add_file(open.file.file_mut(), planned.identity, &bytes, encoded)
+                        .add_file(sink, planned.identity, &bytes, encoded)
                         .map_err(write)?;
                 }
                 (_, CanonicalObject::FileManifest(manifest)) => {
                     open.builder
-                        .add_record(open.file.file_mut(), object_id.kind(), raw, &bytes, encoded)
+                        .add_record(sink, object_id.kind(), raw, &bytes, encoded)
                         .map_err(write)?;
                     let file_raw = pack2::hex_digest(
                         manifest
@@ -1824,10 +2003,11 @@ impl NativeCas {
                 }
                 _ => {
                     open.builder
-                        .add_record(open.file.file_mut(), object_id.kind(), raw, &bytes, encoded)
+                        .add_record(sink, object_id.kind(), raw, &bytes, encoded)
                         .map_err(write)?;
                 }
             }
+            self.spill_if_over(open)?;
             Ok(true)
         })?;
         Ok(Slot::Packed {
@@ -1852,9 +2032,15 @@ impl NativeCas {
     pub(super) fn finish_compact_batch(&self) -> CasResult<()> {
         let (open, loose) =
             self.compact_state(|batch| Ok((batch.pack.take(), std::mem::take(&mut batch.loose))))?;
-        let mut publication = CompactPublication { pack: None, loose };
+        let mut publication = CompactPublication {
+            pack: None,
+            inline: None,
+            loose,
+        };
         if let Some(open) = open {
-            publication.pack = Some(self.publish_pack2(open)?);
+            let (pack, inline) = self.publish_pack2(open)?;
+            publication.pack = Some(pack);
+            publication.inline = inline;
         }
         self.compact_state(|batch| {
             batch.publication = Some(publication);
@@ -1872,24 +2058,114 @@ impl NativeCas {
         }
     }
 
-    fn publish_pack2(&self, mut open: OpenPack) -> CasResult<(OsString, [u8; 32], u64)> {
-        let _span = crate::perf::span("cas.pack2_publish");
+    /// This Store's inline pack limit (`default_inline_pack_limit`).
+    fn inline_pack_limit(&self) -> usize {
+        if INLINE_LIMIT_FORCED.load(std::sync::atomic::Ordering::Acquire) {
+            if let Some(limit) = inline_limit_overrides()
+                .lock()
+                .ok()
+                .and_then(|overrides| overrides.get(&self.root).copied())
+            {
+                return limit;
+            }
+        }
+        default_inline_pack_limit()
+    }
+
+    /// A new pack: in memory while it may be registered inline, else a
+    /// staging file under a shared staging lease.
+    fn open_new_pack(&self) -> CasResult<OpenPack> {
+        if self.inline_pack_limit() > 0 {
+            let mut sink = PackSink::Memory(Vec::new());
+            let path = self.staging_dir.join("inline-pack");
+            let builder = Pack2Builder::start(&mut sink)
+                .map_err(|error| io_error("write CAS pack", &path, error))?;
+            return Ok(OpenPack {
+                sink,
+                path,
+                builder,
+                published: false,
+            });
+        }
+        let lease = StagingLease::shared(&self.staging_lease_path)?;
+        let staging = self.pinned_staging()?;
+        open_pack(&staging, &self.staging_dir, lease)
+    }
+
+    /// Moves a pack kept in memory to a staging file once it outgrows the
+    /// inline limit.
+    fn spill_if_over(&self, open: &mut OpenPack) -> CasResult<()> {
+        let PackSink::Memory(image) = &open.sink else {
+            return Ok(());
+        };
+        if image.len() <= self.inline_pack_limit() {
+            return Ok(());
+        }
+        let _span = crate::perf::span("cas.pack_spill");
+        let lease = StagingLease::shared(&self.staging_lease_path)?;
+        let staging = self.pinned_staging()?;
+        let (mut file, path) = create_staging_pack(&staging, &self.staging_dir)?;
+        let written = file.file_mut().write_all(image);
+        let spilled = PackSink::File {
+            file,
+            _lease: lease,
+        };
+        // From here the staging file is the pack (removed if it fails).
+        let PackSink::Memory(_) = std::mem::replace(&mut open.sink, spilled) else {
+            unreachable!("checked above");
+        };
+        open.path = path;
+        written.map_err(|error| io_error("write CAS pack", &open.path, error))
+    }
+
+    /// Seals and publishes `open`: inline when it fits (its image validated
+    /// as untrusted input, as a reread file is), else as a pack file. Returns
+    /// its registration and, inline, its image.
+    fn publish_pack2(&self, mut open: OpenPack) -> CasResult<(PackRegistration, Option<Vec<u8>>)> {
         let builder = std::mem::replace(&mut open.builder, empty_builder());
-        let path = open.path.clone();
         let sealed = builder
-            .finish(open.file.file_mut())
-            .map_err(|error| io_error("write CAS pack index", &path, error))?;
+            .finish(&mut open.sink)
+            .map_err(|error| io_error("write CAS pack index", &open.path, error))?;
+        if let PackSink::Memory(image) = &open.sink {
+            if image.len() <= self.inline_pack_limit() {
+                let _span = crate::perf::span("cas.pack2_inline");
+                let image = std::mem::take(match &mut open.sink {
+                    PackSink::Memory(image) => image,
+                    PackSink::File { .. } => unreachable!("checked above"),
+                });
+                let name = pack2::new_pack2_name();
+                let path = self.inline_label(&name);
+                pack2::verify_written_from(pack2::PackSource::Image(&image), &path, &sealed)?;
+                self.hit(CasFaultPoint::BeforePackPublication)?;
+                self.hit(CasFaultPoint::AfterPackPublication)?;
+                crate::perf::count("cas.pack2_objects", sealed.logical);
+                return Ok(((name, sealed.digest, sealed.logical), Some(image)));
+            }
+        }
+        self.spill_if_over(&mut open)?;
+        self.publish_pack_file(open, &sealed)
+            .map(|registration| (registration, None))
+    }
+
+    fn publish_pack_file(
+        &self,
+        mut open: OpenPack,
+        sealed: &pack2::SealedPack2,
+    ) -> CasResult<(OsString, [u8; 32], u64)> {
+        let _span = crate::perf::span("cas.pack2_publish");
+        let path = open.path.clone();
         {
             let _span = crate::perf::span("cas.pack_sync");
+            let file = open.file()?;
             match self.batch_mode()? {
-                Some(BatchDurability::JournalOrdered) => write_through(open.file.file()),
-                _ => open.file.file().sync_all(),
+                Some(BatchDurability::JournalOrdered) => write_through(file.file()),
+                _ => file.file().sync_all(),
             }
             .map_err(|error| io_error("sync CAS pack", &path, error))?;
         }
         {
             let _span = crate::perf::span("cas.pack_verify");
-            pack2::verify_written(open.file.file(), &path, &sealed)?;
+            pack2::verify_written(open.file()?.file(), &path, sealed)?;
         }
         self.hit(CasFaultPoint::BeforePackPublication)?;
         let objects = self.pinned_objects()?;
@@ -1902,7 +2178,7 @@ impl NativeCas {
             && self.defer_directory(&packs_path, &packs)?;
         let name = pack2::new_pack2_name();
         let target = packs_path.join(&name);
-        if publish_no_clobber(&open.file, &packs, &name)? {
+        if publish_no_clobber(open.file()?, &packs, &name)? {
             return Err(io_error(
                 "publish CAS pack",
                 &target,
@@ -1915,7 +2191,7 @@ impl NativeCas {
         let installed = packs
             .open_file(&name)
             .map_err(|error| io_error("reread published CAS pack", &target, error))?;
-        if !open.file.same_file(&installed) {
+        if !open.file()?.same_file(&installed) {
             return Err(pack2::pack2_corruption(
                 &target,
                 "published pack is not the file written",
@@ -1928,7 +2204,7 @@ impl NativeCas {
                     .map_err(|error| io_error("sync CAS packs directory", &packs_path, error))?;
             }
         }
-        self.cleanup_published_staging(&open.file, &path, false)?;
+        self.cleanup_published_staging(open.file()?, &path, false)?;
         crate::perf::count("cas.pack2_objects", sealed.logical);
         Ok((name, sealed.digest, sealed.logical))
     }
@@ -2001,7 +2277,11 @@ impl RegisteredCatalog {
                         })),
                 }
             } else {
-                cas.loaded_pack(&row.name, true).and_then(|pack| {
+                match &row.image {
+                    Some(image) => cas.inline_pack(&row.name, Arc::clone(image), true),
+                    None => cas.loaded_pack(&row.name, true),
+                }
+                .and_then(|pack| {
                     check_registration(&pack, &row.name, &row.digest, row.entries).map(|()| pack)
                 })
             };
@@ -2014,8 +2294,12 @@ impl RegisteredCatalog {
                     continue;
                 }
             };
-            // One handle for the whole pack, closed when its audit ends.
-            let file = loaded.open(cas);
+            // One handle for the whole pack, closed when its audit ends (an
+            // inline pack is read from its image).
+            let file = match &loaded.image {
+                Some(_) => None,
+                None => Some(loaded.open(cas)),
+            };
             for (block, records) in loaded.index.records_by_block().into_iter().enumerate() {
                 let (mut envelope_bytes, mut chunk_bytes) = (0_u64, 0_u64);
                 for record in &records {
@@ -2041,9 +2325,18 @@ impl RegisteredCatalog {
                 }) {
                     return;
                 }
-                let raw = file.as_ref().map_err(Clone::clone).and_then(|file| {
-                    pack2::read_block(file.file(), &loaded.path, &loaded.index, block as u32)
-                });
+                let raw = match (&loaded.image, &file) {
+                    (Some(image), _) => pack2::read_block_from(
+                        pack2::PackSource::Image(image),
+                        &loaded.path,
+                        &loaded.index,
+                        block as u32,
+                    ),
+                    (None, Some(file)) => file.as_ref().map_err(Clone::clone).and_then(|file| {
+                        pack2::read_block(file.file(), &loaded.path, &loaded.index, block as u32)
+                    }),
+                    (None, None) => Err(pack2::pack2_corruption(&loaded.path, "pack not opened")),
+                };
                 for record in records {
                     let (object, name, result) = scrub_record(&loaded, record, raw.as_ref());
                     let copy = AuditedCopy {
@@ -2234,22 +2527,31 @@ fn open_pack(
     staging_dir: &Path,
     lease: StagingLease,
 ) -> CasResult<OpenPack> {
+    let (file, path) = create_staging_pack(staging, staging_dir)?;
+    let mut sink = PackSink::File {
+        file,
+        _lease: lease,
+    };
+    let builder =
+        Pack2Builder::start(&mut sink).map_err(|error| io_error("write CAS pack", &path, error))?;
+    Ok(OpenPack {
+        sink,
+        path,
+        builder,
+        published: false,
+    })
+}
+
+/// A new staging file for a pack.
+fn create_staging_pack(
+    staging: &PinnedDirectory,
+    staging_dir: &Path,
+) -> CasResult<(PinnedFile, PathBuf)> {
     let mut last_error = None;
     for _ in 0..64 {
         let name = staging_name();
         match staging.create_file(OsStr::new(&name)) {
-            Ok(mut file) => {
-                let path = staging_dir.join(&name);
-                let builder = Pack2Builder::start(file.file_mut())
-                    .map_err(|error| io_error("write CAS pack", &path, error))?;
-                return Ok(OpenPack {
-                    file,
-                    path,
-                    builder,
-                    published: false,
-                    _lease: lease,
-                });
-            }
+            Ok(file) => return Ok((file, staging_dir.join(&name))),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 last_error = Some(error);
             }

@@ -116,12 +116,21 @@ CREATE INDEX admissions_object_idx ON space_object_admissions(object_id, space_i
 -- (ADR 0028). A pack file without a row is never present to any reader; a
 -- registered pack whose metadata blake3 differs from index_digest is
 -- corruption. entries: logical objects of the pack (bitmap length in bits).
+-- A sequence number is never reused (bitmaps and caches key by it).
 CREATE TABLE cas_packs (
-    pack_seq INTEGER PRIMARY KEY,
+    pack_seq INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE CHECK (length(name) = 41 AND name GLOB 'pack-*.lp2'),
     index_digest BLOB NOT NULL CHECK (length(index_digest) = 32),
     entries INTEGER NOT NULL CHECK (entries >= 0),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0)
+) STRICT;
+
+-- A small pack registered inline (council s7 Q1): its whole pack v2 image,
+-- byte for byte what its file would hold, committed with its registration.
+-- A cas_packs row with an inline row has no file.
+CREATE TABLE cas_pack_inline (
+    pack_seq INTEGER PRIMARY KEY REFERENCES cas_packs(pack_seq) ON DELETE RESTRICT,
+    image BLOB NOT NULL CHECK (length(image) BETWEEN 1 AND 1048576)
 ) STRICT;
 
 -- Exact content admission per Space: bit i (LSB first) of bitmap admits

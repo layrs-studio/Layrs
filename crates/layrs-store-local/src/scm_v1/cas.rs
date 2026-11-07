@@ -332,6 +332,10 @@ struct BatchState {
     /// Coalesced: packs whose members the batch reuses; they are synced
     /// with `objects/packs` before the batch is declared durable.
     reused_packs: BTreeSet<std::ffi::OsString>,
+    /// Whether the batch published or reused a file (`defer_directory`):
+    /// without one, nothing outside SQLite needs ordering before its commit
+    /// (a format 6 batch whose pack is inline, council s7 Q1).
+    files: bool,
 }
 
 #[derive(Debug)]
@@ -1282,6 +1286,7 @@ impl NativeCas {
         let Some(state) = batch.as_mut() else {
             return Ok(false);
         };
+        state.files = true;
         if state.mode == BatchDurability::Coalesced && !state.directories.contains_key(path) {
             let pinned = directory
                 .try_clone()
@@ -1314,6 +1319,7 @@ impl NativeCas {
                 objects,
                 directories: Default::default(),
                 reused_packs: BTreeSet::new(),
+                files: false,
             });
         // Format 5: the batch packs its new small objects. Its inventory of
         // packs is taken here once; its own packs join it as published.
@@ -1344,6 +1350,10 @@ impl NativeCas {
             return Ok(());
         };
         if !durable {
+            return Ok(());
+        }
+        if !state.files && state.reused_packs.is_empty() {
+            crate::perf::count("cas.batch_durability_skipped", 1);
             return Ok(());
         }
         let _span = crate::perf::span("cas.batch_durability");
@@ -1960,6 +1970,7 @@ impl NativeCas {
         }
     }
 }
+pub use compact::set_inline_pack_limit;
 pub use packs::CasLocation;
 use packs::*;
 use paths::*;

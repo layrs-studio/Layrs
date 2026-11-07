@@ -19,7 +19,7 @@ use layrs_store::scm::{
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
-    fsck_existing, init, open, open_exclusive,
+    fsck_existing, init, open, open_exclusive, set_inline_pack_limit,
 };
 use rusqlite::Connection;
 
@@ -53,6 +53,10 @@ impl Drop for TestRoot {
 
 fn create(root: &Path, label: &str, format: &str) {
     let _guard = serial();
+    // These tests damage and count pack files: every pack is a file here.
+    // The inline packs of small batches (council s7 Q1) have tests of their
+    // own, which set the limit back.
+    set_inline_pack_limit(root, Some(0));
     // SAFETY: every reader of this variable in this binary holds `serial`.
     unsafe { std::env::set_var("LAYRS_STORE_FORMAT", format) };
     let opened = init(root, StoreId::parse(format!("store:{label}")).unwrap());
@@ -1687,6 +1691,159 @@ fn a_record_in_two_candidates_and_explicit_manifests_survive_consolidation() {
     }
     drop(reader);
     drop(store);
+    assert_fsck_clean(&root.0);
+}
+
+/// Incompressible bytes (a fixed linear congruential sequence).
+fn noise(length: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    (0..length)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u8
+        })
+        .collect()
+}
+
+fn inline_rows(root: &Path) -> i64 {
+    count(root, "SELECT count(*) FROM cas_pack_inline")
+}
+
+/// Small batches register their pack inline (council s7 Q1): no pack file,
+/// the image committed with the registration; a batch past the limit
+/// spills to a pack file. Every answer equals format 5's.
+#[test]
+fn small_batches_register_inline_packs_that_answer_like_files() {
+    let big = file("big.bin", &noise(200 * 1024, 7), Recipe::Fixed);
+    let mut answers = Vec::new();
+    for format in ["5", "6"] {
+        let root = TestRoot::new(&format!("inline-{format}"));
+        create(&root.0, "inline", format);
+        set_inline_pack_limit(&root.0, None);
+        let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+        let (mut lane, batch) = Lane::begin("alpha", &files);
+        let mut repository = NativeScmRepository::new(&root.0);
+        repository.apply_batch(&batch).unwrap();
+        for step in 0..3 {
+            let added = file(
+                &format!("f{step}.txt"),
+                format!("content {step}").as_bytes(),
+                Recipe::Fixed,
+            );
+            let carried = file_objects(std::slice::from_ref(&added));
+            files.push(added);
+            repository
+                .apply_batch(&lane.capture(&files, carried))
+                .unwrap();
+        }
+        if format == "6" {
+            // Four small batches: four inline packs, no file.
+            assert_eq!(registered_packs(&root.0).len(), 4);
+            assert_eq!(inline_rows(&root.0), 4);
+            assert!(packs(&root.0).is_empty());
+        }
+        // A batch past the limit is a pack file.
+        let carried = file_objects(std::slice::from_ref(&big));
+        files.push(big.clone());
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+        drop(repository);
+        if format == "6" {
+            assert_eq!(registered_packs(&root.0).len(), 5);
+            assert_eq!(inline_rows(&root.0), 4);
+            assert_eq!(packs(&root.0).len(), 1);
+        }
+        answers.push(reader_answers(&root.0, &files, lane.space.id()));
+        assert_fsck_clean(&root.0);
+    }
+    assert_eq!(answers[0], answers[1]);
+}
+
+/// A damaged block of an inline pack fails its records as corruption,
+/// never absence, and fsck names the inline pack.
+#[test]
+fn a_damaged_inline_block_is_corruption_never_absence() {
+    let root = TestRoot::new("inline-damage");
+    create(&root.0, "inline-damage", "6");
+    set_inline_pack_limit(&root.0, None);
+    let files = vec![file("a.txt", b"alpha bytes", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let chunk = StoreObjectId::ChunkRaw(files[0].chunks[0].id().clone());
+    let store = open(&root.0).unwrap();
+    let location = NativeCas::open(&store)
+        .unwrap()
+        .locate(&chunk)
+        .unwrap()
+        .unwrap();
+    drop(store);
+    assert!(
+        matches!(location, CasLocation::Inline { .. }),
+        "{location:?}"
+    );
+    location.flip_stored_byte().unwrap();
+    let repository = NativeScmRepository::new(&root.0);
+    assert!(repository.get_chunk(files[0].chunks[0].id()).is_err());
+    // Metadata answers (the index is intact) still hold.
+    assert!(
+        repository
+            .object_admitted_metadata(&chunk, lane.space.id())
+            .unwrap()
+    );
+    drop(repository);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == FsckFindingCode::CasCorruption
+                && finding.path.as_deref() == Some(location.path())
+        }),
+        "{:#?}",
+        report.findings
+    );
+}
+
+/// Inline packs consolidate into an inline pack (no file is ever written),
+/// keep every admission, and a sequence number is never reused.
+#[test]
+fn inline_packs_consolidate_inline() {
+    let root = TestRoot::new("inline-consolidation");
+    create(&root.0, "inline-consolidation", "6");
+    set_inline_pack_limit(&root.0, None);
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let mut highest = 0_i64;
+    for step in 0..10 {
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+        let seq: i64 = count(&root.0, "SELECT max(pack_seq) FROM cas_packs");
+        assert!(seq > highest, "pack_seq {seq} after {highest}");
+        highest = seq;
+    }
+    drop(repository);
+    assert!(registered_packs(&root.0).len() < 6);
+    assert_eq!(inline_rows(&root.0), registered_packs(&root.0).len() as i64);
+    assert!(packs(&root.0).is_empty());
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false"))
+    );
     assert_fsck_clean(&root.0);
 }
 

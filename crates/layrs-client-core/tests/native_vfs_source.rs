@@ -556,7 +556,7 @@ fn corruption_after_preparation_is_not_served_as_verified_content() {
     // Preserve the corrupt object as evidence while making its canonical path missing
     // (format 6: the registered pack holding it).
     match &compact_pack {
-        Some(pack) => fs::rename(pack, pack.with_extension("missing-test")).unwrap(),
+        Some(location) => location.remove_stored_copy().unwrap(),
         None => fs::rename(&path, path.with_extension("missing-test")).unwrap(),
     }
     assert!(source
@@ -669,8 +669,7 @@ fn prepared_source_and_serialized_binding_reject_store_replacement() {
 fn damage_compact_object(
     store_root: &std::path::Path,
     object: &layrs_store::scm::StoreObjectId,
-) -> Option<std::path::PathBuf> {
-    use std::io::{Read, Seek, SeekFrom, Write};
+) -> Option<layrs_store_local::scm_v1::CasLocation> {
     let store = layrs_store_local::scm_v1::open(store_root).unwrap();
     if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
         return None;
@@ -681,18 +680,7 @@ fn damage_compact_object(
         .unwrap()
         .unwrap();
     drop(store);
-    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
-        panic!("format 6 object {object} is not packed");
-    };
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&pack)
-        .unwrap();
-    let mut byte = [0_u8; 1];
-    file.seek(SeekFrom::Start(offset)).unwrap();
-    file.read_exact(&mut byte).unwrap();
-    file.seek(SeekFrom::Start(offset)).unwrap();
-    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
-    Some(pack)
+    // A pack file or an inline pack image (council s7 Q1).
+    location.flip_stored_byte().unwrap();
+    Some(location)
 }

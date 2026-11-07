@@ -301,9 +301,9 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
                 .id()
                 .clone(),
         );
-        if let Some(pack) = damage_compact_object(workspace.store_root(), &historical_chunk) {
+        if let Some(location) = damage_compact_object(workspace.store_root(), &historical_chunk) {
             if missing {
-                fs::remove_file(&pack).unwrap();
+                location.remove_stored_copy().unwrap();
             }
             assert!(workspace.preview_restore_step(&target, None).is_err());
             assert_eq!(workspace.state().unwrap().operation.id(), &before);
@@ -356,8 +356,7 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
 fn damage_compact_object(
     store_root: &std::path::Path,
     object: &layrs_store::scm::StoreObjectId,
-) -> Option<std::path::PathBuf> {
-    use std::io::{Read, Seek, SeekFrom, Write};
+) -> Option<layrs_store_local::scm_v1::CasLocation> {
     let store = layrs_store_local::scm_v1::open(store_root).unwrap();
     if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
         return None;
@@ -368,18 +367,7 @@ fn damage_compact_object(
         .unwrap()
         .unwrap();
     drop(store);
-    let layrs_store_local::scm_v1::CasLocation::Packed { pack, offset, .. } = location else {
-        panic!("format 6 object {object} is not packed");
-    };
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&pack)
-        .unwrap();
-    let mut byte = [0_u8; 1];
-    file.seek(SeekFrom::Start(offset)).unwrap();
-    file.read_exact(&mut byte).unwrap();
-    file.seek(SeekFrom::Start(offset)).unwrap();
-    file.write_all(&[byte[0] ^ 0x5a]).unwrap();
-    Some(pack)
+    // A pack file or an inline pack image (council s7 Q1).
+    location.flip_stored_byte().unwrap();
+    Some(location)
 }

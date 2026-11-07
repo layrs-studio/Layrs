@@ -770,20 +770,102 @@ pub enum CasLocation {
         offset: u64,
         length: u64,
     },
+    /// In the image of a pack registered inline (format 6, council s7 Q1):
+    /// `pack` names it (`metadata/layrs.sqlite3#pack-...`), `offset` is
+    /// within the image of row `pack_seq` of `database`.
+    Inline {
+        pack: PathBuf,
+        database: PathBuf,
+        pack_seq: i64,
+        offset: u64,
+        length: u64,
+    },
 }
 
 impl CasLocation {
     pub fn length(&self) -> u64 {
         match self {
-            Self::Loose { length, .. } | Self::Packed { length, .. } => *length,
+            Self::Loose { length, .. }
+            | Self::Packed { length, .. }
+            | Self::Inline { length, .. } => *length,
         }
     }
 
     pub fn path(&self) -> &Path {
         match self {
             Self::Loose { path, .. } => path,
-            Self::Packed { pack, .. } => pack,
+            Self::Packed { pack, .. } | Self::Inline { pack, .. } => pack,
         }
+    }
+
+    /// Test support: makes the copy at this location missing while it stays
+    /// registered, as losing its file would: a loose or pack file is renamed
+    /// aside (kept as evidence), an inline pack loses its image row.
+    #[doc(hidden)]
+    pub fn remove_stored_copy(&self) -> std::io::Result<()> {
+        match self {
+            Self::Loose { path, .. } | Self::Packed { pack: path, .. } => {
+                std::fs::rename(path, path.with_extension("missing-test"))
+            }
+            Self::Inline {
+                database, pack_seq, ..
+            } => {
+                let connection =
+                    rusqlite::Connection::open(database).map_err(std::io::Error::other)?;
+                connection
+                    .execute("DELETE FROM cas_pack_inline WHERE pack_seq=?1", [pack_seq])
+                    .map_err(std::io::Error::other)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Test support: inverts bits of the stored byte at this location (in a
+    /// loose or pack file, or in an inline pack image), as damage would.
+    #[doc(hidden)]
+    pub fn flip_stored_byte(&self) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let (path, at) = match self {
+            Self::Loose { path, .. } => (path, 0),
+            Self::Packed { pack, offset, .. } => (pack, *offset),
+            Self::Inline {
+                database,
+                pack_seq,
+                offset,
+                ..
+            } => {
+                let connection =
+                    rusqlite::Connection::open(database).map_err(std::io::Error::other)?;
+                let mut image: Vec<u8> = connection
+                    .query_row(
+                        "SELECT image FROM cas_pack_inline WHERE pack_seq=?1",
+                        [pack_seq],
+                        |row| row.get(0),
+                    )
+                    .map_err(std::io::Error::other)?;
+                let at = usize::try_from(*offset).map_err(std::io::Error::other)?;
+                let byte = image
+                    .get_mut(at)
+                    .ok_or_else(|| std::io::Error::other("offset past the image"))?;
+                *byte ^= 0x5a;
+                connection
+                    .execute(
+                        "UPDATE cas_pack_inline SET image=?1 WHERE pack_seq=?2",
+                        rusqlite::params![image, pack_seq],
+                    )
+                    .map_err(std::io::Error::other)?;
+                return Ok(());
+            }
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let mut byte = [0_u8; 1];
+        file.seek(SeekFrom::Start(at))?;
+        file.read_exact(&mut byte)?;
+        file.seek(SeekFrom::Start(at))?;
+        file.write_all(&[byte[0] ^ 0x5a])
     }
 }
 

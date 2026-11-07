@@ -35,7 +35,7 @@ pub use admission::CompositeAdmissionResolver;
 pub use cas::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue,
     CasScrubReport, InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PreparedObject,
-    PutItem,
+    PutItem, set_inline_pack_limit,
 };
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,

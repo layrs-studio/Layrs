@@ -1102,6 +1102,15 @@ fn register_compact(c: &Connection, publication: &super::cas::CompactPublication
             params![name, &digest[..], i64::try_from(*entries).map_err(native_backend)?],
         )
         .map_err(sql_backend)?;
+        // A small pack's image commits with its registration (council s7
+        // Q1): durable with the batch, no file.
+        if let Some(image) = &publication.inline {
+            c.execute(
+                "INSERT INTO cas_pack_inline(pack_seq,image) VALUES(last_insert_rowid(),?1)",
+                [image],
+            )
+            .map_err(sql_backend)?;
+        }
     }
     for loose in &publication.loose {
         let id = super::cas::raw_object_digest(&loose.object_id).map_err(cas_backend)?;
