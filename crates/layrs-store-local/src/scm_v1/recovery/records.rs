@@ -5,7 +5,7 @@ use super::*;
 /// retain the latest recorded instant; owner/generation/expiry checks still fence
 /// every transition. This does not authorize takeover of another live lease.
 pub(super) fn ordered_time(
-    transaction: &Transaction<'_>,
+    transaction: &rusqlite::Connection,
     record: &RecoveryRecord,
     requested: i64,
 ) -> RecoveryResult<i64> {
@@ -225,7 +225,7 @@ pub(super) fn leases_are_active(
 }
 
 pub(super) fn release_leases(
-    transaction: &Transaction<'_>,
+    transaction: &rusqlite::Connection,
     record: &RecoveryRecord,
     owner: &str,
     expected: &[ResourceLease],
@@ -314,7 +314,7 @@ pub(super) fn require_exact_path_results(
 }
 
 pub(super) fn persist_path_results(
-    transaction: &Transaction<'_>,
+    transaction: &rusqlite::Connection,
     id: &RecoveryId,
     results: &[RecoveryPathResult],
 ) -> RecoveryResult<()> {

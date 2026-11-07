@@ -230,74 +230,92 @@ impl<'store> NativeRecovery<'store> {
                 to: RecoveryState::Applying,
             });
         }
-        let resources = resource_keys(&current);
-        let mut leases = Vec::new();
-        for resource_key in resources {
-            let existing: Option<(String, String, u64, i64, Option<i64>)> = transaction
-                .prepare_cached("SELECT recovery_operation_id, owner_token, generation, expires_at_ms, released_at_ms FROM materialization_leases \
-                     WHERE worktree_id = ?1 AND resource_key = ?2")?
-                .query_row(params![current.worktree_id.as_str(), resource_key],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                        ))
-                    })
-                .optional()?;
-            let generation = match existing {
-                Some((recovery_id, owner, _, expiry, None))
-                    if (recovery_id != id.as_str() || owner != owner_token) && expiry > now_ms =>
-                {
-                    return Err(RecoveryError::LeaseFenced {
-                        worktree_id: current.worktree_id.clone(),
-                        resource_key,
-                    });
-                }
-                Some((_, _, generation, _, _)) => generation.checked_add(1).ok_or_else(|| {
-                    RecoveryError::Corruption("materialization lease generation overflow".into())
-                })?,
-                None => 1,
-            };
-            transaction
-                .prepare_cached(
-                    "INSERT INTO materialization_leases(
-                    worktree_id, resource_key, recovery_operation_id, owner_token, generation,
-                    acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, NULL)
-                 ON CONFLICT(worktree_id, resource_key) DO UPDATE SET
-                    recovery_operation_id = excluded.recovery_operation_id,
-                    owner_token = excluded.owner_token,
-                    generation = excluded.generation,
-                    acquired_at_ms = excluded.acquired_at_ms,
-                    heartbeat_at_ms = excluded.heartbeat_at_ms,
-                    expires_at_ms = excluded.expires_at_ms,
-                    released_at_ms = NULL",
-                )?
-                .execute(params![
-                    current.worktree_id.as_str(),
-                    resource_key,
-                    id.as_str(),
-                    owner_token,
-                    generation,
-                    now_ms,
-                    expires_at_ms,
-                ])?;
-            leases.push(ResourceLease {
-                resource_key,
-                generation,
-                expires_at_ms,
-            });
-        }
-        transaction.execute(
-            "UPDATE recovery_operations SET state = 'applying', owner_token = ?1,
-             attempt_count = attempt_count + 1, updated_at_ms = ?2
-             WHERE recovery_operation_id = ?3",
-            params![owner_token, now_ms, id.as_str()],
+        let leases = acquire_leases(
+            &transaction,
+            id,
+            &current,
+            &owner_token,
+            now_ms,
+            expires_at_ms,
         )?;
         transaction.commit()?;
+        self.hit(RecoveryFaultPoint::AfterClaimCommit)?;
+        Ok(ClaimOutcome {
+            outcome: MutationOutcome::Applied,
+            leases,
+        })
+    }
+
+    /// `prepare` then `claim` of a Pending record in one transaction: the
+    /// path evidence and the leases become durable together, so a crash
+    /// leaves the record either Pending (untouched) or Applying with its
+    /// evidence; never Prepared without an owner.
+    pub fn prepare_and_claim(
+        &mut self,
+        id: &RecoveryId,
+        preparation: &RecoveryPreparation,
+        owner_token: impl Into<String>,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> RecoveryResult<ClaimOutcome> {
+        let _span = crate::perf::span("journal.prepare_claim");
+        let owner_token = validated_token("owner_token", owner_token.into())?;
+        valid_time("now_ms", now_ms)?;
+        if lease_duration_ms <= 0 {
+            return Err(RecoveryError::InvalidInput {
+                field: "lease_duration_ms",
+                reason: "must be positive".into(),
+            });
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_record(&transaction, id)?;
+        let now_ms = ordered_time(&transaction, &current, now_ms)?;
+        let expires_at_ms =
+            now_ms
+                .checked_add(lease_duration_ms)
+                .ok_or_else(|| RecoveryError::InvalidInput {
+                    field: "lease_duration_ms",
+                    reason: "expiry overflows SQLite INTEGER".into(),
+                })?;
+        if current.state != RecoveryState::Pending {
+            return Err(RecoveryError::InvalidTransition {
+                from: current.state,
+                to: RecoveryState::Applying,
+            });
+        }
+        require_exact_path_evidence(&current.paths, &preparation.path_evidence, id)?;
+        for evidence in &preparation.path_evidence {
+            transaction
+                .prepare_cached(
+                    "UPDATE recovery_paths SET evidence_json = ?1, state = 'verified' \
+                 WHERE recovery_operation_id = ?2 AND path = ?3 AND path_role = ?4",
+                )?
+                .execute(params![
+                    evidence.canonical_json,
+                    id.as_str(),
+                    evidence.path,
+                    evidence.role.as_str(),
+                ])?;
+        }
+        transaction.execute(
+            "UPDATE recovery_operations SET state = 'prepared', evidence_json = ?1,
+             owner_token = NULL, last_error = NULL, updated_at_ms = ?2,
+             completed_at_ms = NULL WHERE recovery_operation_id = ?3",
+            params![preparation.evidence_json, now_ms, id.as_str()],
+        )?;
+        let current = load_record(&transaction, id)?;
+        let leases = acquire_leases(
+            &transaction,
+            id,
+            &current,
+            &owner_token,
+            now_ms,
+            expires_at_ms,
+        )?;
+        transaction.commit()?;
+        self.hit(RecoveryFaultPoint::AfterPrepareCommit)?;
         self.hit(RecoveryFaultPoint::AfterClaimCommit)?;
         Ok(ClaimOutcome {
             outcome: MutationOutcome::Applied,
@@ -662,4 +680,128 @@ impl<'store> NativeRecovery<'store> {
             .check(point)
             .map_err(|message| RecoveryError::InjectedFault { point, message })
     }
+}
+
+/// Takes the leases of a Prepared (or re-claimed Applying) record for
+/// `owner_token` inside `transaction` and sets the record Applying.
+fn acquire_leases(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &RecoveryId,
+    current: &RecoveryRecord,
+    owner_token: &str,
+    now_ms: i64,
+    expires_at_ms: i64,
+) -> RecoveryResult<Vec<ResourceLease>> {
+    let resources = resource_keys(current);
+    let mut leases = Vec::new();
+    for resource_key in resources {
+        let existing: Option<(String, String, u64, i64, Option<i64>)> = transaction
+                .prepare_cached("SELECT recovery_operation_id, owner_token, generation, expires_at_ms, released_at_ms FROM materialization_leases \
+                     WHERE worktree_id = ?1 AND resource_key = ?2")?
+                .query_row(params![current.worktree_id.as_str(), resource_key],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                .optional()?;
+        let generation = match existing {
+            Some((recovery_id, owner, _, expiry, None))
+                if (recovery_id != id.as_str() || owner != owner_token) && expiry > now_ms =>
+            {
+                return Err(RecoveryError::LeaseFenced {
+                    worktree_id: current.worktree_id.clone(),
+                    resource_key,
+                });
+            }
+            Some((_, _, generation, _, _)) => generation.checked_add(1).ok_or_else(|| {
+                RecoveryError::Corruption("materialization lease generation overflow".into())
+            })?,
+            None => 1,
+        };
+        transaction
+            .prepare_cached(
+                "INSERT INTO materialization_leases(
+                    worktree_id, resource_key, recovery_operation_id, owner_token, generation,
+                    acquired_at_ms, heartbeat_at_ms, expires_at_ms, released_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7, NULL)
+                 ON CONFLICT(worktree_id, resource_key) DO UPDATE SET
+                    recovery_operation_id = excluded.recovery_operation_id,
+                    owner_token = excluded.owner_token,
+                    generation = excluded.generation,
+                    acquired_at_ms = excluded.acquired_at_ms,
+                    heartbeat_at_ms = excluded.heartbeat_at_ms,
+                    expires_at_ms = excluded.expires_at_ms,
+                    released_at_ms = NULL",
+            )?
+            .execute(params![
+                current.worktree_id.as_str(),
+                resource_key,
+                id.as_str(),
+                owner_token,
+                generation,
+                now_ms,
+                expires_at_ms,
+            ])?;
+        leases.push(ResourceLease {
+            resource_key,
+            generation,
+            expires_at_ms,
+        });
+    }
+    transaction.execute(
+        "UPDATE recovery_operations SET state = 'applying', owner_token = ?1,
+             attempt_count = attempt_count + 1, updated_at_ms = ?2
+             WHERE recovery_operation_id = ?3",
+        params![owner_token, now_ms, id.as_str()],
+    )?;
+    Ok(leases)
+}
+
+/// The completion of an Applying record owned by `owner_token`, written
+/// inside a write transaction its caller already opened and commits (the
+/// metadata batch of a materialization): the batch and the completion then
+/// commit together. Same checks as `NativeRecovery::complete`.
+pub(crate) fn complete_in_transaction(
+    connection: &rusqlite::Connection,
+    id: &RecoveryId,
+    owner_token: &str,
+    expected_leases: &[ResourceLease],
+    evidence: Value,
+    path_results: &[RecoveryPathResult],
+    now_ms: i64,
+) -> RecoveryResult<()> {
+    let _span = crate::perf::span("journal.complete_in_batch");
+    let owner_token = validated_token("owner_token", owner_token.to_owned())?;
+    valid_time("now_ms", now_ms)?;
+    let evidence_json = required_evidence(evidence)?;
+    let current = load_record(connection, id)?;
+    let now_ms = ordered_time(connection, &current, now_ms)?;
+    require_exact_path_results(&current.paths, path_results, id)?;
+    if current.state != RecoveryState::Applying {
+        return Err(RecoveryError::InvalidTransition {
+            from: current.state,
+            to: RecoveryState::Completed,
+        });
+    }
+    if current.owner_token.as_deref() != Some(owner_token.as_str()) {
+        return Err(RecoveryError::OwnerMismatch(id.clone()));
+    }
+    release_leases(connection, &current, &owner_token, expected_leases, now_ms)?;
+    persist_path_results(connection, id, path_results)?;
+    let changed = connection.execute(
+        "UPDATE recovery_operations SET state = 'completed', evidence_json = ?1,
+         owner_token = NULL, last_error = NULL, updated_at_ms = ?2,
+         completed_at_ms = ?2 WHERE recovery_operation_id = ?3
+         AND state = 'applying' AND owner_token = ?4",
+        params![evidence_json, now_ms, id.as_str(), owner_token],
+    )?;
+    if changed != 1 {
+        return Err(RecoveryError::OwnerMismatch(id.clone()));
+    }
+    Ok(())
 }

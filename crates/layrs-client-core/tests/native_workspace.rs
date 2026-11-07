@@ -351,7 +351,13 @@ fn recovery_distinguishes_precommit_and_committed_interruptions() {
             .restore_step_with_faults(marker.target_step_id(), None, &Stop(point))
             .is_err());
         let reopened = NativeWorkspace::open(&checkout.0).unwrap();
-        assert_eq!(reopened.recover().unwrap(), 1, "point {point:?}");
+        // The metadata and the completed journal commit together (council
+        // s2 r1, B2): stopping after that commit leaves nothing to recover.
+        assert_eq!(
+            reopened.recover().unwrap(),
+            usize::from(point != MaterializationPoint::AfterMetadata),
+            "point {point:?}"
+        );
         assert_eq!(
             fs::read(checkout.0.join("hello")).unwrap(),
             if point == MaterializationPoint::AfterMetadata {

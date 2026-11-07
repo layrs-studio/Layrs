@@ -14,13 +14,17 @@ use std::{
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        // Parallel tests may read the same clock tick: a counter keeps each
+        // fixture's folder its own.
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "layrs-cli-worktrees-{}-{}",
+            "layrs-cli-worktrees-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
         Self(root)

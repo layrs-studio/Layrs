@@ -123,9 +123,11 @@ fn type_changes_recover_at_every_phase_before_and_after_commit() {
                 "{target_directory:?} {point:?}"
             );
             let reopened = NativeWorkspace::open(&f.0).unwrap();
+            // The metadata and the completed journal commit together (council
+            // s2 r1, B2): stopping after that commit leaves nothing to recover.
             assert_eq!(
                 reopened.recover().unwrap(),
-                1,
+                usize::from(point != MaterializationPoint::AfterMetadata),
                 "{target_directory:?} {point:?}"
             );
             f.assert_shape(if point == MaterializationPoint::AfterMetadata {

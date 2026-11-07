@@ -300,6 +300,42 @@ part.
   (from the server or the working tree) as a new registered pack and keeps
   the old bitmaps.
 
+  **Decided by council s2 r1 (2026-11-07, unanimous on the points below;
+  this replaces the proposal above).**
+  - The filter cannot live in or next to the pack (it is what gets lost):
+    one row per registered pack in SQLite (`cas_pack_keys`), written in
+    the transaction that registers the pack, bound to the registered
+    digest, covering every key the pack answers for (explicit kind and id,
+    FileId, ChunkId alias, FileManifestId alias). An xor or binary-fuse
+    filter of about 9 bits per key (about 34 KiB per 10,000 small files)
+    is loaded only when a pack is unreadable. A key it excludes is an
+    exact "absent from that pack"; a key it includes, while the pack is
+    unreadable, stays an error (never absence, never presence).
+  - Writers never need "absent": when a lookup has no positive answer and
+    a registered pack is unreadable, the batch writes its own copy
+    (duplicates are legal). Admission answers stay positive-only, so a
+    closure provable only through the lost pack fails that batch, unless
+    the batch carries the objects.
+  - Repair must keep the old admission bitmaps meaningful, so it restores
+    the lost pack's exact keys and ordinals, never a reordered pack:
+    either from an independently recoverable copy of its index (Astra,
+    Sol), or by splitting the registered digest into a keys-and-ordinals
+    digest and a layout digest, plus a digest per group of 256 ordinals,
+    so a pack rebuilt from candidates (working trees, server, other packs)
+    proves it holds the same keys in the same order (Opus). Choice left to
+    the implementation; both are exact.
+  - What cannot be restored stays registered as `lost`: its row, filter
+    and bitmaps are kept for ever (admissions are never withdrawn), its
+    bits are never moved to another pack, and objects found again are
+    admitted only by new exact acts (capture, fetch).
+  - Consolidation (phase 5) is required before the flip, as a size and
+    speed requirement (every lookup probes every pack; git consolidates by
+    default): geometric policy; replacement packs durable first, then one
+    transaction registers them, remaps every bitmap exactly old to new
+    (per Space popcount unchanged, checked in the same transaction) and
+    retires the old ones; retired files deleted later under the write
+    lock; a `lost` pack is never consolidated.
+
 Known limits until phase 5: every batch adds one pack, so lookups and the
 catalog load grow with the number of packs (a long history of small steps
 needs consolidation), and the process cache keeps the metadata of every

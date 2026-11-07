@@ -39,10 +39,21 @@ pub struct NativeScmRepository {
     faults: Arc<dyn RepositoryFaultInjector>,
     cas_faults: Arc<dyn CasFaultInjector>,
     materialization_permit: Option<(String, String)>,
+    /// With the permit: the journal completion that commits in the same
+    /// transaction as the batch.
+    materialization_completion: Option<MaterializationCompletion>,
     expected_identity: Option<String>,
     expected_metadata_identity: Option<String>,
     expected_store_id: Option<StoreId>,
     acquisition_budget: Duration,
+}
+
+/// What completes a materialization journal (`completing`).
+pub(crate) struct MaterializationCompletion {
+    pub(crate) leases: Vec<super::recovery::ResourceLease>,
+    pub(crate) evidence: serde_json::Value,
+    pub(crate) path_results: Vec<super::recovery::RecoveryPathResult>,
+    pub(crate) now_ms: i64,
 }
 
 struct NoCasFaults;
@@ -76,6 +87,7 @@ impl NativeScmRepository {
             faults: no_faults(),
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
+            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -92,6 +104,7 @@ impl NativeScmRepository {
             faults,
             cas_faults: Arc::new(NoCasFaults),
             materialization_permit: None,
+            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -109,6 +122,7 @@ impl NativeScmRepository {
             faults,
             cas_faults,
             materialization_permit: None,
+            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -125,6 +139,7 @@ impl NativeScmRepository {
             faults: no_faults(),
             cas_faults,
             materialization_permit: None,
+            materialization_completion: None,
             expected_identity: None,
             expected_metadata_identity: None,
             expected_store_id: None,
@@ -165,6 +180,13 @@ impl NativeScmRepository {
         let mut repository = Self::new(root).with_short_acquisition();
         repository.materialization_permit = Some((recovery_id.into(), owner.into()));
         repository
+    }
+
+    /// Completes the permit's journal in the batch's own transaction: the
+    /// new metadata and the completed journal commit together, or neither.
+    pub(crate) fn completing(mut self, completion: MaterializationCompletion) -> Self {
+        self.materialization_completion = Some(completion);
+        self
     }
 
     pub(crate) fn with_short_acquisition(mut self) -> Self {
@@ -476,6 +498,23 @@ impl NativeScmRepository {
             "INSERT INTO applied_transactions(transaction_id,request_digest,receipt_json,applied_at_ms) VALUES(?1,?2,?3,CAST(unixepoch('subsec')*1000 AS INTEGER))",
             params![batch.transaction_id().as_str(), batch.request_digest().to_string(), receipt_json],
         ).map_err(sql_backend)?;
+        if let (Some(completion), Some((id, owner))) = (
+            self.materialization_completion.as_ref(),
+            self.materialization_permit.as_ref(),
+        ) {
+            let id = super::recovery::RecoveryId::parse(id.clone())
+                .map_err(|error| native_backend(error.to_string()))?;
+            super::recovery::complete_in_transaction(
+                &guard,
+                &id,
+                owner,
+                &completion.leases,
+                completion.evidence.clone(),
+                &completion.path_results,
+                completion.now_ms,
+            )
+            .map_err(|error| native_backend(error.to_string()))?;
+        }
         self.hit(RepositoryFaultPoint::AfterReceiptBeforeCommit)?;
         Ok(ApplyBatchOutcome::Applied {
             request_digest: batch.request_digest(),

@@ -113,7 +113,10 @@ fn checkout_and_both_recovery_directions_renew_over_multiple_lease_periods() {
         let result = w.restore_step_with_faults(&target, None, &clock);
         if let Some(point) = stop {
             assert!(result.is_err());
-            assert!(w.needs_repair().unwrap());
+            // The metadata and the completed journal commit together (council
+            // s2 r1, B2): stopping after that commit leaves nothing to recover.
+            let committed = point == MaterializationPoint::AfterMetadata;
+            assert_eq!(w.needs_repair().unwrap(), !committed);
             assert_eq!(
                 scm_v1::materialize::recover_checkout_with_faults(
                     w.store_root(),
@@ -121,7 +124,7 @@ fn checkout_and_both_recovery_directions_renew_over_multiple_lease_periods() {
                     &clock
                 )
                 .unwrap(),
-                1
+                usize::from(!committed)
             );
             f.assert_files(point == MaterializationPoint::AfterMetadata);
             if point == MaterializationPoint::BeforeMetadata {

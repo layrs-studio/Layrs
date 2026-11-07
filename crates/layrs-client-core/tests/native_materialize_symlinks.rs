@@ -171,7 +171,12 @@ fn link_changes_recover_at_each_apply_boundary_without_touching_external_targets
                 "{from}->{to} {point:?}"
             );
             let reopened = NativeWorkspace::open(&f.root).unwrap();
-            assert_eq!(reopened.recover().unwrap(), 1);
+            // The metadata and the completed journal commit together (council
+            // s2 r1, B2): stopping after that commit leaves nothing to recover.
+            assert_eq!(
+                reopened.recover().unwrap(),
+                usize::from(point != MaterializationPoint::AfterMetadata)
+            );
             f.assert_shape(if point == MaterializationPoint::AfterMetadata {
                 to
             } else {

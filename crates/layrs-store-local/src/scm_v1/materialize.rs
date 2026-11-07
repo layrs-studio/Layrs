@@ -494,10 +494,29 @@ pub fn apply_checkout_with_sources_bound_metadata(
     store_directory.verify_path_identity()?;
     metadata_directory.verify_path_identity()?;
     let store_dir = &store_directory;
-    let backups = store_dir
-        .ensure_child("metadata".as_ref())?
-        .ensure_child("repair-backups".as_ref())?;
-    let backup = backups.ensure_child(
+    // On one NTFS volume (checkout and Store), directory updates are ordered
+    // by the NTFS journal: none needs its own flush; one barrier before the
+    // metadata commit makes every earlier one durable (as the CAS batches,
+    // and git's batch mode, do). Elsewhere each directory is synced as before.
+    let ordered = checkout.same_volume(store_dir)
+        && super::change_index::volume_file_system(Path::new(&checkout_root)).as_deref()
+            == Some("NTFS");
+    let ensure = |parent: &PinnedDirectory, name: &std::ffi::OsStr| {
+        if ordered {
+            parent.ensure_child_unsynced(name)
+        } else {
+            parent.ensure_child(name)
+        }
+    };
+    let sync = |directory: &PinnedDirectory| {
+        if ordered { Ok(()) } else { directory.sync() }
+    };
+    let backups = ensure(
+        &ensure(store_dir, "metadata".as_ref())?,
+        "repair-backups".as_ref(),
+    )?;
+    let backup = ensure(
+        &backups,
         backup_root
             .file_name()
             .ok_or_else(|| error("missing backup name"))?,
@@ -518,7 +537,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         end_staging();
     }
     let (staged, evidence, written) = match staging.and_then(|staged| {
-        backup.sync()?;
+        sync(&backup)?;
         Ok(staged)
     }) {
         Ok(staged) => staged,
@@ -546,16 +565,16 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
         let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
+        // The staged evidence and the claim commit together.
         journal
-            .prepare(
+            .prepare_and_claim(
                 &recovery_id,
                 &RecoveryPreparation::new(serde_json::json!({"staged":true}), evidence)
                     .map_err(error)?,
+                &owner,
                 faults.lease_time_ms()?,
+                LEASE_MS,
             )
-            .map_err(error)?;
-        journal
-            .claim(&recovery_id, &owner, faults.lease_time_ms()?, LEASE_MS)
             .map_err(error)?
             .leases
     };
@@ -590,8 +609,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
             if original.rename_to(&backup, format!("old-{index}").as_ref())? {
                 return Err(error("backup already exists"));
             }
-            parent.sync()?;
-            backup.sync()?;
+            sync(&parent)?;
+            sync(&backup)?;
             let protected = backup.open_leaf(format!("old-{index}").as_ref())?;
             if !matches_fingerprint(Some(&protected), &fingerprint(Some(content)), &mut || {
                 lease.tick()
@@ -640,7 +659,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 // Bound open handles: make the installs so far durable early.
                 if installed_into.len() >= 64 {
                     for parent in installed_into.values() {
-                        parent.sync()?;
+                        sync(parent)?;
                     }
                     installed_into.clear();
                 }
@@ -661,10 +680,29 @@ pub fn apply_checkout_with_sources_bound_metadata(
     }
     for parent in installed_into.values() {
         lease.tick()?;
-        parent.sync()?;
+        sync(parent)?;
     }
     if installed_any {
-        backup.sync()?;
+        sync(&backup)?;
+    }
+    if ordered {
+        // The one barrier: flushing a new file on the volume persists the
+        // NTFS journal through every rename above, and the device cache.
+        let _span = crate::perf::span("materialize.ntfs_barrier");
+        let name = format!("barrier-{}", std::process::id());
+        let mut marker = backup.create_file(name.as_ref())?;
+        use std::io::Write as _;
+        let flushed = marker
+            .file_mut()
+            .write_all(b"layrs materialization barrier\n")
+            .and_then(|()| marker.file().sync_all());
+        let removed = marker.unlink();
+        flushed?;
+        if let Err(failure) = removed {
+            if failure.kind() != io::ErrorKind::NotFound {
+                return Err(failure);
+            }
+        }
     }
     drop(installed_into);
     drop(phases);
@@ -745,14 +783,6 @@ pub fn apply_checkout_with_sources_bound_metadata(
     // which is stronger than a heartbeat: renew only when one is due
     // (council r5, D3).
     lease.tick()?;
-    let outcome =
-        NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
-            .with_store_identity(store_identity)
-            .with_metadata_identity(metadata_identity)
-            .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
-            .map_err(io::Error::other)?;
-    faults.check(MaterializationPoint::AfterMetadata)?;
-    lease.tick()?;
     let results = paths
         .iter()
         .map(|p| {
@@ -765,21 +795,44 @@ pub fn apply_checkout_with_sources_bound_metadata(
         })
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(error)?;
-    let mut store = open_exclusive(store_root)
-        .map_err(error)?
-        .with_filesystem_identity(store_identity)?
-        .with_metadata_identity(metadata_identity)?;
-    NativeRecovery::new(&mut store)
-        .map_err(error)?
-        .complete(
-            &recovery_id,
-            &owner,
-            &lease.leases,
-            serde_json::json!({"oldOperation":active,"newOperation":target,"verified":true}),
-            &results,
-            faults.lease_time_ms()?,
-        )
-        .map_err(error)?;
+    let completion_evidence =
+        serde_json::json!({"oldOperation":active,"newOperation":target,"verified":true});
+    // The metadata and the completed journal commit in one transaction (council
+    // s2 r1, B2): a crash leaves either the old state with an Applying
+    // journal, or the new state with a completed one.
+    let outcome =
+        NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
+            .completing(super::repository::MaterializationCompletion {
+                leases: lease.leases.clone(),
+                evidence: completion_evidence.clone(),
+                path_results: results.clone(),
+                now_ms: faults.lease_time_ms()?,
+            })
+            .with_store_identity(store_identity)
+            .with_metadata_identity(metadata_identity)
+            .apply_batch_with_chunks(batch, sources.chunks, &mut sources.read_chunk)
+            .map_err(io::Error::other)?;
+    faults.check(MaterializationPoint::AfterMetadata)?;
+    if matches!(outcome, ApplyBatchOutcome::AlreadyApplied { .. }) {
+        // A batch applied earlier (a replayed request): its journal is
+        // completed as before, in its own transaction.
+        lease.tick()?;
+        let mut store = open_exclusive(store_root)
+            .map_err(error)?
+            .with_filesystem_identity(store_identity)?
+            .with_metadata_identity(metadata_identity)?;
+        NativeRecovery::new(&mut store)
+            .map_err(error)?
+            .complete(
+                &recovery_id,
+                &owner,
+                &lease.leases,
+                completion_evidence,
+                &results,
+                faults.lease_time_ms()?,
+            )
+            .map_err(error)?;
+    }
     drop(metadata);
     {
         let _close = crate::perf::span("materialize.close_staged");
