@@ -45,9 +45,12 @@ impl NativeWorkspace {
     }
 
     /// Everything `layrs status` reports, reading the Store in one session
-    /// before the folder scan and once more to confirm the base did not move:
-    /// whether a repair is pending, else whether the folder changed, and the
-    /// Workspace state.
+    /// before the folder scan: whether a repair is pending, else whether the
+    /// folder changed, and the Workspace state. An observation as of that
+    /// session (council s7, Q3): the base is not read again after the scan,
+    /// as git status does not; a status racing a merge may report what the
+    /// merge was writing. Nothing may act on it: every write checks its own
+    /// base, and `is_dirty` still rechecks.
     pub fn status_report(&self, trust_index: bool) -> Result<StatusReport> {
         let store = self.open_store()?;
         let state = self.state_with(&store)?;
@@ -56,8 +59,7 @@ impl NativeWorkspace {
 
     /// `status_report` continuing a shared session in which `state` was
     /// read (`open_session`). The session is released before the folder is
-    /// read (hashing a changed file can take long, and writers would wait);
-    /// the base is checked again afterwards in a new one.
+    /// read (hashing a changed file can take long, and writers would wait).
     pub fn status_report_in(
         &self,
         store: layrs_store_local::scm_v1::NativeStoreOpen,
@@ -80,8 +82,15 @@ impl NativeWorkspace {
         let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
         drop(store);
         drop(span);
-        let changes =
-            self.working_changes_from(trust_index, false, base, &state, before, indexed)?;
+        let changes = self.working_changes_from(
+            trust_index,
+            false,
+            base,
+            &state,
+            before,
+            indexed,
+            Recheck::No,
+        )?;
         Ok(StatusReport {
             needs_repair: false,
             dirty: Some(changes.is_none_or(|changes| !changes.is_empty())),
@@ -108,7 +117,15 @@ impl NativeWorkspace {
             (base, state, before, indexed)
         };
         drop(span);
-        self.working_changes_from(trust_index, details, base, &state, before, indexed)
+        self.working_changes_from(
+            trust_index,
+            details,
+            base,
+            &state,
+            before,
+            indexed,
+            Recheck::Base,
+        )
     }
 
     /// The Worktree's change index with its bound projection supplied
@@ -142,6 +159,7 @@ impl NativeWorkspace {
         Ok(Some((index, root, bound)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn working_changes_from(
         &self,
         trust_index: bool,
@@ -150,6 +168,7 @@ impl NativeWorkspace {
         state: &super::WorkspaceState,
         before: Vec<CheckoutProjectionEntry>,
         indexed: Option<IndexedBase>,
+        recheck: Recheck,
     ) -> Result<Option<Vec<NativeFileChange>>> {
         let checkout = CheckoutReader::open(
             state.worktree.checkout_root(),
@@ -209,7 +228,7 @@ impl NativeWorkspace {
             }
         };
         let span = layrs_store_local::perf::span("status.recheck_compare");
-        if self.client().capture_base(self.worktree_id())? != base {
+        if recheck == Recheck::Base && self.client().capture_base(self.worktree_id())? != base {
             return Err(NativeClientError::StaleCapture);
         }
         if before == after {
@@ -502,4 +521,13 @@ fn refresh_racy_entries(
     if changed && refreshed.save(store_root).is_err() {
         layrs_store_local::perf::count("status.index_refresh_unsaved", 1);
     }
+}
+
+/// Whether a folder comparison reads its base again after the scan.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Recheck {
+    /// Required wherever an answer may lead to a write (`is_dirty`, diffs).
+    Base,
+    /// The informational `status` (council s7, Q3).
+    No,
 }
