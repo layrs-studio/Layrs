@@ -52,6 +52,61 @@ impl NativeWorkspace {
         })
     }
 
+    /// Supplies a change index's bound projection (council s3, D1): the
+    /// caller's `base` projection when it is the bound one, else the bound
+    /// Tree's from the projection cache, else rebuilt from the Store's Trees
+    /// (a cache file that does not match is deleted first). Never re-hashes
+    /// a file; entries it cannot resolve stay untrusted, so their files are
+    /// read. Returns whether the index is bound to `base`.
+    pub(super) fn resolve_change_index(
+        &self,
+        store: Option<&layrs_store_local::scm_v1::NativeStoreOpen>,
+        index: &mut layrs_store_local::scm_v1::change_index::ChangeIndex,
+        base: &[CheckoutProjectionEntry],
+    ) -> bool {
+        use layrs_store_local::scm_v1::{change_index, projection_cache};
+        let digest = change_index::projection_digest(base);
+        if index.resolve_digested(base, &digest) {
+            return true;
+        }
+        if !index.has_unresolved() {
+            return false;
+        }
+        let Some(tree) = index.bound_tree().cloned() else {
+            return false;
+        };
+        if let Some(cached) = projection_cache::load(self.store_root(), &tree) {
+            if index.resolve(&cached) {
+                return false;
+            }
+            projection_cache::remove(self.store_root(), &tree);
+        }
+        let _span = layrs_store_local::perf::span("change_index.rebuild_projection");
+        let opened;
+        let store = match store {
+            Some(store) => store,
+            None => match self.open_store() {
+                Ok(store) => {
+                    opened = store;
+                    &opened
+                }
+                Err(_) => return false,
+            },
+        };
+        let Ok(reader) = NativeScmReader::new(store) else {
+            return false;
+        };
+        let Ok(projection) = project_tree(&reader, &tree) else {
+            return false;
+        };
+        if index.resolve(&projection) {
+            if let Ok(projection_tree) = projection_tree_id(&projection) {
+                projection_cache::save(self.store_root(), &tree, &projection_tree, &projection);
+            }
+        }
+        false
+    }
+
     /// `read_step_projection` on an already open Store, in `space`.
     pub(super) fn read_step_projection_with(
         &self,

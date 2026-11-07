@@ -14,6 +14,25 @@ fn workspace() -> (std::path::PathBuf, NativeWorkspace) {
     (root, workspace)
 }
 
+/// The index with its entries resolved by the base projection (an index is
+/// written against it, council s3 D1).
+fn resolved_index(workspace: &NativeWorkspace) -> ChangeIndex {
+    let mut index = ChangeIndex::load(workspace.store_root(), workspace.worktree_id()).unwrap();
+    let state = workspace.state().unwrap();
+    let step = state
+        .view
+        .worktrees()
+        .iter()
+        .find(|w| w.worktree_id() == state.worktree.id())
+        .and_then(|w| w.base_step_id())
+        .cloned()
+        .unwrap();
+    let projection = workspace.read_step_projection(&step).unwrap();
+    assert!(index.resolve(&projection), "index bound to the base projection");
+    assert!(!index.has_unresolved());
+    index
+}
+
 #[test]
 fn status_refreshes_only_racy_entries_of_unchanged_files() {
     let (root, workspace) = workspace();
@@ -24,13 +43,13 @@ fn status_refreshes_only_racy_entries_of_unchanged_files() {
         workspace.capture().unwrap(),
         layrs_client_core::native_scm::CapturePlan::Change(_)
     ));
-    let index = ChangeIndex::load(workspace.store_root(), workspace.worktree_id()).unwrap();
+    let index = resolved_index(&workspace);
     let before = index.entry("b.txt").unwrap().clone();
     // Wait past the margin, so a refreshed proof makes the entry trusted.
     std::thread::sleep(std::time::Duration::from_millis(2_100));
     let report = workspace.status_report(true).unwrap();
     assert_eq!(report.dirty, Some(false));
-    let after = ChangeIndex::load(workspace.store_root(), workspace.worktree_id()).unwrap();
+    let after = resolved_index(&workspace);
     let refreshed = after.entry("b.txt").unwrap();
     assert_eq!(refreshed.file_id, before.file_id);
     assert_eq!(refreshed.stat, before.stat);
@@ -43,7 +62,7 @@ fn status_refreshes_only_racy_entries_of_unchanged_files() {
     fs::write(root.join("d/a.txt"), b"alpha edited\n").unwrap();
     let old_a = after.entry("d/a.txt").cloned();
     assert_eq!(workspace.status_report(true).unwrap().dirty, Some(true));
-    let last = ChangeIndex::load(workspace.store_root(), workspace.worktree_id()).unwrap();
+    let last = resolved_index(&workspace);
     assert_eq!(last.entry("d/a.txt").cloned(), old_a);
     let _ = fs::remove_dir_all(&root);
 }

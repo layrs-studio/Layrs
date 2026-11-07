@@ -125,8 +125,8 @@ impl NativeWorkspace {
                 self.worktree_id(),
             ) {
                 // Precedes writing the merge result: two equal passes.
-                Some(index) => {
-                    self.capture_projection_indexed(source, limits, &index, false)?
+                Some(mut index) => {
+                    self.capture_projection_indexed(source, limits, &mut index, false)?
                         .0
                 }
                 None => self.capture_projection_streaming(source, limits)?.1,

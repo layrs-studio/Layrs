@@ -9,7 +9,15 @@
 //! by at least the volume's timestamp margin (otherwise the entry is "racy",
 //! as in git, and the file is read again). A missing index disables the
 //! mechanism; an unreadable one is treated as empty (everything is read).
-use layrs_core::scm::{FileId, WorktreeId};
+//!
+//! An index may be bound to the checkout projection of one root Tree
+//! (council s3, D1): an entry whose FileId, length and executable bit equal
+//! that projection's entry is written without them, and the file records the
+//! Tree and a digest of the exact projection compared against. Such an entry
+//! is trusted only once that very projection is supplied again (`resolve`);
+//! until then its file is read, as for an entry that does not exist.
+use super::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
+use layrs_core::scm::{FileId, TreeId, WorktreeId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -134,7 +142,118 @@ struct Document {
 pub struct ChangeIndex {
     worktree_id: WorktreeId,
     margin_nanos: i64,
-    entries: BTreeMap<String, IndexEntry>,
+    entries: BTreeMap<String, Slot>,
+    binding: Option<Binding>,
+}
+
+/// The projection an index is bound to: its `projection_digest`, which
+/// alone decides whether a supplied projection is that one, and a Tree
+/// whose checkout projection it is (where to find it again).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Binding {
+    tree: TreeId,
+    digest: [u8; 32],
+}
+
+/// One recorded path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Slot {
+    /// A proven entry; `bound` when its FileId, length and executable bit
+    /// equal the bound projection's entry for the path (written without
+    /// them).
+    Known { entry: IndexEntry, bound: bool },
+    /// Read without its FileId, length and executable bit, before the bound
+    /// projection was supplied: never trusted.
+    Unresolved(Omitted),
+}
+
+/// What an entry written against the bound projection keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Omitted {
+    /// `None` when the listed length is the projection's length.
+    stat_length: Option<u64>,
+    /// The listing key; its `length` is set from the projection on resolve.
+    stat: StatKey,
+    verified_at: i64,
+    native: Option<u64>,
+}
+
+impl Slot {
+    fn known(&self) -> Option<&IndexEntry> {
+        match self {
+            Slot::Known { entry, .. } => Some(entry),
+            Slot::Unresolved(_) => None,
+        }
+    }
+}
+
+/// Digest of a checkout projection, entries in path order (council s3, D1):
+/// what binds an index to exactly the projection it was compared against.
+pub fn projection_digest(projection: &[CheckoutProjectionEntry]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"layrs.change-index.projection.v1\0");
+    let mut buffer = Vec::with_capacity(256);
+    for entry in projection {
+        put_varint(&mut buffer, entry.path.len() as u64);
+        buffer.extend_from_slice(entry.path.as_bytes());
+        match &entry.content {
+            CheckoutProjectionContent::File {
+                file_id,
+                byte_length,
+                executable,
+            } => {
+                buffer.push(0);
+                buffer.extend_from_slice(&file_id.digest_bytes());
+                put_varint(&mut buffer, *byte_length);
+                buffer.push(u8::from(*executable));
+            }
+            CheckoutProjectionContent::Symlink { target } => {
+                buffer.push(1);
+                put_varint(&mut buffer, target.len() as u64);
+                buffer.extend_from_slice(target.as_bytes());
+            }
+        }
+        if buffer.len() >= 64 * 1024 {
+            hasher.update(&buffer);
+            buffer.clear();
+        }
+    }
+    hasher.update(&buffer);
+    *hasher.finalize().as_bytes()
+}
+
+/// Looks up a projection's files by path, for paths asked in increasing
+/// order (a merge walk over two sorted sequences).
+struct ProjectionCursor<'a> {
+    projection: &'a [CheckoutProjectionEntry],
+    at: usize,
+}
+
+impl<'a> ProjectionCursor<'a> {
+    fn new(projection: &'a [CheckoutProjectionEntry]) -> Self {
+        Self { projection, at: 0 }
+    }
+
+    /// The file content at `path`: FileId, length, executable bit.
+    fn file(&mut self, path: &str) -> Option<(&'a FileId, u64, bool)> {
+        while let Some(entry) = self.projection.get(self.at) {
+            match entry.path.as_str().cmp(path) {
+                std::cmp::Ordering::Less => self.at += 1,
+                std::cmp::Ordering::Greater => return None,
+                std::cmp::Ordering::Equal => {
+                    return match &entry.content {
+                        CheckoutProjectionContent::File {
+                            file_id,
+                            byte_length,
+                            executable,
+                        } => Some((file_id, *byte_length, *executable)),
+                        CheckoutProjectionContent::Symlink { .. } => None,
+                    };
+                }
+            }
+        }
+        None
+    }
 }
 
 impl ChangeIndex {
@@ -170,6 +289,7 @@ impl ChangeIndex {
             worktree_id: worktree_id.clone(),
             margin_nanos: margin_nanos(checkout_root),
             entries: BTreeMap::new(),
+            binding: None,
         }
         .save(store_root)
     }
@@ -188,20 +308,29 @@ impl ChangeIndex {
             worktree_id: worktree_id.clone(),
             margin_nanos: COARSE_MARGIN_NANOS,
             entries: BTreeMap::new(),
+            binding: None,
         };
         if !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES {
             return Some(empty());
         }
-        let parsed = fs::read(&path)
-            .ok()
+        let read = crate::perf::span("change_index.read");
+        let bytes = fs::read(&path).ok();
+        drop(read);
+        let _decode = crate::perf::span("change_index.decode");
+        let parsed = bytes
             .and_then(|bytes| {
-                if bytes.starts_with(COMPACT_MAGIC) {
-                    decode_compact(&bytes)
-                } else if bytes.starts_with(BINARY_MAGIC) {
-                    decode_binary(&bytes)
+                if bytes.starts_with(BOUND_MAGIC) {
+                    decode_bound(&bytes)
                 } else {
-                    // An index written before the binary format (a cache).
-                    serde_json::from_slice::<Document>(&bytes).ok()
+                    let document = if bytes.starts_with(COMPACT_MAGIC) {
+                        decode_compact(&bytes)
+                    } else if bytes.starts_with(BINARY_MAGIC) {
+                        decode_binary(&bytes)
+                    } else {
+                        // An index written before the binary format (a cache).
+                        serde_json::from_slice::<Document>(&bytes).ok()
+                    }?;
+                    Some(Decoded::from(document))
                 }
             })
             .filter(|document| {
@@ -214,6 +343,7 @@ impl ChangeIndex {
                 worktree_id: document.worktree_id,
                 margin_nanos: document.margin_nanos,
                 entries: document.entries,
+                binding: document.binding,
             },
             None => empty(),
         })
@@ -225,13 +355,7 @@ impl ChangeIndex {
         let path = Self::file(store_root, &self.worktree_id);
         let directory = path.parent().expect("index file has a parent");
         fs::create_dir_all(directory)?;
-        let document = Document {
-            schema: SCHEMA.into(),
-            worktree_id: self.worktree_id.clone(),
-            margin_nanos: self.margin_nanos,
-            entries: self.entries.clone(),
-        };
-        let bytes = encode_compact(&document);
+        let bytes = encode_bound(self);
         let staged = directory.join(format!(
             ".{}.{}.tmp",
             path.file_name().unwrap().to_string_lossy(),
@@ -255,7 +379,7 @@ impl ChangeIndex {
 
     /// The proven entry for `path` if `stat` still identifies it.
     pub fn trusted(&self, path: &str, stat: &StatKey) -> Option<&IndexEntry> {
-        let entry = self.entries.get(path)?;
+        let entry = self.entries.get(path)?.known()?;
         (entry.stat == *stat
             && entry.length == stat.length
             && stat
@@ -265,26 +389,156 @@ impl ChangeIndex {
         .then_some(entry)
     }
 
+    /// The proven entry for `path`; `None` also for an entry whose bound
+    /// projection was not supplied (`resolve`).
     pub fn entry(&self, path: &str) -> Option<&IndexEntry> {
-        self.entries.get(path)
+        self.entries.get(path)?.known()
     }
-    /// Same recorded entries (and so nothing to write).
+    /// Same recorded entries and binding (and so nothing to write).
     pub fn same_entries(&self, other: &Self) -> bool {
         self.worktree_id == other.worktree_id
             && self.margin_nanos == other.margin_nanos
+            && self.binding == other.binding
             && self.entries == other.entries
     }
+    /// Every recorded path, resolved or not.
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
     pub fn insert(&mut self, path: String, entry: IndexEntry) {
-        self.entries.insert(path, entry);
+        self.entries.insert(
+            path,
+            Slot::Known {
+                entry,
+                bound: false,
+            },
+        );
     }
     pub fn remove_path(&mut self, path: &str) {
         self.entries.remove(path);
     }
+    /// Keeps the proven entries `keep` accepts, and every unresolved one.
     pub fn retain(&mut self, mut keep: impl FnMut(&str, &IndexEntry) -> bool) {
-        self.entries.retain(|path, entry| keep(path, entry));
+        self.entries.retain(|path, slot| match slot {
+            Slot::Known { entry, .. } => keep(path, entry),
+            Slot::Unresolved(_) => true,
+        });
+    }
+
+    /// The root Tree this index is bound to, if any.
+    pub fn bound_tree(&self) -> Option<&TreeId> {
+        self.binding.as_ref().map(|binding| &binding.tree)
+    }
+
+    /// Whether some entries wait for the bound projection (`resolve`).
+    pub fn has_unresolved(&self) -> bool {
+        self.entries
+            .values()
+            .any(|slot| matches!(slot, Slot::Unresolved(_)))
+    }
+
+    /// Whether the index is bound to the projection of this digest.
+    pub fn is_bound_to(&self, digest: &[u8; 32]) -> bool {
+        self.binding
+            .as_ref()
+            .is_some_and(|binding| &binding.digest == digest)
+    }
+
+    /// Binds the index to `projection`, the checkout projection of `tree`:
+    /// each proven entry equal to the projection's entry for its path is
+    /// then written without its FileId, length and executable bit. Entries
+    /// still waiting for another projection are dropped (their files are
+    /// read again).
+    pub fn bind(&mut self, tree: &TreeId, projection: &[CheckoutProjectionEntry]) {
+        let digest = projection_digest(projection);
+        self.bind_digested(tree, projection, &digest);
+    }
+
+    /// `bind` with `digest`, which must be `projection_digest(projection)`.
+    pub fn bind_digested(
+        &mut self,
+        tree: &TreeId,
+        projection: &[CheckoutProjectionEntry],
+        digest: &[u8; 32],
+    ) {
+        let _span = crate::perf::span("change_index.bind");
+        if !self.is_bound_to(digest) {
+            self.entries
+                .retain(|_, slot| !matches!(slot, Slot::Unresolved(_)));
+        }
+        let mut cursor = ProjectionCursor::new(projection);
+        for (path, slot) in &mut self.entries {
+            if let Slot::Known { entry, bound } = slot {
+                *bound = cursor.file(path)
+                    == Some((&entry.file_id, entry.length, entry.executable));
+            }
+        }
+        self.binding = Some(Binding {
+            tree: tree.clone(),
+            digest: *digest,
+        });
+    }
+
+    /// Supplies a checkout projection. If it is exactly the projection the
+    /// index is bound to (same digest), every unresolved entry takes its
+    /// FileId, length and executable bit from it, and this returns true.
+    /// Otherwise nothing changes: unresolved entries stay untrusted.
+    pub fn resolve(&mut self, projection: &[CheckoutProjectionEntry]) -> bool {
+        if self.binding.is_none() {
+            return false;
+        }
+        let digest = projection_digest(projection);
+        self.resolve_digested(projection, &digest)
+    }
+
+    /// `resolve` with `digest`, which must be `projection_digest(projection)`.
+    pub fn resolve_digested(
+        &mut self,
+        projection: &[CheckoutProjectionEntry],
+        digest: &[u8; 32],
+    ) -> bool {
+        if !self.is_bound_to(digest) {
+            if self.binding.is_some() {
+                crate::perf::count("change_index.other_projection", 1);
+            }
+            return false;
+        }
+        if !self.has_unresolved() {
+            return true;
+        }
+        let _span = crate::perf::span("change_index.resolve");
+        let mut cursor = ProjectionCursor::new(projection);
+        let mut lost = Vec::new();
+        for (path, slot) in &mut self.entries {
+            let Slot::Unresolved(omitted) = *slot else {
+                continue;
+            };
+            match cursor.file(path) {
+                Some((file_id, length, executable)) => {
+                    *slot = Slot::Known {
+                        entry: IndexEntry {
+                            file_id: file_id.clone(),
+                            length,
+                            executable,
+                            stat: StatKey {
+                                length: omitted.stat_length.unwrap_or(length),
+                                ..omitted.stat
+                            },
+                            verified_at: omitted.verified_at,
+                            native: omitted.native,
+                        },
+                        bound: true,
+                    };
+                }
+                // Written against this very projection, which has no file
+                // there: not a sound entry.
+                None => lost.push(path.clone()),
+            }
+        }
+        for path in lost {
+            self.entries.remove(&path);
+        }
+        true
     }
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -320,10 +574,12 @@ fn put_signed(out: &mut Vec<u8>, value: i64) {
     put_varint(out, ((value << 1) ^ (value >> 63)) as u64);
 }
 
+#[cfg(test)]
 fn file_digest(id: &FileId) -> Option<[u8; 32]> {
     Some(id.digest_bytes())
 }
 
+#[cfg(test)]
 fn encode_compact(document: &Document) -> Vec<u8> {
     let mut out = Vec::with_capacity(64 + document.entries.len() * 64);
     out.extend_from_slice(COMPACT_MAGIC);
@@ -386,6 +642,274 @@ fn encode_compact(document: &Document) -> Vec<u8> {
     let checksum = blake3::hash(&out);
     out.extend_from_slice(checksum.as_bytes());
     out
+}
+
+/// Bound encoding (council s3, D1): `LYRSIDX2`'s fields, the index's
+/// binding (root Tree and projection digest) in the header, and per entry a
+/// flag (0x80) for an entry written without its FileId, length and
+/// executable bit, which come from the bound projection. The flags byte
+/// precedes the FileId.
+const BOUND_MAGIC: &[u8; 8] = b"LYRSIDX3";
+const FLAG_BOUND: u8 = 0x80;
+
+/// A decoded index file.
+struct Decoded {
+    schema: String,
+    worktree_id: WorktreeId,
+    margin_nanos: i64,
+    binding: Option<Binding>,
+    entries: BTreeMap<String, Slot>,
+}
+
+impl From<Document> for Decoded {
+    fn from(document: Document) -> Self {
+        Self {
+            schema: document.schema,
+            worktree_id: document.worktree_id,
+            margin_nanos: document.margin_nanos,
+            binding: None,
+            entries: document
+                .entries
+                .into_iter()
+                .map(|(path, entry)| {
+                    (
+                        path,
+                        Slot::Known {
+                            entry,
+                            bound: false,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+fn encode_bound(index: &ChangeIndex) -> Vec<u8> {
+    let mut out = Vec::with_capacity(96 + index.entries.len() * 24);
+    out.extend_from_slice(BOUND_MAGIC);
+    for text in [SCHEMA, index.worktree_id.as_str()] {
+        put_varint(&mut out, text.len() as u64);
+        out.extend_from_slice(text.as_bytes());
+    }
+    out.extend_from_slice(&index.margin_nanos.to_le_bytes());
+    match &index.binding {
+        None => out.push(0),
+        Some(binding) => {
+            out.push(1);
+            put_varint(&mut out, binding.tree.as_str().len() as u64);
+            out.extend_from_slice(binding.tree.as_str().as_bytes());
+            out.extend_from_slice(&binding.digest);
+        }
+    }
+    let bound = index.binding.is_some();
+    // Unresolved entries exist only under a binding (they were read under
+    // one, and another binding drops them).
+    let count = index
+        .entries
+        .values()
+        .filter(|slot| bound || matches!(slot, Slot::Known { .. }))
+        .count();
+    put_varint(&mut out, count as u64);
+    let mut previous_path: &[u8] = &[];
+    let mut previous_modified = 0_i64;
+    for (path, slot) in &index.entries {
+        // (flags of the FileId part, explicit entry, listed length if it
+        // differs, listing key, proof time, native number)
+        let (head, explicit, stat_length, stat, verified_at, native) = match slot {
+            Slot::Known { entry, bound: omit } => {
+                let omit = *omit && bound;
+                let differs = entry.stat.length != entry.length;
+                (
+                    if omit {
+                        FLAG_BOUND
+                    } else {
+                        u8::from(entry.executable)
+                    },
+                    (!omit).then_some(entry),
+                    differs.then_some(entry.stat.length),
+                    entry.stat,
+                    entry.verified_at,
+                    entry.native,
+                )
+            }
+            Slot::Unresolved(omitted) if bound => (
+                FLAG_BOUND,
+                None,
+                omitted.stat_length,
+                omitted.stat,
+                omitted.verified_at,
+                omitted.native,
+            ),
+            Slot::Unresolved(_) => continue,
+        };
+        let path = path.as_bytes();
+        let shared = path
+            .iter()
+            .zip(previous_path)
+            .take_while(|(a, b)| a == b)
+            .count();
+        put_varint(&mut out, shared as u64);
+        put_varint(&mut out, (path.len() - shared) as u64);
+        out.extend_from_slice(&path[shared..]);
+        previous_path = path;
+        let flags = head
+            | (u8::from(stat.created.is_some()) << 1)
+            | (u8::from(stat.inode.is_some()) << 2)
+            | (u8::from(stat.changed.is_some()) << 3)
+            | (u8::from(stat.mode.is_some()) << 4)
+            | (u8::from(native.is_some()) << 5)
+            | (u8::from(stat_length.is_some()) << 6);
+        out.push(flags);
+        if let Some(entry) = explicit {
+            out.extend_from_slice(&entry.file_id.digest_bytes());
+            put_varint(&mut out, entry.length);
+        }
+        if let Some(length) = stat_length {
+            put_varint(&mut out, length);
+        }
+        put_signed(&mut out, stat.modified.wrapping_sub(previous_modified));
+        previous_modified = stat.modified;
+        if let Some(created) = stat.created {
+            put_signed(&mut out, created.wrapping_sub(stat.modified));
+        }
+        if let Some(inode) = stat.inode {
+            put_varint(&mut out, inode);
+        }
+        if let Some(changed) = stat.changed {
+            put_signed(&mut out, changed.wrapping_sub(stat.modified));
+        }
+        if let Some(mode) = stat.mode {
+            put_varint(&mut out, u64::from(mode));
+        }
+        put_signed(&mut out, verified_at.wrapping_sub(stat.modified));
+        if let Some(native) = native {
+            put_varint(&mut out, native);
+        }
+    }
+    let checksum = blake3::hash(&out);
+    out.extend_from_slice(checksum.as_bytes());
+    out
+}
+
+fn decode_bound(bytes: &[u8]) -> Option<Decoded> {
+    if bytes.len() < BOUND_MAGIC.len() + 32 {
+        return None;
+    }
+    let (body, trailer) = bytes.split_at(bytes.len() - 32);
+    if blake3::hash(body).as_bytes() != trailer {
+        return None;
+    }
+    let mut reader = CompactReader(&body[BOUND_MAGIC.len()..]);
+    let schema = reader.text()?.to_owned();
+    let worktree_id = WorktreeId::parse(reader.text()?).ok()?;
+    let margin_nanos = i64::from_le_bytes(reader.take(8)?.try_into().ok()?);
+    let binding = match reader.take(1)?[0] {
+        0 => None,
+        1 => Some(Binding {
+            tree: TreeId::parse(reader.text()?).ok()?,
+            digest: reader.take(32)?.try_into().ok()?,
+        }),
+        _ => return None,
+    };
+    let count = usize::try_from(reader.varint()?).ok()?;
+    let mut entries: Vec<(String, Slot)> = Vec::with_capacity(count.min(1 << 20));
+    let mut previous_path: Vec<u8> = Vec::new();
+    let mut previous_modified = 0_i64;
+    for index in 0..count {
+        let shared = usize::try_from(reader.varint()?).ok()?;
+        let suffix = usize::try_from(reader.varint()?).ok()?;
+        if shared > previous_path.len() {
+            return None;
+        }
+        let tail = reader.take(suffix)?;
+        // Strictly greater than the previous path.
+        if index > 0 && tail <= &previous_path[shared..] {
+            return None;
+        }
+        previous_path.truncate(shared);
+        previous_path.extend_from_slice(tail);
+        let path = std::str::from_utf8(&previous_path).ok()?.to_owned();
+        let flags = reader.take(1)?[0];
+        let omitted = flags & FLAG_BOUND != 0;
+        // A bound entry needs a binding, which also gives its executable bit.
+        if omitted && (binding.is_none() || flags & 0x01 != 0) {
+            return None;
+        }
+        let explicit = if omitted {
+            None
+        } else {
+            let digest: [u8; 32] = reader.take(32)?.try_into().ok()?;
+            Some((FileId::from_digest_bytes(&digest), reader.varint()?))
+        };
+        let stat_length = reader.when(flags & 0x40 != 0)?;
+        let modified = previous_modified.wrapping_add(reader.signed()?);
+        previous_modified = modified;
+        let created = if flags & 0x02 != 0 {
+            Some(modified.wrapping_add(reader.signed()?))
+        } else {
+            None
+        };
+        let inode = reader.when(flags & 0x04 != 0)?;
+        let changed = if flags & 0x08 != 0 {
+            Some(modified.wrapping_add(reader.signed()?))
+        } else {
+            None
+        };
+        let mode = match reader.when(flags & 0x10 != 0)? {
+            Some(mode) => Some(u32::try_from(mode).ok()?),
+            None => None,
+        };
+        let verified_at = modified.wrapping_add(reader.signed()?);
+        let native = reader.when(flags & 0x20 != 0)?;
+        let slot = match explicit {
+            Some((file_id, length)) => {
+                // One encoding per document: the flag means "differs".
+                if stat_length == Some(length) {
+                    return None;
+                }
+                Slot::Known {
+                    entry: IndexEntry {
+                        file_id,
+                        length,
+                        executable: flags & 0x01 != 0,
+                        stat: StatKey {
+                            length: stat_length.unwrap_or(length),
+                            modified,
+                            created,
+                            inode,
+                            changed,
+                            mode,
+                        },
+                        verified_at,
+                        native,
+                    },
+                    bound: false,
+                }
+            }
+            None => Slot::Unresolved(Omitted {
+                stat_length,
+                stat: StatKey {
+                    length: 0,
+                    modified,
+                    created,
+                    inode,
+                    changed,
+                    mode,
+                },
+                verified_at,
+                native,
+            }),
+        };
+        entries.push((path, slot));
+    }
+    reader.0.is_empty().then(|| Decoded {
+        schema,
+        worktree_id,
+        margin_nanos,
+        binding,
+        entries: entries.into_iter().collect(),
+    })
 }
 
 struct CompactReader<'a>(&'a [u8]);
@@ -519,6 +1043,7 @@ fn decode_compact(bytes: &[u8]) -> Option<Document> {
 /// Former binary encoding (`LYRSIDX1`): still read, no longer written.
 const BINARY_MAGIC: &[u8; 8] = b"LYRSIDX1";
 
+#[cfg(test)]
 fn encode_binary(document: &Document) -> Vec<u8> {
     fn string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u32).to_le_bytes());
@@ -826,6 +1351,27 @@ mod tests {
             mode: None,
         }
     }
+    /// The proven entries, as the former encodings hold them.
+    fn known(index: &ChangeIndex) -> BTreeMap<String, IndexEntry> {
+        index
+            .entries
+            .iter()
+            .filter_map(|(path, slot)| Some((path.clone(), slot.known()?.clone())))
+            .collect()
+    }
+    fn file(path: &str, content: &[u8], length: u64) -> CheckoutProjectionEntry {
+        CheckoutProjectionEntry {
+            path: path.into(),
+            content: CheckoutProjectionContent::File {
+                file_id: FileId::from_bytes(content),
+                byte_length: length,
+                executable: false,
+            },
+        }
+    }
+    fn tree(name: &[u8]) -> TreeId {
+        TreeId::from_digest_bytes(blake3::hash(name).as_bytes())
+    }
 
     #[test]
     fn binary_round_trips_every_field_reads_legacy_json_and_rejects_damage() {
@@ -853,34 +1399,43 @@ mod tests {
         index.insert("d/rich2".into(), mismatched);
         index.save(&store).unwrap();
         let path = ChangeIndex::file(&store, &id);
-        let compact = fs::read(&path).unwrap();
-        assert!(compact.starts_with(COMPACT_MAGIC));
+        let bound = fs::read(&path).unwrap();
+        assert!(bound.starts_with(BOUND_MAGIC));
         let reloaded = ChangeIndex::load(&store, &id).unwrap();
         assert!(reloaded.same_entries(&index));
         let document = Document {
             schema: SCHEMA.into(),
             worktree_id: id.clone(),
             margin_nanos: index.margin_nanos,
-            entries: index.entries.clone(),
+            entries: known(&index),
         };
-        // The former binary encoding is still read, and is larger.
+        // The former encodings are still read, and are larger.
+        let compact = encode_compact(&document);
         let former = encode_binary(&document);
+        assert!(bound.len() <= compact.len() + 1);
         assert!(compact.len() < former.len());
-        fs::write(&path, &former).unwrap();
-        assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
-        // Truncated or extended compact documents are refused.
-        let body = &compact[..compact.len() - 32];
-        for damaged in [&body[..body.len() - 1], &[body, &[0][..]].concat()[..]] {
-            let mut bytes = damaged.to_vec();
-            bytes.extend_from_slice(blake3::hash(damaged).as_bytes());
-            assert!(decode_compact(&bytes).is_none());
+        for bytes in [&compact, &former] {
+            fs::write(&path, bytes).unwrap();
+            assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
+        }
+        // Truncated or extended documents are refused.
+        for (encoded, decode) in [
+            (&compact, (|b: &[u8]| decode_compact(b).is_some()) as fn(&[u8]) -> bool),
+            (&bound, |b: &[u8]| decode_bound(b).is_some()),
+        ] {
+            let body = &encoded[..encoded.len() - 32];
+            for damaged in [&body[..body.len() - 1], &[body, &[0][..]].concat()[..]] {
+                let mut bytes = damaged.to_vec();
+                bytes.extend_from_slice(blake3::hash(damaged).as_bytes());
+                assert!(!decode(&bytes));
+            }
         }
         // A legacy JSON document is still read.
         let document = Document {
             schema: SCHEMA.into(),
             worktree_id: id.clone(),
             margin_nanos: index.margin_nanos,
-            entries: index.entries.clone(),
+            entries: known(&index),
         };
         fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
         assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
@@ -975,11 +1530,139 @@ mod tests {
             schema: SCHEMA.into(),
             worktree_id: foreign.worktree_id.clone(),
             margin_nanos: FINE_MARGIN_NANOS,
-            entries: foreign.entries.clone(),
+            entries: known(&foreign),
         })
         .unwrap();
         fs::write(&path, bytes).unwrap();
         assert!(ChangeIndex::load(&store, &id).unwrap().is_empty());
         let _ = fs::remove_dir_all(store);
+    }
+
+    #[test]
+    fn a_bound_index_omits_what_the_projection_holds_and_trusts_it_only_once_resolved() {
+        let store = temp();
+        let id = worktree();
+        ChangeIndex::enable(&store, &id, &store).unwrap();
+        let mut index = ChangeIndex::load(&store, &id).unwrap();
+        let margin = index.margin_nanos;
+        let projection = vec![
+            file("a.txt", b"a", 1),
+            file("b.txt", b"b", 1),
+            CheckoutProjectionEntry {
+                path: "link".into(),
+                content: CheckoutProjectionContent::Symlink {
+                    target: "a.txt".into(),
+                },
+            },
+        ];
+        let proven = |content: &[u8]| IndexEntry {
+            file_id: FileId::from_bytes(content),
+            length: 1,
+            executable: false,
+            stat: stat(0),
+            verified_at: margin + 1,
+            native: None,
+        };
+        // a.txt equals the projection, b.txt was edited, c.txt is new.
+        index.insert("a.txt".into(), proven(b"a"));
+        index.insert("b.txt".into(), proven(b"B"));
+        index.insert("c.txt".into(), proven(b"c"));
+        let base = tree(b"base");
+        // The same header, matching no entry.
+        let mut unmatched = index.clone();
+        unmatched.bind(&base, &[]);
+        index.bind(&base, &projection);
+        assert_eq!(index.bound_tree(), Some(&base));
+        index.save(&store).unwrap();
+        // One FileId (32 bytes) and its length fewer.
+        assert!(encode_bound(&index).len() + 32 <= encode_bound(&unmatched).len());
+
+        let mut loaded = ChangeIndex::load(&store, &id).unwrap();
+        assert!(loaded.has_unresolved());
+        // Not resolved: a.txt is read again; the explicit entries are trusted.
+        assert!(loaded.trusted("a.txt", &stat(0)).is_none());
+        assert_eq!(loaded.trusted("b.txt", &stat(0)), index.entry("b.txt"));
+        assert_eq!(loaded.trusted("c.txt", &stat(0)), index.entry("c.txt"));
+        assert_eq!(loaded.len(), 3);
+        // Another projection resolves nothing.
+        let mut changed = projection.clone();
+        changed[0] = file("a.txt", b"x", 1);
+        assert!(!loaded.resolve(&changed));
+        assert!(loaded.trusted("a.txt", &stat(0)).is_none());
+        assert!(!loaded.is_bound_to(&projection_digest(&changed)));
+        assert!(loaded.is_bound_to(&projection_digest(&projection)));
+        // The exact projection resolves it, back to the saved index.
+        assert!(loaded.resolve(&projection));
+        assert!(!loaded.has_unresolved());
+        assert_eq!(loaded.trusted("a.txt", &stat(0)), index.entry("a.txt"));
+        assert!(loaded.same_entries(&index));
+
+        // Saving unresolved entries under the same binding keeps them.
+        let unresolved = ChangeIndex::load(&store, &id).unwrap();
+        unresolved.save(&store).unwrap();
+        let mut again = ChangeIndex::load(&store, &id).unwrap();
+        assert!(again.resolve(&projection));
+        assert!(again.same_entries(&index));
+        // Binding to another projection drops them (read again, never wrong).
+        let mut rebound = ChangeIndex::load(&store, &id).unwrap();
+        rebound.bind(&tree(b"next"), &changed);
+        assert!(rebound.entry("a.txt").is_none());
+        assert!(!rebound.has_unresolved());
+        assert_eq!(rebound.len(), 2);
+        let _ = fs::remove_dir_all(store);
+    }
+
+    #[test]
+    fn a_bound_entry_keeps_a_listed_length_that_differs_and_a_native_number() {
+        let store = temp();
+        let id = worktree();
+        ChangeIndex::enable(&store, &id, &store).unwrap();
+        let mut index = ChangeIndex::load(&store, &id).unwrap();
+        let projection = vec![file("p", b"p", 5)];
+        let mut listed = stat(7);
+        listed.length = 9;
+        listed.inode = Some(3);
+        listed.mode = Some(1);
+        index.insert(
+            "p".into(),
+            IndexEntry {
+                file_id: FileId::from_bytes(b"p"),
+                length: 5,
+                executable: false,
+                stat: listed,
+                verified_at: 77,
+                native: Some(12),
+            },
+        );
+        let base = tree(b"base");
+        index.bind(&base, &projection);
+        index.save(&store).unwrap();
+        let mut loaded = ChangeIndex::load(&store, &id).unwrap();
+        assert!(loaded.entry("p").is_none());
+        assert!(loaded.resolve(&projection));
+        assert_eq!(loaded.entry("p"), index.entry("p"));
+        let _ = fs::remove_dir_all(store);
+    }
+
+    #[test]
+    fn a_projection_digest_covers_every_field_and_the_order() {
+        let a = vec![file("a", b"a", 1), file("b", b"b", 1)];
+        let digest = projection_digest(&a);
+        let mut executable = a.clone();
+        if let CheckoutProjectionContent::File { executable: bit, .. } = &mut executable[1].content
+        {
+            *bit = true;
+        }
+        let variants = [
+            vec![file("a", b"a", 1)],
+            vec![file("a", b"a", 1), file("b", b"b", 2)],
+            vec![file("a", b"a", 1), file("c", b"b", 1)],
+            vec![file("b", b"b", 1), file("a", b"a", 1)],
+            executable,
+        ];
+        for variant in variants {
+            assert_ne!(projection_digest(&variant), digest);
+        }
+        assert_eq!(projection_digest(&a.clone()), digest);
     }
 }

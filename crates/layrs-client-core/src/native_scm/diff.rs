@@ -10,6 +10,14 @@ use layrs_store_local::scm_v1::{
     NativeScmReader,
 };
 
+/// A resolved change index, the base Step's root Tree, and whether the
+/// index is bound to the base projection.
+type IndexedBase = (
+    layrs_store_local::scm_v1::change_index::ChangeIndex,
+    layrs_core::scm::TreeId,
+    bool,
+);
+
 /// What `NativeWorkspace::status_report` observed.
 pub struct StatusReport {
     pub needs_repair: bool,
@@ -67,11 +75,13 @@ impl NativeWorkspace {
         let base = self
             .client()
             .capture_base_with(&store, self.worktree_id())?;
-        let before =
-            self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
+        let step = base_step(&state)?;
+        let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
+        let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
         drop(store);
         drop(span);
-        let changes = self.working_changes_from(trust_index, false, base, &state, before)?;
+        let changes =
+            self.working_changes_from(trust_index, false, base, &state, before, indexed)?;
         Ok(StatusReport {
             needs_repair: false,
             dirty: Some(changes.is_none_or(|changes| !changes.is_empty())),
@@ -86,18 +96,50 @@ impl NativeWorkspace {
         details: bool,
     ) -> Result<Option<Vec<NativeFileChange>>> {
         let span = layrs_store_local::perf::span("dirty.base_state");
-        let (base, state, before) = {
+        let (base, state, before, indexed) = {
             let store = self.open_store()?;
             let base = self
                 .client()
                 .capture_base_with(&store, self.worktree_id())?;
             let state = self.state_with(&store)?;
-            let before =
-                self.read_step_projection_with(&store, state.space.id(), &base_step(&state)?)?;
-            (base, state, before)
+            let step = base_step(&state)?;
+            let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
+            let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
+            (base, state, before, indexed)
         };
         drop(span);
-        self.working_changes_from(trust_index, details, base, &state, before)
+        self.working_changes_from(trust_index, details, base, &state, before, indexed)
+    }
+
+    /// The Worktree's change index with its bound projection supplied
+    /// (council s3, D1), the base Step's root Tree, and whether the index is
+    /// bound to the base projection; `None` when the index is not trusted
+    /// (`--full`) or not enabled.
+    fn resolved_change_index(
+        &self,
+        store: &layrs_store_local::scm_v1::NativeStoreOpen,
+        trust_index: bool,
+        step: &StepId,
+        before: &[CheckoutProjectionEntry],
+    ) -> Result<Option<IndexedBase>> {
+        if !trust_index {
+            return Ok(None);
+        }
+        let span = layrs_store_local::perf::span("status.tracked_index");
+        let Some(mut index) = layrs_store_local::scm_v1::change_index::ChangeIndex::load(
+            self.store_root(),
+            self.worktree_id(),
+        ) else {
+            return Ok(None);
+        };
+        let root = NativeScmReader::new(store)?
+            .get_step(step)?
+            .ok_or(NativeClientError::Missing("base Step"))?
+            .root_tree_id()
+            .clone();
+        let bound = self.resolve_change_index(Some(store), &mut index, before);
+        drop(span);
+        Ok(Some((index, root, bound)))
     }
 
     fn working_changes_from(
@@ -107,6 +149,7 @@ impl NativeWorkspace {
         base: super::CaptureBase,
         state: &super::WorkspaceState,
         before: Vec<CheckoutProjectionEntry>,
+        indexed: Option<IndexedBase>,
     ) -> Result<Option<Vec<NativeFileChange>>> {
         let checkout = CheckoutReader::open(
             state.worktree.checkout_root(),
@@ -118,20 +161,16 @@ impl NativeWorkspace {
             max_file_bytes: usize::MAX,
             max_total_bytes: usize::MAX,
         };
-        let span = layrs_store_local::perf::span("status.tracked_index");
+        let span = layrs_store_local::perf::span("status.tracked");
         let tracked = before.iter().map(|e| e.path.clone()).collect();
+        drop(span);
         // A clean checkout (equal to its base) is accepted after one pass. A
         // Worktree with a change index (ADR 0025) reads only the files whose
         // listing changed; this read-only view never records new entries
         // (their content is not admitted to the Store).
-        let index = layrs_store_local::scm_v1::change_index::ChangeIndex::load(
-            self.store_root(),
-            self.worktree_id(),
-        )
-        .filter(|_| trust_index);
-        drop(span);
-        let after = match &index {
-            Some(index) => {
+        debug_assert!(trust_index || indexed.is_none());
+        let after = match &indexed {
+            Some((index, root, bound)) => {
                 let mut trust = |path: &str, listed: &std::fs::Metadata| {
                     let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
                     index.trusted(path, &stat).map(|entry| {
@@ -152,7 +191,13 @@ impl NativeWorkspace {
                     Some(&before),
                     &mut trust,
                 )?;
-                refresh_racy_entries(self.store_root(), index, &captured, verified_at);
+                refresh_racy_entries(
+                    self.store_root(),
+                    index,
+                    &captured,
+                    verified_at,
+                    (!*bound).then_some((root, before.as_slice())),
+                );
                 captured.entries
             }
             None => {
@@ -415,14 +460,20 @@ pub(super) fn diff_entries(
 /// time, so later commands trust it without reading it. Only existing
 /// entries for already admitted content are refreshed; nothing new is
 /// recorded. Best effort (a cache).
+///
+/// An index bound to another projection than the base's (after a
+/// materialization, or a crash before a capture saved it) is bound again to
+/// the base's, so the next command needs no other projection (council s3,
+/// D1).
 fn refresh_racy_entries(
     store_root: &std::path::Path,
     index: &layrs_store_local::scm_v1::change_index::ChangeIndex,
     captured: &layrs_store_local::scm_v1::checkout::TrustedCapture,
     verified_at: i64,
+    rebind: Option<(&layrs_core::scm::TreeId, &[CheckoutProjectionEntry])>,
 ) {
     use layrs_store_local::scm_v1::change_index::StatKey;
-    if captured.hashed.is_empty() {
+    if captured.hashed.is_empty() && rebind.is_none() {
         return;
     }
     let contents: std::collections::BTreeMap<&str, &CheckoutProjectionContent> = captured
@@ -447,6 +498,10 @@ fn refresh_racy_entries(
             refreshed.insert(path.clone(), entry);
             changed = true;
         }
+    }
+    if let Some((root, projection)) = rebind {
+        refreshed.bind(root, projection);
+        changed = true;
     }
     if changed && refreshed.save(store_root).is_err() {
         layrs_store_local::perf::count("status.index_refresh_unsaved", 1);

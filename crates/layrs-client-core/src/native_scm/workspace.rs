@@ -109,6 +109,7 @@ impl NativeWorkspace {
                 for (path, entry) in proven {
                     index.insert(path, entry);
                 }
+                index.bind(&root_tree, &entries);
                 let _ = index.save(&store_root);
             }
         }
@@ -342,7 +343,7 @@ impl NativeWorkspace {
     fn capture_using_passes(
         &self,
         reason: CaptureReason,
-        index: Option<scm_v1::change_index::ChangeIndex>,
+        mut index: Option<scm_v1::change_index::ChangeIndex>,
         single_pass: bool,
     ) -> Result<CapturePlan> {
         let _total = layrs_store_local::perf::span("capture.total");
@@ -350,7 +351,7 @@ impl NativeWorkspace {
             let attempt = (|| {
                 let (plan, next) = {
                     let _span = layrs_store_local::perf::span("capture.prepare");
-                    match &index {
+                    match index.as_mut() {
                         Some(index) => {
                             // Everything read before the scan comes from one
                             // shared session, released before the folder is

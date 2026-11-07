@@ -869,12 +869,16 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // A cache: failing to record it only makes the next capture read more.
         let _span = crate::perf::span("materialize.change_index");
         if let Some(mut index) = super::change_index::ChangeIndex::load(store_root, worktree_id) {
+            // Entries written against the prior projection (council s3, D1)
+            // are resolved by it, then the index is bound to the new one.
+            index.resolve(before);
             for path in &paths {
                 index.remove_path(path);
             }
             for (path, entry) in proven {
                 index.insert(path, entry);
             }
+            index.bind(&projection, after);
             if index.save(store_root).is_err() {
                 crate::perf::count("materialize.change_index_unsaved", 1);
             }

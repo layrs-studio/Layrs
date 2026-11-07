@@ -203,7 +203,7 @@ impl super::NativeWorkspace {
         &self,
         state: &super::WorkspaceState,
         limits: SnapshotLimits,
-        index: &scm_v1::change_index::ChangeIndex,
+        index: &mut scm_v1::change_index::ChangeIndex,
         single_pass: bool,
     ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
         let base = self.read_step_projection(&super::references::base_step(state)?)?;
@@ -218,11 +218,15 @@ impl super::NativeWorkspace {
         base: Vec<CheckoutProjectionEntry>,
         base_root: Option<&layrs_core::scm::TreeId>,
         limits: SnapshotLimits,
-        index: &scm_v1::change_index::ChangeIndex,
+        index: &mut scm_v1::change_index::ChangeIndex,
         single_pass: bool,
     ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
         use scm_v1::change_index::{IndexEntry, StatKey};
         let _span = layrs_store_local::perf::span("capture.indexed");
+        // Entries written against a projection trust nothing until it is
+        // supplied again (council s3, D1).
+        self.resolve_change_index(None, index, &base);
+        let index = &*index;
         // The base's admitted chunks only avoid spooling bytes the Store has.
         // With an index covering most of the base, few files are read: their
         // chunks are spooled and the batch keeps only what is new, so loading
@@ -369,6 +373,7 @@ impl super::NativeWorkspace {
                 }
             };
             if step_root == root {
+                next.bind(&step_root, &base);
                 return Ok((PreparedSnapshot::unchanged(root), next));
             }
         }
@@ -378,6 +383,9 @@ impl super::NativeWorkspace {
             chunks,
             limits,
         )?;
+        // Recorded against the projection of the Tree this capture builds,
+        // the next base (council s3, D1).
+        next.bind(snapshot.root_tree_id(), &captured.entries);
         // The projection of the Tree this capture builds: the next command
         // finds it without re-reading the Trees (derived data, by Tree id).
         scm_v1::projection_cache::save(
