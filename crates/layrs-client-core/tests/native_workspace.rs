@@ -370,6 +370,61 @@ fn recovery_distinguishes_precommit_and_committed_interruptions() {
     }
 }
 
+/// Files are staged before the journal (council s4, Q1). Stopping between
+/// staging and the journal leaves no journal and an untouched checkout; the
+/// next materialization of the Worktree sweeps the folder no journal names.
+#[test]
+fn a_stop_after_staging_leaves_no_journal_and_its_folder_is_swept() {
+    use scm_v1::materialize::{MaterializationFaults, MaterializationPoint};
+    struct Stop;
+    impl MaterializationFaults for Stop {
+        fn check(&self, point: MaterializationPoint) -> std::io::Result<()> {
+            if point == MaterializationPoint::AfterStaging {
+                Err(std::io::Error::other("crash"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let checkout = Checkout::new();
+    let workspace = checkout.init();
+    let marker = workspace.create_marker("initial", "").unwrap();
+    fs::write(checkout.0.join("hello"), b"saved work").unwrap();
+    workspace.capture().unwrap();
+    let attempts = |workspace: &NativeWorkspace| -> Vec<String> {
+        fs::read_dir(workspace.store_root().join("metadata/repair-backups"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|name| name.contains("-attempt-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(workspace
+        .restore_step_with_faults(marker.target_step_id(), None, &Stop)
+        .is_err());
+    // No journal, nothing to repair, the checkout as it was.
+    let reopened = NativeWorkspace::open(&checkout.0).unwrap();
+    assert!(!reopened.needs_repair().unwrap());
+    assert_eq!(reopened.recover().unwrap(), 0);
+    assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"saved work");
+    assert!(!reopened.is_dirty().unwrap());
+    let left = attempts(&reopened);
+    assert_eq!(
+        left.len(),
+        1,
+        "the stopped attempt's folder stays: {left:?}"
+    );
+    // The next materialization of this Worktree sweeps it.
+    reopened
+        .restore_step(marker.target_step_id(), None)
+        .unwrap();
+    assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"hello world");
+    assert!(!attempts(&reopened).contains(&left[0]));
+}
+
 #[test]
 fn recovery_preserves_edits_made_after_interruption() {
     use scm_v1::materialize::{MaterializationFaults, MaterializationPoint};

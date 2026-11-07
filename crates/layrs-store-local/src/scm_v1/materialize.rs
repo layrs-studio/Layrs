@@ -33,6 +33,11 @@ pub trait MaterializationFaults {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterializationPoint {
+    /// An existing checkout, before its files are staged (no journal yet).
+    BeforeStaging,
+    /// An existing checkout, its files staged, before its journal: a stop
+    /// here leaves an attempt folder no journal names (swept later).
+    AfterStaging,
     AfterJournal,
     AfterBackup,
     AfterDirectoryRemoval,
@@ -212,7 +217,31 @@ pub fn apply_checkout_with_sources_bound_metadata(
 ) -> io::Result<ApplyBatchOutcome> {
     let store_directory = pin_store(store_root, store_identity)?;
     let metadata_directory = pin_store(&store_root.join("metadata"), metadata_identity)?;
-    let _checkout_lock = lock_checkout(store_root, store_identity, metadata_identity, worktree_id)?;
+    // One shared session takes the checkout lock and reads the Worktree.
+    // One shared session takes the checkout lock, reads the Worktree and
+    // counts this batch's earlier attempts: a rolled-back attempt keeps its
+    // journal and backups, so a retry of the same immutable batch needs
+    // fresh physical paths. The checkout lock serializes attempts; the
+    // journal session counts again.
+    let (_checkout_lock, worktree, attempt, journaled_folders) = {
+        let store = open(store_root)
+            .map_err(error)?
+            .with_filesystem_identity(store_identity)?
+            .with_metadata_identity(metadata_identity)?;
+        let lock = lock_checkout_in(&store, worktree_id)?;
+        let worktree = super::NativeScmReader::new(&store)
+            .map_err(error)?
+            .get_worktree(worktree_id)
+            .map_err(error)?
+            .ok_or_else(|| error("missing Worktree"))?;
+        let connection = store.connection().map_err(error)?;
+        let attempt = attempts_of(&connection, worktree_id, batch)?
+            .checked_add(1)
+            .ok_or_else(|| error("materialization attempt overflow"))?;
+        let journaled_folders = journaled_attempt_folders(&connection, worktree_id)?;
+        drop(connection);
+        (lock, worktree, attempt, journaled_folders)
+    };
     super::checkout::projection_tree_id(before)?;
     let projection = super::checkout::projection_tree_id(after)?;
     super::repository::streaming_preflight(batch, sources.chunks).map_err(error)?;
@@ -241,12 +270,6 @@ pub fn apply_checkout_with_sources_bound_metadata(
     paths.sort();
     paths.dedup();
     paths.retain(|p| prior.get(p) != next.get(p));
-    let worktree = NativeScmRepository::new(store_root)
-        .with_store_identity(store_identity)
-        .with_metadata_identity(metadata_identity)
-        .get_worktree(worktree_id)
-        .map_err(error)?
-        .ok_or_else(|| error("missing Worktree"))?;
     let checkout = CheckoutReader::open(
         worktree.checkout_root(),
         Some(worktree.filesystem_identity()),
@@ -331,7 +354,99 @@ pub fn apply_checkout_with_sources_bound_metadata(
             ));
         }
     }
-    let (checkout_root, identity, active, target, recovery_id, owner, backup_root) = {
+    let recovery_id = RecoveryId::parse(format!(
+        "recovery:{}:attempt:{attempt}",
+        batch.request_digest()
+    ))
+    .map_err(error)?;
+    let owner = format!("materializer:{}:{attempt}", batch.transaction_id().as_str());
+    let attempt_name = format!(
+        "{}-{}-attempt-{attempt}",
+        attempt_prefix(worktree_id),
+        batch.request_digest().to_string().replace(':', "-")
+    );
+    let backup_root = super::NativeStoreLayout::new(store_root)
+        .map_err(error)?
+        .repair_backups_dir()
+        .join(&attempt_name);
+    let checkout = PinnedDirectory::open(Path::new(worktree.checkout_root()))?;
+    if checkout.identity_token() != worktree.filesystem_identity() {
+        return Err(error("checkout identity changed"));
+    }
+    store_directory.verify_path_identity()?;
+    metadata_directory.verify_path_identity()?;
+    let store_dir = &store_directory;
+    // On one NTFS volume (checkout and Store), directory updates are ordered
+    // by the NTFS journal: none needs its own flush; one barrier before the
+    // metadata commit makes every earlier one durable (as the CAS batches,
+    // and git's batch mode, do). Elsewhere each directory is synced as before.
+    #[cfg(windows)]
+    let ordered = checkout.same_volume(store_dir)
+        && super::change_index::local_ntfs(Path::new(worktree.checkout_root()));
+    #[cfg(not(windows))]
+    let ordered = false;
+    let ensure = |parent: &PinnedDirectory, name: &std::ffi::OsStr| {
+        if ordered {
+            parent.ensure_child_unsynced(name)
+        } else {
+            parent.ensure_child(name)
+        }
+    };
+    let sync = |directory: &PinnedDirectory| {
+        if ordered { Ok(()) } else { directory.sync() }
+    };
+    // An existing checkout's files are staged BEFORE its journal (council s4,
+    // Q1), so the journal is written directly applying with the evidence of
+    // every staged file, in the session that validates the batch. Checkout
+    // files are a projection of content that is already durable in the CAS
+    // (or, for a received graph, installed durably before the commit).
+    // Git-like contract (decided 2026-11-04): staged files are NOT flushed one
+    // by one. Each staged file's identity is journaled, so after a crash a
+    // file of ours whose bytes did not reach the disk is recognised: before
+    // the commit it is quarantined like any installed leaf, after the commit
+    // it is kept and shows as a working change. Originals moved in phase one
+    // keep their per-move syncs, except on one NTFS volume where the journal
+    // orders them and one barrier precedes the metadata commit (`ordered`).
+    // A staging failure (missing or corrupt source, disk full) touched no
+    // checkout path and wrote no journal: its attempt folder is removed.
+    let (mut prestaged, mut evidence) = if fresh {
+        (None, None)
+    } else {
+        faults.check(MaterializationPoint::BeforeStaging)?;
+        let backups = ensure(
+            &ensure(store_dir, "metadata".as_ref())?,
+            "repair-backups".as_ref(),
+        )?;
+        sweep_unjournaled_attempts(&backups, worktree_id, &journaled_folders);
+        // The attempt's own folder is always created durably (a synced
+        // creation), before the journal is applying: recovery of an applying
+        // journal needs it (council s2 r2).
+        let backup = empty_attempt_folder(&backups, attempt_name.as_ref())?;
+        let stage = crate::perf::span("materialize.stage");
+        let staging = stage_all(&backup, &paths, &prior, &next, sources);
+        if let Some(end_staging) = sources.end_staging.as_mut() {
+            end_staging();
+        }
+        match staging.and_then(|staged| {
+            sync(&backup)?;
+            Ok(staged)
+        }) {
+            Ok((staged, evidence, written)) => {
+                drop(stage);
+                (Some((backups, backup, staged, written)), Some(evidence))
+            }
+            Err(failure) => {
+                drop(backup);
+                discard_attempt(&backups, attempt_name.as_ref());
+                return Err(failure);
+            }
+        }
+    };
+    if !fresh {
+        faults.check(MaterializationPoint::AfterStaging)?;
+    }
+    let journal_committed = std::cell::Cell::new(false);
+    let journaled = (|| -> io::Result<_> {
         let _session = crate::perf::span("materialize.session_journal");
         let store = open_exclusive(store_root)
             .map_err(error)?
@@ -385,30 +500,14 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .map_err(error)?;
         let active = worktree.active_operation_id().clone();
         let target = change.new_operation_id().clone();
-        // A rolled-back attempt retains its journal and backups. Retrying the
-        // same immutable batch needs fresh physical paths, while batch-level
-        // idempotency remains unchanged. Both locks serialize this allocation.
-        let attempts: u64 = connection.lock().map_err(error)?.query_row(
-            "SELECT count(*) FROM recovery_operations WHERE worktree_id=?1 AND json_extract(payload_json,'$.batchDigest')=?2",
-            rusqlite::params![worktree_id.as_str(), batch.request_digest().to_string()], |r|r.get(0),
-        ).map_err(error)?;
-        let attempt = attempts
-            .checked_add(1)
-            .ok_or_else(|| error("materialization attempt overflow"))?;
-        let recovery_id = RecoveryId::parse(format!(
-            "recovery:{}:attempt:{attempt}",
-            batch.request_digest()
-        ))
-        .map_err(error)?;
-        let owner = format!("materializer:{}:{attempt}", batch.transaction_id().as_str());
-        let backup_root = store.layout().repair_backups_dir().join(format!(
-            "{}-attempt-{attempt}",
-            batch.request_digest().to_string().replace(':', "-")
-        ));
+        // The attempt counted under the checkout lock still holds.
+        if attempts_of(&*connection.lock().map_err(error)?, worktree_id, batch)? + 1 != attempt {
+            return Err(error("concurrent materialization attempt"));
+        }
         let payload = if fresh {
             serde_json::json!({ "schema":fresh::SCHEMA, "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
         } else {
-            serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
+            serde_json::json!({ "schema":"layrs.checkout-write.v1", "batchDigest":batch.request_digest().to_string(), "attempt":attempt, "oldOperation":active, "newOperation":target, "backupRoot":backup_root, "worktreePrefixed":true, "checkoutRoot":worktree.checkout_root(), "filesystemIdentity":worktree.filesystem_identity(), "leaseScope":"worktree" })
         };
         // A fresh checkout journals the top-level entries it creates: there is
         // no original to restore, and recovery quarantines the folder's content.
@@ -449,17 +548,42 @@ pub fn apply_checkout_with_sources_bound_metadata(
         {
             return Err(error("worktree_needs_repair: pending checkout journal"));
         }
-        journal.create(&plan).map_err(error)?;
+        let leases = match evidence.take() {
+            Some(evidence) => Some(
+                journal
+                    .create_and_claim(
+                        &plan,
+                        &RecoveryPreparation::new(serde_json::json!({"staged":true}), evidence)
+                            .map_err(error)?,
+                        &owner,
+                        faults.lease_time_ms()?,
+                        LEASE_MS,
+                    )
+                    .map_err(error)?
+                    .leases,
+            ),
+            None => {
+                journal.create(&plan).map_err(error)?;
+                None
+            }
+        };
+        journal_committed.set(true);
+        // Durable before any checkout path moves.
         journal.finish().map_err(error)?;
-        (
-            root,
-            identity,
-            active,
-            target,
-            recovery_id,
-            owner,
-            backup_root,
-        )
+        Ok((root, identity, active, target, leases))
+    })();
+    let (checkout_root, identity, active, target, leases) = match journaled {
+        Ok(journaled) => journaled,
+        Err(failure) => {
+            // Without a journal nothing refers to the staged files.
+            if let Some((backups, backup, staged, written)) =
+                prestaged.take().filter(|_| !journal_committed.get())
+            {
+                drop((backup, staged, written));
+                discard_attempt(&backups, attempt_name.as_ref());
+            }
+            return Err(failure);
+        }
     };
     faults.check(MaterializationPoint::AfterJournal)?;
     if fresh {
@@ -486,106 +610,11 @@ pub fn apply_checkout_with_sources_bound_metadata(
             sources,
         );
     }
-    let checkout = PinnedDirectory::open(Path::new(&checkout_root))?;
-    if checkout.identity_token() != identity {
-        return Err(error("checkout identity changed"));
-    }
-    store_directory.verify_path_identity()?;
-    metadata_directory.verify_path_identity()?;
-    let store_dir = &store_directory;
-    // On one NTFS volume (checkout and Store), directory updates are ordered
-    // by the NTFS journal: none needs its own flush; one barrier before the
-    // metadata commit makes every earlier one durable (as the CAS batches,
-    // and git's batch mode, do). Elsewhere each directory is synced as before.
-    #[cfg(windows)]
-    let ordered = checkout.same_volume(store_dir)
-        && super::change_index::local_ntfs(Path::new(&checkout_root));
-    #[cfg(not(windows))]
-    let ordered = false;
-    let ensure = |parent: &PinnedDirectory, name: &std::ffi::OsStr| {
-        if ordered {
-            parent.ensure_child_unsynced(name)
-        } else {
-            parent.ensure_child(name)
-        }
-    };
-    let sync = |directory: &PinnedDirectory| {
-        if ordered { Ok(()) } else { directory.sync() }
-    };
-    let backups = ensure(
-        &ensure(store_dir, "metadata".as_ref())?,
-        "repair-backups".as_ref(),
-    )?;
-    // The attempt's own folder is always created durably (a synced
-    // creation), before `prepare_and_claim` makes the journal Applying:
-    // recovery of an Applying journal needs it (council s2 r2).
-    let backup = backups.ensure_child(
-        backup_root
-            .file_name()
-            .ok_or_else(|| error("missing backup name"))?,
-    )?;
-    // Checkout files are a projection of content that is already durable in
-    // the CAS (or, for a received graph, installed durably before the commit).
-    // Git-like contract (decided 2026-11-04): staged files are NOT flushed one
-    // by one. Each staged file's identity is journaled, so after a crash a
-    // file of ours whose bytes did not reach the disk is recognised: before
-    // the commit it is quarantined like any installed leaf, after the commit
-    // it is kept and shows as a working change. Originals moved in phase one
-    // keep their per-move syncs, except on one NTFS volume where the journal
-    // orders them and one barrier precedes the metadata commit (`ordered`).
-    // A staging failure (missing or corrupt source,
-    // disk full) touched no checkout path: the journal is closed as untouched
-    // instead of leaving the Worktree needing repair.
-    let stage = crate::perf::span("materialize.stage");
-    let staging = stage_all(&backup, &paths, &prior, &next, sources);
-    if let Some(end_staging) = sources.end_staging.as_mut() {
-        end_staging();
-    }
-    let (staged, evidence, written) = match staging.and_then(|staged| {
-        sync(&backup)?;
-        Ok(staged)
-    }) {
-        Ok(staged) => staged,
-        Err(failure) => {
-            if let Err(abandon) = abandon_untouched(
-                store_root,
-                store_identity,
-                metadata_identity,
-                &recovery_id,
-                &owner,
-                &paths,
-                faults,
-            ) {
-                return Err(error(format!(
-                    "{failure}; the untouched checkout journal could not be closed: {abandon}"
-                )));
-            }
-            return Err(failure);
-        }
-    };
-    drop(stage);
-    let leases = {
-        let _session = crate::perf::span("materialize.session_claim");
-        let mut store = open_exclusive(store_root)
-            .map_err(error)?
-            .with_filesystem_identity(store_identity)?
-            .with_metadata_identity(metadata_identity)?;
-        let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
-        // The staged evidence and the claim commit together.
-        let claim = journal
-            .prepare_and_claim(
-                &recovery_id,
-                &RecoveryPreparation::new(serde_json::json!({"staged":true}), evidence)
-                    .map_err(error)?,
-                &owner,
-                faults.lease_time_ms()?,
-                LEASE_MS,
-            )
-            .map_err(error)?;
-        // Durable before any checkout path moves.
-        journal.finish().map_err(error)?;
-        claim.leases
-    };
+    let (backups, backup, staged, written) =
+        prestaged.ok_or_else(|| error("existing checkout was not staged"))?;
+    let leases = leases.ok_or_else(|| error("staged journal holds no lease"))?;
+    debug_assert_eq!(checkout_root, worktree.checkout_root());
+    debug_assert_eq!(identity, worktree.filesystem_identity());
     let mut lease = LeaseKeeper::new(
         store_root,
         &store_directory,
@@ -887,6 +916,130 @@ pub fn apply_checkout_with_sources_bound_metadata(
     Ok(outcome)
 }
 
+/// Journals of `batch` already recorded for `worktree` (its attempts).
+fn attempts_of(
+    connection: &rusqlite::Connection,
+    worktree: &WorktreeId,
+    batch: &WriteBatch,
+) -> io::Result<u64> {
+    connection
+        .query_row(
+            "SELECT count(*) FROM recovery_operations WHERE worktree_id=?1 \
+             AND json_extract(payload_json,'$.batchDigest')=?2",
+            rusqlite::params![worktree.as_str(), batch.request_digest().to_string()],
+            |row| row.get(0),
+        )
+        .map_err(error)
+}
+
+/// The name prefix of this Worktree's attempt folders: only a holder of
+/// its checkout lock creates or sweeps them.
+fn attempt_prefix(worktree: &WorktreeId) -> String {
+    let digest = blake3::hash(worktree.as_str().as_bytes()).to_hex();
+    format!("w{}", &digest.as_str()[..16])
+}
+
+/// The folder names of every journal of `worktree` (`backupRoot`).
+fn journaled_attempt_folders(
+    connection: &rusqlite::Connection,
+    worktree: &WorktreeId,
+) -> io::Result<std::collections::BTreeSet<std::ffi::OsString>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT json_extract(payload_json,'$.backupRoot') FROM recovery_operations \
+             WHERE worktree_id=?1",
+        )
+        .map_err(error)?;
+    let rows = statement
+        .query_map([worktree.as_str()], |row| row.get::<_, Option<String>>(0))
+        .map_err(error)?;
+    let mut names = std::collections::BTreeSet::new();
+    for row in rows {
+        if let Some(name) = row
+            .map_err(error)?
+            .and_then(|root| Path::new(&root).file_name().map(ToOwned::to_owned))
+        {
+            names.insert(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Best effort, under the checkout lock: removes this Worktree's attempt
+/// folders that no journal names (a process stopped between staging and
+/// writing its journal) and that hold only staged files. Any other folder,
+/// of another Worktree or with other content, is left alone.
+fn sweep_unjournaled_attempts(
+    backups: &PinnedDirectory,
+    worktree: &WorktreeId,
+    journaled: &std::collections::BTreeSet<std::ffi::OsString>,
+) {
+    let prefix = format!("{}-", attempt_prefix(worktree));
+    let Ok(entries) = fs::read_dir(backups.display_path()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let ours = name
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix) && name.contains("-attempt-"));
+        if ours && !journaled.contains(&name) {
+            crate::perf::count("materialize.swept_attempt", 1);
+            discard_attempt(backups, &name);
+        }
+    }
+}
+
+/// The attempt's folder, empty and created durably (a synced creation). A
+/// folder of the same attempt left by a process that stopped before writing
+/// its journal holds only staged files and barrier markers, which are
+/// removed first. Anything else refuses: an original is only ever moved
+/// into the folder of an attempt whose journal is applying.
+fn empty_attempt_folder(
+    backups: &PinnedDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<PinnedDirectory> {
+    match backups.open_child(name) {
+        Ok(existing) => {
+            clear_staged(&existing)?;
+            drop(existing);
+            backups.remove_empty_child(name)?;
+        }
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => {}
+        Err(failure) => return Err(failure),
+    }
+    backups.create_new_child(name)
+}
+
+/// Removes the staged files (`new-*`) and barrier markers of an attempt
+/// folder that no journal refers to; refuses anything else.
+fn clear_staged(folder: &PinnedDirectory) -> io::Result<()> {
+    for entry in fs::read_dir(folder.display_path())? {
+        let name = entry?.file_name();
+        let staged = name
+            .to_str()
+            .is_some_and(|name| name.starts_with("new-") || name.starts_with("barrier-"));
+        if !staged {
+            return Err(error(
+                "worktree_needs_repair: unexpected entry in an attempt folder without a journal",
+            ));
+        }
+        folder.unlink_file(&name)?;
+    }
+    Ok(())
+}
+
+/// Best effort: the attempt folder of a materialization that wrote no
+/// journal. Left in place on failure (the next attempt clears it).
+fn discard_attempt(backups: &PinnedDirectory, name: &std::ffi::OsStr) {
+    if let Ok(folder) = backups.open_child(name) {
+        if clear_staged(&folder).is_ok() {
+            drop(folder);
+            let _ = backups.remove_empty_child(name);
+        }
+    }
+}
+
 /// Identity and metadata of a moved original, observed right after it was
 /// proven equal to its tracked content.
 struct BackupSeal {
@@ -1076,73 +1229,6 @@ fn stage_all<'a>(
         );
     }
     Ok((staged, evidence, stamps))
-}
-
-/// Closes a journal whose staging failed before any checkout path was
-/// touched, exactly as recovery closes an untouched Pending journal.
-fn abandon_untouched(
-    store_root: &Path,
-    store_identity: &str,
-    metadata_identity: &str,
-    recovery_id: &RecoveryId,
-    owner: &str,
-    paths: &[&str],
-    faults: &dyn MaterializationFaults,
-) -> io::Result<()> {
-    let mut store = open_exclusive(store_root)
-        .map_err(error)?
-        .with_filesystem_identity(store_identity)?
-        .with_metadata_identity(metadata_identity)?;
-    let mut journal = NativeRecovery::new(&mut store).map_err(error)?;
-    let evidence = paths
-        .iter()
-        .map(|path| {
-            PathEvidence::new(
-                *path,
-                RecoveryPathRole::Materialized,
-                serde_json::json!({"untouched": true}),
-            )
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(error)?;
-    journal
-        .prepare(
-            recovery_id,
-            &RecoveryPreparation::new(
-                serde_json::json!({"untouched": true, "stagingFailed": true}),
-                evidence,
-            )
-            .map_err(error)?,
-            faults.lease_time_ms()?,
-        )
-        .map_err(error)?;
-    let leases = journal
-        .claim(recovery_id, owner, faults.lease_time_ms()?, LEASE_MS)
-        .map_err(error)?
-        .leases;
-    let results = paths
-        .iter()
-        .map(|path| {
-            RecoveryPathResult::new(
-                *path,
-                RecoveryPathRole::Materialized,
-                RecoveryPathState::RolledBack,
-                serde_json::json!({"verified": true, "originalsRetained": true, "untouched": true}),
-            )
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(error)?;
-    journal
-        .complete(
-            recovery_id,
-            owner,
-            &leases,
-            serde_json::json!({"committed": false, "abandoned": true}),
-            &results,
-            faults.lease_time_ms()?,
-        )
-        .map_err(error)?;
-    Ok(())
 }
 
 /// Pre-journal check of exactly the touched paths (see the precheck).
@@ -1400,6 +1486,14 @@ fn lock_checkout(
         .map_err(error)?
         .with_filesystem_identity(store_identity)?
         .with_metadata_identity(metadata_identity)?;
+    lock_checkout_in(&store, worktree)
+}
+
+/// `lock_checkout` in an open, bound session.
+fn lock_checkout_in(
+    store: &super::NativeStoreOpen,
+    worktree: &WorktreeId,
+) -> io::Result<PinnedFile> {
     let metadata = PinnedDirectory::open(store.layout().metadata_dir())?;
     let name = format!(
         "checkout-{}.lock",
@@ -1591,7 +1685,16 @@ pub fn recover_checkout_bound_metadata(
                         .as_u64()
                         .filter(|v| *v > 0)
                         .ok_or_else(|| error("invalid recovery attempt"))?;
-                    format!("{}-attempt-{attempt}", digest.replace(':', "-"))
+                    let name = format!("{}-attempt-{attempt}", digest.replace(':', "-"));
+                    // Staged before their journal, attempts are named after
+                    // their Worktree (swept under its checkout lock).
+                    if record.payload.get("worktreePrefixed")
+                        == Some(&serde_json::Value::Bool(true))
+                    {
+                        format!("{}-{name}", attempt_prefix(&record.worktree_id))
+                    } else {
+                        name
+                    }
                 }
                 None => digest.replace(':', "-"),
             };

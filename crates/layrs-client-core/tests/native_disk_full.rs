@@ -107,15 +107,17 @@ impl Drop for FullDisk {
         fs::remove_file(&self.path).unwrap();
     }
 }
-struct FillAfterJournal {
+/// Fills the disk at `at`, leaving 64 KiB: before staging, a 2 MiB target
+/// cannot be staged; after the journal, the metadata commit cannot be written.
+struct FillAt {
+    at: MaterializationPoint,
     root: PathBuf,
     hit: AtomicBool,
     pressure: Mutex<Option<FullDisk>>,
 }
-impl MaterializationFaults for FillAfterJournal {
+impl MaterializationFaults for FillAt {
     fn check(&self, point: MaterializationPoint) -> io::Result<()> {
-        if point == MaterializationPoint::AfterJournal && !self.hit.swap(true, Ordering::SeqCst) {
-            // Journal already durable; only 64 KiB remains for a 2 MiB target.
+        if point == self.at && !self.hit.swap(true, Ordering::SeqCst) {
             *self.pressure.lock().unwrap() = Some(FullDisk::fill(&self.root, 64 * 1024));
         }
         Ok(())
@@ -186,8 +188,9 @@ fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
         assert!(!workspace.is_dirty().unwrap());
         clean(&workspace);
     }
-    // Fill after a durable checkout journal: a real filesystem write fails,
-    // recovery rolls back, and the identical desired restore can be retried.
+    // Fill before staging: staging fails with no journal written and no
+    // checkout path touched (council s4, Q1: files are staged before the
+    // journal); the identical restore can be retried.
     {
         let fixture = Fixture::new();
         let workspace = fixture.workspace();
@@ -200,7 +203,8 @@ fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
             .restore_step(original.target_step_id(), None)
             .unwrap();
         let before = workspace.state().unwrap();
-        let hook = FillAfterJournal {
+        let hook = FillAt {
+            at: MaterializationPoint::BeforeStaging,
             root: fixture.0.clone(),
             hit: AtomicBool::new(false),
             pressure: Mutex::new(None),
@@ -215,6 +219,51 @@ fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
             fs::read(fixture.0.join("checkout/data.bin")).unwrap(),
             b"original bytes"
         );
+        drop(hook.pressure.lock().unwrap().take());
+        let store = scm_v1::open(workspace.store_root()).unwrap();
+        assert!(!scm_v1::materialize::recovery_pending(&store, workspace.worktree_id()).unwrap());
+        drop(store);
+        assert_eq!(workspace.recover().unwrap(), 0);
+        assert_eq!(
+            workspace.state().unwrap().operation.id(),
+            before.operation.id()
+        );
+        workspace
+            .restore_step(large.target_step_id(), None)
+            .unwrap();
+        assert_eq!(
+            fs::read(fixture.0.join("checkout/data.bin")).unwrap(),
+            target
+        );
+        assert!(!workspace.is_dirty().unwrap());
+        clean(&workspace);
+    }
+    // Fill after a durable checkout journal: a real filesystem write fails,
+    // recovery rolls back, and the identical desired restore can be retried.
+    {
+        let fixture = Fixture::new();
+        let workspace = fixture.workspace();
+        let original = workspace.create_marker("original", "").unwrap();
+        let target = vec![0x29; 2 * 1024 * 1024];
+        fs::write(fixture.0.join("checkout/data.bin"), &target).unwrap();
+        workspace.capture().unwrap();
+        let large = workspace.create_marker("large", "").unwrap();
+        workspace
+            .restore_step(original.target_step_id(), None)
+            .unwrap();
+        let before = workspace.state().unwrap();
+        let hook = FillAt {
+            at: MaterializationPoint::AfterJournal,
+            root: fixture.0.clone(),
+            hit: AtomicBool::new(false),
+            pressure: Mutex::new(None),
+        };
+        let failure = workspace.restore_step_with_faults(large.target_step_id(), None, &hook);
+        assert!(hook.hit.load(Ordering::SeqCst));
+        assert!(
+            failure.is_err(),
+            "checkout must not report success on a full filesystem"
+        );
         assert_eq!(
             fs::read(fixture.0.join("checkout/keep.txt")).unwrap(),
             b"preserved neighbour"
@@ -228,6 +277,10 @@ fn actual_disk_full_cas_capture_and_checkout_recover_without_lost_heads() {
             before.operation.id()
         );
         assert!(workspace.recover().unwrap() > 0);
+        assert_eq!(
+            fs::read(fixture.0.join("checkout/data.bin")).unwrap(),
+            b"original bytes"
+        );
         assert_eq!(
             workspace.state().unwrap().view.layer_heads(),
             before.view.layer_heads()

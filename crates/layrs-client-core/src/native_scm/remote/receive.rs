@@ -185,6 +185,7 @@ impl NativeRemote {
         let workspace = NativeWorkspace {
             client: NativeClient::open(root.join(".layrs"))?,
             worktree_id: worktree.id().clone(),
+            held: Default::default(),
         };
         save_binding(&workspace, &binding)?;
         workspace.client.accept(&initialize)?;

@@ -29,7 +29,7 @@ impl NativeWorkspace {
         if let Some(cached) = self.memoized_projection(space, step) {
             return Ok(cached);
         }
-        let store = self.open_store()?;
+        let store = self.session_store()?;
         self.read_step_projection_with(&store, space, step)
     }
 
@@ -167,7 +167,7 @@ impl NativeWorkspace {
         before: &[CheckoutProjectionEntry],
         after: &[CheckoutProjectionEntry],
     ) -> Result<()> {
-        let store = self.open_store()?;
+        let store = self.session_store()?;
         let reader = NativeScmReader::new(&store)?;
         verify_changed_content(&reader, before, after, &BTreeSet::new(), false)
     }

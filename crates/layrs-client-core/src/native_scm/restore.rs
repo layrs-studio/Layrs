@@ -219,8 +219,11 @@ impl NativeWorkspace {
         drop(span);
         // The state and the Step's admission, in one session.
         let span = layrs_store_local::perf::span("ff.state");
+        // From here to the batch, every read uses one held session (council
+        // s4, Q2), released before the materialization writes.
+        let session = HeldSessionGuard::hold(self)?;
         let (source, admitted) = {
-            let store = self.open_store()?;
+            let store = self.session_store()?;
             let source = self.state_with(&store)?;
             let reader = NativeScmReader::new(&store)?;
             let admitted = reader
@@ -290,6 +293,7 @@ impl NativeWorkspace {
             )?;
             return Ok(true);
         }
+        drop(session);
         let next = RepositoryView::new(
             source.space.id().clone(),
             heads,
@@ -529,7 +533,7 @@ impl NativeWorkspace {
             reference_view.release_ids().to_vec(),
             states,
         )?;
-        let store = self.open_store()?;
+        let store = self.session_store()?;
         let reader = NativeScmReader::new(&store)?;
         let current = reader
             .current_repository_view(source.space.id())?
@@ -593,6 +597,8 @@ impl NativeWorkspace {
         drop(reader);
         drop(store);
         drop(prepare_span);
+        // The materializer takes the Store exclusively.
+        self.release_session();
         let _span = layrs_store_local::perf::span("transition.materialize");
         self.materialize_projection(&before, &after, &batch, faults)
     }
@@ -648,6 +654,23 @@ impl NativeWorkspace {
             },
         )?;
         Ok(())
+    }
+}
+
+/// Holds a workspace's read session for a scope; releases it when dropped
+/// (an error included).
+pub(super) struct HeldSessionGuard<'w>(&'w NativeWorkspace);
+
+impl<'w> HeldSessionGuard<'w> {
+    pub(super) fn hold(workspace: &'w NativeWorkspace) -> Result<Self> {
+        workspace.hold_session()?;
+        Ok(Self(workspace))
+    }
+}
+
+impl Drop for HeldSessionGuard<'_> {
+    fn drop(&mut self) {
+        self.0.release_session();
     }
 }
 

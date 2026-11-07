@@ -444,6 +444,7 @@ impl NativeClient {
         let workspace = super::NativeWorkspace {
             client: self.clone(),
             worktree_id: worktree_id.clone(),
+            held: Default::default(),
         };
         let (_, snapshot) = workspace.capture_projection_streaming(&workspace.state()?, limits)?;
         self.prepare_capture_with_reason(&base, snapshot, stamp, reason)

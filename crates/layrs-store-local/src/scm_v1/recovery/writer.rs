@@ -47,60 +47,50 @@ impl<'store> NativeRecovery<'store> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing: Option<(String, String)> = transaction
-            .query_row(
-                "SELECT recovery_operation_id, request_digest FROM recovery_operations \
-                 WHERE idempotency_key = ?1 OR recovery_operation_id = ?2",
-                params![plan.idempotency_key, plan.id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if let Some((id, digest)) = existing {
-            if id == plan.id.as_str() && digest == plan.request_digest {
-                transaction.commit()?;
-                self.hit(RecoveryFaultPoint::AfterCreateCommit)?;
-                return Ok(MutationOutcome::Replayed);
-            }
+        let outcome = insert_plan(&transaction, plan)?;
+        transaction.commit()?;
+        self.hit(RecoveryFaultPoint::AfterCreateCommit)?;
+        Ok(outcome)
+    }
+
+    /// `create` then `prepare_and_claim` in one transaction: the journal is
+    /// written directly `applying`, with the evidence of what was staged
+    /// before it and the leases of its paths. For a materialization that
+    /// stages first (council s4, Q1): the record is exactly what the two
+    /// steps leave.
+    pub fn create_and_claim(
+        &mut self,
+        plan: &RecoveryPlan,
+        preparation: &RecoveryPreparation,
+        owner_token: impl Into<String>,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> RecoveryResult<ClaimOutcome> {
+        let _span = crate::perf::span("journal.create_and_claim");
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if insert_plan(&transaction, plan)? != MutationOutcome::Applied {
             return Err(RecoveryError::ReplayMismatch {
                 idempotency_key: plan.idempotency_key.clone(),
             });
         }
-        transaction.execute(
-            "INSERT INTO recovery_operations(
-                recovery_operation_id, idempotency_key, request_digest, worktree_id,
-                operation_id, recovery_type, state, payload_json, evidence_json,
-                attempt_count, owner_token, last_error, created_at_ms, updated_at_ms,
-                completed_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, '{}', 0, NULL, NULL, ?8, ?8, NULL)",
-            params![
-                plan.id.as_str(),
-                plan.idempotency_key,
-                plan.request_digest,
-                plan.worktree_id.as_str(),
-                plan.operation_id.as_ref().map(OperationId::as_str),
-                plan.recovery_type.as_str(),
-                plan.payload_json,
-                plan.created_at_ms,
-            ],
+        let leases = prepare_claim_in(
+            &transaction,
+            &plan.id,
+            preparation,
+            owner_token.into(),
+            now_ms,
+            lease_duration_ms,
         )?;
-        for path in &plan.paths {
-            transaction
-                .prepare_cached(
-                    "INSERT INTO recovery_paths(
-                    recovery_operation_id, path, path_role, expected_object_id,
-                    evidence_json, state
-                 ) VALUES (?1, ?2, ?3, ?4, '{}', 'pending')",
-                )?
-                .execute(params![
-                    plan.id.as_str(),
-                    path.path,
-                    path.role.as_str(),
-                    path.expected_object_id,
-                ])?;
-        }
         transaction.commit()?;
         self.hit(RecoveryFaultPoint::AfterCreateCommit)?;
-        Ok(MutationOutcome::Applied)
+        self.hit(RecoveryFaultPoint::AfterPrepareCommit)?;
+        self.hit(RecoveryFaultPoint::AfterClaimCommit)?;
+        Ok(ClaimOutcome {
+            outcome: MutationOutcome::Applied,
+            leases,
+        })
     }
 
     pub fn transition(
@@ -283,60 +273,16 @@ impl<'store> NativeRecovery<'store> {
         lease_duration_ms: i64,
     ) -> RecoveryResult<ClaimOutcome> {
         let _span = crate::perf::span("journal.prepare_claim");
-        let owner_token = validated_token("owner_token", owner_token.into())?;
-        valid_time("now_ms", now_ms)?;
-        if lease_duration_ms <= 0 {
-            return Err(RecoveryError::InvalidInput {
-                field: "lease_duration_ms",
-                reason: "must be positive".into(),
-            });
-        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = load_record(&transaction, id)?;
-        let now_ms = ordered_time(&transaction, &current, now_ms)?;
-        let expires_at_ms =
-            now_ms
-                .checked_add(lease_duration_ms)
-                .ok_or_else(|| RecoveryError::InvalidInput {
-                    field: "lease_duration_ms",
-                    reason: "expiry overflows SQLite INTEGER".into(),
-                })?;
-        if current.state != RecoveryState::Pending {
-            return Err(RecoveryError::InvalidTransition {
-                from: current.state,
-                to: RecoveryState::Applying,
-            });
-        }
-        require_exact_path_evidence(&current.paths, &preparation.path_evidence, id)?;
-        for evidence in &preparation.path_evidence {
-            transaction
-                .prepare_cached(
-                    "UPDATE recovery_paths SET evidence_json = ?1, state = 'verified' \
-                 WHERE recovery_operation_id = ?2 AND path = ?3 AND path_role = ?4",
-                )?
-                .execute(params![
-                    evidence.canonical_json,
-                    id.as_str(),
-                    evidence.path,
-                    evidence.role.as_str(),
-                ])?;
-        }
-        transaction.execute(
-            "UPDATE recovery_operations SET state = 'prepared', evidence_json = ?1,
-             owner_token = NULL, last_error = NULL, updated_at_ms = ?2,
-             completed_at_ms = NULL WHERE recovery_operation_id = ?3",
-            params![preparation.evidence_json, now_ms, id.as_str()],
-        )?;
-        let current = load_record(&transaction, id)?;
-        let leases = acquire_leases(
+        let leases = prepare_claim_in(
             &transaction,
             id,
-            &current,
-            &owner_token,
+            preparation,
+            owner_token.into(),
             now_ms,
-            expires_at_ms,
+            lease_duration_ms,
         )?;
         transaction.commit()?;
         self.hit(RecoveryFaultPoint::AfterPrepareCommit)?;
@@ -828,4 +774,126 @@ pub(crate) fn complete_in_transaction(
         return Err(RecoveryError::OwnerMismatch(id.clone()));
     }
     Ok(())
+}
+
+/// Inserts `plan` as a `pending` journal, or recognises its exact replay.
+fn insert_plan(
+    transaction: &rusqlite::Transaction<'_>,
+    plan: &RecoveryPlan,
+) -> RecoveryResult<MutationOutcome> {
+    let existing: Option<(String, String)> = transaction
+        .query_row(
+            "SELECT recovery_operation_id, request_digest FROM recovery_operations \
+             WHERE idempotency_key = ?1 OR recovery_operation_id = ?2",
+            params![plan.idempotency_key, plan.id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((id, digest)) = existing {
+        if id == plan.id.as_str() && digest == plan.request_digest {
+            return Ok(MutationOutcome::Replayed);
+        }
+        return Err(RecoveryError::ReplayMismatch {
+            idempotency_key: plan.idempotency_key.clone(),
+        });
+    }
+    transaction.execute(
+        "INSERT INTO recovery_operations(
+            recovery_operation_id, idempotency_key, request_digest, worktree_id,
+            operation_id, recovery_type, state, payload_json, evidence_json,
+            attempt_count, owner_token, last_error, created_at_ms, updated_at_ms,
+            completed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, '{}', 0, NULL, NULL, ?8, ?8, NULL)",
+        params![
+            plan.id.as_str(),
+            plan.idempotency_key,
+            plan.request_digest,
+            plan.worktree_id.as_str(),
+            plan.operation_id.as_ref().map(OperationId::as_str),
+            plan.recovery_type.as_str(),
+            plan.payload_json,
+            plan.created_at_ms,
+        ],
+    )?;
+    for path in &plan.paths {
+        transaction
+            .prepare_cached(
+                "INSERT INTO recovery_paths(
+                recovery_operation_id, path, path_role, expected_object_id,
+                evidence_json, state
+             ) VALUES (?1, ?2, ?3, ?4, '{}', 'pending')",
+            )?
+            .execute(params![
+                plan.id.as_str(),
+                path.path,
+                path.role.as_str(),
+                path.expected_object_id,
+            ])?;
+    }
+    Ok(MutationOutcome::Applied)
+}
+
+/// Records the staged evidence of a `pending` journal and claims the
+/// leases of its paths (`applying`), inside the caller's transaction.
+fn prepare_claim_in(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &RecoveryId,
+    preparation: &RecoveryPreparation,
+    owner_token: String,
+    now_ms: i64,
+    lease_duration_ms: i64,
+) -> RecoveryResult<Vec<ResourceLease>> {
+    let owner_token = validated_token("owner_token", owner_token)?;
+    valid_time("now_ms", now_ms)?;
+    if lease_duration_ms <= 0 {
+        return Err(RecoveryError::InvalidInput {
+            field: "lease_duration_ms",
+            reason: "must be positive".into(),
+        });
+    }
+    let current = load_record(transaction, id)?;
+    let now_ms = ordered_time(transaction, &current, now_ms)?;
+    let expires_at_ms =
+        now_ms
+            .checked_add(lease_duration_ms)
+            .ok_or_else(|| RecoveryError::InvalidInput {
+                field: "lease_duration_ms",
+                reason: "expiry overflows SQLite INTEGER".into(),
+            })?;
+    if current.state != RecoveryState::Pending {
+        return Err(RecoveryError::InvalidTransition {
+            from: current.state,
+            to: RecoveryState::Applying,
+        });
+    }
+    require_exact_path_evidence(&current.paths, &preparation.path_evidence, id)?;
+    for evidence in &preparation.path_evidence {
+        transaction
+            .prepare_cached(
+                "UPDATE recovery_paths SET evidence_json = ?1, state = 'verified' \
+             WHERE recovery_operation_id = ?2 AND path = ?3 AND path_role = ?4",
+            )?
+            .execute(params![
+                evidence.canonical_json,
+                id.as_str(),
+                evidence.path,
+                evidence.role.as_str(),
+            ])?;
+    }
+    transaction.execute(
+        "UPDATE recovery_operations SET state = 'prepared', evidence_json = ?1,
+         owner_token = NULL, last_error = NULL, updated_at_ms = ?2,
+         completed_at_ms = NULL WHERE recovery_operation_id = ?3",
+        params![preparation.evidence_json, now_ms, id.as_str()],
+    )?;
+    let current = load_record(transaction, id)?;
+    let leases = acquire_leases(
+        transaction,
+        id,
+        &current,
+        &owner_token,
+        now_ms,
+        expires_at_ms,
+    )?;
+    Ok(leases)
 }

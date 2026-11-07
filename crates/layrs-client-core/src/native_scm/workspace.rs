@@ -12,6 +12,29 @@ use std::{
 pub struct NativeWorkspace {
     pub(super) client: NativeClient,
     pub(super) worktree_id: WorktreeId,
+    /// A shared Store session held across one phase of reads (council s4,
+    /// Q2); see `hold_session`.
+    pub(super) held: HeldSession,
+}
+
+/// The shared Store session a workspace holds across one phase of reads.
+#[derive(Default)]
+pub(super) struct HeldSession(std::sync::Mutex<Option<std::sync::Arc<scm_v1::NativeStoreOpen>>>);
+
+/// A Store session for a read: the held one, or one of its own.
+pub(super) enum SessionStore {
+    Held(std::sync::Arc<scm_v1::NativeStoreOpen>),
+    Own(scm_v1::NativeStoreOpen),
+}
+
+impl std::ops::Deref for SessionStore {
+    type Target = scm_v1::NativeStoreOpen;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Held(store) => store,
+            Self::Own(store) => store,
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -118,6 +141,7 @@ impl NativeWorkspace {
         Ok(Self {
             client,
             worktree_id: worktree.id().clone(),
+            held: HeldSession::default(),
         })
     }
 
@@ -186,6 +210,7 @@ impl NativeWorkspace {
         let result = Self {
             client,
             worktree_id,
+            held: HeldSession::default(),
         };
         drop(span);
         let span = layrs_store_local::perf::span("discover.state");
@@ -244,6 +269,45 @@ impl NativeWorkspace {
     }
     pub fn open_store(&self) -> Result<scm_v1::NativeStoreOpen> {
         self.client.open_store()
+    }
+
+    /// Holds one shared Store session for the reads of a phase (council s4,
+    /// Q2): `session_store` returns it until `release_session`. The shared
+    /// lock excludes every writer, this process's own included (an
+    /// exclusive open then fails as reentrant): release it before a write,
+    /// a request to a VFS host, or a scan of a folder.
+    pub(super) fn hold_session(&self) -> Result<()> {
+        let mut held = self
+            .held
+            .0
+            .lock()
+            .map_err(|_| NativeClientError::InvalidState("held Store session poisoned"))?;
+        if held.is_none() {
+            *held = Some(std::sync::Arc::new(self.open_store()?));
+        }
+        Ok(())
+    }
+
+    /// The held session if any, else a session of its own.
+    pub(super) fn session_store(&self) -> Result<SessionStore> {
+        let held = self.held.0.lock().ok().and_then(|held| held.clone());
+        Ok(match held {
+            Some(store) => SessionStore::Held(store),
+            None => SessionStore::Own(self.open_store()?),
+        })
+    }
+
+    /// Ends the held session; every read using it must have ended.
+    pub(super) fn release_session(&self) {
+        if let Ok(mut held) = self.held.0.lock() {
+            let store = held.take();
+            debug_assert!(
+                store
+                    .as_ref()
+                    .is_none_or(|store| std::sync::Arc::strong_count(store) == 1),
+                "a read still uses the held Store session"
+            );
+        }
     }
     pub fn checkout_root(&self) -> Result<PathBuf> {
         Ok(PathBuf::from(self.state()?.worktree.checkout_root()))
