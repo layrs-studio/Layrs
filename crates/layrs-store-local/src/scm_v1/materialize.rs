@@ -501,8 +501,13 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 }
             })
         };
+        let scope = super::admission::memo_scope_of(store.store_id(), store.layout().root());
         CompositeAdmissionResolver::new(&reader, batch)
-            .and_then(|r| r.with_chunk_source(&resolve).validate_batch())
+            .and_then(|r| {
+                r.with_chunk_source(&resolve)
+                    .with_memo_scope(scope)
+                    .validate_batch()
+            })
             .map_err(error)?;
         let active = worktree.active_operation_id().clone();
         let target = change.new_operation_id().clone();

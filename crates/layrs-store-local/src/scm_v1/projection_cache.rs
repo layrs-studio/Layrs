@@ -305,6 +305,7 @@ pub fn save(
         (changes.len() * 100 <= entries.len() * DELTA_MAX_PERCENT)
             .then(|| (base_root, base.checksum, changes_owned(&changes)))
     });
+    let complete = delta.is_none();
     match delta {
         Some((base_root, base_checksum, changes)) => {
             body.push(FORM_DELTA);
@@ -345,7 +346,13 @@ pub fn save(
         fs::rename(&staged, &path).inspect_err(|_| {
             let _ = fs::remove_file(&staged);
         })?;
-        prune(&directory, &path);
+        // Pruning reads every file's header: only needed once a complete
+        // projection was added (at most `KEPT_COMPLETE` stay) or more than
+        // `KEPT` files are listed. A delta added within `KEPT` breaks
+        // neither rule.
+        if complete || listed(&directory).len() > KEPT {
+            prune(&directory, &path);
+        }
         Ok(())
     })();
 }

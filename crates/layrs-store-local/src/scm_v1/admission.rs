@@ -73,6 +73,18 @@ pub struct CompositeAdmissionResolver<'a> {
     admission_visits: AtomicUsize,
     admission_edge_visits: AtomicUsize,
     failure: Mutex<Option<StoreError>>,
+    /// The Store this resolver reads (identity and root), for process
+    /// memos of checks that only grow true; `None` disables them.
+    memo_scope: Option<String>,
+}
+
+/// The memo scope of the Store `store_id` at `root` (`with_memo_scope`).
+pub(crate) fn memo_scope_of(store_id: &StoreId, root: &std::path::Path) -> String {
+    format!(
+        "{store_id}
+{}",
+        root.display()
+    )
 }
 
 impl<'a> CompositeAdmissionResolver<'a> {
@@ -218,7 +230,19 @@ impl<'a> CompositeAdmissionResolver<'a> {
             admission_visits: AtomicUsize::new(0),
             admission_edge_visits: AtomicUsize::new(0),
             failure: Mutex::new(None),
+            memo_scope: None,
         })
+    }
+
+    /// Names the Store read (its identity and root), enabling process memos
+    /// of checks whose result can only stay true on that Store.
+    pub(crate) fn with_memo_scope(mut self, scope: String) -> Self {
+        self.memo_scope = Some(scope);
+        self
+    }
+
+    pub(super) fn memo_scope(&self) -> Option<&str> {
+        self.memo_scope.as_deref()
     }
 
     pub fn step_dag(&self) -> &StepDag {

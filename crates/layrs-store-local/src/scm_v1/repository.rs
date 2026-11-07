@@ -416,6 +416,7 @@ impl NativeScmRepository {
                 publication.as_ref(),
                 completing,
                 locked_at_ms,
+                &super::admission::memo_scope_of(store.store_id(), store.layout().root()),
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
@@ -487,6 +488,7 @@ impl NativeScmRepository {
         publication: Option<&super::cas::CompactPublication>,
         completing: Completing<'_>,
         locked_at_ms: i64,
+        memo_scope: &str,
     ) -> Result<ApplyBatchOutcome> {
         // CAS publication intentionally precedes replay inspection. Therefore a
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
@@ -528,7 +530,8 @@ impl NativeScmRepository {
         } else {
             ensure_immutables(&reader, batch)?;
         }
-        let resolver = CompositeAdmissionResolver::new(&reader, batch)?;
+        let resolver =
+            CompositeAdmissionResolver::new(&reader, batch)?.with_memo_scope(memo_scope.to_owned());
         resolver.validate_batch()?;
         drop(resolver);
         drop(reader);

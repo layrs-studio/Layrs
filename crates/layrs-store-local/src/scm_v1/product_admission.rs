@@ -5,6 +5,18 @@ use layrs_store::scm::CanonicalProduct;
 use layrs_sync::v3::{MergeBase, ProductEnvelope};
 use layrs_weave::graph_merge::PlannedConflict;
 
+/// Weave receipts whose result closure this process already walked and
+/// found exactly as declared, by (batch digest, Product, Space). The walk
+/// depends only on the batch and on Store facts that are never withdrawn
+/// (objects present, admissions): a materialization validates its batch in
+/// its journal session and again when completing it, under the exclusive
+/// lock each time, and the second walk can only find the same closure.
+fn walked_closures() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static WALKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    WALKED.get_or_init(Default::default)
+}
+
 fn rejected(reason: impl std::fmt::Display) -> StoreError {
     StoreError::Corruption {
         message: format!("Product admission: {reason}"),
@@ -92,6 +104,25 @@ impl CompositeAdmissionResolver<'_> {
                     }
                 }
             }
+        }
+        let walked = self.memo_scope().map(|scope| {
+            format!(
+                "{scope}
+{}
+{}
+{}",
+                self.batch.request_digest(),
+                product.id(),
+                space.as_str()
+            )
+        });
+        if walked.as_ref().is_some_and(|walked| {
+            walked_closures()
+                .lock()
+                .is_ok_and(|known| known.contains(walked))
+        }) {
+            crate::perf::count("validate.weave_closure_known", 1);
+            return Ok(());
         }
         let mut conflicts = BTreeSet::new();
         let mut seen = BTreeSet::new();
@@ -217,6 +248,12 @@ impl CompositeAdmissionResolver<'_> {
             return Err(rejected(
                 "receipt Conflict IDs differ from transitive result closure",
             ));
+        }
+        if let (Some(walked), Ok(mut known)) = (walked, walked_closures().lock()) {
+            if known.len() >= 64 {
+                known.clear();
+            }
+            known.insert(walked);
         }
         Ok(())
     }
