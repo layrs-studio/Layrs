@@ -177,12 +177,14 @@ impl NativeStoreLayout {
         // object's type: no path is walked again per boundary.
         let root = crate::secure_fs::PinnedDirectory::open(&self.root)?;
         let name = |path: &Path| {
-            path.file_name().map(std::ffi::OsStr::to_os_string).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("native Store boundary has no name: {}", path.display()),
-                )
-            })
+            path.file_name()
+                .map(std::ffi::OsStr::to_os_string)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("native Store boundary has no name: {}", path.display()),
+                    )
+                })
         };
         let child = |parent: &crate::secure_fs::PinnedDirectory, path: &Path| {
             parent.open_child_for_traversal(&name(path)?)

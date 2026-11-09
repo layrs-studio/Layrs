@@ -2045,6 +2045,116 @@ fn an_invalid_declared_form_is_never_read_as_a_file() {
     assert!(!report.is_clean());
 }
 
+/// A recent object is read from the most recent packs without loading the
+/// others, an old one through the whole catalog; a damaged recent copy is
+/// corruption either way, never absence.
+#[test]
+fn recent_objects_read_from_recent_packs_and_damage_stays_corruption() {
+    let root = TestRoot::new("recent-read");
+    create(&root.0, "recent-read", "6");
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let first_step = {
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let view = reader.get_repository_view(&lane.view).unwrap().unwrap();
+        view.layer_heads()[0].step_ids()[0].clone()
+    };
+    for step in 0..5 {
+        let added = file(
+            &format!("f{step}.txt"),
+            format!("content {step}").as_bytes(),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+    }
+    // Each read in a fresh session: the first read loads no catalog.
+    let read_view = || {
+        let store = open(&root.0).unwrap();
+        NativeScmReader::new(&store)
+            .unwrap()
+            .get_repository_view(&lane.view)
+    };
+    let view = read_view().unwrap().unwrap();
+    assert_eq!(view.id(), &lane.view);
+    let store = open(&root.0).unwrap();
+    // An old Step, in the oldest pack: through the whole catalog.
+    assert!(
+        NativeScmReader::new(&store)
+            .unwrap()
+            .get_step(&first_step)
+            .unwrap()
+            .is_some()
+    );
+    drop(store);
+    // The newest View's block damaged: an error, not an absence.
+    flip_located(&root.0, &StoreObjectId::RepositoryView(lane.view.clone()));
+    assert!(read_view().is_err());
+}
+
+/// A pack file whose row is damaged to declare it inline keeps its file:
+/// orphan collection keeps every registered name (council s8 r3).
+#[test]
+fn a_file_pack_declared_inline_by_damage_keeps_its_file() {
+    let root = TestRoot::new("form-flip");
+    create(&root.0, "form-flip", "6");
+    let mut files = vec![file("a.txt", b"alpha bytes", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let pack = packs(&root.0).remove(0);
+    sql(&root.0)
+        .execute("UPDATE cas_packs SET stored_inline=1", [])
+        .unwrap();
+    // The next write opens the CAS writer (orphan collection runs), whether
+    // or not the damaged pack lets the batch through.
+    let added = file("b.txt", b"beta bytes", Recipe::Fixed);
+    let carried = file_objects(std::slice::from_ref(&added));
+    files.push(added);
+    let _ = NativeScmRepository::new(&root.0).apply_batch(&lane.capture(&files, carried));
+    assert!(pack.is_file(), "{pack:?} was removed");
+    assert!(
+        NativeScmRepository::new(&root.0)
+            .get_chunk(files[0].chunks[0].id())
+            .is_err()
+    );
+}
+
+/// An inline image past the limit (its CHECK bypassed) is damage to its
+/// pack, found from its length without reading it (council s8 r3).
+#[test]
+fn an_oversized_inline_image_is_damage_without_being_read() {
+    let (root, files, _lane, seq, label) = one_inline_pack("inline-oversized");
+    sql(&root.0)
+        .execute_batch(&format!(
+            "PRAGMA ignore_check_constraints=ON; \
+             UPDATE cas_pack_inline SET image=zeroblob(2097152) WHERE pack_seq={seq};"
+        ))
+        .unwrap();
+    assert!(
+        NativeScmRepository::new(&root.0)
+            .get_chunk(files[0].chunks[0].id())
+            .is_err()
+    );
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.code == FsckFindingCode::CasCorruption
+                && finding.path.as_deref() == Some(label.as_path())
+        }),
+        "{:#?}",
+        report.findings
+    );
+}
+
 /// Fails every pack publication after the first `allowed`.
 struct PublicationsAfter {
     allowed: usize,

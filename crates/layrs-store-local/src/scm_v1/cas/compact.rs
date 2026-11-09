@@ -284,12 +284,12 @@ impl NativeCas {
         let Ok(entries) = fs::read_dir(&directory) else {
             return 0;
         };
-        // Only packs registered as files: a file carrying an inline pack's
-        // name is never that pack.
+        // Every registered name is kept, whatever form its row declares: a
+        // damaged form (a file pack read as inline) must never cost the
+        // file (council s8 r3). Reads alone refuse a file for an inline pack.
         let registered: HashSet<&OsStr> = catalog
             .rows
             .iter()
-            .filter(|row| !row.inline())
             .map(|row| row.name.as_os_str())
             .collect();
         let orphans: Vec<OsString> = entries
@@ -418,12 +418,15 @@ impl RegisteredCatalog {
             || inline + added_inline >= CONSOLIDATE_INLINE_AT
     }
 
-    /// The packs to consolidate now, in registration order, leaving out
-    /// `excluded` positions; empty when none is due. Geometric, as git's:
-    /// the smallest packs while each next one is at most twice their total,
-    /// so a large pack is rewritten only once the small ones have grown to
-    /// its size. Only sound packs: a damaged one keeps its row and bitmaps
-    /// as they are, and does not stop the others (council s6 r1).
+    /// The packs to consolidate now, positions in increasing order, leaving
+    /// out `excluded`; empty when none is due. At `CONSOLIDATE_INLINE_AT`
+    /// inline packs, as many of them as fit the budgets, smallest first
+    /// (council s8 r2, r3). Else, at `CONSOLIDATE_AT_PACKS` pack files, a
+    /// geometric group of files, as git's: the smallest while each next one
+    /// is at most twice their total, so a large pack is rewritten only once
+    /// the small ones have grown to its size. Only sound packs: a damaged one
+    /// keeps its row and bitmaps as they are, and does not stop the others
+    /// (council s6 r1).
     pub(crate) fn consolidation_candidates(&self, excluded: &[usize]) -> Vec<usize> {
         // Inline packs merge among themselves first, within the same budgets
         // as any group (council s8 r2): the result stays inline while it
@@ -498,7 +501,9 @@ fn consolidation_group(by_size: &[(u64, u64, u64, u64, usize)]) -> Vec<usize> {
 /// The packs taken from `by_size` (smallest first) while the group stays
 /// within the inline budgets (on disk and decompressed) and half the
 /// reader's limits for one pack, and, `geometric`, while each next pack is
-/// at most twice the group's total. Positions in increasing order.
+/// at most twice the group's total. Without the geometric rule a pack that
+/// does not fit is skipped, so one oversized pack never blocks the others
+/// (council s8 r3). Positions in increasing order.
 fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Vec<usize> {
     let mut chosen = Vec::new();
     let (mut total, mut records, mut blocks, mut raw) = (0_u64, 0_u64, 0_u64, 0_u64);
@@ -506,17 +511,17 @@ fn bounded_group(by_size: &[(u64, u64, u64, u64, usize)], geometric: bool) -> Ve
         if geometric && !chosen.is_empty() && size > total.saturating_mul(2) {
             break;
         }
-        if total.saturating_add(size) > INLINE_BUDGET_BYTES
-            || raw.saturating_add(pack_raw) > INLINE_RAW_BUDGET_BYTES
-        {
-            break;
-        }
-        // Within half the reader's limits for one pack, so the new pack
-        // always loads.
-        if records + pack_records > pack2::MAX_PACK_ENTRIES / 2
-            || blocks + pack_blocks > pack2::MAX_PACK_BLOCKS / 2
-        {
-            break;
+        // Within the inline budgets, and half the reader's limits for one
+        // pack so the new pack always loads.
+        let fits = total.saturating_add(size) <= INLINE_BUDGET_BYTES
+            && raw.saturating_add(pack_raw) <= INLINE_RAW_BUDGET_BYTES
+            && records + pack_records <= pack2::MAX_PACK_ENTRIES / 2
+            && blocks + pack_blocks <= pack2::MAX_PACK_BLOCKS / 2;
+        if !fits {
+            if geometric {
+                break;
+            }
+            continue;
         }
         total = total.saturating_add(size);
         raw = raw.saturating_add(pack_raw);
@@ -840,6 +845,20 @@ struct RegisteredRow {
     image: ImageRow,
 }
 
+/// Whether reading an inline image failed on what its stored bytes prove.
+fn image_damage(error: &rusqlite::Error) -> bool {
+    match error {
+        rusqlite::Error::SqliteFailure(failure, _) => matches!(
+            failure.code,
+            rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+        ),
+        rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
+            true
+        }
+        _ => false,
+    }
+}
+
 /// What `cas_pack_inline` holds for a registered pack.
 #[derive(Debug)]
 enum ImageRow {
@@ -1038,12 +1057,14 @@ impl RegisteredCatalog {
         // Which packs have an image row (their sequence numbers only); each
         // image is then read alone, in this same snapshot, so one unreadable
         // image damages its pack only (council s8 r2).
-        let with_image: HashSet<i64> = connection
-            .prepare("SELECT pack_seq FROM cas_pack_inline")
+        // With their lengths, so an image past the limit is damage to its
+        // pack without being read (council s8 r3).
+        let with_image: HashMap<i64, i64> = connection
+            .prepare("SELECT pack_seq, length(image) FROM cas_pack_inline")
             .and_then(|mut statement| {
                 statement
-                    .query_map([], |row| row.get::<_, i64>(0))?
-                    .collect::<rusqlite::Result<HashSet<_>>>()
+                    .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?
+                    .collect::<rusqlite::Result<HashMap<_, _>>>()
             })
             .map_err(sql_error)?;
         let mut read_image = connection
@@ -1063,13 +1084,28 @@ impl RegisteredCatalog {
             });
         }
         for (seq, name, digest, entries, form) in rows {
-            let image = match (with_image.contains(&seq), form == 1) {
-                (false, _) => ImageRow::Absent,
-                (true, false) => ImageRow::Stray,
-                (true, true) => match read_image.query_row([seq], |row| row.get::<_, Vec<u8>>(0)) {
-                    Ok(image) => ImageRow::Present(Arc::from(image)),
-                    Err(error) => ImageRow::Unreadable(error.to_string()),
-                },
+            let image = match (with_image.get(&seq), form == 1) {
+                (None, _) => ImageRow::Absent,
+                (Some(_), false) => ImageRow::Stray,
+                (Some(&length), true)
+                    if usize::try_from(length)
+                        .is_ok_and(|length| (1..=MAX_INLINE_IMAGE_BYTES).contains(&length)) =>
+                {
+                    match read_image.query_row([seq], |row| row.get::<_, Vec<u8>>(0)) {
+                        Ok(image) => ImageRow::Present(Arc::from(image)),
+                        // What the stored bytes prove (a damaged page, a
+                        // value of another type) damages this pack only; any
+                        // other error (I/O, busy, memory) fails the catalog,
+                        // to be retried (council s8 r3).
+                        Err(error) if image_damage(&error) => {
+                            ImageRow::Unreadable(error.to_string())
+                        }
+                        Err(error) => return Err(sql_error(error)),
+                    }
+                }
+                (Some(length), true) => {
+                    ImageRow::Unreadable(format!("image of {length} bytes is out of bounds"))
+                }
             };
             let row = RegisteredRow {
                 seq,
@@ -1154,6 +1190,80 @@ impl RegisteredCatalog {
     /// Whether this catalog was read from the database now (an audit).
     pub(crate) fn is_fresh(&self) -> bool {
         self.fresh
+    }
+
+    /// An explicit record `id` from one of the `limit` most recently
+    /// registered packs, without loading the others: its stored length and
+    /// the object, verified against `id`. `None` whenever this cannot
+    /// answer (not in those packs, one of them unreadable, any SQLite
+    /// error): the caller then reads through the whole catalog, which keeps
+    /// every rule of a complete answer. A positive answer needs no other
+    /// pack: the copy is registered and verified against its content address.
+    /// Most reads of a command are of its newest objects (a View, a Step),
+    /// so the large old packs are not even loaded for them.
+    pub(crate) fn read_recent(
+        connection: &Connection,
+        cas: &NativeCas,
+        id: &StoreObjectId,
+        limit: usize,
+    ) -> Option<(u64, CanonicalObject)> {
+        let _span = crate::perf::span("cas.read_recent");
+        let raw = pack2::raw_digest(id).ok()?;
+        let code = pack2::kind_code(id.kind());
+        let mut rows = connection
+            .prepare_cached(
+                "SELECT pack_seq, name, index_digest, entries, stored_inline FROM cas_packs \
+                 ORDER BY pack_seq DESC LIMIT ?1",
+            )
+            .ok()?;
+        let rows: Vec<(i64, String, Vec<u8>, i64, i64)> = rows
+            .query_map([i64::try_from(limit).ok()?], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .ok()?
+            .collect::<rusqlite::Result<_>>()
+            .ok()?;
+        let packs = std::cell::OnceCell::new();
+        for (seq, name, digest, entries, form) in rows {
+            let image = if form == 1 {
+                let image: Vec<u8> = connection
+                    .query_row(
+                        "SELECT image FROM cas_pack_inline WHERE pack_seq=?1",
+                        [seq],
+                        |row| row.get(0),
+                    )
+                    .ok()?;
+                ImageRow::Present(Arc::from(image))
+            } else {
+                ImageRow::Absent
+            };
+            let row = RegisteredRow {
+                seq,
+                name: OsString::from(name),
+                digest,
+                entries,
+                form,
+                image,
+            };
+            let loaded = row.load(cas, &packs, false).ok()?;
+            check_registration(&loaded, &row.name, &row.digest, row.entries).ok()?;
+            let Some(ordinal) = loaded.index.find(code, &raw) else {
+                continue;
+            };
+            let (kind, _, location) = loaded.index.explicit(ordinal)?;
+            let block = loaded.read_block(cas, location.block).ok()?;
+            let body = pack2::record_body(&block, location, kind, &loaded.path).ok()?;
+            let object = validate_stored_bytes(id, body).ok()?;
+            crate::perf::count("cas.read_recent_hit", 1);
+            return Some((u64::from(location.length), object));
+        }
+        None
     }
 
     /// The first unreadable registered pack, if any.
@@ -2781,6 +2891,11 @@ mod consolidation_tests {
         // the 256 MiB decompressed budget (council s8 r2).
         let inline: Vec<_> = (0..8).map(|p| (64 * kib, 1, 1, 64 * mib, p)).collect();
         assert_eq!(bounded_group(&inline, false), vec![0, 1, 2, 3]);
+        // The smallest pack alone over the decompressed budget is skipped:
+        // the eight after it still merge (council s8 r3).
+        let mut blocked = vec![(kib, 1, 1, 300 * mib, 0)];
+        blocked.extend((1..9).map(|p| (2 * kib, 1, 1, kib, p)));
+        assert_eq!(bounded_group(&blocked, false), (1..9).collect::<Vec<_>>());
         // Without the geometric rule, sizes far apart still merge.
         let mixed = vec![(1, 1, 1, 1, 0), (10, 1, 1, 10, 1), (1000, 1, 1, 1000, 2)];
         assert_eq!(bounded_group(&mixed, false), vec![0, 1, 2]);

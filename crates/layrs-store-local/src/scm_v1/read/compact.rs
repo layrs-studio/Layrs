@@ -8,6 +8,8 @@ use crate::scm_v1::cas::{FileManifestEntry, Placement, RegisteredCatalog, SpaceA
 use std::sync::Arc;
 
 const MAX_FILE_MANIFESTS: usize = 1024;
+/// Packs a read of a recent object tries before the whole catalog.
+const RECENT_PACKS: usize = 4;
 
 impl NativeScmReader<'_> {
     /// Whether this reader reads a format 6 Store.
@@ -59,6 +61,11 @@ impl NativeScmReader<'_> {
         &self,
         id: &StoreObjectId,
     ) -> Result<Option<CanonicalObject>> {
+        if !crate::scm_v1::cas::is_content(id.kind()) {
+            if let Some(object) = self.read_recent_compact(id)? {
+                return Ok(Some(object));
+            }
+        }
         let catalog = self.catalog()?;
         if crate::scm_v1::cas::is_content(id.kind()) {
             return catalog.read(&self.cas, id).map_err(cas_read_error);
@@ -100,6 +107,41 @@ impl NativeScmReader<'_> {
             .read_registered(&catalog, id)
             .map(Some)
             .map_err(cas_read_error)
+    }
+
+    /// A non-content object read from the most recent packs while no
+    /// catalog is loaded (`RegisteredCatalog::read_recent`): the same row
+    /// checks as `read_object_compact`, and `None` to let the whole catalog
+    /// answer in every other case.
+    fn read_recent_compact(&self, id: &StoreObjectId) -> Result<Option<CanonicalObject>> {
+        let SqlReadSource::Ready(store) = self.source else {
+            return Ok(None);
+        };
+        if self.cas.compact_catalog().is_some() || store.registered_catalog().get().is_some() {
+            return Ok(None);
+        }
+        let connection = self.connection()?;
+        let row: Option<(String, i64, i64)> = connection
+            .prepare_cached(
+                "SELECT object_kind, byte_length, verified FROM objects WHERE object_id = ?1",
+            )
+            .map_err(sqlite_backend)?
+            .query_row([id.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()
+            .map_err(sqlite_backend)?;
+        let Some((kind, byte_length, verified)) = row else {
+            return Ok(None);
+        };
+        if kind != kind_name(id.kind()) || verified != 1 || byte_length <= 0 {
+            return Ok(None);
+        }
+        Ok(
+            RegisteredCatalog::read_recent(&connection, &self.cas, id, RECENT_PACKS)
+                .filter(|(length, _)| i64::try_from(*length).is_ok_and(|l| l == byte_length))
+                .map(|(_, object)| object),
+        )
     }
 
     pub(super) fn preflight_chunk_bytes_compact(&self, id: &ChunkId) -> Result<usize> {

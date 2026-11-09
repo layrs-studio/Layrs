@@ -369,7 +369,13 @@ part.
     of that row, never read as a file, and a file carrying an inline pack's
     name is never that pack. A scrub reads the images from the database
     now. Inline packs do not count toward the 6-pack trigger: at 8 they
-    merge together, inline while the result fits, else into a pack file.
+    merge together, as many as fit the consolidation budgets (on disk,
+    decompressed, reader limits; one that does not fit is skipped), inline
+    while the result fits, else into a pack file. An image is read only
+    once its length is within the limit; only an error the stored bytes
+    prove damages its pack, any other fails the catalog (retried). Orphan
+    collection keeps every registered name, whatever form its row declares
+    (council s8 r2, r3).
     The limit is clamped to the column's 1 MiB. Only format 6 batches skip
     the barrier (a format 5 batch may reuse a pack whose own barrier never
     ran). `cas_packs.pack_seq` is AUTOINCREMENT: a sequence number is never

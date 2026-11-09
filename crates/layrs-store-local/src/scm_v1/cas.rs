@@ -1196,8 +1196,15 @@ impl NativeCas {
                 // From the database now (council s8 r1): an inline pack's
                 // image is reread, as a pack file is, never the one this view
                 // loaded. The root must still be this view's and the database
-                // this Store's (council s8 r2).
-                self.pinned_root()?;
+                // this Store's (council s8 r2); the root and its metadata
+                // directory stay pinned and are checked at their paths again
+                // once the catalog is read (council s8 r3).
+                let root = self.pinned_root()?;
+                let metadata = root
+                    .open_child_for_traversal(std::ffi::OsStr::new(
+                        super::layout::METADATA_DIR_NAME,
+                    ))
+                    .map_err(|error| io_error("pin Store metadata", &self.root, error))?;
                 let path = self
                     .root
                     .join(super::layout::METADATA_DIR_NAME)
@@ -1221,6 +1228,11 @@ impl NativeCas {
                 })?;
                 super::sqlite::validate_store_identity(&connection, store_id).map_err(database)?;
                 let catalog = compact::RegisteredCatalog::load_fresh(&connection, self)?;
+                for pinned in [&root, &metadata] {
+                    pinned
+                        .verify_path_identity()
+                        .map_err(|error| io_error("verify Store binding", &self.root, error))?;
+                }
                 self.scrub_registered(&catalog, &mut report)?;
             }
         }
