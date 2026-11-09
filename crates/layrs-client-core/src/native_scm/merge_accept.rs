@@ -124,9 +124,12 @@ impl NativeWorkspace {
                 self.store_root(),
                 self.worktree_id(),
             ) {
-                // Precedes writing the merge result: two equal passes.
+                // One pass, as `status`: this check deletes nothing. Every
+                // path the merge writes is proven again right before it is
+                // replaced (materialization phase one), and untouched paths
+                // are never written.
                 Some(mut index) => {
-                    self.capture_projection_indexed(source, limits, &mut index, false)?
+                    self.capture_projection_indexed(source, limits, &mut index, true)?
                         .0
                 }
                 None => self.capture_projection_streaming(source, limits)?.1,
