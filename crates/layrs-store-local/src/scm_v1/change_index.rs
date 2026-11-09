@@ -543,6 +543,16 @@ impl ChangeIndex {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+    /// This index without its entries (same Worktree, margin and binding),
+    /// without copying them.
+    pub fn emptied(&self) -> Self {
+        Self {
+            worktree_id: self.worktree_id.clone(),
+            margin_nanos: self.margin_nanos,
+            entries: BTreeMap::new(),
+            binding: self.binding.clone(),
+        }
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }

@@ -10,16 +10,17 @@ use std::{
 /// No pathname is exported or trusted when accepting a prepared mutation.
 #[derive(Debug)]
 pub(crate) struct SnapshotChunkSpool {
-    file: Mutex<File>,
+    /// Created with the first chunk: a capture that reads nothing new (most
+    /// captures) creates no file.
+    file: Mutex<Option<File>>,
     entries: BTreeMap<ChunkId, (u64, usize)>,
     length: u64,
 }
 
 impl SnapshotChunkSpool {
     pub(crate) fn new() -> io::Result<Self> {
-        let file = layrs_store_local::private_spool_file()?;
         Ok(Self {
-            file: Mutex::new(file),
+            file: Mutex::new(None),
             entries: BTreeMap::new(),
             length: 0,
         })
@@ -44,6 +45,10 @@ impl SnapshotChunkSpool {
             .file
             .get_mut()
             .map_err(|_| io::Error::other("capture spool poisoned"))?;
+        let file = match file {
+            Some(file) => file,
+            None => file.insert(layrs_store_local::private_spool_file()?),
+        };
         file.seek(SeekFrom::Start(self.length))?;
         file.write_all(chunk.bytes())?;
         self.entries
@@ -71,6 +76,9 @@ impl SnapshotChunkSpool {
                 .file
                 .lock()
                 .map_err(|_| io::Error::other("capture spool poisoned"))?;
+            let file = file
+                .as_mut()
+                .ok_or_else(|| io::Error::other("prepared chunk absent"))?;
             file.seek(SeekFrom::Start(*offset))?;
             let mut bytes = vec![0; *len];
             file.read_exact(&mut bytes)?;
@@ -117,11 +125,18 @@ mod tests {
         spool.insert(&chunk).unwrap();
         assert_eq!(spool.descriptors().len(), 1);
         assert_eq!(spool.read(chunk.id()).unwrap(), chunk.bytes());
-        let file = spool.file.get_mut().unwrap();
+        let file = spool.file.get_mut().unwrap().as_mut().unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(b"!").unwrap();
         assert!(spool.read(chunk.id()).is_err());
-        spool.file.get_mut().unwrap().set_len(0).unwrap();
+        spool
+            .file
+            .get_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_len(0)
+            .unwrap();
         assert!(spool.read(chunk.id()).is_err());
     }
 }

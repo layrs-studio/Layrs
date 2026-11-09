@@ -207,11 +207,18 @@ impl super::NativeWorkspace {
         single_pass: bool,
     ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
         let base = self.read_step_projection(&super::references::base_step(state)?)?;
-        self.capture_projection_indexed_from(state, base, None, limits, index, single_pass)
+        let (snapshot, next, pending) =
+            self.capture_projection_indexed_from(state, base, None, limits, index, single_pass)?;
+        if let Some(pending) = pending {
+            pending.save(self.store_root());
+        }
+        Ok((snapshot, next))
     }
 
     /// `capture_projection_indexed` from the base Step's projection (and, if
-    /// known, its root Tree), read by the caller before the scan.
+    /// known, its root Tree), read by the caller before the scan. The
+    /// projection of a new Tree is returned for the caller to record
+    /// (`PendingProjection::save`), possibly while it accepts the capture.
     pub(super) fn capture_projection_indexed_from(
         &self,
         state: &super::WorkspaceState,
@@ -220,7 +227,11 @@ impl super::NativeWorkspace {
         limits: SnapshotLimits,
         index: &mut scm_v1::change_index::ChangeIndex,
         single_pass: bool,
-    ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
+    ) -> Result<(
+        PreparedSnapshot,
+        scm_v1::change_index::ChangeIndex,
+        Option<PendingProjection>,
+    )> {
         use scm_v1::change_index::{IndexEntry, StatKey};
         let _span = layrs_store_local::perf::span("capture.indexed");
         // Entries written against a projection trust nothing until it is
@@ -257,7 +268,9 @@ impl super::NativeWorkspace {
             let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
             reader.admitted_chunk_ids_of_files(state.space.id(), selected.iter(), 1_000_000)?
         };
+        let tracked_span = layrs_store_local::perf::span("capture.tracked");
         let tracked = base.iter().map(|e| e.path.clone()).collect();
+        drop(tracked_span);
         let checkout = CheckoutReader::open(
             Path::new(state.worktree.checkout_root()),
             Some(state.worktree.filesystem_identity()),
@@ -307,14 +320,22 @@ impl super::NativeWorkspace {
         )?;
         layrs_store_local::perf::count("capture.index_trusted", captured.trusted as u64);
         layrs_store_local::perf::count("capture.index_hashed", captured.hashed.len() as u64);
+        let next_span = layrs_store_local::perf::span("capture.next_index");
         let hashed: std::collections::BTreeMap<&str, &std::fs::Metadata> = captured
             .hashed
             .iter()
             .map(|(path, listed)| (path.as_str(), listed))
             .collect();
-        let mut next = index.clone();
-        next.clear();
-        for entry in &captured.entries {
+        // Nothing read and every entry of the index trusted: each file came
+        // from its own entry (same FileId), so the rebuilt index would hold
+        // exactly these entries.
+        let every_entry_trusted = captured.hashed.is_empty() && captured.trusted == index.len();
+        let mut next = if every_entry_trusted {
+            index.clone()
+        } else {
+            index.emptied()
+        };
+        for entry in captured.entries.iter().filter(|_| !every_entry_trusted) {
             let CheckoutProjectionContent::File {
                 file_id,
                 byte_length,
@@ -349,6 +370,7 @@ impl super::NativeWorkspace {
                 }
             }
         }
+        drop(next_span);
         // Nothing read and exactly the base projection (paths, FileIds,
         // modes): its Tree is the base projection's own, memoized when the
         // projection was read. Building and hashing the Trees again would
@@ -374,7 +396,7 @@ impl super::NativeWorkspace {
             };
             if step_root == root {
                 next.bind(&step_root, &base);
-                return Ok((PreparedSnapshot::unchanged(root), next));
+                return Ok((PreparedSnapshot::unchanged(root), next, None));
             }
         }
         let snapshot = PreparedSnapshot::from_streaming_referencing(
@@ -386,15 +408,11 @@ impl super::NativeWorkspace {
         // Recorded against the projection of the Tree this capture builds,
         // the next base (council s3, D1).
         next.bind(snapshot.root_tree_id(), &captured.entries);
-        // The projection of the Tree this capture builds: the next command
-        // finds it without re-reading the Trees (derived data, by Tree id).
-        scm_v1::projection_cache::save(
-            self.store_root(),
-            snapshot.root_tree_id(),
-            snapshot.root_tree_id(),
-            &captured.entries,
-        );
-        Ok((snapshot, next))
+        let pending = PendingProjection {
+            root: snapshot.root_tree_id().clone(),
+            entries: captured.entries,
+        };
+        Ok((snapshot, next, Some(pending)))
     }
 
     pub(super) fn capture_projection(
@@ -448,5 +466,19 @@ impl NativeClient {
         };
         let (_, snapshot) = workspace.capture_projection_streaming(&workspace.state()?, limits)?;
         self.prepare_capture_with_reason(&base, snapshot, stamp, reason)
+    }
+}
+
+/// The projection of the Tree a capture builds, to record in the projection
+/// cache: the next command finds it without re-reading the Trees (derived
+/// data, by Tree id; a failed write only costs that read).
+pub(super) struct PendingProjection {
+    root: layrs_core::scm::TreeId,
+    entries: Vec<CheckoutProjectionEntry>,
+}
+
+impl PendingProjection {
+    pub(super) fn save(&self, store_root: &Path) {
+        scm_v1::projection_cache::save(store_root, &self.root, &self.root, &self.entries);
     }
 }

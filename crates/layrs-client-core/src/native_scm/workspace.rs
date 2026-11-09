@@ -423,7 +423,7 @@ impl NativeWorkspace {
         let _total = layrs_store_local::perf::span("capture.total");
         for _ in 0..8 {
             let attempt = (|| {
-                let (plan, next) = {
+                let plan = {
                     let _span = layrs_store_local::perf::span("capture.prepare");
                     match index.as_mut() {
                         Some(index) => {
@@ -449,7 +449,7 @@ impl NativeWorkspace {
                                     .clone();
                                 (base, state, projection, root)
                             };
-                            let (snapshot, next) = self.capture_projection_indexed_from(
+                            let (snapshot, next, pending) = self.capture_projection_indexed_from(
                                 &state,
                                 base_projection,
                                 Some(&base_root),
@@ -463,7 +463,7 @@ impl NativeWorkspace {
                                 MutationStamp::fresh()?,
                                 reason,
                             )?;
-                            (plan, Some(next))
+                            (plan, Some(next), pending)
                         }
                         None => (
                             self.client.prepare_disk_capture_with_reason(
@@ -473,12 +473,24 @@ impl NativeWorkspace {
                                 reason,
                             )?,
                             None,
+                            None,
                         ),
                     }
                 };
+                let (plan, next, pending) = plan;
+                let store_root = self.store_root();
                 if let CapturePlan::Change(change) = &plan {
                     let _span = layrs_store_local::perf::span("capture.accept");
-                    self.client.accept(change)?;
+                    // The new Tree's projection is recorded (derived data)
+                    // while the capture is accepted.
+                    std::thread::scope(|scope| {
+                        if let Some(pending) = &pending {
+                            scope.spawn(move || pending.save(store_root));
+                        }
+                        self.client.accept(change)
+                    })?;
+                } else if let Some(pending) = &pending {
+                    pending.save(store_root);
                 }
                 Ok((plan, next))
             })();
