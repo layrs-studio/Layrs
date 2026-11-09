@@ -16,6 +16,11 @@ pub(super) struct LeaseKeeper<'a> {
     last_ms: i64,
     /// Last implicit identity recheck by `tick()`; `force()` always rechecks.
     verified_at: Option<std::time::Instant>,
+    /// The materialization holds the exclusive Store capability (council
+    /// s10, Q1): nobody can take the Store, so leases are not renewed (a
+    /// renewal would open the Store again); their expiry is still checked
+    /// against the time the Store was taken, at the metadata commit.
+    holding: bool,
 }
 
 /// Progress ticks run per scanned entry and chunk. Rebinding checks there are
@@ -48,7 +53,13 @@ impl<'a> LeaseKeeper<'a> {
             faults,
             last_ms,
             verified_at: None,
+            holding: false,
         })
+    }
+    /// See `holding`.
+    pub fn holding_store(mut self, holding: bool) -> Self {
+        self.holding = holding;
+        self
     }
     pub fn tick(&mut self) -> io::Result<()> {
         self.renew(false)
@@ -69,7 +80,7 @@ impl<'a> LeaseKeeper<'a> {
         let now = self.faults.lease_time_ms()?;
         // A backwards wall-clock correction does not expire an existing lease.
         // Avoid an O(paths²) renewal storm while time catches up.
-        if force || now.saturating_sub(self.last_ms) >= RENEW_EVERY_MS {
+        if !self.holding && (force || now.saturating_sub(self.last_ms) >= RENEW_EVERY_MS) {
             let mut store = open_exclusive(self.root)
                 .map_err(error)?
                 .with_filesystem_identity(&self.store_directory.identity_token())?

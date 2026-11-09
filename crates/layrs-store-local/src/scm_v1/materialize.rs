@@ -30,6 +30,51 @@ pub trait MaterializationFaults {
     fn lease_time_ms(&self) -> io::Result<i64> {
         now_ms()
     }
+    /// Whether a small materialization may hold the exclusive Store
+    /// capability from its journal to its metadata commit (council s10, Q1).
+    /// Recipes that renew leases over virtual time, or let another process
+    /// take the Store between phases, answer false.
+    fn held_session(&self) -> bool {
+        true
+    }
+}
+
+/// Paths a held session may cover (council s10, Q1).
+const HELD_MAX_PATHS: usize = 64;
+/// Bytes (originals and new files together) a held session may cover.
+const HELD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Whether a materialization is small enough to hold the exclusive Store
+/// capability through its phases (council s10, Q1): at most `HELD_MAX_PATHS`
+/// paths, regular files only, no file replaced by a directory or the
+/// reverse, and at most `HELD_MAX_BYTES` of originals and new files.
+fn held_scope(
+    paths: &[&str],
+    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
+    next: &BTreeMap<&str, &CheckoutProjectionContent>,
+) -> bool {
+    if paths.is_empty() || paths.len() > HELD_MAX_PATHS {
+        return false;
+    }
+    let mut bytes = 0u64;
+    for path in paths {
+        for content in [prior.get(path), next.get(path)].into_iter().flatten() {
+            match content {
+                CheckoutProjectionContent::File { byte_length, .. } => {
+                    bytes = bytes.saturating_add(*byte_length);
+                }
+                _ => return false,
+            }
+        }
+        let topology = path.match_indices('/').any(|(at, _)| {
+            let ancestor = &path[..at];
+            prior.contains_key(ancestor) || next.contains_key(ancestor)
+        });
+        if topology {
+            return false;
+        }
+    }
+    bytes <= HELD_MAX_BYTES
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterializationPoint {
@@ -293,7 +338,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
     if fresh {
         super::checkout_paths::validate_paths(paths.iter().copied(), cfg!(windows))?;
     } else if !touched_paths_match(&pinned_checkout, checkout.root(), &paths, &prior)? {
-        return Err(error("checkout changed after capture"));
+        return Err(error(
+            "local changes to paths this operation writes would be overwritten: capture them first (layrs step)",
+        ));
     }
     drop(pinned_checkout);
     drop(precheck);
@@ -450,14 +497,24 @@ pub fn apply_checkout_with_sources_bound_metadata(
         worktree.filesystem_identity().to_owned(),
     );
     let journal_committed = std::cell::Cell::new(false);
+    // A small materialization of an existing checkout holds the exclusive
+    // Store capability its journal takes until its metadata commits (council
+    // s10, Q1): one session, one validation, no lease renewal (nobody else
+    // can take the Store meanwhile). Everything else keeps the lease path.
+    let held = !fresh && ordered && faults.held_session() && held_scope(&paths, &prior, &next);
+    if held {
+        crate::perf::count("materialize.held_session", 1);
+    }
     let journaled = (|| -> io::Result<_> {
         let _session = crate::perf::span("materialize.session_journal");
         let store = open_exclusive(store_root)
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
+        let locked_at_ms = now_ms()?;
         // The journal is created on this writer, which ends with a checked
-        // checkpoint (`journal.finish()`) before any checkout path moves.
+        // checkpoint (`journal.finish()`) before any checkout path moves; a
+        // held session commits it with the WAL flushed instead and goes on.
         let connection = store.begin_session_writer().map_err(error)?;
         connection.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
         let connection = std::sync::Mutex::new(connection);
@@ -551,6 +608,13 @@ pub fn apply_checkout_with_sources_bound_metadata(
         drop(reader);
         let connection = connection.into_inner().map_err(error)?;
         connection.execute_batch("ROLLBACK").map_err(error)?;
+        if held {
+            // Each commit flushes the WAL: the journal is durable at its
+            // commit, before any checkout path moves.
+            connection
+                .pragma_update(None, "synchronous", "FULL")
+                .map_err(error)?;
+        }
         // The journal is created on the same writer (council s3, D2).
         let mut journal = NativeRecovery::with_writer(&store, connection, cas);
         // Another failed or pending checkout write must be recovered first.
@@ -582,11 +646,27 @@ pub fn apply_checkout_with_sources_bound_metadata(
             }
         };
         journal_committed.set(true);
+        if held {
+            // Durable at its commit; the session goes on to the metadata
+            // commit, whose checked checkpoint ends it.
+            let writer = journal.into_writer();
+            writer
+                .pragma_update(None, "synchronous", "NORMAL")
+                .map_err(error)?;
+            return Ok((
+                root,
+                identity,
+                active,
+                target,
+                leases,
+                Some((store, writer, locked_at_ms)),
+            ));
+        }
         // Durable before any checkout path moves.
         journal.finish().map_err(error)?;
-        Ok((root, identity, active, target, leases))
+        Ok((root, identity, active, target, leases, None))
     })();
-    let (checkout_root, identity, active, target, leases) = match journaled {
+    let (checkout_root, identity, active, target, leases, held_session) = match journaled {
         Ok(journaled) => journaled,
         Err(failure) => {
             // Without a journal nothing refers to the staged files.
@@ -639,7 +719,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
         &owner,
         leases,
         faults,
-    )?;
+    )?
+    .holding_store(held_session.is_some());
     let phases = crate::perf::span("materialize.phases");
     // What each moved original looked like once proven equal to its tracked
     // content: the completed attempt deletes only backups still exactly so.
@@ -865,27 +946,51 @@ pub fn apply_checkout_with_sources_bound_metadata(
                 message: format!("lease clock: {failure}"),
             })
     };
-    let outcome =
+    let mut repository =
         NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
             .with_store_identity(store_identity)
-            .with_metadata_identity(metadata_identity)
-            .apply_batch_completing(
-                batch,
-                sources.chunks,
-                &mut sources.read_chunk,
-                &completion,
-                &clock,
-            )
-            .map_err(io::Error::other)?;
+            .with_metadata_identity(metadata_identity);
+    let (outcome, held_store) = match held_session {
+        Some((store, writer, locked_at_ms)) => {
+            let outcome = repository
+                .apply_batch_completing_held(
+                    &store,
+                    writer,
+                    locked_at_ms,
+                    batch,
+                    sources.chunks,
+                    &mut sources.read_chunk,
+                    &completion,
+                    &clock,
+                )
+                .map_err(io::Error::other)?;
+            (outcome, Some(store))
+        }
+        None => (
+            repository
+                .apply_batch_completing(
+                    batch,
+                    sources.chunks,
+                    &mut sources.read_chunk,
+                    &completion,
+                    &clock,
+                )
+                .map_err(io::Error::other)?,
+            None,
+        ),
+    };
     faults.check(MaterializationPoint::AfterMetadata)?;
     if matches!(outcome, ApplyBatchOutcome::AlreadyApplied { .. }) {
         // A batch applied earlier (a replayed request): its journal is
         // completed as before, in its own transaction.
         lease.tick()?;
-        let mut store = open_exclusive(store_root)
-            .map_err(error)?
-            .with_filesystem_identity(store_identity)?
-            .with_metadata_identity(metadata_identity)?;
+        let mut store = match held_store {
+            Some(store) => store,
+            None => open_exclusive(store_root)
+                .map_err(error)?
+                .with_filesystem_identity(store_identity)?
+                .with_metadata_identity(metadata_identity)?,
+        };
         NativeRecovery::new(&mut store)
             .map_err(error)?
             .complete(

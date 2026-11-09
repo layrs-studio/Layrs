@@ -74,6 +74,11 @@ impl Clock {
     }
 }
 impl MaterializationFaults for Clock {
+    // Leases renewed over virtual time, or taken by another owner between
+    // phases: the lease path, never a held session (council s10, Q1).
+    fn held_session(&self) -> bool {
+        false
+    }
     fn lease_time_ms(&self) -> io::Result<i64> {
         Ok(self.now.fetch_add(31_000, Ordering::SeqCst))
     }
@@ -147,6 +152,11 @@ struct LoseLease {
     hit: AtomicBool,
 }
 impl MaterializationFaults for LoseLease {
+    // Leases renewed over virtual time, or taken by another owner between
+    // phases: the lease path, never a held session (council s10, Q1).
+    fn held_session(&self) -> bool {
+        false
+    }
     fn lease_time_ms(&self) -> io::Result<i64> {
         self.clock.lease_time_ms()
     }
@@ -223,6 +233,11 @@ struct JumpAtCompletion {
     reads_after_metadata: std::sync::atomic::AtomicI64,
 }
 impl MaterializationFaults for JumpAtCompletion {
+    // Leases renewed over virtual time, or taken by another owner between
+    // phases: the lease path, never a held session (council s10, Q1).
+    fn held_session(&self) -> bool {
+        false
+    }
     fn lease_time_ms(&self) -> io::Result<i64> {
         let reads = self.reads_after_metadata.load(Ordering::SeqCst);
         if reads >= 0 {

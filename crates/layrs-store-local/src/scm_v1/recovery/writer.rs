@@ -34,6 +34,13 @@ impl<'store> NativeRecovery<'store> {
         }
     }
 
+    /// The writer back, for a session that continues after its journal
+    /// committed (a held materialization, council s10, Q1): the caller ends
+    /// it at the checked durability point (`sqlite::finish_writer`).
+    pub(crate) fn into_writer(self) -> Connection {
+        self.connection
+    }
+
     /// Ends the session at its checked durability point
     /// (`sqlite::finish_writer`): every transition it committed is durable
     /// when this returns, before the caller acts on it.

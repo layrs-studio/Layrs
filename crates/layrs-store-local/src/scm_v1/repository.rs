@@ -213,6 +213,38 @@ impl NativeScmRepository {
         )
     }
 
+    /// `apply_batch_completing` on the exclusive capability `store` that the
+    /// caller has held since it validated `batch` and committed its journal
+    /// on `writer` (council s10, Q1: one held session for a small
+    /// materialization). The batch's admission is not validated again: no
+    /// other writer could run since. `locked_at_ms` is when `store` was
+    /// taken. Ends with the checked checkpoint, as every writer session.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_batch_completing_held(
+        &mut self,
+        store: &super::NativeStoreExclusive,
+        writer: Connection,
+        locked_at_ms: i64,
+        batch: &WriteBatch,
+        chunks: &[(ChunkId, u64)],
+        read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        completion: &MaterializationCompletion,
+        clock: &dyn Fn() -> Result<i64>,
+    ) -> Result<ApplyBatchOutcome> {
+        Self::preflight_batch(batch, chunks)?;
+        self.validate_store_id(store.store_id())?;
+        self.apply_on_store(
+            store,
+            Some(writer),
+            locked_at_ms,
+            batch,
+            chunks,
+            read_chunk,
+            || Ok(()),
+            Some((completion, clock)),
+        )
+    }
+
     pub(crate) fn with_short_acquisition(mut self) -> Self {
         self.acquisition_budget = SHORT_WAIT;
         self
@@ -280,28 +312,12 @@ impl NativeScmRepository {
         &mut self,
         batch: &WriteBatch,
         chunks: &[(ChunkId, u64)],
-        mut read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
         mut guard: impl FnMut() -> Result<()>,
         acquisition_budget: Duration,
         completing: Completing<'_>,
     ) -> Result<ApplyBatchOutcome> {
-        super::admission::preflight_batch_budgets(batch)?;
-        streaming::preflight(batch, chunks)?;
-        // Rebuild through the public constructor: this rechecks ordering,
-        // duplicate targets, publication coupling, canonical JSON and digest.
-        let verified = WriteBatch::new(
-            batch.transaction_id().clone(),
-            batch.canonical_objects().to_vec(),
-            batch.entity_records().to_vec(),
-            batch.admissions().to_vec(),
-            batch.mutations().to_vec(),
-        )?;
-        if verified.request_digest() != batch.request_digest() {
-            return Err(StoreError::Corruption {
-                message: "WriteBatch digest changed after construction".into(),
-            });
-        }
-
+        Self::preflight_batch(batch, chunks)?;
         let store = acquire("repository acceptance", acquisition_budget, || {
             open_exclusive(&self.root)
         })
@@ -324,31 +340,88 @@ impl NativeScmRepository {
         };
         self.validate_store_id(store.store_id())?;
         guard()?;
+        self.apply_on_store(
+            &store,
+            None,
+            locked_at_ms,
+            batch,
+            chunks,
+            read_chunk,
+            guard,
+            completing,
+        )
+    }
+
+    /// Checks a batch before any Store is taken: budgets, streaming chunk
+    /// descriptors, and the digest rebuilt through the public constructor
+    /// (ordering, duplicate targets, publication coupling, canonical JSON).
+    fn preflight_batch(batch: &WriteBatch, chunks: &[(ChunkId, u64)]) -> Result<()> {
+        super::admission::preflight_batch_budgets(batch)?;
+        streaming::preflight(batch, chunks)?;
+        let verified = WriteBatch::new(
+            batch.transaction_id().clone(),
+            batch.canonical_objects().to_vec(),
+            batch.entity_records().to_vec(),
+            batch.admissions().to_vec(),
+            batch.mutations().to_vec(),
+        )?;
+        if verified.request_digest() != batch.request_digest() {
+            return Err(StoreError::Corruption {
+                message: "WriteBatch digest changed after construction".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The batch applied under the exclusive capability `store`, taken at
+    /// `locked_at_ms`. `held`: the writer of a held session (council s10,
+    /// Q1), which already validated the batch's admission and holds a
+    /// committed journal; else a writer is opened here and the batch is
+    /// validated in its transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_on_store(
+        &mut self,
+        store: &super::NativeStoreExclusive,
+        held: Option<Connection>,
+        locked_at_ms: i64,
+        batch: &WriteBatch,
+        chunks: &[(ChunkId, u64)],
+        mut read_chunk: impl FnMut(&ChunkId) -> Result<Vec<u8>>,
+        mut guard: impl FnMut() -> Result<()>,
+        completing: Completing<'_>,
+    ) -> Result<ApplyBatchOutcome> {
+        let validated = held.is_some();
         // Reject an already-stale new request before installing any bytes. The
         // immutable reader uses this same exclusive capability, never another
-        // Store lock. Any existing receipt preserves the original CAS-before-
-        // replay path, including digest collisions and corrupt receipts.
+        // Store lock (a held session reads through its own writer: its WAL
+        // holds the journal). Any existing receipt preserves the original
+        // CAS-before-replay path, including digest collisions and corrupt
+        // receipts.
         store.verify_filesystem_identity().map_err(native_backend)?;
-        {
-            let connection =
-                super::sqlite::open_read_only(store.layout().sqlite_path(), SHORT_WAIT)
-                    .map_err(schema_backend)?;
-            super::sqlite::validate_store_identity(&connection, store.store_id())
-                .map_err(schema_backend)?;
-            let has_receipt: bool = connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_id=?1)",
-                    [batch.transaction_id().as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(sql_backend)?;
-            if !has_receipt {
-                precheck_mutations(&Mutex::new(connection), batch)?;
+        let held = match held {
+            Some(writer) => {
+                let writer = Mutex::new(writer);
+                Self::precheck_new(&writer, batch)?;
+                Some(writer.into_inner().map_err(|_| poisoned())?)
             }
-        }
+            None => {
+                let connection =
+                    super::sqlite::open_read_only(store.layout().sqlite_path(), SHORT_WAIT)
+                        .map_err(schema_backend)?;
+                super::sqlite::validate_store_identity(&connection, store.store_id())
+                    .map_err(schema_backend)?;
+                Self::precheck_new(&Mutex::new(connection), batch)?;
+                None
+            }
+        };
         store.verify_filesystem_identity().map_err(native_backend)?;
-        let cas = NativeCasWriter::with_fault_injector(&store, Arc::clone(&self.cas_faults))
-            .map_err(cas_backend)?;
+        let cas = match &held {
+            Some(writer) => {
+                NativeCasWriter::with_session_writer(store, Arc::clone(&self.cas_faults), writer)
+            }
+            None => NativeCasWriter::with_fault_injector(store, Arc::clone(&self.cas_faults)),
+        }
+        .map_err(cas_backend)?;
         let compact = store.compact();
         if compact {
             plan_file_records(&cas, batch, chunks)?;
@@ -397,7 +470,10 @@ impl NativeScmRepository {
 
         // Ends with a checked checkpoint below (durable before the caller
         // acts on the commit).
-        let connection = store.begin_session_writer().map_err(schema_backend)?;
+        let connection = match held {
+            Some(writer) => writer,
+            None => store.begin_session_writer().map_err(schema_backend)?,
+        };
         self.hit(RepositoryFaultPoint::AfterWriterOpen)?;
         connection
             .execute_batch("BEGIN IMMEDIATE")
@@ -417,6 +493,7 @@ impl NativeScmRepository {
                 completing,
                 locked_at_ms,
                 &super::admission::memo_scope_of(store.store_id(), store.layout().root()),
+                validated,
             )
             .and_then(|outcome| {
                 store.verify_filesystem_identity().map_err(native_backend)?;
@@ -460,7 +537,7 @@ impl NativeScmRepository {
                             .map_err(|error| error.to_string())
                     };
                     if super::consolidation::consolidate_if_due(
-                        &store,
+                        store,
                         Arc::clone(&self.cas_faults),
                         &after_commit,
                     )
@@ -495,6 +572,7 @@ impl NativeScmRepository {
         completing: Completing<'_>,
         locked_at_ms: i64,
         memo_scope: &str,
+        validated: bool,
     ) -> Result<ApplyBatchOutcome> {
         // CAS publication intentionally precedes replay inspection. Therefore a
         // transaction-ID/digest mismatch may leave verified, unreferenced CAS
@@ -536,10 +614,13 @@ impl NativeScmRepository {
         } else {
             ensure_immutables(&reader, batch)?;
         }
-        let resolver =
-            CompositeAdmissionResolver::new(&reader, batch)?.with_memo_scope(memo_scope.to_owned());
-        resolver.validate_batch()?;
-        drop(resolver);
+        // A held session validated this batch under the same exclusive
+        // capability, before its journal (council s10, Q1).
+        if !validated {
+            let resolver = CompositeAdmissionResolver::new(&reader, batch)?
+                .with_memo_scope(memo_scope.to_owned());
+            resolver.validate_batch()?;
+        }
         drop(reader);
         drop(validation);
         self.hit(RepositoryFaultPoint::AfterValidation)?;
@@ -605,6 +686,25 @@ impl NativeScmRepository {
 }
 
 impl NativeScmRepository {
+    /// Before any byte is installed: a batch with no receipt yet must still
+    /// match every compare-and-swap target (a stale request installs
+    /// nothing).
+    fn precheck_new(connection: &Mutex<Connection>, batch: &WriteBatch) -> Result<()> {
+        let has_receipt: bool = connection
+            .lock()
+            .map_err(|_| poisoned())?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM applied_transactions WHERE transaction_id=?1)",
+                [batch.transaction_id().as_str()],
+                |row| row.get(0),
+            )
+            .map_err(sql_backend)?;
+        if !has_receipt {
+            precheck_mutations(connection, batch)?;
+        }
+        Ok(())
+    }
+
     /// A pending materialization of a Worktree this batch moves must be ours
     /// (permit, owner, `applying`, digest) with every lease live when this
     /// batch took the exclusive Store (`locked_at_ms`). Those leases are then

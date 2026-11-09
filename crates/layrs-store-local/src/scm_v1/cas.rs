@@ -1716,6 +1716,26 @@ impl<'store> NativeCasWriter<'store> {
         store: &'store NativeStoreExclusive,
         faults: Arc<dyn CasFaultInjector>,
     ) -> CasResult<Self> {
+        Self::open_with(store, faults, None)
+    }
+
+    /// `with_fault_injector` reading the registered catalog through
+    /// `writer`, the session's own writer: a held materialization session
+    /// (council s10, Q1) has committed its journal there, and a read-only
+    /// open refuses a WAL not yet checkpointed.
+    pub(crate) fn with_session_writer(
+        store: &'store NativeStoreExclusive,
+        faults: Arc<dyn CasFaultInjector>,
+        writer: &rusqlite::Connection,
+    ) -> CasResult<Self> {
+        Self::open_with(store, faults, Some(writer))
+    }
+
+    fn open_with(
+        store: &'store NativeStoreExclusive,
+        faults: Arc<dyn CasFaultInjector>,
+        writer: Option<&rusqlite::Connection>,
+    ) -> CasResult<Self> {
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
@@ -1727,18 +1747,24 @@ impl<'store> NativeCasWriter<'store> {
             // this capability ends.
             cas.compact_format = true;
             cas.store_id = Some(store.store_id().clone());
-            let connection = super::sqlite::open_read_only(
-                store.layout().sqlite_path(),
-                std::time::Duration::from_secs(5),
-            )
-            .map_err(|error| {
-                io_error(
-                    "open SQLite for the CAS catalog",
-                    store.layout().sqlite_path(),
-                    io::Error::other(error.to_string()),
-                )
-            })?;
-            let catalog = Arc::new(compact::RegisteredCatalog::load(&connection, &cas)?);
+            let catalog = match writer {
+                Some(writer) => compact::RegisteredCatalog::load(writer, &cas)?,
+                None => {
+                    let connection = super::sqlite::open_read_only(
+                        store.layout().sqlite_path(),
+                        std::time::Duration::from_secs(5),
+                    )
+                    .map_err(|error| {
+                        io_error(
+                            "open SQLite for the CAS catalog",
+                            store.layout().sqlite_path(),
+                            io::Error::other(error.to_string()),
+                        )
+                    })?;
+                    compact::RegisteredCatalog::load(&connection, &cas)?
+                }
+            };
+            let catalog = Arc::new(catalog);
             cas.collect_orphan_packs(&catalog);
             cas.compact = Some(catalog);
         }
