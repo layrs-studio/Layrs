@@ -1,5 +1,49 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - lectures de packs, captures, fusions (Claude, 2026-11-09, suite)
+
+**Commits**
+- `dfdecba` : purge du dossier de tentative sans synchronisation (reste inoffensif, balayé) ; parents de la phase 2 sans synchronisation propre sur un volume NTFS (la barrière les rend durables, décision B2 2 du conseil s2) ; la création du dossier de tentative reste synchronisée (même décision) ; un delta de projection lié à la dernière projection complète lue par le processus (même condensé) s'applique à ses octets vérifiés sans relire le fichier ; `status` décode l'index de changements sur un autre fil pendant la lecture du Store.
+- `21c22a5` : la capture ne crée son fichier de spool qu'au premier morceau ; une capture qui n'a rien relu et a fait confiance à toutes les entrées garde l'index tel quel (au lieu de le reconstruire entrée par entrée) ; la projection du nouvel arbre est écrite dans le cache pendant l'acceptation.
+- `bedeb35` : la capture décode aussi l'index pendant la lecture du Store.
+- `6ffc7d7` : un catalogue garde ouvert chaque fichier pack qu'il lit (avant : une ouverture épinglée par bloc lu) ; cache de blocs 8 → 64. Lecture des morceaux à la création d'une Room virtuelle : 2 322 → 47 ms à 10 000 fichiers.
+- `89cede5` : le recontrôle du dossier avant d'écrire le résultat d'une fusion se fait en une passe (comme `status`) : il ne supprime rien, chaque chemin écrit est reprouvé juste avant son remplacement.
+- `b7dcca4`, `625c6b1` : un seul verrou partagé du Store par première lecture d'un fichier virtuel (manifeste et morceaux) ; une lecture annulée pendant l'attente du verrou reste `Cancelled`.
+
+**Banc à 10 000 fichiers, format 6** (`625c6b1`, deux répétitions, machine calme ; git dans la même zone) :
+
+| | layrs | git |
+| --- | --- | --- |
+| `init` | 1,2–1,7 s | 40–48 s |
+| `status` propre / 2 changements (juste après `init`) | 56–57 / 63–65 ms | 51–55 / 53–60 ms |
+| `step` (2 fichiers) | 126–136 ms | 150–155 ms |
+| création de Room (agent) | 1,68 s | 2,17–2,22 s |
+| première lecture de tous les fichiers | 3,37–3,55 s | 2,67–2,96 s |
+| `room step` de l'agent | 164–210 ms | 175–238 ms |
+| fusion en avance rapide / 2e fusion | 143–167 / 147–148 ms | 72–79 / 69–74 ms |
+| fusion 3 voies | 319–337 ms | 359–371 ms |
+| suppression de la Room | 0,29–0,45 s | 1,41–1,47 s |
+| création d'une Room physique | 1,29–1,40 s | — |
+| Store après le scénario | 2 624–2 628 Kio | 1 822 Kio |
+
+Notes :
+- `status` juste après `init` : les fichiers écrits moins de 100 ms avant la preuve de l'`init` sont « racy » (marge NTFS) et relus une fois, comme git relit ses entrées racy ; en régime établi, `status` est devant git (21,1–22,0 contre 22,5–22,8 ms).
+- Première lecture d'une Room virtuelle : même une deuxième lecture coûte ~0,4 s de plus que git (2,97 contre 2,54 s). L'hôte ne reçoit aucun rappel pendant ces lectures : c'est le filtre ProjFS à chaque ouverture d'un placeholder hydraté. Création et lecture ensemble restent à parité (5,05–5,23 contre 4,84–5,18 s) ; une Room physique se lit comme un dossier ordinaire.
+
+**Mesures ponctuelles**
+- `status` propre, même dossier : 21,1–22,0 ms contre 22,5–22,8 ms pour git (avant : 22,9 ms).
+- `step` sans changement : 29 → 24 ms dans le processus.
+- Création de Room : virtuelle 2,08–2,29 → 1,73–1,75 s, physique 1,43–1,47 → 1,18–1,23 s (git `worktree add` 2,29 s, mesures séparées de `room_create_bench.sh`).
+- Fusion en avance rapide, dans le processus : ~160 → ~115 ms (git ~45 ms hors démarrage).
+
+**Écarté pour l'instant** : une seule session exclusive tenue du journal à la clôture (décision unanime s4 Q3). Tenir le verrou exclusif pendant les phases rend caduc le modèle de baux (un concurrent ne peut plus reprendre un bail en cours de phases, ce que testent `native_materialize_lease`) ; gain estimé ~8 ms par petite matérialisation. À reprendre avec une revue du conseil.
+
+**Décisions utilisateur en attente**
+1. Fusion en avance rapide sans journal (contrat de git) : Astra et Sol pour, Opus contre (promesse de l'ADR 0025). ~15–30 ms.
+2. Pas de capture du projet avant une fusion (git ne vérifie que les chemins touchés) : ~20 ms.
+3. Identité de contenu (FileId et ChunkId de 32 octets) : seul levier restant pour la taille (2 620 contre 1 822 Kio).
+4. `room drop` d'une Room physique : l'ADR 0025 impose de tout relire et hacher ; sur une Room fraîche de 10 000 fichiers, ~10 s (antivirus à chaque première ouverture). git se fie aux métadonnées de l'index.
+
 ## Point courant - packs en ligne, création de Room, conseil s8 (Claude + conseil, 2026-11-09)
 
 **Banc à 10 000 fichiers, format 6** (`1d651a6`, deux répétitions, machine chargée ; git dans la même zone) :
