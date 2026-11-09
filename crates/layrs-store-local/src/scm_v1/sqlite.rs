@@ -263,6 +263,10 @@ pub fn create_fresh_baseline(
         // Only an empty database takes a page size, before WAL is enabled.
         connection.pragma_update(None, "page_size", page_size)?;
     }
+    if baseline.auto_vacuum {
+        // Only an empty database takes a vacuum mode, before any table.
+        connection.pragma_update(None, "auto_vacuum", "FULL")?;
+    }
     configure_writer(&connection, busy_timeout)?;
     if !table_names(&connection)?.is_empty() {
         return Err(ScmSchemaError::InvalidStagedDatabase {

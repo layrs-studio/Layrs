@@ -149,6 +149,10 @@ pub struct Baseline {
     /// SQLite page size of a fresh database (format 6: 1 KiB pages, so the
     /// ~80 nearly empty tables and indexes do not cost 4 KiB each).
     pub page_size: Option<u32>,
+    /// Whether a fresh database returns the pages a commit frees to the file
+    /// system (`auto_vacuum = FULL`; format 6: retired inline pack images,
+    /// a dropped Room's rows), instead of keeping them free in the file.
+    pub auto_vacuum: bool,
 }
 
 pub const BASELINE_V2: Baseline = Baseline {
@@ -159,6 +163,7 @@ pub const BASELINE_V2: Baseline = Baseline {
     fingerprint: SCHEMA_FINGERPRINT,
     required_tables: REQUIRED_TABLES,
     page_size: None,
+    auto_vacuum: false,
 };
 
 pub const BASELINE_V3: Baseline = Baseline {
@@ -169,6 +174,7 @@ pub const BASELINE_V3: Baseline = Baseline {
     fingerprint: SCHEMA_V3_FINGERPRINT,
     required_tables: REQUIRED_TABLES_V3,
     page_size: Some(1024),
+    auto_vacuum: true,
 };
 
 /// The baseline of a Store of `format_version` (format 6: v3; else v2).
