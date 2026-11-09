@@ -1228,7 +1228,7 @@ pub fn now() -> i64 {
 }
 
 /// Timestamp margin for the volume holding `root`.
-fn margin_nanos(root: &Path) -> i64 {
+pub(crate) fn margin_nanos(root: &Path) -> i64 {
     #[cfg(windows)]
     {
         match volume_file_system(root).as_deref() {

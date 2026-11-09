@@ -184,6 +184,32 @@ pub(super) fn write(
     )?;
     let indexed =
         super::super::change_index::ChangeIndex::is_enabled(fresh.store_root, fresh.worktree_id);
+    if indexed {
+        // As git dates its index after the files it wrote: the proof below
+        // (each file still at its path with the exact stat its writing
+        // handle saw) is taken once the volume's timestamp margin has passed
+        // since the last write, so no entry is "racy" and the first capture
+        // reads none of the files just written (council s10). A same-tick
+        // rewrite keeping the size escapes the stat comparison, as in git.
+        // Only on a volume with a fine margin (NTFS, ReFS: 100 ms): a coarse
+        // one would cost seconds, and its first capture rereads instead.
+        let margin = super::super::change_index::margin_nanos(root);
+        let last = written
+            .files
+            .values()
+            .map(|stat| stat.modified)
+            .max()
+            .filter(|_| margin <= 250_000_000);
+        if let Some(due) = last.and_then(|last| last.checked_add(margin)) {
+            let wait = due.saturating_sub(super::super::change_index::now());
+            if wait > 0 {
+                let _span = crate::perf::span("fresh.settle");
+                std::thread::sleep(std::time::Duration::from_nanos(
+                    u64::try_from(wait.saturating_add(1_000_000)).unwrap_or(0),
+                ));
+            }
+        }
+    }
     let proven_at = super::super::change_index::now();
     let proven = {
         let _span = crate::perf::span("fresh.verify");
