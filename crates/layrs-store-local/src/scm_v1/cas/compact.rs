@@ -23,7 +23,7 @@ use std::sync::{Mutex, OnceLock};
 /// verified against its id at each read, and the cache lives only as long
 /// as the catalog (one SQLite snapshot): a later operation rereads the disk,
 /// as format 5 rereads every object, and sees any damage done since.
-const RECENT_BLOCKS: usize = 8;
+const RECENT_BLOCKS: usize = 64;
 const RECENT_BLOCK_MAX: usize = 64 * 1024;
 
 /// One pack v2 loaded by this process: its validated metadata. A published
@@ -990,6 +990,12 @@ pub(crate) struct RegisteredCatalog {
     admissions: Mutex<HashMap<String, Arc<SpaceAdmissions>>>,
     /// Last decompressed blocks: ((pack, block), raw bytes).
     recent: Mutex<VecDeque<RecentBlock>>,
+    /// Pack files this catalog opened, by pack position: one open (pinned,
+    /// its length checked) per pack for the catalog's life instead of one
+    /// per block read. Opened with every sharing mode, so a pack retired
+    /// meanwhile can still be deleted; its bytes do not change (each block
+    /// is checked against its checksum, each record against its id).
+    open_packs: Mutex<HashMap<usize, Arc<PinnedFile>>>,
 }
 
 impl RegisteredCatalog {
@@ -999,7 +1005,7 @@ impl RegisteredCatalog {
                 return Ok(Arc::clone(bytes));
             }
         }
-        let raw = Arc::new(self.packs[pack].pack.read_block(cas, block)?);
+        let raw = Arc::new(self.read_pack_block(cas, pack, block)?);
         if raw.len() <= RECENT_BLOCK_MAX {
             if let Ok(mut recent) = self.recent.lock() {
                 recent.push_front(((pack, block), Arc::clone(&raw)));
@@ -1007,6 +1013,32 @@ impl RegisteredCatalog {
             }
         }
         Ok(raw)
+    }
+
+    /// Block `block` of pack `pack`, read through the pack file this catalog
+    /// keeps open (opened on first use).
+    fn read_pack_block(&self, cas: &NativeCas, pack: usize, block: u32) -> CasResult<Vec<u8>> {
+        let loaded = &self.packs[pack].pack;
+        if loaded.is_inline() {
+            return loaded.read_block(cas, block);
+        }
+        let kept = self
+            .open_packs
+            .lock()
+            .ok()
+            .and_then(|open| open.get(&pack).cloned());
+        let file = match kept {
+            Some(file) => file,
+            None => {
+                let _span = crate::perf::span("cas.pack_open");
+                let file = Arc::new(loaded.open(cas)?);
+                if let Ok(mut open) = self.open_packs.lock() {
+                    open.insert(pack, Arc::clone(&file));
+                }
+                file
+            }
+        };
+        pack2::read_block(file.file(), &loaded.path, &loaded.index, block)
     }
 
     fn body(
@@ -1180,6 +1212,7 @@ impl RegisteredCatalog {
             loose_by_file,
             admissions: Mutex::new(HashMap::new()),
             recent: Mutex::new(VecDeque::with_capacity(RECENT_BLOCKS)),
+            open_packs: Mutex::new(HashMap::new()),
         })
     }
 
