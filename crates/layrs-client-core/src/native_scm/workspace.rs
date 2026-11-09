@@ -375,21 +375,29 @@ impl NativeWorkspace {
     }
 
     pub fn capture_with_reason(&self, reason: CaptureReason) -> Result<CapturePlan> {
-        let index = self.change_index();
-        self.capture_using(reason, index)
+        if !self.change_index_enabled() {
+            return self.capture_using(reason, None);
+        }
+        // The index file is decoded on another thread while the capture
+        // reads the Store (joined before the scan).
+        let (store_root, worktree_id) = (self.store_root(), &self.worktree_id);
+        std::thread::scope(|scope| {
+            let loading = scope
+                .spawn(move || scm_v1::change_index::ChangeIndex::load(store_root, worktree_id));
+            self.capture_using_passes(reason, None, Some(loading), true)
+        })
     }
 
     /// Every physical folder, the project's own included, keeps a change
     /// index (ADR 0025, decision of 4 November 2026); one without yet gets an
     /// empty one, which its next capture fills. A cache: if it cannot be
     /// created, captures read every file as before.
-    fn change_index(&self) -> Option<scm_v1::change_index::ChangeIndex> {
+    fn change_index_enabled(&self) -> bool {
         use scm_v1::change_index::ChangeIndex;
-        if !ChangeIndex::is_enabled(self.store_root(), &self.worktree_id) {
-            let root = self.checkout_root().ok()?;
-            ChangeIndex::enable(self.store_root(), &self.worktree_id, &root).ok()?;
-        }
-        ChangeIndex::load(self.store_root(), &self.worktree_id)
+        ChangeIndex::is_enabled(self.store_root(), &self.worktree_id)
+            || self.checkout_root().is_ok_and(|root| {
+                ChangeIndex::enable(self.store_root(), &self.worktree_id, &root).is_ok()
+            })
     }
 
     /// Reads every file even when this Worktree has a change index (ADR 0025):
@@ -401,7 +409,7 @@ impl NativeWorkspace {
                 index.clear();
                 index
             });
-        self.capture_using_passes(reason, index, false)
+        self.capture_using_passes(reason, index, None, false)
     }
 
     fn capture_using(
@@ -409,15 +417,21 @@ impl NativeWorkspace {
         reason: CaptureReason,
         index: Option<scm_v1::change_index::ChangeIndex>,
     ) -> Result<CapturePlan> {
-        self.capture_using_passes(reason, index, true)
+        self.capture_using_passes(reason, index, None, true)
     }
 
     /// single_pass for a capture that only records content (council r5,
     /// D4); the verification before a deletion keeps two equal passes.
+    /// `loading`, when given, yields the index (`index` is then `None`): it
+    /// is joined once the first Store session is read; if it yields none,
+    /// the capture reads every file.
     fn capture_using_passes(
         &self,
         reason: CaptureReason,
         mut index: Option<scm_v1::change_index::ChangeIndex>,
+        mut loading: Option<
+            std::thread::ScopedJoinHandle<'_, Option<scm_v1::change_index::ChangeIndex>>,
+        >,
         single_pass: bool,
     ) -> Result<CapturePlan> {
         let _total = layrs_store_local::perf::span("capture.total");
@@ -425,47 +439,8 @@ impl NativeWorkspace {
             let attempt = (|| {
                 let plan = {
                     let _span = layrs_store_local::perf::span("capture.prepare");
-                    match index.as_mut() {
-                        Some(index) => {
-                            // Everything read before the scan comes from one
-                            // shared session, released before the folder is
-                            // read (no Store lock is held while hashing).
-                            let (base, state, base_projection, base_root) = {
-                                let store = self.open_store()?;
-                                let base =
-                                    self.client.capture_base_with(&store, &self.worktree_id)?;
-                                let state = self.state_with(&store)?;
-                                let step = super::references::base_step(&state)?;
-                                let projection = self.read_step_projection_with(
-                                    &store,
-                                    state.space.id(),
-                                    &step,
-                                )?;
-                                let reader = NativeScmReader::new(&store)?;
-                                let root = reader
-                                    .get_step(&step)?
-                                    .ok_or(NativeClientError::Missing("base Step"))?
-                                    .root_tree_id()
-                                    .clone();
-                                (base, state, projection, root)
-                            };
-                            let (snapshot, next, pending) = self.capture_projection_indexed_from(
-                                &state,
-                                base_projection,
-                                Some(&base_root),
-                                SnapshotLimits::streaming(),
-                                index,
-                                single_pass,
-                            )?;
-                            let plan = self.client.prepare_capture_with_reason(
-                                &base,
-                                snapshot,
-                                MutationStamp::fresh()?,
-                                reason,
-                            )?;
-                            (plan, Some(next), pending)
-                        }
-                        None => (
+                    let disk = || -> Result<_> {
+                        Ok((
                             self.client.prepare_disk_capture_with_reason(
                                 &self.worktree_id,
                                 SnapshotLimits::streaming(),
@@ -474,7 +449,53 @@ impl NativeWorkspace {
                             )?,
                             None,
                             None,
-                        ),
+                        ))
+                    };
+                    if index.is_none() && loading.is_none() {
+                        disk()?
+                    } else {
+                        // Everything read before the scan comes from one
+                        // shared session, released before the folder is
+                        // read (no Store lock is held while hashing).
+                        let (base, state, base_projection, base_root) = {
+                            let store = self.open_store()?;
+                            let base = self.client.capture_base_with(&store, &self.worktree_id)?;
+                            let state = self.state_with(&store)?;
+                            let step = super::references::base_step(&state)?;
+                            let projection =
+                                self.read_step_projection_with(&store, state.space.id(), &step)?;
+                            let reader = NativeScmReader::new(&store)?;
+                            let root = reader
+                                .get_step(&step)?
+                                .ok_or(NativeClientError::Missing("base Step"))?
+                                .root_tree_id()
+                                .clone();
+                            (base, state, projection, root)
+                        };
+                        if let Some(loading) = loading.take() {
+                            index = loading.join().ok().flatten();
+                        }
+                        match index.as_mut() {
+                            Some(index) => {
+                                let (snapshot, next, pending) = self
+                                    .capture_projection_indexed_from(
+                                        &state,
+                                        base_projection,
+                                        Some(&base_root),
+                                        SnapshotLimits::streaming(),
+                                        index,
+                                        single_pass,
+                                    )?;
+                                let plan = self.client.prepare_capture_with_reason(
+                                    &base,
+                                    snapshot,
+                                    MutationStamp::fresh()?,
+                                    reason,
+                                )?;
+                                (plan, Some(next), pending)
+                            }
+                            None => disk()?,
+                        }
                     }
                 };
                 let (plan, next, pending) = plan;
