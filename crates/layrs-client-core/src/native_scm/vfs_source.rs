@@ -342,10 +342,20 @@ impl VerifiedVfsSnapshot {
         drop(cached);
         // A view bound during a bulk read is held instead of the one it
         // replaces (council s9 r2): reads still running on the old view
-        // finish through it, opening its packs per read.
+        // finish through it, opening its packs per read. The view held is
+        // the one cached now, taken in the order `bulk_reads` takes the two
+        // locks, so a concurrent rebind never leaves an older view held
+        // (council s9 r3).
         if let Ok(mut bulk) = self.bulk.lock() {
             if bulk.readers > 0 {
-                bulk.hold(&cas);
+                let current = self
+                    .cas
+                    .lock()
+                    .ok()
+                    .and_then(|cached| cached.as_ref().map(|(cas, _)| cas.clone()));
+                if let Some(current) = current {
+                    bulk.hold(&current);
+                }
             }
         }
         Ok(cas)
@@ -699,6 +709,59 @@ fn cancelled(cancel: &Cancellation) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+
+    /// A bulk read holds the pack files of the current view only, and the
+    /// last one releases them (council s9 r2, r3).
+    #[test]
+    fn a_bulk_read_holds_only_the_current_view() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-vfs-bulk-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let bytes = b"bulk read bytes".to_vec();
+        std::fs::write(root.join("file.txt"), &bytes).unwrap();
+        let store_root = root.join(".layrs");
+        // Every pack a file, so reading it opens one.
+        scm_v1::set_inline_pack_limit(&store_root, Some(0));
+        let workspace = super::super::NativeWorkspace::initialize(&root, "Bulk").unwrap();
+        let chunk =
+            StoreObjectId::ChunkRaw(layrs_core::scm::Chunk::new(bytes).unwrap().id().clone());
+        let view =
+            || scm_v1::NativeCas::open(&scm_v1::open(workspace.store_root()).unwrap()).unwrap();
+        let (first, second) = (view(), view());
+        if first.hold_pack_files().is_none() {
+            // Format 5: no catalog to hold.
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let bulk = std::sync::Arc::new(std::sync::Mutex::new(BulkHolds {
+            readers: 1,
+            hold: None,
+        }));
+        bulk.lock().unwrap().hold(&first);
+        first.read(&chunk).unwrap();
+        assert_eq!(scm_v1::held_pack_files(&first), 1);
+        // A new view replaces the held one.
+        bulk.lock().unwrap().hold(&second);
+        assert_eq!(scm_v1::held_pack_files(&first), 0);
+        second.read(&chunk).unwrap();
+        assert_eq!(scm_v1::held_pack_files(&second), 1);
+        // The last bulk read releases everything.
+        drop(BulkReads(std::sync::Arc::clone(&bulk)));
+        assert_eq!(scm_v1::held_pack_files(&second), 0);
+        drop((first, second, workspace));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]

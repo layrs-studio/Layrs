@@ -28,6 +28,16 @@ const RECENT_BLOCK_MAX: usize = 64 * 1024;
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
 const HELD_PACKS_MAX: usize = 16;
+/// Most pack files every held catalog of this process keeps open together
+/// (council s9 r3): concurrent staging sessions share it. Past it, a read
+/// opens its pack for that read only.
+const HELD_PACKS_PROCESS_MAX: usize = 32;
+
+/// Pack files kept open by the held catalogs of this process.
+fn held_packs() -> &'static std::sync::atomic::AtomicUsize {
+    static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    &HELD
+}
 
 /// One pack v2 loaded by this process: its validated metadata. A published
 /// pack is immutable; the cache is keyed by
@@ -1036,6 +1046,7 @@ impl Drop for CatalogHold {
             .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
             == 1
         {
+            held_packs().fetch_sub(open.len(), std::sync::atomic::Ordering::AcqRel);
             open.clear();
         }
     }
@@ -1095,7 +1106,20 @@ impl RegisteredCatalog {
                 let _span = crate::perf::span("cas.pack_open");
                 let file = Arc::new(loaded.open(cas)?);
                 if let Ok(mut open) = self.open_packs.lock() {
-                    if held() && open.len() < HELD_PACKS_MAX {
+                    let reserved = || {
+                        held_packs()
+                            .fetch_update(
+                                std::sync::atomic::Ordering::AcqRel,
+                                std::sync::atomic::Ordering::Acquire,
+                                |kept| (kept < HELD_PACKS_PROCESS_MAX).then_some(kept + 1),
+                            )
+                            .is_ok()
+                    };
+                    if held()
+                        && !open.contains_key(&pack)
+                        && open.len() < HELD_PACKS_MAX
+                        && reserved()
+                    {
                         open.insert(pack, Arc::clone(&file));
                     }
                 }

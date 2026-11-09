@@ -99,10 +99,12 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         loaded.filter(|(_, entries)| well_formed(entries))
     };
     let Some((projection_tree, entries)) = checked else {
-        forget_complete(root_tree);
+        // Removed, then forgotten (council s9 r3): a read that saw the file
+        // began before the forget, so it cannot remember it again.
         if path.exists() {
             let _ = fs::remove_file(&path);
         }
+        forget_complete(root_tree);
         return None;
     };
     {
@@ -220,9 +222,14 @@ fn forget_complete(root_tree: &TreeId) {
 /// The remembered bytes of `root_tree`'s complete projection, if they are
 /// exactly those of `checksum` and were read within `REMEMBERED_FOR`.
 fn last_complete(root_tree: &TreeId, checksum: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
-    let last = verified_complete().lock().ok()?;
+    let mut last = verified_complete().lock().ok()?;
     let (tree, sum, bytes, read_at) = last.as_ref()?;
-    (tree == root_tree && sum == checksum && read_at.elapsed() < REMEMBERED_FOR).then(|| {
+    if read_at.elapsed() >= REMEMBERED_FOR {
+        // Expired: a long-lived process does not keep it (council s9 r3).
+        *last = None;
+        return None;
+    }
+    (tree == root_tree && sum == checksum).then(|| {
         crate::perf::count("projection_cache.base_remembered", 1);
         bytes.clone()
     })
@@ -624,8 +631,10 @@ fn prune(directory: &Path, kept: &Path) {
 
 /// Forgets a cached projection found to differ from its recomputation.
 pub fn remove(store_root: &Path, root_tree: &TreeId) {
-    forget_complete(root_tree);
+    // Removed, then forgotten (council s9 r3): a read that saw the file
+    // began before the forget, so it cannot remember it again.
     let _ = fs::remove_file(file(store_root, root_tree));
+    forget_complete(root_tree);
 }
 
 /// Structure a projection always has: non-empty relative paths without empty
