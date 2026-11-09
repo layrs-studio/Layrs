@@ -112,10 +112,23 @@ pub(super) fn write(
             .ok_or(Error::IdentityMismatch)?;
         by_parent.entry(parent).or_default().push(index);
     }
-    let items: Vec<&[usize]> = by_parent
+    // Items taken from the directories in turn: concurrent workers write
+    // into different directories, as files created at once in one NTFS
+    // directory serialize on it (8 threads: about 3.7 times slower).
+    let mut runs: Vec<std::slice::Chunks<'_, usize>> = by_parent
         .values()
-        .flat_map(|indices| indices.chunks(WORK_ITEM_FILES))
+        .map(|indices| indices.chunks(WORK_ITEM_FILES))
         .collect();
+    let mut items: Vec<&[usize]> = Vec::new();
+    while !runs.is_empty() {
+        runs.retain_mut(|run| match run.next() {
+            Some(item) => {
+                items.push(item);
+                true
+            }
+            None => false,
+        });
+    }
     let next = AtomicUsize::new(0);
     let written = Mutex::new(Vec::with_capacity(selected.len()));
     let failure: Mutex<Option<Error>> = Mutex::new(None);

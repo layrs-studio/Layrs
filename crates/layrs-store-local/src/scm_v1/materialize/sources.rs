@@ -42,6 +42,33 @@ pub(super) fn stage_files(
     write_files(&create, &|_, file| Ok(file), jobs, sources)
 }
 
+/// The directory part of a checkout path (`""` at the root).
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+/// Positions of the items whose directories are `parents`, in an order that
+/// takes the directories in turn, one item each: consecutive positions are
+/// in different directories as long as several remain.
+pub(super) fn spread_by_directory<'p>(parents: impl Iterator<Item = &'p str>) -> Vec<usize> {
+    let mut groups: std::collections::BTreeMap<&str, std::collections::VecDeque<usize>> =
+        std::collections::BTreeMap::new();
+    let mut count = 0;
+    for (position, parent) in parents.enumerate() {
+        groups.entry(parent).or_default().push_back(position);
+        count += 1;
+    }
+    let mut queues: Vec<_> = groups.into_values().collect();
+    let mut order = Vec::with_capacity(count);
+    while !queues.is_empty() {
+        queues.retain_mut(|queue| {
+            order.extend(queue.pop_front());
+            !queue.is_empty()
+        });
+    }
+    order
+}
+
 /// A freshly created file the staging writer fills.
 pub(super) trait CreatedFile: Send {
     fn output(&mut self) -> &mut dyn Write;
@@ -92,17 +119,23 @@ pub(super) fn write_files<H: CreatedFile, T: Send>(
         .min(jobs.len().max(1));
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
+    // Concurrent workers write into different directories: files created
+    // at once in one NTFS directory serialize on it (8 threads, 1,000 files
+    // each: about 3.7 times slower than in separate directories).
+    let order = spread_by_directory(jobs.iter().map(|job| parent_of(job.path)));
     let mut results = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
             .map(|_| {
-                let (next, stop, stage_one) = (&next, &stop, &stage_one);
+                let (next, stop, stage_one, order) = (&next, &stop, &stage_one, &order);
                 scope.spawn(move || {
                     let mut done = Vec::new();
                     let mut write = |path: &str, output: &mut dyn Write| shared(path, output);
                     while !stop.load(Ordering::Relaxed) {
-                        let position = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(job) = jobs.get(position) else { break };
-                        let result = stage_one(job, &mut write);
+                        let claimed = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&position) = order.get(claimed) else {
+                            break;
+                        };
+                        let result = stage_one(&jobs[position], &mut write);
                         if result.is_err() {
                             stop.store(true, Ordering::Relaxed);
                         }
@@ -198,6 +231,16 @@ impl Write for VerifiedWriter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_positions_spread_over_directories() {
+        let parents = ["a", "a", "a", "b", "b", "", "c"];
+        let order = spread_by_directory(parents.iter().copied());
+        assert_eq!(order, vec![5, 0, 3, 6, 1, 4, 2]);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..parents.len()).collect::<Vec<_>>());
+    }
     #[test]
     fn staged_writer_rejects_corruption_truncation_overrun_and_ignored_errors() {
         let id = FileId::from_bytes(b"abcd");
