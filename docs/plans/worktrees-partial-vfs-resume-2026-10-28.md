@@ -1,5 +1,27 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - packs en ligne, création de Room, conseil s8 (Claude + conseil, 2026-11-09)
+
+**Banc à 10 000 fichiers, format 6** (`1d651a6`, deux répétitions, machine chargée ; git dans la même zone) :
+
+| | layrs | git |
+| --- | --- | --- |
+| `init` | 1,2–1,6 s | 43 s |
+| `status` propre / 2 changements | 60–65 / 67–69 ms | 51–54 / 55–56 ms |
+| `step` (2 fichiers) | 143–146 ms | 152–156 ms |
+| création de Room (agent) | 2,63–2,67 s | 2,29–2,32 s |
+| première lecture de tous les fichiers | 3,29–3,66 s | 2,95–3,23 s |
+| `room step` de l'agent | 172–183 ms | 283–297 ms |
+| fusion en avance rapide / 2e fusion | 157–168 ms | 73–80 ms |
+| fusion 3 voies | 333–344 ms | 354–368 ms |
+| suppression de la Room | 0,33 s | 1,35–1,57 s |
+| Store après le scénario | 2 620 Kio | 1 822 Kio |
+
+Depuis (`caf35b8`, `05dba21`, machine plus calme) :
+- Les écrivains parallèles prennent les dossiers à tour de rôle : créer à 8 threads dans un seul dossier NTFS est ~3,7 fois plus lent (1 240 contre 334 ms pour 8 000 fichiers). Room virtuelle 2,52–2,60 → 1,97–2,11 s (git 2,29–2,32), Room physique 2,19–2,21 → 1,36–1,41 s, première lecture 3,28–3,49 → 3,06–3,31 s.
+- Frontières du Store validées par la racine épinglée (une marche, puis des ouvertures relatives) : `status` ~42,3 ms contre git ~39,4 ms dans le même dossier.
+- Reste : `status` (~3 ms ; le plus gros poste est le décodage de l'index du pack initial, 2,5 ms, inutile pour lire la vue — différer le décodage est une question de conception), fusions en avance rapide (décisions utilisateur), taille (identité de contenu, décision utilisateur ; SQLite ~420 Kio de structure fixe), staging à plat d'une matérialisation dans un dossier existant (même contention NTFS, touche au format de reprise).
+
 ## Point courant - performances et taille, « je veux tout » (Claude + conseil s2, 2026-11-07)
 
 Demande : « Reprends sur tout, je veux tout » (fusions, taille, Rooms hybrides, toutes les commandes contre git).
