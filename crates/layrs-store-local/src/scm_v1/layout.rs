@@ -171,38 +171,37 @@ impl NativeStoreLayout {
 
     pub(crate) fn validate_ready_boundaries(&self) -> io::Result<()> {
         self.validate_containment()?;
-        for directory in [
-            &self.root,
-            &self.objects_dir,
-            &self.staging_dir,
-            &self.metadata_dir,
-            &self.repair_backups_dir,
-        ] {
-            let metadata = fs::symlink_metadata(directory)?;
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "native store boundary is not a directory: {}",
-                        directory.display()
-                    ),
-                ));
-            }
-        }
-        for file in [&self.sqlite_path, &self.lock_path, &self.staging_lease_path] {
-            let metadata = fs::symlink_metadata(file)?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "native Store boundary is not a regular file: {}",
-                        file.display()
-                    ),
-                ));
-            }
-            drop(open_read_no_follow(file)?);
-        }
-        self.validate_existing_boundaries()
+        // One walk pins the root, refusing a link or reparse point at every
+        // component (its ancestors included); every boundary is then opened
+        // through its pinned parent, which refuses the same and checks the
+        // object's type: no path is walked again per boundary.
+        let root = crate::secure_fs::PinnedDirectory::open(&self.root)?;
+        let name = |path: &Path| {
+            path.file_name().map(std::ffi::OsStr::to_os_string).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("native Store boundary has no name: {}", path.display()),
+                )
+            })
+        };
+        let child = |parent: &crate::secure_fs::PinnedDirectory, path: &Path| {
+            parent.open_child_for_traversal(&name(path)?)
+        };
+        let file = |parent: &crate::secure_fs::PinnedDirectory, path: &Path| -> io::Result<()> {
+            #[cfg(windows)]
+            let opened = parent.open_readonly_file(&name(path)?);
+            #[cfg(not(windows))]
+            let opened = parent.open_file(&name(path)?);
+            opened.map(drop)
+        };
+        child(&root, &self.objects_dir)?;
+        let staging = child(&root, &self.staging_dir)?;
+        let metadata = child(&root, &self.metadata_dir)?;
+        child(&metadata, &self.repair_backups_dir)?;
+        file(&metadata, &self.sqlite_path)?;
+        file(&metadata, &self.lock_path)?;
+        file(&staging, &self.staging_lease_path)?;
+        file(&root, &self.format_path)
     }
 
     fn validate_existing_boundaries(&self) -> io::Result<()> {
