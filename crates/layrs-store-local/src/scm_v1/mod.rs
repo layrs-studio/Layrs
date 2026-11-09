@@ -32,13 +32,13 @@ pub mod worktrees;
 mod write_batch;
 
 pub use admission::CompositeAdmissionResolver;
-#[cfg(any(test, feature = "test-support"))]
-pub use cas::set_inline_pack_limit;
 pub use cas::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, CasResult, CasScrubIssue,
     CasScrubReport, InstallOutcome, NativeCas, NativeCasAudit, NativeCasWriter, PackFileHold,
     PreparedObject, PutItem,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use cas::{held_pack_files, set_inline_pack_limit};
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
     NativeFsck, ProjectionAction, ProjectionRebuildPlan, fsck, fsck_existing,

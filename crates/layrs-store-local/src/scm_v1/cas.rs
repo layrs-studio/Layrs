@@ -2070,6 +2070,15 @@ impl NativeCas {
 }
 #[cfg(any(test, feature = "test-support"))]
 pub use compact::set_inline_pack_limit;
+
+/// Test support: how many pack files `cas`'s catalog keeps open now
+/// (`NativeCas::hold_pack_files`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn held_pack_files(cas: &NativeCas) -> usize {
+    cas.compact
+        .as_ref()
+        .map_or(0, |catalog| catalog.held_pack_count())
+}
 pub use packs::CasLocation;
 use packs::*;
 use paths::*;

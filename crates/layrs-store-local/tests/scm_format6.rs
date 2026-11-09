@@ -19,7 +19,7 @@ use layrs_store::scm::{
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
-    fsck_existing, init, open, open_exclusive, set_inline_pack_limit,
+    fsck_existing, held_pack_files, init, open, open_exclusive, set_inline_pack_limit,
 };
 use rusqlite::Connection;
 
@@ -2153,6 +2153,47 @@ fn an_oversized_inline_image_is_damage_without_being_read() {
         "{:#?}",
         report.findings
     );
+}
+
+/// A pack file stays open only while a bulk read holds its catalog
+/// (ADR 0026, council s9 r2): never after a read without a hold, and no
+/// longer once the last hold is dropped.
+#[test]
+fn pack_files_stay_open_only_while_held() {
+    let root = TestRoot::new("pack-holds");
+    create(&root.0, "pack-holds", "6");
+    let files = vec![
+        file("a.txt", b"alpha bytes", Recipe::Fixed),
+        file("b.txt", b"beta bytes", Recipe::Fixed),
+    ];
+    let (_lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    assert_eq!(packs(&root.0).len(), 1);
+    let chunk = |index: usize| StoreObjectId::ChunkRaw(files[index].chunks[0].id().clone());
+    // Each phase on a view of its own: a fresh catalog, an empty block cache.
+    let view = || NativeCas::open(&open(&root.0).unwrap()).unwrap();
+    // Without a hold, a read keeps nothing open.
+    let cas = view();
+    cas.read(&chunk(0)).unwrap();
+    assert_eq!(held_pack_files(&cas), 0);
+    // While held (twice), the pack read stays open; until the last hold ends.
+    let cas = view();
+    let first = cas.hold_pack_files().unwrap();
+    let second = cas.hold_pack_files().unwrap();
+    assert!(first.holds(&cas));
+    cas.read(&chunk(0)).unwrap();
+    assert_eq!(held_pack_files(&cas), 1);
+    drop(first);
+    assert_eq!(held_pack_files(&cas), 1);
+    drop(second);
+    assert_eq!(held_pack_files(&cas), 0);
+    // A read after the last hold keeps nothing open again.
+    let cas = view();
+    drop(cas.hold_pack_files());
+    cas.read(&chunk(1)).unwrap();
+    assert_eq!(held_pack_files(&cas), 0);
 }
 
 /// Fails every pack publication after the first `allowed`.

@@ -340,10 +340,12 @@ impl VerifiedVfsSnapshot {
         CheckoutReader::open(&self.store_root, Some(&guard.identity()))?;
         *cached = Some((cas.clone(), Instant::now()));
         drop(cached);
-        // A view bound during a bulk read is held for its remainder.
+        // A view bound during a bulk read is held instead of the one it
+        // replaces (council s9 r2): reads still running on the old view
+        // finish through it, opening its packs per read.
         if let Ok(mut bulk) = self.bulk.lock() {
-            if bulk.readers > 0 && !bulk.holds.iter().any(|hold| hold.holds(&cas)) {
-                bulk.holds.extend(cas.hold_pack_files());
+            if bulk.readers > 0 {
+                bulk.hold(&cas);
             }
         }
         Ok(cas)
@@ -449,11 +451,21 @@ fn validate_vfs_tree_namespace(
     cancelled(cancel)
 }
 
-/// Bulk reads in progress over a VFS snapshot, and their pack file holds.
+/// Bulk reads in progress over a VFS snapshot, and their hold on the pack
+/// files of the current CAS view only.
 #[derive(Default)]
 struct BulkHolds {
     readers: usize,
-    holds: Vec<scm_v1::PackFileHold>,
+    hold: Option<scm_v1::PackFileHold>,
+}
+
+impl BulkHolds {
+    /// Holds `cas`'s pack files, releasing the hold on any previous view.
+    fn hold(&mut self, cas: &scm_v1::NativeCas) {
+        if !self.hold.as_ref().is_some_and(|hold| hold.holds(cas)) {
+            self.hold = cas.hold_pack_files();
+        }
+    }
 }
 
 /// Ends one bulk read; the last one drops every hold.
@@ -467,7 +479,7 @@ impl Drop for BulkReads {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         bulk.readers = bulk.readers.saturating_sub(1);
         if bulk.readers == 0 {
-            bulk.holds.clear();
+            bulk.hold = None;
         }
     }
 }
@@ -492,9 +504,7 @@ impl SnapshotSource for VerifiedVfsSnapshot {
             .ok()
             .and_then(|cached| cached.as_ref().map(|(cas, _)| cas.clone()));
         if let Some(cas) = current {
-            if !bulk.holds.iter().any(|hold| hold.holds(&cas)) {
-                bulk.holds.extend(cas.hold_pack_files());
-            }
+            bulk.hold(&cas);
         }
         drop(bulk);
         Box::new(BulkReads(std::sync::Arc::clone(&self.bulk)))

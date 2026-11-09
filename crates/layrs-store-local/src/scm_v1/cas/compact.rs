@@ -1058,6 +1058,12 @@ impl RegisteredCatalog {
         Ok(raw)
     }
 
+    /// Test support: how many pack files this catalog keeps open now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn held_pack_count(&self) -> usize {
+        self.open_packs.lock().map_or(0, |open| open.len())
+    }
+
     /// A hold on this catalog's pack files for a bulk read (see
     /// `CatalogHold`).
     pub(crate) fn hold_pack_files(self: &Arc<Self>) -> CatalogHold {

@@ -38,11 +38,13 @@ Notes :
 
 **Conseil s9 (revue de `5435358..9ca9ddf`, brief `council-s9-r1.md`)**
 
-| Membre | s9 r1 |
-| --- | --- |
-| GPT-6 Astra (xhigh) | 8/10 |
-| GPT-6.1 Sol (max) | 8/10 |
-| Claude Opus 5.5 (xhigh) | 8/10 |
+| Membre | s9 r1 | s9 r2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 8/10 | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 8/10 | 8/10 |
+
+Corrections s9 r2 : un peuplement de Room ne tient que la vue CAS courante (les trois : une prise s'ajoutait à chaque nouvelle vue, toutes les 2 s) ; le mémo de projection n'est republié par aucune lecture commencée avant un oubli (génération) et ne sert qu'une seconde (Astra) ; test `pack_files_stay_open_only_while_held` (Opus) ; ADR 0026 précisée (au plus 16 packs par catalogue tenu, une vue de l'hôte, une session par fil de staging).
 
 Corrections s9 r1 (`64234fa`, `a138aa1`) :
 - Handles de packs (les trois) : gardés seulement pendant une lecture en masse explicite (`hold_pack_files` : peuplement d'une Room par le crochet `SnapshotSource::bulk_reads`, staging d'une matérialisation), au plus 16, en lecture seule sans droit de suppression ; ADR 0026 amendée. Hors de ces fenêtres, une ouverture par lecture comme avant.

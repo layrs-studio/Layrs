@@ -134,6 +134,9 @@ fn read(path: &Path, root_tree: &TreeId) -> Option<Parsed> {
     if !metadata.is_file() || metadata.len() > MAX_BYTES || metadata.len() < 40 {
         return None;
     }
+    // Taken before the read: bytes read before a projection is forgotten
+    // are never remembered after it (council s9 r2).
+    let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
     let bytes = {
         let _span = crate::perf::span("projection_cache.read_file");
         fs::read(path).ok()?
@@ -148,13 +151,30 @@ fn read(path: &Path, root_tree: &TreeId) -> Option<Parsed> {
     }
     let parsed = parse(body, root_tree, checksum)?;
     if matches!(parsed.form, Form::Complete(_)) {
-        remember_complete(root_tree, checksum, bytes);
+        remember_complete(root_tree, checksum, bytes, generation);
     }
     Some(parsed)
 }
 
-/// The verified bytes of the last complete projection this process read.
-type Verified = (TreeId, [u8; 32], std::sync::Arc<Vec<u8>>);
+/// The verified bytes of the last complete projection this process read,
+/// and when they were read.
+type Verified = (
+    TreeId,
+    [u8; 32],
+    std::sync::Arc<Vec<u8>>,
+    std::time::Instant,
+);
+
+/// How long remembered bytes may answer a delta: the loads of one command,
+/// not a long-lived process's later commands. Another process removing the
+/// projection meanwhile is no more exposed than a read just before it.
+const REMEMBERED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Incremented whenever a projection is forgotten.
+fn memo_generation() -> &'static std::sync::atomic::AtomicU64 {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    &GENERATION
+}
 
 fn verified_complete() -> &'static std::sync::Mutex<Option<Verified>> {
     static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Verified>>> =
@@ -167,29 +187,42 @@ fn verified_complete() -> &'static std::sync::Mutex<Option<Verified>> {
 /// projections that are deltas to the same complete one. Only bytes whose
 /// checksum was verified, only one projection per process, and only up to
 /// `REMEMBERED_MAX_BYTES` (a larger one is read again).
-fn remember_complete(root_tree: &TreeId, checksum: [u8; 32], bytes: Vec<u8>) {
+fn remember_complete(root_tree: &TreeId, checksum: [u8; 32], bytes: Vec<u8>, generation: u64) {
     if let Ok(mut last) = verified_complete().lock() {
-        *last = (bytes.len() <= REMEMBERED_MAX_BYTES)
-            .then(|| (root_tree.clone(), checksum, std::sync::Arc::new(bytes)));
+        // Under the lock `forget_complete` takes: a projection forgotten
+        // since these bytes were read is not remembered again.
+        if memo_generation().load(std::sync::atomic::Ordering::Acquire) != generation {
+            return;
+        }
+        *last = (bytes.len() <= REMEMBERED_MAX_BYTES).then(|| {
+            (
+                root_tree.clone(),
+                checksum,
+                std::sync::Arc::new(bytes),
+                std::time::Instant::now(),
+            )
+        });
     }
 }
 
 /// Forgets the remembered projection of `root_tree` (council s9 r1): a
 /// projection removed as wrong must not keep answering its deltas.
 fn forget_complete(root_tree: &TreeId) {
-    if let Ok(mut last) = verified_complete().lock() {
-        if last.as_ref().is_some_and(|(tree, _, _)| tree == root_tree) {
-            *last = None;
-        }
+    let mut last = verified_complete()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    memo_generation().fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    if last.as_ref().is_some_and(|(tree, ..)| tree == root_tree) {
+        *last = None;
     }
 }
 
 /// The remembered bytes of `root_tree`'s complete projection, if they are
-/// exactly those of `checksum`.
+/// exactly those of `checksum` and were read within `REMEMBERED_FOR`.
 fn last_complete(root_tree: &TreeId, checksum: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
     let last = verified_complete().lock().ok()?;
-    let (tree, sum, bytes) = last.as_ref()?;
-    (tree == root_tree && sum == checksum).then(|| {
+    let (tree, sum, bytes, read_at) = last.as_ref()?;
+    (tree == root_tree && sum == checksum && read_at.elapsed() < REMEMBERED_FOR).then(|| {
         crate::perf::count("projection_cache.base_remembered", 1);
         bytes.clone()
     })
