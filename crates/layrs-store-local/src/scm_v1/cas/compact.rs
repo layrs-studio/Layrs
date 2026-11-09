@@ -25,6 +25,9 @@ use std::sync::{Mutex, OnceLock};
 /// as format 5 rereads every object, and sees any damage done since.
 const RECENT_BLOCKS: usize = 64;
 const RECENT_BLOCK_MAX: usize = 64 * 1024;
+/// Most pack files a held catalog keeps open (`hold_pack_files`): two
+/// descriptors each (the file and its pinned directory).
+const HELD_PACKS_MAX: usize = 16;
 
 /// One pack v2 loaded by this process: its validated metadata. A published
 /// pack is immutable; the cache is keyed by
@@ -32,7 +35,9 @@ const RECENT_BLOCK_MAX: usize = 64 * 1024;
 /// digest with the one SQLite registered. No handle stays open between
 /// reads (ADR 0026): a block read opens the pack through the pinned CAS
 /// directories, as a loose read does, so a Store directory is never held
-/// by a process that merely read from it.
+/// by a process that merely read from it. The one exception is a bulk read
+/// that holds its catalog's pack files (`RegisteredCatalog::hold_pack_files`)
+/// until it ends.
 pub(crate) struct LoadedPack {
     name: OsString,
     path: PathBuf,
@@ -74,12 +79,17 @@ impl LoadedPack {
     /// then checked against their checksums and records against their ids).
     fn open(&self, cas: &NativeCas) -> CasResult<PinnedFile> {
         let directory = cas.objects_dir.join(PACKS_DIR);
-        let file = cas
+        let packs = cas
             .pinned_objects_for_read()?
             .open_child(OsStr::new(PACKS_DIR))
-            .map_err(|error| missing_or_io("pin CAS packs", &directory, error))?
-            .open_file(&self.name)
-            .map_err(|error| missing_or_io("open CAS pack", &self.path, error))?;
+            .map_err(|error| missing_or_io("pin CAS packs", &directory, error))?;
+        // For reading only: no delete access, which an opener that does
+        // not share deletion would otherwise conflict with.
+        #[cfg(windows)]
+        let file = packs.open_readonly_file(&self.name);
+        #[cfg(not(windows))]
+        let file = packs.open_file(&self.name);
+        let file = file.map_err(|error| missing_or_io("open CAS pack", &self.path, error))?;
         let length = file
             .file()
             .metadata()
@@ -990,12 +1000,45 @@ pub(crate) struct RegisteredCatalog {
     admissions: Mutex<HashMap<String, Arc<SpaceAdmissions>>>,
     /// Last decompressed blocks: ((pack, block), raw bytes).
     recent: Mutex<VecDeque<RecentBlock>>,
-    /// Pack files this catalog opened, by pack position: one open (pinned,
-    /// its length checked) per pack for the catalog's life instead of one
-    /// per block read. Opened with every sharing mode, so a pack retired
-    /// meanwhile can still be deleted; its bytes do not change (each block
-    /// is checked against its checksum, each record against its id).
+    /// Pack files kept open while a bulk read holds this catalog
+    /// (`hold_pack_files`), by pack position, at most `HELD_PACKS_MAX`;
+    /// closed when the last hold ends (ADR 0026, council s9 r1). Opened for
+    /// reading only, with every sharing mode, so a pack retired meanwhile can
+    /// still be deleted; its bytes do not change (each block is checked
+    /// against its checksum, each record against its id).
     open_packs: Mutex<HashMap<usize, Arc<PinnedFile>>>,
+    /// Bulk reads holding this catalog's pack files.
+    holds: std::sync::atomic::AtomicUsize,
+}
+
+/// A bulk read's hold on a catalog's pack files: while one is alive, the
+/// catalog keeps the pack files it reads open instead of opening one per
+/// block; they are closed when the last hold is dropped.
+pub(crate) struct CatalogHold(Arc<RegisteredCatalog>);
+
+impl CatalogHold {
+    /// Whether this hold is on `catalog`.
+    pub(crate) fn holds(&self, catalog: &Arc<RegisteredCatalog>) -> bool {
+        Arc::ptr_eq(&self.0, catalog)
+    }
+}
+
+impl Drop for CatalogHold {
+    fn drop(&mut self) {
+        let catalog = &self.0;
+        // Under the lock a reader checks `holds` before keeping a file.
+        let mut open = catalog
+            .open_packs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if catalog
+            .holds
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            open.clear();
+        }
+    }
 }
 
 impl RegisteredCatalog {
@@ -1015,11 +1058,24 @@ impl RegisteredCatalog {
         Ok(raw)
     }
 
-    /// Block `block` of pack `pack`, read through the pack file this catalog
-    /// keeps open (opened on first use).
+    /// A hold on this catalog's pack files for a bulk read (see
+    /// `CatalogHold`).
+    pub(crate) fn hold_pack_files(self: &Arc<Self>) -> CatalogHold {
+        let _open = self
+            .open_packs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.holds.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        CatalogHold(Arc::clone(self))
+    }
+
+    /// Block `block` of pack `pack`. Without a hold the pack file is opened
+    /// for this read only (ADR 0026); while one is held, through the file
+    /// kept open (opened on first use, at most `HELD_PACKS_MAX`).
     fn read_pack_block(&self, cas: &NativeCas, pack: usize, block: u32) -> CasResult<Vec<u8>> {
         let loaded = &self.packs[pack].pack;
-        if loaded.is_inline() {
+        let held = || self.holds.load(std::sync::atomic::Ordering::Acquire) > 0;
+        if loaded.is_inline() || !held() {
             return loaded.read_block(cas, block);
         }
         let kept = self
@@ -1033,7 +1089,9 @@ impl RegisteredCatalog {
                 let _span = crate::perf::span("cas.pack_open");
                 let file = Arc::new(loaded.open(cas)?);
                 if let Ok(mut open) = self.open_packs.lock() {
-                    open.insert(pack, Arc::clone(&file));
+                    if held() && open.len() < HELD_PACKS_MAX {
+                        open.insert(pack, Arc::clone(&file));
+                    }
                 }
                 file
             }
@@ -1213,6 +1271,7 @@ impl RegisteredCatalog {
             admissions: Mutex::new(HashMap::new()),
             recent: Mutex::new(VecDeque::with_capacity(RECENT_BLOCKS)),
             open_packs: Mutex::new(HashMap::new()),
+            holds: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 

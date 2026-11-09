@@ -123,7 +123,13 @@ Les packs sont désactivés si le lot ne peut pas démarrer, ou avec
   lecture courte compte comme une corruption. Le contenu est validé par le
   décodeur canonique avant d'être livré, y compris pour un chunk lu en flux.
 - La présence dans l'index n'est jamais une preuve de contenu ni d'admission.
-- Aucun handle de pack ne reste ouvert entre deux lectures.
+- Aucun handle de pack ne reste ouvert entre deux lectures. Exception
+  (2026-11-09, conseil s9 r1) : une lecture en masse explicite — le peuplement
+  d'une Room virtuelle, le staging d'une matérialisation — tient les fichiers
+  pack de son catalogue (`hold_pack_files`) jusqu'à sa fin : au plus 16 packs,
+  ouverts en lecture seule sans droit de suppression, avec tous les modes de
+  partage. Rouvrir le pack à chaque bloc coûtait ~230 µs par fichier lors du
+  peuplement d'une Room (git garde aussi ses packs ouverts, en nombre borné).
 
 ### Format et compatibilité
 

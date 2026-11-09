@@ -719,11 +719,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
                     }
                     installed_into.clear();
                 }
-                let (parent, _) = if ordered {
-                    checkout.components_to_parent_unsynced(Path::new(path))?
-                } else {
-                    checkout.components_to_parent(Path::new(path))?
-                };
+                let (parent, _) = checkout.components_to_parent_with(Path::new(path), !ordered)?;
                 installed_into.insert(directory, parent);
             }
             let parent = &installed_into[directory];
@@ -1197,8 +1193,7 @@ fn purge_completed_backup(
     drop(backup);
     if deleted == sealed.len() {
         if let Some(name) = root.file_name() {
-            // Not synced: a folder left by a crash is harmless (swept).
-            let _ = backups.remove_empty_child_unsynced(name);
+            let _ = backups.remove_empty_child(name);
         }
     }
 }

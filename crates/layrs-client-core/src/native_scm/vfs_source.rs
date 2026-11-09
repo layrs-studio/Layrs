@@ -55,6 +55,10 @@ pub struct VerifiedVfsSnapshot {
     cas: std::sync::Mutex<Option<(scm_v1::NativeCas, Instant)>>,
     /// The Store's shared lock, held around each hydrated range.
     read_lock: scm_v1::SharedReadLocks,
+    /// Bulk reads in progress (`bulk_reads`), and their holds on the pack
+    /// files of the views they read through, dropped when the last ends:
+    /// outside a bulk read no pack file stays open (ADR 0026).
+    bulk: std::sync::Arc<std::sync::Mutex<BulkHolds>>,
     /// The last few chunks read (and verified) by hydration. Ranges are
     /// smaller than chunks, so a sequential read reuses each chunk instead of
     /// re-reading and re-hashing it per range. Chunks are immutable.
@@ -197,6 +201,7 @@ impl VerifiedVfsSnapshot {
             chunk_reads: AtomicU64::new(0),
             chunk_bytes: AtomicU64::new(0),
             cas: std::sync::Mutex::new(None),
+            bulk: std::sync::Arc::default(),
             read_lock: scm_v1::SharedReadLocks::open(store.layout().root()).map_err(|error| {
                 NativeClientError::Filesystem(io::Error::other(error.to_string()))
             })?,
@@ -334,6 +339,13 @@ impl VerifiedVfsSnapshot {
             .map_err(|error| NativeClientError::InvalidSnapshot(format!("VFS CAS: {error}")))?;
         CheckoutReader::open(&self.store_root, Some(&guard.identity()))?;
         *cached = Some((cas.clone(), Instant::now()));
+        drop(cached);
+        // A view bound during a bulk read is held for its remainder.
+        if let Ok(mut bulk) = self.bulk.lock() {
+            if bulk.readers > 0 && !bulk.holds.iter().any(|hold| hold.holds(&cas)) {
+                bulk.holds.extend(cas.hold_pack_files());
+            }
+        }
         Ok(cas)
     }
 
@@ -437,9 +449,55 @@ fn validate_vfs_tree_namespace(
     cancelled(cancel)
 }
 
+/// Bulk reads in progress over a VFS snapshot, and their pack file holds.
+#[derive(Default)]
+struct BulkHolds {
+    readers: usize,
+    holds: Vec<scm_v1::PackFileHold>,
+}
+
+/// Ends one bulk read; the last one drops every hold.
+struct BulkReads(std::sync::Arc<std::sync::Mutex<BulkHolds>>);
+
+impl Drop for BulkReads {
+    fn drop(&mut self) {
+        let mut bulk = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bulk.readers = bulk.readers.saturating_sub(1);
+        if bulk.readers == 0 {
+            bulk.holds.clear();
+        }
+    }
+}
+
 impl SnapshotSource for VerifiedVfsSnapshot {
     fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    /// While a Room is populated, the current CAS view (and any view bound
+    /// meanwhile) keeps the pack files it reads open: one open per pack
+    /// instead of one per block read (ADR 0026, council s9 r1).
+    fn bulk_reads(&self) -> Box<dyn std::any::Any + Send> {
+        let mut bulk = self
+            .bulk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bulk.readers += 1;
+        let current = self
+            .cas
+            .lock()
+            .ok()
+            .and_then(|cached| cached.as_ref().map(|(cas, _)| cas.clone()));
+        if let Some(cas) = current {
+            if !bulk.holds.iter().any(|hold| hold.holds(&cas)) {
+                bulk.holds.extend(cas.hold_pack_files());
+            }
+        }
+        drop(bulk);
+        Box::new(BulkReads(std::sync::Arc::clone(&self.bulk)))
     }
 
     fn read_exact_at(

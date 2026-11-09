@@ -246,6 +246,12 @@ pub trait SnapshotSource: Send + Sync + 'static {
         buffer: &mut [u8],
         cancel: &Cancellation,
     ) -> Result<()>;
+    /// Called around a pass that reads many files (a Room's population):
+    /// the source may keep resources for that pass only, released when the
+    /// returned guard is dropped.
+    fn bulk_reads(&self) -> Box<dyn std::any::Any + Send> {
+        Box::new(())
+    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]

@@ -135,6 +135,7 @@ pub(super) fn write(
     let cancel = Cancellation::default();
     let reading = std::sync::atomic::AtomicU64::new(0);
     let creating = std::sync::atomic::AtomicU64::new(0);
+    let bulk = source.bulk_reads();
     std::thread::scope(|scope| {
         for _ in 0..workers().min(items.len()) {
             scope.spawn(|| {
@@ -180,6 +181,7 @@ pub(super) fn write(
             });
         }
     });
+    drop(bulk);
     if let Some(error) = failure.into_inner().expect("warm failure") {
         return Err(error);
     }

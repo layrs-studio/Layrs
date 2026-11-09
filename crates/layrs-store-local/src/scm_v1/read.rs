@@ -130,6 +130,15 @@ impl NativeStoreReading {
         })
     }
 
+    /// For a bulk read through this session (a checkout's staging): its
+    /// catalog keeps the pack files it reads open until the hold is dropped
+    /// (`NativeCas::hold_pack_files`). `None` outside format 6.
+    pub fn hold_pack_files(&self) -> Result<Option<super::PackFileHold>> {
+        self.cas
+            .hold_store_pack_files(&self.store)
+            .map_err(cas_open_backend)
+    }
+
     pub fn reader(&self) -> NativeScmReader<'_> {
         NativeScmReader {
             source: SqlReadSource::Ready(&self.store),

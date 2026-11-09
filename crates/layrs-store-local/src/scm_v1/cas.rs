@@ -503,6 +503,16 @@ impl NativeCas {
         self.compact.as_ref()
     }
 
+    /// For a bulk read through this view (a Room's population): its
+    /// catalog keeps the pack files it reads open until the hold is dropped,
+    /// instead of opening one per block (ADR 0026). `None` without a format 6
+    /// catalog.
+    pub fn hold_pack_files(&self) -> Option<PackFileHold> {
+        self.compact
+            .as_ref()
+            .map(|catalog| PackFileHold(catalog.hold_pack_files()))
+    }
+
     /// Whether this view belongs to a format 6 Store.
     pub(crate) fn is_compact(&self) -> bool {
         self.compact_format
@@ -566,6 +576,19 @@ impl NativeCas {
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
         Ok(cas)
+    }
+
+    /// A hold on `store`'s catalog for a bulk read (`hold_pack_files`).
+    pub(crate) fn hold_store_pack_files(
+        &self,
+        store: &NativeStoreOpen,
+    ) -> CasResult<Option<PackFileHold>> {
+        if !store.compact() {
+            return Ok(None);
+        }
+        Ok(Some(PackFileHold(
+            self.store_catalog(store)?.hold_pack_files(),
+        )))
     }
 
     /// The registered catalog of `store`'s immutable snapshot, loaded once
@@ -1980,6 +2003,20 @@ impl<'store> NativeCasWriter<'store> {
 
 mod codec;
 pub(crate) mod compact;
+
+/// A bulk read's hold on a format 6 catalog's pack files
+/// (`NativeCas::hold_pack_files`): they stay open until it is dropped.
+pub struct PackFileHold(compact::CatalogHold);
+
+impl PackFileHold {
+    /// Whether this hold is on `cas`'s catalog.
+    pub fn holds(&self, cas: &NativeCas) -> bool {
+        cas.compact
+            .as_ref()
+            .is_some_and(|catalog| self.0.holds(catalog))
+    }
+}
+
 mod pack2;
 mod packs;
 mod paths;

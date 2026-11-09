@@ -55,6 +55,9 @@ const FORM_COMPLETE: u8 = 0;
 const FORM_DELTA: u8 = 1;
 /// A delta is written while it changes at most this share of the paths.
 const DELTA_MAX_PERCENT: usize = 25;
+/// Largest complete projection a process keeps in memory for its deltas
+/// (about 400 000 paths).
+const REMEMBERED_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 fn file(store_root: &Path, tree: &TreeId) -> PathBuf {
     let name = blake3::hash(tree.as_str().as_bytes()).to_hex();
@@ -96,6 +99,7 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         loaded.filter(|(_, entries)| well_formed(entries))
     };
     let Some((projection_tree, entries)) = checked else {
+        forget_complete(root_tree);
         if path.exists() {
             let _ = fs::remove_file(&path);
         }
@@ -161,10 +165,22 @@ fn verified_complete() -> &'static std::sync::Mutex<Option<Verified>> {
 /// Kept so a delta bound to these exact bytes (its base checksum) applies to
 /// them without reading the file again: a command often loads two
 /// projections that are deltas to the same complete one. Only bytes whose
-/// checksum was verified, and only one projection per process.
+/// checksum was verified, only one projection per process, and only up to
+/// `REMEMBERED_MAX_BYTES` (a larger one is read again).
 fn remember_complete(root_tree: &TreeId, checksum: [u8; 32], bytes: Vec<u8>) {
     if let Ok(mut last) = verified_complete().lock() {
-        *last = Some((root_tree.clone(), checksum, std::sync::Arc::new(bytes)));
+        *last = (bytes.len() <= REMEMBERED_MAX_BYTES)
+            .then(|| (root_tree.clone(), checksum, std::sync::Arc::new(bytes)));
+    }
+}
+
+/// Forgets the remembered projection of `root_tree` (council s9 r1): a
+/// projection removed as wrong must not keep answering its deltas.
+fn forget_complete(root_tree: &TreeId) {
+    if let Ok(mut last) = verified_complete().lock() {
+        if last.as_ref().is_some_and(|(tree, _, _)| tree == root_tree) {
+            *last = None;
+        }
     }
 }
 
@@ -575,6 +591,7 @@ fn prune(directory: &Path, kept: &Path) {
 
 /// Forgets a cached projection found to differ from its recomputation.
 pub fn remove(store_root: &Path, root_tree: &TreeId) {
+    forget_complete(root_tree);
     let _ = fs::remove_file(file(store_root, root_tree));
 }
 
@@ -800,6 +817,28 @@ mod tests {
         save(&root, &tree(0), &tree(0), &altered);
         assert_eq!(load(&root, &tree(1)), None);
         assert!(!file(&root, &tree(1)).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A complete projection removed as wrong no longer answers the deltas
+    /// bound to it from this process's memory (council s9 r1).
+    #[test]
+    fn a_removed_base_no_longer_answers_its_deltas() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-forget-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 77]))).unwrap();
+        let base = many(300, 5);
+        save(&root, &tree(0), &tree(0), &base);
+        let mut next = base.clone();
+        next.remove(7);
+        save(&root, &tree(1), &tree(1), &next);
+        // The base is read (and remembered), then removed.
+        assert_eq!(load(&root, &tree(0)), Some(base));
+        remove(&root, &tree(0));
+        assert_eq!(load(&root, &tree(1)), None);
         let _ = fs::remove_dir_all(&root);
     }
 

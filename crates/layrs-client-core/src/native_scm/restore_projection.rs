@@ -114,7 +114,14 @@ pub(super) fn captured(snapshot: &PreparedSnapshot) -> Result<Vec<CheckoutProjec
 /// metadata queries run in parallel instead of queueing on one connection.
 pub(super) struct SharedStagingStore<F> {
     open: F,
-    idle: std::sync::Mutex<Vec<layrs_store_local::scm_v1::NativeStoreReading>>,
+    /// Idle sessions, each holding its catalog's pack files for the whole
+    /// staging (a bulk read, ADR 0026): released by `end`.
+    idle: std::sync::Mutex<
+        Vec<(
+            layrs_store_local::scm_v1::NativeStoreReading,
+            Option<layrs_store_local::scm_v1::PackFileHold>,
+        )>,
+    >,
     ended: std::sync::atomic::AtomicBool,
 }
 
@@ -142,12 +149,16 @@ where
         let checked_out = self.idle.lock().map_err(|_| poisoned())?.pop();
         let reading = match checked_out {
             Some(reading) => reading,
-            None => layrs_store_local::scm_v1::NativeStoreReading::new(
-                (self.open)().map_err(std::io::Error::other)?,
-            )
-            .map_err(std::io::Error::other)?,
+            None => {
+                let reading = layrs_store_local::scm_v1::NativeStoreReading::new(
+                    (self.open)().map_err(std::io::Error::other)?,
+                )
+                .map_err(std::io::Error::other)?;
+                let hold = reading.hold_pack_files().map_err(std::io::Error::other)?;
+                (reading, hold)
+            }
         };
-        let result = read(&reading.reader());
+        let result = read(&reading.0.reader());
         // A reading returned after `end` is dropped at once, never kept.
         let mut idle = self.idle.lock().map_err(|_| poisoned())?;
         if !self.ended.load(std::sync::atomic::Ordering::Acquire) {

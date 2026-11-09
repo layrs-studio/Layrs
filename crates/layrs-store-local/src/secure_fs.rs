@@ -292,16 +292,10 @@ impl PinnedDirectory {
     /// Remove one empty directory through its pinned parent. Never recursive,
     /// never follows a symlink/reparse point and never deletes a regular file.
     pub(crate) fn remove_empty_child(&self, name: &OsStr) -> io::Result<()> {
-        self.remove_empty_child_unsynced(name)?;
-        self.sync()
-    }
-
-    /// As `remove_empty_child` without its sync: for a removal nothing relies
-    /// on (a best-effort cleanup whose leftover is harmless).
-    pub(crate) fn remove_empty_child_unsynced(&self, name: &OsStr) -> io::Result<()> {
         validate_name(name)?;
         self.verify_path_identity()?;
-        platform::remove_empty_directory_at(&self.file, name)
+        platform::remove_empty_directory_at(&self.file, name)?;
+        self.sync()
     }
 
     pub(crate) fn existing_parent(
@@ -413,32 +407,17 @@ impl PinnedDirectory {
         &self,
         relative: &Path,
     ) -> io::Result<(Self, std::ffi::OsString)> {
-        let mut components = relative.components().peekable();
-        let mut directory = self.try_clone()?;
-        while let Some(component) = components.next() {
-            let Component::Normal(name) = component else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "CAS path contains a non-normal component",
-                ));
-            };
-            if components.peek().is_none() {
-                return Ok((directory, name.to_os_string()));
-            }
-            directory = directory.ensure_child(name)?;
-        }
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "CAS target has no file name",
-        ))
+        self.components_to_parent_with(relative, true)
     }
 
-    /// As `components_to_parent` with `ensure_child_unsynced`: the caller
-    /// makes every directory it created durable later (one barrier on an
-    /// NTFS volume, whose journal orders directory updates).
-    pub(crate) fn components_to_parent_unsynced(
+    /// `components_to_parent`; with `synced` false, each directory is
+    /// ensured without its syncs (`ensure_child_unsynced`): the caller makes
+    /// every directory it created durable later (one barrier on an NTFS
+    /// volume, whose journal orders directory updates).
+    pub(crate) fn components_to_parent_with(
         &self,
         relative: &Path,
+        synced: bool,
     ) -> io::Result<(Self, std::ffi::OsString)> {
         let mut components = relative.components().peekable();
         let mut directory = self.try_clone()?;
@@ -452,7 +431,11 @@ impl PinnedDirectory {
             if components.peek().is_none() {
                 return Ok((directory, name.to_os_string()));
             }
-            directory = directory.ensure_child_unsynced(name)?;
+            directory = if synced {
+                directory.ensure_child(name)?
+            } else {
+                directory.ensure_child_unsynced(name)?
+            };
         }
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
