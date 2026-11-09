@@ -565,6 +565,7 @@ fn validate_ready_boundaries_once(layout: &NativeStoreLayout) -> io::Result<()> 
     if super::layout::ready_boundaries_validated(layout.root()) {
         return Ok(());
     }
+    let _span = crate::perf::span("open.boundaries");
     layout.validate_ready_boundaries()?;
     super::layout::remember_ready_boundaries_validated(layout.root());
     Ok(())
@@ -607,7 +608,10 @@ fn inspect_marker(layout: NativeStoreLayout) -> Result<NativeStoreInspection, Na
             };
         }
     }
-    let inspected = inspect_marker_uncached(layout)?;
+    let inspected = {
+        let _span = crate::perf::span("open.marker");
+        inspect_marker_uncached(layout)?
+    };
     if let (NativeStoreInspection::NativeReady { layout, marker }, Some((length, modified))) =
         (&inspected, observed)
     {

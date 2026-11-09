@@ -74,12 +74,22 @@ impl NativeWorkspace {
                 state,
             });
         }
-        let base = self
-            .client()
-            .capture_base_with(&store, self.worktree_id())?;
-        let step = base_step(&state)?;
-        let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
-        let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
+        // The change index is a file of its own: decoded on another thread
+        // while this one reads the Store.
+        let ((base, step, before), index) = std::thread::scope(|scope| {
+            let loading = trust_index.then(|| scope.spawn(|| self.load_change_index()));
+            let read = (|| -> Result<_> {
+                let base = self
+                    .client()
+                    .capture_base_with(&store, self.worktree_id())?;
+                let step = base_step(&state)?;
+                let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
+                Ok((base, step, before))
+            })();
+            let index = loading.and_then(|loading| loading.join().ok().flatten());
+            read.map(|read| (read, index))
+        })?;
+        let indexed = self.resolved_change_index(&store, trust_index, &step, &before, index)?;
         drop(store);
         drop(span);
         let changes = self.working_changes_from(
@@ -113,7 +123,12 @@ impl NativeWorkspace {
             let state = self.state_with(&store)?;
             let step = base_step(&state)?;
             let before = self.read_step_projection_with(&store, state.space.id(), &step)?;
-            let indexed = self.resolved_change_index(&store, trust_index, &step, &before)?;
+            let index = if trust_index {
+                self.load_change_index()
+            } else {
+                None
+            };
+            let indexed = self.resolved_change_index(&store, trust_index, &step, &before, index)?;
             (base, state, before, indexed)
         };
         drop(span);
@@ -128,7 +143,16 @@ impl NativeWorkspace {
         )
     }
 
-    /// The Worktree's change index with its bound projection supplied
+    /// The Worktree's change index as its file holds it (`None` when it is
+    /// not enabled or cannot be read).
+    fn load_change_index(&self) -> Option<layrs_store_local::scm_v1::change_index::ChangeIndex> {
+        layrs_store_local::scm_v1::change_index::ChangeIndex::load(
+            self.store_root(),
+            self.worktree_id(),
+        )
+    }
+
+    /// The Worktree's change index (`loaded`) with its bound projection supplied
     /// (council s3, D1), the base Step's root Tree, and whether the index is
     /// bound to the base projection; `None` when the index is not trusted
     /// (`--full`) or not enabled.
@@ -138,15 +162,13 @@ impl NativeWorkspace {
         trust_index: bool,
         step: &StepId,
         before: &[CheckoutProjectionEntry],
+        loaded: Option<layrs_store_local::scm_v1::change_index::ChangeIndex>,
     ) -> Result<Option<IndexedBase>> {
         if !trust_index {
             return Ok(None);
         }
         let span = layrs_store_local::perf::span("status.tracked_index");
-        let Some(mut index) = layrs_store_local::scm_v1::change_index::ChangeIndex::load(
-            self.store_root(),
-            self.worktree_id(),
-        ) else {
+        let Some(mut index) = loaded else {
             return Ok(None);
         };
         let root = NativeScmReader::new(store)?

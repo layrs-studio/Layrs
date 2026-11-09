@@ -78,8 +78,10 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
             base_checksum,
             changes,
         } => {
-            let base_path = file(store_root, &base_root);
-            let base = read(&base_path, &base_root)?;
+            let base = match last_complete(&base_root, &base_checksum) {
+                Some(bytes) => parse(&bytes[..bytes.len() - 32], &base_root, base_checksum),
+                None => read(&file(store_root, &base_root), &base_root),
+            }?;
             let Form::Complete(base_entries) = base.form else {
                 return None;
             };
@@ -89,14 +91,20 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
                 .map(|entries| (parsed.projection_tree, entries))
         }
     });
-    let Some((projection_tree, entries)) = loaded.filter(|(_, entries)| well_formed(entries))
-    else {
+    let checked = {
+        let _span = crate::perf::span("projection_cache.well_formed");
+        loaded.filter(|(_, entries)| well_formed(entries))
+    };
+    let Some((projection_tree, entries)) = checked else {
         if path.exists() {
             let _ = fs::remove_file(&path);
         }
         return None;
     };
-    super::checkout::remember_projection_tree_id(&entries, &projection_tree);
+    {
+        let _span = crate::perf::span("projection_cache.remember");
+        super::checkout::remember_projection_tree_id(&entries, &projection_tree);
+    }
     Some(entries)
 }
 
@@ -122,12 +130,58 @@ fn read(path: &Path, root_tree: &TreeId) -> Option<Parsed> {
     if !metadata.is_file() || metadata.len() > MAX_BYTES || metadata.len() < 40 {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
+    let bytes = {
+        let _span = crate::perf::span("projection_cache.read_file");
+        fs::read(path).ok()?
+    };
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
-    let checksum = *blake3::hash(body).as_bytes();
+    let checksum = {
+        let _span = crate::perf::span("projection_cache.checksum");
+        *blake3::hash(body).as_bytes()
+    };
     if checksum != trailer {
         return None;
     }
+    let parsed = parse(body, root_tree, checksum)?;
+    if matches!(parsed.form, Form::Complete(_)) {
+        remember_complete(root_tree, checksum, bytes);
+    }
+    Some(parsed)
+}
+
+/// The verified bytes of the last complete projection this process read.
+type Verified = (TreeId, [u8; 32], std::sync::Arc<Vec<u8>>);
+
+fn verified_complete() -> &'static std::sync::Mutex<Option<Verified>> {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<Option<Verified>>> =
+        std::sync::OnceLock::new();
+    LAST.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Kept so a delta bound to these exact bytes (its base checksum) applies to
+/// them without reading the file again: a command often loads two
+/// projections that are deltas to the same complete one. Only bytes whose
+/// checksum was verified, and only one projection per process.
+fn remember_complete(root_tree: &TreeId, checksum: [u8; 32], bytes: Vec<u8>) {
+    if let Ok(mut last) = verified_complete().lock() {
+        *last = Some((root_tree.clone(), checksum, std::sync::Arc::new(bytes)));
+    }
+}
+
+/// The remembered bytes of `root_tree`'s complete projection, if they are
+/// exactly those of `checksum`.
+fn last_complete(root_tree: &TreeId, checksum: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
+    let last = verified_complete().lock().ok()?;
+    let (tree, sum, bytes) = last.as_ref()?;
+    (tree == root_tree && sum == checksum).then(|| {
+        crate::perf::count("projection_cache.base_remembered", 1);
+        bytes.clone()
+    })
+}
+
+/// A cache file's body (its checksum already verified) bound to `root_tree`.
+fn parse(body: &[u8], root_tree: &TreeId, checksum: [u8; 32]) -> Option<Parsed> {
+    let _span = crate::perf::span("projection_cache.parse");
     let mut reader = Reader { bytes: body, at: 0 };
     if reader.take(8)? != MAGIC || reader.u32()? != VERSION {
         return None;

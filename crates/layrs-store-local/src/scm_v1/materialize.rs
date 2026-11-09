@@ -708,7 +708,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
         if let Some(file) = staged.get(path) {
             let parent_span = crate::perf::span("phases.parent");
             let (directory, name) = path.rsplit_once('/').unwrap_or(("", path));
-            // One ensured (created and synced) parent per directory; its path
+            // One ensured (created and synced, or on one NTFS volume made
+            // durable by the barrier below) parent per directory; its path
             // binding is still verified before every install into it.
             if !installed_into.contains_key(directory) {
                 // Bound open handles: make the installs so far durable early.
@@ -718,7 +719,11 @@ pub fn apply_checkout_with_sources_bound_metadata(
                     }
                     installed_into.clear();
                 }
-                let (parent, _) = checkout.components_to_parent(Path::new(path))?;
+                let (parent, _) = if ordered {
+                    checkout.components_to_parent_unsynced(Path::new(path))?
+                } else {
+                    checkout.components_to_parent(Path::new(path))?
+                };
                 installed_into.insert(directory, parent);
             }
             let parent = &installed_into[directory];
@@ -1192,7 +1197,8 @@ fn purge_completed_backup(
     drop(backup);
     if deleted == sealed.len() {
         if let Some(name) = root.file_name() {
-            let _ = backups.remove_empty_child(name);
+            // Not synced: a folder left by a crash is harmless (swept).
+            let _ = backups.remove_empty_child_unsynced(name);
         }
     }
 }

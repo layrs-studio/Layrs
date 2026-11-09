@@ -894,6 +894,7 @@ fn validate_writer_pragmas(connection: &Connection, busy_timeout: Duration) -> R
 fn validate_schema_once(connection: &Connection, path: &Path) -> Result<()> {
     static VALIDATED: std::sync::OnceLock<FileVersions> = std::sync::OnceLock::new();
     once_per_version(VALIDATED.get_or_init(Default::default), path, || {
+        let _span = crate::perf::span("sqlite.validate_schema");
         validate_schema(connection, path)
     })
 }
