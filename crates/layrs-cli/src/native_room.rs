@@ -242,9 +242,9 @@ pub fn run(cli: &Cli, command: &RoomCommand) -> Result<Rendered, CliError> {
                 *preview,
             )
         }
-        RoomCommand::Drop { name, force } => {
+        RoomCommand::Drop { name, force, full } => {
             let room = selected(&context, name.as_ref())?;
-            drop_room(cli, &context.project, room, *force)
+            drop_room(cli, &context.project, room, *force, *full)
         }
     }
 }
@@ -629,15 +629,13 @@ fn merge(
     }
     // Each folder sees Layer heads through its own last Operation: name the
     // Room's exact captured Step as the source, not its Layer.
-    // The fast-forward attempt above already captured the project folder;
-    // acceptance still rechecks that folder before writing anything.
+    // The project folder is not captured (council s10, Q2: git's merge): its
+    // working changes are carried, unrecorded; acceptance writes only the
+    // paths the result changes, each proven to hold its base content.
     let span = layrs_store_local::perf::span("room.merge.weave_prepare");
-    let plan = if preview {
-        project.preview_named_weave(&head, &target)
-    } else {
-        project.prepare_named_weave_after_capture(&head, &target)
-    }
-    .map_err(error)?;
+    let plan = project
+        .prepare_named_weave_after_capture(&head, &target)
+        .map_err(error)?;
     drop(span);
     let conflicts: Vec<Value> = plan
         .plan()
@@ -686,14 +684,16 @@ fn drop_room(
     project: &NativeWorkspace,
     mut room: RoomRecord,
     force: bool,
+    full: bool,
 ) -> Result<Rendered, CliError> {
-    // Whatever the folder holds is captured first: dropping never loses work,
-    // it stays on the Room's Layer. Captures trust the change index (ADR
-    // 0025); before deleting anything, every local byte is verified instead.
-    // One capture, the verifying one: it is strictly stronger than an
-    // index-trusting step, and whatever it finds is kept on the Layer.
+    // Whatever the folder holds is captured first: dropping never loses work
+    // that the capture sees, it stays on the Room's Layer. Two equal passes;
+    // a physical Room trusts its change index as git trusts its index
+    // (council s10, Q4: exact stat match, racy entries read again), unless
+    // `--full` rereads every local byte. A virtual Room rechecks its
+    // placeholders live.
     let span = layrs_store_local::perf::span("room.drop.verify_all");
-    let head = verify_all(cli, project, &mut room)?;
+    let head = verify_all(cli, project, &mut room, full)?;
     drop(span);
     let settled = head == room.base_step_id || room.merged_step_id.as_deref() == Some(&head);
     if !settled && !force {
@@ -926,6 +926,7 @@ fn verify_all(
     cli: &Cli,
     project: &NativeWorkspace,
     room: &mut RoomRecord,
+    full: bool,
 ) -> Result<String, CliError> {
     match room.kind {
         #[cfg(windows)]
@@ -952,9 +953,12 @@ fn verify_all(
         RoomKind::Physical => {
             let _ = cli;
             let workspace = NativeWorkspace::discover(&room.path).map_err(error)?;
-            workspace
-                .capture_verifying_all(layrs_core::scm::CaptureReason::BeforeOperation)
-                .map_err(error)?;
+            let reason = layrs_core::scm::CaptureReason::BeforeOperation;
+            if full {
+                workspace.capture_verifying_all(reason).map_err(error)?;
+            } else {
+                workspace.capture_before_deletion(reason).map_err(error)?;
+            }
             own_base_step(&NativeWorkspace::discover(&room.path).map_err(error)?)
         }
     }

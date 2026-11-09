@@ -64,7 +64,14 @@ fn virtual_room_detects_edits_renames_and_ignores_without_reopening_files() {
     let dir = root.join("rooms").join("agent-v");
     let created = run(
         &project,
-        &["room", "new", "agent-v", "--dir", dir.to_str().unwrap()],
+        &[
+            "room",
+            "new",
+            "agent-v",
+            "--virtual",
+            "--dir",
+            dir.to_str().unwrap(),
+        ],
         true,
     );
     assert_eq!(created["room"]["kind"], "virtual");
@@ -135,7 +142,14 @@ fn virtual_room_drop_keeps_unmerged_work() {
     let room = PathBuf::from(
         run(
             &project,
-            &["room", "new", "agent-w", "--dir", dir.to_str().unwrap()],
+            &[
+                "room",
+                "new",
+                "agent-w",
+                "--virtual",
+                "--dir",
+                dir.to_str().unwrap(),
+            ],
             true,
         )["room"]["path"]
             .as_str()

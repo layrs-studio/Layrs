@@ -412,6 +412,16 @@ impl NativeWorkspace {
         self.capture_using_passes(reason, index, None, false)
     }
 
+    /// Before a physical Room's folder is deleted (council s10, Q4): two
+    /// equal passes, as `capture_verifying_all`, but trusting the change
+    /// index's proven entries as git trusts its index (exact stat match;
+    /// racy and unproven entries are read). Without an index, every file is
+    /// read.
+    pub fn capture_before_deletion(&self, reason: CaptureReason) -> Result<CapturePlan> {
+        let index = scm_v1::change_index::ChangeIndex::load(self.store_root(), &self.worktree_id);
+        self.capture_using_passes(reason, index, None, false)
+    }
+
     fn capture_using(
         &self,
         reason: CaptureReason,

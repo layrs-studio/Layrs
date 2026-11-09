@@ -139,9 +139,10 @@ impl NativeWorkspace {
     pub fn prepare_named_weave(&self, source: &str, target: &str) -> Result<NativeMergePreview> {
         self.named_weave(source, target, Some(true))
     }
-    /// As `prepare_named_weave` when the caller captured this folder just
-    /// before (a Room merge whose fast-forward attempt did): no second scan.
-    /// `accept_merge` still verifies the folder against its base first.
+    /// As `prepare_named_weave` without capturing this folder (a Room merge,
+    /// council s10, Q2: git's merge). Its working changes are neither
+    /// recorded nor required clean; `accept_merge` writes only the paths the
+    /// result changes, each proven to hold its base content first.
     pub fn prepare_named_weave_after_capture(
         &self,
         source: &str,

@@ -207,6 +207,12 @@ impl NativeWorkspace {
     /// are materialized (O(changes)); otherwise only the Layer head moves.
     /// Returns whether this folder's files were updated. Refuses (caller then
     /// performs a full Weave) when the target moved since `expected_head`.
+    ///
+    /// The folder is not captured first (council s10, Q2: git's merge): its
+    /// working changes are neither recorded nor touched. Every path the
+    /// merge writes must still hold its base content, which the materializer
+    /// proves right before replacing it; one that does not refuses the merge
+    /// before anything is written.
     pub fn fast_forward_layer(
         &self,
         target: &LayerId,
@@ -214,9 +220,6 @@ impl NativeWorkspace {
         step: &StepId,
     ) -> Result<bool> {
         let _total = layrs_store_local::perf::span("room.fast_forward");
-        let span = layrs_store_local::perf::span("ff.capture");
-        self.capture_with_reason(CaptureReason::BeforeOperation)?;
-        drop(span);
         // The state and the Step's admission, in one session.
         let span = layrs_store_local::perf::span("ff.state");
         // From here to the batch, every read uses one held session (council
@@ -224,6 +227,10 @@ impl NativeWorkspace {
         let session = HeldSessionGuard::hold(self)?;
         let (source, admitted) = {
             let store = self.session_store()?;
+            // A pending recovery refuses, as a capture would have.
+            if scm_v1::materialize::recovery_pending(&store, self.worktree_id())? {
+                return Err(NativeClientError::NeedsRepair);
+            }
             let source = self.state_with(&store)?;
             let reader = NativeScmReader::new(&store)?;
             let admitted = reader

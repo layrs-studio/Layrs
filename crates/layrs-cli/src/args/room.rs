@@ -35,9 +35,12 @@ pub enum RoomCommand {
         into: Option<String>,
         preview: bool,
     },
+    /// `full`: reread every local byte before deleting (else a physical
+    /// Room trusts its change index, as git trusts its index).
     Drop {
         name: Option<String>,
         force: bool,
+        full: bool,
     },
 }
 
@@ -65,7 +68,16 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
     match args.first().map(String::as_str) {
         Some("new") => {
             args.remove(0);
-            let physical = take_bool_flag(&mut args, "--physical")?;
+            // Physical by default (council s10, Q5); `--virtual` asks for a
+            // virtual Room, `--physical` stays accepted.
+            let physical_flag = take_bool_flag(&mut args, "--physical")?;
+            let virtual_flag = take_bool_flag(&mut args, "--virtual")?;
+            if physical_flag && virtual_flag {
+                return Err(CliParseError::new(
+                    "usage: --physical and --virtual exclude each other",
+                ));
+            }
+            let physical = !virtual_flag;
             let dir = take_string_option(&mut args, "--dir")?
                 .filter(|dir| !dir.is_empty())
                 .map(PathBuf::from);
@@ -124,14 +136,16 @@ pub(super) fn parse(invoked_as: &str, mut args: Vec<String>) -> Result<CliComman
         Some("drop") => {
             args.remove(0);
             let force = take_bool_flag(&mut args, "--force")?;
+            let full = take_bool_flag(&mut args, "--full")?;
             Ok(CliCommand::Room(RoomCommand::Drop {
                 name: optional_name(args, "drop")?,
                 force,
+                full,
             }))
         }
         Some("create" | "open" | "resume") => Ok(CliCommand::Worktree(worktree::parse(args)?)),
         _ => Err(CliParseError::new(
-            "usage: layrs room new NAME [--physical] [--dir PATH] | list | path NAME | location [set DIR | reset] [--global] | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] | drop [NAME] [--force]  (alias: loom)",
+            "usage: layrs room new NAME [--virtual | --physical] [--dir PATH] | list | path NAME | location [set DIR | reset] [--global] | status [NAME] | step [NAME] | merge [NAME] [--into LAYER] [--preview] | drop [NAME] [--force] [--full]  (alias: loom)",
         )),
     }
 }
@@ -148,10 +162,21 @@ mod tests {
                 parse_args([name, "new", "agent-a"]).unwrap().command,
                 CliCommand::Room(RoomCommand::New {
                     name: "agent-a".into(),
+                    physical: true,
+                    dir: None
+                })
+            );
+            assert_eq!(
+                parse_args([name, "new", "agent-v", "--virtual"])
+                    .unwrap()
+                    .command,
+                CliCommand::Room(RoomCommand::New {
+                    name: "agent-v".into(),
                     physical: false,
                     dir: None
                 })
             );
+            assert!(parse_args([name, "new", "x", "--virtual", "--physical"]).is_err());
             assert_eq!(
                 parse_args([name, "new", "agent-b", "--physical", "--dir", "../b"])
                     .unwrap()
@@ -226,7 +251,16 @@ mod tests {
                     .command,
                 CliCommand::Room(RoomCommand::Drop {
                     name: Some("agent-a".into()),
-                    force: true
+                    force: true,
+                    full: false
+                })
+            );
+            assert_eq!(
+                parse_args([name, "drop", "--full"]).unwrap().command,
+                CliCommand::Room(RoomCommand::Drop {
+                    name: None,
+                    force: false,
+                    full: true
                 })
             );
             assert_eq!(

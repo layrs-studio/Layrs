@@ -194,29 +194,12 @@ impl super::NativeWorkspace {
             Some(self.store_root()),
         )
     }
-    /// As `capture_projection_streaming`, recognising unchanged files from the
-    /// Worktree's change index (ADR 0025) without opening them. Returns the
-    /// index to record once this capture is accepted: entries of trusted
-    /// files are kept, every hashed file gets a fresh proven entry, and paths
-    /// that are no longer files are forgotten.
-    pub(super) fn capture_projection_indexed(
-        &self,
-        state: &super::WorkspaceState,
-        limits: SnapshotLimits,
-        index: &mut scm_v1::change_index::ChangeIndex,
-        single_pass: bool,
-    ) -> Result<(PreparedSnapshot, scm_v1::change_index::ChangeIndex)> {
-        let base = self.read_step_projection(&super::references::base_step(state)?)?;
-        let (snapshot, next, pending) =
-            self.capture_projection_indexed_from(state, base, None, limits, index, single_pass)?;
-        if let Some(pending) = pending {
-            pending.save(self.store_root());
-        }
-        Ok((snapshot, next))
-    }
-
-    /// `capture_projection_indexed` from the base Step's projection (and, if
-    /// known, its root Tree), read by the caller before the scan. The
+    /// A capture recognising unchanged files from the Worktree's change
+    /// index (ADR 0025) without opening them, from the base Step's projection
+    /// (and, if known, its root Tree), read by the caller before the scan.
+    /// Returns the index to record once this capture is accepted: entries of
+    /// trusted files are kept, every hashed file gets a fresh proven entry,
+    /// and paths that are no longer files are forgotten. The
     /// projection of a new Tree is returned for the caller to record
     /// (`PendingProjection::save`), possibly while it accepts the capture.
     pub(super) fn capture_projection_indexed_from(

@@ -21,18 +21,23 @@ particulier une par agent :
   (par défaut la Layer source).
 - **Une Room se présente comme un dossier complet** : l'agent lit, écrit, compile
   et teste normalement. Les outils ne voient jamais un dossier partiel.
-- **Par défaut une Room est virtuelle (VFS)** : ses fichiers apparaissent à la
-  lecture et sont copiés depuis le Store à la première écriture (copy-on-write
-  par fichier). `--physical` crée à la place un dossier réel complet. Sur une
-  plateforme sans VFS qualifié, la Room est physique et la commande le dit.
+- **Par défaut une Room est physique** (conseil s10, 2026-11-09 ; avant :
+  virtuelle) : un dossier réel complet, lu comme n'importe quel dossier.
+  `--virtual` crée une Room virtuelle (VFS) : ses fichiers apparaissent à la
+  lecture, remplis depuis le Store. Chaque ouverture d'un placeholder in-sync
+  coûte ~0,04 ms de plus qu'un fichier ordinaire (~0,4 s par lecture de
+  10 000 fichiers, à chaque lecture), ce que la règle « plus rapide que git
+  sur chaque commande » ne permet pas par défaut. Sur une plateforme sans VFS
+  qualifié, `--virtual` donne une Room physique et la commande le dit. Les
+  Rooms existantes gardent leur type.
 - **Emplacement par défaut hors de l'arbre du projet** : sous Windows
   `%LOCALAPPDATA%\Layrs\rooms\<Space>\<Room>` (hors OneDrive, chemin court, pas
   d'imbrication de racines de synchronisation) ; Linux
   `$XDG_DATA_HOME/layrs/rooms/…` ; macOS `~/Library/Application Support/Layrs/rooms/…`.
   Le registre des Rooms vit dans `.layrs/rooms/`. Les outils qui parcourent le
   projet principal ne voient donc jamais les Rooms.
-- **Commandes** : `layrs room new NOM` (affiche le chemin), `room list`,
-  `room path NOM`, `room merge NOM [--into LAYER]`, `room drop NOM [--force]`.
+- **Commandes** : `layrs room new NOM [--virtual]` (affiche le chemin), `room list`,
+  `room path NOM`, `room merge NOM [--into LAYER]`, `room drop NOM [--force] [--full]`.
   Une Room ne change jamais de Layer : on en ouvre une autre.
 
 ## Invariants
@@ -89,8 +94,14 @@ Limites assumées, comme git :
 
 Garde-fous :
 
-- `room drop` relit d'abord tout le contenu local, sans confiance dans
-  l'index : chaque fichier ordinaire ou placeholder modifié est haché ;
+- `room drop` capture d'abord tout ce qu'il voit, en deux passes égales. Une
+  Room physique fait confiance à son index de changements comme git à son
+  index (conseil s10, 2026-11-09) : une entrée prouvée dont les métadonnées
+  sont identiques et qui n'est pas « racy » n'est pas relue ; les autres le
+  sont. Une réécriture qui garde exactement taille et dates n'est donc vue,
+  comme dans git, que par `room drop --full`, qui relit et hache tout le
+  contenu local sans confiance dans l'index. Une Room virtuelle hache chaque
+  placeholder modifié ;
 - chaque placeholder énuméré in-sync est réinspecté en direct par un handle
   d'attributs : état in-sync natif, octets modifiés nuls, identité et numéro
   de fichier. Ce handle n'accède pas aux données, donc rien n'est hydraté ni

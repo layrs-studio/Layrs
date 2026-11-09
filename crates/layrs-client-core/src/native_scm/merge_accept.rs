@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_scm::{prepare, references::base_step, SnapshotLimits};
+use crate::native_scm::{prepare, references::base_step};
 use layrs_store_local::scm_v1::materialize::{MaterializationFaults, NoMaterializationFaults};
 use layrs_sync::v3::{ProductEnvelope, WeaveLogicalId};
 use layrs_weave::graph_merge::ReceiptContext;
@@ -115,25 +115,15 @@ impl NativeWorkspace {
                 "merge requires a ready active Worktree",
             ));
         }
-        // Also covers a graph-only join whose checkout delta is empty. The
-        // checkout is streamed (no whole-checkout memory bound) and read only
-        // where its change index (ADR 0025), if any, does not vouch for it.
-        if active {
-            let limits = SnapshotLimits::streaming();
-            let captured = match layrs_store_local::scm_v1::change_index::ChangeIndex::load(
-                self.store_root(),
-                self.worktree_id(),
-            ) {
-                // Precedes writing the merge result: two equal passes.
-                Some(mut index) => {
-                    self.capture_projection_indexed(source, limits, &mut index, false)?
-                        .0
-                }
-                None => self.capture_projection_streaming(source, limits)?.1,
-            };
-            if worktree.materialized_tree_id() != Some(captured.root_tree_id()) {
-                return Err(NativeClientError::StaleCapture);
-            }
+        // The folder is not rescanned (council s10, Q2: git's merge): only the
+        // paths the result writes must still hold their base content, which
+        // the materializer proves right before replacing each one; other
+        // working changes stay as they are, unrecorded. A pending recovery
+        // refuses, as a capture would have.
+        if active
+            && layrs_store_local::scm_v1::materialize::recovery_pending(&store, self.worktree_id())?
+        {
+            return Err(NativeClientError::NeedsRepair);
         }
         let bundle = preview.plan.installation_bundle().map_err(merge_error)?;
         // Only a clean merge into the active checkout is materialized, from

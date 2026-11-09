@@ -404,8 +404,10 @@ fn actual_lens_execution_and_dirty_checkout_are_not_accepted() {
     assert_eq!(fs::read(f.0.join("code.ts")).unwrap(), b"uncommitted\n");
 }
 
+/// A graph-only join writes no file: a working change is carried as git's
+/// merge carries it, neither refused nor recorded (council s10, Q2).
 #[test]
-fn graph_only_join_still_rejects_dirty_files() {
+fn graph_only_join_carries_dirty_files_unrecorded() {
     let f = Fixture::new();
     let w = f.workspace();
     let source = branch(&f, &w);
@@ -418,8 +420,10 @@ fn graph_only_join_still_rejects_dirty_files() {
         .unwrap();
     let old = w.state().unwrap().operation.id().clone();
     f.write("code.ts", b"uncommitted\n");
-    assert!(w.accept_merge(&preview).is_err());
-    assert_eq!(w.state().unwrap().operation.id(), &old);
+    w.accept_merge(&preview).unwrap();
+    assert_ne!(w.state().unwrap().operation.id(), &old);
+    assert_eq!(fs::read(f.0.join("code.ts")).unwrap(), b"uncommitted\n");
+    assert!(w.is_dirty().unwrap());
 }
 
 struct Fail(MaterializationPoint);

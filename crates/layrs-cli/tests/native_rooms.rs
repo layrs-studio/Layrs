@@ -178,10 +178,11 @@ fn second_room_merges_through_a_weave_after_the_first() {
 }
 
 /// ADR 0025: a Room's captures trust its change index like git (on Windows an
-/// edit that keeps the exact size and dates is not seen by `step`), but `drop`
-/// reads every byte first, so that edit is captured and the drop refused.
+/// edit that keeps the exact size and dates is not seen by `step`), and so
+/// does a plain `drop` (council s10, Q4); `drop --full` reads every byte
+/// first, so that edit is captured and the drop refused.
 #[test]
-fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
+fn room_step_trusts_the_index_but_drop_full_verifies_every_byte() {
     let fixture = Fixture::new();
     let project = init(&fixture);
     let dir = fixture.room_dir("agent-i");
@@ -217,8 +218,9 @@ fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
         "a git-like step trusts the unchanged stat"
     );
 
-    // Dropping verifies content: the edit is found, kept, and the drop refused.
-    let refused = run(&project, &["room", "drop", "agent-i"], false);
+    // Dropping with --full verifies content: the edit is found, kept, and
+    // the drop refused.
+    let refused = run(&project, &["room", "drop", "agent-i", "--full"], false);
     assert!(refused["message"].as_str().unwrap().contains("not merged"));
     assert_eq!(fs::read(&file).unwrap(), b"Z\n");
     run(&project, &["room", "merge", "agent-i"], true);
@@ -230,6 +232,49 @@ fn room_step_trusts_the_index_but_drop_verifies_every_byte() {
     run(&project, &["room", "merge", "agent-i"], true);
     run(&project, &["room", "drop", "agent-i"], true);
     assert!(!room.exists());
+}
+
+/// Council s10, Q2 (git's merge): `room merge` does not capture the project
+/// folder. A working change on a path the merge does not write is carried,
+/// unrecorded, and the fast-forward stays one; a working change on a path it
+/// writes refuses the merge before anything is written.
+#[test]
+fn room_merge_carries_untouched_working_changes_and_refuses_touched_ones() {
+    let fixture = Fixture::new();
+    let project = init(&fixture);
+    let dir = fixture.room_dir("agent-g");
+    let created = run(&project, &["room", "new", "agent-g", "--dir", &dir], true);
+    assert_eq!(created["room"]["kind"], "physical", "physical by default");
+    let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
+    fs::write(room.join("src/a.txt"), b"a, edited by the agent\n").unwrap();
+    run(&room, &["room", "step"], true);
+    // Untouched by the merge: carried, never recorded.
+    fs::write(project.join("readme.txt"), b"readme, being edited\n").unwrap();
+    let merged = run(&project, &["room", "merge", "agent-g"], true);
+    assert_eq!(merged["fastForward"], true, "{merged}");
+    assert_eq!(
+        fs::read(project.join("src/a.txt")).unwrap(),
+        b"a, edited by the agent\n"
+    );
+    assert_eq!(
+        fs::read(project.join("readme.txt")).unwrap(),
+        b"readme, being edited\n"
+    );
+    // Not captured: still a working change against the merged base.
+    assert_eq!(run(&project, &["status"], true)["dirty"], true);
+    // Touched by the merge: refused, nothing written.
+    fs::write(room.join("src/b.txt"), b"b, edited by the agent\n").unwrap();
+    run(&room, &["room", "step"], true);
+    fs::write(project.join("src/b.txt"), b"b, edited in the project\n").unwrap();
+    run(&project, &["room", "merge", "agent-g"], false);
+    assert_eq!(
+        fs::read(project.join("src/b.txt")).unwrap(),
+        b"b, edited in the project\n"
+    );
+    assert_eq!(
+        fs::read(project.join("readme.txt")).unwrap(),
+        b"readme, being edited\n"
+    );
 }
 
 #[test]
