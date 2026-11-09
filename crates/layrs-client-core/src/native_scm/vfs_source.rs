@@ -223,20 +223,36 @@ impl VerifiedVfsSnapshot {
     }
 
     fn manifest(&self, id: &FileId, cancel: &Cancellation) -> Result<std::sync::Arc<FileManifest>> {
-        if let Some(manifest) = self
+        if let Some(manifest) = self.cached_manifest(id)? {
+            return Ok(manifest);
+        }
+        // Read under the Store's shared lock, as every range is.
+        let _lock = shared_read_lock(&self.read_lock, cancel)?;
+        self.manifest_locked(id, cancel)
+    }
+
+    fn cached_manifest(&self, id: &FileId) -> Result<Option<std::sync::Arc<FileManifest>>> {
+        Ok(self
             .manifests
             .lock()
             .map_err(|_| NativeClientError::InvalidState("VFS manifest cache poisoned"))?
             .get(id)
-        {
-            return Ok(manifest.clone());
+            .cloned())
+    }
+
+    /// `manifest` while the caller holds the Store's shared lock.
+    fn manifest_locked(
+        &self,
+        id: &FileId,
+        cancel: &Cancellation,
+    ) -> Result<std::sync::Arc<FileManifest>> {
+        if let Some(manifest) = self.cached_manifest(id)? {
+            return Ok(manifest);
         }
         let (manifest_id, length) = self
             .manifest_ids
             .get(id)
             .ok_or(NativeClientError::Missing("VFS manifest"))?;
-        // Read under the Store's shared lock, as every range is.
-        let _lock = shared_read_lock(&self.read_lock, cancel)?;
         let manifest = match self
             .read_object(&StoreObjectId::FileManifest(manifest_id.clone()), cancel)
             .map_err(|error| NativeClientError::InvalidSnapshot(format!("VFS manifest: {error}")))?
@@ -435,26 +451,31 @@ impl SnapshotSource for VerifiedVfsSnapshot {
     ) -> layrs_vfs::Result<()> {
         cancel.check()?;
         let _range = layrs_store_local::perf::span("vfs.read_range");
+        // Each range waits for an exclusive Store writer like a shared open
+        // would, but holds only the Store's shared file lock: one hold for
+        // the manifest (on a first read) and the chunks.
+        let lock_span = layrs_store_local::perf::span("vfs.read_lock");
+        let lock = shared_read_lock(&self.read_lock, cancel)
+            .map_err(|error| layrs_vfs::Error::Io(io::Error::other(error.to_string())))?;
+        drop(lock_span);
         let manifest_span = layrs_store_local::perf::span("vfs.read_manifest");
-        let manifest = self.manifest(id, cancel).map_err(|error| match error {
-            NativeClientError::Missing(_) => layrs_vfs::Error::MissingBytes {
-                file_id: id.clone(),
-                offset,
-                length: output.len(),
-            },
-            error => layrs_vfs::Error::Io(io::Error::other(error.to_string())),
-        })?;
+        let manifest = self
+            .manifest_locked(id, cancel)
+            .map_err(|error| match error {
+                NativeClientError::Missing(_) => layrs_vfs::Error::MissingBytes {
+                    file_id: id.clone(),
+                    offset,
+                    length: output.len(),
+                },
+                error => layrs_vfs::Error::Io(io::Error::other(error.to_string())),
+            })?;
         drop(manifest_span);
         let end = offset
             .checked_add(output.len() as u64)
             .filter(|end| *end <= manifest.byte_length())
             .ok_or(layrs_vfs::Error::InvalidRange)?;
         let result = (|| -> Result<()> {
-            // Each range waits for an exclusive Store writer like a shared
-            // open would, but holds only the Store's shared file lock.
-            let lock_span = layrs_store_local::perf::span("vfs.read_lock");
-            let _lock = shared_read_lock(&self.read_lock, cancel)?;
-            drop(lock_span);
+            let _lock = &lock;
             {
                 let _span = layrs_store_local::perf::span("vfs.read_cas_bind");
                 self.chunk_source(cancel)?;
