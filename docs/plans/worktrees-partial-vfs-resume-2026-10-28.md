@@ -26,6 +26,8 @@
 | création d'une Room physique | 1,29–1,40 s | — |
 | Store après le scénario | 2 624–2 628 Kio | 1 822 Kio |
 
+Après les corrections du conseil s9 (`9fd414a`, deux répétitions, machine plus chargée : `git init` 54–58 s) : `status` 61–64 / 64–66 ms (git 55–62 / 59–64) ; `step` 134–136 (151–179) ; création de Room 1,83–1,95 s (2,26–2,57) ; première lecture 3,46–3,93 s (2,91–3,30) ; `room step` 204–242 ms (168–188), mais 156–177 ms sur quatre séries isolées de cinq essais, autant qu'avant les corrections (`room_step_cmp.sh`) ; fusion en avance rapide / 2e 162–172 / 147–161 (78–83 / 80–83) ; 3 voies 335–361 (385–416) ; suppression 0,35–0,53 s (1,38–1,52) ; Room physique 1,45 s ; Store 2 628–2 636 Kio (1 822–1 826).
+
 Notes :
 - `status` juste après `init` : les fichiers écrits moins de 100 ms avant la preuve de l'`init` sont « racy » (marge NTFS) et relus une fois, comme git relit ses entrées racy ; en régime établi, `status` est devant git (21,1–22,0 contre 22,5–22,8 ms).
 - Première lecture d'une Room virtuelle : même une deuxième lecture coûte ~0,4 s de plus que git (2,97 contre 2,54 s). L'hôte ne reçoit aucun rappel pendant ces lectures : c'est le filtre ProjFS à chaque ouverture d'un placeholder hydraté. Création et lecture ensemble restent à parité (5,05–5,23 contre 4,84–5,18 s) ; une Room physique se lit comme un dossier ordinaire.
