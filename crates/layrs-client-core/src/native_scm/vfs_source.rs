@@ -455,13 +455,19 @@ impl SnapshotSource for VerifiedVfsSnapshot {
         // would, but holds only the Store's shared file lock: one hold for
         // the manifest (on a first read) and the chunks.
         let lock_span = layrs_store_local::perf::span("vfs.read_lock");
-        let lock = shared_read_lock(&self.read_lock, cancel)
-            .map_err(|error| layrs_vfs::Error::Io(io::Error::other(error.to_string())))?;
+        let lock = shared_read_lock(&self.read_lock, cancel).map_err(|error| {
+            if cancel.is_cancelled() {
+                layrs_vfs::Error::Cancelled
+            } else {
+                layrs_vfs::Error::Io(io::Error::other(error.to_string()))
+            }
+        })?;
         drop(lock_span);
         let manifest_span = layrs_store_local::perf::span("vfs.read_manifest");
         let manifest = self
             .manifest_locked(id, cancel)
             .map_err(|error| match error {
+                _ if cancel.is_cancelled() => layrs_vfs::Error::Cancelled,
                 NativeClientError::Missing(_) => layrs_vfs::Error::MissingBytes {
                     file_id: id.clone(),
                     offset,
