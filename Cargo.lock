@@ -1305,6 +1305,7 @@ dependencies = [
  "layrs-core",
  "layrs-graph",
  "layrs-store",
+ "layrs-store-local",
  "layrs-sync",
  "layrs-vfs",
  "layrs-weave",

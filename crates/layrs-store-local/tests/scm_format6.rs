@@ -2014,6 +2014,37 @@ fn an_inline_pack_committed_before_a_stop_is_recovered() {
     assert_fsck_clean(&root.0);
 }
 
+/// An invalid declared form is an invalid registration, even when the pack
+/// file it names is sound (council s8 r2).
+#[test]
+fn an_invalid_declared_form_is_never_read_as_a_file() {
+    let root = TestRoot::new("invalid-form");
+    create(&root.0, "invalid-form", "6");
+    let files = vec![file("a.txt", b"alpha bytes", Recipe::Fixed)];
+    let (lane, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let connection = sql(&root.0);
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE cas_packs SET stored_inline=2;")
+        .unwrap();
+    drop(connection);
+    let repository = NativeScmRepository::new(&root.0);
+    assert!(repository.get_chunk(files[0].chunks[0].id()).is_err());
+    assert!(
+        repository
+            .object_admitted_metadata(
+                &StoreObjectId::ChunkRaw(files[0].chunks[0].id().clone()),
+                lane.space.id()
+            )
+            .is_err()
+    );
+    drop(repository);
+    let report = fsck_existing(&root.0, FsckOptions::default()).unwrap();
+    assert!(!report.is_clean());
+}
+
 /// Fails every pack publication after the first `allowed`.
 struct PublicationsAfter {
     allowed: usize,

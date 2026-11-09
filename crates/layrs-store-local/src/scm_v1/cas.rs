@@ -297,6 +297,9 @@ pub struct NativeCas {
     packer: Arc<std::sync::Mutex<Option<Packer>>>,
     /// Format 6 (ADR 0028): this view reads only what SQLite registered.
     compact_format: bool,
+    /// Format 6: the Store id this view was opened for; a scrub reopening
+    /// the database authenticates it (council s8 r2).
+    store_id: Option<layrs_core::scm::StoreId>,
     /// Format 6: the registered packs and loose objects of this view's
     /// SQLite snapshot (the Store's read connection, or the snapshot a
     /// writer took under its exclusive lock).
@@ -478,6 +481,7 @@ impl NativeCas {
         let mut cas = Self::open_layout(store.layout(), Arc::new(NoFaults), packs)?;
         if store.compact() {
             cas.compact_format = true;
+            cas.store_id = Some(store.store_id().clone());
             let connection = store.try_connection().map_err(|error| {
                 io_error(
                     "open SQLite for the CAS catalog",
@@ -557,6 +561,7 @@ impl NativeCas {
         let mut cas =
             Self::open_layout_bound(store.layout(), faults, packs, store.bound_root_identity())?;
         cas.compact_format = store.compact();
+        cas.store_id = store.compact().then(|| store.store_id().clone());
         store
             .verify_filesystem_identity()
             .map_err(|error| io_error("verify Store binding", store.layout().root(), error))?;
@@ -671,6 +676,7 @@ impl NativeCas {
             packs,
             packer: Arc::default(),
             compact_format: false,
+            store_id: None,
             compact: None,
             compact_batch: Arc::default(),
         })
@@ -1121,6 +1127,10 @@ impl NativeCas {
 
     /// Iteratively checks every physical SCM V1 object without consulting any
     /// Space admission table.
+    ///
+    /// Format 6: the registered catalog is reread from the database now, so
+    /// the Store capability this view was opened from must still hold its
+    /// lock, outside any write in progress (an uncheckpointed WAL refuses).
     pub fn scrub(&self) -> CasResult<CasScrubReport> {
         reject_reparse_components(&self.objects_dir)
             .map_err(|error| io_error("validate objects directory", &self.objects_dir, error))?;
@@ -1178,25 +1188,41 @@ impl NativeCas {
         if self.packs.is_some() {
             self.scrub_packs(&mut report)?;
         }
-        if self.compact_view()?.is_some() {
-            // From the database now (council s8 r1): an inline pack's image
-            // is reread, as a pack file is, never the one this view loaded.
-            let path = self
-                .root
-                .join(super::layout::METADATA_DIR_NAME)
-                .join(super::layout::SQLITE_FILE_NAME);
-            let connection =
-                super::sqlite::open_read_only(&path, std::time::Duration::from_secs(5)).map_err(
-                    |error| {
-                        io_error(
-                            "open Store database",
-                            &path,
-                            io::Error::other(error.to_string()),
-                        )
-                    },
-                )?;
-            let catalog = compact::RegisteredCatalog::load_fresh(&connection, self)?;
-            self.scrub_registered(&catalog, &mut report)?;
+        if let Some(view) = self.compact_view()? {
+            if view.is_fresh() {
+                // An audit view: its catalog was read from the database now.
+                self.scrub_registered(view, &mut report)?;
+            } else {
+                // From the database now (council s8 r1): an inline pack's
+                // image is reread, as a pack file is, never the one this view
+                // loaded. The root must still be this view's and the database
+                // this Store's (council s8 r2).
+                self.pinned_root()?;
+                let path = self
+                    .root
+                    .join(super::layout::METADATA_DIR_NAME)
+                    .join(super::layout::SQLITE_FILE_NAME);
+                let database = |error: super::sqlite::ScmSchemaError| {
+                    io_error(
+                        "open Store database",
+                        &path,
+                        io::Error::other(error.to_string()),
+                    )
+                };
+                let connection =
+                    super::sqlite::open_read_only(&path, std::time::Duration::from_secs(5))
+                        .map_err(database)?;
+                let store_id = self.store_id.as_ref().ok_or_else(|| {
+                    io_error(
+                        "scrub format 6 CAS",
+                        &self.root,
+                        io::Error::other("this CAS view has no Store id"),
+                    )
+                })?;
+                super::sqlite::validate_store_identity(&connection, store_id).map_err(database)?;
+                let catalog = compact::RegisteredCatalog::load_fresh(&connection, self)?;
+                self.scrub_registered(&catalog, &mut report)?;
+            }
         }
         report
             .issues
@@ -1665,6 +1691,7 @@ impl<'store> NativeCasWriter<'store> {
             // exclusive lock: no other writer can register anything until
             // this capability ends.
             cas.compact_format = true;
+            cas.store_id = Some(store.store_id().clone());
             let connection = super::sqlite::open_read_only(
                 store.layout().sqlite_path(),
                 std::time::Duration::from_secs(5),
