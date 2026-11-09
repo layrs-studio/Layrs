@@ -3,11 +3,11 @@
 ## Point courant - lectures de packs, captures, fusions (Claude, 2026-11-09, suite)
 
 **Commits**
-- `dfdecba` : purge du dossier de tentative sans synchronisation (reste inoffensif, balayé) ; parents de la phase 2 sans synchronisation propre sur un volume NTFS (la barrière les rend durables, décision B2 2 du conseil s2) ; la création du dossier de tentative reste synchronisée (même décision) ; un delta de projection lié à la dernière projection complète lue par le processus (même condensé) s'applique à ses octets vérifiés sans relire le fichier ; `status` décode l'index de changements sur un autre fil pendant la lecture du Store.
+- `dfdecba` : purge du dossier de tentative sans synchronisation (rétablie par `a138aa1`) ; parents de la phase 2 sans synchronisation propre sur un volume NTFS (la barrière les rend durables, décision B2 2 du conseil s2) ; la création du dossier de tentative reste synchronisée (même décision) ; un delta de projection lié à la dernière projection complète lue par le processus (même condensé) s'applique à ses octets vérifiés sans relire le fichier ; `status` décode l'index de changements sur un autre fil pendant la lecture du Store.
 - `21c22a5` : la capture ne crée son fichier de spool qu'au premier morceau ; une capture qui n'a rien relu et a fait confiance à toutes les entrées garde l'index tel quel (au lieu de le reconstruire entrée par entrée) ; la projection du nouvel arbre est écrite dans le cache pendant l'acceptation.
 - `bedeb35` : la capture décode aussi l'index pendant la lecture du Store.
-- `6ffc7d7` : un catalogue garde ouvert chaque fichier pack qu'il lit (avant : une ouverture épinglée par bloc lu) ; cache de blocs 8 → 64. Lecture des morceaux à la création d'une Room virtuelle : 2 322 → 47 ms à 10 000 fichiers.
-- `89cede5` : le recontrôle du dossier avant d'écrire le résultat d'une fusion se fait en une passe (comme `status`) : il ne supprime rien, chaque chemin écrit est reprouvé juste avant son remplacement.
+- `6ffc7d7` : un catalogue garde ouvert chaque fichier pack qu'il lit (avant : une ouverture épinglée par bloc lu) ; cache de blocs 8 → 64 ; limité aux lectures en masse par `a138aa1`. Lecture des morceaux à la création d'une Room virtuelle : 2 322 → 47 ms à 10 000 fichiers.
+- `89cede5` : recontrôle avant fusion en une passe — annulé (conseil s9 r1, voir plus bas).
 - `b7dcca4`, `625c6b1` : un seul verrou partagé du Store par première lecture d'un fichier virtuel (manifeste et morceaux) ; une lecture annulée pendant l'attente du verrou reste `Cancelled`.
 
 **Banc à 10 000 fichiers, format 6** (`625c6b1`, deux répétitions, machine calme ; git dans la même zone) :
@@ -35,6 +35,21 @@ Notes :
 - `step` sans changement : 29 → 24 ms dans le processus.
 - Création de Room : virtuelle 2,08–2,29 → 1,73–1,75 s, physique 1,43–1,47 → 1,18–1,23 s (git `worktree add` 2,29 s, mesures séparées de `room_create_bench.sh`).
 - Fusion en avance rapide, dans le processus : ~160 → ~115 ms (git ~45 ms hors démarrage).
+
+**Conseil s9 (revue de `5435358..9ca9ddf`, brief `council-s9-r1.md`)**
+
+| Membre | s9 r1 |
+| --- | --- |
+| GPT-6 Astra (xhigh) | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 |
+| Claude Opus 5.5 (xhigh) | 8/10 |
+
+Corrections s9 r1 (`64234fa`, `a138aa1`) :
+- Handles de packs (les trois) : gardés seulement pendant une lecture en masse explicite (`hold_pack_files` : peuplement d'une Room par le crochet `SnapshotSource::bulk_reads`, staging d'une matérialisation), au plus 16, en lecture seule sans droit de suppression ; ADR 0026 amendée. Hors de ces fenêtres, une ouverture par lecture comme avant.
+- Purge du dossier de tentative à nouveau synchronisée (Sol, Opus) : les journaux complétés nomment toujours ce dossier, qui ne serait jamais balayé.
+- `89cede5` annulé (Opus) : une première passe égale à la base clôt déjà la vérification en deux passes ; le changement ne gagnait rien sur un dossier propre et affaiblissait D4 ailleurs.
+- Mémo de projection borné (16 Mio) et oublié quand la projection est retirée ou illisible (Astra, Opus) ; test `a_removed_base_no_longer_answers_its_deltas`.
+- `components_to_parent_with(synced)` au lieu de deux copies (Opus).
 
 **Écarté pour l'instant** : une seule session exclusive tenue du journal à la clôture (décision unanime s4 Q3). Tenir le verrou exclusif pendant les phases rend caduc le modèle de baux (un concurrent ne peut plus reprendre un bail en cours de phases, ce que testent `native_materialize_lease`) ; gain estimé ~8 ms par petite matérialisation. À reprendre avec une revue du conseil.
 
