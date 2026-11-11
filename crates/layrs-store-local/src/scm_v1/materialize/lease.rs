@@ -17,9 +17,9 @@ pub(super) struct LeaseKeeper<'a> {
     /// Last implicit identity recheck by `tick()`; `force()` always rechecks.
     verified_at: Option<std::time::Instant>,
     /// The materialization holds the exclusive Store capability (council
-    /// s10, Q1): nobody can take the Store, so leases are not renewed (a
-    /// renewal would open the Store again); their expiry is still checked
-    /// against the time the Store was taken, at the metadata commit.
+    /// s10, Q1): nobody can take the Store, so nobody can claim its leases
+    /// and they are not renewed (a renewal would open the Store again). The
+    /// metadata commit extends them, then completes the journal.
     holding: bool,
 }
 

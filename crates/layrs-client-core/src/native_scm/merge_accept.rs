@@ -255,8 +255,9 @@ impl NativeWorkspace {
                 self.verify_displaced_content(&before, &after)?;
                 self.materialize_projection(&before, &after, &batch, faults)?;
             } else {
-                // No files change. Verify current bytes still match the claimed
-                // old projection, and retain that old projection in the View.
+                // No files change: the folder keeps its bytes and its working
+                // changes (council s10, Q2), and the View retains the old
+                // projection with the Worktree marked Conflicted.
                 self.client.repository().apply_batch(&batch)?;
             }
         } else {

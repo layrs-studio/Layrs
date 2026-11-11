@@ -511,7 +511,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
             .map_err(error)?
             .with_filesystem_identity(store_identity)?
             .with_metadata_identity(metadata_identity)?;
-        let locked_at_ms = now_ms()?;
+        // On the lease clock: the leases claimed below are checked against
+        // it at the metadata commit.
+        let locked_at_ms = faults.lease_time_ms()?;
         // The journal is created on this writer, which ends with a checked
         // checkpoint (`journal.finish()`) before any checkout path moves; a
         // held session commits it with the WAL flushed instead and goes on.
@@ -653,13 +655,15 @@ pub fn apply_checkout_with_sources_bound_metadata(
             writer
                 .pragma_update(None, "synchronous", "NORMAL")
                 .map_err(error)?;
+            // Writer first: on an early return it closes (checkpointing its
+            // WAL) before the Store lock is released.
             return Ok((
                 root,
                 identity,
                 active,
                 target,
                 leases,
-                Some((store, writer, locked_at_ms)),
+                Some((writer, store, locked_at_ms)),
             ));
         }
         // Durable before any checkout path moves.
@@ -950,8 +954,8 @@ pub fn apply_checkout_with_sources_bound_metadata(
         NativeScmRepository::for_materialization(store_root, recovery_id.as_str(), &owner)
             .with_store_identity(store_identity)
             .with_metadata_identity(metadata_identity);
-    let (outcome, held_store) = match held_session {
-        Some((store, writer, locked_at_ms)) => {
+    let (outcome, mut held_store) = match held_session {
+        Some((writer, store, locked_at_ms)) => {
             let outcome = repository
                 .apply_batch_completing_held(
                     &store,
@@ -984,7 +988,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // A batch applied earlier (a replayed request): its journal is
         // completed as before, in its own transaction.
         lease.tick()?;
-        let mut store = match held_store {
+        let mut store = match held_store.take() {
             Some(store) => store,
             None => open_exclusive(store_root)
                 .map_err(error)?
@@ -1003,6 +1007,9 @@ pub fn apply_checkout_with_sources_bound_metadata(
             )
             .map_err(error)?;
     }
+    // Closing the staged handles, purging backups and saving the change
+    // index need no Store lock: a held session ends here.
+    drop(held_store);
     drop(metadata);
     {
         let _close = crate::perf::span("materialize.close_staged");
@@ -1467,6 +1474,13 @@ fn touched_paths_match(
             {
                 return Ok(false);
             }
+            // Without a capture first (council s10, Q2), the directory may
+            // also hold untracked or ignored entries: refused before any
+            // journal, as git refuses, instead of failing to remove it after
+            // the originals moved (council s11 r1).
+            if tracked_below(path) {
+                only_removed_tracked_below(root, path, paths, prior)?;
+            }
         }
         for (end, _) in path.match_indices('/') {
             let ancestor = &path[..end];
@@ -1478,6 +1492,37 @@ fn touched_paths_match(
         }
     }
     Ok(true)
+}
+
+/// Every leaf under `directory` (which a new leaf replaces) is a tracked
+/// path this transition removes; any other entry refuses.
+fn only_removed_tracked_below(
+    root: &Path,
+    directory: &str,
+    paths: &[&str],
+    prior: &BTreeMap<&str, &CheckoutProjectionContent>,
+) -> io::Result<()> {
+    let mut pending = vec![directory.to_owned()];
+    while let Some(folder) = pending.pop() {
+        for entry in fs::read_dir(root.join(&folder))? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| error("checkout filename is not UTF-8"))?;
+            let path = format!("{folder}/{name}");
+            if entry.file_type()?.is_dir() {
+                pending.push(path);
+            } else if !prior.contains_key(path.as_str())
+                || paths.binary_search(&path.as_str()).is_err()
+            {
+                return Err(error(format!(
+                    "untracked files in {directory} would be removed by this operation: move them first"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Post-install check of exactly the touched paths: each new leaf holds its

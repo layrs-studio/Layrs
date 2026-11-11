@@ -51,6 +51,15 @@ particulier une par agent :
 - `room drop` refuse une Room dont des changements ne sont ni capturés ni
   fusionnés, sauf `--force` qui capture d'abord (rien n'est jamais effacé sans
   avoir été conservé dans le Store).
+- `room merge` capture la Room, jamais le dossier du projet (conseil s10,
+  2026-11-09, comme la fusion de git) : une modification de travail sur un
+  chemin que la fusion n'écrit pas est conservée telle quelle, sans être
+  enregistrée ; un chemin que la fusion écrit doit encore avoir son contenu de
+  base, prouvé juste avant son remplacement, sinon la fusion refuse avant
+  toute écriture (de même pour un dossier remplacé par un fichier qui contient
+  autre chose que du contenu suivi supprimé par la fusion). `room merge
+  --preview` n'exige plus un dossier propre. `layrs weave` garde sa capture
+  préalable.
 - Le statut et la capture d'une Room virtuelle sont en O(changements) : un
   fichier jamais modifié reste identique à sa base sans être relu.
 
@@ -81,7 +90,10 @@ L'index est un cache :
 - il n'est écrit qu'après acceptation de la capture ;
 - une entrée ne naît que d'un contenu prouvé : soit haché par la capture, soit
   écrit par la matérialisation pendant qu'elle tient le fichier en écriture
-  exclusive.
+  exclusive. Une création à neuf (Room physique) tient chaque fichier écrit
+  jusqu'à ce que la marge de dates du volume soit passée, puis compare
+  l'énumération aux métadonnées prises par le handle d'écriture : la preuve,
+  datée de ce moment, n'est pas « racy » (conseil s11).
 
 Limites assumées, comme git :
 

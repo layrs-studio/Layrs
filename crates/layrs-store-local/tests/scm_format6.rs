@@ -2196,6 +2196,20 @@ fn pack_files_stay_open_only_while_held() {
     assert_eq!(held_pack_files(&cas), 0);
 }
 
+/// A format 6 database returns the pages a commit frees (auto_vacuum FULL);
+/// a format 5 one keeps SQLite's default.
+#[test]
+fn format_6_databases_return_freed_pages() {
+    for (format, mode) in [("6", 1), ("5", 0)] {
+        let root = TestRoot::new(&format!("vacuum-{format}"));
+        create(&root.0, "vacuum", format);
+        let auto_vacuum: i64 = sql(&root.0)
+            .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
+            .unwrap();
+        assert_eq!(auto_vacuum, mode, "format {format}");
+    }
+}
+
 /// Fails every pack publication after the first `allowed`.
 struct PublicationsAfter {
     allowed: usize,

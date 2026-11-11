@@ -277,6 +277,63 @@ fn room_merge_carries_untouched_working_changes_and_refuses_touched_ones() {
     );
 }
 
+/// A directory the merge replaces by a file may hold untracked entries now
+/// that the project folder is not captured first: the merge refuses before
+/// any journal or write (council s11 r1), as git refuses.
+#[test]
+fn room_merge_refuses_to_remove_untracked_files_under_a_replaced_folder() {
+    let fixture = Fixture::new();
+    let project = init(&fixture);
+    let dir = fixture.room_dir("agent-u");
+    let created = run(&project, &["room", "new", "agent-u", "--dir", &dir], true);
+    let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
+    // The Room replaces folder `src` (tracked a.txt, b.txt) by a file.
+    fs::remove_dir_all(room.join("src")).unwrap();
+    fs::write(room.join("src"), b"now a file\n").unwrap();
+    run(&room, &["room", "step"], true);
+    fs::write(project.join("src/notes.txt"), b"untracked notes\n").unwrap();
+    let refused = run(&project, &["room", "merge", "agent-u"], false);
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("untracked files in src"),
+        "{refused}"
+    );
+    assert_eq!(
+        fs::read(project.join("src/notes.txt")).unwrap(),
+        b"untracked notes\n"
+    );
+    assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a\n");
+    assert_eq!(run(&project, &["status"], true)["needsRepair"], false);
+}
+
+/// A small fast-forward on one NTFS volume holds one exclusive session from
+/// its journal to its metadata commit (council s10, Q1).
+#[cfg(windows)]
+#[test]
+fn a_small_fast_forward_holds_one_session() {
+    let fixture = Fixture::new();
+    let project = init(&fixture);
+    let dir = fixture.room_dir("agent-h");
+    let created = run(&project, &["room", "new", "agent-h", "--dir", &dir], true);
+    let room = PathBuf::from(created["room"]["path"].as_str().unwrap());
+    fs::write(room.join("src/a.txt"), b"a, held\n").unwrap();
+    run(&room, &["room", "step"], true);
+    let perf = fixture.0.join("merge.perf");
+    let output = Command::new(env!("CARGO_BIN_EXE_layrs"))
+        .current_dir(&project)
+        .env("LAYRS_PERF", "1")
+        .env("LAYRS_PERF_OUT", &perf)
+        .args(["--json", "room", "merge", "agent-h"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report = fs::read_to_string(&perf).unwrap();
+    assert!(report.contains("\"materialize.held_session\""), "{report}");
+    assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a, held\n");
+}
+
 #[test]
 fn room_names_and_folders_are_validated() {
     let fixture = Fixture::new();
