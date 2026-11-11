@@ -126,16 +126,36 @@ pub(super) fn write(
             "the new Worktree folder is no longer empty; nothing was written",
         ));
     }
+    // With a change index on a volume with a fine timestamp margin (NTFS,
+    // ReFS: 100 ms), each written file keeps its handle, which shares no
+    // write access, until that margin has passed since its last write
+    // (council s11 r1): no other process can change it meanwhile, and any
+    // later write stamps another modification time. Its proof is then not
+    // "racy", so the first capture reads none of the files just written,
+    // while every rewrite stays visible to the stat comparison. A coarse
+    // margin would cost seconds: its first capture rereads instead.
+    let indexed =
+        super::super::change_index::ChangeIndex::is_enabled(fresh.store_root, fresh.worktree_id);
+    let margin = super::super::change_index::margin_nanos(root);
+    let settling = (indexed && (0..=250_000_000).contains(&margin)).then(|| {
+        SettlingClose::new(std::time::Duration::from_nanos(
+            u64::try_from(margin).unwrap_or(0),
+        ))
+    });
     let span = crate::perf::span("fresh.write");
-    let written = write_tree(&checkout, paths, next, sources);
+    let written = write_tree(&checkout, paths, next, sources, settling.as_ref());
     if let Some(end_staging) = sources.end_staging.as_mut() {
         end_staging();
     }
     let written = match written {
         Ok(written) => written,
         Err(failure) => {
-            // Every writer has stopped and every handle is closed: what was
-            // created is ours, moved aside, never deleted.
+            // Every writer has stopped and every handle is closed (held ones
+            // now, without waiting): what was created is ours, moved aside,
+            // never deleted.
+            if let Some(settling) = settling {
+                settling.end(false);
+            }
             let rolled_back = quarantine(
                 fresh.checkout_root,
                 fresh.identity,
@@ -182,33 +202,11 @@ pub(super) fn write(
         leases,
         fresh.faults,
     )?;
-    let indexed =
-        super::super::change_index::ChangeIndex::is_enabled(fresh.store_root, fresh.worktree_id);
-    if indexed {
-        // As git dates its index after the files it wrote: the proof below
-        // (each file still at its path with the exact stat its writing
-        // handle saw) is taken once the volume's timestamp margin has passed
-        // since the last write, so no entry is "racy" and the first capture
-        // reads none of the files just written (council s10). A same-tick
-        // rewrite keeping the size escapes the stat comparison, as in git.
-        // Only on a volume with a fine margin (NTFS, ReFS: 100 ms): a coarse
-        // one would cost seconds, and its first capture rereads instead.
-        let margin = super::super::change_index::margin_nanos(root);
-        let last = written
-            .files
-            .values()
-            .map(|stat| stat.modified)
-            .max()
-            .filter(|_| margin <= 250_000_000);
-        if let Some(due) = last.and_then(|last| last.checked_add(margin)) {
-            let wait = due.saturating_sub(super::super::change_index::now());
-            if wait > 0 {
-                let _span = crate::perf::span("fresh.settle");
-                std::thread::sleep(std::time::Duration::from_nanos(
-                    u64::try_from(wait.saturating_add(1_000_000)).unwrap_or(0),
-                ));
-            }
-        }
+    if let Some(settling) = settling {
+        // Every handle closed once its margin passed (monotonic waits, at
+        // most the margin after the last write): the proof below follows.
+        let _span = crate::perf::span("fresh.settle");
+        settling.end(true);
     }
     let proven_at = super::super::change_index::now();
     let proven = {
@@ -269,6 +267,7 @@ fn write_tree<'a>(
     paths: &[&'a str],
     next: &BTreeMap<&'a str, &CheckoutProjectionContent>,
     sources: &mut CheckoutSources<'_>,
+    settling: Option<&SettlingClose>,
 ) -> io::Result<Written<'a>> {
     let mut children: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     children
@@ -363,7 +362,13 @@ fn write_tree<'a>(
             }
             super::super::change_index::StatKey::of(&metadata)
         };
-        stat.ok_or_else(|| error("fresh checkout file has no usable metadata"))
+        let stat = stat.ok_or_else(|| error("fresh checkout file has no usable metadata"))?;
+        // Closed now, or held until its timestamp margin has passed.
+        match settling {
+            Some(settling) => settling.close_later(file),
+            None => drop(file),
+        }
+        Ok(stat)
     };
     let mut created = sources::write_files(&create, &finish, &jobs, sources)?;
     let mut files = BTreeMap::new();
@@ -778,6 +783,99 @@ pub(super) fn recover(
         )
         .map_err(error)?;
     Ok(())
+}
+
+/// Closes written files once a timestamp margin has passed since their last
+/// write (council s11 r1). Each handle shares no write access, so until it
+/// is closed no other process can change the file; a write after the close
+/// stamps a later modification time. A few threads close them as they come
+/// due (closing is where an antivirus scans a new file), overlapping the
+/// other writes.
+struct SettlingClose {
+    sender: std::sync::Mutex<Option<std::sync::mpsc::Sender<(std::time::Instant, fs::File)>>>,
+    /// Set to close every remaining handle at once (a failed write).
+    now: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    margin: std::time::Duration,
+}
+
+impl SettlingClose {
+    fn new(margin: std::time::Duration) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel::<(std::time::Instant, fs::File)>();
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let threads = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .clamp(2, 8);
+        let workers = (0..threads)
+            .filter_map(|_| {
+                let receiver = std::sync::Arc::clone(&receiver);
+                let now = std::sync::Arc::clone(&now);
+                std::thread::Builder::new()
+                    .spawn(move || {
+                        loop {
+                            let next = match receiver.lock() {
+                                Ok(receiver) => receiver.recv(),
+                                Err(_) => return,
+                            };
+                            let Ok((due, file)) = next else {
+                                return;
+                            };
+                            let wait = due.saturating_duration_since(std::time::Instant::now());
+                            if !wait.is_zero() && !now.load(std::sync::atomic::Ordering::Acquire) {
+                                std::thread::sleep(wait);
+                            }
+                            drop(file);
+                        }
+                    })
+                    .ok()
+            })
+            .collect();
+        Self {
+            sender: std::sync::Mutex::new(Some(sender)),
+            now,
+            workers,
+            margin,
+        }
+    }
+
+    /// Holds `file` until the margin has passed from now (its last write
+    /// was just before); closes it at once if no closer is running.
+    fn close_later(&self, file: fs::File) {
+        let due = std::time::Instant::now() + self.margin;
+        let sent = self
+            .sender
+            .lock()
+            .ok()
+            .and_then(|sender| sender.as_ref().map(|sender| sender.send((due, file))));
+        if let Some(Err(std::sync::mpsc::SendError((_, file)))) = sent {
+            drop(file);
+        }
+    }
+
+    /// Every handle closed: as each comes due (`wait`), or at once.
+    fn end(mut self, wait: bool) {
+        self.finish(wait);
+    }
+
+    fn finish(&mut self, wait: bool) {
+        if !wait {
+            self.now.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if let Ok(mut sender) = self.sender.lock() {
+            sender.take();
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for SettlingClose {
+    fn drop(&mut self) {
+        // An early return: nothing waits on these proofs any more.
+        self.finish(false);
+    }
 }
 
 #[cfg(test)]
