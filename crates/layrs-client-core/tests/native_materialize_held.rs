@@ -95,11 +95,15 @@ fn a_held_session_killed_mid_phase_is_recovered_from_its_wal() {
             .status()
             .unwrap();
         assert!(!status.success(), "{at}: the child was not killed");
-        // A real crash: the journal is only in the WAL, never checkpointed.
+        // A real crash of a held session (Windows, one NTFS volume): the
+        // journal is only in the WAL, never checkpointed. Elsewhere the
+        // journal was checkpointed before any path moved.
+        #[cfg(windows)]
         let wal = workspace
             .store_root()
             .join("metadata")
             .join("layrs.sqlite3-wal");
+        #[cfg(windows)]
         assert!(
             fs::metadata(&wal).map(|m| m.len()).unwrap_or(0) > 0,
             "{at}: the journal is not left in the WAL"

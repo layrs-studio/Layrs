@@ -108,7 +108,9 @@ Limites assumées, comme git :
 
 Garde-fous :
 
-- `room drop` capture d'abord tout ce qu'il voit, en deux passes égales. Une
+- `room drop` capture d'abord tout ce qu'il voit, avec les passes de la
+  vérification complète (une passe qui retrouve exactement la base suffit,
+  sinon deux passes égales). Une
   Room physique fait confiance à son index de changements comme git à son
   index (conseil s10, 2026-11-09) : une entrée prouvée dont les métadonnées
   sont identiques et qui n'est pas « racy » n'est pas relue ; les autres le
