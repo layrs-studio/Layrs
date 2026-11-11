@@ -354,14 +354,15 @@ impl super::NativeWorkspace {
             }
         }
         drop(next_span);
-        // Nothing read and exactly the base projection (paths, FileIds,
-        // modes): its Tree is the base projection's own, memoized when the
-        // projection was read. Building and hashing the Trees again would
-        // give the same id. Only when that Tree is the base Step's root:
-        // a root holding what a checkout cannot represent (Tombstones, empty
+        // Exactly the base projection (paths, FileIds, modes): its Tree is
+        // the base projection's own, memoized when the projection was read,
+        // whether or not some files were read again (a racy entry hashed to
+        // its base content). Building and hashing the Trees again would give
+        // the same id. Only when that Tree is the base Step's root: a root
+        // holding what a checkout cannot represent (Tombstones, empty
         // directories) projects to another Tree, which a capture must build
         // and carry.
-        if captured.hashed.is_empty() && captured.manifests.is_empty() && captured.entries == base {
+        if captured.entries == base {
             let root = scm_v1::checkout::projection_tree_id(&base)?;
             let step_root = match base_root {
                 Some(step_root) => step_root.clone(),

@@ -10,17 +10,23 @@ use std::{
 /// No pathname is exported or trusted when accepting a prepared mutation.
 #[derive(Debug)]
 pub(crate) struct SnapshotChunkSpool {
-    /// Created with the first chunk: a capture that reads nothing new (most
-    /// captures) creates no file.
+    /// The first `MEMORY_BYTES` stay in memory: a capture that reads little
+    /// (most captures: a few edited files) creates no file. Created when they
+    /// would grow past it, with what memory held.
     file: Mutex<Option<File>>,
+    memory: Vec<u8>,
     entries: BTreeMap<ChunkId, (u64, usize)>,
     length: u64,
 }
+
+/// Spooled bytes kept in memory before a private file is created.
+const MEMORY_BYTES: u64 = 4 * 1024 * 1024;
 
 impl SnapshotChunkSpool {
     pub(crate) fn new() -> io::Result<Self> {
         Ok(Self {
             file: Mutex::new(None),
+            memory: Vec::new(),
             entries: BTreeMap::new(),
             length: 0,
         })
@@ -45,12 +51,20 @@ impl SnapshotChunkSpool {
             .file
             .get_mut()
             .map_err(|_| io::Error::other("capture spool poisoned"))?;
-        let file = match file {
-            Some(file) => file,
-            None => file.insert(layrs_store_local::private_spool_file()?),
-        };
-        file.seek(SeekFrom::Start(self.length))?;
-        file.write_all(chunk.bytes())?;
+        match file {
+            None if next <= MEMORY_BYTES => self.memory.extend_from_slice(chunk.bytes()),
+            None => {
+                let mut created = layrs_store_local::private_spool_file()?;
+                created.write_all(&self.memory)?;
+                created.write_all(chunk.bytes())?;
+                self.memory = Vec::new();
+                *file = Some(created);
+            }
+            Some(file) => {
+                file.seek(SeekFrom::Start(self.length))?;
+                file.write_all(chunk.bytes())?;
+            }
+        }
         self.entries
             .insert(chunk.id().clone(), (self.length, chunk.bytes().len()));
         self.length = next;
@@ -76,12 +90,19 @@ impl SnapshotChunkSpool {
                 .file
                 .lock()
                 .map_err(|_| io::Error::other("capture spool poisoned"))?;
-            let file = file
-                .as_mut()
-                .ok_or_else(|| io::Error::other("prepared chunk absent"))?;
-            file.seek(SeekFrom::Start(*offset))?;
-            let mut bytes = vec![0; *len];
-            file.read_exact(&mut bytes)?;
+            let bytes = match file.as_mut() {
+                Some(file) => {
+                    file.seek(SeekFrom::Start(*offset))?;
+                    let mut bytes = vec![0; *len];
+                    file.read_exact(&mut bytes)?;
+                    bytes
+                }
+                None => usize::try_from(*offset)
+                    .ok()
+                    .and_then(|start| self.memory.get(start..start.checked_add(*len)?))
+                    .ok_or_else(|| io::Error::other("prepared chunk absent"))?
+                    .to_vec(),
+            };
             let chunk = Chunk::new(bytes).map_err(io::Error::other)?;
             if chunk.id() != id {
                 return Err(io::Error::other("prepared chunk identity changed"));
@@ -118,12 +139,35 @@ impl SnapshotChunkSpool {
 mod tests {
     use super::*;
     #[test]
+    fn small_spools_stay_in_memory_and_spill_whole() {
+        let small = Chunk::new(b"small".to_vec()).unwrap();
+        let mut spool = SnapshotChunkSpool::new().unwrap();
+        spool.insert(&small).unwrap();
+        assert!(spool.file.get_mut().unwrap().is_none());
+        assert_eq!(spool.read(small.id()).unwrap(), small.bytes());
+        let large = Chunk::new(vec![7; MEMORY_BYTES as usize]).unwrap();
+        spool.insert(&large).unwrap();
+        assert!(spool.file.get_mut().unwrap().is_some());
+        assert!(spool.memory.is_empty());
+        assert_eq!(spool.read(small.id()).unwrap(), small.bytes());
+        assert_eq!(spool.read(large.id()).unwrap(), large.bytes());
+    }
+
+    #[test]
     fn capture_spool_rehashes_private_content_and_rejects_truncation() {
         let chunk = Chunk::new(b"prepared bytes".to_vec()).unwrap();
         let mut spool = SnapshotChunkSpool::new().unwrap();
         spool.insert(&chunk).unwrap();
         spool.insert(&chunk).unwrap();
         assert_eq!(spool.descriptors().len(), 1);
+        assert_eq!(spool.read(chunk.id()).unwrap(), chunk.bytes());
+        // In memory, a damaged byte is refused the same way.
+        spool.memory[0] ^= 1;
+        assert!(spool.read(chunk.id()).is_err());
+        spool.memory[0] ^= 1;
+        // Spilled to the private file by a larger chunk.
+        let large = Chunk::new(vec![9; MEMORY_BYTES as usize]).unwrap();
+        spool.insert(&large).unwrap();
         assert_eq!(spool.read(chunk.id()).unwrap(), chunk.bytes());
         let file = spool.file.get_mut().unwrap().as_mut().unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
