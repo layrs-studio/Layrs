@@ -814,12 +814,18 @@ struct SettlingClose {
 
 impl SettlingClose {
     fn new(margin: std::time::Duration) -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel::<(std::time::Instant, fs::File)>();
-        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
-        let now = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let threads = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .clamp(2, 8);
+        Self::with_threads(margin, threads)
+    }
+
+    /// `threads` closing threads (tests start none: as if none could be
+    /// spawned).
+    fn with_threads(margin: std::time::Duration, threads: usize) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel::<(std::time::Instant, fs::File)>();
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        let now = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let workers: Vec<std::thread::JoinHandle<()>> = (0..threads)
             .filter_map(|_| {
                 let receiver = std::sync::Arc::clone(&receiver);
@@ -905,6 +911,25 @@ impl Drop for SettlingClose {
 
 #[cfg(test)]
 mod tests {
+    /// Without a closing thread no handle is held through its margin: the
+    /// proofs are reported unsettled, so entries stay racy (council s11 r2).
+    #[test]
+    fn handles_not_held_through_their_margin_leave_proofs_unsettled() {
+        let dir = std::env::temp_dir().join(format!("layrs-settle-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let file = || fs::File::create(dir.join("f")).unwrap();
+        let none = SettlingClose::with_threads(std::time::Duration::from_millis(1), 0);
+        none.close_later(file());
+        assert!(!none.end(true));
+        let held = SettlingClose::with_threads(std::time::Duration::from_millis(1), 2);
+        held.close_later(file());
+        assert!(held.end(true));
+        let aborted = SettlingClose::with_threads(std::time::Duration::from_millis(1), 2);
+        aborted.close_later(file());
+        assert!(!aborted.end(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
