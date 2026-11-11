@@ -1495,13 +1495,23 @@ fn touched_paths_match(
 }
 
 /// Every leaf under `directory` (which a new leaf replaces) is a tracked
-/// path this transition removes; any other entry refuses.
+/// path this transition removes, and every folder under it holds one: the
+/// obstruction pass removes exactly the parents of removed tracked paths.
+/// Any other entry, an empty untracked folder included, refuses before any
+/// journal (council s11 r3).
 fn only_removed_tracked_below(
     root: &Path,
     directory: &str,
     paths: &[&str],
     prior: &BTreeMap<&str, &CheckoutProjectionContent>,
 ) -> io::Result<()> {
+    let removed_below = |folder: &str| {
+        let prefix = format!("{folder}/");
+        prior
+            .range::<&str, _>(prefix.as_str()..)
+            .take_while(|(path, _)| path.starts_with(&prefix))
+            .any(|(path, _)| paths.binary_search(path).is_ok())
+    };
     let mut pending = vec![directory.to_owned()];
     while let Some(folder) = pending.pop() {
         for entry in fs::read_dir(root.join(&folder))? {
@@ -1512,6 +1522,11 @@ fn only_removed_tracked_below(
                 .map_err(|_| error("checkout filename is not UTF-8"))?;
             let path = format!("{folder}/{name}");
             if entry.file_type()?.is_dir() {
+                if !removed_below(&path) {
+                    return Err(error(format!(
+                        "untracked files in {directory} would be removed by this operation: move them first"
+                    )));
+                }
                 pending.push(path);
             } else if !prior.contains_key(path.as_str())
                 || paths.binary_search(&path.as_str()).is_err()

@@ -11,11 +11,15 @@ Les décisions laissées à l'utilisateur sont restées sans réponse ; l'utilis
 
 Autres commits : `06aeb8b` (format 6 en `auto_vacuum = FULL` : Store après le scénario 2 620 → 2 556 Kio) ; `294d6c0` puis `5f144d7`, `8ef78d0`, `84dba82` (une création à neuf tient chaque fichier écrit jusqu'à la fin de la marge de dates avant de dater sa preuve : première `room step` 1 064 → 137 ms ; sans cela, preuves datées de chaque écriture, donc racy) ; `f506652` et la correction r2 (Store relâché dès la clôture, écrivain fermé avant le verrou, refus avant écriture d'un dossier remplacé contenant des non-suivis, fusion en conflit refusée sur dossier modifié, tests d'arrêt brutal d'une session tenue).
 
-| Membre | s11 r1 | s11 r2 |
-| --- | --- | --- |
-| GPT-6 Astra (xhigh) | 6/10 | 6/10 |
-| GPT-6.1 Sol (max) | 8/10 | 8/10 |
-| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 |
+| Membre | s11 r1 | s11 r2 | s11 r3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 6/10 | 8/10 |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 | 8/10 |
+
+Corrections r3 (`3f94709` et suivant) : passes de la capture avant suppression décrites telles qu'elles sont (celles de la vérification complète) ; assertion du WAL du test d'arrêt brutal réservée à Windows (seul cas de session tenue) ; un dossier vide non suivi sous un dossier remplacé par un fichier est refusé avant le journal ; `projectDirty` vaut `null` hors `--preview`. Trois tours faits : arrêt du conseil sur ce lot.
+
+**Inachevé** : Q2 n'est appliquée qu'à `room merge` ; `layrs weave` capture toujours le dossier avant de préparer (enregistré dans l'ADR 0025).
 
 **Écarts restants contre git** (banc `9b3b2de`) : fusion en avance rapide ~150 ms contre ~78 (la capture d'une Room physique coûte ~33 ms sans sentinelle ; la capture de la Room avant fusion est une décision actée) ; Store 2 556 contre 1 822 Kio (Q3 ~330 Kio ; ~420 Kio de structure SQLite sans équivalent chez git).
 

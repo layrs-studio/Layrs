@@ -306,6 +306,19 @@ fn room_merge_refuses_to_remove_untracked_files_under_a_replaced_folder() {
     );
     assert_eq!(fs::read(project.join("src/a.txt")).unwrap(), b"a\n");
     assert_eq!(run(&project, &["status"], true)["needsRepair"], false);
+    // An empty untracked folder there is refused the same way.
+    fs::remove_file(project.join("src/notes.txt")).unwrap();
+    fs::create_dir(project.join("src/build")).unwrap();
+    let refused = run(&project, &["room", "merge", "agent-u"], false);
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("untracked files in src"),
+        "{refused}"
+    );
+    assert!(project.join("src/build").is_dir());
+    assert_eq!(run(&project, &["status"], true)["needsRepair"], false);
 }
 
 /// A small fast-forward on one NTFS volume holds one exclusive session from

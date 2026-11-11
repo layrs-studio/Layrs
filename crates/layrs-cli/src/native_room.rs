@@ -647,8 +647,12 @@ fn merge(
     if preview || !conflicts.is_empty() {
         // The folder is not captured (Q2): say so when it has working
         // changes, which refuse the merge if they touch a path it writes.
-        let dirty = preview && project.is_dirty().map_err(error)?;
-        let human = if conflicts.is_empty() && dirty {
+        let dirty = if preview {
+            Some(project.is_dirty().map_err(error)?)
+        } else {
+            None
+        };
+        let human = if conflicts.is_empty() && dirty == Some(true) {
             format!(
                 "Room {} merges cleanly into {target}; the project folder has working changes: the merge refuses if they touch a path it writes",
                 room.name
