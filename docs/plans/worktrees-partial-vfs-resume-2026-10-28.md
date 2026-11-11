@@ -1,5 +1,24 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - décisions du conseil s10, revue s11 (Claude + conseil, 2026-11-11)
+
+Les décisions laissées à l'utilisateur sont restées sans réponse ; l'utilisateur ayant délégué (« hésite pas a faire appel au conseil pour vérifier ou décider »), le conseil s10 les a tranchées (brief `council-s10-design.md`) :
+- Q1 (unanime) : garder journal et sauvegardes ; une petite matérialisation (≤ 64 chemins, ≤ 16 Mio, fichiers ordinaires, sans bascule fichier/dossier, un volume NTFS) tient une seule session exclusive du journal à la clôture, avec une seule validation. Fait (`d82e38d`) : `room.fast_forward` 97–101 → 64 ms dans le processus.
+- Q2 (unanime) : `room merge` ne capture plus le dossier du projet (sémantique de git) ; les chemins écrits restent prouvés juste avant remplacement. Fait (`9b3b2de`). `layrs weave` garde sa capture.
+- Q3 (unanime) : un seul condensé de 256 bits pour un fichier à un morceau, par un changement d'identité versionné. **Non commencé** (gain estimé ~330 Kio à 10 000 fichiers ; seul, il ne rejoint pas git).
+- Q4 (unanime) : `room drop` d'une Room physique se fie à l'index de changements (deux passes, entrées racy relues) ; `--full` relit tout. Fait (`9b3b2de`).
+- Q5 (Astra, Sol ; Opus convergent pour un projet de petits fichiers) : Rooms physiques par défaut, `--virtual` explicite. Fait (`9b3b2de`). Les mentions « virtuelles par défaut » et « drop relit tout » plus bas sont dépassées.
+
+Autres commits : `06aeb8b` (format 6 en `auto_vacuum = FULL` : Store après le scénario 2 620 → 2 556 Kio) ; `294d6c0` puis `5f144d7`, `8ef78d0`, `84dba82` (une création à neuf tient chaque fichier écrit jusqu'à la fin de la marge de dates avant de dater sa preuve : première `room step` 1 064 → 137 ms ; sans cela, preuves datées de chaque écriture, donc racy) ; `f506652` et la correction r2 (Store relâché dès la clôture, écrivain fermé avant le verrou, refus avant écriture d'un dossier remplacé contenant des non-suivis, fusion en conflit refusée sur dossier modifié, tests d'arrêt brutal d'une session tenue).
+
+| Membre | s11 r1 | s11 r2 |
+| --- | --- | --- |
+| GPT-6 Astra (xhigh) | 6/10 | 6/10 |
+| GPT-6.1 Sol (max) | 8/10 | 8/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 8/10 |
+
+**Écarts restants contre git** (banc `9b3b2de`) : fusion en avance rapide ~150 ms contre ~78 (la capture d'une Room physique coûte ~33 ms sans sentinelle ; la capture de la Room avant fusion est une décision actée) ; Store 2 556 contre 1 822 Kio (Q3 ~330 Kio ; ~420 Kio de structure SQLite sans équivalent chez git).
+
 ## Point courant - lectures de packs, captures, fusions (Claude, 2026-11-09, suite)
 
 **Commits**

@@ -49,8 +49,10 @@ particulier une par agent :
   du 4 novembre 2026) : un fichier abîmé par une coupure apparaît comme une
   modification et se restaure depuis l'historique.
 - `room drop` refuse une Room dont des changements ne sont ni capturés ni
-  fusionnés, sauf `--force` qui capture d'abord (rien n'est jamais effacé sans
-  avoir été conservé dans le Store).
+  fusionnés, sauf `--force` qui capture d'abord : rien de ce que la capture
+  voit n'est effacé sans avoir été conservé dans le Store. Une réécriture qui
+  garde exactement taille et dates n'est vue, comme dans git, que par
+  `room drop --full` (voir « Garde-fous » et « Limites assumées »).
 - `room merge` capture la Room, jamais le dossier du projet (conseil s10,
   2026-11-09, comme la fusion de git) : une modification de travail sur un
   chemin que la fusion n'écrit pas est conservée telle quelle, sans être

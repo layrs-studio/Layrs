@@ -339,7 +339,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         super::checkout_paths::validate_paths(paths.iter().copied(), cfg!(windows))?;
     } else if !touched_paths_match(&pinned_checkout, checkout.root(), &paths, &prior)? {
         return Err(error(
-            "local changes to paths this operation writes would be overwritten: capture them first (layrs step)",
+            "local changes to paths this operation writes would be overwritten: capture or discard them first",
         ));
     }
     drop(pinned_checkout);
@@ -2209,5 +2209,63 @@ fn matches_fingerprint(
         // Existing durable journals use unprefixed BLAKE3. Preserve recovery
         // without loading the full original/new file into memory.
         Ok(expected["blake3"].as_str() == Some(hash.finalize().to_hex().as_str()))
+    }
+}
+
+#[cfg(test)]
+mod held_scope_tests {
+    use super::*;
+    use layrs_core::scm::FileId;
+
+    fn file(length: u64) -> CheckoutProjectionContent {
+        CheckoutProjectionContent::File {
+            file_id: FileId::from_bytes(&length.to_le_bytes()),
+            byte_length: length,
+            executable: false,
+        }
+    }
+
+    /// The held session's bounds (council s10, Q1): past any of them, or on
+    /// a file/directory switch, a materialization takes the lease path.
+    #[test]
+    fn held_scope_bounds() {
+        let names: Vec<String> = (0..65).map(|n| format!("f{n:02}")).collect();
+        let small = file(10);
+        let paths = |count: usize| {
+            names[..count]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        };
+        let map = |count: usize, content: &'static CheckoutProjectionContent| {
+            names[..count]
+                .iter()
+                .map(|name| (name.as_str(), content))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let small: &'static CheckoutProjectionContent = Box::leak(Box::new(small));
+        assert!(held_scope(&paths(64), &map(64, small), &map(64, small)));
+        assert!(!held_scope(&paths(65), &map(65, small), &map(65, small)));
+        assert!(!held_scope(&[], &BTreeMap::new(), &BTreeMap::new()));
+        // 16 MiB together is in; one byte more is out.
+        let half: &'static CheckoutProjectionContent = Box::leak(Box::new(file(8 * 1024 * 1024)));
+        let over: &'static CheckoutProjectionContent =
+            Box::leak(Box::new(file(8 * 1024 * 1024 + 1)));
+        assert!(held_scope(&paths(1), &map(1, half), &map(1, half)));
+        assert!(!held_scope(&paths(1), &map(1, half), &map(1, over)));
+        // A file replaced by a directory (or the reverse) is out.
+        let prior = BTreeMap::from([("d", small)]);
+        let next = BTreeMap::from([("d/a", small)]);
+        assert!(!held_scope(&["d", "d/a"], &prior, &next));
+        // A symlink is out.
+        let link: &'static CheckoutProjectionContent =
+            Box::leak(Box::new(CheckoutProjectionContent::Symlink {
+                target: "t".into(),
+            }));
+        assert!(!held_scope(
+            &["l"],
+            &BTreeMap::from([("l", link)]),
+            &BTreeMap::new()
+        ));
     }
 }

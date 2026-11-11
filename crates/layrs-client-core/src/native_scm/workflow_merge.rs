@@ -143,7 +143,7 @@ impl NativeWorkspace {
     /// council s10, Q2: git's merge). Its working changes are neither
     /// recorded nor required clean; `accept_merge` writes only the paths the
     /// result changes, each proven to hold its base content first.
-    pub fn prepare_named_weave_after_capture(
+    pub fn prepare_named_weave_without_capture(
         &self,
         source: &str,
         target: &str,

@@ -1,4 +1,5 @@
-//! `layrs room` (ADR 0025): lightweight working folders, virtual by default.
+//! `layrs room` (ADR 0025): lightweight working folders, physical by default
+//! (`--virtual` for a virtual one, council s10).
 use crate::{
     args::{Cli, RoomCommand, RoomLocationAction},
     error::CliError,
@@ -634,7 +635,7 @@ fn merge(
     // paths the result changes, each proven to hold its base content.
     let span = layrs_store_local::perf::span("room.merge.weave_prepare");
     let plan = project
-        .prepare_named_weave_after_capture(&head, &target)
+        .prepare_named_weave_without_capture(&head, &target)
         .map_err(error)?;
     drop(span);
     let conflicts: Vec<Value> = plan
@@ -644,7 +645,15 @@ fn merge(
         .map(|conflict| serde_json::to_value(conflict).unwrap_or(Value::Null))
         .collect();
     if preview || !conflicts.is_empty() {
-        let human = if conflicts.is_empty() {
+        // The folder is not captured (Q2): say so when it has working
+        // changes, which refuse the merge if they touch a path it writes.
+        let dirty = preview && project.is_dirty().map_err(error)?;
+        let human = if conflicts.is_empty() && dirty {
+            format!(
+                "Room {} merges cleanly into {target}; the project folder has working changes: the merge refuses if they touch a path it writes",
+                room.name
+            )
+        } else if conflicts.is_empty() {
             format!("Room {} merges cleanly into {target}", room.name)
         } else {
             format!(
@@ -656,7 +665,7 @@ fn merge(
         };
         return Ok(Rendered {
             human,
-            data: json!({ "room": room, "target": target, "conflicts": conflicts, "merged": false }),
+            data: json!({ "room": room, "target": target, "conflicts": conflicts, "merged": false, "projectDirty": dirty }),
         });
     }
     let span = layrs_store_local::perf::span("room.merge.weave_accept");

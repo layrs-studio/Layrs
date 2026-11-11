@@ -95,6 +95,15 @@ fn a_held_session_killed_mid_phase_is_recovered_from_its_wal() {
             .status()
             .unwrap();
         assert!(!status.success(), "{at}: the child was not killed");
+        // A real crash: the journal is only in the WAL, never checkpointed.
+        let wal = workspace
+            .store_root()
+            .join("metadata")
+            .join("layrs.sqlite3-wal");
+        assert!(
+            fs::metadata(&wal).map(|m| m.len()).unwrap_or(0) > 0,
+            "{at}: the journal is not left in the WAL"
+        );
         // A new process: the journal is pending; recovery restores the
         // originals, and the Store opens with an empty WAL.
         assert!(workspace.needs_repair().unwrap(), "{at}");
