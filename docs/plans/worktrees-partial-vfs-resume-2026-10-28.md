@@ -19,6 +19,23 @@ Autres commits : `06aeb8b` (format 6 en `auto_vacuum = FULL` : Store après le s
 
 Corrections r3 (`3f94709` et suivant) : passes de la capture avant suppression décrites telles qu'elles sont (celles de la vérification complète) ; assertion du WAL du test d'arrêt brutal réservée à Windows (seul cas de session tenue) ; un dossier vide non suivi sous un dossier remplacé par un fichier est refusé avant le journal ; `projectDirty` vaut `null` hors `--preview`. Trois tours faits : arrêt du conseil sur ce lot.
 
+**Banc à 10 000 fichiers, format 6** (`c5d82a4`, deux répétitions ; git dans la même zone) :
+
+| | layrs | git |
+| --- | --- | --- |
+| `init` | 1,2–1,6 s | 41,7–42,4 s |
+| `status` propre (juste après `init`) / 2 changements | 57–59 / 61–69 ms | 46–48 / 51 ms |
+| `step` (2 fichiers) | 123–137 ms | 141–145 ms |
+| création de Room (physique par défaut) | 1,22–1,31 s | 2,11–2,18 s |
+| première lecture de tous les fichiers | 2,53–2,61 s | 2,54–2,68 s |
+| `room step` | 127–132 ms | 231–259 ms |
+| fusion en avance rapide / 2e fusion | 136–145 / 153–173 ms | 68–69 / 66–68 ms |
+| fusion 3 voies | 270–307 ms | 303–357 ms |
+| suppression de la Room | 0,11–0,12 s | 1,31–1,34 s |
+| Store après le scénario | 2 556–2 564 Kio | 1 822 Kio |
+
+`status` juste après `init` : ~1 000 fichiers écrits moins de 100 ms avant la preuve de l'`init` sont relus (la preuve d'une capture est datée d'avant l'énumération ; git date son index après le hachage, compromis plus faible). En régime établi, `status` est devant git.
+
 **Inachevé** : Q2 n'est appliquée qu'à `room merge` ; `layrs weave` capture toujours le dossier avant de préparer (enregistré dans l'ADR 0025).
 
 **Écarts restants contre git** (banc `9b3b2de`) : fusion en avance rapide ~150 ms contre ~78 (la capture d'une Room physique coûte ~33 ms sans sentinelle ; la capture de la Room avant fusion est une décision actée) ; Store 2 556 contre 1 822 Kio (Q3 ~330 Kio ; ~420 Kio de structure SQLite sans équivalent chez git).
