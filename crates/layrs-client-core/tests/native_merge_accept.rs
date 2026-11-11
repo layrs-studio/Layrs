@@ -328,6 +328,41 @@ fn clean_acceptance_materializes_and_persists_canonical_receipt_with_replay() {
     assert_eq!(retry.operation_id, accepted.operation_id);
 }
 
+/// A conflicting merge into a folder with an unrelated working change is
+/// refused before anything is written: resolving or undoing a Conflicted
+/// Worktree needs the folder equal to its base (council s11 r2).
+#[test]
+fn conflicting_merge_refuses_a_folder_with_working_changes() {
+    let f = Fixture::new();
+    let w = f.workspace();
+    let source = branch(&f, &w);
+    f.write("code.ts", b"OTHER\nb\nc\n");
+    w.capture().unwrap();
+    let old = w.state().unwrap().operation.id().clone();
+    let preview = w
+        .preview_structural_merge(
+            &[source.clone()],
+            &layer(&w),
+            policy(),
+            GraphMergeLimits::default(),
+        )
+        .unwrap();
+    f.write("unrelated.txt", b"uncommitted\n");
+    assert!(w.accept_merge(&preview).is_err());
+    assert_eq!(w.state().unwrap().operation.id(), &old);
+    assert_eq!(fs::read(f.0.join("code.ts")).unwrap(), b"OTHER\nb\nc\n");
+    assert_eq!(
+        fs::read(f.0.join("unrelated.txt")).unwrap(),
+        b"uncommitted\n"
+    );
+    // Once the change is captured, the same merge is accepted, Conflicted.
+    w.capture().unwrap();
+    let preview = w
+        .preview_structural_merge(&[source], &layer(&w), policy(), GraphMergeLimits::default())
+        .unwrap();
+    assert_eq!(w.accept_merge(&preview).unwrap().conflict_ids.len(), 1);
+}
+
 #[test]
 fn structural_conflict_keeps_honest_old_projection_and_persists_variants() {
     let f = Fixture::new();

@@ -202,18 +202,26 @@ pub(super) fn write(
         leases,
         fresh.faults,
     )?;
-    if let Some(settling) = settling {
-        // Every handle closed once its margin passed (monotonic waits, at
-        // most the margin after the last write): the proof below follows.
+    // Every handle held until its margin passed (monotonic waits, at most
+    // the margin after the last write): the proof below is dated after it.
+    // Otherwise (a coarse margin, or a handle that could not be held) each
+    // entry is dated by its own write: it stays racy and the first capture
+    // reads the file again (council s11 r2).
+    let settled = settling.is_some_and(|settling| {
         let _span = crate::perf::span("fresh.settle");
-        settling.end(true);
-    }
+        settling.end(true)
+    });
     let proven_at = super::super::change_index::now();
     let proven = {
         let _span = crate::perf::span("fresh.verify");
-        verify(&checkout, root, &written, next, proven_at, &mut || {
-            lease.tick()
-        })?
+        verify(
+            &checkout,
+            root,
+            &written,
+            next,
+            settled.then_some(proven_at),
+            &mut || lease.tick(),
+        )?
     };
     drop(written);
     fresh.faults.check(MaterializationPoint::BeforeMetadata)?;
@@ -405,7 +413,7 @@ fn verify(
     root: &Path,
     written: &Written<'_>,
     next: &BTreeMap<&str, &CheckoutProjectionContent>,
-    proven_at: i64,
+    proven_at: Option<i64>,
     tick: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<(String, super::super::change_index::IndexEntry)>> {
     let changed =
@@ -465,7 +473,9 @@ fn verify(
                     length: *byte_length,
                     executable: *executable,
                     stat: *stat,
-                    verified_at: proven_at,
+                    // Without a settled proof, dated by the file's own
+                    // write: racy until a capture reads it again.
+                    verified_at: proven_at.unwrap_or(stat.modified),
                     native: None,
                 },
             ));
@@ -795,6 +805,9 @@ struct SettlingClose {
     sender: std::sync::Mutex<Option<std::sync::mpsc::Sender<(std::time::Instant, fs::File)>>>,
     /// Set to close every remaining handle at once (a failed write).
     now: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Some handle was closed before its margin passed (no closing thread
+    /// could take it): the proofs are not settled.
+    unsettled: std::sync::atomic::AtomicBool,
     workers: Vec<std::thread::JoinHandle<()>>,
     margin: std::time::Duration,
 }
@@ -807,7 +820,7 @@ impl SettlingClose {
         let threads = std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .clamp(2, 8);
-        let workers = (0..threads)
+        let workers: Vec<std::thread::JoinHandle<()>> = (0..threads)
             .filter_map(|_| {
                 let receiver = std::sync::Arc::clone(&receiver);
                 let now = std::sync::Arc::clone(&now);
@@ -831,9 +844,11 @@ impl SettlingClose {
                     .ok()
             })
             .collect();
+        let unsettled = std::sync::atomic::AtomicBool::new(workers.is_empty());
         Self {
             sender: std::sync::Mutex::new(Some(sender)),
             now,
+            unsettled,
             workers,
             margin,
         }
@@ -848,14 +863,24 @@ impl SettlingClose {
             .lock()
             .ok()
             .and_then(|sender| sender.as_ref().map(|sender| sender.send((due, file))));
-        if let Some(Err(std::sync::mpsc::SendError((_, file)))) = sent {
-            drop(file);
+        match sent {
+            Some(Ok(())) => {}
+            Some(Err(std::sync::mpsc::SendError((_, file)))) => {
+                self.unsettled
+                    .store(true, std::sync::atomic::Ordering::Release);
+                drop(file);
+            }
+            None => self
+                .unsettled
+                .store(true, std::sync::atomic::Ordering::Release),
         }
     }
 
-    /// Every handle closed: as each comes due (`wait`), or at once.
-    fn end(mut self, wait: bool) {
+    /// Every handle closed: as each comes due (`wait`), or at once. Whether
+    /// every one was held until its margin passed.
+    fn end(mut self, wait: bool) -> bool {
         self.finish(wait);
+        wait && !self.unsettled.load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn finish(&mut self, wait: bool) {

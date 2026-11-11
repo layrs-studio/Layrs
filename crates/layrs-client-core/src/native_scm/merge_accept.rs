@@ -125,6 +125,15 @@ impl NativeWorkspace {
         {
             return Err(NativeClientError::NeedsRepair);
         }
+        // A conflicted result leaves the Worktree Conflicted, and resolving
+        // it (or undoing the merge) needs the folder equal to its base: a
+        // conflicting merge into a folder with working changes refuses
+        // before writing anything (council s11 r2).
+        if active && !clean && self.is_dirty()? {
+            return Err(NativeClientError::InvalidState(
+                "this merge has conflicts: capture or discard working changes first",
+            ));
+        }
         let bundle = preview.plan.installation_bundle().map_err(merge_error)?;
         // Only a clean merge into the active checkout is materialized, from
         // metadata: the result Tree's projection (new Trees and resolved
