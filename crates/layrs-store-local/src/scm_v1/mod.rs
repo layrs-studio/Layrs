@@ -14,6 +14,7 @@ pub mod checkout_ignore;
 mod checkout_paths;
 pub mod compaction;
 mod consolidation;
+mod derived_cache;
 mod format;
 pub mod fsck;
 mod identity;

@@ -8,10 +8,11 @@
 //! the Step's admission; the cache only answers what the Tree projects to. It is derived data, like the change
 //! index (ADR 0025) or git's index and commit-graph:
 //!
-//! - It is written atomically (rename) and never synced.
-//! - A file whose binding, structure or trailing blake3 checksum is wrong is
-//!   ignored and the projection is read from the Store again.
-//! - Callers sample hits against a recomputation and delete a wrong file.
+//! - Each projection is one value of the derived cache database
+//!   (`derived_cache`), written without sync.
+//! - A value whose binding, structure or trailing blake3 checksum is wrong
+//!   is ignored and the projection is read from the Store again.
+//! - Callers sample hits against a recomputation and delete a wrong value.
 //!
 //! The format, in order:
 //!
@@ -33,10 +34,10 @@
 //!    a few bytes, not another copy of every FileId.
 //! 5. The blake3 checksum of everything before it.
 use super::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
+use super::derived_cache::{Access, Projections};
 use layrs_core::scm::{FileId, TreeId};
 use std::{
     fs,
-    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -59,39 +60,41 @@ const DELTA_MAX_PERCENT: usize = 25;
 /// (about 400 000 paths).
 const REMEMBERED_MAX_BYTES: usize = 16 * 1024 * 1024;
 
-fn file(store_root: &Path, tree: &TreeId) -> PathBuf {
-    let name = blake3::hash(tree.as_str().as_bytes()).to_hex();
-    store_root
-        .join("metadata")
-        .join(DIRECTORY)
-        .join(format!("{name}.bin"))
+/// Where projections were kept as files before the derived cache database;
+/// removed when a projection is saved.
+fn legacy_directory(store_root: &Path) -> PathBuf {
+    store_root.join("metadata").join(DIRECTORY)
 }
 
-/// The cached projection of `root_tree`, if a file exists whose binding,
+/// The cached projection of `root_tree`, if a value exists whose binding,
 /// structure and checksum are all intact (and, for a delta, those of the
-/// exact complete projection it applies to). A file that fails is removed,
+/// exact complete projection it applies to). A value that fails is removed,
 /// so the next `save` writes it again.
 pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProjectionEntry>> {
     let _span = crate::perf::span("projection_cache.load");
-    let path = file(store_root, root_tree);
-    let loaded = read(&path, root_tree).and_then(|parsed| match parsed.form {
-        Form::Complete(entries) => Some((parsed.projection_tree, entries)),
-        Form::Delta {
-            base_root,
-            base_checksum,
-            changes,
-        } => {
-            let base = match last_complete(&base_root, &base_checksum) {
-                Some(bytes) => parse(&bytes[..bytes.len() - 32], &base_root, base_checksum),
-                None => read(&file(store_root, &base_root), &base_root),
-            }?;
-            let Form::Complete(base_entries) = base.form else {
-                return None;
-            };
-            (base.checksum == base_checksum)
-                .then(|| apply(base_entries, changes))
-                .flatten()
-                .map(|entries| (parsed.projection_tree, entries))
+    let cache = Projections::open(store_root, Access::Read);
+    let mut stored = false;
+    let loaded = cache.as_ref().and_then(|cache| {
+        let parsed = read(cache, root_tree, &mut stored)?;
+        match parsed.form {
+            Form::Complete(entries) => Some((parsed.projection_tree, entries)),
+            Form::Delta {
+                base_root,
+                base_checksum,
+                changes,
+            } => {
+                let base = match last_complete(&base_root, &base_checksum) {
+                    Some(bytes) => parse(&bytes[..bytes.len() - 32], &base_root, base_checksum),
+                    None => read(cache, &base_root, &mut false),
+                }?;
+                let Form::Complete(base_entries) = base.form else {
+                    return None;
+                };
+                (base.checksum == base_checksum)
+                    .then(|| apply(base_entries, changes))
+                    .flatten()
+                    .map(|entries| (parsed.projection_tree, entries))
+            }
         }
     });
     let checked = {
@@ -99,10 +102,10 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         loaded.filter(|(_, entries)| well_formed(entries))
     };
     let Some((projection_tree, entries)) = checked else {
-        // Removed, then forgotten (council s9 r3): a read that saw the file
+        // Removed, then forgotten (council s9 r3): a read that saw the value
         // began before the forget, so it cannot remember it again.
-        if path.exists() {
-            let _ = fs::remove_file(&path);
+        if let (Some(cache), true) = (&cache, stored) {
+            cache.remove(root_tree.as_str());
         }
         forget_complete(root_tree);
         return None;
@@ -130,19 +133,26 @@ struct Parsed {
     checksum: [u8; 32],
 }
 
-/// One cache file bound to `root_tree`, its checksum checked.
-fn read(path: &Path, root_tree: &TreeId) -> Option<Parsed> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_BYTES || metadata.len() < 40 {
-        return None;
-    }
+/// One cached value bound to `root_tree`, its checksum checked; `stored` is
+/// set when a value was found at all.
+fn read(cache: &Projections, root_tree: &TreeId, stored: &mut bool) -> Option<Parsed> {
     // Taken before the read: bytes read before a projection is forgotten
     // are never remembered after it (council s9 r2).
     let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
     let bytes = {
         let _span = crate::perf::span("projection_cache.read_file");
-        fs::read(path).ok()?
+        cache.get(root_tree.as_str(), MAX_BYTES)?
     };
+    *stored = true;
+    verified(bytes, root_tree, generation)
+}
+
+/// `bytes` parsed if their checksum holds; a complete projection's bytes are
+/// remembered (`remember_complete`).
+fn verified(bytes: Vec<u8>, root_tree: &TreeId, generation: u64) -> Option<Parsed> {
+    if bytes.len() < 40 {
+        return None;
+    }
     let (body, trailer) = bytes.split_at(bytes.len() - 32);
     let checksum = {
         let _span = crate::perf::span("projection_cache.checksum");
@@ -390,32 +400,35 @@ pub fn save(
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
         return;
     }
-    let path = file(store_root, root_tree);
-    if path.is_file() {
-        // Recorded already: only marked recent, so pruning keeps it.
-        if let Ok(file) = fs::OpenOptions::new().write(true).open(&path) {
-            let _ = file.set_modified(std::time::SystemTime::now());
-        }
-        return;
-    }
-    let Some(directory) = path.parent().map(Path::to_path_buf) else {
+    let Some(cache) = Projections::open(store_root, Access::Create) else {
         return;
     };
+    if cache.touch(root_tree.as_str()) {
+        // Recorded already: only marked recent, so pruning keeps it.
+        return;
+    }
     let mut body = Vec::with_capacity(64 + entries.len() * 48);
     body.extend_from_slice(MAGIC);
     body.extend_from_slice(&VERSION.to_le_bytes());
     put_string(&mut body, root_tree.as_str());
     put_string(&mut body, projection_tree.as_str());
-    let delta = newest_complete(&directory).and_then(|(base_root, base_path)| {
-        let base = read(&base_path, &base_root)?;
-        let Form::Complete(base_entries) = &base.form else {
-            return None;
-        };
-        let changes = changes_between(base_entries, entries);
-        (changes.len() * 100 <= entries.len() * DELTA_MAX_PERCENT)
-            .then(|| (base_root, base.checksum, changes_owned(&changes)))
-    });
+    let delta = cache
+        .newest_complete(MAX_BYTES)
+        .and_then(|(base_root, bytes)| {
+            let base_root = TreeId::parse(base_root).ok()?;
+            let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
+            let base = verified(bytes, &base_root, generation)?;
+            let Form::Complete(base_entries) = &base.form else {
+                return None;
+            };
+            let changes = changes_between(base_entries, entries);
+            (changes.len() * 100 <= entries.len() * DELTA_MAX_PERCENT)
+                .then(|| (base_root, base.checksum, changes_owned(&changes)))
+        });
     let complete = delta.is_none();
+    let base = delta
+        .as_ref()
+        .map(|(base_root, ..)| base_root.as_str().to_owned());
     match delta {
         Some((base_root, base_checksum, changes)) => {
             body.push(FORM_DELTA);
@@ -442,29 +455,22 @@ pub fn save(
     }
     let checksum = blake3::hash(&body);
     body.extend_from_slice(checksum.as_bytes());
-    let _ = (|| -> io::Result<()> {
-        fs::create_dir_all(&directory)?;
-        let staged = directory.join(format!(
-            ".{}.{}.tmp",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            std::process::id()
-        ));
-        {
-            let mut file = fs::File::create(&staged)?;
-            file.write_all(&body)?;
-        }
-        fs::rename(&staged, &path).inspect_err(|_| {
-            let _ = fs::remove_file(&staged);
-        })?;
-        // Pruning reads every file's header: only needed once a complete
-        // projection was added (at most `KEPT_COMPLETE` stay) or more than
-        // `KEPT` files are listed. A delta added within `KEPT` breaks
-        // neither rule.
-        if complete || listed(&directory).len() > KEPT {
-            prune(&directory, &path);
-        }
-        Ok(())
-    })();
+    if cache
+        .insert(root_tree.as_str(), base.as_deref(), &body)
+        .is_err()
+    {
+        return;
+    }
+    // Pruning is only needed once a complete projection was added (at most
+    // `KEPT_COMPLETE` stay) or more than `KEPT` are recorded. A delta added
+    // within `KEPT` breaks neither rule.
+    if complete || cache.count() > KEPT {
+        prune(&cache, root_tree.as_str());
+    }
+    let legacy = legacy_directory(store_root);
+    if fs::symlink_metadata(&legacy).is_ok() {
+        let _ = fs::remove_dir_all(&legacy);
+    }
 }
 
 fn changes_owned(
@@ -517,62 +523,6 @@ fn put_entries<'a>(
     }
 }
 
-/// What a cache file is, from its header alone: its root Tree, and for a
-/// delta the root of the complete projection it needs.
-struct Header {
-    root: TreeId,
-    base: Option<TreeId>,
-}
-
-fn header(path: &Path) -> Option<Header> {
-    use std::io::Read;
-    let mut prefix = Vec::with_capacity(320);
-    fs::File::open(path)
-        .ok()?
-        .take(320)
-        .read_to_end(&mut prefix)
-        .ok()?;
-    let mut reader = Reader {
-        bytes: &prefix,
-        at: 0,
-    };
-    if reader.take(8)? != MAGIC || reader.u32()? != VERSION {
-        return None;
-    }
-    let root = TreeId::parse(reader.string()?).ok()?;
-    reader.string()?;
-    let base = match reader.u8()? {
-        FORM_COMPLETE => None,
-        FORM_DELTA => Some(TreeId::parse(reader.string()?).ok()?),
-        _ => return None,
-    };
-    Some(Header { root, base })
-}
-
-/// The most recently written complete projection: its root and file.
-fn newest_complete(directory: &Path) -> Option<(TreeId, PathBuf)> {
-    let mut files = listed(directory);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-    files.into_iter().find_map(|(_, path)| {
-        let header = header(&path)?;
-        header.base.is_none().then_some((header.root, path))
-    })
-}
-
-fn listed(directory: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
-    let Ok(listing) = fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    listing
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            (path.extension()? == "bin").then_some(())?;
-            Some((entry.metadata().ok()?.modified().ok()?, path))
-        })
-        .collect()
-}
-
 /// Projections kept: those of the Trees most recently written (each Worktree
 /// and Room base, recent Steps), most of them small deltas.
 const KEPT: usize = 8;
@@ -584,56 +534,43 @@ const KEPT_COMPLETE: usize = 3;
 /// written, always) and the complete projections they apply to, with at most
 /// `KEPT_COMPLETE` complete ones; a delta whose complete projection goes goes
 /// too. Best effort: a removed projection is read from the Store when needed.
-fn prune(directory: &Path, kept: &Path) {
-    let mut files = listed(directory);
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-    if let Some(at) = files.iter().position(|(_, path)| path == kept) {
-        let just = files.remove(at);
-        files.insert(0, just);
+fn prune(cache: &Projections, kept: &str) {
+    let mut rows = cache.rows();
+    if let Some(at) = rows.iter().position(|row| row.root == kept) {
+        let just = rows.remove(at);
+        rows.insert(0, just);
     }
-    let headers: Vec<(PathBuf, Option<Header>)> = files
-        .into_iter()
-        .map(|(_, path)| {
-            let header = header(&path);
-            (path, header)
-        })
-        .collect();
     // The newest complete projections, by root.
-    let complete: Vec<&TreeId> = headers
+    let complete: Vec<&str> = rows
         .iter()
-        .filter_map(|(_, header)| {
-            header
-                .as_ref()
-                .filter(|h| h.base.is_none())
-                .map(|h| &h.root)
-        })
+        .filter(|row| row.base.is_none())
+        .map(|row| row.root.as_str())
         .take(KEPT_COMPLETE)
         .collect();
     // Deltas fill what the complete projections leave of `KEPT`.
     let mut retained = complete.len();
-    for (path, header) in &headers {
-        let keep = match header {
-            Some(Header {
-                base: Some(base), ..
-            }) => {
-                let keep = complete.contains(&base) && retained < KEPT;
+    for row in &rows {
+        let keep = match &row.base {
+            Some(base) => {
+                let keep = complete.contains(&base.as_str()) && retained < KEPT;
                 retained += usize::from(keep);
                 keep
             }
-            Some(Header { root, base: None }) => complete.contains(&root),
-            None => false,
+            None => complete.contains(&row.root.as_str()),
         };
-        if !keep && path != kept {
-            let _ = fs::remove_file(path);
+        if !keep && row.root != kept {
+            cache.remove(&row.root);
         }
     }
 }
 
 /// Forgets a cached projection found to differ from its recomputation.
 pub fn remove(store_root: &Path, root_tree: &TreeId) {
-    // Removed, then forgotten (council s9 r3): a read that saw the file
+    // Removed, then forgotten (council s9 r3): a read that saw the value
     // began before the forget, so it cannot remember it again.
-    let _ = fs::remove_file(file(store_root, root_tree));
+    if let Some(cache) = Projections::open(store_root, Access::Write) {
+        cache.remove(root_tree.as_str());
+    }
     forget_complete(root_tree);
 }
 
@@ -764,19 +701,23 @@ mod tests {
         let tree = TreeId::parse(format!("blake3:{}", blake3::hash(b"tree"))).unwrap();
         save(&root, &tree, &tree, &entries());
         assert_eq!(load(&root, &tree), Some(entries()));
-        // Another Tree never reads this file as its own, even renamed.
+        // Another Tree never reads this value as its own, even copied.
         let other = TreeId::parse(format!("blake3:{}", blake3::hash(b"other"))).unwrap();
-        fs::copy(file(&root, &tree), file(&root, &other)).unwrap();
+        let cache = Projections::open(&root, Access::Read).unwrap();
+        let bytes = cache.get(tree.as_str(), MAX_BYTES).unwrap();
+        cache.insert(other.as_str(), None, &bytes).unwrap();
         assert_eq!(load(&root, &other), None);
-        // Any flipped byte fails the checksum.
-        let path = file(&root, &tree);
-        let mut bytes = fs::read(&path).unwrap();
-        let middle = bytes.len() / 2;
-        bytes[middle] ^= 1;
-        fs::write(&path, &bytes).unwrap();
+        // Any flipped byte fails the checksum, and the value is removed.
+        let mut damaged = bytes.clone();
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 1;
+        cache.insert(tree.as_str(), None, &damaged).unwrap();
         assert_eq!(load(&root, &tree), None);
+        assert!(cache.get(tree.as_str(), MAX_BYTES).is_none());
+        save(&root, &tree, &tree, &entries());
         remove(&root, &tree);
-        assert!(!path.exists());
+        assert!(cache.get(tree.as_str(), MAX_BYTES).is_none());
+        drop(cache);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -793,8 +734,7 @@ mod tests {
         for tree in &trees {
             save(&root, tree, tree, &entries());
         }
-        let directory = file(&root, &trees[0]).parent().unwrap().to_path_buf();
-        assert!(fs::read_dir(&directory).unwrap().count() <= KEPT);
+        assert!(Projections::open(&root, Access::Read).unwrap().count() <= KEPT);
         assert_eq!(load(&root, trees.last().unwrap()), Some(entries()));
         let _ = fs::remove_dir_all(&root);
     }
@@ -842,23 +782,30 @@ mod tests {
             },
         });
         save(&root, &tree(1), &tree(1), &next);
-        let size = |n: u8| fs::metadata(file(&root, &tree(n))).unwrap().len();
+        let cache = Projections::open(&root, Access::Read).unwrap();
+        let size = |n: u8| cache.get(tree(n).as_str(), MAX_BYTES).unwrap().len();
         assert!(size(1) * 20 < size(0), "{} vs {}", size(1), size(0));
         assert_eq!(load(&root, &tree(1)), Some(next.clone()));
         assert_eq!(load(&root, &tree(0)), Some(base.clone()));
         // Most paths changed: a complete projection.
         let far = many(400, 2);
         save(&root, &tree(2), &tree(2), &far);
-        assert!(header(&file(&root, &tree(2))).unwrap().base.is_none());
+        assert!(
+            cache
+                .rows()
+                .iter()
+                .any(|row| row.root == tree(2).as_str() && row.base.is_none())
+        );
         assert_eq!(load(&root, &tree(2)), Some(far));
         // A delta never applies to other bytes than its base's: a base
         // rewritten (same Tree, other bytes) leaves it unreadable and removed.
         let mut altered = base.clone();
         altered.truncate(399);
-        fs::remove_file(file(&root, &tree(0))).unwrap();
+        cache.remove(tree(0).as_str());
         save(&root, &tree(0), &tree(0), &altered);
         assert_eq!(load(&root, &tree(1)), None);
-        assert!(!file(&root, &tree(1)).exists());
+        assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
+        drop(cache);
         let _ = fs::remove_dir_all(&root);
     }
 

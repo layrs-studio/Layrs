@@ -21,8 +21,7 @@ use layrs_core::scm::{FileId, TreeId, WorktreeId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -257,6 +256,8 @@ impl<'a> ProjectionCursor<'a> {
 }
 
 impl ChangeIndex {
+    /// Where an index was kept before the derived cache database: still read
+    /// when the database has none, and removed once it is written there.
     fn file(store_root: &Path, worktree_id: &WorktreeId) -> PathBuf {
         let name: String = worktree_id
             .as_str()
@@ -282,7 +283,7 @@ impl ChangeIndex {
         worktree_id: &WorktreeId,
         checkout_root: &Path,
     ) -> io::Result<()> {
-        if fs::symlink_metadata(Self::file(store_root, worktree_id)).is_ok() {
+        if Self::is_enabled(store_root, worktree_id) {
             return Ok(());
         }
         Self {
@@ -294,27 +295,46 @@ impl ChangeIndex {
         .save(store_root)
     }
 
+    /// Whether an index exists for this Worktree (an unreadable cache
+    /// database may hold one: it counts as existing, read as empty).
     pub fn is_enabled(store_root: &Path, worktree_id: &WorktreeId) -> bool {
-        fs::symlink_metadata(Self::file(store_root, worktree_id)).is_ok_and(|m| m.is_file())
+        match super::derived_cache::change_index_presence(store_root, worktree_id.as_str()) {
+            super::derived_cache::Presence::Present | super::derived_cache::Presence::Unknown => {
+                true
+            }
+            super::derived_cache::Presence::Missing => {
+                fs::symlink_metadata(Self::file(store_root, worktree_id)).is_ok_and(|m| m.is_file())
+            }
+        }
     }
 
     /// `None` when the mechanism is off for this Worktree. A damaged index is
     /// returned empty, with the conservative margin: every file is read.
     pub fn load(store_root: &Path, worktree_id: &WorktreeId) -> Option<Self> {
         let _span = crate::perf::span("change_index.load");
-        let path = Self::file(store_root, worktree_id);
-        let metadata = fs::symlink_metadata(&path).ok()?;
         let empty = || Self {
             worktree_id: worktree_id.clone(),
             margin_nanos: COARSE_MARGIN_NANOS,
             entries: BTreeMap::new(),
             binding: None,
         };
-        if !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES {
-            return Some(empty());
-        }
         let read = crate::perf::span("change_index.read");
-        let bytes = fs::read(&path).ok();
+        let bytes = match super::derived_cache::change_index_get(
+            store_root,
+            worktree_id.as_str(),
+            MAX_INDEX_BYTES,
+        ) {
+            super::derived_cache::Stored::Present(bytes) => Some(bytes),
+            super::derived_cache::Stored::Unreadable => None,
+            super::derived_cache::Stored::Missing => {
+                let path = Self::file(store_root, worktree_id);
+                let metadata = fs::symlink_metadata(&path).ok()?;
+                if !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES {
+                    return Some(empty());
+                }
+                fs::read(&path).ok()
+            }
+        };
         drop(read);
         let _decode = crate::perf::span("change_index.decode");
         let parsed = bytes
@@ -349,32 +369,40 @@ impl ChangeIndex {
         })
     }
 
-    /// Atomic replacement, without fsync: this is a cache, and a lost or torn
-    /// update only makes the next capture read more.
+    /// Replaces the stored index in the derived cache database, without
+    /// sync: this is a cache, and a lost or torn update only makes the next
+    /// capture read more (a torn value fails its checksum).
     pub fn save(&self, store_root: &Path) -> io::Result<()> {
-        let path = Self::file(store_root, &self.worktree_id);
-        let directory = path.parent().expect("index file has a parent");
-        fs::create_dir_all(directory)?;
+        let _span = crate::perf::span("change_index.save");
         let bytes = encode_bound(self);
-        let staged = directory.join(format!(
-            ".{}.{}.tmp",
-            path.file_name().unwrap().to_string_lossy(),
-            std::process::id()
-        ));
-        {
-            let mut file = fs::File::create(&staged)?;
-            file.write_all(&bytes)?;
+        super::derived_cache::change_index_put(store_root, self.worktree_id.as_str(), &bytes)?;
+        let legacy = Self::file(store_root, &self.worktree_id);
+        if fs::symlink_metadata(&legacy).is_ok() {
+            let _ = fs::remove_file(&legacy);
         }
-        fs::rename(&staged, &path).inspect_err(|_| {
-            let _ = fs::remove_file(&staged);
-        })
+        Ok(())
     }
 
     pub fn remove(store_root: &Path, worktree_id: &WorktreeId) -> io::Result<()> {
+        super::derived_cache::change_index_delete(store_root, worktree_id.as_str())?;
         match fs::remove_file(Self::file(store_root, worktree_id)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         }
+    }
+
+    /// The stored bytes of an index (tests that damage them).
+    #[cfg(test)]
+    fn stored_bytes(store_root: &Path, worktree_id: &WorktreeId) -> Vec<u8> {
+        match super::derived_cache::change_index_get(store_root, worktree_id.as_str(), u64::MAX) {
+            super::derived_cache::Stored::Present(bytes) => bytes,
+            _ => panic!("no stored index"),
+        }
+    }
+
+    #[cfg(test)]
+    fn store_bytes(store_root: &Path, worktree_id: &WorktreeId, bytes: &[u8]) {
+        super::derived_cache::change_index_put(store_root, worktree_id.as_str(), bytes).unwrap();
     }
 
     /// The proven entry for `path` if `stat` still identifies it.
@@ -1408,8 +1436,7 @@ mod tests {
         mismatched.length = 8;
         index.insert("d/rich2".into(), mismatched);
         index.save(&store).unwrap();
-        let path = ChangeIndex::file(&store, &id);
-        let bound = fs::read(&path).unwrap();
+        let bound = ChangeIndex::stored_bytes(&store, &id);
         assert!(bound.starts_with(BOUND_MAGIC));
         let reloaded = ChangeIndex::load(&store, &id).unwrap();
         assert!(reloaded.same_entries(&index));
@@ -1425,7 +1452,7 @@ mod tests {
         assert!(bound.len() <= compact.len() + 1);
         assert!(compact.len() < former.len());
         for bytes in [&compact, &former] {
-            fs::write(&path, bytes).unwrap();
+            ChangeIndex::store_bytes(&store, &id, bytes);
             assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
         }
         // Truncated or extended documents are refused.
@@ -1450,14 +1477,14 @@ mod tests {
             margin_nanos: index.margin_nanos,
             entries: known(&index),
         };
-        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        ChangeIndex::store_bytes(&store, &id, &serde_json::to_vec(&document).unwrap());
         assert!(ChangeIndex::load(&store, &id).unwrap().same_entries(&index));
         // A damaged binary index loads empty: every file is read.
         index.save(&store).unwrap();
-        let mut bytes = fs::read(&path).unwrap();
+        let mut bytes = ChangeIndex::stored_bytes(&store, &id);
         let middle = bytes.len() / 2;
         bytes[middle] ^= 1;
-        fs::write(&path, &bytes).unwrap();
+        ChangeIndex::store_bytes(&store, &id, &bytes);
         assert!(ChangeIndex::load(&store, &id).unwrap().is_empty());
         let _ = fs::remove_dir_all(&store);
     }
@@ -1479,6 +1506,17 @@ mod tests {
         assert_eq!(ChangeIndex::load(&store, &id).unwrap().len(), 1);
         ChangeIndex::remove(&store, &id).unwrap();
         assert!(ChangeIndex::load(&store, &id).is_none());
+        // An index kept as a file by an earlier version is still read, and
+        // moves to the database when saved again.
+        let legacy = ChangeIndex::file(&store, &id);
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, encode_bound(&index)).unwrap();
+        assert!(ChangeIndex::is_enabled(&store, &id));
+        let reloaded = ChangeIndex::load(&store, &id).unwrap();
+        assert_eq!(reloaded.entry("a.txt"), index.entry("a.txt"));
+        reloaded.save(&store).unwrap();
+        assert!(!legacy.exists());
+        assert_eq!(ChangeIndex::load(&store, &id).unwrap().len(), 1);
         let _ = fs::remove_dir_all(store);
     }
 
@@ -1529,8 +1567,7 @@ mod tests {
         let store = temp();
         let id = worktree();
         ChangeIndex::enable(&store, &id, &store).unwrap();
-        let path = ChangeIndex::file(&store, &id);
-        fs::write(&path, b"{not json").unwrap();
+        ChangeIndex::store_bytes(&store, &id, b"{not json");
         let index = ChangeIndex::load(&store, &id).unwrap();
         assert!(index.is_empty());
         assert_eq!(index.margin_nanos, COARSE_MARGIN_NANOS);
@@ -1546,7 +1583,7 @@ mod tests {
             entries: known(&foreign),
         })
         .unwrap();
-        fs::write(&path, bytes).unwrap();
+        ChangeIndex::store_bytes(&store, &id, &bytes);
         assert!(ChangeIndex::load(&store, &id).unwrap().is_empty());
         let _ = fs::remove_dir_all(store);
     }

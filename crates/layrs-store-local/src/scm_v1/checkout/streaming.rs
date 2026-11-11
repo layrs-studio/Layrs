@@ -418,8 +418,15 @@ impl CheckoutReader {
         scan.manifests.dedup_by(|a, b| a.id() == b.id());
         // A pass equal to the expected projection (read from an admitted Step,
         // where it was validated) is representable; any other is validated.
+        // A read-only observation (`status`) records nothing: its paths are
+        // checked, but no Tree is built (a capture still builds and checks
+        // every Tree before recording anything).
         if expected != Some(scan.entries.as_slice()) {
-            projection_tree_id(&scan.entries)?;
+            if relist {
+                projection_tree_id(&scan.entries)?;
+            } else {
+                super::validate_streaming_projection(&scan.entries)?;
+            }
         }
         self.directory.verify_path_identity()?;
         Ok(TrustedCapture {

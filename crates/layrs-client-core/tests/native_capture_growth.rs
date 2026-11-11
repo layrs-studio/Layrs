@@ -20,10 +20,16 @@ fn payload(version: u64) -> Vec<u8> {
 fn tree_bytes(root: &Path) -> u64 {
     tree_bytes_except(root, &[])
 }
-/// Derived caches (ADR 0025 change index, projection cache): rewritten when
-/// a racy entry gets a new proof time, so their size may change once by a
-/// byte of varint; they are measured apart and must then stay stable.
-const DERIVED_CACHES: [&str; 2] = ["change-index", "projection-cache"];
+/// Derived caches (ADR 0025 change index, projection cache), in their
+/// database (and the folders earlier versions used): rewritten when a racy
+/// entry gets a new proof time, so their size may change once; they are
+/// measured apart and must then stay stable.
+const DERIVED_CACHES: [&str; 4] = [
+    "change-index",
+    "projection-cache",
+    "derived.sqlite3",
+    "derived.sqlite3-journal",
+];
 fn tree_bytes_except(root: &Path, skipped: &[&str]) -> u64 {
     fs::read_dir(root)
         .unwrap()
@@ -31,12 +37,10 @@ fn tree_bytes_except(root: &Path, skipped: &[&str]) -> u64 {
             let entry = entry.unwrap();
             let metadata = entry.metadata().unwrap();
             assert!(!metadata.is_symlink());
-            if metadata.is_dir() {
-                if skipped.iter().any(|name| entry.file_name() == *name) {
-                    0
-                } else {
-                    tree_bytes_except(&entry.path(), skipped)
-                }
+            if skipped.iter().any(|name| entry.file_name() == *name) {
+                0
+            } else if metadata.is_dir() {
+                tree_bytes_except(&entry.path(), skipped)
             } else {
                 metadata.len()
             }
@@ -47,8 +51,11 @@ fn cache_bytes(workspace: &NativeWorkspace) -> u64 {
     DERIVED_CACHES
         .iter()
         .map(|name| workspace.store_root().join("metadata").join(name))
-        .filter(|path| path.is_dir())
-        .map(|path| tree_bytes(&path))
+        .map(|path| match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => tree_bytes(&path),
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        })
         .sum()
 }
 fn measurement(workspace: &NativeWorkspace) -> Value {

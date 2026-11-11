@@ -88,6 +88,13 @@ Une Room reconnaît un fichier inchangé **sans le relire**, avec un contrat
 
 L'index est un cache :
 
+- il est rangé, avec le cache de projections, dans une base SQLite de caches
+  dérivés (`metadata/derived.sqlite3`, sans synchronisation, journal de
+  retour arrière ; chaque valeur garde son encodage et sa somme de contrôle).
+  Une commande relit ce que la précédente vient d'écrire, et sur une machine
+  dont l'antivirus analyse en temps réel, ouvrir un fichier de données
+  fraîchement écrit coûte ~5 ms de plus qu'une page de cette base (mesuré en
+  novembre 2026) ;
 - s'il est illisible, tout est relu ;
 - il n'est écrit qu'après acceptation de la capture ;
 - une entrée ne naît que d'un contenu prouvé : soit haché par la capture, soit
