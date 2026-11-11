@@ -11,10 +11,39 @@ const MAX_FILE_MANIFESTS: usize = 1024;
 /// Packs a read of a recent object tries before the whole catalog.
 const RECENT_PACKS: usize = 4;
 
+/// Exact positions of file records in this reader's large packs, for the
+/// projection cache to hold instead of 32-byte FileIds
+/// (`projection_cache::FileRefs`). A snapshot of the catalog's metadata:
+/// usable after the session ends, and never reads a pack.
+pub struct FileRecordRefs(Arc<RegisteredCatalog>);
+
+impl crate::scm_v1::projection_cache::FileRefs for FileRecordRefs {
+    fn reference(&self, file_id: &FileId, length: u64) -> Option<([u8; 32], u32)> {
+        let (pack, ordinal) = self.0.file_record_ref(file_id)?;
+        // A record's length is its File's: an entry claiming another length
+        // is not named by it.
+        let (_, recorded) = self.0.resolve_file_record(&pack, ordinal)?;
+        (recorded == length).then_some((pack, ordinal))
+    }
+
+    fn resolve(&self, pack: &[u8; 32], ordinal: u32) -> Option<(FileId, u64)> {
+        self.0.resolve_file_record(pack, ordinal)
+    }
+}
+
 impl NativeScmReader<'_> {
     /// Whether this reader reads a format 6 Store.
     pub(super) fn compact(&self) -> bool {
         self.cas.is_compact()
+    }
+
+    /// The file record positions of this reader's catalog (`None` outside
+    /// format 6).
+    pub fn file_record_refs(&self) -> Result<Option<FileRecordRefs>> {
+        if !self.compact() {
+            return Ok(None);
+        }
+        Ok(Some(FileRecordRefs(self.catalog()?)))
     }
 
     /// The registered catalog of this reader's snapshot: its CAS view's, or

@@ -389,6 +389,7 @@ impl<'store> NativeScmReader<'store> {
 
 mod availability;
 mod compact;
+pub use compact::FileRecordRefs;
 mod projections;
 mod reader;
 mod transactional;

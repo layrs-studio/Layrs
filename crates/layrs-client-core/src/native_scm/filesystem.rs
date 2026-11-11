@@ -156,6 +156,7 @@ pub(super) fn capture_checkout_streaming_known(
             snapshot.root_tree_id(),
             snapshot.root_tree_id(),
             &entries,
+            None,
         );
     }
     Ok((checkout.identity(), snapshot))
@@ -202,6 +203,7 @@ impl super::NativeWorkspace {
     /// and paths that are no longer files are forgotten. The
     /// projection of a new Tree is returned for the caller to record
     /// (`PendingProjection::save`), possibly while it accepts the capture.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn capture_projection_indexed_from(
         &self,
         state: &super::WorkspaceState,
@@ -210,6 +212,7 @@ impl super::NativeWorkspace {
         limits: SnapshotLimits,
         index: &mut scm_v1::change_index::ChangeIndex,
         single_pass: bool,
+        refs: Option<scm_v1::FileRecordRefs>,
     ) -> Result<(
         PreparedSnapshot,
         scm_v1::change_index::ChangeIndex,
@@ -395,6 +398,7 @@ impl super::NativeWorkspace {
         let pending = PendingProjection {
             root: snapshot.root_tree_id().clone(),
             entries: captured.entries,
+            refs,
         };
         Ok((snapshot, next, Some(pending)))
     }
@@ -459,10 +463,21 @@ impl NativeClient {
 pub(super) struct PendingProjection {
     root: layrs_core::scm::TreeId,
     entries: Vec<CheckoutProjectionEntry>,
+    /// File record positions of the catalog the capture read its base from
+    /// (files new in this capture are named by id).
+    refs: Option<scm_v1::FileRecordRefs>,
 }
 
 impl PendingProjection {
     pub(super) fn save(&self, store_root: &Path) {
-        scm_v1::projection_cache::save(store_root, &self.root, &self.root, &self.entries);
+        scm_v1::projection_cache::save(
+            store_root,
+            &self.root,
+            &self.root,
+            &self.entries,
+            self.refs
+                .as_ref()
+                .map(|refs| refs as &dyn scm_v1::projection_cache::FileRefs),
+        );
     }
 }

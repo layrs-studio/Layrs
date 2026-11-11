@@ -179,6 +179,7 @@ pub(super) fn assemble_snapshot<'a>(
         snapshot.root_tree_id(),
         snapshot.root_tree_id(),
         &entries,
+        None,
     );
     Ok(VfsCapturedSnapshot {
         snapshot,

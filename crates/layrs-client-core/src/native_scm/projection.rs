@@ -76,11 +76,8 @@ impl NativeWorkspace {
         let Some(tree) = index.bound_tree().cloned() else {
             return false;
         };
-        let cached = projection_cache::load(self.store_root(), &tree);
-        if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
-            return false;
-        }
-        let _span = layrs_store_local::perf::span("change_index.rebuild_projection");
+        // The cached projection names most files by their pack records:
+        // reading it needs the Store's catalog.
         let opened;
         let store = match store {
             Some(store) => store,
@@ -95,6 +92,15 @@ impl NativeWorkspace {
         let Ok(reader) = NativeScmReader::new(store) else {
             return false;
         };
+        let refs = reader.file_record_refs().ok().flatten();
+        let refs = refs
+            .as_ref()
+            .map(|refs| refs as &dyn projection_cache::FileRefs);
+        let cached = projection_cache::load(self.store_root(), &tree, refs);
+        if cached.as_ref().is_some_and(|cached| index.resolve(cached)) {
+            return false;
+        }
+        let _span = layrs_store_local::perf::span("change_index.rebuild_projection");
         let Ok(projection) = project_tree(&reader, &tree) else {
             return false;
         };
@@ -104,7 +110,13 @@ impl NativeWorkspace {
                 projection_cache::remove(self.store_root(), &tree);
             }
             if let Ok(projection_tree) = projection_tree_id(&projection) {
-                projection_cache::save(self.store_root(), &tree, &projection_tree, &projection);
+                projection_cache::save(
+                    self.store_root(),
+                    &tree,
+                    &projection_tree,
+                    &projection,
+                    refs,
+                );
             }
         }
         false
@@ -255,8 +267,14 @@ pub(super) fn read_admitted_step_projection(
         .ok_or(NativeClientError::Missing("Step"))?;
     let root_tree = step.root_tree_id();
     use layrs_store_local::scm_v1::projection_cache;
+    // Derived data only: without them, cached projections that name files
+    // by their pack records are not read, and new ones name files by id.
+    let refs = cache.and_then(|_| reader.file_record_refs().ok()).flatten();
+    let refs = refs
+        .as_ref()
+        .map(|refs| refs as &dyn projection_cache::FileRefs);
     if let Some(root) = cache {
-        if let Some(cached) = projection_cache::load(root, root_tree) {
+        if let Some(cached) = projection_cache::load(root, root_tree, refs) {
             if !sample_cache_hit() {
                 layrs_store_local::perf::count("projection_cache.hit", 1);
                 return Ok(cached);
@@ -275,7 +293,7 @@ pub(super) fn read_admitted_step_projection(
     if let Some(root) = cache {
         // Memoized: the walk just validated this projection's Tree.
         let projection = projection_tree_id(&computed)?;
-        projection_cache::save(root, root_tree, &projection, &computed);
+        projection_cache::save(root, root_tree, &projection, &computed, refs);
     }
     Ok(computed)
 }

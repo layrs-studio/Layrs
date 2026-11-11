@@ -136,8 +136,23 @@ impl NativeWorkspace {
                 let _ = index.save(&store_root);
             }
         }
-        // The first Step's projection, so the first `status` reads no Tree.
-        scm_v1::projection_cache::save(&store_root, &root_tree, &root_tree, &entries);
+        // The first Step's projection, so the first `status` reads no Tree;
+        // its files are named by their records in the pack just written.
+        let refs = client.open_store().ok().and_then(|store| {
+            scm_v1::NativeScmReader::new(&store)
+                .ok()?
+                .file_record_refs()
+                .ok()
+                .flatten()
+        });
+        scm_v1::projection_cache::save(
+            &store_root,
+            &root_tree,
+            &root_tree,
+            &entries,
+            refs.as_ref()
+                .map(|refs| refs as &dyn scm_v1::projection_cache::FileRefs),
+        );
         Ok(Self {
             client,
             worktree_id: worktree.id().clone(),
@@ -468,7 +483,7 @@ impl NativeWorkspace {
                         // Everything read before the scan comes from one
                         // shared session, released before the folder is
                         // read (no Store lock is held while hashing).
-                        let (base, state, base_projection, base_root) = {
+                        let (base, state, base_projection, base_root, refs) = {
                             let store = self.open_store()?;
                             let base = self.client.capture_base_with(&store, &self.worktree_id)?;
                             let state = self.state_with(&store)?;
@@ -481,7 +496,10 @@ impl NativeWorkspace {
                                 .ok_or(NativeClientError::Missing("base Step"))?
                                 .root_tree_id()
                                 .clone();
-                            (base, state, projection, root)
+                            // Derived data only: without them, the new
+                            // projection names its files by id.
+                            let refs = reader.file_record_refs().ok().flatten();
+                            (base, state, projection, root, refs)
                         };
                         if let Some(loading) = loading.take() {
                             index = loading.join().ok().flatten();
@@ -496,6 +514,7 @@ impl NativeWorkspace {
                                         SnapshotLimits::streaming(),
                                         index,
                                         single_pass,
+                                        refs,
                                     )?;
                                 let plan = self.client.prepare_capture_with_reason(
                                     &base,

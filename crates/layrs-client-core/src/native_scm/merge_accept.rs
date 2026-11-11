@@ -157,11 +157,14 @@ impl NativeWorkspace {
             // The result's projection, for the next command (derived data,
             // keyed by the result Tree; its own Tree id was just checked).
             let root = preview.plan.step().root_tree_id();
+            let refs = reader.file_record_refs().ok().flatten();
             layrs_store_local::scm_v1::projection_cache::save(
                 self.store_root(),
                 root,
                 root,
                 &after,
+                refs.as_ref()
+                    .map(|refs| refs as &dyn layrs_store_local::scm_v1::projection_cache::FileRefs),
             );
         }
         let states = source

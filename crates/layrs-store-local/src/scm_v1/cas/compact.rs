@@ -24,6 +24,9 @@ use std::sync::{Mutex, OnceLock};
 /// as the catalog (one SQLite snapshot): a later operation rereads the disk,
 /// as format 5 rereads every object, and sees any damage done since.
 const RECENT_BLOCKS: usize = 64;
+/// Packs whose file records derived data may name by position
+/// (`file_record_ref`): large ones, which consolidation rarely replaces.
+const REFERENCED_PACK_RECORDS: usize = 4096;
 const RECENT_BLOCK_MAX: usize = 64 * 1024;
 /// Most pack files a held catalog keeps open (`hold_pack_files`): two
 /// descriptors each (the file and its pinned directory).
@@ -1715,6 +1718,42 @@ impl RegisteredCatalog {
             }
         }
         Ok(None)
+    }
+
+    /// An exact position naming `file_id`'s file record, for derived data
+    /// (the projection cache) to hold instead of its 32-byte id: the digest
+    /// of a large registered pack and the record's ordinal in it. Only packs
+    /// of at least `REFERENCED_PACK_RECORDS` records are named, which
+    /// consolidation rarely replaces; `None` otherwise.
+    pub(crate) fn file_record_ref(&self, file_id: &FileId) -> Option<([u8; 32], u32)> {
+        let raw = file_id.digest_bytes();
+        self.packs
+            .iter()
+            .filter(|registered| registered.pack.index.files.len() >= REFERENCED_PACK_RECORDS)
+            .find_map(|registered| {
+                let file = registered.pack.index.find_file(&raw)?;
+                Some((registered.pack.index.digest, u32::try_from(file).ok()?))
+            })
+    }
+
+    /// The FileId and length `file_record_ref` named, while that pack is
+    /// registered; `None` once it is not (or for a position it never had).
+    pub(crate) fn resolve_file_record(
+        &self,
+        pack: &[u8; 32],
+        ordinal: u32,
+    ) -> Option<(FileId, u64)> {
+        let registered = self
+            .packs
+            .iter()
+            .find(|registered| &registered.pack.index.digest == pack)?;
+        let record = registered
+            .pack
+            .index
+            .files
+            .get(usize::try_from(ordinal).ok()?)?;
+        let file_id = FileId::parse(pack2::digest_text(&record.file_id)).ok()?;
+        Some((file_id, u64::from(record.location.length)))
     }
 
     /// Every registered content object: explicit content records, the chunk

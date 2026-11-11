@@ -20,19 +20,26 @@
 //! 2. The binding: the root Tree id, then the projection's own Tree id (as
 //!    `projection_tree_id` computes it; it differs from the root only when
 //!    the root holds what a checkout cannot represent, such as Tombstones).
-//! 3. The form: complete (0) or delta (1).
-//! 4. A complete projection: its entries, sorted by path (ADR 0028, compact).
+//! 3. The packs its entries name: their count, then each one's 32-byte
+//!    registered digest.
+//! 4. The form: complete (0) or delta (1).
+//! 5. A complete projection: its entries, sorted by path (ADR 0028, compact).
 //!    Each holds its path as the byte count it shares with the previous path
-//!    plus its own suffix (varints), a kind byte (file, executable file or
-//!    symlink), and then either the 32-byte FileId digest and the length
-//!    (varint), or the target (symlink).
+//!    plus its own suffix (varints), a kind byte, and then:
+//!    - a File (plain or executable) its Store holds as a file record of a
+//!      large pack: that pack's position in the table and the record's
+//!      ordinal (varints; `FileRefs`). The record gives the FileId and
+//!      length exactly, and a pack no longer registered leaves the value
+//!      unreadable (removed, then read from the Store again);
+//!    - any other File: the 32-byte FileId digest and the length (varint);
+//!    - a symlink: its target.
 //!
 //!    A delta: the root Tree of the complete projection it applies to and that
 //!    file's own checksum (so it applies to those exact bytes only), then the
 //!    paths it removes or sets, sorted, encoded as entries where a removed
 //!    path has kind 0. Successive projections differ by a few paths: each is
 //!    a few bytes, not another copy of every FileId.
-//! 5. The blake3 checksum of everything before it.
+//! 6. The blake3 checksum of everything before it.
 use super::checkout::{CheckoutProjectionContent, CheckoutProjectionEntry};
 use super::derived_cache::{Access, Projections};
 use layrs_core::scm::{FileId, TreeId};
@@ -42,7 +49,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"LYRSPRJ1";
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 const DIRECTORY: &str = "projection-cache";
 /// Bound on what a corrupt file can make a reader allocate.
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -50,6 +57,11 @@ const MAX_ENTRIES: usize = 1_000_000;
 const KIND_FILE: u8 = 1;
 const KIND_SYMLINK: u8 = 2;
 const KIND_EXECUTABLE: u8 = 3;
+/// A File named by a file record (`FileRefs`).
+const KIND_FILE_REF: u8 = 4;
+const KIND_EXECUTABLE_REF: u8 = 5;
+/// Packs one value may name.
+const MAX_PACKS: usize = 1024;
 /// In a delta: the path is absent from the result.
 const KIND_REMOVED: u8 = 0;
 const FORM_COMPLETE: u8 = 0;
@@ -59,6 +71,24 @@ const DELTA_MAX_PERCENT: usize = 25;
 /// Largest complete projection a process keeps in memory for its deltas
 /// (about 400 000 paths).
 const REMEMBERED_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Exact positions naming Files in the Store (its large packs' file
+/// records), so a projection holds a few bytes per File instead of its
+/// 32-byte FileId. Without them, values that use positions are not read
+/// (`load` answers `None` and keeps them).
+pub trait FileRefs {
+    /// A position naming `file_id` (whose length is `length`), if any.
+    fn reference(&self, file_id: &FileId, length: u64) -> Option<([u8; 32], u32)>;
+    /// The FileId and length a position names, while its pack is registered.
+    fn resolve(&self, pack: &[u8; 32], ordinal: u32) -> Option<(FileId, u64)>;
+}
+
+/// How a value is decoded: with the Store's positions, if any, and whether
+/// it needed them without having them.
+struct Decoding<'a> {
+    refs: Option<&'a dyn FileRefs>,
+    needs_refs: std::cell::Cell<bool>,
+}
 
 /// Where projections were kept as files before the derived cache database;
 /// removed when a projection is saved.
@@ -70,12 +100,21 @@ fn legacy_directory(store_root: &Path) -> PathBuf {
 /// structure and checksum are all intact (and, for a delta, those of the
 /// exact complete projection it applies to). A value that fails is removed,
 /// so the next `save` writes it again.
-pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProjectionEntry>> {
+pub fn load(
+    store_root: &Path,
+    root_tree: &TreeId,
+    refs: Option<&dyn FileRefs>,
+) -> Option<Vec<CheckoutProjectionEntry>> {
     let _span = crate::perf::span("projection_cache.load");
     let cache = Projections::open(store_root, Access::Read);
+    let decoding = Decoding {
+        refs,
+        needs_refs: std::cell::Cell::new(false),
+    };
+    let decoding = &decoding;
     let mut stored = false;
     let loaded = cache.as_ref().and_then(|cache| {
-        let parsed = read(cache, root_tree, &mut stored)?;
+        let parsed = read(cache, root_tree, &mut stored, decoding)?;
         match parsed.form {
             Form::Complete(entries) => Some((parsed.projection_tree, entries)),
             Form::Delta {
@@ -84,8 +123,13 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
                 changes,
             } => {
                 let base = match last_complete(&base_root, &base_checksum) {
-                    Some(bytes) => parse(&bytes[..bytes.len() - 32], &base_root, base_checksum),
-                    None => read(cache, &base_root, &mut false),
+                    Some(bytes) => parse(
+                        &bytes[..bytes.len() - 32],
+                        &base_root,
+                        base_checksum,
+                        decoding,
+                    ),
+                    None => read(cache, &base_root, &mut false, decoding),
                 }?;
                 let Form::Complete(base_entries) = base.form else {
                     return None;
@@ -102,6 +146,10 @@ pub fn load(store_root: &Path, root_tree: &TreeId) -> Option<Vec<CheckoutProject
         loaded.filter(|(_, entries)| well_formed(entries))
     };
     let Some((projection_tree, entries)) = checked else {
+        if decoding.needs_refs.get() {
+            // Sound for a caller with the Store's positions: kept.
+            return None;
+        }
         // Removed, then forgotten (council s9 r3): a read that saw the value
         // began before the forget, so it cannot remember it again.
         if let (Some(cache), true) = (&cache, stored) {
@@ -135,7 +183,12 @@ struct Parsed {
 
 /// One cached value bound to `root_tree`, its checksum checked; `stored` is
 /// set when a value was found at all.
-fn read(cache: &Projections, root_tree: &TreeId, stored: &mut bool) -> Option<Parsed> {
+fn read(
+    cache: &Projections,
+    root_tree: &TreeId,
+    stored: &mut bool,
+    decoding: &Decoding<'_>,
+) -> Option<Parsed> {
     // Taken before the read: bytes read before a projection is forgotten
     // are never remembered after it (council s9 r2).
     let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
@@ -144,12 +197,17 @@ fn read(cache: &Projections, root_tree: &TreeId, stored: &mut bool) -> Option<Pa
         cache.get(root_tree.as_str(), MAX_BYTES)?
     };
     *stored = true;
-    verified(bytes, root_tree, generation)
+    verified(bytes, root_tree, generation, decoding)
 }
 
 /// `bytes` parsed if their checksum holds; a complete projection's bytes are
 /// remembered (`remember_complete`).
-fn verified(bytes: Vec<u8>, root_tree: &TreeId, generation: u64) -> Option<Parsed> {
+fn verified(
+    bytes: Vec<u8>,
+    root_tree: &TreeId,
+    generation: u64,
+    decoding: &Decoding<'_>,
+) -> Option<Parsed> {
     if bytes.len() < 40 {
         return None;
     }
@@ -161,7 +219,7 @@ fn verified(bytes: Vec<u8>, root_tree: &TreeId, generation: u64) -> Option<Parse
     if checksum != trailer {
         return None;
     }
-    let parsed = parse(body, root_tree, checksum)?;
+    let parsed = parse(body, root_tree, checksum, decoding)?;
     if matches!(parsed.form, Form::Complete(_)) {
         remember_complete(root_tree, checksum, bytes, generation);
     }
@@ -246,7 +304,12 @@ fn last_complete(root_tree: &TreeId, checksum: &[u8; 32]) -> Option<std::sync::A
 }
 
 /// A cache file's body (its checksum already verified) bound to `root_tree`.
-fn parse(body: &[u8], root_tree: &TreeId, checksum: [u8; 32]) -> Option<Parsed> {
+fn parse(
+    body: &[u8],
+    root_tree: &TreeId,
+    checksum: [u8; 32],
+    decoding: &Decoding<'_>,
+) -> Option<Parsed> {
     let _span = crate::perf::span("projection_cache.parse");
     let mut reader = Reader { bytes: body, at: 0 };
     if reader.take(8)? != MAGIC || reader.u32()? != VERSION {
@@ -256,9 +319,16 @@ fn parse(body: &[u8], root_tree: &TreeId, checksum: [u8; 32]) -> Option<Parsed> 
         return None;
     }
     let projection_tree = TreeId::parse(reader.string()?).ok()?;
+    let pack_count = usize::try_from(reader.u32()?).ok()?;
+    if pack_count > MAX_PACKS {
+        return None;
+    }
+    let packs = (0..pack_count)
+        .map(|_| reader.take(32)?.try_into().ok())
+        .collect::<Option<Vec<[u8; 32]>>>()?;
     let form = match reader.u8()? {
         FORM_COMPLETE => Form::Complete(
-            read_entries(&mut reader, false)?
+            read_entries(&mut reader, false, &packs, decoding)?
                 .into_iter()
                 .map(|(path, content)| {
                     content.map(|content| CheckoutProjectionEntry { path, content })
@@ -271,7 +341,7 @@ fn parse(body: &[u8], root_tree: &TreeId, checksum: [u8; 32]) -> Option<Parsed> 
             Form::Delta {
                 base_root,
                 base_checksum,
-                changes: read_entries(&mut reader, true)?,
+                changes: read_entries(&mut reader, true, &packs, decoding)?,
             }
         }
         _ => return None,
@@ -287,6 +357,8 @@ fn parse(body: &[u8], root_tree: &TreeId, checksum: [u8; 32]) -> Option<Parsed> 
 fn read_entries(
     reader: &mut Reader<'_>,
     removals: bool,
+    packs: &[[u8; 32]],
+    decoding: &Decoding<'_>,
 ) -> Option<Vec<(String, Option<CheckoutProjectionContent>)>> {
     let count = usize::try_from(reader.u32()?).ok()?;
     if count > MAX_ENTRIES {
@@ -315,6 +387,20 @@ fn read_entries(
                     file_id: FileId::from_digest_bytes(&digest),
                     byte_length: reader.varint()?,
                     executable: kind == KIND_EXECUTABLE,
+                })
+            }
+            kind @ (KIND_FILE_REF | KIND_EXECUTABLE_REF) => {
+                let pack = packs.get(usize::try_from(reader.varint()?).ok()?)?;
+                let ordinal = u32::try_from(reader.varint()?).ok()?;
+                let Some(refs) = decoding.refs else {
+                    decoding.needs_refs.set(true);
+                    return None;
+                };
+                let (file_id, byte_length) = refs.resolve(pack, ordinal)?;
+                Some(CheckoutProjectionContent::File {
+                    file_id,
+                    byte_length,
+                    executable: kind == KIND_EXECUTABLE_REF,
                 })
             }
             KIND_SYMLINK => Some(CheckoutProjectionContent::Symlink {
@@ -395,6 +481,7 @@ pub fn save(
     root_tree: &TreeId,
     projection_tree: &TreeId,
     entries: &[CheckoutProjectionEntry],
+    refs: Option<&dyn FileRefs>,
 ) {
     let _span = crate::perf::span("projection_cache.save");
     if entries.len() > MAX_ENTRIES || !well_formed(entries) {
@@ -407,17 +494,18 @@ pub fn save(
         // Recorded already: only marked recent, so pruning keeps it.
         return;
     }
-    let mut body = Vec::with_capacity(64 + entries.len() * 48);
-    body.extend_from_slice(MAGIC);
-    body.extend_from_slice(&VERSION.to_le_bytes());
-    put_string(&mut body, root_tree.as_str());
-    put_string(&mut body, projection_tree.as_str());
+    let decoding = Decoding {
+        refs,
+        needs_refs: std::cell::Cell::new(false),
+    };
+    let mut packs: Vec<[u8; 32]> = Vec::new();
+    let mut form = Vec::with_capacity(16 + entries.len() * 16);
     let delta = cache
         .newest_complete(MAX_BYTES)
         .and_then(|(base_root, bytes)| {
             let base_root = TreeId::parse(base_root).ok()?;
             let generation = memo_generation().load(std::sync::atomic::Ordering::Acquire);
-            let base = verified(bytes, &base_root, generation)?;
+            let base = verified(bytes, &base_root, generation, &decoding)?;
             let Form::Complete(base_entries) = &base.form else {
                 return None;
             };
@@ -431,28 +519,42 @@ pub fn save(
         .map(|(base_root, ..)| base_root.as_str().to_owned());
     match delta {
         Some((base_root, base_checksum, changes)) => {
-            body.push(FORM_DELTA);
-            put_string(&mut body, base_root.as_str());
-            body.extend_from_slice(&base_checksum);
+            form.push(FORM_DELTA);
+            put_string(&mut form, base_root.as_str());
+            form.extend_from_slice(&base_checksum);
             put_entries(
-                &mut body,
+                &mut form,
                 changes
                     .iter()
                     .map(|(path, content)| (path.as_str(), content.as_ref())),
                 changes.len(),
+                refs,
+                &mut packs,
             );
         }
         None => {
-            body.push(FORM_COMPLETE);
+            form.push(FORM_COMPLETE);
             put_entries(
-                &mut body,
+                &mut form,
                 entries
                     .iter()
                     .map(|entry| (entry.path.as_str(), Some(&entry.content))),
                 entries.len(),
+                refs,
+                &mut packs,
             );
         }
     }
+    let mut body = Vec::with_capacity(96 + packs.len() * 32 + form.len());
+    body.extend_from_slice(MAGIC);
+    body.extend_from_slice(&VERSION.to_le_bytes());
+    put_string(&mut body, root_tree.as_str());
+    put_string(&mut body, projection_tree.as_str());
+    body.extend_from_slice(&(packs.len() as u32).to_le_bytes());
+    for pack in &packs {
+        body.extend_from_slice(pack);
+    }
+    body.extend_from_slice(&form);
     let checksum = blake3::hash(&body);
     body.extend_from_slice(checksum.as_bytes());
     if cache
@@ -486,6 +588,8 @@ fn put_entries<'a>(
     body: &mut Vec<u8>,
     entries: impl Iterator<Item = (&'a str, Option<&'a CheckoutProjectionContent>)>,
     count: usize,
+    refs: Option<&dyn FileRefs>,
+    packs: &mut Vec<[u8; 32]>,
 ) {
     body.extend_from_slice(&(count as u32).to_le_bytes());
     let mut previous: &[u8] = &[];
@@ -506,13 +610,39 @@ fn put_entries<'a>(
                 byte_length,
                 executable,
             }) => {
-                body.push(if *executable {
-                    KIND_EXECUTABLE
-                } else {
-                    KIND_FILE
-                });
-                body.extend_from_slice(&file_id.digest_bytes());
-                put_varint(body, *byte_length);
+                let named = refs
+                    .and_then(|refs| refs.reference(file_id, *byte_length))
+                    .and_then(|(pack, ordinal)| {
+                        let at = match packs.iter().position(|known| known == &pack) {
+                            Some(at) => at,
+                            None if packs.len() < MAX_PACKS => {
+                                packs.push(pack);
+                                packs.len() - 1
+                            }
+                            None => return None,
+                        };
+                        Some((at, ordinal))
+                    });
+                match named {
+                    Some((at, ordinal)) => {
+                        body.push(if *executable {
+                            KIND_EXECUTABLE_REF
+                        } else {
+                            KIND_FILE_REF
+                        });
+                        put_varint(body, at as u64);
+                        put_varint(body, u64::from(ordinal));
+                    }
+                    None => {
+                        body.push(if *executable {
+                            KIND_EXECUTABLE
+                        } else {
+                            KIND_FILE
+                        });
+                        body.extend_from_slice(&file_id.digest_bytes());
+                        put_varint(body, *byte_length);
+                    }
+                }
             }
             Some(CheckoutProjectionContent::Symlink { target }) => {
                 body.push(KIND_SYMLINK);
@@ -699,22 +829,22 @@ mod tests {
             std::env::temp_dir().join(format!("layrs-projection-cache-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let tree = TreeId::parse(format!("blake3:{}", blake3::hash(b"tree"))).unwrap();
-        save(&root, &tree, &tree, &entries());
-        assert_eq!(load(&root, &tree), Some(entries()));
+        save(&root, &tree, &tree, &entries(), None);
+        assert_eq!(load(&root, &tree, None), Some(entries()));
         // Another Tree never reads this value as its own, even copied.
         let other = TreeId::parse(format!("blake3:{}", blake3::hash(b"other"))).unwrap();
         let cache = Projections::open(&root, Access::Read).unwrap();
         let bytes = cache.get(tree.as_str(), MAX_BYTES).unwrap();
         cache.insert(other.as_str(), None, &bytes).unwrap();
-        assert_eq!(load(&root, &other), None);
+        assert_eq!(load(&root, &other, None), None);
         // Any flipped byte fails the checksum, and the value is removed.
         let mut damaged = bytes.clone();
         let middle = damaged.len() / 2;
         damaged[middle] ^= 1;
         cache.insert(tree.as_str(), None, &damaged).unwrap();
-        assert_eq!(load(&root, &tree), None);
+        assert_eq!(load(&root, &tree, None), None);
         assert!(cache.get(tree.as_str(), MAX_BYTES).is_none());
-        save(&root, &tree, &tree, &entries());
+        save(&root, &tree, &tree, &entries(), None);
         remove(&root, &tree);
         assert!(cache.get(tree.as_str(), MAX_BYTES).is_none());
         drop(cache);
@@ -732,10 +862,10 @@ mod tests {
             .map(|n| TreeId::parse(format!("blake3:{}", blake3::hash(&[n as u8]))).unwrap())
             .collect();
         for tree in &trees {
-            save(&root, tree, tree, &entries());
+            save(&root, tree, tree, &entries(), None);
         }
         assert!(Projections::open(&root, Access::Read).unwrap().count() <= KEPT);
-        assert_eq!(load(&root, trees.last().unwrap()), Some(entries()));
+        assert_eq!(load(&root, trees.last().unwrap(), None), Some(entries()));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -766,7 +896,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 99]))).unwrap();
         let base = many(400, 1);
-        save(&root, &tree(0), &tree(0), &base);
+        save(&root, &tree(0), &tree(0), &base, None);
         // A few paths changed, one removed, one added: a delta, much smaller.
         let mut next = base.clone();
         next.remove(3);
@@ -781,29 +911,29 @@ mod tests {
                 executable: true,
             },
         });
-        save(&root, &tree(1), &tree(1), &next);
+        save(&root, &tree(1), &tree(1), &next, None);
         let cache = Projections::open(&root, Access::Read).unwrap();
         let size = |n: u8| cache.get(tree(n).as_str(), MAX_BYTES).unwrap().len();
         assert!(size(1) * 20 < size(0), "{} vs {}", size(1), size(0));
-        assert_eq!(load(&root, &tree(1)), Some(next.clone()));
-        assert_eq!(load(&root, &tree(0)), Some(base.clone()));
+        assert_eq!(load(&root, &tree(1), None), Some(next.clone()));
+        assert_eq!(load(&root, &tree(0), None), Some(base.clone()));
         // Most paths changed: a complete projection.
         let far = many(400, 2);
-        save(&root, &tree(2), &tree(2), &far);
+        save(&root, &tree(2), &tree(2), &far, None);
         assert!(
             cache
                 .rows()
                 .iter()
                 .any(|row| row.root == tree(2).as_str() && row.base.is_none())
         );
-        assert_eq!(load(&root, &tree(2)), Some(far));
+        assert_eq!(load(&root, &tree(2), None), Some(far));
         // A delta never applies to other bytes than its base's: a base
         // rewritten (same Tree, other bytes) leaves it unreadable and removed.
         let mut altered = base.clone();
         altered.truncate(399);
         cache.remove(tree(0).as_str());
-        save(&root, &tree(0), &tree(0), &altered);
-        assert_eq!(load(&root, &tree(1)), None);
+        save(&root, &tree(0), &tree(0), &altered, None);
+        assert_eq!(load(&root, &tree(1), None), None);
         assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
         drop(cache);
         let _ = fs::remove_dir_all(&root);
@@ -820,14 +950,88 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 77]))).unwrap();
         let base = many(300, 5);
-        save(&root, &tree(0), &tree(0), &base);
+        save(&root, &tree(0), &tree(0), &base, None);
         let mut next = base.clone();
         next.remove(7);
-        save(&root, &tree(1), &tree(1), &next);
+        save(&root, &tree(1), &tree(1), &next, None);
         // The base is read (and remembered), then removed.
-        assert_eq!(load(&root, &tree(0)), Some(base));
+        assert_eq!(load(&root, &tree(0), None), Some(base));
         remove(&root, &tree(0));
-        assert_eq!(load(&root, &tree(1)), None);
+        assert_eq!(load(&root, &tree(1), None), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Positions handed out by a test: (pack 7, ordinal n) names the n-th
+    /// FileId of `files`, while `alive`.
+    struct Positions {
+        files: Vec<(FileId, u64)>,
+        alive: std::cell::Cell<bool>,
+    }
+
+    impl FileRefs for Positions {
+        fn reference(&self, file_id: &FileId, length: u64) -> Option<([u8; 32], u32)> {
+            let at = self
+                .files
+                .iter()
+                .position(|(known, known_length)| known == file_id && *known_length == length)?;
+            Some(([7; 32], at as u32))
+        }
+
+        fn resolve(&self, pack: &[u8; 32], ordinal: u32) -> Option<(FileId, u64)> {
+            (self.alive.get() && pack == &[7; 32])
+                .then(|| self.files.get(ordinal as usize).cloned())
+                .flatten()
+        }
+    }
+
+    #[test]
+    fn files_named_by_position_are_smaller_and_need_the_positions() {
+        let root = std::env::temp_dir().join(format!(
+            "layrs-projection-cache-refs-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let tree = |n: u8| TreeId::parse(format!("blake3:{}", blake3::hash(&[n, 55]))).unwrap();
+        let projection = many(300, 3);
+        let files: Vec<(FileId, u64)> = projection
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                CheckoutProjectionContent::File {
+                    file_id,
+                    byte_length,
+                    ..
+                } => Some((file_id.clone(), *byte_length)),
+                _ => None,
+            })
+            .collect();
+        let positions = Positions {
+            files,
+            alive: std::cell::Cell::new(true),
+        };
+        // Complete forms both: without the positions, the first is no base.
+        save(&root, &tree(1), &tree(1), &projection, Some(&positions));
+        save(&root, &tree(0), &tree(0), &projection, None);
+        let cache = Projections::open(&root, Access::Read).unwrap();
+        let size = |n: u8| cache.get(tree(n).as_str(), MAX_BYTES).unwrap().len();
+        assert!(size(1) * 3 < size(0), "{} vs {}", size(1), size(0));
+        assert_eq!(
+            load(&root, &tree(1), Some(&positions)),
+            Some(projection.clone())
+        );
+        // Without the positions: not read, and kept.
+        assert_eq!(load(&root, &tree(1), None), None);
+        assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_some());
+        // A position whose pack is gone: unreadable, and removed.
+        positions.alive.set(false);
+        assert_eq!(load(&root, &tree(1), Some(&positions)), None);
+        assert!(cache.get(tree(1).as_str(), MAX_BYTES).is_none());
+        // Values without positions read as before, with or without them.
+        assert_eq!(
+            load(&root, &tree(0), Some(&positions)),
+            Some(projection.clone())
+        );
+        assert_eq!(load(&root, &tree(0), None), Some(projection));
+        drop(cache);
         let _ = fs::remove_dir_all(&root);
     }
 

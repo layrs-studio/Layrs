@@ -57,8 +57,8 @@ pub use layout::{
     SQLITE_FILE_NAME, STAGING_DIR_NAME, STAGING_LEASE_FILE_NAME,
 };
 pub use read::{
-    NativeScmReader, NativeStoreReading, NativeTransactionalScmReader, ObservationProjection,
-    ObservationSnapshot,
+    FileRecordRefs, NativeScmReader, NativeStoreReading, NativeTransactionalScmReader,
+    ObservationProjection, ObservationSnapshot,
 };
 pub use recovery::{
     ClaimOutcome, MutationOutcome, NativeRecovery, PathEvidence, RecoveryDecision, RecoveryError,
