@@ -69,3 +69,69 @@ fn status_refreshes_only_racy_entries_of_unchanged_files() {
     assert_eq!(last.entry("d/a.txt").cloned(), old_a);
     let _ = fs::remove_dir_all(&root);
 }
+
+/// A file no other handle may read: opened without sharing on Windows,
+/// made unreadable on Unix.
+struct Held {
+    #[cfg(windows)]
+    _file: fs::File,
+    #[cfg(unix)]
+    path: std::path::PathBuf,
+}
+
+fn hold(path: &std::path::Path) -> Held {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap();
+        assert!(fs::read(path).is_err(), "the held file is unreadable");
+        Held { _file: file }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+        Held {
+            path: path.to_owned(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Held {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o644));
+    }
+}
+
+/// `status` answers whether the folder changed: a file whose length differs
+/// from the base's, or that the base lacks, changed without being read (as
+/// git compares sizes before hashing), so even an unreadable one is
+/// reported; a same-length edit is read and found.
+#[test]
+fn status_decides_a_length_change_or_a_new_file_without_reading_it() {
+    let (root, workspace) = workspace();
+    // Same length: read, found, then found equal again.
+    fs::write(root.join("b.txt"), b"BETA\n").unwrap();
+    assert_eq!(workspace.status_report(true).unwrap().dirty, Some(true));
+    fs::write(root.join("b.txt"), b"beta\n").unwrap();
+    assert_eq!(workspace.status_report(true).unwrap().dirty, Some(false));
+    // Another length, unreadable.
+    fs::write(root.join("d/a.txt"), b"alpha, longer\n").unwrap();
+    let held = hold(&root.join("d/a.txt"));
+    assert_eq!(workspace.status_report(true).unwrap().dirty, Some(true));
+    drop(held);
+    fs::write(root.join("d/a.txt"), b"alpha\n").unwrap();
+    assert_eq!(workspace.status_report(true).unwrap().dirty, Some(false));
+    // A new file, unreadable.
+    fs::write(root.join("new.txt"), b"new\n").unwrap();
+    let held = hold(&root.join("new.txt"));
+    assert_eq!(workspace.status_report(true).unwrap().dirty, Some(true));
+    drop(held);
+    let _ = fs::remove_dir_all(&root);
+}

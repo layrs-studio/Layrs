@@ -212,14 +212,54 @@ impl NativeWorkspace {
         debug_assert!(trust_index || indexed.is_none());
         let after = match &indexed {
             Some((index, root, bound)) => {
+                // `status` only answers whether the folder changed, and no
+                // write depends on it: a file the base lacks, or whose length
+                // differs from the base's, has changed without being read
+                // (git compares sizes before hashing too), and once one has,
+                // no other file needs reading. Such a file stands in the
+                // observation with its listed length; nothing is recorded
+                // from it (only hashed files refresh the index).
+                let decide_only = !details && recheck == Recheck::No;
+                let changed = std::sync::atomic::AtomicBool::new(false);
+                let base_lengths: std::collections::HashMap<&str, Option<u64>> = if decide_only {
+                    before
+                        .iter()
+                        .map(|entry| {
+                            let length = match &entry.content {
+                                CheckoutProjectionContent::File { byte_length, .. } => {
+                                    Some(*byte_length)
+                                }
+                                _ => None,
+                            };
+                            (entry.path.as_str(), length)
+                        })
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
+                let stand_in = layrs_core::scm::FileId::from_bytes(&[]);
                 let trust = |path: &str, listed: &std::fs::Metadata| {
-                    let stat = layrs_store_local::scm_v1::change_index::StatKey::of(listed)?;
-                    index.trusted(path, &stat).map(|entry| {
-                        layrs_store_local::scm_v1::checkout::TrustedFile {
+                    let trusted = layrs_store_local::scm_v1::change_index::StatKey::of(listed)
+                        .and_then(|stat| index.trusted(path, &stat))
+                        .map(|entry| layrs_store_local::scm_v1::checkout::TrustedFile {
                             file_id: entry.file_id.clone(),
                             length: entry.length,
                             executable: entry.executable,
-                        }
+                        });
+                    if trusted.is_some() || !decide_only {
+                        return trusted;
+                    }
+                    let same_length =
+                        base_lengths.get(path).copied().flatten() == Some(listed.len());
+                    if same_length && !changed.load(std::sync::atomic::Ordering::Relaxed) {
+                        return None;
+                    }
+                    changed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    layrs_store_local::perf::count("status.decided_unread", 1);
+                    Some(layrs_store_local::scm_v1::checkout::TrustedFile {
+                        file_id: stand_in.clone(),
+                        length: listed.len(),
+                        executable: false,
                     })
                 };
                 // Taken before the listing: no hashed content is credited
