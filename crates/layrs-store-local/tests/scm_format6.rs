@@ -1774,7 +1774,7 @@ fn inline_rows(root: &Path) -> i64 {
 /// spills to a pack file. Every answer equals format 5's.
 #[test]
 fn small_batches_register_inline_packs_that_answer_like_files() {
-    let big = file("big.bin", &noise(200 * 1024, 7), Recipe::Fixed);
+    let big = file("big.bin", &noise(300 * 1024, 7), Recipe::Fixed);
     let mut answers = Vec::new();
     for format in ["5", "6"] {
         let root = TestRoot::new(&format!("inline-{format}"));
@@ -2036,6 +2036,51 @@ fn inline_packs_that_outgrow_the_limit_merge_into_a_file() {
         ),
         1
     );
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false"))
+    );
+    assert_fsck_clean(&root.0);
+}
+
+/// Inline packs of up to 256 KiB merge once they hold 1 MiB, before eight of
+/// them, and the merged pack, past 64 KiB, is a file (council s13 Q1).
+#[test]
+fn large_inline_packs_merge_by_size_into_a_file() {
+    let root = TestRoot::new("inline-bytes");
+    create(&root.0, "inline-bytes", "6");
+    set_inline_pack_limit(&root.0, None);
+    let mut files = vec![file("first.txt", b"first", Recipe::Fixed)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    for step in 0..5 {
+        let added = file(
+            &format!("f{step}.bin"),
+            &noise(200 * 1024, step),
+            Recipe::Fixed,
+        );
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+    }
+    // Six inline packs, under 1 MiB together: no merge yet.
+    assert_eq!(inline_rows(&root.0), 6);
+    assert!(packs(&root.0).is_empty());
+    let added = file("f5.bin", &noise(200 * 1024, 5), Recipe::Fixed);
+    let carried = file_objects(std::slice::from_ref(&added));
+    files.push(added);
+    repository
+        .apply_batch(&lane.capture(&files, carried))
+        .unwrap();
+    drop(repository);
+    // Seven packs over 1 MiB: merged into one pack file.
+    assert_eq!(packs(&root.0).len(), 1);
+    assert!(inline_rows(&root.0) < 7);
     let answers = reader_answers(&root.0, &files, lane.space.id());
     assert!(
         answers

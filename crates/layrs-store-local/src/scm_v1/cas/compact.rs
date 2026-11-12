@@ -414,6 +414,14 @@ pub(crate) struct ConsolidationFailure {
 const CONSOLIDATE_AT_PACKS: usize = 6;
 /// Inline packs that are merged together (council s8 r1).
 const CONSOLIDATE_INLINE_AT: usize = 8;
+/// Bytes of inline packs that are merged together, whatever their count
+/// (council s13 Q1): a batch keeps up to 256 KiB inline, so fewer, larger
+/// inline packs are merged before the database holds much of them.
+const CONSOLIDATE_INLINE_BYTES: u64 = 1024 * 1024;
+/// A consolidation's output stays inline up to this size only (council s13
+/// Q1): a larger merged pack becomes a file, so merged history does not
+/// accumulate in the database.
+const MERGED_INLINE_MAX: usize = 64 * 1024;
 /// The most bytes of packs one consolidation rewrites inline, under the
 /// exclusive lock of the write that triggered it (council s6 r2): readers
 /// and writers wait seconds at most. Larger tiers are left as they are (an
@@ -427,18 +435,32 @@ const INLINE_RAW_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 impl RegisteredCatalog {
     /// Whether a consolidation is due once `added_files` more pack files
-    /// and `added_inline` more inline packs are registered (decided without
-    /// reopening anything). Inline packs do not count toward the file
-    /// trigger: they are merged among themselves at `CONSOLIDATE_INLINE_AT`
-    /// (council s8 r1), so small batches do not consolidate every few.
-    pub(crate) fn consolidation_due(&self, added_files: usize, added_inline: usize) -> bool {
-        let inline = self
-            .packs
-            .iter()
-            .filter(|pack| pack.pack.is_inline())
-            .count();
+    /// and `added_inline` more inline packs of `added_inline_bytes` are
+    /// registered (decided without reopening anything). Inline packs do not
+    /// count toward the file trigger: they are merged among themselves at
+    /// `CONSOLIDATE_INLINE_AT` packs (council s8 r1), so small batches do not
+    /// consolidate every few, or at `CONSOLIDATE_INLINE_BYTES` (council s13
+    /// Q1).
+    pub(crate) fn consolidation_due(
+        &self,
+        added_files: usize,
+        added_inline: usize,
+        added_inline_bytes: u64,
+    ) -> bool {
+        let (inline, inline_bytes) = self.inline_totals();
         self.packs.len() - inline + added_files >= CONSOLIDATE_AT_PACKS
             || inline + added_inline >= CONSOLIDATE_INLINE_AT
+            || inline_bytes.saturating_add(added_inline_bytes) >= CONSOLIDATE_INLINE_BYTES
+    }
+
+    /// The count and total size of the inline packs.
+    fn inline_totals(&self) -> (usize, u64) {
+        self.packs
+            .iter()
+            .filter(|pack| pack.pack.is_inline())
+            .fold((0, 0), |(count, bytes), pack| {
+                (count + 1, bytes.saturating_add(pack.pack.index.file_len))
+            })
     }
 
     /// The packs to consolidate now, positions in increasing order, leaving
@@ -455,7 +477,10 @@ impl RegisteredCatalog {
         // as any group (council s8 r2): the result stays inline while it
         // fits, else it becomes a pack file.
         let inline = self.by_size(excluded, true);
-        if inline.len() >= CONSOLIDATE_INLINE_AT {
+        let inline_bytes = inline
+            .iter()
+            .fold(0_u64, |total, pack| total.saturating_add(pack.0));
+        if inline.len() >= CONSOLIDATE_INLINE_AT || inline_bytes >= CONSOLIDATE_INLINE_BYTES {
             let group = bounded_group(&inline, false);
             if group.len() >= 2 {
                 return group;
@@ -600,7 +625,9 @@ impl NativeCas {
     ) -> Result<Consolidation, ConsolidationFailure> {
         let _span = crate::perf::span("cas.consolidate");
         let general = |error| ConsolidationFailure { pack: None, error };
-        let mut open = self.open_new_pack().map_err(general)?;
+        let mut open = self
+            .open_new_pack(self.inline_pack_limit().min(MERGED_INLINE_MAX))
+            .map_err(general)?;
         let mut explicit_written: HashSet<(u8, [u8; 32])> = HashSet::new();
         let mut files_written: HashMap<[u8; 32], FileIdentity> = HashMap::new();
         let mut packs = Vec::with_capacity(candidates.len());
@@ -2181,6 +2208,8 @@ struct OpenPack {
     path: PathBuf,
     builder: Pack2Builder,
     published: bool,
+    /// The largest image registered inline (0: a file from the start).
+    inline_limit: usize,
 }
 
 impl OpenPack {
@@ -2213,16 +2242,19 @@ impl Drop for OpenPack {
 /// The largest image `cas_pack_inline` accepts (its CHECK).
 const MAX_INLINE_IMAGE_BYTES: usize = 1024 * 1024;
 
-/// Bytes up to which a pack is kept in memory and registered inline, by
-/// default: `LAYRS_CAS_INLINE_MAX` (bytes; 0 never inlines; at most
-/// `MAX_INLINE_IMAGE_BYTES`), else 64 KiB.
+/// Bytes up to which a batch's pack is kept in memory and registered
+/// inline, by default: `LAYRS_CAS_INLINE_MAX` (bytes; 0 never inlines; at
+/// most `MAX_INLINE_IMAGE_BYTES`), else 256 KiB (council s13 Q1: a step
+/// that rewrites a few large directories stays one database write, and a
+/// fresh pack file costs its first open on a machine with real-time
+/// antivirus scanning).
 fn default_inline_pack_limit() -> usize {
     static FROM_ENV: OnceLock<usize> = OnceLock::new();
     *FROM_ENV.get_or_init(|| {
         std::env::var("LAYRS_CAS_INLINE_MAX")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(64 * 1024)
+            .unwrap_or(256 * 1024)
             .min(MAX_INLINE_IMAGE_BYTES)
     })
 }
@@ -2434,7 +2466,7 @@ impl NativeCas {
                 return Ok(false);
             }
             if batch.pack.is_none() {
-                batch.pack = Some(self.open_new_pack()?);
+                batch.pack = Some(self.open_new_pack(self.inline_pack_limit())?);
             }
             let Some(open) = batch.pack.as_mut() else {
                 return Err(io_error(
@@ -2546,10 +2578,11 @@ impl NativeCas {
         default_inline_pack_limit()
     }
 
-    /// A new pack: in memory while it may be registered inline, else a
-    /// staging file under a shared staging lease.
-    fn open_new_pack(&self) -> CasResult<OpenPack> {
-        if self.inline_pack_limit() > 0 {
+    /// A new pack: in memory while it may be registered inline (up to
+    /// `inline_limit` bytes), else a staging file under a shared staging
+    /// lease.
+    fn open_new_pack(&self, inline_limit: usize) -> CasResult<OpenPack> {
+        if inline_limit > 0 {
             let mut sink = PackSink::Memory(Vec::new());
             let path = self.staging_dir.join("inline-pack");
             let builder = Pack2Builder::start(&mut sink)
@@ -2559,6 +2592,7 @@ impl NativeCas {
                 path,
                 builder,
                 published: false,
+                inline_limit,
             });
         }
         let lease = StagingLease::shared(&self.staging_lease_path)?;
@@ -2570,7 +2604,7 @@ impl NativeCas {
     /// inline limit.
     fn spill_if_over(&self, open: &mut OpenPack) -> CasResult<()> {
         match &open.sink {
-            PackSink::Memory(image) if image.len() > self.inline_pack_limit() => self.spill(open),
+            PackSink::Memory(image) if image.len() > open.inline_limit => self.spill(open),
             _ => Ok(()),
         }
     }
@@ -2606,7 +2640,7 @@ impl NativeCas {
             .finish(&mut open.sink)
             .map_err(|error| io_error("write CAS pack index", &open.path, error))?;
         if let PackSink::Memory(image) = &open.sink {
-            if image.len() <= self.inline_pack_limit() {
+            if image.len() <= open.inline_limit {
                 let _span = crate::perf::span("cas.pack2_inline");
                 let image = std::mem::take(match &mut open.sink {
                     PackSink::Memory(image) => image,
@@ -3016,6 +3050,7 @@ fn open_pack(
         path,
         builder,
         published: false,
+        inline_limit: 0,
     })
 }
 
