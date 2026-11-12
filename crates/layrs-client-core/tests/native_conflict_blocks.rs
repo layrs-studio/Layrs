@@ -145,15 +145,18 @@ fn canonical_blocks_survive_store_reopen_and_final_resolution_is_exact_and_idemp
     );
     let store = open(w.store_root()).unwrap();
     let reader = NativeScmReader::new(&store).unwrap();
-    // The resolution rebuilt the first File: the Store keeps one form of it
-    // (council s16 r3).
-    assert_eq!(
-        reader
-            .file_manifest_ids_metadata(&FileId::from_bytes(b"zero\r\nsame\r\nzero\r\n"))
-            .unwrap()
-            .len(),
-        1
-    );
+    // The resolution rebuilt the first File: a compact Store (formats 6 and
+    // 7) keeps one form of it (council s16 r3). Format 5 proves no closure
+    // by admission bits and keeps the resolution's manifest as before.
+    let forms = reader
+        .file_manifest_ids_metadata(&FileId::from_bytes(b"zero\r\nsame\r\nzero\r\n"))
+        .unwrap()
+        .len();
+    if store.format_version() >= layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+        assert_eq!(forms, 1);
+    } else {
+        assert!(forms <= 2, "{forms}");
+    }
     assert_eq!(
         reader
             .get_step(&resolved.step_id)
