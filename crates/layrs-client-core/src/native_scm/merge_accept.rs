@@ -84,7 +84,7 @@ impl NativeWorkspace {
             already_accepted: false,
         };
         let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         // The preview owns a stable mutation stamp. A lost commit response is
         // recognized before stale-state checks and cannot install a second Weave.
         if let Some(existing) = reader.get_operation(&receipt.operation_id)? {

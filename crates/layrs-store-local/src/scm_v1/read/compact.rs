@@ -37,6 +37,32 @@ impl NativeScmReader<'_> {
         self.cas.is_compact()
     }
 
+    /// Whether a registered pack of this reader's catalog cannot be read
+    /// (format 6; never outside it).
+    pub fn catalog_damaged(&self) -> Result<bool> {
+        if !self.compact() {
+            return Ok(false);
+        }
+        Ok(self.catalog()?.damage().is_some())
+    }
+
+    /// Whether a readable copy of `id` is stored: a readable registered pack
+    /// or a loose file holds it (council s17, B1a). Outside format 6, a
+    /// verified `objects` row (no registered pack to lose).
+    pub fn stored_copy_proven(&self, id: &StoreObjectId) -> Result<bool> {
+        if !self.compact() {
+            return self.object_exists_typed(id);
+        }
+        if self
+            .catalog()?
+            .contains_with(id, true)
+            .map_err(cas_read_error)?
+        {
+            return Ok(true);
+        }
+        Ok(self.cas.loose_length(id).map_err(cas_read_error)?.is_some())
+    }
+
     /// The file record positions of this reader's catalog (`None` outside
     /// format 6).
     pub fn file_record_refs(&self) -> Result<Option<FileRecordRefs>> {
@@ -97,7 +123,9 @@ impl NativeScmReader<'_> {
         }
         let catalog = self.catalog()?;
         if crate::scm_v1::cas::is_content(id.kind()) {
-            return catalog.read(&self.cas, id).map_err(cas_read_error);
+            return catalog
+                .read_with(&self.cas, id, self.positive)
+                .map_err(cas_read_error);
         }
         let connection = self.connection()?;
         let row: Option<(String, i64, i64)> = connection
@@ -121,10 +149,20 @@ impl NativeScmReader<'_> {
         }
         // A registered pack record, or the loose file the row authorizes;
         // either is verified against its content address by the read below.
-        let length = match catalog.stored_length(id).map_err(cas_read_error)? {
+        let registered = if self.positive && !catalog.contains_with(id, true).unwrap_or(false) {
+            // A writer: a row whose only copy no readable pack holds proves
+            // nothing (council s17, B1a).
+            None
+        } else {
+            catalog.stored_length(id).map_err(cas_read_error)?
+        };
+        let length = match registered {
             Some(length) => Some(length),
             None => self.cas.loose_length(id).map_err(cas_read_error)?,
         };
+        if self.positive && length.is_none() {
+            return Ok(None);
+        }
         let length =
             length.ok_or_else(|| corruption(format!("verified CAS object {id} is missing")))?;
         if length != u64::try_from(byte_length).unwrap_or_default() {
@@ -189,7 +227,7 @@ impl NativeScmReader<'_> {
 
     pub(super) fn chunk_present_compact(&self, id: &ChunkId) -> Result<bool> {
         self.catalog()?
-            .contains(&StoreObjectId::ChunkRaw(id.clone()))
+            .contains_with(&StoreObjectId::ChunkRaw(id.clone()), self.positive)
             .map_err(cas_read_error)
     }
 
@@ -203,12 +241,14 @@ impl NativeScmReader<'_> {
         let catalog = self.catalog()?;
         let admissions = self.admissions(&catalog, space)?;
         catalog
-            .admitted(&admissions, object_id)
+            .admitted_with(&admissions, object_id, self.positive)
             .map_err(cas_read_error)
     }
 
     fn file_manifest_entries(&self, id: &FileId) -> Result<Vec<FileManifestEntry>> {
-        self.catalog()?.file_manifests(id).map_err(cas_read_error)
+        self.catalog()?
+            .file_manifests_with(id, self.positive)
+            .map_err(cas_read_error)
     }
 
     pub(super) fn file_length_metadata_compact(&self, id: &FileId) -> Result<Option<u64>> {
@@ -228,7 +268,10 @@ impl NativeScmReader<'_> {
         let catalog = self.catalog()?;
         let mut lengths = std::collections::BTreeMap::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {
-            if let Some(length) = catalog.file_length(file).map_err(cas_read_error)? {
+            if let Some(length) = catalog
+                .file_length_with(file, self.positive)
+                .map_err(cas_read_error)?
+            {
                 lengths.insert(file.clone(), length);
             }
         }
@@ -257,7 +300,9 @@ impl NativeScmReader<'_> {
         let admissions = self.admissions(&catalog, space)?;
         let mut admitted = std::collections::BTreeMap::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {
-            let entries = catalog.file_manifests(file).map_err(cas_read_error)?;
+            let entries = catalog
+                .file_manifests_with(file, self.positive)
+                .map_err(cas_read_error)?;
             if entries.is_empty() || entries.len() > MAX_FILE_MANIFESTS {
                 continue;
             }
@@ -265,7 +310,7 @@ impl NativeScmReader<'_> {
             for entry in entries {
                 let object = StoreObjectId::FileManifest(entry.id.clone());
                 if catalog
-                    .admitted(&admissions, &object)
+                    .admitted_with(&admissions, &object, self.positive)
                     .map_err(cas_read_error)?
                 {
                     admitted.insert(file.clone(), entry.id);
@@ -312,7 +357,10 @@ impl NativeScmReader<'_> {
         let admissions = self.admissions(&catalog, space)?;
         let mut ids = BTreeSet::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {
-            for entry in catalog.file_manifests(file).map_err(cas_read_error)? {
+            for entry in catalog
+                .file_manifests_with(file, self.positive)
+                .map_err(cas_read_error)?
+            {
                 // A file record's chunk is in its index entry; an explicit
                 // manifest is decoded (no projection rows in format 6).
                 let chunks: Vec<ChunkId> = match entry.placement {
@@ -342,7 +390,7 @@ impl NativeScmReader<'_> {
                     }
                     let object = StoreObjectId::ChunkRaw(chunk.clone());
                     if catalog
-                        .admitted(&admissions, &object)
+                        .admitted_with(&admissions, &object, self.positive)
                         .map_err(cas_read_error)?
                     {
                         ids.insert(chunk);
@@ -365,7 +413,9 @@ impl NativeScmReader<'_> {
         consumed: &mut FileAvailabilityConsumption,
     ) -> Result<Option<Vec<FileManifestId>>> {
         let catalog = self.catalog()?;
-        let entries = catalog.file_manifests(id).map_err(cas_read_error)?;
+        let entries = catalog
+            .file_manifests_with(id, self.positive)
+            .map_err(cas_read_error)?;
         if entries.is_empty() {
             return Ok(None);
         }

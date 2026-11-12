@@ -528,7 +528,7 @@ impl NativeWorkspace {
                         // Everything read before the scan comes from one
                         // shared session, released before the folder is
                         // read (no Store lock is held while hashing).
-                        let (base, state, base_projection, base_root, refs) = {
+                        let (base, state, base_projection, base_root, refs, damaged) = {
                             let (store, read) = match opened.take() {
                                 Some((store, state)) => (store, Some(state)),
                                 None => (self.open_store()?, None),
@@ -550,7 +550,11 @@ impl NativeWorkspace {
                             // Derived data only: without them, the new
                             // projection names its files by id.
                             let refs = reader.file_record_refs().ok().flatten();
-                            (base, state, projection, root, refs)
+                            // An unreadable registered pack: an unchanged
+                            // capture still builds what it read, for the
+                            // recovery batch (council s17, B1a).
+                            let damaged = reader.catalog_damaged()?;
+                            (base, state, projection, root, refs, damaged)
                         };
                         if let Some(loading) = loading.take() {
                             index = loading.join().ok().flatten();
@@ -566,6 +570,7 @@ impl NativeWorkspace {
                                         index,
                                         single_pass,
                                         refs,
+                                        damaged,
                                     )?;
                                 let plan = self.client.prepare_capture_with_reason(
                                     &base,

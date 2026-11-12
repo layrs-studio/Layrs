@@ -293,7 +293,17 @@ pub(super) fn read_admitted_step_projection(
                 layrs_store_local::perf::count("projection_cache.hit", 1);
                 return Ok(cached);
             }
-            let computed = project_tree(reader, root_tree)?;
+            let computed = match project_tree(reader, root_tree) {
+                Ok(computed) => computed,
+                // A registered pack is unreadable (council s17, B1a): the
+                // check cannot be made; the cached projection, validated
+                // when it was written, answers.
+                Err(_) if reader.catalog_damaged().unwrap_or(false) => {
+                    layrs_store_local::perf::count("projection_cache.unverifiable", 1);
+                    return Ok(cached);
+                }
+                Err(error) => return Err(error),
+            };
             if computed == cached {
                 layrs_store_local::perf::count("projection_cache.sampled_ok", 1);
             } else {

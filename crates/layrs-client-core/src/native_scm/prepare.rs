@@ -342,7 +342,7 @@ impl NativeClient {
     ) -> Result<CapturePlan> {
         let worktree_id = &expected.worktree_id;
         let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         let worktree = reader
             .get_worktree(worktree_id)?
             .ok_or(NativeClientError::Missing("Worktree"))?;
@@ -388,6 +388,23 @@ impl NativeClient {
             .get_step(base_id)?
             .ok_or(NativeClientError::Missing("base Step"))?;
         if snapshot.root_tree_id() == base.root_tree_id() {
+            // A Store with an unreadable registered pack (council s17, B1a):
+            // what this capture read and the Store can no longer prove goes
+            // back in, so a full capture (`step --full`) restores lost
+            // content from the folder.
+            if reader.catalog_damaged()? {
+                let space = worktree.space_id().clone();
+                let recovery = recovery_batch(&reader, &space, snapshot, &stamp)?;
+                drop(reader);
+                drop(store);
+                if let Some(recovery) = recovery {
+                    self.accept(&PreparedMutation {
+                        batch: recovery.0,
+                        step_id: base.id().clone(),
+                        chunks: recovery.1,
+                    })?;
+                }
+            }
             return Ok(CapturePlan::Unchanged {
                 step_id: base.id().clone(),
             });
@@ -590,6 +607,54 @@ fn observation_with_identity(
         Metadata::empty(),
     )
 }
+/// What an unchanged capture read that the Store can no longer prove (a
+/// registered pack unreadable: council s17, B1a), as a batch of content and
+/// admissions without a Step or a View: its objects without a readable
+/// admitted copy, and the spooled chunks likewise. `None` when the Store
+/// proves everything.
+#[allow(clippy::type_complexity)]
+fn recovery_batch(
+    reader: &NativeScmReader<'_>,
+    space: &layrs_core::scm::SpaceId,
+    mut snapshot: PreparedSnapshot,
+    stamp: &MutationStamp,
+) -> Result<
+    Option<(
+        WriteBatch,
+        Option<std::sync::Arc<super::snapshot::SnapshotChunkSpool>>,
+    )>,
+> {
+    let proven = |id: &layrs_store::scm::StoreObjectId| -> Result<bool> {
+        Ok(reader.stored_copy_proven(id)? && reader.object_admitted_metadata(id, space)?)
+    };
+    let mut objects = Vec::new();
+    for object in snapshot.objects() {
+        if !proven(&object.object_id())? {
+            objects.push(object.clone());
+        }
+    }
+    let mut chunks = snapshot.chunks.take();
+    if let Some(spool) = chunks.as_mut().and_then(std::sync::Arc::get_mut) {
+        spool.forget_known(|id| proven(&layrs_store::scm::StoreObjectId::ChunkRaw(id.clone())))?;
+    }
+    let carried_chunks = chunks
+        .as_ref()
+        .is_some_and(|spool| !spool.descriptors().is_empty());
+    if objects.is_empty() && !carried_chunks {
+        return Ok(None);
+    }
+    layrs_store_local::perf::count("capture.recovered_objects", objects.len() as u64);
+    let admissions = admissions_with_chunks(space, &objects, chunks.as_deref());
+    let batch = WriteBatch::new(
+        stamp.transaction_id.clone(),
+        objects,
+        vec![],
+        admissions,
+        vec![],
+    )?;
+    Ok(Some((batch, chunks)))
+}
+
 fn admissions_with_chunks(
     space: &layrs_core::scm::SpaceId,
     objects: &[CanonicalObject],

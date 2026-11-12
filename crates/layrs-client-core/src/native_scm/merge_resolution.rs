@@ -57,7 +57,7 @@ impl NativeWorkspace {
             already_accepted: false,
         };
         let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         if let Some(operation) = reader.get_operation(&preview.stamp.operation_id)? {
             let view = reader
                 .get_repository_view(operation.resulting_view_id())?

@@ -1528,6 +1528,18 @@ impl RegisteredCatalog {
         }
     }
 
+    /// `complete`, or for a `positive` question (a writer's: council s17,
+    /// B1a) the answer of the readable packs alone: what they prove, where
+    /// "not found" means "not proven", never "absent". A writer then keeps
+    /// or writes its own copy, and a closure only they could prove fails.
+    fn settle<T>(&self, positive: bool, value: T) -> CasResult<T> {
+        if positive {
+            Ok(value)
+        } else {
+            self.complete(value)
+        }
+    }
+
     /// Every copy of `id` in this catalog, packs in registration order then
     /// a loose file.
     pub(crate) fn placements(&self, id: &StoreObjectId) -> CasResult<Vec<Placement>> {
@@ -1567,8 +1579,13 @@ impl RegisteredCatalog {
 
     /// Whether some copy of `id` is registered (never content proof).
     pub(crate) fn contains(&self, id: &StoreObjectId) -> CasResult<bool> {
+        self.contains_with(id, false)
+    }
+
+    /// `contains`, `positive` as in `settle`.
+    pub(crate) fn contains_with(&self, id: &StoreObjectId, positive: bool) -> CasResult<bool> {
         if self.placements(id)?.is_empty() {
-            return self.complete(false);
+            return self.settle(positive, false);
         }
         Ok(true)
     }
@@ -1696,9 +1713,19 @@ impl RegisteredCatalog {
         cas: &NativeCas,
         id: &StoreObjectId,
     ) -> CasResult<Option<CanonicalObject>> {
+        self.read_with(cas, id, false)
+    }
+
+    /// `read`, `positive` as in `settle`.
+    pub(crate) fn read_with(
+        &self,
+        cas: &NativeCas,
+        id: &StoreObjectId,
+        positive: bool,
+    ) -> CasResult<Option<CanonicalObject>> {
         let placements = self.placements(id)?;
         if placements.is_empty() {
-            return self.complete(None);
+            return self.settle(positive, None);
         }
         let mut first_error = None;
         for placement in placements {
@@ -1752,7 +1779,12 @@ impl RegisteredCatalog {
 
     /// The smallest length recorded for `file_id` among its manifests (what
     /// `file_manifests` lists), without building each manifest's id.
-    pub(crate) fn file_length(&self, file_id: &FileId) -> CasResult<Option<u64>> {
+    /// `positive` as in `settle`.
+    pub(crate) fn file_length_with(
+        &self,
+        file_id: &FileId,
+        positive: bool,
+    ) -> CasResult<Option<u64>> {
         let raw = file_id.digest_bytes();
         let mut length: Option<u64> = None;
         let mut keep = |value: u64| {
@@ -1784,13 +1816,27 @@ impl RegisteredCatalog {
         for (_, file_length) in self.loose_by_file.get(&raw).into_iter().flatten() {
             keep(*file_length);
         }
-        self.complete(length)
+        // A File's length is set by its id: one a readable pack records is
+        // the answer whatever an unreadable one holds (council s17, B1a).
+        if length.is_some() {
+            return Ok(length);
+        }
+        self.settle(positive, length)
     }
 
     /// Every registered manifest of `file_id`, sorted by id, with its file
     /// length: FileId sections, file records and loose manifests. Index
     /// answers only; no content is read.
     pub(crate) fn file_manifests(&self, file_id: &FileId) -> CasResult<Vec<FileManifestEntry>> {
+        self.file_manifests_with(file_id, false)
+    }
+
+    /// `file_manifests`, `positive` as in `settle`: the readable packs'.
+    pub(crate) fn file_manifests_with(
+        &self,
+        file_id: &FileId,
+        positive: bool,
+    ) -> CasResult<Vec<FileManifestEntry>> {
         let raw = file_id.digest_bytes();
         let mut found: BTreeMap<FileManifestId, FileManifestEntry> = BTreeMap::new();
         let parse = |path: &Path, digest: &[u8; 32]| {
@@ -1833,7 +1879,7 @@ impl RegisteredCatalog {
                 placement: Placement::Loose,
             });
         }
-        self.complete(found.into_values().collect())
+        self.settle(positive, found.into_values().collect())
     }
 
     /// Whether a registered whole file record is named `chunk_id` (its
@@ -2123,12 +2169,22 @@ impl RegisteredCatalog {
         admissions: &SpaceAdmissions,
         id: &StoreObjectId,
     ) -> CasResult<bool> {
+        self.admitted_with(admissions, id, false)
+    }
+
+    /// `admitted`, `positive` as in `settle`: a bit of a readable pack.
+    pub(crate) fn admitted_with(
+        &self,
+        admissions: &SpaceAdmissions,
+        id: &StoreObjectId,
+        positive: bool,
+    ) -> CasResult<bool> {
         for placement in self.placements(id)? {
             if self.placement_admitted(admissions, id, placement)? {
                 return Ok(true);
             }
         }
-        self.complete(false)
+        self.settle(positive, false)
     }
 
     /// Where `id`'s first copy is (`CasLocation`), from metadata.
@@ -2405,6 +2461,15 @@ fn inline_limit_overrides() -> &'static Mutex<HashMap<PathBuf, usize>> {
 
 static INLINE_LIMIT_FORCED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Test support: forgets every pack this process loaded, as a new process
+/// would start (a pack file removed meanwhile is then found unreadable).
+#[cfg(any(test, feature = "test-support"))]
+pub fn forget_loaded_packs() {
+    if let Ok(mut cache) = pack_cache().lock() {
+        cache.clear();
+    }
+}
 
 /// Test support: forces the inline pack limit of the Store at `root` in
 /// this process (`None` restores the default).

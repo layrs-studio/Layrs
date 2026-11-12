@@ -381,7 +381,9 @@ impl NativeWorkspace {
     pub fn read_step_files(&self, step: &StepId) -> Result<Vec<CheckoutEntry>> {
         let state = self.state()?;
         let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        // Content is read from a verified copy: one readable pack suffices
+        // (council s17, B1a).
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
             return Err(NativeClientError::Missing("Step admitted to this Space"));
         }
@@ -399,7 +401,9 @@ impl NativeWorkspace {
     ) -> Result<Vec<CheckoutEntry>> {
         let state = self.state()?;
         let store = self.open_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        // Content is read from a verified copy: one readable pack suffices
+        // (council s17, B1a).
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
             return Err(NativeClientError::Missing("Step admitted to this Space"));
         }
@@ -541,7 +545,7 @@ impl NativeWorkspace {
             states,
         )?;
         let store = self.session_store()?;
-        let reader = NativeScmReader::new(&store)?;
+        let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         let current = reader
             .current_repository_view(source.space.id())?
             .ok_or(NativeClientError::Missing("current View"))?;

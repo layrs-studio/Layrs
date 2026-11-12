@@ -176,7 +176,8 @@ impl super::NativeWorkspace {
         // the base files' chunks: unchanged content is what a capture re-reads.
         let known = {
             let store = self.open_store()?;
-            let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
+            let reader =
+                layrs_store_local::scm_v1::NativeScmReader::new(&store)?.with_positive_evidence();
             reader.admitted_chunk_ids_of_files(
                 state.space.id(),
                 base.iter().filter_map(|entry| match &entry.content {
@@ -216,6 +217,7 @@ impl super::NativeWorkspace {
         index: &mut scm_v1::change_index::ChangeIndex,
         single_pass: bool,
         refs: Option<scm_v1::FileRecordRefs>,
+        damaged: bool,
     ) -> Result<(
         PreparedSnapshot,
         scm_v1::change_index::ChangeIndex,
@@ -260,7 +262,8 @@ impl super::NativeWorkspace {
             None
         } else {
             let store = self.open_store()?;
-            let reader = layrs_store_local::scm_v1::NativeScmReader::new(&store)?;
+            let reader =
+                layrs_store_local::scm_v1::NativeScmReader::new(&store)?.with_positive_evidence();
             reader.admitted_chunk_ids_of_files(state.space.id(), selected.iter(), 1_000_000)?
         };
         let tracked_span = layrs_store_local::perf::span("capture.tracked");
@@ -374,8 +377,9 @@ impl super::NativeWorkspace {
         // the same id. Only when that Tree is the base Step's root: a root
         // holding what a checkout cannot represent (Tombstones, empty
         // directories) projects to another Tree, which a capture must build
-        // and carry.
-        if captured.entries == base {
+        // and carry. A Store with an unreadable registered pack gets the
+        // full snapshot: what it can no longer prove goes back in.
+        if captured.entries == base && !damaged {
             let root = scm_v1::checkout::projection_tree_id(&base)?;
             let step_root = match base_root {
                 Some(step_root) => step_root.clone(),

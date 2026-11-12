@@ -2128,7 +2128,7 @@ impl NativeCas {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub use compact::set_inline_pack_limit;
+pub use compact::{forget_loaded_packs, set_inline_pack_limit};
 
 /// Test support: how many pack files `cas`'s catalog keeps open now
 /// (`NativeCas::hold_pack_files`).

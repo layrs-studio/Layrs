@@ -605,7 +605,8 @@ impl NativeScmRepository {
             insert_object_rows(&guard, store_root, &installed[..external_chunks])?;
         }
         let validation = crate::perf::span("batch.validate");
-        let reader = NativeTransactionalScmReader::new(connection, cas)?;
+        // A writer's reads: positive evidence only (council s17, B1a).
+        let reader = NativeTransactionalScmReader::new(connection, cas)?.with_positive_evidence();
         if publication.is_some() {
             // Objects this batch just wrote (`existed == false`) had no
             // registered copy to disagree with; rereading them from the new

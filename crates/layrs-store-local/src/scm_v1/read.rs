@@ -43,6 +43,8 @@ pub struct NativeScmReader<'store> {
     /// Format 6, transactional reader: the transaction's registered catalog,
     /// loaded on first use (`compact.rs`).
     transaction_catalog: std::sync::OnceLock<std::sync::Arc<super::cas::RegisteredCatalog>>,
+    /// A writer's reader (`with_positive_evidence`).
+    positive: bool,
 }
 
 enum SqlReadSource<'source> {
@@ -99,6 +101,12 @@ impl<'transaction> NativeTransactionalScmReader<'transaction> {
         NativeScmReader::transactional(connection, cas).map(|reader| Self { reader })
     }
 
+    /// `NativeScmReader::with_positive_evidence`: how a batch is validated.
+    pub fn with_positive_evidence(mut self) -> Self {
+        self.reader.positive = true;
+        self
+    }
+
     /// Returns the shared implementation only after proving that the write
     /// transaction is still active. Every `ScmReader` entry point delegates
     /// through this gate, including methods whose implementation can return
@@ -145,6 +153,7 @@ impl NativeStoreReading {
             identities: self.identities.clone(),
             cas: CasReadSource::Transaction(&self.cas),
             transaction_catalog: std::sync::OnceLock::new(),
+            positive: false,
         }
     }
 }
@@ -160,7 +169,19 @@ impl<'store> NativeScmReader<'store> {
             identities: store.identities()?,
             cas: CasReadSource::Owned(cas),
             transaction_catalog: std::sync::OnceLock::new(),
+            positive: false,
         })
+    }
+
+    /// A writer's reader (council s17, B1a): in a format 6 Store with an
+    /// unreadable registered pack, its content answers are those of the
+    /// readable packs, positive evidence only. "Not found" then means "not
+    /// proven", never "absent": a writer keeps or writes its own copy, and
+    /// a closure only the lost pack could prove fails its batch. A sound
+    /// catalog answers exactly as before.
+    pub fn with_positive_evidence(mut self) -> Self {
+        self.positive = true;
+        self
     }
 
     pub fn store(&self) -> &'store NativeStoreOpen {
@@ -199,6 +220,7 @@ impl<'store> NativeScmReader<'store> {
             identities: super::identity::read_registry(cas.root(), cas.store_id())?,
             cas: CasReadSource::Transaction(cas.reader()),
             transaction_catalog: std::sync::OnceLock::new(),
+            positive: false,
         })
     }
 

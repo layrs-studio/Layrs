@@ -521,7 +521,10 @@ pub fn apply_checkout_with_sources_bound_metadata(
         connection.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
         let connection = std::sync::Mutex::new(connection);
         let cas = NativeCas::open_exclusive(&store).map_err(error)?;
-        let reader = NativeTransactionalScmReader::new(&connection, &cas).map_err(error)?;
+        // A writer's reads: positive evidence only (council s17, B1a).
+        let reader = NativeTransactionalScmReader::new(&connection, &cas)
+            .map_err(error)?
+            .with_positive_evidence();
         let worktree = reader
             .get_worktree(worktree_id)
             .map_err(error)?
