@@ -11,7 +11,15 @@ Commits :
 - `acd93ed`, `27b798b`, `8e07476` corrections s15 (Astra 7 → 8, Sol 6 → 9 ship, Opus 8 → 8) : `SQLITE_OPEN_NOFOLLOW` sur tous les écrivains, nom refusé *avant* l'ouverture s'il est un lien, identifiant de fichier 128 bits (repli 64 bits), reprise du nom d'une base liée (copie privée, mode et propriétaire de la source).
 - `ed92a45` Q5 : format 7 (`LAYRS_STORE_FORMAT=7`, opt-in) = format 6 + recette `whole` (un fichier de 1 octet à 1 Mio a un seul chunk nommé par son FileId) + packs v2 de version 2. `8b5a419` : valeurs du cache dérivé en trames zstd (cache v2).
 - Q6 (schéma v4) retiré (`3b07408`) : WITHOUT ROWID cassait le `rowid` de l'historique et de fsck, pour ~8 Ko. Reporté aux identifiants binaires (ADR 0028 §7).
-- Corrections s16 : r1 `3b07408`, `0aaa289`, `5df6730` (Astra 5, Sol 5, Opus 5) ; r2 `d279b1f`, `818ebdb`, `fc50f97` (Astra 7, Sol 7, Opus 7). Règle d'une seule forme par fichier (`prepare::redundant_file_objects`, captures, réceptions, réécritures) ; barrière `whole` à chaque `validate_stored_bytes` ; consolidation mixte whole/v1 dans les deux ordres ; le réseau ne porte que du v1 (`refuse_whole`). r3 : voir ci-dessous.
+- Corrections s16 : r1 `3b07408`, `0aaa289`, `5df6730` (Astra 5, Sol 5, Opus 5) ; r2 `d279b1f`, `818ebdb`, `fc50f97` (Astra 7, Sol 7, Opus 7). Règle d'une seule forme par fichier (`prepare::redundant_file_objects`, captures, réceptions, réécritures) ; barrière `whole` à chaque `validate_stored_bytes` ; consolidation mixte whole/v1 dans les deux ordres ; le réseau ne porte que du v1 (`refuse_whole`). r3 `affe82d` (Astra 8, Sol 7, Opus 8, tous ship after fixes) : routage des checkouts (`checkout_kind`, Studio) par `scm_v1::supported_format` (le format 7 était refusé) ; plan des enregistrements avec les chunks `whole` externes ; le v1 reconstruit à la réception vient toujours d'une lecture vérifiée du Store courant (seuls les manifestes en cache) ; fusions et résolutions en une seule forme par fichier (`prepare::new_objects`, une recherche d'admission par objet) ; tests des refus des packs v2. Trois tours : arrêt du conseil sur ce lot.
+
+| Membre | s16 r1 | s16 r2 | s16 r3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 5/10 | 7/10 | 8/10 |
+| GPT-6.1 Sol (max) | 5/10 | 7/10 | 7/10 |
+| Claude Opus 5.5 (xhigh) | 5/10 | 7/10 | 8/10 |
+
+Suites Windows à `fc50f97` : store-local 784 en formats 7, 6 et 5 ; client-core 284 en 7 et 6 ; CLI 113 en 7 et 5 ; core 35 ; vfs 48 : tout passe. À `affe82d` : store-local 786 (7, 6, 5), client-core 285 (7, 6), CLI 113 en 5 et 112/113 en 7 : `physical_room_new_step_merge_drop_and_recreate` a échoué une fois sur `room merge` avec « Accès refusé (os error 5) » (machine chargée), puis 10/10 ; core 35 ; vfs 48. Même famille que `room_merge_carries_untouched_working_changes_and_refuses_touched_ones` : un renommage ou une ouverture refusés par Windows pendant une matérialisation (antivirus ou suppression en attente). git réessaie ces erreurs (`mingw_rename`) ; à traiter.
 
 Audit Fable 5.2 (à la demande de l'utilisateur, « tourner en rond ? ») : **NON**, continuer. Signaux qui feraient passer à OUI : deux bancs précis de suite sans écart réduit de plus de ~5 % ; Q5 repoussé une troisième fois ; un conseil au-delà de 3 tours ; une nouvelle réécriture du cache de projection ou de l'index. Choix produit à confirmer par l'utilisateur : Rooms physiques par défaut (s10 Q5) ; `room merge` ignore les modifications non capturées (s13 Q4). Écart non classé : `init` ~10 s contre 0,5 s pour git quand Defender connaît déjà les contenus.
 
@@ -19,7 +27,9 @@ Banc précis (10 000 fichiers, **format 7**, binaire `8b5a419`, deux passes) : S
 
 Profil de l'avance rapide (72 ms dans le processus, binaire 133) : matérialisation 46,5 ms dont journal de session 10,8, métadonnées et clôture 7,1, phases 5,0 (barrière NTFS 3,7), index de changements 4,7, purge 2,5 ; 5 ouvertures partagées du Store 8,8 ms ; deux lectures de projection 7,1 ms. L'essentiel de l'écart est le protocole de reprise durable (décision utilisateur n° 1 ci-dessous). Piste sans compromis : une ouverture du Store par commande (5 → 1 : ~5 ms sur `step`, `room step` et l'avance rapide ; `room step` découvre aussi le client trois fois, ~5 ms).
 
-**Reste** : format par défaut d'`init` = 5 (6 et 7 en opt-in) : à décider (le Store ne bat git qu'en format 7) ; purge des opérations de récupération terminées (clé d'idempotence) ; identifiants binaires dans SQLite ; écarts `status`, `step`, fusions ; test instable `room_merge_carries_untouched_working_changes_and_refuses_touched_ones` (« Accès refusé », Windows, 1/10 avant ce travail).
+**Format par défaut** : `init` crée encore du format 5 ; le Store ne bat git qu'en format 7. Le passage est la phase 6 de l'ADR 0028, bloquée par deux points décidés par le conseil et non faits (`store-format-6.md`, « Blockers before format 6 becomes the default ») : un pack inscrit illisible refuse tout le Store (s2 r1 : filtres `cas_pack_keys`, packs `lost`, réparation exacte) ; les tranches au-delà des budgets inline ne sont jamais consolidées (maintenance `store gc`). Prochain chantier pour la taille.
+
+**Reste** : purge des opérations de récupération terminées (clé d'idempotence) ; identifiants binaires dans SQLite ; écarts `status`, `step`, fusions ; test instable `room_merge_carries_untouched_working_changes_and_refuses_touched_ones` (« Accès refusé », Windows, 1/10 avant ce travail).
 
 ## Point courant - caches dérivés en SQLite, conseil s12 (Claude + conseil, 2026-11-12)
 
