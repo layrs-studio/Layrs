@@ -329,11 +329,9 @@ impl NativeScmReader<'_> {
         space: &SpaceId,
     ) -> Result<BTreeSet<FileId>> {
         let catalog = self.catalog()?;
-        // A damaged catalog proves nothing here: the exact path reports its
-        // damage (council s14 r1).
-        if catalog.damage().is_some() {
-            return Ok(BTreeSet::new());
-        }
+        // A File an unreadable pack may hold a manifest of is not proven
+        // here (`file_manifest_admitted`): the exact path reports it
+        // (council s14 r1, s17 B1b).
         let admissions = self.admissions(&catalog, space)?;
         let mut closed = BTreeSet::new();
         for file in files.into_iter().collect::<BTreeSet<_>>() {

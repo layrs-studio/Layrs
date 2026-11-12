@@ -19,8 +19,8 @@ use layrs_store::scm::{
 use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector, RepositoryFaultPoint,
-    existence_proofs_on_this_thread, fsck_existing, held_pack_files, init, open, open_exclusive,
-    set_inline_pack_limit,
+    existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing, held_pack_files, init,
+    open, open_exclusive, set_inline_pack_limit,
 };
 use rusqlite::Connection;
 
@@ -1622,6 +1622,66 @@ fn damaged_metadata_or_a_digest_mismatch_is_corruption_never_absence() {
         "{:#?}",
         report.findings
     );
+}
+
+/// Every registered pack has its keys row (council s17, B1b): beside an
+/// unreadable pack, a key its row excludes is answered exactly (absent, or
+/// present elsewhere, a File proven closed by its bits), a key it may hold
+/// is still an error, and a row that does not check excludes nothing.
+#[test]
+fn keys_rows_answer_exactly_beside_a_lost_pack() {
+    let root = TestRoot::new("keys");
+    create(&root.0, "keys", "7");
+    let kept = vec![file("kept.txt", b"kept bytes", Recipe::Whole)];
+    let (mut lane, batch) = Lane::begin("keys", &kept);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let lost = vec![file("lost.txt", b"lost bytes", Recipe::Fixed)];
+    repository
+        .apply_batch(&lane.capture(&lost, file_objects(&lost)))
+        .unwrap();
+    drop(repository);
+    assert_eq!(
+        count(&root.0, "SELECT count(*) FROM cas_pack_keys"),
+        count(&root.0, "SELECT count(*) FROM cas_packs")
+    );
+    let second = packs(&root.0).pop().unwrap();
+    fs::remove_file(&second).unwrap();
+    forget_loaded_packs();
+    let absent = Chunk::new(b"never stored".to_vec()).unwrap();
+    let repository = NativeScmRepository::new(&root.0);
+    assert!(!repository.chunk_present_metadata(absent.id()).unwrap());
+    assert!(
+        repository
+            .chunk_present_metadata(kept[0].chunks[0].id())
+            .unwrap()
+    );
+    let error = repository
+        .chunk_present_metadata(lost[0].chunks[0].id())
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
+    {
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        let closed = reader
+            .files_durably_closed_metadata(
+                [kept[0].manifest.file_id(), lost[0].manifest.file_id()],
+                lane.space.id(),
+            )
+            .unwrap();
+        assert_eq!(
+            closed.into_iter().collect::<Vec<_>>(),
+            vec![kept[0].manifest.file_id().clone()]
+        );
+    }
+    // A keys row that does not check excludes nothing.
+    sql(&root.0)
+        .execute("UPDATE cas_pack_keys SET checksum = zeroblob(16)", [])
+        .unwrap();
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    let error = repository.chunk_present_metadata(absent.id()).unwrap_err();
+    assert!(matches!(error, StoreError::Corruption { .. }), "{error:?}");
 }
 
 #[test]

@@ -396,6 +396,8 @@ pub(crate) struct ConsolidatedPack {
 pub(crate) struct Consolidation {
     /// The new pack: name, metadata digest, logical entries.
     pub(crate) pack: (OsString, [u8; 32], u64),
+    /// Its keys row (council s17, B1b).
+    pub(crate) keys: super::keys::PackKeys,
     /// Its image when it is registered inline.
     pub(crate) inline: Option<Vec<u8>>,
     pub(crate) packs: Vec<ConsolidatedPack>,
@@ -512,6 +514,85 @@ impl RegisteredCatalog {
         by_size.sort_unstable();
         by_size
     }
+}
+
+/// The keys a question about object `id` asks of a pack's keys row: its
+/// explicit record, and for a chunk or a manifest the file record aliases
+/// that may stand for it (a whole chunk is named by its FileId).
+fn object_keys(id: &StoreObjectId) -> CasResult<Vec<super::keys::Key>> {
+    use super::keys::{self, key};
+    let raw = pack2::raw_digest(id)?;
+    let mut asked = vec![keys::explicit_key(pack2::kind_code(id.kind()), &raw)];
+    match id.kind() {
+        StoreObjectKind::ChunkRaw => {
+            asked.push(key(keys::CHUNK_ALIAS_TAG, &raw));
+            asked.push(key(keys::FILE_RECORD_TAG, &raw));
+        }
+        StoreObjectKind::FileManifest => asked.push(key(keys::MANIFEST_ALIAS_TAG, &raw)),
+        _ => {}
+    }
+    Ok(asked)
+}
+
+/// The keys a question about File `file_id` (its manifests, its length)
+/// asks: the FileId section and the file records.
+fn file_keys(file_id: &FileId) -> Vec<super::keys::Key> {
+    use super::keys::{self, key};
+    let raw = file_id.digest_bytes();
+    vec![
+        key(keys::FILEID_SECTION_TAG, &raw),
+        key(keys::FILE_RECORD_TAG, &raw),
+    ]
+}
+
+/// The key filters of the `damaged` packs whose keys row is sound and bound
+/// to their registration (`rows`); read only when a pack is unreadable.
+fn damaged_filters(
+    connection: &Connection,
+    damaged: &[(i64, CasError)],
+    rows: &[RegisteredRow],
+) -> HashMap<i64, super::keys::KeyFilter> {
+    let mut filters = HashMap::new();
+    if damaged.is_empty() {
+        return filters;
+    }
+    let Ok(mut statement) = connection.prepare(
+        "SELECT layout_digest,keys_digest,key_count,rice_bits,group_digests,filter,checksum          FROM cas_pack_keys WHERE pack_seq=?1",
+    ) else {
+        return filters;
+    };
+    for (seq, _) in damaged {
+        let Some(row) = rows.iter().find(|row| row.seq == *seq) else {
+            continue;
+        };
+        let stored = statement.query_row([seq], |stored| {
+            Ok((
+                stored.get::<_, Vec<u8>>(0)?,
+                stored.get::<_, Vec<u8>>(1)?,
+                stored.get::<_, i64>(2)?,
+                stored.get::<_, i64>(3)?,
+                stored.get::<_, Vec<u8>>(4)?,
+                stored.get::<_, Vec<u8>>(5)?,
+                stored.get::<_, Vec<u8>>(6)?,
+            ))
+        });
+        let Ok((layout, keys_digest, count, bits, groups, filter, checksum)) = stored else {
+            continue;
+        };
+        if let Some(filter) = super::keys::PackKeys::filter_of_row(
+            &row.digest,
+            &layout,
+            &keys_digest,
+            count,
+            bits,
+            groups,
+            filter,
+            &checksum,
+        ) {
+            filters.insert(*seq, filter);
+        }
+    }
+    filters
 }
 
 /// A pack's size on disk, records, blocks and decompressed bytes: what the
@@ -726,7 +807,7 @@ impl NativeCas {
                 loaded.is_inline(),
             ));
         }
-        let (pack, inline, _) = self.publish_pack2(open).map_err(general)?;
+        let (pack, inline, _, pack_keys) = self.publish_pack2(open).map_err(general)?;
         let new = match &inline {
             Some(image) => self
                 .inline_pack(&pack.0, Arc::from(image.as_slice()), true)
@@ -793,6 +874,7 @@ impl NativeCas {
             })
             .collect::<Result<Vec<_>, ConsolidationFailure>>()?;
         Ok(Consolidation {
+            keys: pack_keys,
             pack,
             inline,
             packs,
@@ -1124,6 +1206,9 @@ pub(crate) struct RegisteredCatalog {
     packs: Vec<RegisteredPack>,
     /// Registered packs that cannot be read: (pack_seq, error).
     damaged: Vec<(i64, CasError)>,
+    /// The key filters of the unreadable packs whose keys row is sound
+    /// (council s17, B1b).
+    damaged_filters: HashMap<i64, super::keys::KeyFilter>,
     /// Every `cas_packs` row of the snapshot, sound or damaged.
     rows: Vec<RegisteredRow>,
     /// Whether every pack was loaded from the metadata on disk now (an
@@ -1417,9 +1502,11 @@ impl RegisteredCatalog {
             }
             loose.insert(id, LooseEntry { kind, byte_length });
         }
+        let damaged_filters = damaged_filters(connection, &damaged, &registered_rows);
         Ok(Self {
             packs,
             damaged,
+            damaged_filters,
             fresh,
             rows: registered_rows,
             loose,
@@ -1519,24 +1606,39 @@ impl RegisteredCatalog {
         self.damaged.first().map(|(_, error)| error)
     }
 
-    /// `Ok(value)` when the catalog is complete; a negative or complete
-    /// answer from a catalog with an unreadable registered pack is refused.
-    fn complete<T>(&self, value: T) -> CasResult<T> {
-        match self.damage() {
+    /// `Ok(value)` when the catalog answers exactly about `keys` (the
+    /// keys the question asks): every unreadable registered pack's keys row
+    /// excludes them all (council s17, B1b). Otherwise a negative or
+    /// complete answer is refused with that pack's error: never absent,
+    /// never present.
+    fn complete<T>(&self, keys: &[super::keys::Key], value: T) -> CasResult<T> {
+        match self.unknown_to(keys) {
             Some(error) => Err(error.clone()),
             None => Ok(value),
         }
+    }
+
+    /// The error of the first unreadable pack that may hold one of `keys`.
+    fn unknown_to(&self, keys: &[super::keys::Key]) -> Option<&CasError> {
+        self.damaged
+            .iter()
+            .find(|(seq, _)| {
+                self.damaged_filters
+                    .get(seq)
+                    .is_none_or(|filter| keys.iter().any(|key| filter.may_contain(key)))
+            })
+            .map(|(_, error)| error)
     }
 
     /// `complete`, or for a `positive` question (a writer's: council s17,
     /// B1a) the answer of the readable packs alone: what they prove, where
     /// "not found" means "not proven", never "absent". A writer then keeps
     /// or writes its own copy, and a closure only they could prove fails.
-    fn settle<T>(&self, positive: bool, value: T) -> CasResult<T> {
+    fn settle<T>(&self, positive: bool, keys: &[super::keys::Key], value: T) -> CasResult<T> {
         if positive {
             Ok(value)
         } else {
-            self.complete(value)
+            self.complete(keys, value)
         }
     }
 
@@ -1585,7 +1687,7 @@ impl RegisteredCatalog {
     /// `contains`, `positive` as in `settle`.
     pub(crate) fn contains_with(&self, id: &StoreObjectId, positive: bool) -> CasResult<bool> {
         if self.placements(id)?.is_empty() {
-            return self.settle(positive, false);
+            return self.settle(positive, &object_keys(id)?, false);
         }
         Ok(true)
     }
@@ -1593,7 +1695,7 @@ impl RegisteredCatalog {
     /// Canonical byte length of `id`'s first copy, from metadata only.
     pub(crate) fn stored_length(&self, id: &StoreObjectId) -> CasResult<Option<u64>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
-            return self.complete(None);
+            return self.complete(&object_keys(id)?, None);
         };
         self.placement_length(id, placement).map(Some)
     }
@@ -1725,7 +1827,7 @@ impl RegisteredCatalog {
     ) -> CasResult<Option<CanonicalObject>> {
         let placements = self.placements(id)?;
         if placements.is_empty() {
-            return self.settle(positive, None);
+            return self.settle(positive, &object_keys(id)?, None);
         }
         let mut first_error = None;
         for placement in placements {
@@ -1750,7 +1852,7 @@ impl RegisteredCatalog {
         let id = StoreObjectId::ChunkRaw(chunk_id.clone());
         let placements = self.placements(&id)?;
         if placements.is_empty() {
-            self.complete(())?;
+            self.complete(&object_keys(&id)?, ())?;
             return Err(CasError::NotFound {
                 kind: StoreObjectKind::ChunkRaw,
                 id: chunk_id.to_string(),
@@ -1821,7 +1923,7 @@ impl RegisteredCatalog {
         if length.is_some() {
             return Ok(length);
         }
-        self.settle(positive, length)
+        self.settle(positive, &file_keys(file_id), length)
     }
 
     /// Every registered manifest of `file_id`, sorted by id, with its file
@@ -1879,7 +1981,7 @@ impl RegisteredCatalog {
                 placement: Placement::Loose,
             });
         }
-        self.settle(positive, found.into_values().collect())
+        self.settle(positive, &file_keys(file_id), found.into_values().collect())
     }
 
     /// Whether a registered whole file record is named `chunk_id` (its
@@ -2119,9 +2221,11 @@ impl RegisteredCatalog {
         file_id: &FileId,
         max_manifests: usize,
     ) -> CasResult<bool> {
-        // A damaged catalog proves nothing from its bitmaps: the exact path
-        // reports the damage (council s14 r2).
-        if self.damage().is_some() {
+        // An unreadable pack that may hold a manifest of the File leaves its
+        // manifests unknown: the exact path reports it (council s14 r2).
+        // One whose keys exclude the File changes nothing (council s17,
+        // B1b).
+        if self.unknown_to(&file_keys(file_id)).is_some() {
             return Ok(false);
         }
         let raw = file_id.digest_bytes();
@@ -2184,7 +2288,7 @@ impl RegisteredCatalog {
                 return Ok(true);
             }
         }
-        self.settle(positive, false)
+        self.settle(positive, &object_keys(id)?, false)
     }
 
     /// Where `id`'s first copy is (`CasLocation`), from metadata.
@@ -2194,7 +2298,7 @@ impl RegisteredCatalog {
         id: &StoreObjectId,
     ) -> CasResult<Option<CasLocation>> {
         let Some(placement) = self.placements(id)?.into_iter().next() else {
-            return self.complete(None);
+            return self.complete(&object_keys(id)?, None);
         };
         let length = self.placement_length(id, placement)?;
         let packed = |pack: usize, location: Location| {
@@ -2507,6 +2611,8 @@ pub(crate) struct CompactPublication {
     pub(crate) inline: Option<Vec<u8>>,
     /// Its sizes, as the consolidation budgets count them.
     pub(crate) stats: Option<PackStats>,
+    /// Its keys row (council s17, B1b).
+    pub(crate) keys: Option<super::keys::PackKeys>,
     pub(crate) loose: Vec<LooseInstall>,
 }
 
@@ -2796,13 +2902,15 @@ impl NativeCas {
             pack: None,
             inline: None,
             stats: None,
+            keys: None,
             loose,
         };
         if let Some(open) = open {
-            let (pack, inline, stats) = self.publish_pack2(open)?;
+            let (pack, inline, stats, keys) = self.publish_pack2(open)?;
             publication.pack = Some(pack);
             publication.inline = inline;
             publication.stats = Some(stats);
+            publication.keys = Some(keys);
         }
         self.compact_state(|batch| {
             batch.publication = Some(publication);
@@ -2890,10 +2998,16 @@ impl NativeCas {
     /// Seals and publishes `open`: inline when it fits (its image validated
     /// as untrusted input, as a reread file is), else as a pack file. Returns
     /// its registration and, inline, its image.
+    #[allow(clippy::type_complexity)]
     fn publish_pack2(
         &self,
         mut open: OpenPack,
-    ) -> CasResult<(PackRegistration, Option<Vec<u8>>, PackStats)> {
+    ) -> CasResult<(
+        PackRegistration,
+        Option<Vec<u8>>,
+        PackStats,
+        super::keys::PackKeys,
+    )> {
         let builder = std::mem::replace(&mut open.builder, empty_builder());
         let sealed = builder
             .finish(&mut open.sink)
@@ -2916,13 +3030,14 @@ impl NativeCas {
                     (name, sealed.digest, sealed.logical),
                     Some(image),
                     pack_stats(&index),
+                    sealed.keys,
                 ));
             }
         }
         // Not inline (decided once): the pack is a file.
         self.spill(&mut open)?;
-        self.publish_pack_file(open, &sealed)
-            .map(|(registration, stats)| (registration, None, stats))
+        let (registration, stats) = self.publish_pack_file(open, &sealed)?;
+        Ok((registration, None, stats, sealed.keys))
     }
 
     fn publish_pack_file(

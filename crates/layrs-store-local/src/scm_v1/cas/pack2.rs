@@ -1080,6 +1080,8 @@ pub(super) struct SealedPack2 {
     pub(super) explicit: u64,
     pub(super) files: u64,
     pub(super) block_hashes: Vec<blake3::Hash>,
+    /// Its keys row (council s17, B1b), registered with it.
+    pub(super) keys: super::keys::PackKeys,
 }
 
 impl Pack2Builder {
@@ -1350,6 +1352,7 @@ impl Pack2Builder {
             put_varint(&mut metadata, u64::from(*position));
             put_varint(&mut metadata, *length);
         }
+        let keys = self.keys(&section)?;
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(&header_bytes(self.version));
@@ -1370,7 +1373,57 @@ impl Pack2Builder {
             explicit: self.explicit.len() as u64,
             files: self.files.len() as u64,
             block_hashes: self.block_hashes,
+            keys,
         })
+    }
+
+    /// The keys row of the sealed pack, from its records in index order:
+    /// explicit records sorted by kind and id, then file records by FileId,
+    /// each with its chunk and manifest aliases (the ordinals of the
+    /// admission bitmaps), and the FileId section.
+    fn keys(&self, section: &[([u8; 32], u32, u64)]) -> io::Result<super::keys::PackKeys> {
+        use super::keys::{self, Ordinal, SectionEntry};
+        let mut ordinals = Vec::with_capacity(self.explicit.len() + 2 * self.files.len());
+        let mut tagged =
+            Vec::with_capacity(self.explicit.len() + 3 * self.files.len() + section.len());
+        for (code, id, _) in &self.explicit {
+            ordinals.push(Ordinal::Explicit {
+                kind_code: *code,
+                id,
+            });
+            tagged.push(keys::explicit_key(*code, id));
+        }
+        for (file, manifest_id) in &self.files {
+            ordinals.push(Ordinal::ChunkAlias {
+                file_id: &file.file_id,
+                chunk_id: &file.chunk_id,
+                recipe: file.recipe.code(),
+                length: u64::from(file.location.length),
+            });
+            ordinals.push(Ordinal::ManifestAlias {
+                file_id: &file.file_id,
+                manifest_id,
+            });
+            tagged.push(keys::key(keys::FILE_RECORD_TAG, &file.file_id));
+            // A whole record's chunk is named by its FileId: the record key
+            // answers for it.
+            if file.recipe != Recipe::Whole {
+                tagged.push(keys::key(keys::CHUNK_ALIAS_TAG, &file.chunk_id));
+            }
+            tagged.push(keys::key(keys::MANIFEST_ALIAS_TAG, manifest_id));
+        }
+        let entries: Vec<SectionEntry<'_>> = section
+            .iter()
+            .map(|(file_id, position, length)| SectionEntry {
+                file_id,
+                manifest_position: *position,
+                length: *length,
+            })
+            .collect();
+        for (file_id, _, _) in section {
+            tagged.push(keys::key(keys::FILEID_SECTION_TAG, file_id));
+        }
+        keys::PackKeys::build(&ordinals, &entries, tagged, keys::RICE_BITS)
     }
 }
 

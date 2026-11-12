@@ -188,6 +188,48 @@ fichier dans l'index du pack.
   d'idempotence), Trees et manifestes binaires (phase 4), conversion d'un
   Store du format 6.
 
+### 8. Un pack illisible (conseil s17, B1a et B1b)
+
+Avant : un seul pack inscrit illisible rendait fausse toute réponse qui
+n'était pas positive (absence, liste complète, admission) ; capture, `step`
+et tout lot échouaient, y compris celui qui aurait rapporté le contenu.
+
+- **Écrivains : preuve positive seulement.** Le lecteur d'un écrivain
+  (`NativeScmReader::with_positive_evidence`) répond d'après les packs
+  lisibles ; « introuvable » veut dire « non prouvé », jamais « absent ».
+  La déduplication écrit sa propre copie, une capture garde ce qu'elle ne
+  peut pas prouver, une fermeture que seul le pack perdu prouvait fait
+  échouer ce lot seulement. La validation des lots, la préparation des
+  captures, les réécritures, fusions et résolutions, et la lecture du
+  contenu des fichiers (une copie vérifiée suffit) l'utilisent.
+- **Réparation par le dossier.** Une capture qui retrouve sa base dans un
+  Store abîmé remet ce qu'elle a lu et que le Store ne prouve plus : un lot
+  de contenu et d'admissions sans Step. `step --full` rapporte ainsi le
+  contenu perdu. Un pack perdu qui tenait une Step de l'historique bloque
+  les Steps suivantes (leur ascendance) jusqu'à la réparation exacte.
+- **Clés par pack.** Chaque pack inscrit a sa ligne `cas_pack_keys`,
+  écrite dans la transaction qui l'inscrit (`register_compact`,
+  `consolidation::register`) et liée à son condensé d'index : un ensemble
+  codé Golomb-Rice des empreintes de toutes les clés auxquelles il répond,
+  étiquetées par forme (enregistrement explicite, FileId d'un
+  enregistrement de fichier, alias de chunk et de manifeste, section des
+  FileId), paramètre `rice_bits` = 20 (environ 21,5 bits par clé, une
+  fausse inclusion par million de clés demandées) ; `keys_digest`, le
+  contenu logique du pack dans l'ordre des ordinaux (celui des bitmaps), et
+  un condensé par 256 ordinaux, pour la réparation exacte. Lue seulement
+  pour un pack illisible : une clé qu'elle exclut a une réponse exacte, une
+  clé qu'elle peut contenir reste une erreur ; une ligne absente ou qui ne
+  se vérifie pas n'exclut rien.
+- **Schéma v3 changé une dernière fois** avant le passage au format 7 par
+  défaut (`cas_pack_keys`, colonne réservée `cas_packs.lost_at_ms`) : un
+  Store au format 6 ou 7 créé avant est refusé (« missing
+  [cas_pack_keys] ») ; il faut le recréer, comme pour les packs inline.
+- **Coût mesuré** (10 000 fichiers, format 7) : +64 Kio (Store 1 284 Kio
+  après `init`, 1 720 Kio après le scénario ; git 1 916 / 1 956–1 980) ;
+  aucune commande plus lente.
+- **Suite** : fsck vérifie chaque ligne de clés (B1c) ; réparation exacte
+  et état `lost` après le passage par défaut.
+
 ## Phases
 
 Chaque phase ne garde que ce qui entre dans la conception finale. Le

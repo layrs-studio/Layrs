@@ -2062,6 +2062,7 @@ impl<'store> NativeCasWriter<'store> {
 
 mod codec;
 pub(crate) mod compact;
+pub(crate) mod keys;
 
 /// A bulk read's hold on a format 6 catalog's pack files
 /// (`NativeCas::hold_pack_files`): they stay open until it is dropped.

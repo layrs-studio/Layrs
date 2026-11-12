@@ -306,7 +306,8 @@ and `layrs store repair` come after). Agreed by all three, in this order:
    base still has to carry what the Store can no longer prove (a recovery
    batch of content and admissions, without a new Step); today it returns
    "unchanged".
-2. B1b, the last change to schema v3 (existing opt-in Stores are then
+   Done (`7212ac4`).
+2. B1b (done, ADR 0028 section 8), the last change to schema v3 (existing opt-in Stores are then
    refused, as for inline packs): one `cas_pack_keys` row per registered
    pack (inline ones too), written in the registering transaction
    (`register_compact`, `consolidation::register`), bound to the

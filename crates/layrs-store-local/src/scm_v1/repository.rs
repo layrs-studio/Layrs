@@ -1279,15 +1279,22 @@ fn register_compact(c: &Connection, publication: &super::cas::CompactPublication
             ],
         )
         .map_err(sql_backend)?;
+        let seq = c.last_insert_rowid();
         // A small pack's image commits with its registration (council s7
         // Q1): durable with the batch, no file.
         if let Some(image) = &publication.inline {
             c.execute(
-                "INSERT INTO cas_pack_inline(pack_seq,image) VALUES(last_insert_rowid(),?1)",
-                [image],
+                "INSERT INTO cas_pack_inline(pack_seq,image) VALUES(?1,?2)",
+                params![seq, image],
             )
             .map_err(sql_backend)?;
         }
+        // And its keys row (council s17, B1b).
+        let keys = publication
+            .keys
+            .as_ref()
+            .ok_or_else(|| native_backend("a registered pack has no keys row"))?;
+        keys.insert(c, seq, digest).map_err(sql_backend)?;
     }
     for loose in &publication.loose {
         let id = super::cas::raw_object_digest(&loose.object_id).map_err(cas_backend)?;

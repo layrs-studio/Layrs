@@ -294,6 +294,10 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         )
         .map_err(sql)?;
     let new_seq = transaction.last_insert_rowid();
+    consolidation
+        .keys
+        .insert(&transaction, new_seq, digest)
+        .map_err(sql)?;
     if let Some(image) = &consolidation.inline {
         transaction
             .execute(
@@ -399,6 +403,16 @@ fn register(store: &NativeStoreExclusive, consolidation: &Consolidation) -> Resu
         .map_err(sql)?;
     if deleted != old_count {
         return Err("consolidation would drop admissions it did not remap".into());
+    }
+    // The keys rows of the packs retired: one each.
+    let keys_retired = transaction
+        .execute(
+            &format!("DELETE FROM cas_pack_keys WHERE pack_seq IN ({in_seqs})"),
+            [],
+        )
+        .map_err(sql)?;
+    if keys_retired != consolidation.packs.len() {
+        return Err("consolidated packs differ from their keys rows".into());
     }
     // The images of the inline packs retired, before their rows: exactly
     // those of the inline candidates.

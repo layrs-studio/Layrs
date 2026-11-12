@@ -125,7 +125,10 @@ CREATE TABLE cas_packs (
     index_digest BLOB NOT NULL CHECK (length(index_digest) = 32),
     entries INTEGER NOT NULL CHECK (entries >= 0),
     stored_inline INTEGER NOT NULL CHECK (stored_inline IN (0, 1)),
-    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0)
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    -- Reserved for exact repair (council s17): when a pack proven
+    -- unrecoverable was declared lost. Never set yet.
+    lost_at_ms INTEGER CHECK (lost_at_ms IS NULL OR lost_at_ms >= 0)
 ) STRICT;
 
 -- A small pack registered inline (council s7 Q1): its whole pack v2 image,
@@ -134,6 +137,22 @@ CREATE TABLE cas_packs (
 CREATE TABLE cas_pack_inline (
     pack_seq INTEGER PRIMARY KEY REFERENCES cas_packs(pack_seq) ON DELETE RESTRICT,
     image BLOB NOT NULL CHECK (length(image) BETWEEN 1 AND 1048576)
+) STRICT;
+
+-- The keys of a registered pack (council s17, B1b), written in the
+-- transaction that registers it and bound to its index digest: a filter of
+-- every key it answers for (read only for a pack found unreadable: a key it
+-- excludes is absent from that pack) and its logical content in ordinal
+-- order (`keys_digest`, one digest per 256 ordinals), for exact repair.
+CREATE TABLE cas_pack_keys (
+    pack_seq INTEGER PRIMARY KEY REFERENCES cas_packs(pack_seq) ON DELETE RESTRICT,
+    layout_digest BLOB NOT NULL CHECK (length(layout_digest) = 32),
+    keys_digest BLOB NOT NULL CHECK (length(keys_digest) = 32),
+    key_count INTEGER NOT NULL CHECK (key_count >= 0),
+    rice_bits INTEGER NOT NULL CHECK (rice_bits BETWEEN 1 AND 40),
+    group_digests BLOB NOT NULL CHECK (length(group_digests) % 32 = 0),
+    filter BLOB NOT NULL,
+    checksum BLOB NOT NULL CHECK (length(checksum) = 16)
 ) STRICT;
 
 -- Exact content admission per Space: bit i (LSB first) of bitmap admits

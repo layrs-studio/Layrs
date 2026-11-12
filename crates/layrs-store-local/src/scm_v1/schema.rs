@@ -78,9 +78,9 @@ pub const REQUIRED_TABLES: &[&str] = &[
 pub const SCHEMA_V3_VERSION: u32 = 3;
 pub const BASELINE_V3_NAME: &str = "native_scm_v3_compact_baseline";
 pub const SCHEMA_V3_CHECKSUM: &str =
-    "11339f5a4f8616a8320139041f533238292c2faf7d84ad718d38cf7d2c48e91e";
+    "0728c3e1b5e8d361d896a1af55393104cc1de27f010bae969866b4d410c4288c";
 pub const SCHEMA_V3_FINGERPRINT: &str =
-    "96eafcebe6ad17da351b0f7e3b81c7d15a7508912242286e4bfde22730a9e596";
+    "8b8083b2a1dc98e3d747cc5fc3854fdce38c692fa7482d174391399dba5140b2";
 pub const SCHEMA_V3_SQL: &str = include_str!("../../tests/fixtures/scm-v3.sql");
 
 pub fn schema_v3_checksum() -> String {
@@ -101,6 +101,7 @@ pub const REQUIRED_TABLES_V3: &[&str] = &[
     "space_object_admissions",
     "cas_packs",
     "cas_pack_inline",
+    "cas_pack_keys",
     "space_pack_admissions",
     "loose_objects",
     "space_loose_admissions",
