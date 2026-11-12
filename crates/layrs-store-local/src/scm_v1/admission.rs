@@ -761,7 +761,12 @@ impl<'a> CompositeAdmissionResolver<'a> {
             // An object carried by this batch is validated from memory below
             // (strictly more checking than skipping it as durably closed), so
             // only objects outside the batch cost a metadata query.
-            if durable_proves
+            // A durable Step stays closed by induction even beside an
+            // unreadable pack: `load_step_closure` read every Step this
+            // batch's Views reach, and their history is not this batch's to
+            // prove (council s18 r3); its Trees and Files are re-walked only
+            // when reached from what the batch carries.
+            if (durable_proves || matches!(object_id, StoreObjectId::Step(_)))
                 && &object_id != root
                 && self.overlay_object(&object_id).is_none()
                 && self.reader.object_admitted_metadata(&object_id, space)?

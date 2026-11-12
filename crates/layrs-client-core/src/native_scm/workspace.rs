@@ -470,17 +470,9 @@ impl NativeWorkspace {
     /// racy and unproven entries are read). Without an index, every file is
     /// read.
     pub fn capture_before_deletion(&self, reason: CaptureReason) -> Result<CapturePlan> {
-        // Beside an unreadable pack the index does not prove that the Store
-        // still holds what it vouches for: every file is read, and what the
-        // Store cannot prove is stored again before the folder can go
-        // (council s18 r2).
-        let damaged = {
-            let store = self.open_store()?;
-            NativeScmReader::new(&store)?.catalog_damaged()?
-        };
-        if damaged {
-            return self.capture_verifying_all(reason);
-        }
+        // Beside an unreadable pack its index is cleared (every file read)
+        // and its recovery required, as for every verifying capture
+        // (`capture_using_passes_opened`, council s18 r2, r3).
         let index = scm_v1::change_index::ChangeIndex::load(self.store_root(), &self.worktree_id);
         self.capture_using_passes(reason, index, None, false)
     }
@@ -526,12 +518,15 @@ impl NativeWorkspace {
         // Captures before the folder is rewritten, and those that read every
         // file, must store again what a Store with an unreadable pack cannot
         // prove; only a plain step's recovery is best effort (council s18 r2).
-        let before_rewrite = matches!(
-            reason,
-            CaptureReason::BeforeOperation
-                | CaptureReason::BeforeLayerSwitch
-                | CaptureReason::BeforeWorktreeSwitch
-        );
+        // A verifying capture (before a deletion, or `step --full`) is one
+        // too: it reads every file beside an unreadable pack.
+        let before_rewrite = !single_pass
+            || matches!(
+                reason,
+                CaptureReason::BeforeOperation
+                    | CaptureReason::BeforeLayerSwitch
+                    | CaptureReason::BeforeWorktreeSwitch
+            );
         let recovery_required = !single_pass || before_rewrite;
         let result = self.capture_attempts(
             reason,
@@ -545,6 +540,15 @@ impl NativeWorkspace {
         self.explain_damage(result)
     }
 
+    /// `error`, unless the Store has an unreadable pack: then it says the
+    /// object may be there, unreadable, and what can bring it back.
+    pub(super) fn explain_unreadable(&self, error: NativeClientError) -> NativeClientError {
+        match self.explain_damage::<()>(Err(error)) {
+            Err(error) => error,
+            Ok(()) => unreachable!("an error stays an error"),
+        }
+    }
+
     /// A capture's error beside an unreadable pack names the remedy
     /// (council s18 r2): a writer's refusal there means "not provable".
     fn explain_damage<T>(&self, result: Result<T>) -> Result<T> {
@@ -552,29 +556,29 @@ impl NativeWorkspace {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
-        let refusal = matches!(
-            error,
+        // Content the folder may still hold (a closure, a missing object)
+        // can be stored again by a full capture; a Step of the history
+        // cannot: only repair (or a server) brings it back (council s18 r3).
+        let remedy = match &error {
+            NativeClientError::Store(layrs_store::scm::StoreError::NotFound { kind, .. })
+                if kind.starts_with("Step") =>
+            {
+                "it held part of this history: the Store needs repair"
+            }
             NativeClientError::Store(
                 layrs_store::scm::StoreError::AdmissionRejected { .. }
-                    | layrs_store::scm::StoreError::NotFound { .. }
-                    | layrs_store::scm::StoreError::Corruption { .. }
-            ) | NativeClientError::Missing(_)
-        );
-        let damaged = refusal
-            && self
-                .open_store()
-                .ok()
-                .and_then(|store| {
-                    NativeScmReader::new(&store)
-                        .ok()
-                        .and_then(|reader| reader.catalog_damaged().ok())
-                })
-                .unwrap_or(false);
-        if !damaged {
+                | layrs_store::scm::StoreError::NotFound { .. },
+            )
+            | NativeClientError::Missing(_) => {
+                "`layrs step --full` stores again what this folder still holds"
+            }
+            _ => return Err(error),
+        };
+        if !self.store_has_unreadable_pack().unwrap_or(false) {
             return Err(error);
         }
         Err(NativeClientError::InvalidSnapshot(format!(
-            "{error}. A registered pack of this Store cannot be read: `layrs step --full` stores again what this folder still holds"
+            "{error}. A registered pack of this Store cannot be read: {remedy}"
         )))
     }
 

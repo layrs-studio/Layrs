@@ -115,7 +115,8 @@ fn a_lost_pack_of_old_content_is_brought_back_by_a_full_capture() {
     fs::write(root.join("f.txt"), b"phi\n").unwrap();
     let refused = workspace.capture().unwrap_err().to_string();
     assert!(refused.contains("Step parent"), "{refused}");
-    // The refusal names the remedy (council s18 r2).
-    assert!(refused.contains("layrs step --full"), "{refused}");
+    // The refusal names the remedy: a lost Step needs repair, a full
+    // capture cannot bring it back (council s18 r3).
+    assert!(refused.contains("needs repair"), "{refused}");
     drop(fixture);
 }

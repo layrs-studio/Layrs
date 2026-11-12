@@ -385,7 +385,11 @@ impl NativeWorkspace {
         // (council s17, B1a).
         let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
-            return Err(NativeClientError::Missing("Step admitted to this Space"));
+            // Beside an unreadable pack it may be there, unreadable: never
+            // "not admitted" then (council s18 r3).
+            return Err(
+                self.explain_unreadable(NativeClientError::Missing("Step admitted to this Space"))
+            );
         }
         let step = reader
             .get_step(step)?
@@ -405,7 +409,11 @@ impl NativeWorkspace {
         // (council s17, B1a).
         let reader = NativeScmReader::new(&store)?.with_positive_evidence();
         if !reader.object_admitted_to_space(&StoreObjectId::Step(step.clone()), state.space.id())? {
-            return Err(NativeClientError::Missing("Step admitted to this Space"));
+            // Beside an unreadable pack it may be there, unreadable: never
+            // "not admitted" then (council s18 r3).
+            return Err(
+                self.explain_unreadable(NativeClientError::Missing("Step admitted to this Space"))
+            );
         }
         let step = reader
             .get_step(step)?

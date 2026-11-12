@@ -1864,6 +1864,62 @@ fn a_durable_tree_does_not_prove_content_lost_with_its_pack() {
     );
 }
 
+/// Beside a lost content-only pack, a durable Step's history is not the
+/// batch's to prove (council s18 r3): a new Step whose parent names content
+/// only that pack held is accepted when everything it carries is provable.
+#[test]
+fn a_lost_content_only_pack_does_not_block_an_unrelated_step() {
+    let root = TestRoot::new("history");
+    create(&root.0, "history", "7");
+    let old = file("old.txt", b"old content in a lost pack", Recipe::Whole);
+    let (mut lane, batch) = Lane::begin("history", &[]);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    let space = lane.space.id().clone();
+    let admit = |objects: Vec<CanonicalObject>, label: &str| {
+        let admissions = objects
+            .iter()
+            .map(|object| SpaceObjectAdmission::new(space.clone(), object.object_id()))
+            .collect();
+        WriteBatch::new(
+            TransactionId::new(format!("transaction:history-{label}")).unwrap(),
+            objects,
+            vec![],
+            admissions,
+            vec![],
+        )
+        .unwrap()
+    };
+    // The old content alone (a content-only pack), then a Step naming it.
+    repository
+        .apply_batch(&admit(file_objects(std::slice::from_ref(&old)), "content"))
+        .unwrap();
+    let captured = lane.capture(std::slice::from_ref(&old), vec![]);
+    let old_step = captured
+        .canonical_objects()
+        .iter()
+        .find_map(|object| match object {
+            CanonicalObject::Step(step) => Some(step.id().clone()),
+            _ => None,
+        })
+        .unwrap();
+    repository.apply_batch(&captured).unwrap();
+    drop(repository);
+    let content_pack = registered_packs(&root.0)[1].clone();
+    fs::remove_file(root.0.join("objects/packs").join(content_pack)).unwrap();
+    forget_loaded_packs();
+    // A new Step after it, with other content, carried.
+    let new = file("new.txt", b"new content", Recipe::Whole);
+    let tree = tree_of(std::slice::from_ref(&new));
+    let step = Step::new(vec![old_step], tree.id().clone()).unwrap();
+    let mut objects = file_objects(std::slice::from_ref(&new));
+    objects.push(CanonicalObject::Tree(tree));
+    objects.push(CanonicalObject::Step(step));
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&admit(objects, "new-step"))
+        .unwrap();
+}
+
 /// fsck checks every readable pack's keys row against its index (council
 /// s17, B1c): a missing row, or one that does not check, is reported.
 #[test]
