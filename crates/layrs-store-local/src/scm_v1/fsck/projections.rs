@@ -92,30 +92,24 @@ impl Context<'_> {
             if !self.object_ids.contains_key(entry.chunk_id().as_str()) {
                 return Err(format!("missing verified Chunk {}", entry.chunk_id()));
             }
-            // The chunk is also checked in the domain the manifest's recipe
-            // declares, not only in the one its stored copy has (council s16
-            // r1): a `single` manifest never names a whole chunk. Streamed,
-            // never buffered (council s16 r2).
-            let mut chunk_hasher = blake3::Hasher::new();
-            chunk_hasher.update(if manifest.chunks_are_whole() {
-                b"layrs-file-v1\0".as_slice()
-            } else {
-                b"layrs-chunk-v1\0".as_slice()
-            });
-            let chunk_length = cas
-                .stream_verified_chunk(entry.chunk_id(), |part| {
-                    hasher.update(part);
-                    chunk_hasher.update(part);
-                })
-                .map_err(|error| error.to_string())?;
-            if layrs_core::scm::ChunkId::from_digest_bytes(chunk_hasher.finalize().as_bytes())
-                != *entry.chunk_id()
-            {
+            // The chunk is in the domain the manifest's recipe declares: a
+            // whole manifest's chunk is a whole record, any other manifest's
+            // never is (council s16 r1, r2). The stream below verifies the
+            // copy in that record's domain, so no second hash is needed.
+            let stored_whole = cas
+                .compact_catalog()
+                .is_some_and(|catalog| catalog.whole_record(entry.chunk_id()));
+            if stored_whole != manifest.chunks_are_whole() {
                 return Err(format!(
                     "Chunk {} is not named in its manifest's domain",
                     entry.chunk_id()
                 ));
             }
+            let chunk_length = cas
+                .stream_verified_chunk(entry.chunk_id(), |part| {
+                    hasher.update(part);
+                })
+                .map_err(|error| error.to_string())?;
             if chunk_length != entry.byte_length() {
                 return Err(format!(
                     "Chunk {} length is {}, expected {}",

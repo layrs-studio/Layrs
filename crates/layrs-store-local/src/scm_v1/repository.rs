@@ -431,18 +431,11 @@ impl NativeScmRepository {
         // object is installed as by `put`, concurrently; outcomes and fault
         // boundaries are consumed in the original order. A chunk a `whole`
         // manifest of the batch names is checked in the file domain.
-        let mut whole = whole_chunk_ids(batch);
-        // An external chunk no manifest of the batch names takes the domain
-        // its registered record declares (a whole file's own record).
-        if compact {
-            if let Some(catalog) = cas.compact_catalog() {
-                for (id, _) in chunks {
-                    if !whole.contains(id) && catalog.whole_record(id) {
-                        whole.insert(id.clone());
-                    }
-                }
-            }
-        }
+        let whole = whole_external_chunks(
+            batch,
+            chunks,
+            cas.compact_catalog().filter(|_| store.whole_files()),
+        );
         let mut external = chunks.iter();
         let mut objects = batch.canonical_objects().iter();
         let outcomes = cas.put_ordered(|| {
@@ -1169,6 +1162,37 @@ fn insert_object_projections_views(c: &Connection, b: &WriteBatch) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// The external `chunks` of `batch` in the file domain: those its whole
+/// manifests name and, in a Store that keeps whole files (`catalog`), those
+/// no manifest of the batch names whose registered record is whole (the
+/// domain that record declares; council s16 r1, r2). Shared by every path
+/// that installs external chunks.
+pub(super) fn whole_external_chunks(
+    batch: &WriteBatch,
+    chunks: &[(ChunkId, u64)],
+    catalog: Option<&std::sync::Arc<super::cas::RegisteredCatalog>>,
+) -> std::collections::HashSet<ChunkId> {
+    let mut whole = whole_chunk_ids(batch);
+    if let Some(catalog) = catalog {
+        let named: std::collections::HashSet<&ChunkId> = batch
+            .canonical_objects()
+            .iter()
+            .filter_map(|object| match object {
+                CanonicalObject::FileManifest(manifest) => Some(manifest.chunks()),
+                _ => None,
+            })
+            .flatten()
+            .map(|chunk| chunk.chunk_id())
+            .collect();
+        for (id, _) in chunks {
+            if !named.contains(id) && catalog.whole_record(id) {
+                whole.insert(id.clone());
+            }
+        }
+    }
+    whole
 }
 
 /// The chunks the `whole` manifests of `batch` name (council s13 Q5): their

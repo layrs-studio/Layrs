@@ -586,6 +586,7 @@ fn save_binding(workspace: &NativeWorkspace, binding: &Binding) -> RemoteResult<
     Ok(())
 }
 fn encode(object: &CanonicalObject) -> RemoteResult<(ObjectKind, Vec<u8>)> {
+    refuse_whole(object)?;
     Ok(match object {
         CanonicalObject::ChunkRaw(o) => (ObjectKind::Chunk, o.bytes().to_vec()),
         CanonicalObject::FileManifest(o) => (ObjectKind::FileManifest, serde_jcs::to_vec(o)?),
@@ -602,6 +603,22 @@ fn encode(object: &CanonicalObject) -> RemoteResult<(ObjectKind, Vec<u8>)> {
         }
     })
 }
+/// The wire carries v1 files only (council s13 Q5, s16 r2): a `whole` chunk
+/// or manifest never leaves or enters through it, whatever a peer sends.
+fn refuse_whole(object: &CanonicalObject) -> RemoteResult<()> {
+    let whole = match object {
+        CanonicalObject::ChunkRaw(chunk) => chunk.is_whole(),
+        CanonicalObject::FileManifest(manifest) => manifest.chunks_are_whole(),
+        _ => false,
+    };
+    if whole {
+        return Err(NativeRemoteError::Invalid(
+            "a whole file never travels: the wire carries v1 files",
+        ));
+    }
+    Ok(())
+}
+
 fn decode(kind: ObjectKind, bytes: &[u8]) -> RemoteResult<CanonicalObject> {
     let object = match kind {
         ObjectKind::Chunk => CanonicalObject::ChunkRaw(Chunk::new(bytes.to_vec())?),

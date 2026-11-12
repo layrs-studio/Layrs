@@ -153,6 +153,15 @@ fichier dans l'index du pack.
   fichiers en `whole` (`step`, `room step`, `init`, captures avant une
   opération). Les fichiers reçus d'un serveur, les fusions et les captures
   du VFS restent en v1 : un Store au format 7 lit et écrit les deux.
+- **Une seule forme par fichier** (conseil s16) : une capture, une
+  réception ou une réécriture (`revert`, `replay`, `squash`) n'ajoute pas
+  de manifeste à un fichier déjà fermé durablement dans le Space, ni les
+  chunks que seuls ces manifestes nomment ; les arbres ne nomment que des
+  FileId. Rien n'est retiré quand le spool d'une capture est partagé. Le
+  contrôle se fait sur les métadonnées, comme git pour un objet présent.
+  Un Store peut néanmoins tenir les deux formes d'un fichier (un fichier
+  reçu avant d'être capturé) : la consolidation garde l'enregistrement
+  `whole` et écrit la forme v1 en enregistrements explicites.
 - **Réseau inchangé.** Un fichier `whole` part comme le fichier v1 de même
   FileId (son chunk et son manifeste `deterministic_fixed`) : les serveurs
   vérifient les chunks dans le domaine chunk. Arbres et Steps ne nomment

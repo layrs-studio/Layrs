@@ -605,7 +605,7 @@ fn admissions_with_chunks(
 /// installation and closed (admissions are only written after closure
 /// validation and never deleted). A capture batch carries only new objects, so
 /// install, validation and admission scale with the change, not the checkout.
-fn retain_new_objects(
+pub(super) fn retain_new_objects(
     reader: &NativeScmReader<'_>,
     space: &layrs_core::scm::SpaceId,
     objects: Vec<CanonicalObject>,

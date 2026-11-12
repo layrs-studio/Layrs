@@ -543,7 +543,11 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // A stale prepared batch is never retried or admitted against new heads.
         super::repository::precheck_mutations(&connection, batch).map_err(io::Error::other)?;
         let descriptors: BTreeMap<_, _> = sources.chunks.iter().cloned().collect();
-        let whole = super::repository::whole_chunk_ids(batch);
+        let whole = super::repository::whole_external_chunks(
+            batch,
+            sources.chunks,
+            cas.compact_catalog().filter(|_| store.whole_files()),
+        );
         let source = std::cell::RefCell::new(&mut sources.read_chunk);
         let resolve = |id: &layrs_core::scm::ChunkId| {
             let Some(length) = descriptors.get(id) else {

@@ -568,7 +568,20 @@ impl NativeWorkspace {
         )?;
         let mut objects = vec![CanonicalObject::RepositoryView(next.clone())];
         if let Some((step, snapshot)) = created {
-            objects.extend_from_slice(snapshot.objects());
+            // As a capture: only new objects, and no second form of a File
+            // the Space already holds (a revert rebuilds existing files;
+            // council s16 r2).
+            let (redundant, redundant_chunks) =
+                prepare::redundant_file_objects(&reader, source.space.id(), snapshot.objects())?;
+            objects.extend(
+                prepare::retain_new_objects(
+                    &reader,
+                    source.space.id(),
+                    snapshot.objects().to_vec(),
+                )?
+                .into_iter()
+                .filter(|object| !prepare::redundant_object(object, &redundant, &redundant_chunks)),
+            );
             objects.push(CanonicalObject::Step(step));
         }
         let admissions = prepare::admissions(source.space.id(), &objects);

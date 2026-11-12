@@ -123,6 +123,36 @@ fn replay_changes_only_selected_delta_records_map_and_keeps_honest_parent() {
     assert_eq!(head(&workspace), rewritten);
 }
 
+/// A revert back to content the Space holds stores no second form of it
+/// (council s16 r2): one manifest per File, in every format.
+#[test]
+fn a_revert_to_existing_content_stores_no_second_form() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace();
+    fixture.text(b"first content\n");
+    workspace.capture().unwrap();
+    fixture.text(b"second content\n");
+    workspace.capture().unwrap();
+    let last = head(&workspace);
+    let plan = workspace.prepare_revert(&last, None).unwrap();
+    assert!(plan.conflicts().is_empty());
+    workspace.apply_rewrite(&plan).unwrap();
+    assert_eq!(
+        fs::read(fixture.0.join("code.ts")).unwrap(),
+        b"first content\n"
+    );
+    let store = scm_v1::open(workspace.store_root()).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    for content in [&b"first content\n"[..], b"second content\n"] {
+        let file = FileId::from_bytes(content);
+        assert_eq!(
+            reader.file_manifest_ids_metadata(&file).unwrap().len(),
+            1,
+            "{file}"
+        );
+    }
+}
+
 #[test]
 fn revert_preserves_later_work_and_records_additive_revert_operation() {
     let fixture = Fixture::new();

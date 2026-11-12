@@ -567,10 +567,34 @@ pub(super) fn v1_equivalent(
     if !reader.object_admitted_to_space(&StoreObjectId::ChunkRaw(chunk_id.clone()), space)? {
         return Ok(None);
     }
-    match reader.get_chunk(&chunk_id)? {
-        Some(whole) if whole.is_whole() => v1_file(&whole, file_id).map(Some),
-        _ => Ok(None),
+    // The v1 form depends only on the File's bytes: a receive asks for it
+    // once per descriptor (chunk, manifest), so the last few are kept.
+    thread_local! {
+        static REBUILT: std::cell::RefCell<
+            std::collections::VecDeque<(FileId, layrs_core::scm::Chunk, FileManifest)>,
+        > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
     }
+    if let Some(found) = REBUILT.with(|rebuilt| {
+        rebuilt
+            .borrow()
+            .iter()
+            .find(|(id, _, _)| id == file_id)
+            .map(|(_, chunk, manifest)| (chunk.clone(), manifest.clone()))
+    }) {
+        return Ok(Some(found));
+    }
+    let pair = match reader.get_chunk(&chunk_id)? {
+        Some(whole) if whole.is_whole() => v1_file(&whole, file_id)?,
+        _ => return Ok(None),
+    };
+    REBUILT.with(|rebuilt| {
+        let mut rebuilt = rebuilt.borrow_mut();
+        if rebuilt.len() >= 8 {
+            rebuilt.pop_front();
+        }
+        rebuilt.push_back((file_id.clone(), pair.0.clone(), pair.1.clone()));
+    });
+    Ok(Some(pair))
 }
 
 #[cfg(test)]
