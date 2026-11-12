@@ -1,5 +1,44 @@
 # Reprise du 28 octobre 2026
 
+## Point courant - caches dérivés en SQLite, conseil s12 (Claude + conseil, 2026-11-12)
+
+Constat de mesure (Windows 11, Defender) : un fichier de données fraîchement écrit coûte ~5–9 ms à sa première ouverture par un nouveau processus, quelles que soient sa taille et son extension ; une base SQLite ~0,7 ms. Chaque commande relisait l'index de changements et les projections écrits par la précédente.
+
+Commits (`4bcf9d3`, `acf47f2`, `7888a35`, corrections `cfc2f97`, `caffd37`, `ef14128`) :
+- `metadata/derived.sqlite3` range les index de changements et le cache de projections (valeurs inchangées, sommes de contrôle comprises). Contrat dans l'ADR 0025 : journal en mémoire, lecteurs en lecture seule, fichiers annexes refusés ou retirés, fichier à plusieurs liens jamais écrit (handle de SQLite vérifié sous Windows), base abîmée remplacée, base occupée ou plus récente laissée en place.
+- `status` ne construit plus les arbres pour valider une projection qu'il n'enregistre pas (contrôles de forme gardés).
+- Une capture inchangée ne reconstruit plus les arbres quand un fichier « racy » a été relu ; spool en mémoire jusqu'à 4 Mio.
+- Cache de projection format 5 : un fichier tenu par un grand pack (≥ 4 096 enregistrements) y est nommé par (pack, rang) au lieu de son FileId de 32 octets ; quarantaine dans le processus d'une projection trouvée fausse.
+
+| Membre | s12 r1 | s12 r2 | s12 r3 |
+| --- | --- | --- | --- |
+| GPT-6 Astra (xhigh) | 5/10 | 6/10 | 6/10 |
+| GPT-6.1 Sol (max) | 6/10 | 6/10 | 6/10 |
+| Claude Opus 5.5 (xhigh) | 7/10 | 6/10 | 8/10 |
+
+Tous « ship after fixes » ; corrections de r3 faites (`ef14128`). Trois tours : arrêt du conseil sur ce lot. Risque résiduel enregistré (ADR 0025), commun avec la base du Store : un processus qui plante un journal ou un WAL entre nos contrôles et le verrou de SQLite. **À faire** : un VFS qui n'ouvre que la base principale, pour les deux bases.
+
+**Banc précis à 10 000 fichiers, format 6** (`bench_py.py` : processus lancés par CreateProcess, sans shell ; deux répétitions ; binaire `ef14128`) :
+
+| | layrs | git |
+| --- | --- | --- |
+| `status` propre / 2 changements | 24–26 / 32–33 ms | 20 / 19 ms |
+| `step` (2 fichiers) | 97–101 ms | 65–67 ms (`add` + `commit`) |
+| création de Room | 1,10–1,12 s | 1,93–2,34 s |
+| `room step` | 93–99 ms | 65–206 ms |
+| fusion en avance rapide / 2e fusion | 100 / 100–103 ms | 38–45 / 40 ms |
+| fusion 3 voies | 232–243 ms | 249–253 ms |
+| suppression de la Room | 75–76 ms | 1 138–1 163 ms |
+| Store après `init` / après le scénario | 1 752 / 2 180–2 184 Kio | 1 844 / 1 884 Kio |
+
+Le banc bash (`bench_vs_git_samezone.sh`) ajoute ~35 ms par processus aux deux outils et masquait ces écarts. `init` dépend de l'antivirus : contenus neufs, `git add` 35 s contre `layrs init` 10 s ; contenus déjà vus par Defender, git 0,5 s, layrs toujours ~10 s (binaire non signé, fichiers réanalysés à chaque ouverture).
+
+**Écarts restants** :
+- fusions (~60 ms) : capture de la Room avant fusion (décision actée) et matérialisation journalisée (Q1) ; dans les règles actuelles, plancher estimé ~40 ms dans le processus (ouvertures du Store, relectures). Rouvrir ces décisions revient à l'utilisateur.
+- `step` (~30 ms) : validation de fermeture du lot (~10 ms pour ~2 000 fichiers des dossiers modifiés), pack écrit en fichier au-delà de 64 Kio avec sa barrière.
+- `status` (~5–14 ms) : découverte et ouverture du Store (~7 ms), deux ouvertures de la base dérivée.
+- Store après le scénario (+300 Kio) : Q3 (~330 Kio, changement d'identité) et schéma SQLite du format 6 (457 Ko après le scénario : 44 Ko de texte de schéma, 93 arbres d'une page, 40 % d'espace inutilisé).
+
 ## Point courant - décisions du conseil s10, revue s11 (Claude + conseil, 2026-11-11)
 
 Les décisions laissées à l'utilisateur sont restées sans réponse ; l'utilisateur ayant délégué (« hésite pas a faire appel au conseil pour vérifier ou décider »), le conseil s10 les a tranchées (brief `council-s10-design.md`) :
