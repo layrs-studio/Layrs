@@ -8,6 +8,10 @@ fn main() {
     if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_COMMAND) {
         std::process::exit(layrs_cli::native_room::purge_dropped(&raw_args[1..]));
     }
+    // Detached maintenance pass (started after a batch found one due).
+    if raw_args.first().map(String::as_str) == Some(layrs_cli::native::MAINTENANCE_COMMAND) {
+        std::process::exit(layrs_cli::native::run_detached_maintenance(&raw_args[1..]));
+    }
     #[cfg(windows)]
     if raw_args.first().map(String::as_str) == Some(layrs_cli::native_room::PURGE_VIRTUAL_COMMAND) {
         std::process::exit(layrs_cli::native_room::purge_dropped_virtual(
@@ -53,6 +57,7 @@ fn main() {
             } else {
                 println!("{}", rendered.human);
             }
+            layrs_cli::native::start_due();
             std::process::exit(exit_code.as_i32());
         }
         Err(error) => {
@@ -61,6 +66,8 @@ fn main() {
             } else {
                 eprintln!("{error}");
             }
+            // A command may fail after committing a batch.
+            layrs_cli::native::start_due();
             std::process::exit(error.exit_code.as_i32());
         }
     }

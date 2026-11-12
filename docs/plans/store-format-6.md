@@ -346,6 +346,18 @@ and `layrs store repair` come after). Agreed by all three, in this order:
 6. B2c: the batch path marks maintenance due (from its catalog); the CLI
    starts it detached after releasing its lock; `LAYRS_AUTO_MAINTENANCE=0`
    disables it.
+   Done: a batch that did not consolidate notes a pass due when at least
+   `CONSOLIDATE_AT_PACKS` pack files remain (skipped ones left out) among
+   which a maintenance group exists (`consolidation::maintenance_due`,
+   decided from the batch's catalog; the skipped list is read only past
+   that count). The note is per process (`take_maintenance_due`); the
+   CLI, once its output is written, starts `layrs __layrs-maintenance
+   <store root>` detached (no window, own process group, null standard
+   handles, working directory outside the checkout) unless a pass holds
+   the maintenance lock. The detached run makes passes while they
+   consolidate, at most 8. A maintenance candidate with a malformed
+   bitmap or unreadable records is recorded as skipped, as by a batch.
+   Hosts other than the CLI (Desktop, Studio Web) do not start it yet.
 7. Measurement gate: 10,000 and 100,000 files, history, the 1.5 GiB file,
    a Store past 64 MiB of packs with maintenance, a lost pack end to end,
    clone size; no command slower than format 5.

@@ -255,3 +255,26 @@ fn cli_maintenance_runs_a_pass_on_the_checkout_store() {
             .is_some_and(Vec::is_empty)
     );
 }
+
+/// The detached maintenance run a batch starts takes the Store root as its
+/// only argument and exits 0 (council s17, B2c).
+#[test]
+fn detached_maintenance_runs_on_a_store_root() {
+    let fixture = Fixture::new();
+    let (primary, _secondary) = fixture.workspaces();
+    let status = |args: &[&std::ffi::OsStr]| {
+        Command::new(env!("CARGO_BIN_EXE_layrs"))
+            .args(args)
+            .status()
+            .unwrap()
+            .code()
+    };
+    let command = std::ffi::OsStr::new(layrs_cli::native::MAINTENANCE_COMMAND);
+    assert_eq!(
+        status(&[command, primary.store_root().as_os_str()]),
+        Some(0)
+    );
+    assert_eq!(status(&[command]), Some(2));
+    let checkout = primary.checkout_root().unwrap();
+    run(&checkout, &["status"], true);
+}

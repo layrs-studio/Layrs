@@ -10,6 +10,7 @@ use serde_json::json;
 mod blocks;
 #[path = "native_maintenance.rs"]
 mod maintenance;
+pub use maintenance::{MAINTENANCE_COMMAND, run_detached as run_detached_maintenance, start_due};
 #[path = "native_preview.rs"]
 mod preview_output;
 #[path = "native_worktree.rs"]

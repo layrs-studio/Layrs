@@ -47,7 +47,7 @@ pub use cas::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use consolidation::maintain_with_pause;
-pub use consolidation::{MaintenanceOutcome, maintain};
+pub use consolidation::{MaintenanceOutcome, maintain, maintenance_running, take_maintenance_due};
 pub use fsck::{
     FsckError, FsckFinding, FsckFindingCode, FsckOptions, FsckReport, FsckSeverity, GcReachability,
     NativeFsck, ProjectionAction, ProjectionRebuildPlan, fsck, fsck_existing,

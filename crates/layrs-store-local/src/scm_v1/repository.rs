@@ -535,6 +535,16 @@ impl NativeScmRepository {
                     && cas.compact_catalog().is_some_and(|catalog| {
                         catalog.consolidation_due(added, cas.consolidation_budget())
                     });
+                // Else a group only maintenance may write: started detached
+                // by the CLI once its command is done (council s17, B2c).
+                if compact
+                    && !due
+                    && cas.compact_catalog().is_some_and(|catalog| {
+                        super::consolidation::maintenance_due(store, catalog)
+                    })
+                {
+                    super::consolidation::note_maintenance_due(store.layout().root());
+                }
                 drop(cas);
                 if due {
                     let after_commit = || {

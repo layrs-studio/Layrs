@@ -21,7 +21,7 @@ use layrs_store_local::scm_v1::{
     MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
     RepositoryFaultPoint, existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing,
     held_pack_files, init, maintain, maintain_with_pause, open, open_exclusive,
-    set_consolidation_budget, set_inline_pack_limit,
+    set_consolidation_budget, set_inline_pack_limit, take_maintenance_due,
 };
 use rusqlite::Connection;
 
@@ -2083,6 +2083,30 @@ fn maintenance_abandons_a_pack_whose_candidates_moved() {
     }
     drop(repository);
     assert_fsck_clean(&root.0);
+}
+
+/// A batch leaving a group only maintenance may write notes the pass due
+/// on its Store, for the CLI to start detached; once maintenance wrote it,
+/// the next batch notes nothing (council s17, B2c).
+#[test]
+fn a_batch_notes_maintenance_due_until_it_runs() {
+    let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-due", 7);
+    let canonical = fs::canonicalize(&root.0).unwrap();
+    let noted = |due: Vec<PathBuf>| {
+        due.iter()
+            .any(|path| fs::canonicalize(path).is_ok_and(|path| path == canonical))
+    };
+    assert!(noted(take_maintenance_due()));
+    assert!(matches!(
+        maintain(&root.0).unwrap(),
+        MaintenanceOutcome::Consolidated { .. }
+    ));
+    let next = file("after.txt", b"after maintenance", Recipe::Whole);
+    files.push(next.clone());
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&lane.capture(&files, file_objects(&[next])))
+        .unwrap();
+    assert!(!noted(take_maintenance_due()));
 }
 
 /// One pass at a time: a pass started while another builds is `Busy`. A

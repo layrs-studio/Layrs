@@ -571,6 +571,25 @@ impl RegisteredCatalog {
         )
     }
 
+    /// Whether there are at least `CONSOLIDATE_AT_PACKS` pack files (a
+    /// count, no block walked).
+    pub(crate) fn many_pack_files(&self) -> bool {
+        self.packs
+            .iter()
+            .filter(|pack| !pack.pack.is_inline())
+            .count()
+            >= CONSOLIDATE_AT_PACKS
+    }
+
+    /// Whether, leaving out `excluded`, at least `CONSOLIDATE_AT_PACKS`
+    /// pack files remain among which a maintenance group exists (council
+    /// s17, B2c): what a batch's own consolidation could not write.
+    pub(crate) fn maintenance_due(&self, excluded: &[usize]) -> bool {
+        let files = self.by_size(excluded, false);
+        files.len() >= CONSOLIDATE_AT_PACKS
+            && consolidation_group_within(&files, Budget::MAINTENANCE).len() >= 2
+    }
+
     /// The pack files a maintenance pass consolidates (council s17, B2b):
     /// a geometric group of at least two, within half the reader's limits
     /// only, leaving out `excluded`; empty when none.

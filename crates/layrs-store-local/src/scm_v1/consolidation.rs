@@ -44,8 +44,9 @@ pub enum MaintenanceOutcome {
     Busy,
     /// No group of pack files to consolidate (or not a compact Store).
     NothingToDo,
-    /// The candidates changed while their pack was built: nothing was
-    /// published, the built file is removed.
+    /// Nothing was published (the built file is removed): a candidate
+    /// was retired while its pack was built, or was found damaged and is
+    /// left out from now on. Another pass may consolidate.
     Abandoned,
     /// `packs` registered packs were written into one.
     Consolidated { packs: usize },
@@ -80,7 +81,7 @@ fn maintain_pausing(
 ) -> Result<MaintenanceOutcome, String> {
     let _span = crate::perf::span("store.maintenance");
     // The group, from a short shared session.
-    let (cas, catalog, candidates, lock) = {
+    let (cas, catalog, candidates, mut damaged, lock) = {
         let store = super::open(root).map_err(|error| error.to_string())?;
         if !store.compact() {
             return Ok(MaintenanceOutcome::NothingToDo);
@@ -102,22 +103,27 @@ fn maintain_pausing(
         let catalog = cas
             .store_catalog(&store)
             .map_err(|error| error.to_string())?;
-        let skipped = skipped_at(&metadata);
-        let excluded: Vec<usize> = catalog
-            .packs()
-            .iter()
-            .enumerate()
-            .filter(|(_, pack)| {
-                pack.name()
-                    .to_str()
-                    .is_some_and(|name| skipped.contains(name))
-            })
-            .map(|(position, _)| position)
-            .collect();
-        let candidates = catalog.maintenance_candidates(&excluded);
-        (cas, catalog, candidates, lock)
+        let mut excluded = skipped_positions(&skipped_at(&metadata), &catalog);
+        // As a batch's consolidation: a candidate with a malformed
+        // admission bitmap is left out (registration would refuse it).
+        let mut damaged = Vec::new();
+        let candidates = loop {
+            let candidates = catalog.maintenance_candidates(&excluded);
+            if candidates.len() < 2 {
+                break candidates;
+            }
+            match malformed_bitmap(store.layout().sqlite_path(), &catalog, &candidates)? {
+                Some(position) => {
+                    damaged.push(position);
+                    excluded.push(position);
+                }
+                None => break candidates,
+            }
+        };
+        (cas, catalog, candidates, damaged, lock)
     };
     if candidates.len() < 2 {
+        remember_damaged(root, &catalog, &damaged)?;
         return Ok(MaintenanceOutcome::NothingToDo);
     }
     // The pack, with no Store lock held.
@@ -137,17 +143,35 @@ fn maintain_pausing(
             let current = NativeCas::open_lazy(&store)
                 .and_then(|cas| cas.store_catalog(&store))
                 .map_err(|error| error.to_string())?;
+            drop(store);
             if !all_registered(current.packs(), &wanted) {
                 crate::perf::count("store.maintenance_abandoned", 1);
                 return Ok(MaintenanceOutcome::Abandoned);
             }
-            return Err(failure.error.to_string());
+            // A candidate whose records cannot all be copied is damaged
+            // (fsck reports it): left out from now on, as by a batch.
+            let Some(position) = failure.pack else {
+                return Err(failure.error.to_string());
+            };
+            crate::perf::count("store.maintenance_skipped_pack", 1);
+            damaged.push(position);
+            remember_damaged(root, &catalog, &damaged)?;
+            return Ok(MaintenanceOutcome::Abandoned);
         }
     };
-    drop(catalog);
     between()?;
     // Published and registered by the exclusive session, if nothing moved.
     let store = super::open_exclusive(root).map_err(|error| error.to_string())?;
+    for &position in &damaged {
+        if let Some(name) = catalog
+            .packs()
+            .get(position)
+            .and_then(|p| p.name().to_str())
+        {
+            remember_skipped(&store, &catalog, name);
+        }
+    }
+    drop(catalog);
     let writer = NativeCas::open_exclusive(&store).map_err(|error| error.to_string())?;
     let current = writer
         .compact_catalog()
@@ -175,6 +199,104 @@ fn maintain_pausing(
     Ok(MaintenanceOutcome::Consolidated {
         packs: candidates.len(),
     })
+}
+
+/// Records the `damaged` packs (positions in `catalog`) as skipped, in a
+/// short exclusive session; nothing when there are none.
+fn remember_damaged(
+    root: &std::path::Path,
+    catalog: &super::cas::compact::RegisteredCatalog,
+    damaged: &[usize],
+) -> Result<(), String> {
+    if damaged.is_empty() {
+        return Ok(());
+    }
+    let store = super::open_exclusive(root).map_err(|error| error.to_string())?;
+    for &position in damaged {
+        if let Some(name) = catalog
+            .packs()
+            .get(position)
+            .and_then(|p| p.name().to_str())
+        {
+            remember_skipped(&store, catalog, name);
+        }
+    }
+    Ok(())
+}
+
+/// The positions in `catalog` of the `skipped` pack names.
+fn skipped_positions(
+    skipped: &BTreeSet<String>,
+    catalog: &super::cas::compact::RegisteredCatalog,
+) -> Vec<usize> {
+    catalog
+        .packs()
+        .iter()
+        .enumerate()
+        .filter(|(_, pack)| {
+            pack.name()
+                .to_str()
+                .is_some_and(|name| skipped.contains(name))
+        })
+        .map(|(position, _)| position)
+        .collect()
+}
+
+/// Whether a batch that just committed leaves a maintenance pass to do
+/// (council s17, B2c): at least `CONSOLIDATE_AT_PACKS` pack files, besides
+/// the skipped ones, among which a group only maintenance may write. Read
+/// from the batch's catalog; the skipped list only once there are that
+/// many pack files.
+pub(crate) fn maintenance_due(
+    store: &NativeStoreExclusive,
+    catalog: &super::cas::compact::RegisteredCatalog,
+) -> bool {
+    if !catalog.many_pack_files() {
+        return false;
+    }
+    let excluded = skipped_positions(&skipped_packs(store), catalog);
+    catalog.maintenance_due(&excluded)
+}
+
+/// The Store roots for which a batch of this process found a maintenance
+/// pass due (B2c): the CLI starts it detached once its command is done.
+fn due_roots() -> &'static std::sync::Mutex<BTreeSet<std::path::PathBuf>> {
+    static DUE: std::sync::OnceLock<std::sync::Mutex<BTreeSet<std::path::PathBuf>>> =
+        std::sync::OnceLock::new();
+    DUE.get_or_init(Default::default)
+}
+
+/// Notes that a maintenance pass is due on the Store at `root`.
+pub(crate) fn note_maintenance_due(root: &std::path::Path) {
+    if let Ok(mut roots) = due_roots().lock() {
+        roots.insert(root.to_path_buf());
+    }
+}
+
+/// The Store roots a batch of this process found a maintenance pass due
+/// on, forgotten here (council s17, B2c).
+pub fn take_maintenance_due() -> Vec<std::path::PathBuf> {
+    due_roots()
+        .lock()
+        .map(|mut roots| std::mem::take(&mut *roots).into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Whether a maintenance pass holds the Store at `root`'s maintenance lock
+/// now. Never creates the lock file.
+pub fn maintenance_running(root: impl AsRef<std::path::Path>) -> bool {
+    let path = root
+        .as_ref()
+        .join(super::layout::METADATA_DIR_NAME)
+        .join(MAINTENANCE_LOCK);
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(file) => fs2::FileExt::try_lock_exclusive(&file).is_err(),
+        Err(_) => false,
+    }
 }
 
 /// Whether every `(seq, name, digest)` of `wanted` is still registered as it
@@ -298,18 +420,7 @@ fn consolidate(
     let Some(catalog) = cas.compact_catalog().cloned() else {
         return Ok(0);
     };
-    let skipped = skipped_packs(store);
-    let mut excluded: Vec<usize> = catalog
-        .packs()
-        .iter()
-        .enumerate()
-        .filter(|(_, pack)| {
-            pack.name()
-                .to_str()
-                .is_some_and(|name| skipped.contains(name))
-        })
-        .map(|(position, _)| position)
-        .collect();
+    let mut excluded = skipped_positions(&skipped_packs(store), &catalog);
     let remember = |position: usize| {
         if let Some(name) = catalog
             .packs()
@@ -326,7 +437,9 @@ fn consolidate(
         }
         // A candidate with a malformed admission bitmap is left out before
         // any copy: registration would refuse it every time (council s6 r2).
-        if let Some(position) = malformed_bitmap(store, &catalog, &candidates)? {
+        if let Some(position) =
+            malformed_bitmap(store.layout().sqlite_path(), &catalog, &candidates)?
+        {
             crate::perf::count("store.consolidation_skipped_pack", 1);
             remember(position);
             excluded.push(position);
@@ -398,7 +511,7 @@ fn remember_skipped(
 /// The first candidate (position) one of whose admission bitmaps does not
 /// fit its pack, read in one scan of the admissions.
 fn malformed_bitmap(
-    store: &NativeStoreExclusive,
+    sqlite_path: &std::path::Path,
     catalog: &super::cas::compact::RegisteredCatalog,
     candidates: &[usize],
 ) -> Result<Option<usize>, String> {
@@ -411,11 +524,8 @@ fn malformed_bitmap(
                 .map(|pack| (pack.seq, (*position, pack.entries)))
         })
         .collect();
-    let connection = sqlite::open_read_only(
-        store.layout().sqlite_path(),
-        std::time::Duration::from_secs(5),
-    )
-    .map_err(|error| error.to_string())?;
+    let connection = sqlite::open_read_only(sqlite_path, std::time::Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
     let mut statement = connection
         .prepare("SELECT pack_seq, bitmap FROM space_pack_admissions")
         .map_err(|error| error.to_string())?;
