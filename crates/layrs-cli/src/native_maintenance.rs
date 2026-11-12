@@ -17,7 +17,13 @@ fn passes(store_root: &Path) -> Result<(MaintenanceOutcome, usize), String> {
     let mut consolidated = 0;
     let mut last = MaintenanceOutcome::NothingToDo;
     for _ in 0..MAX_PASSES {
-        last = maintain_store(store_root)?;
+        last = match maintain_store(store_root) {
+            Ok(outcome) => outcome,
+            // What earlier passes consolidated stays done; the failure is
+            // recorded by the Store.
+            Err(_) if consolidated > 0 => break,
+            Err(error) => return Err(error),
+        };
         match last {
             MaintenanceOutcome::Consolidated { packs } => consolidated += packs,
             MaintenanceOutcome::Abandoned => {}
@@ -43,7 +49,9 @@ pub fn start_due() {
         return;
     };
     for root in roots {
-        if layrs_store_local::scm_v1::maintenance_running(&root) {
+        if layrs_store_local::scm_v1::maintenance_running(&root)
+            || layrs_store_local::scm_v1::maintenance_paused(&root)
+        {
             continue;
         }
         let mut command = std::process::Command::new(&executable);

@@ -531,35 +531,40 @@ impl NativeScmRepository {
                             .stats
                             .map(|stats| (publication.inline.is_some(), stats))
                     });
-                let due = compact
-                    && cas.compact_catalog().is_some_and(|catalog| {
-                        catalog.consolidation_due(added, cas.consolidation_budget())
-                    });
-                // Else a group only maintenance may write: started detached
-                // by the CLI once its command is done (council s17, B2c).
-                if compact
-                    && !due
-                    && cas.compact_catalog().is_some_and(|catalog| {
-                        super::consolidation::maintenance_due(store, catalog)
-                    })
-                {
-                    super::consolidation::note_maintenance_due(store.layout().root());
-                }
+                let catalog = if compact {
+                    cas.compact_catalog().cloned()
+                } else {
+                    None
+                };
+                let due = catalog.as_ref().is_some_and(|catalog| {
+                    catalog.consolidation_due(added, cas.consolidation_budget())
+                });
                 drop(cas);
+                let mut consolidated = 0;
                 if due {
                     let after_commit = || {
                         self.hit(RepositoryFaultPoint::AfterConsolidationCommit)
                             .map_err(|error| error.to_string())
                     };
-                    if super::consolidation::consolidate_if_due(
+                    match super::consolidation::consolidate_if_due(
                         store,
                         Arc::clone(&self.cas_faults),
                         &after_commit,
-                    )
-                    .is_err()
-                    {
-                        crate::perf::count("store.consolidation_failed", 1);
+                    ) {
+                        Ok(packs) => consolidated = packs,
+                        Err(_) => crate::perf::count("store.consolidation_failed", 1),
                     }
+                }
+                // A group only maintenance may write, when this batch wrote
+                // none (none due, paused, failed or found nothing): started
+                // detached by the CLI once its command is done (council
+                // s17, B2c; s19 r1).
+                if consolidated == 0
+                    && catalog.as_ref().is_some_and(|catalog| {
+                        super::consolidation::maintenance_due(store, catalog, added)
+                    })
+                {
+                    super::consolidation::note_maintenance_due(store.layout().root());
                 }
                 Ok(outcome)
             }

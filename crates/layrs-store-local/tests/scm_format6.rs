@@ -20,7 +20,7 @@ use layrs_store_local::scm_v1::{
     CasError, CasFaultInjector, CasFaultPoint, CasLocation, FsckFindingCode, FsckOptions,
     MaintenanceOutcome, NativeCas, NativeScmReader, NativeScmRepository, RepositoryFaultInjector,
     RepositoryFaultPoint, existence_proofs_on_this_thread, forget_loaded_packs, fsck_existing,
-    held_pack_files, init, maintain, maintain_with_pause, open, open_exclusive,
+    held_pack_files, init, maintain, maintain_with_pause, maintenance_paused, open, open_exclusive,
     set_consolidation_budget, set_inline_pack_limit, take_maintenance_due,
 };
 use rusqlite::Connection;
@@ -2086,27 +2086,116 @@ fn maintenance_abandons_a_pack_whose_candidates_moved() {
 }
 
 /// A batch leaving a group only maintenance may write notes the pass due
-/// on its Store, for the CLI to start detached; once maintenance wrote it,
-/// the next batch notes nothing (council s17, B2c).
+/// on its Store, for the CLI to start detached, from the batch that writes
+/// the sixth pack file on; once maintenance wrote it, the next batch notes
+/// nothing (council s17, B2c; s19 r1). One test: notes are per process.
 #[test]
 fn a_batch_notes_maintenance_due_until_it_runs() {
-    let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-due", 7);
+    let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-due", 4);
+    assert_eq!(registered_packs(&root.0).len(), 5);
     let canonical = fs::canonicalize(&root.0).unwrap();
     let noted = |due: Vec<PathBuf>| {
         due.iter()
             .any(|path| fs::canonicalize(path).is_ok_and(|path| path == canonical))
     };
+    assert!(!noted(take_maintenance_due()));
+    let mut step = |name: &str| {
+        let next = file(name, name.as_bytes(), Recipe::Whole);
+        files.push(next.clone());
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&lane.capture(&files, file_objects(&[next])))
+            .unwrap();
+    };
+    step("sixth.txt");
+    assert_eq!(registered_packs(&root.0).len(), 6);
     assert!(noted(take_maintenance_due()));
     assert!(matches!(
         maintain(&root.0).unwrap(),
         MaintenanceOutcome::Consolidated { .. }
     ));
-    let next = file("after.txt", b"after maintenance", Recipe::Whole);
+    step("after.txt");
+    assert!(!noted(take_maintenance_due()));
+}
+
+/// A crashed pass's temporary pack is removed by the next exclusive
+/// session when no pass runs (automatic maintenance may never run again),
+/// never while one builds (council s19 r1).
+#[test]
+fn a_batch_removes_a_crashed_maintenance_pack_when_no_pass_runs() {
+    let (root, mut lane, mut files) = store_of_unmerged_packs("maintenance-stale", 3);
+    // A first pass creates the maintenance lock file.
+    maintain(&root.0).unwrap();
+    let crashed = root.0.join("objects/packs/.maint-crashed.tmp");
+    fs::write(&crashed, b"a pack a crashed pass left").unwrap();
+    let next = file("next.txt", b"next", Recipe::Whole);
     files.push(next.clone());
     NativeScmRepository::new(&root.0)
         .apply_batch(&lane.capture(&files, file_objects(&[next])))
         .unwrap();
-    assert!(!noted(take_maintenance_due()));
+    assert!(!crashed.exists());
+    assert_fsck_clean(&root.0);
+}
+
+/// General failures in a row pause automatic maintenance as they pause a
+/// batch's consolidation; a pass that completes clears them (council s19
+/// r1).
+#[test]
+fn maintenance_failures_pause_automatic_passes_until_one_completes() {
+    let (root, _lane, _files) = store_of_unmerged_packs("maintenance-paused", 5);
+    let note = root.0.join("metadata/maintenance-failed");
+    fs::write(&note, b"2 0\nan old failure\n").unwrap();
+    assert!(
+        !maintenance_paused(&root.0),
+        "an old failure does not pause"
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    fs::write(&note, format!("2 {now}\nno space left\n")).unwrap();
+    assert!(maintenance_paused(&root.0));
+    // An explicit pass still runs, and clears the note.
+    assert!(matches!(
+        maintain(&root.0).unwrap(),
+        MaintenanceOutcome::Consolidated { .. }
+    ));
+    assert!(!note.exists());
+    assert!(!maintenance_paused(&root.0));
+}
+
+/// A pass whose pack is built waits for the exclusive session as a batch
+/// does, instead of discarding the pack (council s19 r1).
+#[test]
+fn maintenance_waits_for_a_busy_store_to_publish() {
+    let (root, _lane, files) = store_of_unmerged_packs("maintenance-wait", 5);
+    let mut holder = None;
+    let outcome = maintain_with_pause(&root.0, &mut || {
+        let (held, release) = std::sync::mpsc::channel();
+        let path = root.0.clone();
+        holder = Some(std::thread::spawn(move || {
+            let store = open_exclusive(&path).unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(store);
+        }));
+        release.recv().map_err(|error| error.to_string())
+    })
+    .unwrap();
+    holder.unwrap().join().unwrap();
+    assert!(
+        matches!(outcome, MaintenanceOutcome::Consolidated { .. }),
+        "{outcome:?}"
+    );
+    forget_loaded_packs();
+    let repository = NativeScmRepository::new(&root.0);
+    for file in &files {
+        assert_eq!(
+            repository.get_chunk(file.chunks[0].id()).unwrap().as_ref(),
+            Some(&file.chunks[0])
+        );
+    }
+    drop(repository);
+    assert_fsck_clean(&root.0);
 }
 
 /// One pass at a time: a pass started while another builds is `Busy`. A

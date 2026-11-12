@@ -36,11 +36,15 @@ const NOTE_MAX_BYTES: u64 = 64 * 1024;
 /// Under `metadata/`: held exclusively by the one maintenance pass running
 /// (council s17, B2b).
 const MAINTENANCE_LOCK: &str = "maintenance.lock";
+/// Under `metadata/`: the general failures in a row of maintenance passes
+/// (as `FAILED_FILE`); automatic maintenance pauses as consolidation does.
+const MAINTENANCE_FAILED_FILE: &str = "maintenance-failed";
 
 /// What a maintenance pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenanceOutcome {
-    /// Another pass holds the maintenance lock.
+    /// Another pass holds the maintenance lock, or the Store stayed busy
+    /// longer than the pass waits for it (nothing was published).
     Busy,
     /// No group of pack files to consolidate (or not a compact Store).
     NothingToDo,
@@ -62,7 +66,7 @@ pub enum MaintenanceOutcome {
 /// they are then, so admissions made meanwhile are kept). A crash before
 /// that commit leaves only the temporary file, removed by the next pass.
 pub fn maintain(root: impl AsRef<std::path::Path>) -> Result<MaintenanceOutcome, String> {
-    maintain_pausing(root.as_ref(), &mut || Ok(()))
+    maintain_recorded(root.as_ref(), &mut || Ok(()))
 }
 
 /// Test support: `maintain`, running `between` once the pack is built and
@@ -72,7 +76,85 @@ pub fn maintain_with_pause(
     root: impl AsRef<std::path::Path>,
     between: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<MaintenanceOutcome, String> {
-    maintain_pausing(root.as_ref(), between)
+    maintain_recorded(root.as_ref(), between)
+}
+
+/// `maintain_pausing`, its general failures recorded in a row
+/// (`MAINTENANCE_FAILED_FILE`) and cleared by a pass that completes.
+fn maintain_recorded(
+    root: &std::path::Path,
+    between: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MaintenanceOutcome, String> {
+    let result = maintain_pausing(root, between);
+    let metadata = root.join(super::layout::METADATA_DIR_NAME);
+    match &result {
+        Ok(MaintenanceOutcome::Consolidated { .. } | MaintenanceOutcome::NothingToDo) => {
+            match std::fs::symlink_metadata(metadata.join(MAINTENANCE_FAILED_FILE)) {
+                Ok(found) if found.is_file() => {
+                    let _ = std::fs::remove_file(metadata.join(MAINTENANCE_FAILED_FILE));
+                }
+                _ => {}
+            }
+        }
+        Ok(MaintenanceOutcome::Busy | MaintenanceOutcome::Abandoned) => {}
+        Err(message) => {
+            let count =
+                failures_at(&metadata, MAINTENANCE_FAILED_FILE).map_or(0, |(count, _)| count) + 1;
+            write_note_at(
+                &metadata,
+                MAINTENANCE_FAILED_FILE,
+                &format!("{count} {}\n{message}\n", now_ms()),
+            );
+        }
+    }
+    result
+}
+
+/// Whether automatic maintenance of the Store at `root` pauses after
+/// general failures in a row, as a batch's consolidation does (council s19
+/// r1): an explicit `layrs maintenance` still runs.
+pub fn maintenance_paused(root: impl AsRef<std::path::Path>) -> bool {
+    let metadata = root.as_ref().join(super::layout::METADATA_DIR_NAME);
+    failures_at(&metadata, MAINTENANCE_FAILED_FILE).is_some_and(|(count, at)| {
+        count >= FAILURES_BEFORE_PAUSE && now_ms().saturating_sub(at) < FAILURE_PAUSE_MS
+    })
+}
+
+/// Whether `error` is a Store acquisition that waited its whole budget.
+fn timed_out(error: &super::NativeStoreError) -> bool {
+    matches!(error, super::NativeStoreError::Io(error) if error.kind() == std::io::ErrorKind::TimedOut)
+}
+
+/// Opens the maintenance lock under `metadata` without following links,
+/// creating it when `create`; `None` when it is absent and not created.
+fn open_maintenance_lock(
+    metadata: &std::path::Path,
+    create: bool,
+) -> std::io::Result<Option<std::fs::File>> {
+    let path = metadata.join(MAINTENANCE_LOCK);
+    match crate::layout::open_read_write_no_follow(&path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            match crate::layout::create_new_file_no_follow(&path) {
+                Ok(file) => Ok(Some(file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    crate::layout::open_read_write_no_follow(&path).map(Some)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The maintenance lock of the Store at `root`, held, when no pass holds
+/// it (never created here).
+pub(crate) fn idle_maintenance_lock(root: &std::path::Path) -> Option<std::fs::File> {
+    let file =
+        open_maintenance_lock(&root.join(super::layout::METADATA_DIR_NAME), false).ok()??;
+    fs2::FileExt::try_lock_exclusive(&file).ok()?;
+    Some(file)
 }
 
 fn maintain_pausing(
@@ -82,18 +164,22 @@ fn maintain_pausing(
     let _span = crate::perf::span("store.maintenance");
     // The group, from a short shared session.
     let (cas, catalog, candidates, mut damaged, lock) = {
-        let store = super::open(root).map_err(|error| error.to_string())?;
+        let store = match super::acquisition::acquire(
+            "maintenance read",
+            super::acquisition::SHORT_WAIT,
+            || super::open(root),
+        ) {
+            Ok(store) => store,
+            Err(error) if timed_out(&error) => return Ok(MaintenanceOutcome::Busy),
+            Err(error) => return Err(error.to_string()),
+        };
         if !store.compact() {
             return Ok(MaintenanceOutcome::NothingToDo);
         }
         let metadata = store.layout().metadata_dir().to_path_buf();
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(metadata.join(MAINTENANCE_LOCK))
-            .map_err(|error| error.to_string())?;
+        let lock = open_maintenance_lock(&metadata, true)
+            .map_err(|error| error.to_string())?
+            .ok_or("the maintenance lock was not created")?;
         if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
             return Ok(MaintenanceOutcome::Busy);
         }
@@ -139,7 +225,15 @@ fn maintain_pausing(
         Err(failure) => {
             // A batch may have retired a candidate meanwhile and collected
             // its file: that is a moved candidate, not a failure.
-            let store = super::open(root).map_err(|error| error.to_string())?;
+            let store = match super::acquisition::acquire(
+                "maintenance read",
+                super::acquisition::SHORT_WAIT,
+                || super::open(root),
+            ) {
+                Ok(store) => store,
+                Err(error) if timed_out(&error) => return Ok(MaintenanceOutcome::Busy),
+                Err(error) => return Err(error.to_string()),
+            };
             let current = NativeCas::open_lazy(&store)
                 .and_then(|cas| cas.store_catalog(&store))
                 .map_err(|error| error.to_string())?;
@@ -160,8 +254,17 @@ fn maintain_pausing(
         }
     };
     between()?;
-    // Published and registered by the exclusive session, if nothing moved.
-    let store = super::open_exclusive(root).map_err(|error| error.to_string())?;
+    // Published and registered by the exclusive session, if nothing moved;
+    // waited for as a batch waits (the built pack is kept meanwhile).
+    let store = match super::acquisition::acquire(
+        "maintenance publication",
+        super::acquisition::ORDINARY_WAIT,
+        || super::open_exclusive(root),
+    ) {
+        Ok(store) => store,
+        Err(error) if timed_out(&error) => return Ok(MaintenanceOutcome::Busy),
+        Err(error) => return Err(error.to_string()),
+    };
     for &position in &damaged {
         if let Some(name) = catalog
             .packs()
@@ -192,8 +295,9 @@ fn maintain_pausing(
         .collect();
     writer.forget_packs(&retired);
     drop(writer);
-    // Opening the CAS again removes the retired files.
-    drop(NativeCas::open_exclusive(&store).map_err(|error| error.to_string())?);
+    // Opening the CAS again removes the retired files. Best effort: the
+    // pass is committed, and the next exclusive session collects them.
+    drop(NativeCas::open_exclusive(&store));
     drop(lock);
     crate::perf::count("store.maintenance_packs", candidates.len() as u64);
     Ok(MaintenanceOutcome::Consolidated {
@@ -211,7 +315,12 @@ fn remember_damaged(
     if damaged.is_empty() {
         return Ok(());
     }
-    let store = super::open_exclusive(root).map_err(|error| error.to_string())?;
+    let store = super::acquisition::acquire(
+        "maintenance skip record",
+        super::acquisition::SHORT_WAIT,
+        || super::open_exclusive(root),
+    )
+    .map_err(|error| error.to_string())?;
     for &position in damaged {
         if let Some(name) = catalog
             .packs()
@@ -250,12 +359,13 @@ fn skipped_positions(
 pub(crate) fn maintenance_due(
     store: &NativeStoreExclusive,
     catalog: &super::cas::compact::RegisteredCatalog,
+    added: Option<(bool, super::cas::compact::PackStats)>,
 ) -> bool {
-    if !catalog.many_pack_files() {
+    if !catalog.many_pack_files(added) {
         return false;
     }
     let excluded = skipped_positions(&skipped_packs(store), catalog);
-    catalog.maintenance_due(&excluded)
+    catalog.maintenance_due(&excluded, added)
 }
 
 /// The Store roots for which a batch of this process found a maintenance
@@ -285,17 +395,10 @@ pub fn take_maintenance_due() -> Vec<std::path::PathBuf> {
 /// Whether a maintenance pass holds the Store at `root`'s maintenance lock
 /// now. Never creates the lock file.
 pub fn maintenance_running(root: impl AsRef<std::path::Path>) -> bool {
-    let path = root
-        .as_ref()
-        .join(super::layout::METADATA_DIR_NAME)
-        .join(MAINTENANCE_LOCK);
-    match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-    {
-        Ok(file) => fs2::FileExt::try_lock_exclusive(&file).is_err(),
-        Err(_) => false,
+    let metadata = root.as_ref().join(super::layout::METADATA_DIR_NAME);
+    match open_maintenance_lock(&metadata, false) {
+        Ok(Some(file)) => fs2::FileExt::try_lock_exclusive(&file).is_err(),
+        _ => false,
     }
 }
 
@@ -368,7 +471,12 @@ fn now_ms() -> u64 {
 
 /// (count, time of the last) of the general failures in a row, if any.
 fn recent_failures(store: &NativeStoreExclusive) -> Option<(u64, u64)> {
-    let note = read_note(store, FAILED_FILE)?;
+    failures_at(store.layout().metadata_dir(), FAILED_FILE)
+}
+
+/// (count, time of the last) of the failures note `name` under `metadata`.
+fn failures_at(metadata: &std::path::Path, name: &str) -> Option<(u64, u64)> {
+    let note = read_note_at(metadata, name)?;
     let mut fields = note.lines().next()?.split(' ');
     Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
 }
@@ -397,7 +505,11 @@ fn read_note_at(metadata: &std::path::Path, name: &str) -> Option<String> {
 /// Replaces a note with a new file renamed over it: whatever the entry was
 /// (a link included), it is replaced, never written through. Best effort.
 fn write_note(store: &NativeStoreExclusive, name: &str, text: &str) {
-    let directory = store.layout().metadata_dir();
+    write_note_at(store.layout().metadata_dir(), name, text);
+}
+
+/// `write_note` under the metadata directory `directory`.
+fn write_note_at(directory: &std::path::Path, name: &str, text: &str) {
     let staged = directory.join(format!(".{name}.{}.tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
         let mut file = crate::layout::create_new_file_no_follow(&staged)?;

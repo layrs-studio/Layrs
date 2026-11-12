@@ -358,6 +358,20 @@ and `layrs store repair` come after). Agreed by all three, in this order:
    consolidate, at most 8. A maintenance candidate with a malformed
    bitmap or unreadable records is recorded as skipped, as by a batch.
    Hosts other than the CLI (Desktop, Studio Web) do not start it yet.
+   Council s19 r1 (Astra 6, Sol 7, Opus 7): the Store sessions of a pass
+   wait as a batch's do (shared 5 s, exclusive 60 s, keeping the built
+   pack) and a wait that runs out is `Busy`, not a failure; general
+   failures are recorded (`maintenance-failed`) and pause automatic
+   passes as consolidation pauses (2 in a row, 1 hour; an explicit pass
+   still runs and clears them); a batch decides "due" after its own
+   consolidation (none due, paused, failed or nothing found) and counts
+   the pack it adds; the remap is computed from the verified temporary
+   file before the exclusive session, which only publishes and registers;
+   the candidates' files stay open while copied; temporary packs are
+   removed through the pinned packs directory, and by any exclusive
+   session when no pass holds the maintenance lock; the lock file is
+   opened without following links; cleanup after the commit is best
+   effort.
 7. Measurement gate: 10,000 and 100,000 files, history, the 1.5 GiB file,
    a Store past 64 MiB of packs with maintenance, a lost pack end to end,
    clone size; no command slower than format 5.

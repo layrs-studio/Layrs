@@ -331,8 +331,18 @@ impl NativeCas {
             .iter()
             .map(|row| row.name.as_os_str())
             .collect();
-        let orphans: Vec<OsString> = entries
+        let names: Vec<OsString> = entries
             .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        // A crashed maintenance pass's temporary pack, when no pass runs
+        // (council s19 r1): automatic maintenance may never run again.
+        if names.iter().any(|name| maintenance_temporary(name)) {
+            if let Some(_idle) = super::super::consolidation::idle_maintenance_lock(&self.root) {
+                let _ = self.remove_stale_maintenance_packs();
+            }
+        }
+        let orphans: Vec<OsString> = names
+            .into_iter()
             .filter(|name| pack2::valid_pack2_name(name) && !registered.contains(name.as_os_str()))
             .collect();
         if orphans.is_empty() {
@@ -413,13 +423,17 @@ pub(crate) type CandidatePack = (i64, OsString, [u8; 32], bool);
 /// Name prefix of a maintenance pack being built (`.maint-…tmp`).
 const MAINTENANCE_PREFIX: &str = "maint-";
 
+/// Whether `name` is a maintenance pack being built (or left by a crash).
+fn maintenance_temporary(name: &OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| name.starts_with(&format!(".{MAINTENANCE_PREFIX}")))
+}
+
 /// A maintenance consolidation built outside the exclusive Store lock
-/// (`NativeCas::build_maintenance`), not yet published.
+/// (`NativeCas::build_maintenance`), not yet published, with its remap.
 pub(crate) struct BuiltPack {
     open: OpenPack,
-    sealed: pack2::SealedPack2,
-    packs: Vec<CandidatePack>,
-    keys_of: CandidateKeys,
+    consolidation: Consolidation,
 }
 
 /// Each candidate's logical keys with their identities, for the remap.
@@ -573,19 +587,30 @@ impl RegisteredCatalog {
 
     /// Whether there are at least `CONSOLIDATE_AT_PACKS` pack files (a
     /// count, no block walked).
-    pub(crate) fn many_pack_files(&self) -> bool {
+    pub(crate) fn many_pack_files(&self, added: Option<(bool, PackStats)>) -> bool {
+        let added = usize::from(matches!(added, Some((false, _))));
         self.packs
             .iter()
             .filter(|pack| !pack.pack.is_inline())
             .count()
+            + added
             >= CONSOLIDATE_AT_PACKS
     }
 
-    /// Whether, leaving out `excluded`, at least `CONSOLIDATE_AT_PACKS`
+    /// Whether, leaving out `excluded` and with the pack a batch just
+    /// `added` (not in this catalog yet), at least `CONSOLIDATE_AT_PACKS`
     /// pack files remain among which a maintenance group exists (council
     /// s17, B2c): what a batch's own consolidation could not write.
-    pub(crate) fn maintenance_due(&self, excluded: &[usize]) -> bool {
-        let files = self.by_size(excluded, false);
+    pub(crate) fn maintenance_due(
+        &self,
+        excluded: &[usize],
+        added: Option<(bool, PackStats)>,
+    ) -> bool {
+        let mut files = self.by_size(excluded, false);
+        if let Some((false, (size, records, blocks, raw))) = added {
+            files.push((size, records, blocks, raw, usize::MAX));
+            files.sort_unstable();
+        }
         files.len() >= CONSOLIDATE_AT_PACKS
             && consolidation_group_within(&files, Budget::MAINTENANCE).len() >= 2
     }
@@ -1038,6 +1063,22 @@ impl NativeCas {
                     .map_err(general)?,
             ),
         };
+        Self::remap_consolidation(&new, pack, inline, pack_keys, packs, keys_of)
+    }
+
+    /// The consolidation registered for `pack`, whose index `new` is: each
+    /// candidate's logical keys mapped by identity to an ordinal of `new`.
+    /// Depends on no admission bitmap (`consolidation::register` reads the
+    /// current ones).
+    fn remap_consolidation(
+        new: &LoadedPack,
+        pack: PackRegistration,
+        inline: Option<Vec<u8>>,
+        pack_keys: super::keys::PackKeys,
+        packs: Vec<CandidatePack>,
+        keys_of: CandidateKeys,
+    ) -> Result<Consolidation, ConsolidationFailure> {
+        let general = |error| ConsolidationFailure { pack: None, error };
         let index = &new.index;
         let missing = || {
             general(pack2::pack2_corruption(
@@ -1111,13 +1152,17 @@ impl NativeCas {
     /// exclusive lock.
     pub(crate) fn build_maintenance(
         &self,
-        catalog: &RegisteredCatalog,
+        catalog: &Arc<RegisteredCatalog>,
         candidates: &[usize],
     ) -> Result<BuiltPack, ConsolidationFailure> {
         let _span = crate::perf::span("cas.maintenance_build");
         let general = |error| ConsolidationFailure { pack: None, error };
         let mut open = self.open_maintenance_pack().map_err(general)?;
+        // The candidates' files stay open while they are copied (no group
+        // budget bounds a maintenance pass).
+        let hold = catalog.hold_pack_files();
         let (packs, keys_of) = self.copy_candidates(catalog, candidates, &mut open)?;
+        drop(hold);
         let builder = std::mem::replace(&mut open.builder, empty_builder());
         let sealed = builder
             .finish(&mut open.sink)
@@ -1129,11 +1174,28 @@ impl NativeCas {
             .map_err(|error| general(io_error("sync CAS pack", &open.path, error)))?;
         pack2::verify_written(open.file().map_err(general)?.file(), &open.path, &sealed)
             .map_err(general)?;
-        Ok(BuiltPack {
-            open,
-            sealed,
+        // The remap too, from the verified file under its temporary name and
+        // for the name it is published under: the exclusive session only
+        // publishes it and registers it against the current bitmaps.
+        let temporary = open
+            .path
+            .file_name()
+            .map(OsStr::to_os_string)
+            .ok_or_else(|| general(pack2::pack2_corruption(&open.path, "no file name")))?;
+        let new = self
+            .load_pack_from_disk(&std::cell::OnceCell::new(), &temporary)
+            .map_err(general)?;
+        let consolidation = Self::remap_consolidation(
+            &new,
+            (pack2::new_pack2_name(), sealed.digest, sealed.logical),
+            None,
+            sealed.keys,
             packs,
             keys_of,
+        )?;
+        Ok(BuiltPack {
+            open,
+            consolidation,
         })
     }
 
@@ -1148,9 +1210,7 @@ impl NativeCas {
         let general = |error| ConsolidationFailure { pack: None, error };
         let BuiltPack {
             mut open,
-            sealed,
-            packs,
-            keys_of,
+            consolidation,
         } = built;
         let path = open.path.clone();
         let objects = self.pinned_objects().map_err(general)?;
@@ -1158,7 +1218,7 @@ impl NativeCas {
         let packs_dir = objects
             .ensure_child_unsynced(OsStr::new(PACKS_DIR))
             .map_err(|error| general(io_error("open CAS packs directory", &packs_path, error)))?;
-        let name = pack2::new_pack2_name();
+        let name = consolidation.pack.0.clone();
         let target = packs_path.join(&name);
         if publish_no_clobber(open.file().map_err(general)?, &packs_dir, &name).map_err(general)? {
             return Err(general(io_error(
@@ -1182,14 +1242,8 @@ impl NativeCas {
             .map_err(|error| general(io_error("sync CAS packs directory", &packs_path, error)))?;
         self.cleanup_published_staging(open.file().map_err(general)?, &path, false)
             .map_err(general)?;
-        crate::perf::count("cas.maintenance_published", sealed.logical);
-        self.finish_consolidation(
-            (name, sealed.digest, sealed.logical),
-            None,
-            sealed.keys,
-            packs,
-            keys_of,
-        )
+        crate::perf::count("cas.maintenance_published", consolidation.pack.2);
+        Ok(consolidation)
     }
 
     /// A new pack file for maintenance, in the packs directory under a
@@ -1231,22 +1285,27 @@ impl NativeCas {
         ))
     }
 
-    /// Removes the temporary maintenance packs a crashed pass left behind.
-    /// Only under the maintenance lock: no pass is building one.
+    /// Removes the temporary maintenance packs a crashed pass left behind,
+    /// through the pinned packs directory (never through a link). Only
+    /// under the maintenance lock: no pass is building one.
     pub(crate) fn remove_stale_maintenance_packs(&self) -> CasResult<usize> {
         let packs_path = self.objects_dir.join(PACKS_DIR);
-        let entries = match std::fs::read_dir(&packs_path) {
-            Ok(entries) => entries,
+        let packs = match self.pinned_objects()?.open_child(OsStr::new(PACKS_DIR)) {
+            Ok(packs) => packs,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
-            Err(error) => return Err(io_error("list CAS packs directory", &packs_path, error)),
+            Err(error) => return Err(io_error("pin CAS packs", &packs_path, error)),
         };
+        let names: Vec<OsString> = std::fs::read_dir(&packs_path)
+            .map_err(|error| io_error("list CAS packs directory", &packs_path, error))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .filter(|name| maintenance_temporary(name))
+            .collect();
         let mut removed = 0;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name
-                .to_str()
-                .is_some_and(|name| name.starts_with(&format!(".{MAINTENANCE_PREFIX}")))
-                && std::fs::remove_file(entry.path()).is_ok()
+        for name in names {
+            if packs
+                .open_file(&name)
+                .and_then(|file| file.unlink())
+                .is_ok()
             {
                 removed += 1;
             }
