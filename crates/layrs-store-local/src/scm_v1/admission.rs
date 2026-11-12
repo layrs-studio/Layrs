@@ -371,6 +371,13 @@ impl<'a> CompositeAdmissionResolver<'a> {
                 .is_ok_and(|proven| proven.contains(&(space.clone(), file_id.clone())))
     }
 
+    /// Whether this batch carries the manifest `manifest`.
+    fn carried_manifest(&self, manifest: &FileManifestId) -> bool {
+        self.manifests_by_file
+            .values()
+            .any(|manifests| manifests.contains(manifest))
+    }
+
     fn prefetch_tree_files(&self) -> Result<()> {
         let _span = crate::perf::span("validate.prefetch_tree_files");
         let mut files = BTreeSet::new();
@@ -403,12 +410,14 @@ impl<'a> CompositeAdmissionResolver<'a> {
             .collect();
         // A batch that admits manifests it does not carry charges their
         // closures as manifests: its Files take the exact path, so each
-        // manifest is charged once (council s14 r1).
-        let admits_manifests = self
-            .batch
-            .admissions()
-            .iter()
-            .any(|admission| matches!(admission.object_id(), StoreObjectId::FileManifest(_)));
+        // manifest is charged once (council s14 r1). A carried manifest's
+        // File is not among `files` (its closure is the manifest's), so a
+        // step admitting the manifests of its new content keeps the proof
+        // by existence.
+        let admits_manifests = self.batch.admissions().iter().any(|admission| {
+            matches!(admission.object_id(), StoreObjectId::FileManifest(manifest)
+                if !self.carried_manifest(manifest))
+        });
         for space in spaces {
             // Files a durably admitted manifest closes need no manifest id
             // (council s13 Q2); the others take the exact path.
