@@ -647,7 +647,9 @@ fn merge(
             Ok(materialized) => {
                 room.merged_step_id = Some(head.clone());
                 let _span = layrs_store_local::perf::span("room.merge.update_room");
-                project.update_room(room).map_err(error)?;
+                project.update_room(room).map_err(|e| {
+                    error(format!("recording the merge in Room {}: {e}", room.name))
+                })?;
                 return Ok(Rendered {
                     human: with_note(format!(
                         "Room {} merged into {target} (fast-forward to {head}){}",
@@ -662,7 +664,7 @@ fn merge(
                 });
             }
             Err(layrs_client_core::native_scm::NativeClientError::NeedsIntegration) => {}
-            Err(e) => return Err(error(e)),
+            Err(e) => return Err(error(format!("fast-forwarding {target}: {e}"))),
         }
     }
     // Each folder sees Layer heads through its own last Operation: name the
