@@ -398,7 +398,28 @@ impl NativeWorkspace {
     }
 
     pub fn capture_with_reason(&self, reason: CaptureReason) -> Result<CapturePlan> {
+        self.capture_opened(reason, None)
+    }
+
+    /// `capture` continuing the shared session in which discovery read
+    /// `state` (`discover_session`): its reads before the scan come from that
+    /// session instead of a new one, which is released before the folder is
+    /// read, as the capture's own would be.
+    pub fn capture_in(
+        &self,
+        store: scm_v1::NativeStoreOpen,
+        state: WorkspaceState,
+    ) -> Result<CapturePlan> {
+        self.capture_opened(CaptureReason::ManualSnapshot, Some((store, state)))
+    }
+
+    fn capture_opened(
+        &self,
+        reason: CaptureReason,
+        opened: Option<(scm_v1::NativeStoreOpen, WorkspaceState)>,
+    ) -> Result<CapturePlan> {
         if !self.change_index_enabled() {
+            drop(opened);
             return self.capture_using(reason, None);
         }
         // The index file is decoded on another thread while the capture
@@ -407,7 +428,7 @@ impl NativeWorkspace {
         std::thread::scope(|scope| {
             let loading = scope
                 .spawn(move || scm_v1::change_index::ChangeIndex::load(store_root, worktree_id));
-            self.capture_using_passes(reason, None, Some(loading), true)
+            self.capture_using_passes_opened(reason, None, Some(loading), true, opened)
         })
     }
 
@@ -462,11 +483,26 @@ impl NativeWorkspace {
     fn capture_using_passes(
         &self,
         reason: CaptureReason,
+        index: Option<scm_v1::change_index::ChangeIndex>,
+        loading: Option<
+            std::thread::ScopedJoinHandle<'_, Option<scm_v1::change_index::ChangeIndex>>,
+        >,
+        single_pass: bool,
+    ) -> Result<CapturePlan> {
+        self.capture_using_passes_opened(reason, index, loading, single_pass, None)
+    }
+
+    /// `opened`, a shared session and the state read in it, serves the
+    /// first attempt's reads before the scan; a retry opens its own.
+    fn capture_using_passes_opened(
+        &self,
+        reason: CaptureReason,
         mut index: Option<scm_v1::change_index::ChangeIndex>,
         mut loading: Option<
             std::thread::ScopedJoinHandle<'_, Option<scm_v1::change_index::ChangeIndex>>,
         >,
         single_pass: bool,
+        mut opened: Option<(scm_v1::NativeStoreOpen, WorkspaceState)>,
     ) -> Result<CapturePlan> {
         let _total = layrs_store_local::perf::span("capture.total");
         for _ in 0..8 {
@@ -486,15 +522,22 @@ impl NativeWorkspace {
                         ))
                     };
                     if index.is_none() && loading.is_none() {
+                        drop(opened.take());
                         disk()?
                     } else {
                         // Everything read before the scan comes from one
                         // shared session, released before the folder is
                         // read (no Store lock is held while hashing).
                         let (base, state, base_projection, base_root, refs) = {
-                            let store = self.open_store()?;
+                            let (store, read) = match opened.take() {
+                                Some((store, state)) => (store, Some(state)),
+                                None => (self.open_store()?, None),
+                            };
                             let base = self.client.capture_base_with(&store, &self.worktree_id)?;
-                            let state = self.state_with(&store)?;
+                            let state = match read {
+                                Some(state) => state,
+                                None => self.state_with(&store)?,
+                            };
                             let step = super::references::base_step(&state)?;
                             let projection =
                                 self.read_step_projection_with(&store, state.space.id(), &step)?;

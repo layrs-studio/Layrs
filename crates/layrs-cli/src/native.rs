@@ -210,9 +210,14 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
     // Shared discovery validates both a primary Store and a secondary file
     // locator, including its registered root and filesystem identity.
     let discover_span = layrs_store_local::perf::span("cli.discover");
-    // `status` is read-only: it continues in the session discovery opened.
-    // Any other command releases it at once (it may write).
-    let discovered = if matches!(cli.command, CliCommand::Status { .. }) {
+    // `status` is read-only: it continues in the session discovery opened,
+    // and so do the reads a `step` makes before reading the folder (it
+    // releases the session before its scan and its write). Any other
+    // command releases it at once (it may write).
+    let discovered = if matches!(
+        cli.command,
+        CliCommand::Status { .. } | CliCommand::Step { full: false }
+    ) {
         NativeWorkspace::discover_session(&root)
             .map(|(workspace, store, state)| (workspace, Some((store, state))))
     } else {
@@ -637,7 +642,10 @@ pub fn try_run(cli: &Cli) -> Option<Result<Rendered, CliError>> {
             CliCommand::Step { full } => match (if *full {
                 workspace.capture_verifying_all(layrs_core::scm::CaptureReason::ManualSnapshot)
             } else {
-                workspace.capture()
+                match opening.take() {
+                    Some((store, state)) => workspace.capture_in(store, state),
+                    None => workspace.capture(),
+                }
             })
             .map_err(error)?
             {
