@@ -51,8 +51,8 @@ pub use fsck::{
 pub use format::{
     COMPACT_FORMAT_VERSION, FORMAT_MAGIC, FORMAT_SCHEMA, FORMAT_VERSION, FormatMarker, FormatState,
     NEWEST_FORMAT_VERSION, NativeStoreError, NativeStoreInspection, PACKED_FORMAT_VERSION,
-    SharedReadLock, SharedReadLocks, init, init_with_format, inspect, open, open_audit,
-    open_exclusive,
+    SharedReadLock, SharedReadLocks, WHOLE_FILES_FORMAT_VERSION, creation_keeps_whole_files, init,
+    init_with_format, inspect, open, open_audit, open_exclusive,
 };
 pub use layout::{
     FORMAT_FILE_NAME, LOCK_FILE_NAME, METADATA_DIR_NAME, NativeStoreAudit, NativeStoreExclusive,

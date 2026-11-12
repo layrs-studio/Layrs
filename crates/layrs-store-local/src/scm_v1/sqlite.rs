@@ -1,8 +1,9 @@
 //! SQLite connection and bootstrap boundary for native SCM V1.
 
 use super::schema::{
-    BASELINE_V2, BASELINE_V3, Baseline, REQUIRED_TABLES_V3, SCHEMA_CHECKSUM, SCHEMA_MAGIC,
-    SCHEMA_V3_CHECKSUM, schema_checksum, schema_v3_checksum,
+    BASELINE_V2, BASELINE_V3, BASELINE_V4, Baseline, REQUIRED_TABLES_V3, REQUIRED_TABLES_V4,
+    SCHEMA_CHECKSUM, SCHEMA_MAGIC, SCHEMA_V3_CHECKSUM, SCHEMA_V4_CHECKSUM, schema_checksum,
+    schema_v3_checksum, schema_v4_checksum,
 };
 use layrs_core::scm::{StoreId, canonical_json};
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
@@ -943,13 +944,16 @@ fn validate_embedded_checksum() -> Result<()> {
     // A pure function of this binary's embedded SQL: computed once.
     static VALID: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *VALID.get_or_init(|| {
-        schema_checksum() == SCHEMA_CHECKSUM && schema_v3_checksum() == SCHEMA_V3_CHECKSUM
+        schema_checksum() == SCHEMA_CHECKSUM
+            && schema_v3_checksum() == SCHEMA_V3_CHECKSUM
+            && schema_v4_checksum() == SCHEMA_V4_CHECKSUM
     }) {
         return Ok(());
     }
     for (actual, published) in [
         (schema_checksum(), SCHEMA_CHECKSUM),
         (schema_v3_checksum(), SCHEMA_V3_CHECKSUM),
+        (schema_v4_checksum(), SCHEMA_V4_CHECKSUM),
     ] {
         if actual != published {
             return Err(ScmSchemaError::EmbeddedChecksumMismatch {
@@ -1053,11 +1057,15 @@ fn validate_schema(connection: &Connection, path: &Path) -> Result<()> {
     }
     // A database is checked against the baseline whose exact table set it
     // has; anything else is checked (and refused) as v2, as before format 6.
-    let baseline = if tables.len() == REQUIRED_TABLES_V3.len()
-        && REQUIRED_TABLES_V3
-            .iter()
-            .all(|table| tables.iter().any(|actual| actual == table))
-    {
+    let has_exactly = |required: &[&str]| {
+        tables.len() == required.len()
+            && required
+                .iter()
+                .all(|table| tables.iter().any(|actual| actual == table))
+    };
+    let baseline = if has_exactly(REQUIRED_TABLES_V4) {
+        &BASELINE_V4
+    } else if has_exactly(REQUIRED_TABLES_V3) {
         &BASELINE_V3
     } else {
         &BASELINE_V2

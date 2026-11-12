@@ -420,6 +420,21 @@ impl GraphObjects {
                     let m = reader
                         .get_file_manifest(&id)?
                         .ok_or(NativeRemoteError::Invalid("missing local manifest"))?;
+                    // A `whole` file travels as the v1 file of the same
+                    // FileId (council s13 Q5): servers name chunks in the
+                    // chunk domain.
+                    if m.chunks_are_whole() {
+                        let [part] = m.chunks() else {
+                            return Err(NativeRemoteError::Invalid("invalid whole manifest"));
+                        };
+                        let whole = reader
+                            .get_chunk(part.chunk_id())?
+                            .ok_or(NativeRemoteError::Invalid("missing local chunk"))?;
+                        let (chunk, manifest) = v1_file(&whole, m.file_id())?;
+                        result.insert(CanonicalObject::ChunkRaw(chunk))?;
+                        result.insert(CanonicalObject::FileManifest(manifest))?;
+                        continue;
+                    }
                     pending.extend(
                         m.chunks()
                             .iter()
@@ -511,6 +526,41 @@ impl GraphObjects {
                 .saturating_add(metadata);
         }
         Ok(file.verified_manifest_ids()[0].clone())
+    }
+}
+
+/// The v1 file of the same FileId as the `whole` chunk `whole`: its chunk
+/// named in the chunk domain and its `deterministic_fixed` manifest, what a
+/// server holds (council s13 Q5).
+pub(super) fn v1_file(
+    whole: &layrs_core::scm::Chunk,
+    file_id: &FileId,
+) -> RemoteResult<(layrs_core::scm::Chunk, FileManifest)> {
+    let chunk = layrs_core::scm::Chunk::new(whole.bytes().to_vec())?;
+    let manifest = FileManifest::from_chunks(
+        layrs_core::scm::fixed_chunking(whole.byte_length()),
+        std::slice::from_ref(&chunk),
+    )?;
+    if manifest.file_id() != file_id {
+        return Err(NativeRemoteError::Invalid("whole file identity mismatch"));
+    }
+    Ok((chunk, manifest))
+}
+
+/// The v1 file of `file_id` when this Store keeps it `whole` and admitted
+/// to `space`; `None` otherwise.
+pub(super) fn v1_equivalent(
+    reader: &NativeScmReader<'_>,
+    file_id: &FileId,
+    space: &SpaceId,
+) -> RemoteResult<Option<(layrs_core::scm::Chunk, FileManifest)>> {
+    let chunk_id = ChunkId::of_whole_file(file_id);
+    if !reader.object_admitted_to_space(&StoreObjectId::ChunkRaw(chunk_id.clone()), space)? {
+        return Ok(None);
+    }
+    match reader.get_chunk(&chunk_id)? {
+        Some(whole) if whole.is_whole() => v1_file(&whole, file_id).map(Some),
+        _ => Ok(None),
     }
 }
 

@@ -296,8 +296,7 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
         // Format 6: the historical chunk is a pack v2 record; damaging (or
         // removing) it means damaging (or removing) its block's pack.
         let historical_chunk = layrs_store::scm::StoreObjectId::ChunkRaw(
-            layrs_core::scm::Chunk::new(b"original\0".to_vec())
-                .unwrap()
+            stored_chunk(workspace.store_root(), b"original\0")
                 .id()
                 .clone(),
         );
@@ -353,12 +352,25 @@ fn missing_or_corrupted_historical_chunk_refuses_preview_without_capturing_dirty
 /// flipping one byte of the block that holds it (every record of that block
 /// then fails verification) and returns that pack. `None` for other formats,
 /// whose tests damage the loose file as before.
+/// The chunk a Store keeps for small `content`: one `whole` chunk named by
+/// its FileId in format 7 (council s13 Q5), else its v1 chunk.
+fn stored_chunk(store_root: &std::path::Path, content: &[u8]) -> layrs_core::scm::Chunk {
+    if layrs_store_local::scm_v1::open(store_root)
+        .unwrap()
+        .whole_files()
+    {
+        layrs_core::scm::Chunk::whole(content.to_vec()).unwrap()
+    } else {
+        layrs_core::scm::Chunk::new(content.to_vec()).unwrap()
+    }
+}
+
 fn damage_compact_object(
     store_root: &std::path::Path,
     object: &layrs_store::scm::StoreObjectId,
 ) -> Option<layrs_store_local::scm_v1::CasLocation> {
     let store = layrs_store_local::scm_v1::open(store_root).unwrap();
-    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+    if store.format_version() < layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
         return None;
     }
     let location = layrs_store_local::scm_v1::NativeCas::open(&store)

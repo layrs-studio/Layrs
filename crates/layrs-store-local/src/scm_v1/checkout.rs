@@ -44,9 +44,18 @@ pub fn validate_projection(entries: &[CheckoutEntry]) -> io::Result<()> {
 pub struct CheckoutReader {
     root: PathBuf,
     directory: PinnedDirectory,
+    /// Captures keep a file of 1 byte to 1 MiB as one `whole` chunk named
+    /// by its FileId (Store format 7, council s13 Q5).
+    whole_files: bool,
 }
 
 impl CheckoutReader {
+    /// Captures for a Store that keeps small files `whole` (format 7).
+    pub fn with_whole_files(mut self, whole_files: bool) -> Self {
+        self.whole_files = whole_files;
+        self
+    }
+
     pub fn open(root: impl AsRef<Path>, expected_identity: Option<&str>) -> io::Result<Self> {
         let root = std::path::absolute(root)?;
         if root.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -77,7 +86,11 @@ impl CheckoutReader {
         if expected_identity.is_some_and(|expected| expected != directory.identity_token()) {
             return Err(invalid("checkout filesystem identity changed"));
         }
-        Ok(Self { root, directory })
+        Ok(Self {
+            root,
+            directory,
+            whole_files: false,
+        })
     }
 
     pub fn root(&self) -> &Path {

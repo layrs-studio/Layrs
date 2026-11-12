@@ -12,6 +12,7 @@ pub(super) fn limits() -> SnapshotLimits {
         max_depth: 128,
         max_file_bytes: usize::MAX,
         max_total_bytes: usize::MAX,
+        whole_files: false,
     }
 }
 pub(super) fn snapshot(entries: &[CheckoutProjectionEntry]) -> Result<PreparedSnapshot> {
@@ -239,13 +240,15 @@ fn write_file_from(
             _ => None,
         }) {
             Some(chunk) => chunk,
-            None if spool.is_some_and(|spool| spool.contains(part.chunk_id())) => Chunk::new(
-                spool
-                    .expect("checked spool")
-                    .read(part.chunk_id())
-                    .map_err(error)?,
-            )
-            .map_err(error)?,
+            None if spool.is_some_and(|spool| spool.contains(part.chunk_id())) => manifest
+                .chunk(
+                    part,
+                    spool
+                        .expect("checked spool")
+                        .read(part.chunk_id())
+                        .map_err(error)?,
+                )
+                .map_err(error)?,
             None => {
                 let _span = layrs_store_local::perf::span("restore.chunk");
                 reader

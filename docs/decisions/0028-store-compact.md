@@ -126,6 +126,58 @@ passage du format 6 par défaut. La consolidation :
 - ne supprime les fichiers retirés que plus tard, sous le verrou d'écriture ;
 - garantit que l'ensemble admis n'est jamais réduit.
 
+### 7. Format 7 : un seul condensé par petit fichier (conseil s13 Q5, Q6)
+
+Un fichier d'un seul chunk gardait deux condensés de 256 bits : son FileId
+(domaine fichier) et son ChunkId (domaine chunk), soit 32 octets de plus par
+fichier dans l'index du pack.
+
+- **Recette `whole` (version 1).** Un fichier de 1 octet à 1 Mio a un seul
+  chunk, nommé par le condensé de son FileId : son ChunkId *est* ce
+  condensé, calculé une fois. Le manifeste `whole` le vérifie (un chunk, de
+  la taille du fichier, nommé par le FileId). Les recettes existantes et
+  leurs identités ne changent pas ; un fichier vide garde zéro chunk.
+- **Vérification par domaine.** Un chunk `whole` est vérifié dans le
+  domaine fichier, partout où des octets sont comparés à un ChunkId : la
+  recette du manifeste, l'enregistrement du pack ou le chunk lui-même
+  (`Chunk::whole`, `Chunk::verified`) le déclarent. On n'essaie jamais les
+  deux domaines.
+- **Packs v2, version 2.** Un enregistrement `whole` ne stocke pas de
+  ChunkId et sort de l'ordre des ChunkId (l'ordre des FileId en tient lieu).
+  Un ChunkId n'y nomme jamais à la fois un chunk et un enregistrement
+  `whole`. Un pack de version 1 ne contient jamais de `whole`.
+- **Écriture.** Un chunk `whole` n'est stocké que comme l'enregistrement de
+  son fichier ; un objet `whole` est refusé par tout Store qui n'est pas au
+  format 7, et un pack de version 2 y est lu comme une corruption.
+- **Captures.** Les captures d'un Store au format 7 gardent les petits
+  fichiers en `whole` (`step`, `room step`, `init`, captures avant une
+  opération). Les fichiers reçus d'un serveur, les fusions et les captures
+  du VFS restent en v1 : un Store au format 7 lit et écrit les deux.
+- **Réseau inchangé.** Un fichier `whole` part comme le fichier v1 de même
+  FileId (son chunk et son manifeste `deterministic_fixed`) : les serveurs
+  vérifient les chunks dans le domaine chunk. Arbres et Steps ne nomment
+  que des FileId : ils ne changent pas.
+- **Schéma SQLite v4.** Les tables de v3 sans les tables `pending_*` que le
+  format 6 n'écrit jamais, `WITHOUT ROWID` pour les clés textuelles ou
+  composées (plus d'index de clé séparé), une instruction par ligne
+  (SQLite garde le texte de chaque instruction ; les commentaires sont
+  entre les instructions). Mêmes colonnes et contraintes : chaque requête
+  de v3 s'exécute telle quelle. Gain mesuré modeste (~8 Ko après le
+  scénario) : avec des pages de 1 Kio, une ligne `WITHOUT ROWID` de plus de
+  ~230 octets déborde, et les identifiants TEXT de 71 caractères y
+  arrivent vite ; les identifiants binaires de 32 octets lèveraient cette
+  limite.
+- **Mesures** (10 000 fichiers, scénario du banc) : pack d'init 1 249 →
+  909 Ko ; Store 1 761 → 1 385 Kio après `init`, 2 246 → 1 906 Kio après
+  le scénario (git : 1 868 / 1 908).
+- **Compatibilité.** `formatVersion = minReaderVersion = 7`, en opt-in
+  (`LAYRS_STORE_FORMAT=7`) ; un lecteur du format 6 refuse le Store. Un
+  Store au format 6 n'est jamais réinterprété ; sa conversion sera
+  explicite.
+- **Reporté** : identifiants binaires de 32 octets dans SQLite, purge des
+  opérations de récupération terminées (leur clé d'idempotence), Trees et
+  manifestes binaires (phase 4).
+
 ## Phases
 
 Chaque phase ne garde que ce qui entre dans la conception finale. Le

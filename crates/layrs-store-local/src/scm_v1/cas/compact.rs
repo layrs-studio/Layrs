@@ -175,6 +175,18 @@ impl LoadedPack {
 }
 
 impl NativeCas {
+    /// A pack of version 2 (`whole` records) belongs only in a Store of
+    /// format 7: never read as anything else (council s13 Q5).
+    fn check_pack_version(&self, index: &Pack2Index, path: &Path) -> CasResult<()> {
+        if index.version != 1 && !self.whole_files {
+            return Err(pack2::pack2_corruption(
+                path,
+                "a pack of Store format 7 in an older Store",
+            ));
+        }
+        Ok(())
+    }
+
     fn compact_key(&self) -> String {
         format!("{}|{}", self.root_identity, self.root.display())
     }
@@ -207,11 +219,13 @@ impl NativeCas {
                 .and_then(|cache| cache.get(&key).cloned())
                 .filter(|pack| pack.image.as_deref() == Some(&*image))
             {
+                self.check_pack_version(&pack.index, &pack.path)?;
                 return Ok(pack);
             }
         }
         let path = self.inline_label(name);
         let index = pack2::load_from(pack2::PackSource::Image(&image), &path)?;
+        self.check_pack_version(&index, &path)?;
         let manifest_digests = (0..index.files.len()).map(|_| OnceLock::new()).collect();
         let pack = Arc::new(LoadedPack {
             name: name.to_os_string(),
@@ -253,6 +267,7 @@ impl NativeCas {
             .and_then(|cache| cache.get(&key).cloned())
             .filter(|pack| pack.image.is_none())
         {
+            self.check_pack_version(&pack.index, &pack.path)?;
             return Ok(pack);
         }
         let pack = Arc::new(self.load_pack_from_disk(packs, name)?);
@@ -286,6 +301,7 @@ impl NativeCas {
         let parse = crate::perf::span("cas.pack_index");
         let index = pack2::load(file.file(), &path)?;
         drop(parse);
+        self.check_pack_version(&index, &path)?;
         drop(file);
         let manifest_digests = (0..index.files.len()).map(|_| OnceLock::new()).collect();
         Ok(LoadedPack {
@@ -815,7 +831,7 @@ impl NativeCas {
                 }
                 let (_, chunk_id) = loaded.alias_ids(file)?;
                 let body = pack2::record_body(raw, record.location, FILE_KIND, &loaded.path)?;
-                validate_stored_bytes(&StoreObjectId::ChunkRaw(chunk_id), body)?;
+                validate_file_record_chunk(chunk_id, body, record.recipe)?;
                 open.builder
                     .add_file(sink, identity, body, None)
                     .map_err(write)?;
@@ -1546,8 +1562,20 @@ impl RegisteredCatalog {
             }
             Placement::Chunk { pack, file } => {
                 let loaded = &self.packs[pack].pack;
-                let location = loaded.index.files[file].location;
-                validate_stored_bytes(id, &self.body(cas, pack, FILE_KIND, location)?)
+                let record = loaded.index.files[file];
+                let (_, chunk_id) = loaded.alias_ids(file)?;
+                let object = validate_file_record_chunk(
+                    chunk_id,
+                    &self.body(cas, pack, FILE_KIND, record.location)?,
+                    record.recipe,
+                )?;
+                if &object.object_id() != id {
+                    return Err(CasError::IdMismatch {
+                        expected: id.clone(),
+                        actual: object.object_id().to_string(),
+                    });
+                }
+                Ok(object)
             }
             Placement::Manifest { pack, file } => {
                 let manifest = self.packs[pack].pack.alias_manifest(file)?;
@@ -2129,10 +2157,18 @@ impl FileRecordPlan {
         supplied_chunks: &HashSet<ChunkId>,
     ) -> CasResult<Self> {
         let mut plan = Self::default();
+        // Whole manifests first: their chunk can only be a file record, and
+        // a batch keeps one record per FileId (council s13 Q5).
+        let mut manifests: Vec<&FileManifest> = manifests.into_iter().collect();
+        manifests.sort_by_key(|manifest| !manifest.chunks_are_whole());
+        let mut planned_files: HashSet<[u8; 32]> = HashSet::new();
         for manifest in manifests {
             let Some(recipe) = Recipe::of(manifest) else {
                 continue;
             };
+            if planned_files.contains(&manifest.file_id().digest_bytes()) {
+                continue;
+            }
             let chunk = &manifest.chunks()[0];
             if !supplied_chunks.contains(chunk.chunk_id()) {
                 continue;
@@ -2158,6 +2194,7 @@ impl FileRecordPlan {
                 id: manifest.file_id().to_string(),
             })?;
             let manifest_raw = pack2::raw_digest(&manifest_object)?;
+            planned_files.insert(file_raw);
             plan.covered_manifests.insert(manifest_raw);
             plan.by_chunk.insert(
                 chunk_raw,
@@ -2434,7 +2471,20 @@ impl NativeCas {
                 ..outcome
             }));
         }
-        validate_stored_bytes(&object_id, &bytes)?;
+        // A whole file's chunk is verified in the file domain and stored only
+        // as its file record (council s13 Q5).
+        let whole_chunk = match object {
+            CanonicalObject::ChunkRaw(chunk) if chunk.is_whole() => Some(chunk.id().clone()),
+            _ => None,
+        };
+        match &whole_chunk {
+            Some(chunk_id) => {
+                validate_file_record_chunk(chunk_id.clone(), &bytes, Recipe::Whole)?;
+            }
+            None => {
+                validate_stored_bytes(&object_id, &bytes)?;
+            }
+        }
         let raw = pack2::raw_digest(&object_id)?;
         let code = pack2::kind_code(object_id.kind());
         // A large record is compressed before taking the batch lock, so
@@ -2445,6 +2495,12 @@ impl NativeCas {
             }
             _ => None,
         };
+        if whole_chunk.is_some() && planned.is_none() {
+            return Err(corruption(
+                &object_id,
+                "a whole file chunk is stored only as its file record",
+            ));
+        }
         let covered = matches!(object, CanonicalObject::FileManifest(_))
             && self.compact_state(|batch| Ok(batch.plan.covered_manifests.contains(&raw)))?;
         if covered {
@@ -2590,7 +2646,7 @@ impl NativeCas {
         if inline_limit > 0 {
             let mut sink = PackSink::Memory(Vec::new());
             let path = self.staging_dir.join("inline-pack");
-            let builder = Pack2Builder::start(&mut sink)
+            let builder = Pack2Builder::start(&mut sink, self.whole_files)
                 .map_err(|error| io_error("write CAS pack", &path, error))?;
             return Ok(OpenPack {
                 sink,
@@ -2602,7 +2658,7 @@ impl NativeCas {
         }
         let lease = StagingLease::shared(&self.staging_lease_path)?;
         let staging = self.pinned_staging()?;
-        open_pack(&staging, &self.staging_dir, lease)
+        open_pack(&staging, &self.staging_dir, lease, self.whole_files)
     }
 
     /// Moves a pack kept in memory to a staging file once it outgrows the
@@ -3019,7 +3075,7 @@ fn scrub_record(
                 let body =
                     pack2::record_body(block, file_record.location, FILE_KIND, &loaded.path)?;
                 let (file_id, chunk_id) = loaded.alias_ids(file)?;
-                validate_stored_bytes(&StoreObjectId::ChunkRaw(chunk_id), body)?;
+                validate_file_record_chunk(chunk_id, body, file_record.recipe)?;
                 if FileId::from_bytes(body) != file_id {
                     return Err(pack2::pack2_corruption(
                         &loaded.path,
@@ -3033,23 +3089,51 @@ fn scrub_record(
     }
 }
 
+/// A file record's body as its chunk: named in the file domain for a
+/// `whole` record (council s13 Q5), else as any raw chunk.
+fn validate_file_record_chunk(
+    chunk_id: ChunkId,
+    body: &[u8],
+    recipe: Recipe,
+) -> CasResult<CanonicalObject> {
+    let id = StoreObjectId::ChunkRaw(chunk_id);
+    if recipe != Recipe::Whole {
+        return validate_stored_bytes(&id, body);
+    }
+    match Chunk::whole(body.to_vec()) {
+        Ok(chunk) if StoreObjectId::ChunkRaw(chunk.id().clone()) == id => {
+            Ok(CanonicalObject::ChunkRaw(chunk))
+        }
+        Ok(chunk) => Err(CasError::IdMismatch {
+            expected: id,
+            actual: chunk.id().to_string(),
+        }),
+        Err(error) => Err(CasError::Corruption {
+            kind: StoreObjectKind::ChunkRaw,
+            id: id.to_string(),
+            reason: format!("invalid whole file chunk: {error}"),
+        }),
+    }
+}
+
 fn empty_builder() -> Pack2Builder {
     // Only replaces a builder being finished; never written.
-    Pack2Builder::start(&mut io::sink()).unwrap_or_else(|_| unreachable!("sink never fails"))
+    Pack2Builder::start(&mut io::sink(), false).unwrap_or_else(|_| unreachable!("sink never fails"))
 }
 
 fn open_pack(
     staging: &PinnedDirectory,
     staging_dir: &Path,
     lease: StagingLease,
+    whole_files: bool,
 ) -> CasResult<OpenPack> {
     let (file, path) = create_staging_pack(staging, staging_dir)?;
     let mut sink = PackSink::File {
         file,
         _lease: lease,
     };
-    let builder =
-        Pack2Builder::start(&mut sink).map_err(|error| io_error("write CAS pack", &path, error))?;
+    let builder = Pack2Builder::start(&mut sink, whole_files)
+        .map_err(|error| io_error("write CAS pack", &path, error))?;
     Ok(OpenPack {
         sink,
         path,

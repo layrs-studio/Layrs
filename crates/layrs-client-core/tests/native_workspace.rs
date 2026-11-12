@@ -115,8 +115,7 @@ fn repeated_file_content_keeps_each_path_and_is_revalidated_on_later_reads() {
     assert_eq!(fs::read(checkout.0.join("hello")).unwrap(), b"hello\0world");
     // A later read must not trust a process-global cache of previously valid CAS.
     let shared = layrs_store::scm::StoreObjectId::ChunkRaw(
-        layrs_core::scm::Chunk::new(b"hello\0world".to_vec())
-            .unwrap()
+        stored_chunk(workspace.store_root(), b"hello\0world")
             .id()
             .clone(),
     );
@@ -541,12 +540,25 @@ fn native_diff_preserves_newlines_and_distinguishes_empty_from_absence() {
 /// flipping one byte of the block that holds it (every record of that block
 /// then fails verification) and returns that pack. `None` for other formats,
 /// whose tests damage the loose file as before.
+/// The chunk a Store keeps for small `content`: one `whole` chunk named by
+/// its FileId in format 7 (council s13 Q5), else its v1 chunk.
+fn stored_chunk(store_root: &std::path::Path, content: &[u8]) -> layrs_core::scm::Chunk {
+    if layrs_store_local::scm_v1::open(store_root)
+        .unwrap()
+        .whole_files()
+    {
+        layrs_core::scm::Chunk::whole(content.to_vec()).unwrap()
+    } else {
+        layrs_core::scm::Chunk::new(content.to_vec()).unwrap()
+    }
+}
+
 fn damage_compact_object(
     store_root: &std::path::Path,
     object: &layrs_store::scm::StoreObjectId,
 ) -> Option<std::path::PathBuf> {
     let store = layrs_store_local::scm_v1::open(store_root).unwrap();
-    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+    if store.format_version() < layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
         return None;
     }
     let location = layrs_store_local::scm_v1::NativeCas::open(&store)

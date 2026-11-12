@@ -24,12 +24,19 @@
 //! Admission ordinals: explicit record `i` (in metadata order) is logical
 //! object `i`; file record `f` carries two logical objects, its chunk
 //! (`explicit + 2f`) and its recipe manifest (`explicit + 2f + 1`).
+//!
+//! Version 2 (Store format 7, council s13 Q5) adds the `whole` recipe: a
+//! file record whose chunk is named by its FileId stores no ChunkId and is
+//! left out of the ChunkId order (its FileId order is that order). Version 1
+//! never holds a `whole` record.
 use super::*;
 
 pub(super) const PACK2_SUFFIX: &str = ".lp2";
 const HEADER_MAGIC: &[u8; 8] = b"LYRSPAK2";
 const FOOTER_MAGIC: &[u8; 8] = b"LYRSP2EN";
 const PACK2_VERSION: u32 = 1;
+/// Packs of Store format 7: `whole` file records (council s13 Q5).
+const PACK2_VERSION_WHOLE: u32 = 2;
 pub(super) const HEADER_LEN: u64 = 16;
 /// index offset, index length, explicit count, file count, digest, magic.
 const FOOTER_LEN: u64 = 8 + 8 + 8 + 8 + 32 + 8;
@@ -85,6 +92,8 @@ pub(super) struct BlockInfo {
 pub(super) enum Recipe {
     Fixed,
     Single,
+    /// The chunk is named by the FileId (council s13 Q5; packs version 2).
+    Whole,
 }
 
 impl Recipe {
@@ -92,6 +101,7 @@ impl Recipe {
         match self {
             Self::Fixed => 0,
             Self::Single => 1,
+            Self::Whole => 2,
         }
     }
 
@@ -99,6 +109,7 @@ impl Recipe {
         match code {
             0 => Some(Self::Fixed),
             1 => Some(Self::Single),
+            2 => Some(Self::Whole),
             _ => None,
         }
     }
@@ -107,6 +118,7 @@ impl Recipe {
         match self {
             Self::Fixed => layrs_core::scm::fixed_chunking(0),
             Self::Single => layrs_core::scm::ChunkingDescriptor::single(),
+            Self::Whole => layrs_core::scm::ChunkingDescriptor::whole(),
         }
     }
 
@@ -122,7 +134,7 @@ impl Recipe {
         {
             return None;
         }
-        [Self::Fixed, Self::Single]
+        [Self::Fixed, Self::Single, Self::Whole]
             .into_iter()
             .find(|recipe| &recipe.chunking() == manifest.chunking())
     }
@@ -181,6 +193,8 @@ struct KindRun {
 /// A decoded and validated pack v2 metadata area.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Pack2Index {
+    /// 1, or 2 for a pack of Store format 7 (`whole` records).
+    pub(super) version: u32,
     pub(super) file_len: u64,
     pub(super) digest: [u8; 32],
     pub(super) blocks: Vec<BlockInfo>,
@@ -257,11 +271,17 @@ impl Pack2Index {
             .map(|found| low + found)
     }
 
+    /// The file record standing for the chunk `chunk_id`: through the
+    /// ChunkId order, or a `whole` record named by the same digest.
     pub(super) fn find_chunk_alias(&self, chunk_id: &[u8; 32]) -> Option<usize> {
         self.chunk_order
             .binary_search_by(|file| self.files[*file as usize].chunk_id.cmp(chunk_id))
             .ok()
             .map(|position| self.chunk_order[position] as usize)
+            .or_else(|| {
+                self.find_file(chunk_id)
+                    .filter(|file| self.files[*file].recipe == Recipe::Whole)
+            })
     }
 
     /// File records whose manifest id starts like `manifest_id`; the caller
@@ -511,11 +531,20 @@ fn write_location(out: &mut Vec<u8>, location: Location) {
     put_varint(out, u64::from(location.length));
 }
 
-fn header_bytes() -> [u8; HEADER_LEN as usize] {
+fn header_bytes(version: u32) -> [u8; HEADER_LEN as usize] {
     let mut header = [0_u8; HEADER_LEN as usize];
     header[..8].copy_from_slice(HEADER_MAGIC);
-    header[8..12].copy_from_slice(&PACK2_VERSION.to_le_bytes());
+    header[8..12].copy_from_slice(&version.to_le_bytes());
     header
+}
+
+/// The pack version a Store writes: 2 when it keeps `whole` records.
+fn version_for(whole_files: bool) -> u32 {
+    if whole_files {
+        PACK2_VERSION_WHOLE
+    } else {
+        PACK2_VERSION
+    }
 }
 
 fn le_u64(bytes: &[u8]) -> u64 {
@@ -533,9 +562,10 @@ fn decode(
     footer: &[u8],
     metadata: &[u8],
 ) -> CasResult<Pack2Index> {
-    if header != header_bytes() {
-        return Err(pack2_corruption(path, "unknown pack header or version"));
-    }
+    let version = [PACK2_VERSION, PACK2_VERSION_WHOLE]
+        .into_iter()
+        .find(|version| header == header_bytes(*version))
+        .ok_or_else(|| pack2_corruption(path, "unknown pack header or version"))?;
     if &footer[64..72] != FOOTER_MAGIC {
         return Err(pack2_corruption(path, "pack footer magic is missing"));
     }
@@ -638,9 +668,23 @@ fn decode(
         if location.length == 0 {
             return Err(pack2_corruption(path, "pack file record is empty"));
         }
-        let chunk_id = reader.id()?;
-        let recipe = Recipe::from_code(reader.u8()?)
-            .ok_or_else(|| pack2_corruption(path, "pack file record has an unknown recipe"))?;
+        let (chunk_id, recipe) = if version == PACK2_VERSION {
+            let chunk_id = reader.id()?;
+            let recipe = Recipe::from_code(reader.u8()?)
+                .filter(|recipe| *recipe != Recipe::Whole)
+                .ok_or_else(|| pack2_corruption(path, "pack file record has an unknown recipe"))?;
+            (chunk_id, recipe)
+        } else {
+            let recipe = Recipe::from_code(reader.u8()?)
+                .ok_or_else(|| pack2_corruption(path, "pack file record has an unknown recipe"))?;
+            // A whole record's chunk is named by its FileId.
+            let chunk_id = if recipe == Recipe::Whole {
+                file_id
+            } else {
+                reader.id()?
+            };
+            (chunk_id, recipe)
+        };
         let prefix = reader.take(4)?;
         files.push(FileRecord {
             file_id,
@@ -650,7 +694,12 @@ fn decode(
             manifest_prefix: [prefix[0], prefix[1], prefix[2], prefix[3]],
         });
     }
-    let chunk_order = read_permutation(&mut reader, files.len())?;
+    // Version 2 orders the ChunkIds of the records that are not whole only.
+    let ordered: Vec<bool> = files
+        .iter()
+        .map(|file| file.recipe != Recipe::Whole)
+        .collect();
+    let chunk_order = read_order(&mut reader, &ordered)?;
     if chunk_order
         .windows(2)
         .any(|pair| files[pair[0] as usize].chunk_id >= files[pair[1] as usize].chunk_id)
@@ -658,6 +707,20 @@ fn decode(
         return Err(pack2_corruption(
             path,
             "pack chunk aliases are not strictly sorted",
+        ));
+    }
+    // A ChunkId names one record: never a whole record's FileId as well.
+    if version == PACK2_VERSION_WHOLE
+        && chunk_order.iter().any(|file| {
+            let chunk = &files[*file as usize].chunk_id;
+            files
+                .binary_search_by(|record| record.file_id.cmp(chunk))
+                .is_ok_and(|found| files[found].recipe == Recipe::Whole)
+        })
+    {
+        return Err(pack2_corruption(
+            path,
+            "a pack chunk alias is also a whole file record",
         ));
     }
     let manifest_order = read_permutation(&mut reader, files.len())?;
@@ -710,6 +773,7 @@ fn decode(
     }
     let file_fanout = fanout_of(files.iter().map(|file| &file.file_id));
     Ok(Pack2Index {
+        version,
         file_len,
         digest,
         blocks,
@@ -722,6 +786,25 @@ fn decode(
         manifest_order,
         fileid_section,
     })
+}
+
+/// A permutation of the records `ordered` marks (every record in version 1,
+/// those that are not whole in version 2).
+fn read_order(reader: &mut Reader<'_>, ordered: &[bool]) -> CasResult<Vec<u32>> {
+    let count = ordered.iter().filter(|listed| **listed).count();
+    let mut seen = vec![false; ordered.len()];
+    let mut order = Vec::with_capacity(count);
+    for _ in 0..count {
+        let file = reader.varint(ordered.len().saturating_sub(1) as u64)? as usize;
+        if !ordered[file] || std::mem::replace(&mut seen[file], true) {
+            return Err(pack2_corruption(
+                reader.path,
+                "pack alias order repeats or lists a whole record",
+            ));
+        }
+        order.push(file as u32);
+    }
+    Ok(order)
 }
 
 fn read_permutation(reader: &mut Reader<'_>, length: usize) -> CasResult<Vec<u32>> {
@@ -966,6 +1049,8 @@ pub(super) struct FileIdentity {
 
 /// Streams a pack v2: records into blocks, then metadata and footer.
 pub(super) struct Pack2Builder {
+    /// `PACK2_VERSION`, or `PACK2_VERSION_WHOLE` in Store format 7.
+    version: u32,
     block: Vec<u8>,
     /// Records of the open block: (explicit index or file index, offset).
     blocks: Vec<BlockInfo>,
@@ -987,9 +1072,12 @@ pub(super) struct SealedPack2 {
 }
 
 impl Pack2Builder {
-    pub(super) fn start(out: &mut impl Write) -> io::Result<Self> {
-        out.write_all(&header_bytes())?;
+    /// A pack of a Store that keeps `whole` records (format 7) or not.
+    pub(super) fn start(out: &mut impl Write, whole_files: bool) -> io::Result<Self> {
+        let version = version_for(whole_files);
+        out.write_all(&header_bytes(version))?;
         Ok(Self {
+            version,
             block: Vec::with_capacity(BLOCK_TARGET),
             blocks: Vec::new(),
             block_hashes: Vec::new(),
@@ -1097,6 +1185,13 @@ impl Pack2Builder {
         if body.is_empty() {
             return Err(io::Error::other("a file record holds at least one byte"));
         }
+        if identity.recipe == Recipe::Whole
+            && (self.version != PACK2_VERSION_WHOLE || identity.chunk_id != identity.file_id)
+        {
+            return Err(io::Error::other(
+                "a whole file record is named by its FileId, in a format 7 pack",
+            ));
+        }
         let location = self.place(out, FILE_KIND, body, encoded)?;
         let manifest_id = identity.manifest_id;
         self.files.push((
@@ -1190,11 +1285,21 @@ impl Pack2Builder {
         for (file, _) in &self.files {
             metadata.extend_from_slice(&file.file_id);
             write_location(&mut metadata, file.location);
-            metadata.extend_from_slice(&file.chunk_id);
-            metadata.push(file.recipe.code());
+            if self.version == PACK2_VERSION {
+                metadata.extend_from_slice(&file.chunk_id);
+                metadata.push(file.recipe.code());
+            } else {
+                metadata.push(file.recipe.code());
+                if file.recipe != Recipe::Whole {
+                    metadata.extend_from_slice(&file.chunk_id);
+                }
+            }
             metadata.extend_from_slice(&file.manifest_prefix);
         }
-        let mut chunk_order: Vec<u32> = (0..self.files.len() as u32).collect();
+        // Version 2 orders the ChunkIds of the records that are not whole.
+        let mut chunk_order: Vec<u32> = (0..self.files.len() as u32)
+            .filter(|file| self.files[*file as usize].0.recipe != Recipe::Whole)
+            .collect();
         chunk_order.sort_unstable_by(|left, right| {
             self.files[*left as usize]
                 .0
@@ -1203,6 +1308,11 @@ impl Pack2Builder {
         });
         if chunk_order.windows(2).any(|pair| {
             self.files[pair[0] as usize].0.chunk_id == self.files[pair[1] as usize].0.chunk_id
+        }) || chunk_order.iter().any(|file| {
+            let chunk = &self.files[*file as usize].0.chunk_id;
+            self.files
+                .binary_search_by(|record| record.0.file_id.cmp(chunk))
+                .is_ok_and(|found| self.files[found].0.recipe == Recipe::Whole)
         }) {
             return Err(invalid("two file records share a chunk"));
         }
@@ -1223,7 +1333,7 @@ impl Pack2Builder {
         }
 
         let mut hasher = blake3::Hasher::new();
-        hasher.update(&header_bytes());
+        hasher.update(&header_bytes(self.version));
         hasher.update(&metadata);
         let digest = *hasher.finalize().as_bytes();
         let mut footer = Vec::with_capacity(FOOTER_LEN as usize);
@@ -1335,7 +1445,7 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap();
-        let mut builder = Pack2Builder::start(&mut file).unwrap();
+        let mut builder = Pack2Builder::start(&mut file, false).unwrap();
         build(&mut builder, &mut file);
         let sealed = builder.finish(&mut file).unwrap();
         file.sync_all().unwrap();
@@ -1570,7 +1680,7 @@ mod tests {
     #[test]
     fn untrusted_metadata_is_bounded_and_ordered() {
         let path = Path::new("pack");
-        let header = header_bytes();
+        let header = header_bytes(PACK2_VERSION);
         let footer = |metadata: &[u8], explicit: u64, files: u64| {
             let mut hasher = blake3::Hasher::new();
             hasher.update(&header);

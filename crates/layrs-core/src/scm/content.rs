@@ -37,10 +37,30 @@ pub fn fixed_chunking(byte_length: u64) -> ChunkingDescriptor {
     })
 }
 
+/// Largest file the `whole` recipe holds (council s13 Q5): one chunk of at
+/// most a fixed chunk's size.
+pub const WHOLE_MAX_BYTES: u64 = BASE_CHUNK_BYTES;
+
+/// The recipe a capture uses for a file of `byte_length` bytes: `whole` for
+/// a non-empty file up to `WHOLE_MAX_BYTES` when the Store holds it
+/// (`whole_files`), else the fixed chunking.
+pub fn capture_chunking(byte_length: u64, whole_files: bool) -> ChunkingDescriptor {
+    if whole_files && (1..=WHOLE_MAX_BYTES).contains(&byte_length) {
+        ChunkingDescriptor::whole()
+    } else {
+        fixed_chunking(byte_length)
+    }
+}
+
+/// A chunk of content. Its id is a digest of its bytes in the chunk domain
+/// (`layrs-chunk-v1`), or, for the single chunk of a `whole` file (council
+/// s13 Q5), in the file domain: then it equals the file's FileId digest, so
+/// a Store keeps one digest for both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     id: ChunkId,
     bytes: Vec<u8>,
+    whole: bool,
 }
 
 impl Chunk {
@@ -52,7 +72,44 @@ impl Chunk {
             ));
         }
         let id = ChunkId::from_digest(domain_hash(CHUNK_DOMAIN, &bytes));
-        Ok(Self { id, bytes })
+        Ok(Self {
+            id,
+            bytes,
+            whole: false,
+        })
+    }
+
+    /// The single chunk of a `whole` file: named in the file domain, at
+    /// most `WHOLE_MAX_BYTES`.
+    pub fn whole(bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        let bytes = bytes.into();
+        if bytes.is_empty() || bytes.len() as u64 > WHOLE_MAX_BYTES {
+            return Err(ScmError::InvalidChunk(
+                "a whole file chunk holds 1 byte to 1 MiB".into(),
+            ));
+        }
+        let id = ChunkId::from_digest(domain_hash(FILE_DOMAIN, &bytes));
+        Ok(Self {
+            id,
+            bytes,
+            whole: true,
+        })
+    }
+
+    /// Verifies `bytes` as the chunk `id` in the domain of its recipe.
+    pub fn verified(id: &ChunkId, bytes: Vec<u8>, whole: bool) -> Result<Self> {
+        let chunk = if whole {
+            Self::whole(bytes)?
+        } else {
+            Self::new(bytes)?
+        };
+        if &chunk.id != id {
+            return Err(ScmError::IdentityMismatch {
+                claimed: id.to_string(),
+                computed: chunk.id.to_string(),
+            });
+        }
+        Ok(chunk)
     }
 
     pub fn id(&self) -> &ChunkId {
@@ -67,8 +124,28 @@ impl Chunk {
         self.bytes.len() as u64
     }
 
+    /// Whether this is the chunk of a `whole` file (named in the file
+    /// domain).
+    pub fn is_whole(&self) -> bool {
+        self.whole
+    }
+
     pub fn identity_bytes(&self) -> Vec<u8> {
-        domain_separated_bytes(CHUNK_DOMAIN, &self.bytes)
+        domain_separated_bytes(
+            if self.whole {
+                FILE_DOMAIN
+            } else {
+                CHUNK_DOMAIN
+            },
+            &self.bytes,
+        )
+    }
+}
+
+impl ChunkId {
+    /// The chunk of the `whole` file `file_id`: the same digest.
+    pub fn of_whole_file(file_id: &FileId) -> Self {
+        Self::from_digest_bytes(&file_id.digest_bytes())
     }
 }
 
@@ -112,7 +189,11 @@ struct ChunkWire {
 impl Serialize for Chunk {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         ChunkRef {
-            schema_version: "layrs.chunk.v1",
+            schema_version: if self.whole {
+                WHOLE_CHUNK_SCHEMA
+            } else {
+                "layrs.chunk.v1"
+            },
             chunk_id: &self.id,
             byte_length: self.byte_length(),
             content: Base64Content {
@@ -127,9 +208,11 @@ impl Serialize for Chunk {
 impl<'de> Deserialize<'de> for Chunk {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let wire = ChunkWire::deserialize(deserializer)?;
-        if wire.schema_version != "layrs.chunk.v1" {
-            return Err(serde::de::Error::custom("unsupported Chunk schemaVersion"));
-        }
+        let whole = match wire.schema_version.as_str() {
+            "layrs.chunk.v1" => false,
+            WHOLE_CHUNK_SCHEMA => true,
+            _ => return Err(serde::de::Error::custom("unsupported Chunk schemaVersion")),
+        };
         let bytes = STANDARD
             .decode(wire.content.bytes.as_bytes())
             .map_err(serde::de::Error::custom)?;
@@ -139,7 +222,12 @@ impl<'de> Deserialize<'de> for Chunk {
         if bytes.len() as u64 != wire.byte_length {
             return Err(serde::de::Error::custom("Chunk byteLength mismatch"));
         }
-        let chunk = Self::new(bytes).map_err(serde::de::Error::custom)?;
+        let chunk = if whole {
+            Self::whole(bytes)
+        } else {
+            Self::new(bytes)
+        }
+        .map_err(serde::de::Error::custom)?;
         if chunk.id != wire.chunk_id {
             return Err(serde::de::Error::custom(ScmError::IdentityMismatch {
                 claimed: wire.chunk_id.to_string(),
@@ -153,11 +241,18 @@ impl<'de> Deserialize<'de> for Chunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkingDescriptor(ChunkingWire);
 
+/// The schema of a serialized `whole` chunk: distinct from v1, so no reader
+/// ever verifies it in the chunk domain.
+const WHOLE_CHUNK_SCHEMA: &str = "layrs.chunk.whole.v1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "snake_case", deny_unknown_fields)]
 enum ChunkingWire {
     #[serde(rename = "single")]
     Single { version: u8 },
+    /// One chunk named by the file's own digest (council s13 Q5).
+    #[serde(rename = "whole")]
+    Whole { version: u8 },
     #[serde(rename = "deterministic_fixed", rename_all = "camelCase")]
     DeterministicFixed { version: u8, chunk_bytes: u64 },
     #[serde(rename = "fastcdc", rename_all = "camelCase")]
@@ -172,6 +267,18 @@ enum ChunkingWire {
 impl ChunkingDescriptor {
     pub fn single() -> Self {
         Self(ChunkingWire::Single { version: 1 })
+    }
+
+    /// One chunk covering the whole file, named in the file domain: its
+    /// ChunkId digest is the FileId digest (council s13 Q5).
+    pub fn whole() -> Self {
+        Self(ChunkingWire::Whole { version: 1 })
+    }
+
+    /// Whether this is the `whole` recipe, whose chunk is named in the file
+    /// domain.
+    pub fn is_whole(&self) -> bool {
+        matches!(self.0, ChunkingWire::Whole { .. })
     }
 
     pub fn deterministic_fixed(chunk_bytes: u64) -> Result<Self> {
@@ -197,6 +304,7 @@ impl ChunkingDescriptor {
     fn validate(&self) -> Result<()> {
         match &self.0 {
             ChunkingWire::Single { version } if *version == 1 => Ok(()),
+            ChunkingWire::Whole { version } if *version == 1 => Ok(()),
             ChunkingWire::DeterministicFixed {
                 version: 1,
                 chunk_bytes,
@@ -218,6 +326,7 @@ impl ChunkingDescriptor {
     pub fn strategy(&self) -> &'static str {
         match &self.0 {
             ChunkingWire::Single { .. } => "single",
+            ChunkingWire::Whole { .. } => "whole",
             ChunkingWire::DeterministicFixed { .. } => "deterministic_fixed",
             ChunkingWire::FastCdc { .. } => "fastcdc",
         }
@@ -355,6 +464,9 @@ impl FileManifest {
     ) -> Result<Self> {
         chunking.validate()?;
         validate_coverage(byte_length, &chunks)?;
+        if chunking.is_whole() {
+            validate_whole(&file_id, byte_length, &chunks)?;
+        }
         let payload = FileManifestPayload {
             schema_version: "layrs.file-manifest.v1",
             file_id: &file_id,
@@ -413,7 +525,7 @@ impl FileManifest {
         for entry in &self.chunks {
             let chunk_bytes = resolve(&entry.chunk_id)
                 .ok_or_else(|| ScmError::MissingChunk(entry.chunk_id.to_string()))?;
-            let computed = ChunkId::from_digest(domain_hash(CHUNK_DOMAIN, &chunk_bytes));
+            let computed = ChunkId::from_digest(domain_hash(self.chunk_domain(), &chunk_bytes));
             if computed != entry.chunk_id || chunk_bytes.len() as u64 != entry.byte_length {
                 return Err(ScmError::InvalidChunk(entry.chunk_id.to_string()));
             }
@@ -433,6 +545,42 @@ impl FileManifest {
             });
         }
         Ok(bytes)
+    }
+
+    /// The `whole` manifest of a non-empty file of at most
+    /// `WHOLE_MAX_BYTES`: its chunk is named by `file_id`'s digest.
+    pub fn whole(file_id: FileId, byte_length: u64) -> Result<Self> {
+        let chunk = FileChunk::new(ChunkId::of_whole_file(&file_id), 0, byte_length)?;
+        Self::new(
+            file_id,
+            byte_length,
+            ChunkingDescriptor::whole(),
+            vec![chunk],
+        )
+    }
+
+    /// Whether this manifest's chunks are named in the file domain (the
+    /// `whole` recipe) rather than the chunk domain.
+    pub fn chunks_are_whole(&self) -> bool {
+        self.chunking.is_whole()
+    }
+
+    /// The domain this manifest's chunk ids are digests in.
+    fn chunk_domain(&self) -> &'static str {
+        if self.chunks_are_whole() {
+            FILE_DOMAIN
+        } else {
+            CHUNK_DOMAIN
+        }
+    }
+
+    /// Verifies `bytes` as this manifest's chunk `entry`, in the domain of
+    /// its recipe.
+    pub fn chunk(&self, entry: &FileChunk, bytes: Vec<u8>) -> Result<Chunk> {
+        if bytes.len() as u64 != entry.byte_length {
+            return Err(ScmError::InvalidChunk(entry.chunk_id.to_string()));
+        }
+        Chunk::verified(&entry.chunk_id, bytes, self.chunks_are_whole())
     }
 
     pub fn id(&self) -> &FileManifestId {
@@ -470,6 +618,23 @@ impl FileManifest {
             FILE_MANIFEST_DOMAIN,
             &self.canonical_payload()?,
         ))
+    }
+}
+
+/// A `whole` manifest: one chunk covering 1 byte to `WHOLE_MAX_BYTES`,
+/// named by the FileId's digest.
+fn validate_whole(file_id: &FileId, byte_length: u64, chunks: &[FileChunk]) -> Result<()> {
+    let invalid = |reason: &str| ScmError::InvalidField {
+        field: "chunking",
+        reason: reason.into(),
+    };
+    if !(1..=WHOLE_MAX_BYTES).contains(&byte_length) {
+        return Err(invalid("a whole file holds 1 byte to 1 MiB"));
+    }
+    match chunks {
+        [chunk] if chunk.chunk_id.digest_bytes() == file_id.digest_bytes() => Ok(()),
+        [_] => Err(invalid("a whole file's chunk is named by its FileId")),
+        _ => Err(invalid("a whole file has exactly one chunk")),
     }
 }
 
@@ -589,5 +754,114 @@ mod chunking_tests {
         assert_eq!(built, read);
         assert_eq!(built.id(), read.id());
         assert!(built.clone().is_proven());
+    }
+}
+
+#[cfg(test)]
+mod whole_tests {
+    use super::*;
+
+    fn whole_manifest(bytes: &[u8]) -> FileManifest {
+        let chunk = Chunk::whole(bytes.to_vec()).unwrap();
+        FileManifest::from_chunks(ChunkingDescriptor::whole(), &[chunk]).unwrap()
+    }
+
+    #[test]
+    fn a_whole_file_names_its_chunk_by_its_file_id() {
+        let manifest = whole_manifest(b"hello");
+        assert_eq!(manifest.file_id(), &FileId::from_bytes(b"hello"));
+        assert_eq!(
+            manifest.chunks()[0].chunk_id(),
+            &ChunkId::of_whole_file(manifest.file_id())
+        );
+        assert!(manifest.is_proven());
+        assert_eq!(
+            FileManifest::whole(manifest.file_id().clone(), 5).unwrap(),
+            manifest
+        );
+        // Its chunk is not the v1 chunk of the same bytes.
+        assert_ne!(
+            Chunk::new(b"hello".to_vec()).unwrap().id(),
+            manifest.chunks()[0].chunk_id()
+        );
+        // Reconstruction and streaming verification use the file domain.
+        let whole = Chunk::whole(b"hello".to_vec()).unwrap();
+        assert_eq!(
+            manifest.reconstruct(|_| Some(b"hello".to_vec())).unwrap(),
+            b"hello"
+        );
+        manifest
+            .verify_chunks(|id| (id == whole.id()).then(|| b"hello".to_vec()))
+            .unwrap();
+        assert!(manifest.reconstruct(|_| Some(b"hellO".to_vec())).is_err());
+        assert_eq!(
+            manifest
+                .chunk(&manifest.chunks()[0], b"hello".to_vec())
+                .unwrap(),
+            whole
+        );
+        assert!(
+            manifest
+                .chunk(&manifest.chunks()[0], b"hellO".to_vec())
+                .is_err()
+        );
+        // The JSON round trip keeps the recipe and the identity.
+        let read: FileManifest =
+            serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(read, manifest);
+        assert!(read.chunks_are_whole());
+        let chunk: Chunk = serde_json::from_slice(&serde_json::to_vec(&whole).unwrap()).unwrap();
+        assert_eq!(chunk, whole);
+        assert!(chunk.is_whole());
+    }
+
+    #[test]
+    fn a_whole_manifest_is_refused_unless_one_chunk_named_by_the_file() {
+        let file_id = FileId::from_bytes(b"abc");
+        let v1 = Chunk::new(b"abc".to_vec()).unwrap();
+        // A v1 chunk id under the whole recipe.
+        assert!(
+            FileManifest::new(
+                file_id.clone(),
+                3,
+                ChunkingDescriptor::whole(),
+                vec![FileChunk::new(v1.id().clone(), 0, 3).unwrap()],
+            )
+            .is_err()
+        );
+        // Two chunks.
+        let named = ChunkId::of_whole_file(&file_id);
+        assert!(
+            FileManifest::new(
+                file_id.clone(),
+                3,
+                ChunkingDescriptor::whole(),
+                vec![
+                    FileChunk::new(named.clone(), 0, 1).unwrap(),
+                    FileChunk::new(named, 1, 2).unwrap(),
+                ],
+            )
+            .is_err()
+        );
+        // Empty, or over 1 MiB.
+        assert!(FileManifest::empty(ChunkingDescriptor::whole()).is_err());
+        assert!(FileManifest::whole(file_id, WHOLE_MAX_BYTES + 1).is_err());
+        assert!(Chunk::whole(vec![1; WHOLE_MAX_BYTES as usize + 1]).is_err());
+        // A builder refuses a chunk of the other domain.
+        let mut builder =
+            FileManifestBuilder::new(ChunkingDescriptor::whole(), u64::MAX, 1).unwrap();
+        assert!(builder.push_chunk(&v1).is_err());
+        let mut builder = FileManifestBuilder::new(fixed_chunking(3), u64::MAX, 1).unwrap();
+        assert!(
+            builder
+                .push_chunk(&Chunk::whole(b"abc".to_vec()).unwrap())
+                .is_err()
+        );
+        // The capture recipe.
+        assert!(capture_chunking(1, true).is_whole());
+        assert!(capture_chunking(WHOLE_MAX_BYTES, true).is_whole());
+        assert!(!capture_chunking(WHOLE_MAX_BYTES + 1, true).is_whole());
+        assert!(!capture_chunking(0, true).is_whole());
+        assert!(!capture_chunking(5, false).is_whole());
     }
 }

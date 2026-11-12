@@ -25,7 +25,32 @@ pub(super) fn read(
     let store = workspace.open_store()?;
     let reader = NativeScmReader::new(&store)?;
     if !reader.object_admitted_to_space(&key, &cap.space_id)? {
-        return Ok(None);
+        // A file this Store keeps `whole` is held by servers as the v1 file
+        // of the same FileId (council s13 Q5): its chunk and manifest are
+        // rebuilt from the admitted local bytes, and served only if they are
+        // exactly the object described.
+        let FetchClaim::File { file_id, .. } = &cap.claim else {
+            return Ok(None);
+        };
+        if !matches!(
+            descriptor.kind,
+            ObjectKind::Chunk | ObjectKind::FileManifest
+        ) {
+            return Ok(None);
+        }
+        let Some((chunk, manifest)) =
+            super::super::graph::v1_equivalent(&reader, file_id, &cap.space_id)?
+        else {
+            return Ok(None);
+        };
+        let object = match key {
+            StoreObjectId::ChunkRaw(id) if &id == chunk.id() => CanonicalObject::ChunkRaw(chunk),
+            StoreObjectId::FileManifest(id) if &id == manifest.id() => {
+                CanonicalObject::FileManifest(manifest)
+            }
+            _ => return Ok(None),
+        };
+        return described(object, descriptor, id);
     }
     // Typed readers verify CAS identity, durable verification and projections.
     // Missing/corrupt admitted objects must fail, not silently repair the Store.
@@ -45,6 +70,16 @@ pub(super) fn read(
     .ok_or(NativeRemoteError::Invalid(
         "missing admitted transfer object",
     ))?;
+    described(object, descriptor, id)
+}
+
+/// The canonical bytes of `object`, if they are exactly the object
+/// `descriptor` names.
+fn described(
+    object: CanonicalObject,
+    descriptor: &ObjectDescriptor,
+    id: &str,
+) -> RemoteResult<Option<Vec<u8>>> {
     let (kind, bytes) = encode(&object)?;
     if kind != descriptor.kind
         || object.object_id().as_str() != id

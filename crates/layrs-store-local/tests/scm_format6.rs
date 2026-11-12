@@ -75,6 +75,8 @@ enum Recipe {
     Fixed,
     Single,
     Half,
+    /// One chunk named by the FileId (Store format 7, council s13 Q5).
+    Whole,
 }
 
 /// One File: its chunks (by its recipe) and manifest.
@@ -86,7 +88,17 @@ struct File {
 }
 
 fn file(name: &str, bytes: &[u8], recipe: Recipe) -> File {
+    if let Recipe::Whole = recipe {
+        let chunks = vec![Chunk::whole(bytes.to_vec()).unwrap()];
+        let manifest = FileManifest::from_chunks(ChunkingDescriptor::whole(), &chunks).unwrap();
+        return File {
+            name: name.into(),
+            chunks,
+            manifest,
+        };
+    }
     let (chunking, size) = match recipe {
+        Recipe::Whole => unreachable!("handled above"),
         Recipe::Fixed => (fixed_chunking(bytes.len() as u64), MIB),
         Recipe::Single => (ChunkingDescriptor::single(), usize::MAX),
         Recipe::Half => (
@@ -414,6 +426,214 @@ fn reader_answers(root: &Path, files: &[File], space: &SpaceId) -> Vec<String> {
         ));
     }
     answers
+}
+
+/// The pack version of a pack file (its header).
+fn pack_version(path: &Path) -> u32 {
+    let bytes = fs::read(path).unwrap();
+    u32::from_le_bytes(bytes[8..12].try_into().unwrap())
+}
+
+fn many(count: usize, recipe: Recipe) -> Vec<File> {
+    (0..count)
+        .map(|i| {
+            file(
+                &format!("f{i}.txt"),
+                format!("line {i}\n{}", "\n".repeat(i % 40)).as_bytes(),
+                recipe,
+            )
+        })
+        .collect()
+}
+
+/// Format 7 keeps a small file as one `whole` record named by its FileId
+/// (council s13 Q5): a version 2 pack without a second digest, smaller than
+/// format 6's for the same content, read, admitted, closed and checked as
+/// format 6 answers.
+#[test]
+fn format_7_keeps_small_files_whole_in_smaller_packs() {
+    let mut sizes = Vec::new();
+    for (format, recipe) in [("6", Recipe::Fixed), ("7", Recipe::Whole)] {
+        let root = TestRoot::new(&format!("whole-{format}"));
+        create(&root.0, &format!("whole-{format}"), format);
+        let mut files = many(200, recipe);
+        // A file over 1 MiB keeps its chunks in both formats; a file of
+        // format 7 may still be v1 (received, or captured before).
+        let large: Vec<u8> = (0..(MIB + 300)).map(|i| (i * 7 % 253) as u8).collect();
+        files.push(file("large.bin", &large, Recipe::Fixed));
+        files.push(file("v1.txt", b"a v1 file in any format", Recipe::Fixed));
+        let (lane, batch) = Lane::begin("alpha", &files);
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .unwrap();
+        let [pack] = packs(&root.0).try_into().unwrap();
+        assert_eq!(pack_version(&pack), if format == "7" { 2 } else { 1 });
+        sizes.push(fs::metadata(&pack).unwrap().len());
+        let store = open(&root.0).unwrap();
+        let reader = NativeScmReader::new(&store).unwrap();
+        for file in &files {
+            let id = file.manifest.file_id();
+            assert!(reader.file_present_metadata(id).unwrap(), "{}", file.name);
+            assert_eq!(
+                reader.file_manifest_ids_metadata(id).unwrap(),
+                vec![file.manifest.id().clone()]
+            );
+            for chunk in &file.chunks {
+                let read = reader.get_chunk(chunk.id()).unwrap().unwrap();
+                assert_eq!(&read, chunk);
+                assert_eq!(read.is_whole(), format == "7" && file.name.starts_with('f'));
+            }
+            assert_eq!(
+                reader.get_file_manifest(file.manifest.id()).unwrap(),
+                Some(file.manifest.clone())
+            );
+        }
+        // The v1 chunk of a whole file's bytes is not stored.
+        if format == "7" {
+            let v1 = Chunk::new(files[0].chunks[0].bytes().to_vec()).unwrap();
+            assert!(reader.get_chunk(v1.id()).unwrap().is_none());
+        }
+        drop(reader);
+        drop(store);
+        assert_closure_matches(&root.0, &files, lane.space.id());
+        assert_fsck_clean(&root.0);
+        let store = open(&root.0).unwrap();
+        assert!(NativeCas::open(&store).unwrap().scrub().unwrap().is_clean());
+    }
+    // 200 whole records: at least 32 bytes each saved.
+    assert!(sizes[1] + 200 * 32 <= sizes[0], "{sizes:?}");
+}
+
+/// Consolidation copies whole records as they are: every answer and
+/// admission is kept.
+#[test]
+fn whole_records_survive_consolidation() {
+    let root = TestRoot::new("whole-consolidation");
+    create(&root.0, "whole-consolidation", "7");
+    let mut files = vec![file("first.txt", b"first", Recipe::Whole)];
+    let (mut lane, batch) = Lane::begin("alpha", &files);
+    let mut repository = NativeScmRepository::new(&root.0);
+    repository.apply_batch(&batch).unwrap();
+    for step in 0..7 {
+        let recipe = if step % 2 == 0 {
+            Recipe::Whole
+        } else {
+            Recipe::Fixed
+        };
+        let added = file(&format!("f{step}.txt"), &noise(300, step), recipe);
+        let carried = file_objects(std::slice::from_ref(&added));
+        files.push(added);
+        repository
+            .apply_batch(&lane.capture(&files, carried))
+            .unwrap();
+    }
+    drop(repository);
+    assert!(registered_packs(&root.0).len() < 8);
+    for pack in packs(&root.0) {
+        assert_eq!(pack_version(&pack), 2);
+    }
+    let answers = reader_answers(&root.0, &files, lane.space.id());
+    assert!(
+        answers
+            .iter()
+            .all(|answer| !answer.contains("admitted=false")),
+        "{answers:?}"
+    );
+    assert_closure_matches(&root.0, &files, lane.space.id());
+    assert_fsck_clean(&root.0);
+}
+
+/// A whole file and the v1 file of the same bytes in one batch: the whole
+/// manifest takes the file record, the v1 manifest and chunk stay explicit;
+/// both manifests answer.
+#[test]
+fn a_whole_and_a_v1_manifest_of_one_file_share_a_batch() {
+    let root = TestRoot::new("whole-and-v1");
+    create(&root.0, "whole-and-v1", "7");
+    let whole = file("same.txt", b"the same bytes", Recipe::Whole);
+    let v1 = file("same.txt", b"the same bytes", Recipe::Fixed);
+    assert_eq!(whole.manifest.file_id(), v1.manifest.file_id());
+    let (lane, batch) = Lane::begin("alpha", std::slice::from_ref(&whole));
+    let mut objects = batch.canonical_objects().to_vec();
+    objects.extend(file_objects(std::slice::from_ref(&v1)));
+    let mut admissions = batch.admissions().to_vec();
+    admissions.push(SpaceObjectAdmission::new(
+        lane.space.id().clone(),
+        StoreObjectId::FileManifest(v1.manifest.id().clone()),
+    ));
+    admissions.push(SpaceObjectAdmission::new(
+        lane.space.id().clone(),
+        StoreObjectId::ChunkRaw(v1.chunks[0].id().clone()),
+    ));
+    let batch = WriteBatch::new(
+        batch.transaction_id().clone(),
+        objects,
+        batch.entity_records().to_vec(),
+        admissions,
+        batch.mutations().to_vec(),
+    )
+    .unwrap();
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let store = open(&root.0).unwrap();
+    let reader = NativeScmReader::new(&store).unwrap();
+    let mut expected = vec![whole.manifest.id().clone(), v1.manifest.id().clone()];
+    expected.sort();
+    assert_eq!(
+        reader
+            .file_manifest_ids_metadata(whole.manifest.file_id())
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        reader.get_chunk(v1.chunks[0].id()).unwrap().as_ref(),
+        Some(&v1.chunks[0])
+    );
+    assert_eq!(
+        reader.get_chunk(whole.chunks[0].id()).unwrap().as_ref(),
+        Some(&whole.chunks[0])
+    );
+    drop(reader);
+    drop(store);
+    assert_fsck_clean(&root.0);
+}
+
+/// A whole file belongs only in a Store of format 7, and a format 7 pack
+/// is never read by a Store that is not.
+#[test]
+fn whole_files_and_their_packs_stay_in_format_7() {
+    // A format 6 Store refuses a batch carrying a whole file.
+    let root = TestRoot::new("whole-in-6");
+    create(&root.0, "whole-in-6", "6");
+    let files = vec![file("a.txt", b"alpha", Recipe::Whole)];
+    let (_, batch) = Lane::begin("alpha", &files);
+    assert!(
+        NativeScmRepository::new(&root.0)
+            .apply_batch(&batch)
+            .is_err()
+    );
+    assert!(registered_packs(&root.0).is_empty());
+    // A format 7 Store whose marker is rewritten to format 6 reads its
+    // version 2 pack as corruption, never as format 6 content.
+    let root = TestRoot::new("whole-marker");
+    create(&root.0, "whole-marker", "7");
+    let (_, batch) = Lane::begin("alpha", &files);
+    NativeScmRepository::new(&root.0)
+        .apply_batch(&batch)
+        .unwrap();
+    let marker = root.0.join("FORMAT");
+    let text = fs::read_to_string(&marker).unwrap();
+    fs::write(
+        &marker,
+        text.replace("\"formatVersion\":7", "\"formatVersion\":6")
+            .replace("\"minReaderVersion\":7", "\"minReaderVersion\":6"),
+    )
+    .unwrap();
+    let store = open(&root.0).unwrap();
+    assert_eq!(store.format_version(), 6);
+    let reader = NativeScmReader::new(&store).unwrap();
+    assert!(reader.get_chunk(files[0].chunks[0].id()).is_err());
 }
 
 /// A step carrying the manifest of its new content still proves its other

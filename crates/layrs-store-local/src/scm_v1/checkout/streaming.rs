@@ -424,6 +424,7 @@ impl CheckoutReader {
         );
         let mut scan = StreamScan {
             limits,
+            whole_files: self.whole_files,
             tracked,
             observe,
             trust,
@@ -549,6 +550,8 @@ struct StreamScan<'a> {
     hash_threads: usize,
     /// Shared by the parallel subtrees of one walk.
     hash_slots: Option<&'a HashSlots>,
+    /// Small files are hashed as one `whole` chunk (Store format 7).
+    whole_files: bool,
 }
 
 struct ScannedDirectory {
@@ -771,6 +774,7 @@ impl StreamScan<'_> {
         let stop = AtomicBool::new(false);
         let (limits, tracked, trust, ignored) =
             (self.limits, self.tracked, self.trust, self.ignored);
+        let whole_files = self.whole_files;
         let (visited, bytes, observer_failed, relist) =
             (self.visited, self.bytes, self.observer_failed, self.relist);
         let root = &self
@@ -810,6 +814,7 @@ impl StreamScan<'_> {
                             let mut quiet = || Ok(());
                             let mut scan = StreamScan {
                                 limits,
+                                whole_files,
                                 tracked,
                                 observe: &mut unused,
                                 trust,
@@ -959,6 +964,7 @@ impl StreamScan<'_> {
         let stop = AtomicBool::new(false);
         let observer_failed = self.observer_failed;
         let limits = self.limits;
+        let whole_files = self.whole_files;
         // Running total charged by each worker before it reads a file.
         let total = self.bytes;
         let directories = &self.directories;
@@ -989,6 +995,7 @@ impl StreamScan<'_> {
                                     &directory.handle,
                                     task,
                                     limits,
+                                    whole_files,
                                     total,
                                     &sender,
                                     observer_failed,
@@ -1081,6 +1088,7 @@ fn hash_file(
     directory: &PinnedDirectory,
     task: &FileTask,
     limits: CheckoutLimits,
+    whole_files: bool,
     total: &AtomicU64,
     sink: &std::sync::mpsc::SyncSender<Chunk>,
     observer_failed: &AtomicBool,
@@ -1099,12 +1107,12 @@ fn hash_file(
     let chunk_bytes = layrs_core::scm::fixed_chunk_bytes(first.len());
     let chunks = usize::try_from(first.len().div_ceil(chunk_bytes))
         .map_err(|_| invalid("file chunk count exceeds this platform"))?;
-    let mut builder = FileManifestBuilder::new(
-        layrs_core::scm::fixed_chunking(first.len()),
-        first.len(),
-        chunks,
-    )
-    .map_err(|e| invalid(&e.to_string()))?;
+    // A small file of a format 7 Store is one chunk named by its FileId
+    // (council s13 Q5): one digest, computed once.
+    let chunking = layrs_core::scm::capture_chunking(first.len(), whole_files);
+    let whole = chunking.is_whole();
+    let mut builder = FileManifestBuilder::new(chunking, first.len(), chunks)
+        .map_err(|e| invalid(&e.to_string()))?;
     let mut remaining = first.len();
     while remaining != 0 {
         if observer_failed.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1119,7 +1127,12 @@ fn hash_file(
                 e
             }
         })?;
-        let chunk = Chunk::new(bytes).map_err(|e| invalid(&e.to_string()))?;
+        let chunk = if whole {
+            Chunk::whole(bytes)
+        } else {
+            Chunk::new(bytes)
+        }
+        .map_err(|e| invalid(&e.to_string()))?;
         builder
             .push_chunk(&chunk)
             .map_err(|e| invalid(&e.to_string()))?;

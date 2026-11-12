@@ -472,6 +472,7 @@ fn snapshot_limits_reserved_paths_and_symlinks_are_explicit() {
         max_depth: 2,
         max_file_bytes: 4,
         max_total_bytes: 5,
+        whole_files: false,
     };
     let mut b = SnapshotBuilder::new(limits);
     assert!(b

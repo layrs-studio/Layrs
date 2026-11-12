@@ -163,8 +163,14 @@ pub struct NativeClient {
     pub(super) store_identity: String,
     pub(super) metadata_identity: String,
     store_id: layrs_core::scm::StoreId,
+    /// The Store keeps small files `whole` (format 7, council s13 Q5).
+    whole_files: bool,
 }
 impl NativeClient {
+    /// Whether captures for this Store keep small files `whole`.
+    pub fn whole_files(&self) -> bool {
+        self.whole_files
+    }
     pub fn store_identity(&self) -> &str {
         &self.store_identity
     }
@@ -191,6 +197,7 @@ impl NativeClient {
             store_identity,
             metadata_identity,
             store_id: store.store_id().clone(),
+            whole_files: store.whole_files(),
         };
         Ok((client, store))
     }

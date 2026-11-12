@@ -56,18 +56,30 @@ pub const PACKED_FORMAT_VERSION: u32 = 5;
 /// registered in SQLite (schema v3), per-Space admission bitmaps. Opt-in
 /// with `LAYRS_STORE_FORMAT=6` until it becomes the default.
 pub const COMPACT_FORMAT_VERSION: u32 = 6;
+/// Format 6 whose captures keep a small file as one `whole` record, its
+/// chunk named by its FileId (council s13 Q5): packs v2 of version 2.
+/// Opt-in with `LAYRS_STORE_FORMAT=7`. A reader of format 6 refuses it.
+pub const WHOLE_FILES_FORMAT_VERSION: u32 = 7;
 /// The newest complete-Store format this reader understands.
-pub const NEWEST_FORMAT_VERSION: u32 = COMPACT_FORMAT_VERSION;
+pub const NEWEST_FORMAT_VERSION: u32 = WHOLE_FILES_FORMAT_VERSION;
 pub const MAX_FORMAT_BYTES: u64 = 64 * 1024;
 
 /// The format `init` creates: packed (5), unless `LAYRS_STORE_FORMAT` asks
-/// for 2 or for the compact format 6.
+/// for 2, for the compact format 6 or for 7.
 fn creation_format_version() -> u32 {
     match std::env::var("LAYRS_STORE_FORMAT").as_deref() {
         Ok("2") => FORMAT_VERSION,
         Ok("6") => COMPACT_FORMAT_VERSION,
+        Ok("7") => WHOLE_FILES_FORMAT_VERSION,
         _ => PACKED_FORMAT_VERSION,
     }
+}
+
+/// Whether `init` creates a Store of format 7 (`LAYRS_STORE_FORMAT=7`),
+/// whose captures keep small files `whole`: a first capture runs before the
+/// Store exists.
+pub fn creation_keeps_whole_files() -> bool {
+    creation_format_version() == WHOLE_FILES_FORMAT_VERSION
 }
 
 /// Whether this reader reads complete Stores of `version` (3 and 4 belong
@@ -76,6 +88,7 @@ fn supported_format(version: u64) -> bool {
     version == u64::from(FORMAT_VERSION)
         || version == u64::from(PACKED_FORMAT_VERSION)
         || version == u64::from(COMPACT_FORMAT_VERSION)
+        || version == u64::from(WHOLE_FILES_FORMAT_VERSION)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

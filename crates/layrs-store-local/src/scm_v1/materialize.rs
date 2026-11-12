@@ -543,6 +543,7 @@ pub fn apply_checkout_with_sources_bound_metadata(
         // A stale prepared batch is never retried or admitted against new heads.
         super::repository::precheck_mutations(&connection, batch).map_err(io::Error::other)?;
         let descriptors: BTreeMap<_, _> = sources.chunks.iter().cloned().collect();
+        let whole = super::repository::whole_chunk_ids(batch);
         let source = std::cell::RefCell::new(&mut sources.read_chunk);
         let resolve = |id: &layrs_core::scm::ChunkId| {
             let Some(length) = descriptors.get(id) else {
@@ -554,11 +555,11 @@ pub fn apply_checkout_with_sources_bound_metadata(
                     message: "prepared chunk length changed".into(),
                 });
             }
-            layrs_core::scm::Chunk::new(bytes).map(Some).map_err(|e| {
-                layrs_store::scm::StoreError::Corruption {
+            layrs_core::scm::Chunk::verified(id, bytes, whole.contains(id))
+                .map(Some)
+                .map_err(|e| layrs_store::scm::StoreError::Corruption {
                     message: e.to_string(),
-                }
-            })
+                })
         };
         let scope = super::admission::memo_scope_of(store.store_id(), store.layout().root());
         CompositeAdmissionResolver::new(&reader, batch)

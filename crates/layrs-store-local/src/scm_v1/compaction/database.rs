@@ -4,15 +4,39 @@ use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use std::{fs, path::Path, time::Duration};
 
 pub fn require_idle(db: &Connection) -> CompactionResult<()> {
-    for query in [
-        "SELECT EXISTS(SELECT 1 FROM recovery_operations WHERE state!='completed')",
-        "SELECT EXISTS(SELECT 1 FROM materialization_leases WHERE released_at_ms IS NULL)",
-        "SELECT EXISTS(SELECT 1 FROM pending_objects WHERE state NOT IN ('installed','abandoned'))",
-        "SELECT EXISTS(SELECT 1 FROM pending_admissions WHERE state IN ('pending','validated'))",
-        "SELECT EXISTS(SELECT 1 FROM pending_steps WHERE state IN ('pending','validated'))",
-        "SELECT EXISTS(SELECT 1 FROM pending_ref_updates WHERE state IN ('pending','validated'))",
+    // Schema v4 (format 7) has no pending_* tables: nothing can be pending.
+    let pending: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_objects')",
+        [],
+        |row| row.get(0),
+    )?;
+    for (query, applies) in [
+        (
+            "SELECT EXISTS(SELECT 1 FROM recovery_operations WHERE state!='completed')",
+            true,
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM materialization_leases WHERE released_at_ms IS NULL)",
+            true,
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM pending_objects WHERE state NOT IN ('installed','abandoned'))",
+            pending,
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM pending_admissions WHERE state IN ('pending','validated'))",
+            pending,
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM pending_steps WHERE state IN ('pending','validated'))",
+            pending,
+        ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM pending_ref_updates WHERE state IN ('pending','validated'))",
+            pending,
+        ),
     ] {
-        if db.query_row(query, [], |row| row.get::<_, bool>(0))? {
+        if applies && db.query_row(query, [], |row| row.get::<_, bool>(0))? {
             return Err(
                 "metadata compaction refused: recovery, lease or pending mutation in a Worktree"
                     .into(),

@@ -734,8 +734,18 @@ mod bulk_tests {
         // Every pack a file, so reading it opens one.
         scm_v1::set_inline_pack_limit(&store_root, Some(0));
         let workspace = super::super::NativeWorkspace::initialize(&root, "Bulk").unwrap();
-        let chunk =
-            StoreObjectId::ChunkRaw(layrs_core::scm::Chunk::new(bytes).unwrap().id().clone());
+        // The chunk the Store keeps: `whole` in format 7 (council s13 Q5).
+        let whole = scm_v1::open(workspace.store_root()).unwrap().whole_files();
+        let chunk = StoreObjectId::ChunkRaw(
+            if whole {
+                layrs_core::scm::Chunk::whole(bytes)
+            } else {
+                layrs_core::scm::Chunk::new(bytes)
+            }
+            .unwrap()
+            .id()
+            .clone(),
+        );
         let view =
             || scm_v1::NativeCas::open(&scm_v1::open(workspace.store_root()).unwrap()).unwrap();
         let (first, second) = (view(), view());

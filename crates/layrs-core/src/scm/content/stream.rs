@@ -42,6 +42,13 @@ impl FileManifestBuilder {
             return Err(invalid("builder previously failed"));
         }
         self.failed = true;
+        // A `whole` manifest takes its one chunk named in the file domain;
+        // every other recipe takes chunks named in the chunk domain.
+        if chunk.is_whole() != self.chunking.is_whole()
+            || (self.chunking.is_whole() && !self.chunks.is_empty())
+        {
+            return Err(invalid("chunk domain differs from the recipe"));
+        }
         let next = self
             .bytes
             .checked_add(chunk.byte_length())
@@ -50,7 +57,10 @@ impl FileManifestBuilder {
             return Err(invalid("file stream exceeds caller budget"));
         }
         let entry = FileChunk::new(chunk.id().clone(), self.bytes, chunk.byte_length())?;
-        self.hash.update(chunk.bytes());
+        // A whole chunk's id is already the FileId's digest.
+        if !chunk.is_whole() {
+            self.hash.update(chunk.bytes());
+        }
         self.chunks.push(entry);
         self.bytes = next;
         self.failed = false;
@@ -60,14 +70,16 @@ impl FileManifestBuilder {
         if self.failed {
             return Err(invalid("builder previously failed"));
         }
-        // Every chunk id and the FileId were hashed here from the same bytes.
-        FileManifest::new(
-            FileId::from_digest(self.hash.finalize()),
-            self.bytes,
-            self.chunking,
-            self.chunks,
-        )
-        .map(FileManifest::into_proven)
+        // Every chunk id and the FileId were hashed here from the same bytes
+        // (a whole file's once: its chunk id is its FileId's digest).
+        let file_id = match self.chunks.as_slice() {
+            [chunk] if self.chunking.is_whole() => {
+                FileId::from_digest_bytes(&chunk.chunk_id().digest_bytes())
+            }
+            _ => FileId::from_digest(self.hash.finalize()),
+        };
+        FileManifest::new(file_id, self.bytes, self.chunking, self.chunks)
+            .map(FileManifest::into_proven)
     }
 }
 
@@ -97,7 +109,7 @@ impl FileManifestVerifier<'_> {
         if entry.offset != self.bytes {
             return Err(invalid("chunk offset differs from manifest"));
         }
-        let mut chunk_hash = hasher(CHUNK_DOMAIN);
+        let mut chunk_hash = hasher(self.manifest.chunk_domain());
         chunk_hash.update(bytes);
         if ChunkId::from_digest(chunk_hash.finalize()) != entry.chunk_id {
             return Err(ScmError::InvalidChunk(entry.chunk_id.to_string()));

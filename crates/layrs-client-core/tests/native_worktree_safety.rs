@@ -734,7 +734,7 @@ fn damage_compact_object(
     object: &layrs_store::scm::StoreObjectId,
 ) -> Option<std::path::PathBuf> {
     let store = layrs_store_local::scm_v1::open(store_root).unwrap();
-    if store.format_version() != layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
+    if store.format_version() < layrs_store_local::scm_v1::COMPACT_FORMAT_VERSION {
         return None;
     }
     let location = layrs_store_local::scm_v1::NativeCas::open(&store)

@@ -15,7 +15,9 @@ pub(crate) struct SnapshotChunkSpool {
     /// would grow past it, with what memory held.
     file: Mutex<Option<File>>,
     memory: Vec<u8>,
-    entries: BTreeMap<ChunkId, (u64, usize)>,
+    /// Offset, length, and whether the chunk is a `whole` file's (named in
+    /// the file domain).
+    entries: BTreeMap<ChunkId, (u64, usize, bool)>,
     length: u64,
 }
 
@@ -65,15 +67,17 @@ impl SnapshotChunkSpool {
                 file.write_all(chunk.bytes())?;
             }
         }
-        self.entries
-            .insert(chunk.id().clone(), (self.length, chunk.bytes().len()));
+        self.entries.insert(
+            chunk.id().clone(),
+            (self.length, chunk.bytes().len(), chunk.is_whole()),
+        );
         self.length = next;
         Ok(())
     }
     pub(crate) fn descriptors(&self) -> Vec<(ChunkId, u64)> {
         self.entries
             .iter()
-            .map(|(id, (_, len))| (id.clone(), *len as u64))
+            .map(|(id, (_, len, _))| (id.clone(), *len as u64))
             .collect()
     }
     /// Known (already admitted) chunks are never spooled by a capture.
@@ -82,7 +86,7 @@ impl SnapshotChunkSpool {
     }
     pub(crate) fn read(&self, id: &ChunkId) -> layrs_store::scm::Result<Vec<u8>> {
         let result = (|| -> io::Result<Vec<u8>> {
-            let (offset, len) = self
+            let (offset, len, whole) = self
                 .entries
                 .get(id)
                 .ok_or_else(|| io::Error::other("prepared chunk absent"))?;
@@ -103,10 +107,8 @@ impl SnapshotChunkSpool {
                     .ok_or_else(|| io::Error::other("prepared chunk absent"))?
                     .to_vec(),
             };
-            let chunk = Chunk::new(bytes).map_err(io::Error::other)?;
-            if chunk.id() != id {
-                return Err(io::Error::other("prepared chunk identity changed"));
-            }
+            let chunk = Chunk::verified(id, bytes, *whole)
+                .map_err(|_| io::Error::other("prepared chunk identity changed"))?;
             Ok(chunk.bytes().to_vec())
         })();
         result.map_err(|e| layrs_store::scm::StoreError::Corruption {

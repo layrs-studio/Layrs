@@ -16,6 +16,9 @@ pub struct SnapshotLimits {
     pub max_depth: usize,
     pub max_file_bytes: usize,
     pub max_total_bytes: usize,
+    /// Captures keep a file of 1 byte to 1 MiB as one `whole` chunk named
+    /// by its FileId: a Store of format 7 (council s13 Q5).
+    pub whole_files: bool,
 }
 impl Default for SnapshotLimits {
     fn default() -> Self {
@@ -24,10 +27,17 @@ impl Default for SnapshotLimits {
             max_depth: 128,
             max_file_bytes: 64 * 1024 * 1024,
             max_total_bytes: 256 * 1024 * 1024,
+            whole_files: false,
         }
     }
 }
 impl SnapshotLimits {
+    /// These limits for a Store that keeps small files `whole` (format 7).
+    pub fn with_whole_files(mut self, whole_files: bool) -> Self {
+        self.whole_files = whole_files;
+        self
+    }
+
     /// Logical limits for spool-backed paths: content is never held whole,
     /// so file and capture sizes are unbounded (ADR 0027); only the disk
     /// bounds them. In-memory callers deliberately retain the Default limits.
@@ -203,14 +213,24 @@ impl SnapshotBuilder {
 
     pub fn add_file(&mut self, path: RepoPath, bytes: &[u8], executable: bool) -> Result<()> {
         let parts = self.validate(&path, bytes.len())?;
-        let chunks = bytes
-            .chunks(CHUNK_BYTES)
-            .map(|b| Chunk::new(b.to_vec()))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let manifest = FileManifest::from_chunks(
-            ChunkingDescriptor::deterministic_fixed(CHUNK_BYTES as u64)?,
-            &chunks,
-        )?;
+        let (chunks, manifest) =
+            if layrs_core::scm::capture_chunking(bytes.len() as u64, self.limits.whole_files)
+                .is_whole()
+            {
+                let chunks = vec![Chunk::whole(bytes.to_vec())?];
+                let manifest = FileManifest::from_chunks(ChunkingDescriptor::whole(), &chunks)?;
+                (chunks, manifest)
+            } else {
+                let chunks = bytes
+                    .chunks(CHUNK_BYTES)
+                    .map(|b| Chunk::new(b.to_vec()))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let manifest = FileManifest::from_chunks(
+                    ChunkingDescriptor::deterministic_fixed(CHUNK_BYTES as u64)?,
+                    &chunks,
+                )?;
+                (chunks, manifest)
+            };
         insert(
             &mut self.entries,
             &parts,

@@ -429,7 +429,9 @@ impl NativeScmRepository {
         let mut installed = Vec::with_capacity(batch.canonical_objects().len() + chunks.len());
         // External chunks are read and checked here in order, then every
         // object is installed as by `put`, concurrently; outcomes and fault
-        // boundaries are consumed in the original order.
+        // boundaries are consumed in the original order. A chunk a `whole`
+        // manifest of the batch names is checked in the file domain.
+        let whole = whole_chunk_ids(batch);
         let mut external = chunks.iter();
         let mut objects = batch.canonical_objects().iter();
         let outcomes = cas.put_ordered(|| {
@@ -441,14 +443,12 @@ impl NativeScmRepository {
                             message: "external chunk length differs from its descriptor".into(),
                         });
                     }
-                    let chunk = Chunk::new(bytes).map_err(|error| StoreError::Corruption {
-                        message: format!("invalid external chunk: {error}"),
-                    })?;
-                    if chunk.id() != id {
-                        return Err(StoreError::Corruption {
-                            message: "external chunk identity differs from its descriptor".into(),
-                        });
-                    }
+                    let chunk =
+                        Chunk::verified(id, bytes, whole.contains(id)).map_err(|error| {
+                            StoreError::Corruption {
+                                message: format!("invalid external chunk: {error}"),
+                            }
+                        })?;
                     Ok(PutItem::Owned(CanonicalObject::ChunkRaw(chunk)))
                 })();
                 return Some(checked);
@@ -1158,6 +1158,25 @@ fn insert_object_projections_views(c: &Connection, b: &WriteBatch) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// The chunks the `whole` manifests of `batch` name (council s13 Q5): their
+/// bytes are verified in the file domain.
+pub(super) fn whole_chunk_ids(batch: &WriteBatch) -> std::collections::HashSet<ChunkId> {
+    batch
+        .canonical_objects()
+        .iter()
+        .filter_map(|object| match object {
+            CanonicalObject::FileManifest(manifest) if manifest.chunks_are_whole() => Some(
+                manifest
+                    .chunks()
+                    .iter()
+                    .map(|chunk| chunk.chunk_id().clone()),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 /// Format 6 (ADR 0028): what a CAS item needs to be planned as a file

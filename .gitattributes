@@ -17,3 +17,4 @@ schemas/lenses/v1/lens-contract.schema.json text eol=lf
 
 # Preserve the byte-exact portable validation archive across platforms.
 docs/continuation/worktrees-partial-vfs/evidence.tar.gz -text
+crates/layrs-store-local/tests/fixtures/scm-v4.sql text eol=lf

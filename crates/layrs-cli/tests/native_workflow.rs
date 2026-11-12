@@ -779,7 +779,18 @@ fn restore_preview_refuses_changed_work_and_marker_visibility_preserves_it() {
 #[test]
 fn doctor_reports_corruption_without_repairing_or_requiring_normal_open() {
     let checkout = Checkout::new();
-    fs::write(checkout.0.join("payload"), b"retained bytes").unwrap();
+    // Incompressible and over the inline limit (256 KiB): every format keeps
+    // the initial content in a file to damage, not in SQLite.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let payload: Vec<u8> = (0..300 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    fs::write(checkout.0.join("payload"), &payload).unwrap();
     checkout.run(&["init", "Diagnosis"]);
     let healthy = checkout.run(&["doctor"]);
     assert_eq!(healthy["clean"], true);
@@ -815,10 +826,7 @@ fn doctor_reports_corruption_without_repairing_or_requiring_normal_open() {
     assert_eq!(report["data"]["clean"], false);
     assert!(!report["data"]["findings"].as_array().unwrap().is_empty());
     assert_eq!(fs::read(&object).unwrap(), b"intentional corruption");
-    assert_eq!(
-        fs::read(checkout.0.join("payload")).unwrap(),
-        b"retained bytes"
-    );
+    assert_eq!(fs::read(checkout.0.join("payload")).unwrap(), payload);
     assert_eq!(fs::read(checkout.0.join(".layrs/FORMAT")).unwrap(), format);
 }
 

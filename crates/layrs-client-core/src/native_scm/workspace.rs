@@ -83,7 +83,7 @@ impl NativeWorkspace {
         let (identity, snapshot, proven, entries) =
             super::filesystem::capture_checkout_streaming_indexed(
                 &root,
-                SnapshotLimits::streaming(),
+                SnapshotLimits::streaming().with_whole_files(scm_v1::creation_keeps_whole_files()),
             )?;
         let root_tree = snapshot.root_tree_id().clone();
         let stamp = MutationStamp::fresh()?;

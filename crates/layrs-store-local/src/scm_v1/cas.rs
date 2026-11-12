@@ -297,6 +297,9 @@ pub struct NativeCas {
     packer: Arc<std::sync::Mutex<Option<Packer>>>,
     /// Format 6 (ADR 0028): this view reads only what SQLite registered.
     compact_format: bool,
+    /// Format 7: small files are kept as `whole` records (council s13 Q5);
+    /// a `whole` object or a pack of version 2 belongs nowhere else.
+    whole_files: bool,
     /// Format 6: the Store id this view was opened for; a scrub reopening
     /// the database authenticates it (council s8 r2).
     store_id: Option<layrs_core::scm::StoreId>,
@@ -481,6 +484,7 @@ impl NativeCas {
         let mut cas = Self::open_layout(store.layout(), Arc::new(NoFaults), packs)?;
         if store.compact() {
             cas.compact_format = true;
+            cas.whole_files = store.whole_files();
             cas.store_id = Some(store.store_id().clone());
             let connection = store.try_connection().map_err(|error| {
                 io_error(
@@ -571,6 +575,7 @@ impl NativeCas {
         let mut cas =
             Self::open_layout_bound(store.layout(), faults, packs, store.bound_root_identity())?;
         cas.compact_format = store.compact();
+        cas.whole_files = store.whole_files();
         cas.store_id = store.compact().then(|| store.store_id().clone());
         store
             .verify_filesystem_identity()
@@ -699,6 +704,7 @@ impl NativeCas {
             packs,
             packer: Arc::default(),
             compact_format: false,
+            whole_files: false,
             store_id: None,
             compact: None,
             compact_batch: Arc::default(),
@@ -856,7 +862,26 @@ impl NativeCas {
         Ok(outcome(&prepared, target, existed))
     }
 
+    /// A `whole` chunk or manifest (council s13 Q5) belongs only in a Store
+    /// of format 7: elsewhere no reader verifies its chunk in the file
+    /// domain.
+    fn refuse_whole_elsewhere(&self, object: &CanonicalObject) -> CasResult<()> {
+        let whole = match object {
+            CanonicalObject::ChunkRaw(chunk) => chunk.is_whole(),
+            CanonicalObject::FileManifest(manifest) => manifest.chunks_are_whole(),
+            _ => false,
+        };
+        if whole && !self.whole_files {
+            return Err(corruption(
+                &object.object_id(),
+                "a whole file belongs only in a Store of format 7",
+            ));
+        }
+        Ok(())
+    }
+
     fn put(&self, object: &CanonicalObject) -> CasResult<InstallOutcome> {
+        self.refuse_whole_elsewhere(object)?;
         let object_id = object.object_id();
         let bytes = encode_object(object)?;
         if let Some(outcome) = self.verified_existing(object_id.clone(), &bytes)? {
@@ -871,6 +896,7 @@ impl NativeCas {
     /// to the packer (published by `Packer::finish`); a large one is
     /// installed as by `put`.
     fn put_in_batch(&self, object: &CanonicalObject) -> CasResult<Slot> {
+        self.refuse_whole_elsewhere(object)?;
         if let Some(catalog) = self.compact_view()? {
             return self.put_compact(catalog, object);
         }
@@ -1746,6 +1772,7 @@ impl<'store> NativeCasWriter<'store> {
             // exclusive lock: no other writer can register anything until
             // this capability ends.
             cas.compact_format = true;
+            cas.whole_files = store.whole_files();
             cas.store_id = Some(store.store_id().clone());
             let catalog = match writer {
                 Some(writer) => compact::RegisteredCatalog::load(writer, &cas)?,

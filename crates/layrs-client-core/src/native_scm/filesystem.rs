@@ -30,7 +30,8 @@ fn capture_checkout_tracked(
     limits: SnapshotLimits,
     tracked: &std::collections::BTreeSet<String>,
 ) -> Result<(String, PreparedSnapshot)> {
-    let checkout = CheckoutReader::open(root, expected_identity)?;
+    let checkout =
+        CheckoutReader::open(root, expected_identity)?.with_whole_files(limits.whole_files);
     let captured = checkout.capture_tracked(
         CheckoutLimits {
             max_entries: limits.max_entries,
@@ -67,7 +68,7 @@ pub(super) fn capture_checkout_streaming_indexed(
     Vec<CheckoutProjectionEntry>,
 )> {
     use scm_v1::change_index::{IndexEntry, StatKey};
-    let checkout = CheckoutReader::open(root, None)?;
+    let checkout = CheckoutReader::open(root, None)?.with_whole_files(limits.whole_files);
     let mut chunks = super::snapshot::SnapshotChunkSpool::new()?;
     let verified_at = scm_v1::change_index::now();
     // A first capture only records content: one stable pass (council r5, D4).
@@ -129,7 +130,8 @@ pub(super) fn capture_checkout_streaming_known(
     expected: Option<&[CheckoutProjectionEntry]>,
     cache: Option<&Path>,
 ) -> Result<(String, PreparedSnapshot)> {
-    let checkout = CheckoutReader::open(root, expected_identity)?;
+    let checkout =
+        CheckoutReader::open(root, expected_identity)?.with_whole_files(limits.whole_files);
     let mut chunks = super::snapshot::SnapshotChunkSpool::new()?;
     let (entries, manifests) = checkout.capture_streaming_expecting(
         CheckoutLimits {
@@ -168,6 +170,7 @@ impl super::NativeWorkspace {
         state: &super::WorkspaceState,
         limits: SnapshotLimits,
     ) -> Result<(String, PreparedSnapshot)> {
+        let limits = limits.with_whole_files(limits.whole_files || self.client.whole_files());
         let base = self.read_step_projection(&super::references::base_step(state)?)?;
         // Loaded before hashing; no Store lock is held during the scan. Only
         // the base files' chunks: unchanged content is what a capture re-reads.
@@ -266,7 +269,8 @@ impl super::NativeWorkspace {
         let checkout = CheckoutReader::open(
             Path::new(state.worktree.checkout_root()),
             Some(state.worktree.filesystem_identity()),
-        )?;
+        )?
+        .with_whole_files(limits.whole_files || self.client.whole_files());
         let mut chunks = super::snapshot::SnapshotChunkSpool::new()?;
         // Taken before the listing: no hashed content is credited later than
         // the metadata observed for it.
@@ -414,6 +418,7 @@ impl super::NativeWorkspace {
         state: &super::WorkspaceState,
         limits: SnapshotLimits,
     ) -> Result<(String, PreparedSnapshot)> {
+        let limits = limits.with_whole_files(limits.whole_files || self.client.whole_files());
         let tracked = self
             .read_step_files(&super::references::base_step(state)?)?
             .into_iter()

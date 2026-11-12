@@ -136,6 +136,69 @@ pub const REQUIRED_TABLES_V3: &[&str] = &[
     "gc_roots",
 ];
 
+/// The schema of Store format 7 (council s13 Q6): the v3 tables without the
+/// `pending_*` staging tables format 6 never writes, `WITHOUT ROWID` for
+/// text or composite primary keys (no separate key index), and statements
+/// on one line (SQLite stores each statement's text). Same columns and
+/// constraints: every query of v3 runs unchanged.
+pub const SCHEMA_V4_VERSION: u32 = 4;
+pub const BASELINE_V4_NAME: &str = "native_scm_v4_compact_baseline";
+pub const SCHEMA_V4_CHECKSUM: &str =
+    "3816861bf7124cdfeb92397b373b12015ef507e191364ef9462a63c635fe91d8";
+pub const SCHEMA_V4_FINGERPRINT: &str =
+    "0bbd90d22f1e634d616b7969c56b20a6fccde9a21a954f21f374219d3089d762";
+pub const SCHEMA_V4_SQL: &str = include_str!("../../tests/fixtures/scm-v4.sql");
+
+pub fn schema_v4_checksum() -> String {
+    blake3::hash(SCHEMA_V4_SQL.as_bytes()).to_hex().to_string()
+}
+
+/// The v3 tables without the `pending_*` staging tables.
+pub const REQUIRED_TABLES_V4: &[&str] = &[
+    "meta",
+    "migrations",
+    "applied_transactions",
+    "stores",
+    "spaces",
+    "layers",
+    "layer_parents",
+    "objects",
+    "products",
+    "object_edges",
+    "space_object_admissions",
+    "cas_packs",
+    "cas_pack_inline",
+    "space_pack_admissions",
+    "loose_objects",
+    "space_loose_admissions",
+    "steps",
+    "step_parents",
+    "repository_views",
+    "repository_view_layer_heads",
+    "repository_view_markers",
+    "repository_view_releases",
+    "repository_view_worktrees",
+    "step_observations",
+    "operations",
+    "operation_parents",
+    "operation_rewrites",
+    "operation_rewrite_targets",
+    "worktrees",
+    "markers",
+    "marker_proofs",
+    "releases",
+    "release_proofs",
+    "release_publications",
+    "current_repository_views",
+    "operation_heads",
+    "recovery_operations",
+    "recovery_paths",
+    "materialization_leases",
+    "sync_cursors",
+    "object_pins",
+    "gc_roots",
+];
+
 /// One immutable SQLite baseline: what creation writes and validation
 /// requires, exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,9 +240,23 @@ pub const BASELINE_V3: Baseline = Baseline {
     auto_vacuum: true,
 };
 
-/// The baseline of a Store of `format_version` (format 6: v3; else v2).
+pub const BASELINE_V4: Baseline = Baseline {
+    version: SCHEMA_V4_VERSION,
+    name: BASELINE_V4_NAME,
+    sql: SCHEMA_V4_SQL,
+    checksum: SCHEMA_V4_CHECKSUM,
+    fingerprint: SCHEMA_V4_FINGERPRINT,
+    required_tables: REQUIRED_TABLES_V4,
+    page_size: Some(1024),
+    auto_vacuum: true,
+};
+
+/// The baseline of a Store of `format_version` (format 7: v4; format 6:
+/// v3; else v2).
 pub fn baseline_for_format(format_version: u32) -> &'static Baseline {
-    if format_version == super::format::COMPACT_FORMAT_VERSION {
+    if format_version == super::format::WHOLE_FILES_FORMAT_VERSION {
+        &BASELINE_V4
+    } else if format_version == super::format::COMPACT_FORMAT_VERSION {
         &BASELINE_V3
     } else {
         &BASELINE_V2
@@ -209,6 +286,58 @@ mod baseline_identity_tests {
         assert_eq!(
             (checksum.as_str(), fingerprint.as_str()),
             (super::SCHEMA_V3_CHECKSUM, super::SCHEMA_V3_FINGERPRINT)
+        );
+    }
+
+    #[test]
+    fn v4_baseline_identity_is_pinned() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(super::SCHEMA_V4_SQL).unwrap();
+        let fingerprint = super::super::sqlite::schema_fingerprint(&connection).unwrap();
+        let checksum = super::schema_v4_checksum();
+        assert_eq!(
+            (checksum.as_str(), fingerprint.as_str()),
+            (super::SCHEMA_V4_CHECKSUM, super::SCHEMA_V4_FINGERPRINT)
+        );
+    }
+
+    /// v4 keeps every column and constraint of v3: only the pending_*
+    /// tables, the rowid of keyed tables and the statements' spacing differ.
+    #[test]
+    fn v4_has_the_columns_of_v3_without_the_pending_tables() {
+        let v3 = rusqlite::Connection::open_in_memory().unwrap();
+        v3.execute_batch(super::SCHEMA_V3_SQL).unwrap();
+        let v4 = rusqlite::Connection::open_in_memory().unwrap();
+        v4.execute_batch(super::SCHEMA_V4_SQL).unwrap();
+        let columns =
+            |connection: &rusqlite::Connection, table: &str| -> Vec<(String, String, bool, bool)> {
+                let mut statement = connection
+                    .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                    .unwrap();
+                statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get::<_, i64>(5)? > 0,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+        for table in super::REQUIRED_TABLES_V3 {
+            if table.starts_with("pending_") {
+                assert!(!super::REQUIRED_TABLES_V4.contains(table));
+                continue;
+            }
+            assert!(super::REQUIRED_TABLES_V4.contains(table), "{table}");
+            assert_eq!(columns(&v3, table), columns(&v4, table), "{table}");
+        }
+        assert_eq!(
+            super::REQUIRED_TABLES_V4.len() + 4,
+            super::REQUIRED_TABLES_V3.len()
         );
     }
 }

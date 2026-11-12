@@ -378,7 +378,7 @@ impl NativeStoreOpen {
         &self.store_id
     }
 
-    /// The validated format version of this Store (2, 5 or 6).
+    /// The validated format version of this Store (2, 5, 6 or 7).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
@@ -389,9 +389,15 @@ impl NativeStoreOpen {
         self.format_version == super::PACKED_FORMAT_VERSION
     }
 
-    /// Whether this Store has the compact format 6 (ADR 0028).
+    /// Whether this Store has the compact format (ADR 0028): 6, or 7.
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
+            || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+    }
+
+    /// Whether captures keep small files as `whole` records (format 7).
+    pub fn whole_files(&self) -> bool {
+        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -508,7 +514,7 @@ impl NativeStoreAudit {
         }
     }
 
-    /// The validated format version of this Store (2, 5 or 6).
+    /// The validated format version of this Store (2, 5, 6 or 7).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
@@ -519,9 +525,15 @@ impl NativeStoreAudit {
         self.format_version == super::PACKED_FORMAT_VERSION
     }
 
-    /// Whether this Store has the compact format 6 (ADR 0028).
+    /// Whether this Store has the compact format (ADR 0028): 6, or 7.
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
+            || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+    }
+
+    /// Whether captures keep small files as `whole` records (format 7).
+    pub fn whole_files(&self) -> bool {
+        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
@@ -569,7 +581,7 @@ impl NativeStoreExclusive {
         }
     }
 
-    /// The validated format version of this Store (2, 5 or 6).
+    /// The validated format version of this Store (2, 5, 6 or 7).
     pub fn format_version(&self) -> u32 {
         self.format_version
     }
@@ -580,9 +592,15 @@ impl NativeStoreExclusive {
         self.format_version == super::PACKED_FORMAT_VERSION
     }
 
-    /// Whether this Store has the compact format 6 (ADR 0028).
+    /// Whether this Store has the compact format (ADR 0028): 6, or 7.
     pub fn compact(&self) -> bool {
         self.format_version == super::COMPACT_FORMAT_VERSION
+            || self.format_version == super::WHOLE_FILES_FORMAT_VERSION
+    }
+
+    /// Whether captures keep small files as `whole` records (format 7).
+    pub fn whole_files(&self) -> bool {
+        self.format_version == super::WHOLE_FILES_FORMAT_VERSION
     }
 
     pub(crate) fn with_format_version(mut self, format_version: u32) -> Self {
